@@ -3,7 +3,7 @@ import { Button } from "./Button";
 import { EmptyState, type EmptyStateKind } from "./EmptyState";
 import { Page } from "./Page";
 import { Pagination } from "./Pagination";
-import { SkeletonRows } from "./Skeleton";
+import { Skeleton } from "./Skeleton";
 
 interface Column<T> {
   key: string;
@@ -210,7 +210,60 @@ export function ListPage<T>({
 
       {/* Table / loading / empty */}
       {loading ? (
-        <SkeletonRows count={8} height={40} gap={8} />
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-bg-surface text-fg-subtle text-xs font-medium uppercase tracking-wider">
+                  {columns.map((col) => (
+                    <th
+                      key={col.key}
+                      className={`text-left px-4 py-2.5 ${col.className ?? ""}`}
+                    >
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Skeleton rows — same row count as the active page size
+                    (clamped to 10 so empty workspaces don't stretch a
+                    half-page of empty bars), same per-column padding as
+                    the real table so the cell-grid alignment is identical
+                    on load. Skeleton bar widths vary per column index to
+                    fake content density (id columns shorter, name columns
+                    longer) so it doesn't read as a uniform stripe. */}
+                {Array.from({ length: Math.min(pageSize ?? 10, 10) }).map((_, rowIdx) => (
+                  <tr
+                    key={`sk-${rowIdx}`}
+                    className="border-t border-border"
+                  >
+                    {columns.map((col, colIdx) => {
+                      // Vary skeleton width per column position: first col
+                      // (often id) ~40-60%, middle cols 70-90%, last cols
+                      // (timestamps / actions) ~30-50%. Add tiny per-row
+                      // jitter via (rowIdx + colIdx) so each row reads as
+                      // distinct content.
+                      const widthClass = (() => {
+                        if (colIdx === 0) return rowIdx % 2 === 0 ? "w-[55%]" : "w-[42%]";
+                        if (colIdx === columns.length - 1) return rowIdx % 2 === 0 ? "w-[38%]" : "w-[48%]";
+                        return rowIdx % 3 === 0 ? "w-[85%]" : rowIdx % 3 === 1 ? "w-[72%]" : "w-[60%]";
+                      })();
+                      return (
+                        <td
+                          key={col.key}
+                          className={`px-4 py-3 ${col.className ?? ""}`}
+                        >
+                          <Skeleton className={`h-3.5 ${widthClass}`} rounded="sm" />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : data.length === 0 ? (
         <EmptyState
           title={emptyTitle}
