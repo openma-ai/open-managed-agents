@@ -39,7 +39,8 @@ import {
   PromptInputFooter,
   PromptInputTools,
   PromptInputSubmit,
-  PromptInputActionAddAttachments,
+  PromptInputButton,
+  usePromptInputAttachments,
 } from "../components/ai-elements/prompt-input";
 import { CodeBlock } from "../components/ai-elements/code-block";
 
@@ -1211,7 +1212,7 @@ export function SessionDetail() {
               />
               <PromptInputFooter>
                 <PromptInputTools>
-                  <PromptInputActionAddAttachments />
+                  <AttachButton />
                 </PromptInputTools>
                 <PromptInputSubmit
                   status={sending ? "submitted" : undefined}
@@ -1714,6 +1715,31 @@ function FilesPanel({ sessionId, onClose }: { sessionId: string; onClose: () => 
  *   session.warning           → amber alert div  (same)
  *   anything else             → null  (timeline-only events that shouldn't appear in chat)
  */
+
+/**
+ * Plain paperclip button that opens the PromptInput file picker. The
+ * stock `PromptInputActionAddAttachments` from ai-elements is a
+ * DropdownMenuItem — meant to live inside an action-menu — so dropping
+ * it directly into PromptInputTools threw "MenuItem must be used within
+ * Menu" at render. This button reads the attachments controller from
+ * context and calls `openFileDialog()` directly, no menu required.
+ */
+function AttachButton() {
+  const attachments = usePromptInputAttachments();
+  return (
+    <PromptInputButton
+      type="button"
+      onClick={() => attachments.openFileDialog()}
+      aria-label="Attach files"
+      title="Attach files"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.8l-8.58 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+      </svg>
+    </PromptInputButton>
+  );
+}
+
 function EventRender({
   event,
   livePending = false,
