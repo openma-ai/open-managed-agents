@@ -1,5 +1,6 @@
 import type { ModelMessage, LanguageModel } from "ai";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
+import type { FileResolver } from "../runtime/history";
 
 // SandboxExecutor + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
@@ -7,6 +8,7 @@ import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-
 // for local use AND re-exported so existing imports keep working unchanged.
 import type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
 export type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
+export type { FileResolver, ResolvedFile } from "../runtime/history";
 
 export interface HarnessInterface {
   /** Main agent loop. Required. Drives generateText and emits events. */
@@ -56,14 +58,22 @@ export interface HarnessInterface {
 
   /**
    * Project events → ModelMessage[] for the next generateText call. Default:
-   * eventsToMessages — strict bijection inverse of writes, with
-   * agent.thread_context_compacted boundary handling. Override for
-   * sliding-window / RAG / hierarchical / no-compact strategies.
+   * eventsToMessagesAsync — strict bijection inverse of writes, with
+   * agent.thread_context_compacted boundary handling and async file_id
+   * resolution. Override for sliding-window / RAG / hierarchical / no-compact
+   * strategies.
    *
    * Output MUST be byte-deterministic for any input — Anthropic's prompt
    * cache invalidates on any prefix byte drift.
+   *
+   * Sync-or-async: the union return type lets existing sync overrides
+   * (e.g. AcpProxyHarness returning []) keep their shape. The default-loop
+   * caller always `await`s the result so either form works.
    */
-  deriveModelContext?(events: SessionEvent[]): ModelMessage[];
+  deriveModelContext?(
+    events: SessionEvent[],
+    opts?: { fileFetcher?: FileResolver },
+  ): ModelMessage[] | Promise<ModelMessage[]>;
 }
 
 export interface HarnessRuntime {
@@ -194,6 +204,20 @@ export interface HarnessContext {
    * before any user message, so it sits in the cached prefix forever.
    */
   platformReminders?: Array<{ source: string; text: string }>;
+
+  /**
+   * Resolve a `file_id` (Anthropic Managed Agents ImageBlock/DocumentBlock
+   * `source.type === "file"`) into inline bytes + media type + filename for
+   * the next derive cycle. SessionDO populates this with a
+   * `services.files.get` + R2 fetch composition scoped to the session's
+   * tenant; sub-agents and tests may leave it undefined, in which case the
+   * sync projection runs and file_id sources collapse to placeholder text.
+   *
+   * Idempotent failure: returning `null` is the contract for "couldn't
+   * resolve" (missing, deleted, permission denied, R2 fetch error) — the
+   * derive layer emits a placeholder block so the turn keeps running.
+   */
+  fileFetcher?: FileResolver;
 
   env: {
     ANTHROPIC_API_KEY: string;

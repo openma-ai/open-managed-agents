@@ -18,6 +18,25 @@ import type {
 import { generateEventId } from "@open-managed-agents/shared";
 
 /**
+ * Resolve a `file_id` (Anthropic Managed Agents spec: ImageBlock/DocumentBlock
+ * with `source.type === "file"`) into its underlying bytes + media type +
+ * filename. Implementations should return `null` when the file is missing,
+ * permission-denied, or otherwise un-resolvable so the caller can emit a
+ * placeholder rather than crash the turn.
+ *
+ * Wired through `HarnessContext.fileFetcher`; SessionDO populates it with a
+ * services.files.get + R2 bucket fetch composition. Tests / sub-agents that
+ * don't carry the field will leave it undefined — the sync `eventsToMessages`
+ * + sync `userContentToParts` fall back to placeholder text in that case.
+ */
+export interface ResolvedFile {
+  bytes: Uint8Array;
+  mediaType: string;
+  filename: string;
+}
+export type FileResolver = (file_id: string) => Promise<ResolvedFile | null>;
+
+/**
  * Convert SessionEvent[] → ModelMessage[]. The strict inverse of
  * default-loop.ts onStepFinish writes — together they form the bijection
  * that prompt-cache determinism rests on.
@@ -41,6 +60,13 @@ import { generateEventId } from "@open-managed-agents/shared";
  *     summary are pure UI signals (no effect here).
  *   - Skip lifecycle.* / span.* / notification.* / agent.thread_message_*
  *     and bare (summary-less) compaction events.
+ *
+ * Sync API: file_id-source image/document blocks fall back to a placeholder
+ * text part because resolution requires I/O. Callers that own the resolver
+ * (default-loop) should use `eventsToMessagesAsync(events, resolver)` so
+ * the model sees the actual file bytes; this sync entry point is kept for
+ * tests, in-memory sub-agents, and anywhere a synchronous projection is
+ * required.
  */
 export function eventsToMessages(events: SessionEvent[]): ModelMessage[] {
   // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
@@ -115,6 +141,105 @@ export function eventsToMessages(events: SessionEvent[]): ModelMessage[] {
 }
 
 /**
+ * Async counterpart to `eventsToMessages`. Same projection rules + boundary
+ * handling; the only difference is that `user.message` content with an
+ * image/document source of type `"file"` is resolved through `resolver`
+ * (when supplied) so the model receives real bytes instead of a placeholder.
+ *
+ * Caching: a per-call `Map<file_id, Promise<ResolvedFile | null>>` dedupes
+ * repeated references — the same file_id quoted across multiple turns of one
+ * derive cycle only triggers one R2 fetch.
+ *
+ * Failure mode: `resolver` returns `null` for missing / inaccessible files;
+ * we emit a `{ type: "text", text: "[image|document: file <id> unavailable]" }`
+ * placeholder so the model gets context that something was there but the
+ * turn doesn't crash.
+ *
+ * When `resolver` is undefined, the behavior collapses to the sync version
+ * (file_id sources become placeholders). Kept that way so callers can opt in
+ * without forcing every call site to wire a resolver.
+ */
+export async function eventsToMessagesAsync(
+  events: SessionEvent[],
+  resolver?: FileResolver,
+): Promise<ModelMessage[]> {
+  if (!resolver) return eventsToMessages(events);
+
+  // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
+  // event. Resolves the cross-window lookup problem.
+  const toolNameById = new Map<string, string>();
+  for (const event of events) {
+    if (
+      event.type === "agent.tool_use" ||
+      event.type === "agent.mcp_tool_use" ||
+      event.type === "agent.custom_tool_use"
+    ) {
+      const e = event as AgentToolUseEvent | AgentMcpToolUseEvent | AgentCustomToolUseEvent;
+      const name = event.type === "agent.mcp_tool_use"
+        ? `mcp_${(e as AgentMcpToolUseEvent).mcp_server_name}_call`
+        : (e as AgentToolUseEvent | AgentCustomToolUseEvent).name;
+      toolNameById.set(e.id, name);
+    }
+  }
+
+  // Per-call resolver cache. Stores the in-flight promise so two
+  // simultaneous references to the same file_id share a single fetch.
+  // Promise-keyed (rather than result-keyed) so the dedup works even when
+  // the second lookup races the first before resolution lands.
+  const cache = new Map<string, Promise<ResolvedFile | null>>();
+  const cachedResolve: FileResolver = (file_id) => {
+    let p = cache.get(file_id);
+    if (!p) {
+      // Swallow resolver errors as null so a single failure can't break the
+      // entire projection. The caller will see the placeholder and continue.
+      p = resolver(file_id).catch(() => null);
+      cache.set(file_id, p);
+    }
+    return p;
+  };
+
+  // Same boundary detection as the sync path — duplicated here because we
+  // need to invoke async block builders downstream.
+  let boundaryIdx = -1;
+  let boundarySummary: ContentBlock[] | undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "agent.thread_context_compacted") {
+      const ce = e as AgentThreadContextCompactedEvent;
+      const hasContent = ce.summary?.some(
+        (b) => (b.type === "text" && b.text.trim().length > 0)
+          || b.type === "image"
+          || b.type === "document",
+      );
+      if (hasContent) {
+        boundaryIdx = i;
+        boundarySummary = ce.summary;
+        break;
+      }
+    }
+  }
+
+  if (boundaryIdx < 0) {
+    return buildMessagesAsync(events, 0, events.length, toolNameById, cachedResolve);
+  }
+
+  const preBoundary = await buildMessagesAsync(events, 0, boundaryIdx, toolNameById, cachedResolve);
+  const postBoundary = await buildMessagesAsync(events, boundaryIdx + 1, events.length, toolNameById, cachedResolve);
+  const tail = pickPreservedTail(preBoundary, {
+    minTokens: TAIL_MIN_TOKENS,
+    maxTokens: TAIL_MAX_TOKENS,
+    minMessages: TAIL_MIN_MESSAGES,
+  });
+
+  const summaryMessage: ModelMessage = {
+    role: "user",
+    content: [{ type: "text", text: serializeSummaryAsText(boundarySummary!) }],
+  };
+
+  return [summaryMessage, ...tail, ...postBoundary];
+}
+
+/**
  * Walk events[fromIdx..toIdx) into ModelMessage[]. Maintains pending
  * assistant + tool state internally, flushes at the end. Used by
  * eventsToMessages on either the full stream, the pre-boundary range, or
@@ -163,6 +288,114 @@ function buildMessages(
         messages.push({
           role: "user",
           content: userContentToParts((event as UserMessageEvent).content),
+        });
+        break;
+      }
+      case "agent.thinking": {
+        flushTools();
+        const e = event as AgentThinkingEvent;
+        if (e.text != null) {
+          pendingAssistantContent.push({
+            type: "reasoning",
+            text: e.text,
+            ...(e.providerOptions ? { providerOptions: e.providerOptions as Record<string, any> } : {}),
+          });
+        }
+        break;
+      }
+      case "agent.message": {
+        flushTools();
+        const e = event as AgentMessageEvent;
+        for (const block of e.content) {
+          if (block.type === "text") {
+            pendingAssistantContent.push({ type: "text", text: block.text });
+          }
+        }
+        break;
+      }
+      case "agent.tool_use":
+      case "agent.mcp_tool_use":
+      case "agent.custom_tool_use": {
+        flushTools();
+        const e = event as AgentToolUseEvent | AgentMcpToolUseEvent | AgentCustomToolUseEvent;
+        const toolName = event.type === "agent.mcp_tool_use"
+          ? `mcp_${(e as AgentMcpToolUseEvent).mcp_server_name}_call`
+          : (e as AgentToolUseEvent | AgentCustomToolUseEvent).name;
+        pendingAssistantContent.push({
+          type: "tool-call",
+          toolCallId: e.id,
+          toolName,
+          input: e.input,
+        });
+        break;
+      }
+      case "agent.tool_result":
+      case "agent.mcp_tool_result": {
+        flushAssistant();
+        const e = event as AgentToolResultEvent | AgentMcpToolResultEvent;
+        const toolCallId = event.type === "agent.tool_result"
+          ? (e as AgentToolResultEvent).tool_use_id
+          : (e as AgentMcpToolResultEvent).mcp_tool_use_id;
+        const toolName = toolNameById.get(toolCallId) ?? "unknown";
+        const output = wireContentToToolOutput((e as AgentToolResultEvent).content);
+        pendingToolContent.push({
+          type: "tool-result",
+          toolCallId,
+          toolName,
+          output: output as any,
+        });
+        break;
+      }
+    }
+  }
+
+  flushAssistant();
+  flushTools();
+  return messages;
+}
+
+/**
+ * Async twin of `buildMessages`. Identical control flow; the only divergence
+ * is that `user.message` blocks go through `userContentToPartsAsync` so
+ * file_id sources resolve through the supplied `resolver` instead of
+ * collapsing to a placeholder.
+ */
+async function buildMessagesAsync(
+  events: SessionEvent[],
+  fromIdx: number,
+  toIdx: number,
+  toolNameById: Map<string, string>,
+  resolver: FileResolver,
+): Promise<ModelMessage[]> {
+  const messages: ModelMessage[] = [];
+  let pendingAssistantContent: AssistantModelMessage["content"] = [];
+  let pendingToolContent: ToolModelMessage["content"] = [];
+
+  const flushAssistant = () => {
+    if (pendingAssistantContent.length > 0) {
+      messages.push({ role: "assistant", content: pendingAssistantContent });
+      pendingAssistantContent = [];
+    }
+  };
+  const flushTools = () => {
+    if (pendingToolContent.length > 0) {
+      messages.push({ role: "tool", content: pendingToolContent });
+      pendingToolContent = [];
+    }
+  };
+
+  for (let i = fromIdx; i < toIdx; i++) {
+    const event = events[i];
+    if ((event as unknown as { cancelled_at_ms?: number }).cancelled_at_ms != null) {
+      continue;
+    }
+    switch (event.type) {
+      case "user.message": {
+        flushAssistant();
+        flushTools();
+        messages.push({
+          role: "user",
+          content: await userContentToPartsAsync((event as UserMessageEvent).content, resolver),
         });
         break;
       }
@@ -370,6 +603,11 @@ function wireContentToToolOutput(
 /**
  * UserMessageEvent.content → AI SDK user message content[].
  * Kept simple — image/document mapping mirrors the writer's normalizations.
+ *
+ * `source.type === "file"` (Anthropic Managed Agents spec: ImageBlock /
+ * DocumentBlock referencing an uploaded file by id) collapses to a text
+ * placeholder here because file resolution is async — callers that own a
+ * resolver should use `userContentToPartsAsync` instead.
  */
 function userContentToParts(blocks: ContentBlock[]): any[] {
   return blocks.map((b): any => {
@@ -378,18 +616,13 @@ function userContentToParts(blocks: ContentBlock[]): any[] {
       if (b.source.type === "url" && b.source.url) {
         return { type: "image", image: new URL(b.source.url), mediaType: b.source.media_type };
       }
+      if (b.source.type === "file") {
+        return filePlaceholderPart("image", b.source.file_id);
+      }
       return { type: "image", image: b.source.data ?? "", mediaType: b.source.media_type };
     }
     if (b.type === "document") {
-      const providerOptions = (b.citations || b.title || b.context)
-        ? {
-            anthropic: {
-              ...(b.citations ? { citations: b.citations } : {}),
-              ...(b.title ? { title: b.title } : {}),
-              ...(b.context ? { context: b.context } : {}),
-            },
-          }
-        : undefined;
+      const providerOptions = documentProviderOptions(b);
       if (b.source.type === "url" && b.source.url) {
         return {
           type: "file",
@@ -402,6 +635,9 @@ function userContentToParts(blocks: ContentBlock[]): any[] {
         const prefix = b.title ? `[${b.title}]\n` : "";
         return { type: "text", text: prefix + (b.source.data ?? "") };
       }
+      if (b.source.type === "file") {
+        return filePlaceholderPart("document", b.source.file_id);
+      }
       return {
         type: "file",
         data: b.source.data ?? "",
@@ -411,6 +647,101 @@ function userContentToParts(blocks: ContentBlock[]): any[] {
     }
     return { type: "text", text: JSON.stringify(b) };
   });
+}
+
+/**
+ * Async counterpart to `userContentToParts`. The only divergence from the
+ * sync path: ImageBlock / DocumentBlock with `source.type === "file"` are
+ * resolved through `resolver` to inline bytes (AI SDK `{type:"image",image:
+ * Uint8Array,...}` / `{type:"file",data:Uint8Array,...}`). On resolver
+ * failure (null return) we emit the same placeholder the sync path uses so
+ * the turn doesn't crash.
+ */
+async function userContentToPartsAsync(
+  blocks: ContentBlock[],
+  resolver: FileResolver,
+): Promise<any[]> {
+  return Promise.all(blocks.map(async (b): Promise<any> => {
+    if (b.type === "text") return { type: "text", text: b.text };
+    if (b.type === "image") {
+      if (b.source.type === "url" && b.source.url) {
+        return { type: "image", image: new URL(b.source.url), mediaType: b.source.media_type };
+      }
+      if (b.source.type === "file" && b.source.file_id) {
+        const resolved = await resolver(b.source.file_id);
+        if (!resolved) return filePlaceholderPart("image", b.source.file_id);
+        return {
+          type: "image",
+          image: resolved.bytes,
+          mediaType: resolved.mediaType,
+        };
+      }
+      return { type: "image", image: b.source.data ?? "", mediaType: b.source.media_type };
+    }
+    if (b.type === "document") {
+      const providerOptions = documentProviderOptions(b);
+      if (b.source.type === "url" && b.source.url) {
+        return {
+          type: "file",
+          data: new URL(b.source.url),
+          mediaType: b.source.media_type,
+          ...(providerOptions ? { providerOptions } : {}),
+        };
+      }
+      if (b.source.type === "text") {
+        const prefix = b.title ? `[${b.title}]\n` : "";
+        return { type: "text", text: prefix + (b.source.data ?? "") };
+      }
+      if (b.source.type === "file" && b.source.file_id) {
+        const resolved = await resolver(b.source.file_id);
+        if (!resolved) return filePlaceholderPart("document", b.source.file_id);
+        return {
+          type: "file",
+          data: resolved.bytes,
+          mediaType: resolved.mediaType,
+          filename: resolved.filename,
+          ...(providerOptions ? { providerOptions } : {}),
+        };
+      }
+      return {
+        type: "file",
+        data: b.source.data ?? "",
+        mediaType: b.source.media_type ?? "application/pdf",
+        ...(providerOptions ? { providerOptions } : {}),
+      };
+    }
+    return { type: "text", text: JSON.stringify(b) };
+  }));
+}
+
+/**
+ * Build the Anthropic-specific providerOptions object DocumentBlocks need
+ * when they carry title / context / citations. Shared between the sync and
+ * async user-content converters so the byte shape stays identical.
+ */
+function documentProviderOptions(
+  b: Extract<ContentBlock, { type: "document" }>,
+): { anthropic: Record<string, unknown> } | undefined {
+  if (!(b.citations || b.title || b.context)) return undefined;
+  return {
+    anthropic: {
+      ...(b.citations ? { citations: b.citations } : {}),
+      ...(b.title ? { title: b.title } : {}),
+      ...(b.context ? { context: b.context } : {}),
+    },
+  };
+}
+
+/**
+ * Placeholder for a file-referenced block we couldn't resolve (no resolver
+ * supplied, file deleted, auth fail, R2 fetch failed). Keeps the model in
+ * the loop that something was attached so it can ask the user / give up
+ * gracefully, rather than seeing an empty content block + thinking the user
+ * sent nothing.
+ */
+function filePlaceholderPart(kind: "image" | "document", fileId: string | undefined): { type: "text"; text: string } {
+  const id = fileId ?? "unknown";
+  return { type: "text", text: `[${kind}: file ${id} unavailable]` };
 }
 
 /**

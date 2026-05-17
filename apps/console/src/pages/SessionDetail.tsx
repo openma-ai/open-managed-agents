@@ -620,6 +620,22 @@ export function SessionDetail() {
     return () => { abort.abort(); };
   }, [id]);
 
+  // Encode a File as base64 (no data: URL prefix) for inline content
+  // blocks. Used so OMA backend's userContentToParts can forward the
+  // bytes straight to the AI SDK (image vision / PDF parsing) without
+  // needing to async-resolve file_id sources.
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const r = reader.result as string;
+        const idx = r.indexOf(",");
+        resolve(idx >= 0 ? r.slice(idx + 1) : r);
+      };
+      reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+      reader.readAsDataURL(file);
+    });
+
   const send = async (overrideText?: string, files?: File[]) => {
     const text = (overrideText ?? input).trim();
     if (!text && !files?.length) return;
@@ -653,29 +669,57 @@ export function SessionDetail() {
         }
       }
 
-      // Build user.message content per Claude Managed Agents spec
-      // (https://platform.claude.com/docs/en/managed-agents/events-and-streaming):
-      // the AMA `user.message` event only accepts text content blocks —
-      // that's the whole content surface for the event type. (Image /
-      // DocumentBlock with file_id sources are a base Claude Messages
-      // API feature, NOT AMA — different product surface.)
+      // Build user.message content per Claude Managed Agents spec.
+      // The official AMA SDK
+      // (anthropic-sdk-python/.../beta/sessions/beta_managed_agents_user_message_event.py)
+      // accepts a discriminated union of Text | Image | Document blocks
+      // — NOT text-only as the public docs' quickstart example
+      // implies. Image and Document source.type="file" + file_id is the
+      // canonical way to attach an uploaded file:
       //
-      // Files reach the agent through the environment, not through
-      // content blocks: upload to /v1/files with scope_id=session_id
-      // mounts the file into the session container's /workspace.
-      // The agent reads via its bash / file_read tool. We tell the
-      // model that this happened with a short footer line so it knows
-      // to go look — without that, the model wouldn't know files
-      // appeared mid-conversation.
-      const attachLines = uploaded.length
-        ? `\n\n📎 ${uploaded.length === 1 ? "Attached file" : "Attached files"} (read from /workspace):\n${uploaded.map((u) => `- \`${u.filename}\` (${u.media_type})`).join("\n")}`
-        : "";
-      const composed = (text || (uploaded.length ? "Please look at the attached file(s)." : "")) + attachLines;
+      //   { type: "image",    source: { type: "file", file_id } }
+      //   { type: "document", source: { type: "file", file_id }, title? }
+      //
+      // file_id sources don't include media_type — Anthropic looks the
+      // mime up by file_id. Image gets routed to vision; PDF goes
+      // through native PDF parsing; text/* gets text-inlined.
+      //
+      // OMA's harness userContentToParts (history.ts:374) must resolve
+      // the file_id → bytes when forwarding to the model (see backend
+      // change in this PR).
+      const content: Array<
+        | { type: "text"; text: string }
+        | { type: "image"; source: { type: "file"; file_id: string } }
+        | { type: "document"; source: { type: "file"; file_id: string }; title?: string }
+      > = [];
+      if (text) content.push({ type: "text", text });
+      for (const u of uploaded) {
+        if (u.media_type.startsWith("image/")) {
+          content.push({
+            type: "image",
+            source: { type: "file", file_id: u.id },
+          });
+        } else {
+          content.push({
+            type: "document",
+            source: { type: "file", file_id: u.id },
+            title: u.filename,
+          });
+        }
+      }
+      // Empty-text + only-files case: prepend a verbal cue so the model
+      // knows what to do with the unsolicited content blocks.
+      if (!text && uploaded.length) {
+        content.unshift({
+          type: "text",
+          text: `📎 ${uploaded.length === 1 ? "Attached file" : "Attached files"}.`,
+        });
+      }
 
       await api(`/v1/sessions/${id}/events`, {
         method: "POST",
         body: JSON.stringify({
-          events: [{ type: "user.message", content: [{ type: "text", text: composed }] }],
+          events: [{ type: "user.message", content }],
         }),
       });
       // POST resolved → server already inserted the row + broadcast

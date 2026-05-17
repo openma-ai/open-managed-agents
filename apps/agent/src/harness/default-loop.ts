@@ -1,9 +1,9 @@
 import { streamText, stepCountIs, wrapLanguageModel } from "ai";
 import type { ContentPart, ModelMessage, LanguageModel, SystemModelMessage } from "ai";
-import type { HarnessInterface, HarnessContext, HarnessRuntime } from "./interface";
+import type { HarnessInterface, HarnessContext, HarnessRuntime, FileResolver } from "./interface";
 import type { SessionEvent, ContentBlock, AgentToolUseEvent } from "@open-managed-agents/shared";
 import { generateEventId, classifyExternalError, ModelError } from "@open-managed-agents/shared";
-import { eventsToMessages } from "../runtime/history";
+import { eventsToMessagesAsync } from "../runtime/history";
 import { SummarizeCompactionStrategy, resolveCompactionStrategy } from "./compaction";
 import type { CompactionStrategy } from "./compaction";
 import { ALL_TOOLS } from "./tools";
@@ -297,12 +297,14 @@ export class DefaultHarness implements HarnessInterface {
       }
     }
 
-    // 2. Derive ModelMessage[] from events. Default = eventsToMessages
-    // (strict bijection inverse of write-side, with boundary handling).
-    // Custom harnesses can override for sliding-window / RAG / etc.
+    // 2. Derive ModelMessage[] from events. Default = eventsToMessagesAsync
+    // (strict bijection inverse of write-side, with boundary handling +
+    // async file_id → bytes resolution via ctx.fileFetcher). Custom harnesses
+    // can override for sliding-window / RAG / etc. — the await unwraps either
+    // sync or async overrides so existing implementations keep working.
     const messages = this.deriveModelContext
-      ? this.deriveModelContext(runtime.history.getEvents())
-      : runtime.history.getMessages();
+      ? await this.deriveModelContext(runtime.history.getEvents(), { fileFetcher: ctx.fileFetcher })
+      : await eventsToMessagesAsync(runtime.history.getEvents(), ctx.fileFetcher);
 
     // 3. Apply provider-specific cache strategy. Anthropic: tag system block
     // + last tool + last message + (optional) one mid-conversation breakpoint
@@ -808,12 +810,16 @@ export class DefaultHarness implements HarnessInterface {
   // and replacing the method, or by implementing HarnessInterface directly.
 
   /**
-   * Default: simple eventsToMessages (already byte-deterministic + handles
-   * agent.thread_context_compacted boundary). Override for sliding window /
-   * RAG / hierarchical strategies.
+   * Default: async eventsToMessagesAsync (byte-deterministic + handles
+   * agent.thread_context_compacted boundary + resolves file_id sources via
+   * the supplied fileFetcher). Override for sliding window / RAG /
+   * hierarchical strategies.
    */
-  deriveModelContext(events: SessionEvent[]) {
-    return eventsToMessages(events);
+  deriveModelContext(
+    events: SessionEvent[],
+    opts?: { fileFetcher?: FileResolver },
+  ): Promise<ModelMessage[]> {
+    return eventsToMessagesAsync(events, opts?.fileFetcher);
   }
 
   /**

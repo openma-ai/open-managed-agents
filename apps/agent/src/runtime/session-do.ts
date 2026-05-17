@@ -22,6 +22,7 @@ import {
   ConfigError,
   ModelError,
   TransientInfraError,
+  fileR2Key,
 } from "@open-managed-agents/shared";
 import {
   CfDoStreamRepo,
@@ -59,7 +60,7 @@ import type {
   SystemUserMessagePromotedEvent,
   SystemUserMessageCancelledEvent,
 } from "@open-managed-agents/shared";
-import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle } from "../harness/interface";
+import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle, FileResolver } from "../harness/interface";
 import { resolveHarness } from "../harness/registry";
 import { composeSystemPrompt } from "../harness/platform-guidance";
 import { resolveModel } from "../harness/provider";
@@ -657,6 +658,52 @@ export class SessionDO extends DurableObject<Env> {
       broadcastToolInputEnd: async (toolUseId: string, status) => {
         fire(tag({ type: "agent.tool_use_input_stream_end", tool_use_id: toolUseId, status } as SessionEvent));
       },
+    };
+  }
+
+  /**
+   * Build a `FileResolver` bound to this session's tenant. Used by the
+   * harness's eventsToMessagesAsync projection to materialize file_id
+   * sources on `user.message` ImageBlock/DocumentBlock content into inline
+   * bytes for the model (Anthropic Managed Agents spec — image/document
+   * blocks with `source.type === "file"` reference an uploaded file by id).
+   *
+   * Resolution path:
+   *   1. `services.files.get({tenantId, fileId})` — D1 metadata lookup,
+   *      enforces tenant scoping (returns null for other tenants' files).
+   *   2. R2 fetch at the metadata's `r2_key` (or the canonical
+   *      `fileR2Key(tenant, id)` fallback for rows missing r2_key).
+   *
+   * Returns null on any failure (missing metadata, deleted blob, R2 outage,
+   * service init error) — derive layer maps null to a placeholder text
+   * block so the turn doesn't crash. Errors are intentionally swallowed
+   * here; the per-derive cache wrapping this caches the null result so a
+   * single failure doesn't trigger a retry storm within one projection.
+   *
+   * No per-file logging — the existing default-loop log lines cover the
+   * shape of each call (messages count) without paying per-attachment
+   * verbosity.
+   */
+  private buildFileFetcher(tenantId: string | undefined): FileResolver | undefined {
+    if (!tenantId || !this.env.FILES_BUCKET) return undefined;
+    const tenant = tenantId;
+    const bucket = this.env.FILES_BUCKET;
+    return async (fileId: string) => {
+      try {
+        const services = await getCfServicesForTenant(this.env, tenant);
+        const meta = await services.files.get({ tenantId: tenant, fileId });
+        if (!meta) return null;
+        const obj = await bucket.get(meta.r2_key || fileR2Key(tenant, fileId));
+        if (!obj) return null;
+        const buf = await obj.arrayBuffer();
+        return {
+          bytes: new Uint8Array(buf),
+          mediaType: meta.media_type,
+          filename: meta.filename,
+        };
+      } catch {
+        return null;
+      }
     };
   }
 
@@ -3940,6 +3987,13 @@ export class SessionDO extends DurableObject<Env> {
       tools: subTools,
       model: subModel,
       systemPrompt: subAgent.system || "",
+      // Same resolver the primary HarnessContext uses — the sub-agent shares
+      // the parent's tenant + R2 bucket so an `image`/`document` block with
+      // a file_id source in a future sub-agent user message would resolve
+      // through the same path. Sub-agents currently only synthesize a text
+      // user.message in `runSubAgent`, but wiring this keeps the contract
+      // symmetric and ready when richer sub-turns land.
+      fileFetcher: this.buildFileFetcher(this.state.tenant_id),
       env: {
         ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
         ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
@@ -4369,6 +4423,13 @@ export class SessionDO extends DurableObject<Env> {
       systemPrompt,
       rawSystemPrompt,
       platformReminders,
+      // file_id → bytes resolver for ImageBlock/DocumentBlock content blocks
+      // whose `source.type === "file"`. Default-loop's eventsToMessagesAsync
+      // dedupes via a per-derive Promise cache, so the same file referenced
+      // across multiple turns of one projection only hits R2 once. Null
+      // returns are treated as "unavailable" — the derive layer emits a
+      // placeholder text part instead of crashing the turn.
+      fileFetcher: this.buildFileFetcher(this.state.tenant_id),
       env: {
         ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
         ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
