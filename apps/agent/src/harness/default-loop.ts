@@ -883,27 +883,25 @@ export class DefaultHarness implements HarnessInterface {
   }
 
   /**
-   * Default: write each platformReminder as a `<system-reminder>` user.message
-   * event. Each reminder lands once at session-init time, becoming part of
-   * the cached prefix. The model treats them as user-side context (Claude
-   * recognizes <system-reminder> tags from training).
+   * No-op. Pre-2026-05-17 this wrote each `platformReminder` as a
+   * `<system-reminder>` user.message event so Claude would treat the
+   * skill body as user-side context. Operators objected: skill bodies
+   * leaked into the visible chat feed and polluted the event log even
+   * though the content is static per session.
    *
-   * SessionDO calls this exactly once per session, before the first turn.
-   * Custom harnesses can override to inject differently — or no-op to skip
-   * platform reminders entirely (e.g. RAG-based harness builds its own).
+   * Reminders now flow into the system prompt directly — see
+   * `composeSystemPrompt(rawSystemPrompt, platformReminders)` in
+   * `session-do.ts`. Each reminder is wrapped in
+   * `<source name="…">…</source>` inside the system prompt, so the
+   * model still has structural cues about which skill/memory each
+   * chunk came from.
+   *
+   * Custom harnesses that DO want the legacy behavior (e.g. a RAG
+   * loop that materializes skills only after retrieving them) can
+   * override this method and broadcast their own user.message events.
    */
-  async onSessionInit(ctx: HarnessContext, runtime: HarnessRuntime): Promise<void> {
-    for (const r of ctx.platformReminders ?? []) {
-      runtime.broadcast({
-        type: "user.message",
-        content: [
-          {
-            type: "text",
-            text: `<system-reminder source="${r.source}">\n${r.text}\n</system-reminder>`,
-          },
-        ],
-      });
-    }
+  async onSessionInit(_ctx: HarnessContext, _runtime: HarnessRuntime): Promise<void> {
+    // intentionally empty — see jsdoc
   }
 }
 

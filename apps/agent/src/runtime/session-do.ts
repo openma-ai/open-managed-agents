@@ -4182,19 +4182,24 @@ export class SessionDO extends DurableObject<Env> {
     const creds = await this.resolveModelCardCredentials(effectiveHandle);
     const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders);
 
-    // Build system prompt: agent.system + platform guidance. Shared with the
-    // self-host Node path via @open-managed-agents/agent/harness/platform-guidance
-    // so the two surfaces stay byte-identical (prompt-cache prefix invariant).
-    // Skill / memory_store / appendable_prompt content is NOT appended here —
-    // those are collected as platformReminders and injected by the harness's
-    // onSessionInit hook as <system-reminder> user.message events.
+    // Build system prompt: agent.system + platform guidance + skill /
+    // memory_store / appendable_prompt content (the latter passed in as
+    // platformReminders, see collection below). Shared with the self-host
+    // Node path via @open-managed-agents/agent/harness/platform-guidance
+    // so the two surfaces stay byte-identical (prompt-cache prefix
+    // invariant). Pre-2026-05-17: skill/memory content was broadcast as
+    // <system-reminder> user.message events by harness.onSessionInit;
+    // operators correctly pointed out that static-per-session context
+    // belongs in the system prompt where Claude already knows to treat
+    // it as such, and so it doesn't clutter the visible conversation
+    // feed. composeSystemPrompt now takes the reminders directly; the
+    // default-loop's onSessionInit is a no-op for the same reason.
     const rawSystemPrompt = agent.system || "";
-    const systemPrompt = composeSystemPrompt(rawSystemPrompt);
 
-    // Collect platformReminders for harness.onSessionInit. These get
-    // resolved ONCE at session-init and become part of the events stream.
-    // KV reads happen here; the resulting bytes are frozen — no per-turn KV
-    // race conditions, no per-turn iteration-order drift.
+    // Collect platformReminders first so composeSystemPrompt can inline
+    // them. (Kept on the HarnessContext too for custom harnesses that
+    // want to handle them differently — e.g. RAG harness might want to
+    // resolve a query before injecting.)
     const platformReminders: Array<{ source: string; text: string }> = [];
 
     // Platform-built-in appendable prompts the agent author opted into. Use
@@ -4345,6 +4350,14 @@ export class SessionDO extends DurableObject<Env> {
     const abortController = new AbortController();
     this._threadAbortControllers.set(turnThreadId, abortController);
     const effectiveAbortSignal = abortController.signal;
+
+    // Build the final system prompt: agent.system + platform guidance +
+    // every platformReminder wrapped in a <source name="...">…</source>
+    // block. Done HERE (after all reminder collection) so the prompt
+    // includes every skill / memory_prompt / appendable_prompt we
+    // discovered, and so the byte sequence is stable across the cache
+    // prefix (turn N + 1 reuses the same prompt as turn N).
+    const systemPrompt = composeSystemPrompt(rawSystemPrompt, platformReminders);
 
     // --- Harness receives a fully-prepared context ---
     const ctx: HarnessContext = {

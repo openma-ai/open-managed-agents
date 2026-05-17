@@ -25,7 +25,7 @@ export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
   <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+    className={cn("group not-prose mb-3 w-full max-w-2xl rounded-md border border-border bg-bg/40", className)}
     {...props}
   />
 );
@@ -65,7 +65,7 @@ const statusIcons: Record<ToolPart["state"], ReactNode> = {
 };
 
 export const getStatusBadge = (status: ToolPart["state"]) => (
-  <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+  <Badge className="gap-1 rounded-full text-[10px] py-0 h-5 px-1.5 font-normal" variant="secondary">
     {statusIcons[status]}
     {statusLabels[status]}
   </Badge>
@@ -85,17 +85,17 @@ export const ToolHeader = ({
   return (
     <CollapsibleTrigger
       className={cn(
-        "flex w-full items-center justify-between gap-4 p-3",
+        "flex w-full items-center justify-between gap-3 px-3 py-2",
         className
       )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="font-medium text-sm">{title ?? derivedName}</span>
+      <div className="flex items-center gap-2 min-w-0">
+        <WrenchIcon className="size-3.5 text-fg-subtle shrink-0" />
+        <span className="font-medium text-[13px] text-fg truncate">{title ?? derivedName}</span>
         {getStatusBadge(state)}
       </div>
-      <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      <ChevronDownIcon className="size-3.5 text-fg-subtle transition-transform group-data-[state=open]:rotate-180 shrink-0" />
     </CollapsibleTrigger>
   );
 };
@@ -105,7 +105,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   <CollapsibleContent
     className={cn(
-      "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 space-y-4 p-4 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+      "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 space-y-2 px-3 pb-3 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
       className
     )}
     {...props}
@@ -116,16 +116,36 @@ export type ToolInputProps = ComponentProps<"div"> & {
   input: ToolPart["input"];
 };
 
-export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
-    <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-      Parameters
-    </h4>
-    <div className="rounded-md bg-muted/50">
-      <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
+  // Single-key "command" input (bash, exec, etc.) renders as an inline
+  // shell-style line — `pwd` instead of a 4-line JSON block. The wrapped
+  // chrome (PARAMETERS label + bordered code box) was overkill for the
+  // common case where the input is one short string.
+  if (
+    input
+    && typeof input === "object"
+    && !Array.isArray(input)
+    && Object.keys(input).length === 1
+  ) {
+    const k = Object.keys(input)[0];
+    const v = (input as Record<string, unknown>)[k];
+    if (typeof v === "string" && v.length < 200 && !v.includes("\n")) {
+      return (
+        <div className={cn("font-mono text-[12.5px] text-fg", className)} {...props}>
+          <span className="text-fg-subtle select-none">{k}: </span>
+          <span>{v}</span>
+        </div>
+      );
+    }
+  }
+  return (
+    <div className={cn("overflow-hidden", className)} {...props}>
+      <div className="rounded-md bg-muted/50">
+        <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export type ToolOutputProps = ComponentProps<"div"> & {
   output: ToolPart["output"];
@@ -142,6 +162,26 @@ export const ToolOutput = ({
     return null;
   }
 
+  // String output that isn't structured JSON → inline mono preview, no
+  // syntax-highlighter chrome. CodeBlock with language="json" was making
+  // every shell stdout look like a syntax-error.
+  if (typeof output === "string" && !errorText) {
+    const looksLikeJson = output.trimStart().startsWith("{") || output.trimStart().startsWith("[");
+    if (!looksLikeJson) {
+      return (
+        <div
+          className={cn(
+            "rounded-md bg-muted/40 px-3 py-2 text-[12.5px] font-mono text-fg whitespace-pre-wrap break-words max-h-64 overflow-y-auto",
+            className,
+          )}
+          {...props}
+        >
+          {output}
+        </div>
+      );
+    }
+  }
+
   let Output = <div>{output as ReactNode}</div>;
 
   if (typeof output === "object" && !isValidElement(output)) {
@@ -153,15 +193,12 @@ export const ToolOutput = ({
   }
 
   return (
-    <div className={cn("space-y-2", className)} {...props}>
-      <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        {errorText ? "Error" : "Result"}
-      </h4>
+    <div className={cn("space-y-1", className)} {...props}>
       <div
         className={cn(
           "overflow-x-auto rounded-md text-xs [&_table]:w-full",
           errorText
-            ? "bg-destructive/10 text-destructive"
+            ? "bg-destructive/10 text-destructive px-3 py-2"
             : "bg-muted/50 text-foreground"
         )}
       >

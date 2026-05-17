@@ -26,10 +26,33 @@ export const platformGuidance =
   `${authenticatedCommandGuidance}\n\n${loopStopGuidance}\n\n${sessionOutputsGuidance}`;
 
 /**
- * Compose agent.system + platform guidance. If the agent has no system
- * prompt of its own, the guidance becomes the entire system prompt.
+ * Compose agent.system + platform guidance + optional platform reminders
+ * (skills / memory_prompts / appendable_prompts).
+ *
+ * Reminders are appended to the system prompt instead of broadcast as
+ * `<system-reminder>` user.message events. The legacy approach
+ * leaked the raw skill bodies into the visible conversation feed and
+ * the event log — operators correctly objected that skill content is
+ * static-per-session context and belongs in the system prompt where
+ * Claude already knows to treat it as such.
+ *
+ * Each reminder is wrapped in an XML-ish `<source name="…">…</source>`
+ * block so the model still has a structural cue about where each chunk
+ * came from (matching Anthropic's scratchpad / source convention) and so
+ * downstream consumers can grep the prompt for a specific skill.
+ *
+ * If the agent has no system prompt of its own AND no reminders, the
+ * guidance alone becomes the system prompt.
  */
-export function composeSystemPrompt(rawSystemPrompt: string | null | undefined): string {
+export function composeSystemPrompt(
+  rawSystemPrompt: string | null | undefined,
+  reminders?: ReadonlyArray<{ source: string; text: string }>,
+): string {
   const raw = rawSystemPrompt ?? "";
-  return raw ? `${raw}\n\n${platformGuidance}` : platformGuidance;
+  const base = raw ? `${raw}\n\n${platformGuidance}` : platformGuidance;
+  if (!reminders?.length) return base;
+  const blocks = reminders
+    .map((r) => `<source name="${r.source}">\n${r.text}\n</source>`)
+    .join("\n\n");
+  return `${base}\n\n${blocks}`;
 }
