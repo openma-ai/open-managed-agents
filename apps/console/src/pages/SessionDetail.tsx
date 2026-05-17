@@ -642,7 +642,7 @@ export function SessionDetail() {
     if (!text && !files?.length) return;
     if (!id) return;
     setInput("");
-    setLocalPending(text || (files?.length ? `📎 ${files.length} file(s)` : ""));
+    setLocalPending(text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : ""));
     setSending(true);
     try {
       // Upload attachments first so the user.message can reference them
@@ -670,28 +670,13 @@ export function SessionDetail() {
         }
       }
 
-      // Build user.message content per Claude Managed Agents spec.
-      // The official AMA SDK
-      // (anthropic-sdk-python/.../beta/sessions/beta_managed_agents_user_message_event.py)
-      // accepts a discriminated union of Text | Image | Document blocks
-      // — NOT text-only as the public docs' quickstart example
-      // implies. Image and Document source.type="file" + file_id is the
-      // canonical way to attach an uploaded file:
-      //
-      //   { type: "image",    source: { type: "file", file_id } }
-      //   { type: "document", source: { type: "file", file_id }, title? }
-      //
-      // file_id sources don't include media_type — Anthropic looks the
-      // mime up by file_id. Image gets routed to vision; PDF goes
-      // through native PDF parsing; text/* gets text-inlined.
-      //
-      // OMA's harness userContentToParts (history.ts:374) must resolve
-      // the file_id → bytes when forwarding to the model (see backend
-      // change in this PR).
+      // The + button is image-only — vision inputs go inline to the
+      // model. Non-vision file attachments belong on a separate path
+      // (env-mounted resources) and aren't reachable from this button,
+      // so this loop only emits `image` content blocks.
       const content: Array<
         | { type: "text"; text: string }
         | { type: "image"; source: { type: "file"; file_id: string } }
-        | { type: "document"; source: { type: "file"; file_id: string }; title?: string }
       > = [];
       if (text) content.push({ type: "text", text });
       for (const u of uploaded) {
@@ -700,20 +685,16 @@ export function SessionDetail() {
             type: "image",
             source: { type: "file", file_id: u.id },
           });
-        } else {
-          content.push({
-            type: "document",
-            source: { type: "file", file_id: u.id },
-            title: u.filename,
-          });
         }
+        // non-images can't slip through the accept filter, but if one
+        // does (drag-drop on some browsers ignores accept) we drop it
+        // silently rather than fall back to a document block the model
+        // may not handle.
       }
-      // Empty-text + only-files case: prepend a verbal cue so the model
-      // knows what to do with the unsolicited content blocks.
       if (!text && uploaded.length) {
         content.unshift({
           type: "text",
-          text: `📎 ${uploaded.length === 1 ? "Attached file" : "Attached files"}.`,
+          text: uploaded.length === 1 ? "Attached image." : "Attached images.",
         });
       }
 
@@ -1180,14 +1161,13 @@ export function SessionDetail() {
           {/* Prompt input. ai-elements <PromptInput> wraps a <form> with
               an InputGroup-based textarea + attachment lifecycle; we
               hand it our own onSubmit so the existing send() (POST
-              /events) stays the source of truth. Files dropped or
-              picked via the paperclip button arrive in onSubmit's
-              files[] — send() uploads them to /v1/files (scope_id =
-              session) then appends a synthetic "Attached:" line so the
-              agent sees the file_ids alongside the text. */}
+              /events) stays the source of truth. The + button only
+              accepts images — they go inline to the model as vision
+              inputs. Non-image attachments belong on the mount-based
+              session resources path, not this button. */}
           <div className="px-4 sm:px-8 py-4 border-t border-border shrink-0">
             <PromptInput
-              accept="image/*,application/pdf,text/*,.md,.json,.yaml,.yml,.csv,.xml,.html,.toml,.log,.sh,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.rb,.cpp,.c,.h"
+              accept="image/*"
               multiple
               maxFiles={10}
               maxFileSize={25 * 1024 * 1024}
@@ -1206,7 +1186,7 @@ export function SessionDetail() {
               }}
             >
               <PromptInputTextarea
-                placeholder="Send a message…  (drag files in or click 📎)"
+                placeholder="Send a message…  (drag an image in or click ＋)"
                 disabled={sending}
                 onChange={(e) => setInput(e.currentTarget.value)}
               />
@@ -1717,8 +1697,8 @@ function FilesPanel({ sessionId, onClose }: { sessionId: string; onClose: () => 
  */
 
 /**
- * Plain paperclip button that opens the PromptInput file picker. The
- * stock `PromptInputActionAddAttachments` from ai-elements is a
+ * Plain "+" button that opens the PromptInput file picker for images.
+ * The stock `PromptInputActionAddAttachments` from ai-elements is a
  * DropdownMenuItem — meant to live inside an action-menu — so dropping
  * it directly into PromptInputTools threw "MenuItem must be used within
  * Menu" at render. This button reads the attachments controller from
@@ -1730,11 +1710,11 @@ function AttachButton() {
     <PromptInputButton
       type="button"
       onClick={() => attachments.openFileDialog()}
-      aria-label="Attach files"
-      title="Attach files"
+      aria-label="Add image"
+      title="Add image"
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.8l-8.58 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        <path d="M12 5v14M5 12h14" />
       </svg>
     </PromptInputButton>
   );
