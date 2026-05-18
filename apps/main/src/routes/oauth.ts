@@ -505,7 +505,14 @@ app.get("/callback", async (c) => {
 
   const tokenRes = await fetch(oauthState.token_endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      // GitHub's token endpoint defaults to application/x-www-form-urlencoded
+      // response bodies (`access_token=xxx&scope=&token_type=bearer`); Accept
+      // header is the documented opt-in to JSON. Other providers default to
+      // JSON regardless, so the header is harmless for them.
+      Accept: "application/json",
+    },
     body: tokenBody.toString(),
   });
 
@@ -637,7 +644,11 @@ app.post("/refresh", async (c) => {
 
   const tokenRes = await fetch(cred.auth.token_endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      // See note in /callback — GitHub returns form-encoded by default.
+      Accept: "application/json",
+    },
     body: tokenBody.toString(),
   });
 
