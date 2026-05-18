@@ -223,9 +223,17 @@ export class SlackProvider implements IntegrationProvider {
     payload: Record<string, unknown>,
   ): Promise<InstallStep> {
     const formToken = (payload.formToken as string) ?? "";
+    const rawClientSecret = (payload.clientSecret as string) ?? "";
+    const rawSigningSecret = (payload.signingSecret as string) ?? "";
     const clientId = ((payload.clientId as string) ?? "").trim();
-    const clientSecret = ((payload.clientSecret as string) ?? "").trim();
-    const signingSecret = ((payload.signingSecret as string) ?? "").trim();
+    const clientSecret = rawClientSecret.trim();
+    const signingSecret = rawSigningSecret.trim();
+    // TEMP diagnostic: bad_client_secret reproduces in prod even though MCP
+    // path with same App works. Log lengths (not values) to confirm whether
+    // 4 chars are being eaten before reaching here. Remove once root-caused.
+    console.log(
+      `[slack.submitCreds.diag] clientId.len=${clientId.length} clientSecret.raw=${rawClientSecret.length} clientSecret.trim=${clientSecret.length} signingSecret.raw=${rawSigningSecret.length} signingSecret.trim=${signingSecret.length}`,
+    );
     if (!formToken || !clientId || !clientSecret || !signingSecret) {
       throw new Error(
         "submit_credentials: formToken, clientId, clientSecret, signingSecret required",
