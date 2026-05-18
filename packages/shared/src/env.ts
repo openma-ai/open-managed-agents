@@ -95,6 +95,8 @@ export interface Env {
   GITHUB_OAUTH_CLIENT_SECRET?: string;
   FEISHU_OAUTH_CLIENT_ID?: string;
   FEISHU_OAUTH_CLIENT_SECRET?: string;
+  LARK_OAUTH_CLIENT_ID?: string;
+  LARK_OAUTH_CLIENT_SECRET?: string;
   ASANA_OAUTH_CLIENT_ID?: string;
   ASANA_OAUTH_CLIENT_SECRET?: string;
   CLICKUP_OAUTH_CLIENT_ID?: string;

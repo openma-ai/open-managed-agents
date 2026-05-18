@@ -35,6 +35,7 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
   { id: "feishu", name: "Feishu (飞书)", url: "https://mcp.feishu.cn/mcp", icon: favicon("feishu.cn") },
   { id: "github", name: "GitHub", url: "https://api.githubcopilot.com/mcp/", icon: favicon("github.com") },
   { id: "intercom", name: "Intercom", url: "https://mcp.intercom.com/mcp", icon: favicon("intercom.com") },
+  { id: "lark", name: "Lark", url: "https://mcp.larksuite.com/mcp", icon: favicon("larksuite.com") },
   { id: "linear", name: "Linear", url: "https://mcp.linear.app/mcp", icon: favicon("linear.app") },
   { id: "notion", name: "Notion", url: "https://mcp.notion.com/mcp", icon: favicon("notion.so") },
   { id: "sentry", name: "Sentry", url: "https://mcp.sentry.dev/mcp", icon: favicon("sentry.io") },

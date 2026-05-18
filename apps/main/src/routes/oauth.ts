@@ -318,6 +318,29 @@ app.get("/authorize", async (c) => {
     }
   }
 
+  // Known-provider preset: Lark MCP is the international counterpart of
+  // Feishu — same vendor (ByteDance) but a separate developer console
+  // (open.larksuite.com vs open.feishu.cn) and separate OAuth Apps.
+  // Same DCR-rejection behavior as Feishu. Operator workflow: register
+  // an app at https://open.larksuite.com (Web App, redirect URL =
+  // ${baseUrl}/v1/oauth/callback), then set LARK_OAUTH_CLIENT_ID +
+  // LARK_OAUTH_CLIENT_SECRET on the main worker.
+  if (!clientId && /^https:\/\/accounts\.larksuite\.com\//.test(meta.authServer.issuer)) {
+    if (c.env.LARK_OAUTH_CLIENT_ID && c.env.LARK_OAUTH_CLIENT_SECRET) {
+      clientId = c.env.LARK_OAUTH_CLIENT_ID;
+      clientSecret = c.env.LARK_OAUTH_CLIENT_SECRET;
+    } else {
+      return c.json(
+        {
+          error:
+            "Lark MCP OAuth requires a pre-registered Lark app: visit https://open.larksuite.com, create a Web App with redirect URL " +
+            `${callbackUri}, then set LARK_OAUTH_CLIENT_ID + LARK_OAUTH_CLIENT_SECRET on the main worker.`,
+        },
+        501,
+      );
+    }
+  }
+
   // Known-provider preset: Asana publishes ASM but no registration_endpoint.
   // Operator workflow: visit https://app.asana.com/0/my-apps, create an
   // OAuth app with redirect URL ${baseUrl}/v1/oauth/callback, then set
