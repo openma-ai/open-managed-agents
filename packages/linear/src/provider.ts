@@ -239,9 +239,9 @@ export class LinearProvider implements IntegrationProvider {
     payload: Record<string, unknown>,
   ): Promise<InstallStep> {
     const formToken = (payload.formToken as string) ?? "";
-    const clientId = (payload.clientId as string) ?? "";
-    const clientSecret = (payload.clientSecret as string) ?? "";
-    const webhookSecret = (payload.webhookSecret as string) ?? "";
+    const clientId = ((payload.clientId as string) ?? "").trim();
+    const clientSecret = ((payload.clientSecret as string) ?? "").trim();
+    const webhookSecret = ((payload.webhookSecret as string) ?? "").trim();
     if (!formToken || !clientId || !clientSecret || !webhookSecret) {
       throw new Error(
         "submit_credentials: formToken, clientId, clientSecret, webhookSecret required",

@@ -165,8 +165,8 @@ export class GitHubProvider implements IntegrationProvider {
   ): Promise<InstallStep> {
     const formToken = (payload.formToken as string) ?? "";
     const appId = (payload.appId as string) ?? "";
-    const privateKey = (payload.privateKey as string) ?? "";
-    const webhookSecret = (payload.webhookSecret as string) ?? "";
+    const privateKey = ((payload.privateKey as string) ?? "").trim();
+    const webhookSecret = ((payload.webhookSecret as string) ?? "").trim();
     // Optional OAuth credentials — only needed if the user later wants
     // user-attributed sign-in. For pure App-bot use both can be omitted.
     const clientId = ((payload.clientId as string) || "").trim() || null;

@@ -223,9 +223,9 @@ export class SlackProvider implements IntegrationProvider {
     payload: Record<string, unknown>,
   ): Promise<InstallStep> {
     const formToken = (payload.formToken as string) ?? "";
-    const clientId = (payload.clientId as string) ?? "";
-    const clientSecret = (payload.clientSecret as string) ?? "";
-    const signingSecret = (payload.signingSecret as string) ?? "";
+    const clientId = ((payload.clientId as string) ?? "").trim();
+    const clientSecret = ((payload.clientSecret as string) ?? "").trim();
+    const signingSecret = ((payload.signingSecret as string) ?? "").trim();
     if (!formToken || !clientId || !clientSecret || !signingSecret) {
       throw new Error(
         "submit_credentials: formToken, clientId, clientSecret, signingSecret required",
