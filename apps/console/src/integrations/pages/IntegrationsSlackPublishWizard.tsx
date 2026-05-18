@@ -54,8 +54,6 @@ export function IntegrationsSlackPublishWizard({
   const [clientSecret, setClientSecret] = useState("");
   const [signingSecret, setSigningSecret] = useState("");
   const [a1InstallLink, setA1InstallLink] = useState<A1InstallLink | null>(null);
-  const [handoffUrl, setHandoffUrl] = useState<string | null>(null);
-  const [handoffCopied, setHandoffCopied] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -122,29 +120,6 @@ export function IntegrationsSlackPublishWizard({
     }
   }
 
-  async function generateHandoffLink() {
-    if (!a1Form) return;
-    setError(null);
-    setWorking(true);
-    try {
-      const r = await api.slack.createHandoffLink(a1Form.formToken);
-      setHandoffUrl(r.url);
-      // Auto-copy so the user doesn't have to chase the row. Clipboard can
-      // throw if the page isn't focused or the browser blocks it; treat the
-      // failure as "user can still copy manually" and surface a quiet hint.
-      try {
-        await navigator.clipboard.writeText(r.url);
-        setHandoffCopied(true);
-      } catch {
-        setHandoffCopied(false);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setWorking(false);
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-[760px] mx-auto px-4 sm:px-8 lg:px-10 py-8 lg:py-10">
@@ -200,9 +175,6 @@ export function IntegrationsSlackPublishWizard({
             setSigningSecret={setSigningSecret}
             working={working}
             onSubmit={submitA1Credentials}
-            onHandoff={generateHandoffLink}
-            handoffUrl={handoffUrl}
-            handoffCopied={handoffCopied}
             onBack={() => setStep("pick")}
           />
         )}
@@ -330,7 +302,7 @@ function PickStep(props: {
 
       <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
         Your agent becomes a real Slack teammate — @-mentionable, replies in threads,
-        joins DMs. Setup ~3 min, requires Slack admin (or send a setup link).
+        joins DMs. Setup ~3 min, requires Slack admin.
       </div>
 
       <div className="pt-1">
@@ -357,9 +329,6 @@ function A1CredentialsStep(props: {
   setSigningSecret: (v: string) => void;
   working: boolean;
   onSubmit: () => void;
-  onHandoff: () => void;
-  handoffUrl: string | null;
-  handoffCopied: boolean;
   onBack: () => void;
 }) {
   const manifestUrl = props.form.manifestLaunchUrl;
@@ -476,40 +445,7 @@ function A1CredentialsStep(props: {
             {props.working ? "Validating…" : "Continue"}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
           </button>
-          <span className="text-[12px] text-fg-subtle">or</span>
-          <button
-            onClick={props.onHandoff}
-            disabled={props.working}
-            className="text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
-          >
-            Send setup link to your admin →
-          </button>
         </div>
-
-        {props.handoffUrl && (
-          <div className="mt-4 rounded-md border border-warning/30 bg-warning-subtle p-3.5">
-            <div className="flex items-start gap-2 mb-2">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-warning shrink-0 mt-0.5">
-                <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-              </svg>
-              <div className="text-[13px] font-medium text-fg">
-                Send this link to your Slack admin
-                {props.handoffCopied && (
-                  <span className="ml-2 text-[12px] font-normal text-success">
-                    ✓ Copied to clipboard
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="rounded-md border border-warning/30 bg-bg">
-              <CopyRow label="Setup link" value={props.handoffUrl} />
-            </div>
-            <p className="text-[12px] text-fg-muted mt-2">
-              Anyone with this link can complete the install. Treat it as sensitive.
-              Expires in 7 days.
-            </p>
-          </div>
-        )}
       </section>
     </div>
   );
