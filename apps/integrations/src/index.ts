@@ -32,6 +32,35 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 
+// TEMP debug — staging only, no auth. Read the latest slack_apps row and
+// dump decrypted Client Secret + Signing Secret for the bad_client_secret
+// investigation. Revert before merging this branch to main.
+app.get("/debug/slack-apps-latest", async (c) => {
+  const origin = c.env.GATEWAY_ORIGIN ?? "";
+  if (!/\bstaging\b/i.test(origin)) return c.text("not on staging", 404);
+  const db = c.env.INTEGRATIONS_DB;
+  if (!db) return c.json({ error: "no INTEGRATIONS_DB binding" }, 500);
+  const row = await db
+    .prepare("SELECT id, client_id, client_secret_cipher, signing_secret_cipher, created_at FROM slack_apps ORDER BY created_at DESC LIMIT 1")
+    .first<{ id: string; client_id: string; client_secret_cipher: string; signing_secret_cipher: string; created_at: number }>();
+  if (!row) return c.json({ error: "no rows" }, 404);
+  const { WebCryptoAesGcm } = await import("@open-managed-agents/integrations-adapters-cf");
+  const crypto = new WebCryptoAesGcm(c.env.PLATFORM_ROOT_SECRET, "integrations.tokens");
+  const cs = await crypto.decrypt(row.client_secret_cipher);
+  const ss = await crypto.decrypt(row.signing_secret_cipher);
+  const hex = (s: string) =>
+    Array.from(new TextEncoder().encode(s))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(" ");
+  return c.json({
+    id: row.id,
+    client_id: row.client_id,
+    created_at: new Date(row.created_at).toISOString(),
+    client_secret: { plaintext: cs, length: cs.length, bytes_hex: hex(cs), cipher_b64url_len: row.client_secret_cipher.length },
+    signing_secret: { plaintext: ss, length: ss.length, bytes_hex: hex(ss), cipher_b64url_len: row.signing_secret_cipher.length },
+  });
+});
+
 // Defense-in-depth: /admin/* endpoints never existed (or were intentionally
 // removed). Prod env always 404. Staging env requires TEMP_DEBUG_TOKEN
 // (`x-debug-token`) — wrong/missing token = 401. Correct token falls
