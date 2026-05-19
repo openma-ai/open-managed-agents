@@ -38,7 +38,7 @@
     "js-yaml": "^4.1.1",
     "lowlight": "^3.3.0",
     "lucide-react": "^1.16.0",
-    "motion": "^12.38.0",
+    "motion": "^12.39.0",
     "nanoid": "^5.1.9",
     "radix-ui": "^1.4.3",
     "react": "^19.1.0",
