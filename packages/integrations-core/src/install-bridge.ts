@@ -42,6 +42,16 @@ export interface ContinueInstallResult {
    *  302 target. The bridge re-verifies state internally; surfacing the
    *  decoded URL keeps each route from re-doing JWT crypto. */
   returnUrl: string | null;
+  /** Pass-through of the provider's post-install capability probe, if any.
+   *  Used by the redirect to surface "install worked but a vendor-side
+   *  toggle is off" warnings to the wizard UI. See InstallComplete.
+   *  capabilityProbe for the contract. */
+  capabilityProbe?: {
+    kind: string;
+    ok: boolean;
+    message?: string;
+    fixUrl?: string;
+  };
 }
 
 /** GitHub `refresh-by-vault` mints a fresh installation token via App-JWT,

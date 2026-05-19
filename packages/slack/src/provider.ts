@@ -420,7 +420,83 @@ export class SlackProvider implements IntegrationProvider {
     });
     await this.container.apps.setPublicationId(app.id, publication.id);
 
-    return { kind: "complete", publicationId: publication.id };
+    // Probe mcp.slack.com with the user xoxp- token to detect whether the
+    // App's "Model Context Protocol" toggle (Agents & AI Apps page) is on.
+    // The toggle defaults OFF for new Apps and Slack provides no API to
+    // flip it — the only way to know is to actually call the MCP server.
+    // We tolerate any failure: this is observability, not a gate. UI uses
+    // the probe to either green-check the install or surface a precise
+    // "still off, flip it here" warning with deeplink.
+    const probe = await this.probeMcpEnabled(token.authed_user.access_token, token.app_id);
+
+    return { kind: "complete", publicationId: publication.id, capabilityProbe: probe };
+  }
+
+  /**
+   * One-shot capability probe for Slack's MCP server. POSTs tools/list
+   * with the user xoxp- token; classifies the response:
+   *
+   *   200 → toggle is on, model has access to typed mcp__slack__* tools
+   *   400 with "App is not enabled for Slack MCP server access" → toggle off
+   *   anything else → unknown (network blip, vendor outage) — best to stay
+   *     silent rather than alarm the user with a stale-toggle warning
+   *
+   * Bounded to ~5s so a slow upstream doesn't stall the install response.
+   * Uses globalThis.fetch directly: the integration HttpClient abstraction
+   * is for testable provider-API calls; this is a fire-and-forget probe
+   * whose result is descriptive only — replace with a stub in tests.
+   */
+  private async probeMcpEnabled(
+    userToken: string,
+    slackAppId: string,
+  ): Promise<{ kind: "slack_mcp"; ok: boolean; message?: string; fixUrl?: string }> {
+    const fixUrl = `https://api.slack.com/apps/${slackAppId}/app-assistant`;
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      let res: Response;
+      try {
+        res = await fetch(SLACK_MCP_URL, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${userToken}`,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+          signal: ac.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (res.status >= 200 && res.status < 300) {
+        return { kind: "slack_mcp", ok: true };
+      }
+      const body = await res.text().catch(() => "");
+      if (res.status === 400 && /not enabled for Slack MCP server access/i.test(body)) {
+        return {
+          kind: "slack_mcp",
+          ok: false,
+          message:
+            "Slack MCP server access is OFF on this App. Open the App's Agents & AI Apps page and toggle Model Context Protocol on.",
+          fixUrl,
+        };
+      }
+      return {
+        kind: "slack_mcp",
+        ok: false,
+        message: `Slack MCP probe returned HTTP ${res.status}; tool calls may not work yet.`,
+        fixUrl,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        kind: "slack_mcp",
+        ok: false,
+        message: `Slack MCP probe failed (${msg.slice(0, 80)}); verify the toggle manually.`,
+        fixUrl,
+      };
+    }
   }
 
   /** 7-day re-signed formToken — gives an admin a public install URL. */

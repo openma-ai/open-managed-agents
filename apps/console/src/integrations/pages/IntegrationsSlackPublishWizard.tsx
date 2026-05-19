@@ -144,6 +144,42 @@ export function IntegrationsSlackPublishWizard({
 
         <StepIndicator current={step} />
 
+        {/* Post-install banner — set by the gateway redirect when Slack OAuth
+            completes. install=ok always shows green check; capability probe
+            kind=slack_mcp + probe_ok=0 adds a yellow warning with a deeplink
+            to flip the MCP toggle the user almost certainly missed. */}
+        {search.get("install") === "ok" && (
+          <div className="mb-4 space-y-2">
+            <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[13px] text-success font-medium">
+              ✓ Installed in Slack. Publication: <code>{search.get("publication_id")}</code>
+            </div>
+            {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "0" && (
+              <div className="rounded-md border border-warning/30 bg-warning-subtle px-3.5 py-3 text-[13px]">
+                <div className="font-medium text-fg mb-1">⚠ Slack MCP server access is OFF</div>
+                <p className="text-fg-muted text-[12px] leading-relaxed mb-2">
+                  {search.get("probe_message") ??
+                    "The agent is installed but Slack's MCP server is rejecting our token. Flip the toggle to enable typed mcp__slack__* tools."}
+                </p>
+                {search.get("probe_fix_url") && (
+                  <a
+                    href={search.get("probe_fix_url")!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-warning/40 text-fg hover:bg-warning-subtle/70 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                  >
+                    Open Agents &amp; AI Apps page ↗
+                  </a>
+                )}
+              </div>
+            )}
+            {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "1" && (
+              <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success">
+                ✓ Slack MCP server access verified — agent can use typed slack tools.
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
             {error}

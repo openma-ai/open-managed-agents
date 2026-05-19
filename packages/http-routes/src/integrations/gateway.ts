@@ -133,11 +133,25 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
         extra: { installationId, setupAction },
       });
       if (!result.returnUrl) {
-        return c.json({ ok: true, publicationId: result.publicationId });
+        return c.json({
+          ok: true,
+          publicationId: result.publicationId,
+          capabilityProbe: result.capabilityProbe ?? null,
+        });
       }
       const target = new URL(result.returnUrl);
       target.searchParams.set("publication_id", result.publicationId);
       target.searchParams.set("install", "ok");
+      // Surface the vendor capability probe (e.g. Slack MCP toggle) as
+      // query params so the wizard's success page can show the right
+      // green-check or warning-with-deeplink banner.
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -239,11 +253,25 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
         state,
       });
       if (!result.returnUrl) {
-        return c.json({ ok: true, publicationId: result.publicationId });
+        return c.json({
+          ok: true,
+          publicationId: result.publicationId,
+          capabilityProbe: result.capabilityProbe ?? null,
+        });
       }
       const target = new URL(result.returnUrl);
       target.searchParams.set("publication_id", result.publicationId);
       target.searchParams.set("install", "ok");
+      // Surface the vendor capability probe (e.g. Slack MCP toggle) as
+      // query params so the wizard's success page can show the right
+      // green-check or warning-with-deeplink banner.
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -119,7 +119,11 @@ export class CfInstallBridge implements InstallBridge {
     });
     if (result.kind !== "complete") throw new Error("unexpected install result");
     const statePayload = await slackContainer.jwt.verify<{ returnUrl: string }>(stateRaw);
-    return { publicationId: result.publicationId, returnUrl: statePayload.returnUrl };
+    return {
+      publicationId: result.publicationId,
+      returnUrl: statePayload.returnUrl,
+      capabilityProbe: result.capabilityProbe,
+    };
   }
 
   async refreshGithubVault(
