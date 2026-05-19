@@ -22,6 +22,7 @@ import type {
   DispatchRuleRepo,
   LinearActionableEvent,
   LinearEventStore,
+  LinearPublicationRepo,
   GitHubAppCredentials,
   GitHubAppRepo,
   HmacVerifier,
@@ -41,11 +42,13 @@ import type {
   NewGitHubAppCredentials,
   NewInstallation,
   NewPublication,
+  NewPublicationShell,
   NewSetupLink,
   Persona,
   ProviderId,
   Publication,
-  PublicationRepo,
+  PublicationCredentials,
+  PublicationCredentialsInput,
   PublicationStatus,
   SessionCreator,
   SessionEventInput,
@@ -319,8 +322,9 @@ export class InMemoryInstallationRepo implements InstallationRepo {
   }
 }
 
-export class InMemoryPublicationRepo implements PublicationRepo {
+export class InMemoryPublicationRepo implements LinearPublicationRepo {
   private rows = new Map<string, Publication>();
+  private credentials = new Map<string, PublicationCredentials>();
   private counter = 0;
 
   constructor(private clock: Clock = new FakeClock()) {}
@@ -353,6 +357,71 @@ export class InMemoryPublicationRepo implements PublicationRepo {
     };
     this.rows.set(id, pub);
     return pub;
+  }
+
+  async insertShell(row: NewPublicationShell): Promise<Publication> {
+    this.counter += 1;
+    const id = `pub_${this.counter}`;
+    const pub: Publication = {
+      id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      agentId: row.agentId,
+      installationId: "", // sentinel — filled by bindInstallation
+      environmentId: row.environmentId,
+      mode: row.mode,
+      status: "pending_setup",
+      persona: row.persona,
+      capabilities: row.capabilities,
+      sessionGranularity: row.sessionGranularity,
+      createdAt: this.clock.nowMs(),
+      unpublishedAt: null,
+    };
+    this.rows.set(id, pub);
+    return pub;
+  }
+
+  async setCredentials(
+    id: string,
+    input: PublicationCredentialsInput,
+  ): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.credentials.set(id, {
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      webhookSecret: input.webhookSecret,
+      signingSecret: input.signingSecret ?? null,
+    });
+    this.rows.set(id, { ...row, status: "awaiting_install" });
+  }
+
+  async getCredentials(id: string): Promise<PublicationCredentials | null> {
+    return this.credentials.get(id) ?? null;
+  }
+
+  async getWebhookSecret(id: string): Promise<string | null> {
+    return this.credentials.get(id)?.webhookSecret ?? null;
+  }
+
+  async getClientSecret(id: string): Promise<string | null> {
+    return this.credentials.get(id)?.clientSecret ?? null;
+  }
+
+  async bindInstallation(
+    id: string,
+    args: { installationId: string; vaultId: string | null },
+  ): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.rows.set(id, {
+      ...row,
+      installationId: args.installationId,
+      status: "live",
+    });
+    // vaultId is intentionally not surfaced on the Publication domain shape
+    // (it lives on the linear_publications row + via Installation). The
+    // in-memory fake doesn't need to track it separately.
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {

@@ -536,7 +536,15 @@ export async function applyIntegrationsSchema(opts: {
         "session_granularity"   TEXT NOT NULL,
         "created_at"            ${intT} NOT NULL,
         "unpublished_at"        ${intT},
-        "environment_id"        TEXT
+        "environment_id"        TEXT,
+        -- Publication-first install fields: credentials baked at PATCH
+        -- /publications/:id/credentials before the OAuth callback runs.
+        -- See migration 0002_linear_publication_first.sql for the rationale.
+        "client_id"             TEXT,
+        "client_secret_cipher"  TEXT,
+        "webhook_secret_cipher" TEXT,
+        "signing_secret_cipher" TEXT,
+        "vault_id"              TEXT
       );
       CREATE INDEX IF NOT EXISTS "idx_linear_publications_installation"
         ON "linear_publications" ("installation_id");

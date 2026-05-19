@@ -123,25 +123,22 @@ export class NodeInstallBridge implements InstallBridge {
       }
       if (stateKind === "linear.oauth.reauth") {
         const r = await provider.completeReauthorize({
-          appId: args.providerInstallationId ?? "",
+          publicationId: args.providerInstallationId ?? "",
           code: args.code ?? "",
           state: stateRaw,
           redirectBase: this.opts.gatewayOrigin,
         });
-        return { publicationId: r.installationId, returnUrl: null };
+        return { publicationId: r.publicationId, returnUrl: null };
       }
-      const result = await provider.continueInstall({
-        publicationId: null,
-        payload: {
-          kind: "oauth_callback_dedicated",
-          appId: args.providerInstallationId,
-          code: args.code,
-          state: stateRaw,
-        },
+      if (stateKind !== "linear.oauth.publication") {
+        throw new Error(`invalid state kind: ${stateKind ?? "(none)"}`);
+      }
+      const result = await provider.handleOAuthCallback({
+        publicationId: args.providerInstallationId ?? "",
+        code: args.code ?? "",
+        state: stateRaw,
       });
-      if (result.kind !== "complete") throw new Error("unexpected install result");
-      const statePayload = await jwt.verify<{ returnUrl: string }>(stateRaw);
-      return { publicationId: result.publicationId, returnUrl: statePayload.returnUrl };
+      return { publicationId: result.publicationId, returnUrl: result.returnUrl };
     }
 
     if (args.provider === "github") {
@@ -311,6 +308,13 @@ export class NodeInstallBridge implements InstallBridge {
     const body = args.body;
 
     if (args.mode === "start-a1") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_legacy_install_removed",
+          remediation:
+            "Linear's install flow is now publication-first. POST /v1/integrations/linear/publications instead.",
+        });
+      }
       if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
         return jsonResp(400, {
           error: "userId, agentId, environmentId, personaName, returnUrl required",
@@ -334,6 +338,13 @@ export class NodeInstallBridge implements InstallBridge {
     }
 
     if (args.mode === "credentials") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_legacy_install_removed",
+          remediation:
+            "Linear's install flow is now publication-first. PATCH /v1/integrations/linear/publications/<id>/credentials instead.",
+        });
+      }
       const required = requiredCredentialsKeys(args.provider);
       for (const key of required) {
         if (!body[key]) return jsonResp(400, credentialsBadInputBody(args.provider, required));
@@ -353,6 +364,13 @@ export class NodeInstallBridge implements InstallBridge {
     }
 
     if (args.mode === "handoff-link") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_handoff_removed",
+          remediation:
+            "Linear's handoff page is gone with the publication-first refactor — share the callback URL from POST /v1/integrations/linear/publications directly.",
+        });
+      }
       if (!body.formToken) return jsonResp(400, { error: "formToken required" });
       try {
         const result = await provider.continueInstall({
@@ -365,6 +383,77 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(200, result.data);
       } catch (err) {
         return mapInstallErrorToResp(args.provider, "handoff", err);
+      }
+    }
+
+    if (args.mode === "create-publication") {
+      if (args.provider !== "linear") {
+        return jsonResp(400, { error: "create-publication is linear-only" });
+      }
+      if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
+        return jsonResp(400, {
+          error: "userId, agentId, environmentId, personaName, returnUrl required",
+        });
+      }
+      try {
+        const r = await providers.linear.startPublication({
+          userId: body.userId as string,
+          agentId: body.agentId as string,
+          environmentId: body.environmentId as string,
+          persona: {
+            name: body.personaName as string,
+            avatarUrl: (body.personaAvatarUrl as string | null) ?? null,
+          },
+          returnUrl: body.returnUrl as string,
+        });
+        return jsonResp(200, {
+          publication_id: r.publicationId,
+          callback_url: r.callbackUrl,
+          webhook_url: r.webhookUrl,
+          suggested_app_name: r.suggestedAppName,
+          suggested_avatar_url: r.suggestedAvatarUrl,
+          return_url: r.returnUrl,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResp(400, { error: "create_publication_failed", details: msg });
+      }
+    }
+
+    if (args.mode === "submit-credentials-pub") {
+      if (args.provider !== "linear") {
+        return jsonResp(400, { error: "submit-credentials-pub is linear-only" });
+      }
+      if (
+        !body.publicationId ||
+        !body.clientId ||
+        !body.clientSecret ||
+        !body.webhookSecret ||
+        !body.returnUrl
+      ) {
+        return jsonResp(400, {
+          error:
+            "publicationId, clientId, clientSecret, webhookSecret, returnUrl required",
+        });
+      }
+      try {
+        const r = await providers.linear.submitCredentials({
+          publicationId: body.publicationId as string,
+          clientId: body.clientId as string,
+          clientSecret: body.clientSecret as string,
+          webhookSecret: body.webhookSecret as string,
+          signingSecret: (body.signingSecret as string | null | undefined) ?? null,
+          returnUrl: body.returnUrl as string,
+        });
+        return jsonResp(200, {
+          install_url: r.installUrl,
+          publication_id: r.publicationId,
+          callback_url: r.callbackUrl,
+          webhook_url: r.webhookUrl,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResp(400, { error: "credentials_failed", details: msg });
       }
     }
 

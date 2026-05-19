@@ -65,21 +65,26 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
   const app = new Hono();
 
   // ─── Linear ──────────────────────────────────────────────────────────
-  // GET /linear/oauth/app/:appId/callback?code=&state=
-  app.get("/linear/oauth/app/:appId/callback", async (c) => {
-    const appId = c.req.param("appId");
+  // GET /linear/oauth/pub/:pubId/callback?code=&state=
+  //
+  // Publication-first OAuth callback. The pub_id in the URL was minted at
+  // publication-create time and baked into the user's Linear OAuth-app
+  // config; the InstallBridge resolves it to the publication row and
+  // completes the install (or rotates tokens for the reauth state-kind).
+  app.get("/linear/oauth/pub/:pubId/callback", async (c) => {
+    const pubId = c.req.param("pubId");
     const url = new URL(c.req.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     const error = url.searchParams.get("error");
     if (error) return c.json({ error: "linear_oauth_denied", details: error }, 400);
-    if (!appId || !code || !state) {
-      return c.json({ error: "missing appId, code, or state" }, 400);
+    if (!pubId || !code || !state) {
+      return c.json({ error: "missing pubId, code, or state" }, 400);
     }
     try {
       const result = await deps.installBridge.continueInstall({
         provider: "linear",
-        providerInstallationId: appId,
+        providerInstallationId: pubId,
         code,
         state,
       });
@@ -92,22 +97,15 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ op: "linear.oauth.callback.failed", appId, err: msg }, "linear callback failed");
+      log.warn({ op: "linear.oauth.callback.failed", pubId, err: msg }, "linear callback failed");
       return c.json({ error: "install_failed", details: msg }, 500);
     }
   });
 
-  // GET /linear-setup/:token
-  app.get("/linear-setup/:token", async (c) => {
-    const token = c.req.param("token");
-    let form: { persona: { name: string }; userId: string; agentId: string };
-    try {
-      form = await deps.jwt.verify<typeof form>(token);
-    } catch (err) {
-      return c.html(errorPage(err instanceof Error ? err.message : String(err)), 400);
-    }
-    return c.html(linearLandingPage({ token, personaName: form.persona.name }));
-  });
+  // Legacy `/linear-setup/<token>` handoff page is gone with the
+  // publication-first refactor — admins receive a `/linear/oauth/pub/...`
+  // callback URL directly via the new wizard flow rather than a
+  // form-token-backed splash page.
 
   // ─── GitHub ──────────────────────────────────────────────────────────
   // GET /github/oauth/pub/:pubId/callback?installation_id=&setup_action=&state=
@@ -424,15 +422,24 @@ function mountLinearWebhook(
   handler: WebhookHandler,
   rl: RateLimitHooks | undefined,
 ) {
-  app.post("/linear/webhook/app/:appId", async (c) => {
-    const appId = c.req.param("appId");
+  // Publication-first: webhook URL is keyed on pub_id (the user pasted
+  // `/linear/webhook/pub/<pubId>` into Linear's OAuth-app webhook config
+  // at publication create time). The handler walks pub_id → installation
+  // for credentials and dispatch — see LinearProvider.handleWebhook.
+  app.post("/linear/webhook/pub/:pubId", async (c) => {
+    const pubId = c.req.param("pubId");
     const rawBody = await c.req.raw.text();
     const headers: Record<string, string> = {};
     c.req.raw.headers.forEach((value, key) => (headers[key.toLowerCase()] = value));
     const deliveryId = headers["linear-delivery"] ?? safeJsonField(rawBody, "webhookId");
     const outcome = await handler({
       providerId: "linear",
-      installationId: appId ?? null,
+      // installationId is a misnomer left over from the legacy app-id
+      // keying — for the publication-first flow it carries the pub_id.
+      // Renaming the field would mean churning every WebhookRequest
+      // call site across the three providers, which is outside the scope
+      // of this refactor.
+      installationId: pubId ?? null,
       deliveryId,
       headers,
       rawBody,
@@ -721,99 +728,13 @@ function errorPage(message: string): string {
 </body></html>`;
 }
 
-function linearLandingPage(opts: { token: string; personaName: string }): string {
-  const escapedToken = escapeHtml(opts.token);
-  const escapedName = escapeHtml(opts.personaName);
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Linear app setup — ${escapedName}</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; color: #111; }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    p, li { color: #444; }
-    code { background: #f2f2f2; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
-    label { display: block; font-weight: 600; margin: 16px 0 4px; }
-    input { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; box-sizing: border-box; }
-    button { margin-top: 16px; padding: 10px 16px; background: #111; color: #fff; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: default; }
-    .ok { color: #060; margin-top: 12px; }
-    .err { color: #b00; margin-top: 12px; }
-  </style>
-</head>
-<body>
-  <h1>Set up "${escapedName}" in your Linear workspace</h1>
-  <p>Someone on your team is installing OpenMA's <strong>${escapedName}</strong> agent
-  into your Linear workspace. Linear app registration requires a workspace admin —
-  that's where you come in.</p>
-
-  <ol>
-    <li>Open <a href="https://linear.app/settings/api" target="_blank">Linear → Settings → API</a> and create a new OAuth app:
-      <ul>
-        <li>Name: <code>${escapedName}</code></li>
-        <li>Callback URL and Webhook URL: copy from the email/Slack message that brought you here</li>
-        <li>Scopes: read, write, app:assignable, app:mentionable</li>
-      </ul>
-    </li>
-    <li>Linear will give you <strong>Client ID</strong>, <strong>Client Secret</strong>,
-      and a <strong>Webhook signing secret</strong> (starts with <code>lin_wh_</code>).
-      Paste all three below — Linear auto-generates the webhook secret and OMA can't
-      predict it, so we need it from you.</li>
-    <li>Click "Continue" and approve the install in your Linear workspace.</li>
-  </ol>
-
-  <form id="f">
-    <label for="cid">Client ID</label>
-    <input id="cid" name="cid" required autocomplete="off">
-    <label for="csec">Client Secret</label>
-    <input id="csec" name="csec" type="password" required autocomplete="off">
-    <label for="whsec">Webhook signing secret (lin_wh_…)</label>
-    <input id="whsec" name="whsec" type="password" required autocomplete="off" placeholder="lin_wh_…">
-    <button id="submit" type="submit">Continue →</button>
-    <p id="msg"></p>
-  </form>
-
-  <script>
-    const TOKEN = ${JSON.stringify(escapedToken)};
-    document.getElementById("f").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById("submit");
-      const msg = document.getElementById("msg");
-      btn.disabled = true;
-      msg.textContent = "Validating…";
-      msg.className = "";
-      try {
-        const res = await fetch("/linear/publications/credentials", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            formToken: TOKEN,
-            clientId: document.getElementById("cid").value.trim(),
-            clientSecret: document.getElementById("csec").value.trim(),
-            webhookSecret: document.getElementById("whsec").value.trim(),
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          msg.textContent = "Error: " + (data.details || data.error || res.status);
-          msg.className = "err";
-          btn.disabled = false;
-          return;
-        }
-        msg.textContent = "Redirecting to Linear to authorize…";
-        msg.className = "ok";
-        window.location.href = data.url;
-      } catch (err) {
-        msg.textContent = "Network error: " + err.message;
-        msg.className = "err";
-        btn.disabled = false;
-      }
-    });
-  </script>
-</body>
-</html>`;
+function linearLandingPage(_opts: { token: string; personaName: string }): string {
+  // Removed with the publication-first refactor; the wizard now hands an
+  // OAuth callback URL directly. Function kept as a deprecated stub so any
+  // forgotten import surfaces a build error rather than runtime null.
+  throw new Error(
+    "linearLandingPage removed in publication-first refactor — use POST /v1/integrations/linear/publications instead",
+  );
 }
 
 function githubLandingPage(opts: { token: string; personaName: string }): string {

@@ -91,7 +91,9 @@ export function buildCfRepos(env: CfReposEnv) {
   // (linear_* vs github_* tables). Slack lives in slack_* and is wired
   // separately via the slack-specific helpers in apps/integrations/wire.ts.
   const linearInstallations = new D1InstallationRepo(idb, cryptoImpl, ids);
-  const linearPublications = new D1PublicationRepo(idb, ids);
+  // D1PublicationRepo needs Crypto: the publication-first install flow
+  // stores OAuth client_secret + webhook_secret encrypted on the row.
+  const linearPublications = new D1PublicationRepo(idb, ids, cryptoImpl);
   const githubInstallations = new D1GitHubInstallationRepo(idb, cryptoImpl, ids);
   const githubPublications = new D1GitHubPublicationRepo(idb, ids, cryptoImpl);
   const apps = new D1AppRepo(idb, cryptoImpl, ids);

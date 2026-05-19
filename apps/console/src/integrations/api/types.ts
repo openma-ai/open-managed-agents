@@ -127,6 +127,42 @@ export interface LinearSubmitCredentialsInput {
   webhookSecret: string;
 }
 
+/** Step 1 result of the Linear publication-first install: a server-side
+ *  publication shell row created with status='pending_setup'. The user
+ *  pastes the callback + webhook URLs into Linear's OAuth-app form, then
+ *  submits credentials via PATCH .../credentials. */
+export interface LinearPublicationShell {
+  publication_id: string;
+  callback_url: string;
+  webhook_url: string;
+  suggested_app_name: string;
+  suggested_avatar_url: string | null;
+  return_url: string;
+}
+
+/** Step 2 result: the OAuth authorize URL the user clicks to bind the
+ *  installation to the publication. Echoes back the callback/webhook URLs
+ *  for client-side verification (they must match what was pasted into
+ *  Linear). */
+export interface LinearPublicationInstallLink {
+  install_url: string;
+  publication_id: string;
+  callback_url: string;
+  webhook_url: string;
+}
+
+/** Step 2 input. */
+export interface LinearPublicationCredentialsInput {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  /** Reserved — Linear today reuses webhookSecret as the HMAC key. */
+  signingSecret?: string | null;
+  /** Carried through to the OAuth state JWT so the callback can build
+   *  the final 302 target. */
+  returnUrl: string;
+}
+
 /** Symphony-equivalent install — Personal API Key in one shot, no OAuth dance. */
 export interface LinearPersonalTokenInput {
   agentId: string;

@@ -66,11 +66,14 @@ export interface InstallProxyForwarder {
    * @param subpath e.g. "linear/publications/start-a1"
    * @param body parsed JSON body (will be re-stringified for forward).
    * @param needsInternalSecret true if the proxy must inject x-internal-secret.
+   * @param method HTTP method (default POST). Linear's publication-first
+   *   /credentials route is a PATCH.
    */
   forward(opts: {
     subpath: string;
     body: unknown;
     needsInternalSecret: boolean;
+    method?: "POST" | "PATCH" | "PUT";
   }): Promise<Response>;
 }
 
@@ -254,6 +257,52 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
     });
 
     if (provider === "linear") {
+      // ─── Linear publication-first install endpoints ────────────────
+      // Mounted only on /v1/integrations/linear/. Slack and GitHub keep
+      // the legacy /start-a1 + /credentials shapes above until they
+      // get their own publication-first refactor.
+
+      sub.post("/publications", async (c) => {
+        const proxy = typeof deps.installProxy === "function" ? deps.installProxy(c) : deps.installProxy;
+        if (!proxy) {
+          return c.json({ error: "install proxy not configured" }, 503);
+        }
+        const userId = c.get("user_id")!;
+        const body = (await c.req.json()) as Record<string, unknown>;
+        return proxy.forward({
+          subpath: "linear/publications",
+          body: { ...body, userId },
+          needsInternalSecret: true,
+        });
+      });
+
+      sub.patch("/publications/:id/credentials", async (c) => {
+        const proxy = typeof deps.installProxy === "function" ? deps.installProxy(c) : deps.installProxy;
+        if (!proxy) {
+          return c.json({ error: "install proxy not configured" }, 503);
+        }
+        const userId = c.get("user_id")!;
+        const id = c.req.param("id");
+        // Authorization gate: only the publication owner can paste
+        // credentials onto its row. The integrations gateway accepts the
+        // request unauthenticated (handoff page is reachable without a
+        // session) so we enforce ownership here while we still have
+        // user_id from the cookie/API-key middleware.
+        const { bag, err } = bagOr503(c, "linear");
+        if (err) return err;
+        const pub = await bag.publications.get(id);
+        if (!pub || pub.userId !== userId) return c.json({ error: "not found" }, 404);
+        const body = (await c.req.json()) as Record<string, unknown>;
+        return proxy.forward({
+          subpath: `linear/publications/${encodeURIComponent(id)}/credentials`,
+          body,
+          // Internal secret not required — the gateway validates the
+          // publication's existence + the body shape itself.
+          needsInternalSecret: false,
+          method: "PATCH",
+        });
+      });
+
       sub.post("/personal-token", async (c) => {
         const proxy = typeof deps.installProxy === "function" ? deps.installProxy(c) : deps.installProxy; if (!proxy) {
           return c.json({ error: "install proxy not configured" }, 503);

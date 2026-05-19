@@ -17,6 +17,9 @@ import type {
   HandoffLink,
   LinearInstallation,
   LinearPublication,
+  LinearPublicationCredentialsInput,
+  LinearPublicationInstallLink,
+  LinearPublicationShell,
   LinearSubmitCredentialsInput,
   LinearPersonalTokenInput,
   LinearPersonalTokenResult,
@@ -143,6 +146,31 @@ class LinearClient {
       method: "POST",
       body: JSON.stringify({ formToken }),
     });
+  }
+
+  // ─── Linear: publication-first install (new wizard surface) ─────────
+  //
+  // Replaces startA1 + submitCredentials. Each call writes to exactly one
+  // anchor row server-side; the publication is the durable identity from
+  // step 1 onward.
+
+  async createPublication(input: PublishWizardInput): Promise<LinearPublicationShell> {
+    return request<LinearPublicationShell>(
+      this.basePath,
+      "/v1/integrations/linear/publications",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  async submitCredentialsForPublication(
+    publicationId: string,
+    input: LinearPublicationCredentialsInput,
+  ): Promise<LinearPublicationInstallLink> {
+    return request<LinearPublicationInstallLink>(
+      this.basePath,
+      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/credentials`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    );
   }
 
   /** Symphony-equivalent install: paste a Linear PAT, get a publication. */

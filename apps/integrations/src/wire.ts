@@ -46,15 +46,19 @@ function cfEnvOf(env: Env): CfContainerEnv {
 /**
  * Linear container — `installations`/`publications`/`webhookEvents`
  * already point at the linear_* repos via buildCfContainer's default
- * wiring (webhookEvents = D1LinearEventStore against the merged
- * linear_events table). sessionScopes is Linear-irrelevant but required
- * by the Container shape; we hand it the Slack impl since the slot is
- * unused on the Linear path (Linear uses issueSessions instead).
+ * wiring. The Linear publication repo (`linearPublications`) implements
+ * `LinearPublicationRepo` directly (publication-first install fields live
+ * on the row), so we re-narrow the spread back to the concrete type.
+ * `webhookEvents` similarly narrows to `LinearEventStore` for the merged
+ * `linear_events` drain queue. sessionScopes is Linear-irrelevant but
+ * required by the Container shape; we hand it the Slack impl since the
+ * slot is unused on the Linear path (Linear uses issueSessions instead).
  */
 export function buildContainer(env: Env): LinearContainer {
   const base = buildCfContainer(cfEnvOf(env));
   return {
     ...base,
+    publications: base.linearPublications,
     // Narrow the webhookEvents slot from WebhookEventStore (Container shape)
     // to LinearEventStore (LinearContainer shape). The runtime instance is
     // already the narrower type — base.linearEvents — but the spread above

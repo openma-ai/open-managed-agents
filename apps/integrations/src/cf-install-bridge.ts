@@ -41,8 +41,12 @@ export class CfInstallBridge implements InstallBridge {
     if (args.provider === "linear") {
       const container = buildContainer(env);
       const stateRaw = args.state ?? "";
-      // Re-route into the legacy reauth path when state.kind says so;
-      // matches dedicated-callback.ts behavior.
+      // Re-route by state.kind:
+      //   linear.oauth.publication → first-time install (publication-first)
+      //   linear.oauth.reauth      → token rotation for an existing install
+      // The legacy linear.oauth.dedicated kind was retired with the
+      // publication-first refactor — old in-flight installs will hit the
+      // "invalid state kind" branch and need to restart from the wizard.
       let stateKind: string | null = null;
       try {
         const payload = await container.jwt.verify<{ kind?: string }>(stateRaw);
@@ -52,28 +56,25 @@ export class CfInstallBridge implements InstallBridge {
       }
       if (stateKind === "linear.oauth.reauth") {
         const r = await providers.linear.completeReauthorize({
-          appId: args.providerInstallationId ?? "",
+          publicationId: args.providerInstallationId ?? "",
           code: args.code ?? "",
           state: stateRaw,
           redirectBase: env.GATEWAY_ORIGIN,
         });
-        // reauth doesn't produce a publicationId; rotation path. Surface a
-        // synthetic id so the route's redirect can render — Console treats
-        // `install=ok` as enough.
-        return { publicationId: r.installationId, returnUrl: null };
+        // reauth doesn't produce a fresh publication; rotation path. Surface
+        // the existing publicationId so the route's redirect can render —
+        // Console treats `install=ok` as enough.
+        return { publicationId: r.publicationId, returnUrl: null };
       }
-      const result = await providers.linear.continueInstall({
-        publicationId: null,
-        payload: {
-          kind: "oauth_callback_dedicated",
-          appId: args.providerInstallationId,
-          code: args.code,
-          state: stateRaw,
-        },
+      if (stateKind !== "linear.oauth.publication") {
+        throw new Error(`invalid state kind: ${stateKind ?? "(none)"}`);
+      }
+      const result = await providers.linear.handleOAuthCallback({
+        publicationId: args.providerInstallationId ?? "",
+        code: args.code ?? "",
+        state: stateRaw,
       });
-      if (result.kind !== "complete") throw new Error("unexpected install result");
-      const statePayload = await container.jwt.verify<{ returnUrl: string }>(stateRaw);
-      return { publicationId: result.publicationId, returnUrl: statePayload.returnUrl };
+      return { publicationId: result.publicationId, returnUrl: result.returnUrl };
     }
 
     if (args.provider === "github") {

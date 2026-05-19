@@ -1,12 +1,16 @@
 import type {
   CapabilityKey,
   CapabilitySet,
+  Crypto,
   IdGenerator,
+  LinearPublicationRepo,
   NewPublication,
+  NewPublicationShell,
   Persona,
   Publication,
+  PublicationCredentials,
+  PublicationCredentialsInput,
   PublicationMode,
-  PublicationRepo,
   PublicationStatus,
   SessionGranularity,
 } from "@open-managed-agents/integrations-core";
@@ -26,12 +30,39 @@ interface Row {
   session_granularity: string;
   created_at: number;
   unpublished_at: number | null;
+  // Publication-first credential columns (migration 0002).
+  client_id: string | null;
+  client_secret_cipher: string | null;
+  webhook_secret_cipher: string | null;
+  signing_secret_cipher: string | null;
+  vault_id: string | null;
 }
 
-export class D1PublicationRepo implements PublicationRepo {
+/** Sentinel used for `installation_id` on rows that haven't bound yet. */
+const PENDING_INSTALLATION_ID = "";
+
+/**
+ * Linear's publication repo. Implements both the base `PublicationRepo`
+ * surface (used by routes / dispatch / unpublish) and the Linear-specific
+ * publication-first methods (insertShell / setCredentials / bindInstallation
+ * / getCredentials / get*Secret).
+ *
+ * Crypto is required because credentials live on this row now —
+ * client_secret, webhook_secret, and (reserved) signing_secret are encrypted
+ * via the same Crypto port that token-at-rest uses ("integrations.tokens"
+ * label).
+ */
+export class D1PublicationRepo implements LinearPublicationRepo {
   constructor(
     private readonly db: D1Database,
     private readonly ids: IdGenerator,
+    /**
+     * Optional Crypto port. Required when the publication-first methods are
+     * used (setCredentials / getCredentials / get*Secret). The base
+     * PublicationRepo methods don't touch it; tests / hosts that wire only
+     * legacy install paths can pass undefined.
+     */
+    private readonly crypto?: Crypto,
   ) {}
 
   async get(id: string): Promise<Publication | null> {
@@ -110,6 +141,149 @@ export class D1PublicationRepo implements PublicationRepo {
       createdAt: now,
       unpublishedAt: null,
     };
+  }
+
+  async insertShell(row: NewPublicationShell): Promise<Publication> {
+    const id = this.ids.generate();
+    const now = Date.now();
+    await this.db
+      .prepare(
+        `INSERT INTO linear_publications (
+           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
+           persona_name, persona_avatar_url, capabilities,
+           session_granularity, created_at, unpublished_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .bind(
+        id,
+        row.tenantId,
+        row.userId,
+        row.agentId,
+        // installation_id stays NOT NULL in the schema; pending pubs get
+        // the empty-string sentinel until bindInstallation runs.
+        PENDING_INSTALLATION_ID,
+        row.environmentId,
+        row.mode,
+        "pending_setup",
+        row.persona.name,
+        row.persona.avatarUrl ?? null,
+        JSON.stringify([...row.capabilities]),
+        row.sessionGranularity,
+        now,
+      )
+      .run();
+    return {
+      id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      agentId: row.agentId,
+      installationId: PENDING_INSTALLATION_ID,
+      environmentId: row.environmentId,
+      mode: row.mode,
+      status: "pending_setup",
+      persona: row.persona,
+      capabilities: row.capabilities,
+      sessionGranularity: row.sessionGranularity,
+      createdAt: now,
+      unpublishedAt: null,
+    };
+  }
+
+  async setCredentials(
+    id: string,
+    input: PublicationCredentialsInput,
+  ): Promise<void> {
+    if (!this.crypto) {
+      throw new Error(
+        "D1PublicationRepo.setCredentials: Crypto port required for publication-first flow",
+      );
+    }
+    const clientSecretCipher = await this.crypto.encrypt(input.clientSecret);
+    const webhookSecretCipher = await this.crypto.encrypt(input.webhookSecret);
+    const signingSecretCipher =
+      input.signingSecret == null ? null : await this.crypto.encrypt(input.signingSecret);
+    await this.db
+      .prepare(
+        `UPDATE linear_publications
+           SET client_id = ?,
+               client_secret_cipher = ?,
+               webhook_secret_cipher = ?,
+               signing_secret_cipher = ?,
+               status = 'awaiting_install'
+         WHERE id = ?`,
+      )
+      .bind(
+        input.clientId,
+        clientSecretCipher,
+        webhookSecretCipher,
+        signingSecretCipher,
+        id,
+      )
+      .run();
+  }
+
+  async getCredentials(id: string): Promise<PublicationCredentials | null> {
+    if (!this.crypto) return null;
+    const row = await this.db
+      .prepare(
+        `SELECT client_id, client_secret_cipher, webhook_secret_cipher,
+                signing_secret_cipher
+           FROM linear_publications WHERE id = ?`,
+      )
+      .bind(id)
+      .first<{
+        client_id: string | null;
+        client_secret_cipher: string | null;
+        webhook_secret_cipher: string | null;
+        signing_secret_cipher: string | null;
+      }>();
+    if (!row || !row.client_id || !row.client_secret_cipher || !row.webhook_secret_cipher) {
+      return null;
+    }
+    return {
+      clientId: row.client_id,
+      clientSecret: await this.crypto.decrypt(row.client_secret_cipher),
+      webhookSecret: await this.crypto.decrypt(row.webhook_secret_cipher),
+      signingSecret: row.signing_secret_cipher
+        ? await this.crypto.decrypt(row.signing_secret_cipher)
+        : null,
+    };
+  }
+
+  async getWebhookSecret(id: string): Promise<string | null> {
+    if (!this.crypto) return null;
+    const row = await this.db
+      .prepare(`SELECT webhook_secret_cipher FROM linear_publications WHERE id = ?`)
+      .bind(id)
+      .first<{ webhook_secret_cipher: string | null }>();
+    if (!row || !row.webhook_secret_cipher) return null;
+    return this.crypto.decrypt(row.webhook_secret_cipher);
+  }
+
+  async getClientSecret(id: string): Promise<string | null> {
+    if (!this.crypto) return null;
+    const row = await this.db
+      .prepare(`SELECT client_secret_cipher FROM linear_publications WHERE id = ?`)
+      .bind(id)
+      .first<{ client_secret_cipher: string | null }>();
+    if (!row || !row.client_secret_cipher) return null;
+    return this.crypto.decrypt(row.client_secret_cipher);
+  }
+
+  async bindInstallation(
+    id: string,
+    args: { installationId: string; vaultId: string | null },
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE linear_publications
+           SET installation_id = ?,
+               vault_id = ?,
+               status = 'live'
+         WHERE id = ?`,
+      )
+      .bind(args.installationId, args.vaultId, id)
+      .run();
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {

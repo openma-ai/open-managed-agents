@@ -6,7 +6,7 @@ import {
 } from "../../packages/integrations-core/src/test-fakes";
 import { ALL_CAPABILITIES, DEFAULT_LINEAR_SCOPES } from "../../packages/linear/src/config";
 
-const APP_WEBHOOK_SECRET = "wsec";
+const WEBHOOK_SECRET = "wsec";
 
 function makeProvider(c: FakeContainer): LinearProvider {
   return new LinearProvider(c, {
@@ -16,41 +16,58 @@ function makeProvider(c: FakeContainer): LinearProvider {
   });
 }
 
-async function seedDedicatedPublication(
+/**
+ * Seed a live publication-first install: pub shell + credentials +
+ * installation + bindInstallation. Returns the pub_id (URL key) and
+ * inst_id for assertions. Webhook URL routing is keyed on pub_id, so
+ * tests pass it as `installationId` on WebhookRequest (the field name is
+ * a hold-over from legacy app-id keying — see WebhookRequest in
+ * integrations-core).
+ */
+async function seedLivePublication(
   c: FakeContainer,
 ): Promise<{ instId: string; pubId: string }> {
-  const app = await c.apps.insert({
-    publicationId: null,
+  c.tenants.set("usr_a", "tnt_acme");
+  // Publication shell + credentials
+  const pubShell = await c.publications.insertShell({
+    tenantId: "tnt_acme",
+    userId: "usr_a",
+    agentId: "agt_default",
+    environmentId: "env_dev",
+    mode: "full",
+    persona: { name: "Triage", avatarUrl: null },
+    capabilities: new Set(),
+    sessionGranularity: "per_issue",
+  });
+  await c.publications.setCredentials(pubShell.id, {
     clientId: "cid",
     clientSecret: "csec",
-    webhookSecret: APP_WEBHOOK_SECRET,
+    webhookSecret: WEBHOOK_SECRET,
   });
+
+  // Installation (created by handleOAuthCallback in real flow).
   const inst = await c.installations.insert({
+    tenantId: "tnt_acme",
     userId: "usr_a",
     providerId: "linear",
     workspaceId: "org_acme",
     workspaceName: "Acme",
     installKind: "dedicated",
-    appId: app.id,
+    appId: null,
     accessToken: "lin_at",
     refreshToken: null,
     scopes: ["read", "write"],
     botUserId: "linbot",
   });
   await c.installations.setVaultId(inst.id, "vlt_acme");
-  const pub = await c.publications.insert({
-    userId: "usr_a",
-    agentId: "agt_default",
+
+  // Bind: installation_id + status='live' onto the pub row.
+  await c.publications.bindInstallation(pubShell.id, {
     installationId: inst.id,
-    environmentId: "env_dev",
-    mode: "full",
-    status: "live",
-    persona: { name: "Triage", avatarUrl: null },
-    capabilities: new Set(),
-    sessionGranularity: "per_issue",
+    vaultId: "vlt_acme",
   });
-  await c.apps.setPublicationId(app.id, pub.id);
-  return { instId: inst.id, pubId: pub.id };
+
+  return { instId: inst.id, pubId: pubShell.id };
 }
 
 const ASSIGN_PAYLOAD = JSON.stringify({
@@ -70,7 +87,7 @@ const ASSIGN_PAYLOAD = JSON.stringify({
   },
 });
 
-describe("LinearProvider — handleWebhook (dedicated)", () => {
+describe("LinearProvider — handleWebhook (publication-first)", () => {
   let c: FakeContainer;
   let provider: LinearProvider;
   let instId: string;
@@ -79,7 +96,7 @@ describe("LinearProvider — handleWebhook (dedicated)", () => {
   beforeEach(async () => {
     c = buildFakeContainer();
     provider = makeProvider(c);
-    const seeded = await seedDedicatedPublication(c);
+    const seeded = await seedLivePublication(c);
     instId = seeded.instId;
     pubId = seeded.pubId;
   });
@@ -87,7 +104,10 @@ describe("LinearProvider — handleWebhook (dedicated)", () => {
   it("rejects unsigned (no signature header)", async () => {
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      // Webhook URL key in publication-first flow is the publication_id;
+      // the WebhookRequest.installationId field carries it for transport
+      // (the field name is legacy).
+      installationId: pubId,
       deliveryId: "del_1",
       headers: {},
       rawBody: ASSIGN_PAYLOAD,
@@ -98,7 +118,7 @@ describe("LinearProvider — handleWebhook (dedicated)", () => {
   it("rejects bad signature", async () => {
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      installationId: pubId,
       deliveryId: "del_1",
       headers: { "linear-signature": "bogus" },
       rawBody: ASSIGN_PAYLOAD,
@@ -106,124 +126,70 @@ describe("LinearProvider — handleWebhook (dedicated)", () => {
     expect(out).toEqual({ handled: false, reason: "invalid_signature" });
   });
 
-  it("rejects when installation is missing", async () => {
+  it("rejects when publication is missing", async () => {
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: "inst_does_not_exist",
+      installationId: "pub_does_not_exist",
       deliveryId: "del_1",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
       rawBody: ASSIGN_PAYLOAD,
     });
     expect(out.handled).toBe(false);
-    expect(out.reason).toMatch(/installation_not_found/);
+    expect(out.reason).toMatch(/publication_not_found/);
   });
 
-  it.skip("dispatches a fresh session on first issueAssignedToYou", async () => {
+  it("rejects when publication is unpublished", async () => {
+    await c.publications.markUnpublished(pubId, c.clock.nowMs());
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      installationId: pubId,
       deliveryId: "del_1",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
       rawBody: ASSIGN_PAYLOAD,
     });
-
-    expect(out.handled).toBe(true);
-    expect(out.publicationId).toBe(pubId);
-    expect(out.sessionId).toBe("sess_1");
-
-    expect(c.sessions.created).toHaveLength(1);
-    const created = c.sessions.created[0];
-    expect(created.userId).toBe("usr_a");
-    expect(created.agentId).toBe("agt_default");
-    expect(created.environmentId).toBe("env_dev");
-    expect(created.vaultIds).toEqual(["vlt_acme"]);
-    // Provider no longer passes mcp.linear.app directly — apps/main wires
-    // the OMA-hosted Linear MCP (integrations.openma.dev/linear/mcp/...)
-    // based on session metadata. See provider.ts:516 for the rationale.
-    expect(created.mcpServers).toEqual([]);
-
-    const scope = await c.sessionScopes.getByScope(pubId, "iss_142");
-    expect(scope?.status).toBe("active");
-    expect(scope?.sessionId).toBe("sess_1");
-  });
-
-  it.skip("resumes the same session for a subsequent comment on the same issue", async () => {
-    await provider.handleWebhook({
-      providerId: "linear",
-      installationId: instId,
-      deliveryId: "del_1",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
-      rawBody: ASSIGN_PAYLOAD,
-    });
-
-    const COMMENT_PAYLOAD = JSON.stringify({
-      type: "AppUserNotification",
-      action: "issueCommentMention",
-      webhookId: "del_2",
-      organizationId: "org_acme",
-      notification: {
-        type: "issueCommentMention",
-        issue: { id: "iss_142", identifier: "ENG-142", title: "Auth bug", labels: { nodes: [] } },
-        comment: { id: "cmt_1", body: "any update?" },
-        actor: { id: "usr_bob", name: "Bob" },
-      },
-    });
-
-    const out = await provider.handleWebhook({
-      providerId: "linear",
-      installationId: instId,
-      deliveryId: "del_2",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${COMMENT_PAYLOAD}` },
-      rawBody: COMMENT_PAYLOAD,
-    });
-
-    expect(out.handled).toBe(true);
-    expect(out.sessionId).toBe("sess_1");
-    expect(c.sessions.created).toHaveLength(1);
-    expect(c.sessions.resumed).toHaveLength(1);
-    expect(c.sessions.resumed[0].sessionId).toBe("sess_1");
-    expect(c.sessions.resumed[0].userId).toBe("usr_a");
+    expect(out.handled).toBe(false);
+    expect(out.reason).toBe("publication_unpublished");
   });
 
   it("dedupes duplicate delivery_id", async () => {
     const out1 = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      installationId: pubId,
       deliveryId: "del_dup",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
       rawBody: ASSIGN_PAYLOAD,
     });
     expect(out1.handled).toBe(true);
 
     const out2 = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      installationId: pubId,
       deliveryId: "del_dup",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
       rawBody: ASSIGN_PAYLOAD,
     });
     expect(out2).toEqual({ handled: false, reason: "duplicate_delivery" });
 
-    // Async architecture: handleWebhook promotes to actionable in linear_events;
-    // sessions.create is invoked by drainPendingEvents in the cron tick, not
-    // here. Assert dedup worked at the queue level (one row enqueued, second
-    // delivery dropped).
+    // Async architecture: handleWebhook promotes to actionable in
+    // linear_events; sessions.create is invoked by drainPendingEvents in
+    // the cron tick. Assert dedup at the queue level.
     const queued = await c.webhookEvents.listUnprocessed(10);
     expect(queued).toHaveLength(1);
   });
 
-  it("drops events when the install has no live publication", async () => {
-    await c.publications.markUnpublished(pubId, c.clock.nowMs());
-
+  it("references the bound installation tenantId on actionable webhooks", async () => {
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
-      deliveryId: "del_3",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
+      installationId: pubId,
+      deliveryId: "del_t",
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${ASSIGN_PAYLOAD}` },
       rawBody: ASSIGN_PAYLOAD,
     });
-    expect(out.handled).toBe(false);
-    expect(out.reason).toBe("no_live_publication");
+    expect(out.handled).toBe(true);
+    expect(out.tenantId).toBe("tnt_acme");
+    // No actual session yet — drain handles that.
     expect(c.sessions.created).toHaveLength(0);
+    // instId is referenced from the seed for parity with the legacy test.
+    expect(instId).toBeTruthy();
   });
 });

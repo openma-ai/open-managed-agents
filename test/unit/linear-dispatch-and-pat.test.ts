@@ -330,8 +330,7 @@ describe("LinearProvider — runDispatchSweep", () => {
 describe("LinearProvider — async webhook flow (persist + ack + drain)", () => {
   let c: FakeContainer;
   let provider: LinearProvider;
-  const APP_WEBHOOK_SECRET = "wh_secret_x";
-  let appId: string;
+  const WEBHOOK_SECRET = "wh_secret_x";
   let instId: string;
   let pubId: string;
 
@@ -340,14 +339,23 @@ describe("LinearProvider — async webhook flow (persist + ack + drain)", () => 
     provider = makeProvider(c);
     c.tenants.set("usr_a", "tnt_acme");
 
-    const app = await c.apps.insert({
+    // Publication-first seed: shell + credentials + installation + bind.
+    const pubShell = await c.publications.insertShell({
       tenantId: "tnt_acme",
-      publicationId: null,
+      userId: "usr_a",
+      agentId: "agt_default",
+      environmentId: "env_dev",
+      mode: "full",
+      persona: { name: "Bot", avatarUrl: null },
+      capabilities: new Set(),
+      sessionGranularity: "per_issue",
+    });
+    pubId = pubShell.id;
+    await c.publications.setCredentials(pubId, {
       clientId: "client",
       clientSecret: "csec",
-      webhookSecret: APP_WEBHOOK_SECRET,
+      webhookSecret: WEBHOOK_SECRET,
     });
-    appId = app.id;
 
     const inst = await c.installations.insert({
       tenantId: "tnt_acme",
@@ -356,7 +364,7 @@ describe("LinearProvider — async webhook flow (persist + ack + drain)", () => 
       workspaceId: "ws_acme",
       workspaceName: "Acme",
       installKind: "dedicated",
-      appId,
+      appId: null,
       accessToken: "tok_oauth",
       refreshToken: null,
       scopes: ["read", "write"],
@@ -364,21 +372,10 @@ describe("LinearProvider — async webhook flow (persist + ack + drain)", () => 
     });
     instId = inst.id;
     await c.installations.setVaultId(instId, "vlt_acme");
-
-    const pub = await c.publications.insert({
-      tenantId: "tnt_acme",
-      userId: "usr_a",
-      agentId: "agt_default",
+    await c.publications.bindInstallation(pubId, {
       installationId: instId,
-      environmentId: "env_dev",
-      mode: "full",
-      status: "live",
-      persona: { name: "Bot", avatarUrl: null },
-      capabilities: new Set(),
-      sessionGranularity: "per_issue",
+      vaultId: "vlt_acme",
     });
-    pubId = pub.id;
-    await c.apps.setPublicationId(appId, pubId);
   });
 
   it("issueAssignedToYou webhook persists to pending_events, returns immediately, no session yet", async () => {
@@ -395,9 +392,12 @@ describe("LinearProvider — async webhook flow (persist + ack + drain)", () => 
     });
     const out = await provider.handleWebhook({
       providerId: "linear",
-      installationId: instId,
+      // Publication-first: webhook URL key is the publication id, passed
+      // as installationId for legacy field-name compat. See
+      // WebhookRequest in integrations-core.
+      installationId: pubId,
       deliveryId: "del_async_1",
-      headers: { "linear-signature": `expected:${APP_WEBHOOK_SECRET}:${payload}` },
+      headers: { "linear-signature": `expected:${WEBHOOK_SECRET}:${payload}` },
       rawBody: payload,
     });
     expect(out.handled).toBe(true);

@@ -68,7 +68,9 @@ export function buildNodeRepos(env: NodeReposEnv) {
   const http = new WorkerHttpClient();
   const tenants = new SqlMembershipTenantResolver(sql);
   const linearInstallations = new SqlInstallationRepo(sql, cryptoImpl, ids);
-  const linearPublications = new SqlPublicationRepo(sql, ids);
+  // SqlPublicationRepo needs Crypto: the publication-first install flow
+  // stores OAuth client_secret + webhook_secret encrypted on the row.
+  const linearPublications = new SqlPublicationRepo(sql, ids, cryptoImpl);
   const githubInstallations = new SqlGitHubInstallationRepo(sql, cryptoImpl, ids);
   const githubPublications = new SqlGitHubPublicationRepo(sql, ids, cryptoImpl);
   const apps = new SqlAppRepo(sql, cryptoImpl, ids);

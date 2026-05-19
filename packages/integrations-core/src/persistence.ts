@@ -110,6 +110,99 @@ export interface PublicationRepo {
   markUnpublished(id: string, at: number): Promise<void>;
 }
 
+/**
+ * Insert payload for a publication-first shell row. Carries everything the
+ * UX wizard collected up front; credentials and installation binding are
+ * filled in by separate calls (`setCredentials`, `bindInstallation`) once
+ * the user has registered the OAuth app on Linear's side.
+ *
+ * `installationId` is intentionally absent — the caller writes the empty
+ * string sentinel into `linear_publications.installation_id` until the
+ * OAuth callback wires up the real installation row.
+ */
+export interface NewPublicationShell {
+  tenantId: string;
+  userId: UserId;
+  agentId: AgentId;
+  environmentId: string;
+  mode: PublicationMode;
+  persona: Persona;
+  capabilities: CapabilitySet;
+  sessionGranularity: SessionGranularity;
+}
+
+/** OAuth-app credentials, plaintext on input — repo encrypts at rest. */
+export interface PublicationCredentialsInput {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  /**
+   * Reserved for upstream surfaces that distinguish HMAC-signing key from
+   * webhook secret (e.g. Slack). Linear today re-uses webhookSecret for
+   * both roles; pass null.
+   */
+  signingSecret?: string | null;
+}
+
+/** Decrypted credentials returned by `getCredentials`. */
+export interface PublicationCredentials {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  signingSecret: string | null;
+}
+
+/**
+ * Linear-specific extension of `PublicationRepo`. Linear's publication-first
+ * install flow stashes the OAuth-app credentials directly on the publication
+ * row instead of in a separate `linear_apps` table — see migration
+ * 0002_linear_publication_first.sql. The new methods are kept on a narrowed
+ * port so Slack/GitHub providers don't accidentally reach for them.
+ *
+ * Lifecycle of a publication-first install:
+ *   insertShell  (status='pending_setup')
+ *     → setCredentials (status='awaiting_install', secrets encrypted in row)
+ *     → bindInstallation (status='live', installation+vault wired in)
+ */
+export interface LinearPublicationRepo extends PublicationRepo {
+  /**
+   * Create a publication shell with status='pending_setup'. The
+   * installation_id column gets the empty string sentinel; bindInstallation
+   * replaces it once OAuth completes.
+   */
+  insertShell(row: NewPublicationShell): Promise<Publication>;
+
+  /**
+   * Persist OAuth credentials on the row and advance status to
+   * 'awaiting_install'. Encrypts client_secret / webhook_secret /
+   * signing_secret via the same Crypto port that backs token storage.
+   */
+  setCredentials(id: string, input: PublicationCredentialsInput): Promise<void>;
+
+  /**
+   * Returns the decrypted OAuth credentials, or null when the row hasn't
+   * had `setCredentials` called yet. Used by the callback handler before
+   * Linear token exchange and by the webhook receiver before HMAC check.
+   */
+  getCredentials(id: string): Promise<PublicationCredentials | null>;
+
+  /** Hot-path getter for the webhook HMAC verifier. */
+  getWebhookSecret(id: string): Promise<string | null>;
+
+  /** Hot-path getter for the OAuth `code` exchange + the refresh flow. */
+  getClientSecret(id: string): Promise<string | null>;
+
+  /**
+   * Bind the freshly-minted installation + vault onto the publication and
+   * flip status to 'live'. Idempotent on retry: callers that re-enter the
+   * callback (e.g. user double-clicked Install) get the same final state.
+   */
+  bindInstallation(
+    id: string,
+    args: { installationId: string; vaultId: string | null },
+  ): Promise<void>;
+}
+
 export interface NewAppCredentials {
   /**
    * Optional explicit id. When provided, insert behaves as an upsert keyed on

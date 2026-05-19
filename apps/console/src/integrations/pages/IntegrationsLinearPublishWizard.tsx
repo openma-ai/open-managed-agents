@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
-import type { A1FormStep, A1InstallLink } from "../api/types";
+import type {
+  LinearPublicationShell,
+  LinearPublicationInstallLink,
+} from "../api/types";
 import { SecretInput, TextInput } from "../../components/Input";
 import { Combobox } from "../../components/Combobox";
 import { Field } from "../../components/Field";
@@ -23,14 +26,28 @@ interface PublishWizardProps {
   loadEnvironments: () => Promise<EnvironmentOption[]>;
 }
 
-type Step = "pick" | "a1-credentials" | "a1-install";
+type Step = "pick" | "credentials" | "install";
 
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: "pick", label: "Configure" },
-  { id: "a1-credentials", label: "Credentials" },
-  { id: "a1-install", label: "Install" },
+  { id: "credentials", label: "Credentials" },
+  { id: "install", label: "Install" },
 ];
 
+/**
+ * Publication-first wizard. Three discrete steps, each touching exactly
+ * one anchor row server-side:
+ *
+ *   1. POST  /v1/integrations/linear/publications      → creates pending pub
+ *   2. PATCH /v1/integrations/linear/publications/:id/credentials
+ *                                                       → fills + advances
+ *   3. <a href={install_url}>                           → OAuth callback
+ *                                                         binds installation
+ *
+ * If the user closes the tab mid-flow, the pub stays in pending_setup /
+ * awaiting_install and the wizard can resume from `?publication_id=...`
+ * (re-using the same callback URL they already pasted into Linear).
+ */
 export function IntegrationsLinearPublishWizard({
   loadAgents,
   loadEnvironments,
@@ -49,11 +66,11 @@ export function IntegrationsLinearPublishWizard({
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [a1Form, setA1Form] = useState<A1FormStep | null>(null);
+  const [shell, setShell] = useState<LinearPublicationShell | null>(null);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
-  const [a1InstallLink, setA1InstallLink] = useState<A1InstallLink | null>(null);
+  const [installLink, setInstallLink] = useState<LinearPublicationInstallLink | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -84,15 +101,15 @@ export function IntegrationsLinearPublishWizard({
     setError(null);
     setWorking(true);
     try {
-      const f = await api.startA1({
+      const s = await api.linear.createPublication({
         agentId,
         environmentId: envId,
         personaName,
         personaAvatarUrl: personaAvatar || null,
         returnUrl,
       });
-      setA1Form(f);
-      setStep("a1-credentials");
+      setShell(s);
+      setStep("credentials");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -100,19 +117,22 @@ export function IntegrationsLinearPublishWizard({
     }
   }
 
-  async function submitA1Credentials() {
-    if (!a1Form || !clientId || !clientSecret || !webhookSecret) return;
+  async function submitCredentials() {
+    if (!shell || !clientId || !clientSecret || !webhookSecret) return;
     setError(null);
     setWorking(true);
     try {
-      const link = await api.submitCredentials({
-        formToken: a1Form.formToken,
-        clientId,
-        clientSecret,
-        webhookSecret,
-      });
-      setA1InstallLink(link);
-      setStep("a1-install");
+      const link = await api.linear.submitCredentialsForPublication(
+        shell.publication_id,
+        {
+          clientId,
+          clientSecret,
+          webhookSecret,
+          returnUrl,
+        },
+      );
+      setInstallLink(link);
+      setStep("install");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -164,9 +184,9 @@ export function IntegrationsLinearPublishWizard({
           />
         )}
 
-        {step === "a1-credentials" && a1Form && (
-          <A1CredentialsStep
-            form={a1Form}
+        {step === "credentials" && shell && (
+          <CredentialsStep
+            shell={shell}
             clientId={clientId}
             setClientId={setClientId}
             clientSecret={clientSecret}
@@ -174,11 +194,11 @@ export function IntegrationsLinearPublishWizard({
             webhookSecret={webhookSecret}
             setWebhookSecret={setWebhookSecret}
             working={working}
-            onSubmit={submitA1Credentials}
+            onSubmit={submitCredentials}
           />
         )}
 
-        {step === "a1-install" && a1InstallLink && <A1InstallStep link={a1InstallLink} />}
+        {step === "install" && installLink && <InstallStep link={installLink} />}
       </div>
     </div>
   );
@@ -299,7 +319,7 @@ function PickStep(props: {
 
       <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
         Your agent becomes a real Linear teammate with @autocomplete and a slot in the
-        assignee dropdown. Setup ~3 min, requires Linear admin.
+        assignee dropdown. Setup ~3 min, requires Linear admin (or send a setup link).
       </div>
 
       <div className="pt-1">
@@ -316,8 +336,8 @@ function PickStep(props: {
   );
 }
 
-function A1CredentialsStep(props: {
-  form: A1FormStep;
+function CredentialsStep(props: {
+  shell: LinearPublicationShell;
   clientId: string;
   setClientId: (v: string) => void;
   clientSecret: string;
@@ -346,17 +366,14 @@ function A1CredentialsStep(props: {
           and register a new OAuth application with these values:
         </p>
         <div className="rounded-md border border-border bg-bg-surface/30 divide-y divide-border">
-          <CopyRow label="App name" value={props.form.suggestedAppName} />
-          <CopyRow label="Developer URL" value="https://openma.dev" />
-          <CopyRow label="Callback URL" value={props.form.callbackUrl} />
-          <CopyRow label="Webhook URL" value={props.form.webhookUrl} />
+          <CopyRow label="App name" value={props.shell.suggested_app_name} />
+          <CopyRow label="Callback URL" value={props.shell.callback_url} />
+          <CopyRow label="Webhook URL" value={props.shell.webhook_url} />
         </div>
         <p className="text-[12px] text-fg-subtle mt-2">
-          Linear's form also asks for Developer Name (any value — your team name
-          works) and Description (optional). Linear auto-generates the webhook
-          signing secret on its side and ignores any value pasted into the form.
-          You'll copy it back to OMA in the next step (it starts with{" "}
-          <code>lin_wh_</code>).
+          Linear auto-generates the webhook signing secret on its side and ignores
+          any value pasted into the form. You'll copy it back to OMA in the next
+          step (it starts with <code>lin_wh_</code>).
         </p>
       </section>
 
@@ -408,7 +425,7 @@ function A1CredentialsStep(props: {
   );
 }
 
-function A1InstallStep({ link }: { link: A1InstallLink }) {
+function InstallStep({ link }: { link: LinearPublicationInstallLink }) {
   return (
     <div className="space-y-4">
       <div>
@@ -416,13 +433,13 @@ function A1InstallStep({ link }: { link: A1InstallLink }) {
           Install the app in your workspace
         </h2>
         <p className="text-[13px] text-fg-muted">
-          We've validated your credentials. Click below to authorize the install in
+          We've stored your credentials. Click below to authorize the install in
           Linear — you'll be redirected back here automatically.
         </p>
       </div>
 
       <a
-        href={link.url}
+        href={link.install_url}
         className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
       >
         Install in Linear
@@ -434,8 +451,8 @@ function A1InstallStep({ link }: { link: A1InstallLink }) {
           Verify the URLs Linear should now show
         </summary>
         <div className="mt-2 rounded-md border border-border bg-bg-surface/30 divide-y divide-border">
-          <CopyRow label="Callback URL" value={link.callbackUrl} />
-          <CopyRow label="Webhook URL" value={link.webhookUrl} />
+          <CopyRow label="Callback URL" value={link.callback_url} />
+          <CopyRow label="Webhook URL" value={link.webhook_url} />
         </div>
       </details>
     </div>
@@ -486,5 +503,3 @@ function CopyRow({ label, value, secret = false }: { label: string; value: strin
 
 const inputCls =
   "w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
-
-const selectCls = inputCls;
