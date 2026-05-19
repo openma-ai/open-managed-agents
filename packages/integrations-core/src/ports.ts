@@ -116,6 +116,19 @@ export interface CreateSessionInput {
   metadata: Record<string, unknown>;
   /** First user.message-shaped event. */
   initialEvent: SessionEventInput;
+  /**
+   * Provider-supplied prose appended to the frozen `agent_snapshot.system`
+   * before the session record is written. Use for protocol/signal vocabulary
+   * the agent must know once per session — putting it here (instead of
+   * duplicating it on every webhook-derived user.message) keeps prompt-cache
+   * locality and slashes per-turn token cost.
+   *
+   * Slack uses this for the `<oma_signal>` catalog + reply rules; the system
+   * prompt is frozen at session.create time so resumes still see whatever
+   * protocol was current at creation. Empty/undefined leaves the snapshot's
+   * system field untouched.
+   */
+  additionalSystemPrompt?: string;
 }
 
 export interface SessionEventInput {

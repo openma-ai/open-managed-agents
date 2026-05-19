@@ -556,6 +556,15 @@ class InProcessSessionCreator implements SessionCreator {
     const agentBase = { ...agentRow, tenant_id: undefined } as unknown as Record<string, unknown>;
     delete agentBase.tenant_id;
 
+    // Provider-supplied prose appended to system. Mirror apps/main internal.ts
+    // so per_channel Slack sessions land here with the same frozen protocol
+    // text. Idempotent on empty input.
+    if (input.additionalSystemPrompt && input.additionalSystemPrompt.trim()) {
+      const existing = (agentBase.system as string | undefined) ?? "";
+      const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
+      agentBase.system = existing + sep + input.additionalSystemPrompt;
+    }
+
     // Self-host agents always run on local-runtime. We use a synthetic env
     // snapshot rather than reading from environments-store; main-node
     // accepts any environment_id today (loadEnvironment returns a synthetic

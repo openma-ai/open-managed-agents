@@ -5,7 +5,7 @@
 // concerns (HTTP, storage, crypto, JWT) are injected via integrations-core
 // ports plus the Slack-specific SlackInstallationRepo extension.
 
-export { SlackProvider, scopeKeyFor } from "./provider";
+export { SlackProvider, scopeKeyFor, SLACK_SIGNAL_PROTOCOL_PROMPT } from "./provider";
 export type { SlackContainer } from "./provider";
 export {
   type SlackConfig,

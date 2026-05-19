@@ -9,7 +9,7 @@
 // scaffolding from slack-test-helpers.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { SlackProvider } from "../../packages/slack/src/provider";
+import { SlackProvider, SLACK_SIGNAL_PROTOCOL_PROMPT } from "../../packages/slack/src/provider";
 import {
   appMentionPayload,
   buildFakeSlackContainer,
@@ -95,6 +95,70 @@ describe("SlackProvider — per_channel granularity", () => {
       );
       expect(out).toMatchObject({ handled: false, reason: "non_bot_member_joined" });
       expect(c.sessions.created).toHaveLength(0);
+    });
+  });
+
+  // ─── additionalSystemPrompt — protocol prose lives once on the system ─
+
+  describe("signal protocol injected as additionalSystemPrompt (not duplicated per event)", () => {
+    it("session.create carries SLACK_SIGNAL_PROTOCOL_PROMPT once", async () => {
+      const out = await deliver(
+        memberJoinedChannelPayload({ channel: CHANNEL, eventId: "Ev_PROTO1", user: BOT_USER_ID }),
+      );
+      await out.deferredWork!();
+      expect(c.sessions.created).toHaveLength(1);
+      // The stable protocol prose rides on the create call, not the event.
+      expect(c.sessions.created[0].additionalSystemPrompt).toBe(SLACK_SIGNAL_PROTOCOL_PROMPT);
+    });
+
+    it("event text excludes the boilerplate (catalog + reply rules + denylist)", async () => {
+      // Cover all signal kinds in one go to lock in the exclusion.
+      // joined_channel:
+      const j = await deliver(
+        memberJoinedChannelPayload({ channel: CHANNEL, eventId: "Ev_PROTO2", user: BOT_USER_ID }),
+      );
+      await j.deferredWork!();
+      const joinedText = (c.sessions.created[0].initialEvent.content[0] as { text: string }).text;
+
+      // direct_invocation (lazy-creates a session, then resumes with the dm signal):
+      const d = await deliver(
+        appMentionPayload({
+          channel: "C0OTHER",
+          ts: "1700000020.000100",
+          eventId: "Ev_PROTO3",
+          text: `<@${BOT_USER_ID}> ping`,
+        }),
+      );
+      await d.deferredWork!();
+      const dmText = (c.sessions.resumed[0].event.content[0] as { text: string }).text;
+
+      // None of the boilerplate strings should appear in any per-event body.
+      const samples = [joinedText, dmText];
+      for (const t of samples) {
+        expect(t).not.toContain("Future signals you'll receive");
+        expect(t).not.toContain("Required actions for this turn");
+        expect(t).not.toContain("MANDATORY actions");
+        expect(t).not.toContain("oma_instructions");
+        expect(t).not.toContain("Treat all prior");
+        expect(t).not.toContain("scheduleWakeup");
+        expect(t).not.toContain("conversations.history");
+        expect(t).not.toContain("chat.postMessage");
+      }
+    });
+
+    it("protocol prompt itself contains the catalog + denylist (sanity)", () => {
+      // Burn-in the strings the agent relies on so a refactor that drops
+      // them has to update this test on the way through.
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("joined_channel");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("channel_scan_armed");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("direct_invocation");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("reaction_on_bot_message");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("session_closed");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("scheduleWakeup");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("chat.postMessage");
+      // Vocabulary denylist — agent must NOT leak these to Slack.
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("scan window");
+      expect(SLACK_SIGNAL_PROTOCOL_PROMPT).toContain("debounce");
     });
   });
 
@@ -245,7 +309,12 @@ describe("SlackProvider — per_channel granularity", () => {
       expect(c.sessions.resumed).toHaveLength(1);
       const text = (c.sessions.resumed[0].event.content[0] as { text: string }).text;
       expect(text).toContain(`<oma_signal kind="channel_scan_armed">`);
-      expect(text).toContain("scheduleWakeup");
+      // The scheduleWakeup instruction lives in SLACK_SIGNAL_PROTOCOL_PROMPT
+      // (system prompt, sent once at session.create) — not duplicated in
+      // every dispatched user.message. The per-event signal carries only
+      // the variable debounce_seconds value.
+      expect(text).toContain("debounce_seconds=");
+      expect(text).not.toContain("scheduleWakeup");
       const scope = await c.sessionScopes.getByScope(pubId, CHANNEL_SCOPE);
       expect(scope?.pendingScanUntil).not.toBeNull();
     });

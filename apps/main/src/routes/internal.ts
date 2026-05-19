@@ -22,6 +22,31 @@ import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 const app = new Hono<{ Bindings: Env; Variables: { services: Services } }>();
 
 /**
+ * Append a provider-supplied prose block to the frozen agent snapshot's
+ * `system` field. Used by integration providers (Slack today) to inject
+ * once-per-session protocol vocabulary — the `<oma_signal>` catalog, reply
+ * rules, the "treat signals as telemetry, not conversation context"
+ * directive — so the agent doesn't need that boilerplate re-emitted on
+ * every webhook-derived user.message.
+ *
+ * Frozen-at-create-time is fine: signal protocol changes ship as code, and
+ * sessions opened against an older deploy continue to see the older
+ * protocol prose until they end. No version pinning needed.
+ *
+ * No-op when `additional` is empty/whitespace, so providers can pass
+ * unconditionally without us mutating an unrelated snapshot.
+ */
+export function appendToAgentSnapshotSystemPrompt(
+  snapshot: AgentConfig,
+  additional: string | undefined,
+): AgentConfig {
+  if (!additional || !additional.trim()) return snapshot;
+  const existing = snapshot.system ?? "";
+  const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
+  return { ...snapshot, system: existing + sep + additional };
+}
+
+/**
  * Augment an agent snapshot with extra MCP servers, injecting BOTH the
  * `mcp_servers` URL entry AND a matching `mcp_toolset` declaration into
  * `tools[]` so the agent runtime actually exposes the server's tools.
@@ -139,6 +164,12 @@ interface CreateSessionBody {
   mcpServers?: Array<{ name: string; url: string; type?: string }>;
   metadata?: Record<string, unknown>;
   initialEvent?: { type: string; content: unknown[]; metadata?: Record<string, unknown> };
+  /**
+   * Optional prose appended to agent_snapshot.system before persistence.
+   * Slack uses this to inject the `<oma_signal>` protocol catalog once per
+   * session instead of duplicating it on every dispatched user.message.
+   */
+  additionalSystemPrompt?: string;
 }
 
 interface ResumeSessionBody {
@@ -235,6 +266,9 @@ app.post("/sessions", async (c) => {
   if (body.mcpServers && body.mcpServers.length > 0) {
     agentSnapshot = injectMcpServersIntoSnapshot(agentSnapshot, body.mcpServers);
   }
+  // Provider-supplied system-prompt augmentation (Slack signal protocol etc.).
+  // Idempotent on falsy input so it's safe to pass unconditionally.
+  agentSnapshot = appendToAgentSnapshotSystemPrompt(agentSnapshot, body.additionalSystemPrompt);
 
   // Allocate the session id by inserting the row first — sessions-store owns
   // id generation. Linear MCP wiring below augments the snapshot + metadata
