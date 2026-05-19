@@ -92,7 +92,7 @@ app.get("/debug/slack-mcp-probe", async (c) => {
     authJson = JSON.parse(cred.auth);
     if (typeof (authJson as { type?: string }).type !== "string") throw new Error("not plaintext");
   } catch {
-    const cryptoSvc = new WebCryptoAesGcm(c.env.PLATFORM_ROOT_SECRET, "credentials");
+    const cryptoSvc = new WebCryptoAesGcm(c.env.PLATFORM_ROOT_SECRET, "credentials.auth");
     authJson = JSON.parse(await cryptoSvc.decrypt(cred.auth));
   }
   const token = authJson.token ?? authJson.access_token ?? authJson.bearer_token;
