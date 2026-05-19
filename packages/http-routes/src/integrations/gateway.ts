@@ -361,15 +361,26 @@ function mountSlackWebhook(
       if (dropped) return c.json({ ok: false, reason: "tenant_rate_limited" }, 200);
     }
     if (outcome.deferredWork) {
-      // Run in background — Slack's 3sec budget rules out inline. CF
-      // still passes c.executionCtx.waitUntil under the hood; on Node the
-      // promise just runs in the background.
-      void outcome.deferredWork().catch((err) => {
+      // Run in background — Slack's 3sec budget rules out inline. On
+      // Cloudflare Workers, the isolate is terminated as soon as we
+      // return the response, so a bare `void promise.catch()` would have
+      // its work yanked mid-flight (and dispatchEvent's sessions.create /
+      // attachSession would never complete — webhook_events row stuck at
+      // session_id=null + error=null). Hand it to executionCtx.waitUntil
+      // so CF keeps the isolate alive until it settles. On Node, where
+      // executionCtx may be absent, fall through to plain background.
+      const work = outcome.deferredWork().catch((err) => {
         log.warn(
           { op: "slack.webhook.deferred.failed", err: err instanceof Error ? err.message : String(err) },
           "slack deferred work failed",
         );
       });
+      try {
+        c.executionCtx?.waitUntil(work);
+      } catch {
+        // c.executionCtx accessor throws on Node when not provided; the
+        // promise still runs in the background.
+      }
     }
     return c.json({ ok: outcome.handled, reason: outcome.reason ?? null }, 200);
   });
