@@ -5,17 +5,20 @@ import type { A1FormStep, A1InstallLink } from "../api/types";
 import { SecretInput, TextInput } from "../../components/Input";
 import { Combobox } from "../../components/Combobox";
 import { Field } from "../../components/Field";
+import { formatRelative } from "../../lib/format";
 
 const api = new IntegrationsApi();
 
 interface AgentOption {
   id: string;
   name: string;
+  created_at?: string;
 }
 
 interface EnvironmentOption {
   id: string;
   name: string;
+  created_at?: string;
 }
 
 interface PublishWizardProps {
@@ -167,6 +170,9 @@ export function IntegrationsSlackPublishWizard({
         {step === "a1-credentials" && a1Form && (
           <A1CredentialsStep
             form={a1Form}
+            agentName={agents.find((a) => a.id === agentId)?.name ?? agentId}
+            envName={envs.find((e) => e.id === envId)?.name ?? envId}
+            personaName={personaName}
             clientId={clientId}
             setClientId={setClientId}
             clientSecret={clientSecret}
@@ -256,24 +262,42 @@ function PickStep(props: {
     <div className="space-y-5">
       <div className="grid md:grid-cols-2 gap-4">
         <Field label="Agent">
-          <Combobox<{ id: string; name: string }>
+          <Combobox<{ id: string; name: string; created_at?: string }>
             value={props.agentId}
             onValueChange={(v) => props.setAgentId(v)}
             endpoint="/v1/agents"
             getValue={(a) => a.id}
-            getLabel={(a) => a.name}
+            getLabel={(a) => (
+              <span className="flex items-center justify-between gap-2 w-full min-w-0">
+                <span className="truncate">{a.name}</span>
+                {a.created_at && (
+                  <span className="text-xs text-fg-subtle shrink-0">
+                    {formatRelative(Date.now() - new Date(a.created_at).getTime())}
+                  </span>
+                )}
+              </span>
+            )}
             getTextLabel={(a) => a.name}
             placeholder="Pick an agent…"
           />
         </Field>
 
         <Field label="Environment">
-          <Combobox<{ id: string; name: string }>
+          <Combobox<{ id: string; name: string; created_at?: string }>
             value={props.envId}
             onValueChange={(v) => props.setEnvId(v)}
             endpoint="/v1/environments"
             getValue={(e) => e.id}
-            getLabel={(e) => e.name}
+            getLabel={(e) => (
+              <span className="flex items-center justify-between gap-2 w-full min-w-0">
+                <span className="truncate">{e.name}</span>
+                {e.created_at && (
+                  <span className="text-xs text-fg-subtle shrink-0">
+                    {formatRelative(Date.now() - new Date(e.created_at).getTime())}
+                  </span>
+                )}
+              </span>
+            )}
             getTextLabel={(e) => e.name}
             placeholder="Pick an environment…"
           />
@@ -321,6 +345,9 @@ function PickStep(props: {
 
 function A1CredentialsStep(props: {
   form: A1FormStep;
+  agentName: string;
+  envName: string;
+  personaName: string;
   clientId: string;
   setClientId: (v: string) => void;
   clientSecret: string;
@@ -334,6 +361,23 @@ function A1CredentialsStep(props: {
   const manifestUrl = props.form.manifestLaunchUrl;
   return (
     <div className="space-y-7">
+      {/* Breadcrumb — current agent / env / persona, with Change link back to pick step. */}
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-[12px]">
+        <div className="text-fg-muted truncate">
+          Publishing{" "}
+          <span className="text-fg font-medium">{props.personaName || props.agentName}</span>
+          {" "}({props.agentName}) →{" "}
+          <span className="text-fg font-medium">{props.envName}</span>
+        </div>
+        <button
+          type="button"
+          onClick={props.onBack}
+          disabled={props.working}
+          className="text-brand hover:underline disabled:opacity-50 shrink-0"
+        >
+          Change ←
+        </button>
+      </div>
       {manifestUrl && (
         <section className="rounded-md border border-brand/30 bg-brand-subtle/30 p-4">
           <h2 className="text-[15px] font-medium text-fg mb-1">
@@ -405,6 +449,23 @@ function A1CredentialsStep(props: {
           From your Slack App's <strong>Basic Information</strong> page. The Signing
           Secret signs all incoming webhooks; we verify every event with it.
         </p>
+        <div className="mb-3">
+          <a
+            href="https://api.slack.com/apps"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-border text-fg-muted hover:text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          >
+            Open Slack App settings ↗
+          </a>
+          <p className="text-[12px] text-fg-subtle mt-1.5">
+            Click <strong>Show</strong> next to <strong>Client Secret</strong> /
+            <strong> Signing Secret</strong> on Slack's page to reveal them.
+            Both are 32-char hex strings (look like <code>c83b3cf17e1dee5cdc5f55fdcb6a2f23</code>) —
+            <strong> not</strong> the Client ID (<code>5720…</code>) or the
+            Verification Token. Copy each value precisely.
+          </p>
+        </div>
         <div className="grid md:grid-cols-2 gap-4">
           <Field label="Client ID">
             <TextInput
