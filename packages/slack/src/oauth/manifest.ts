@@ -57,9 +57,12 @@ export function buildManifest(input: SlackManifestInput): Record<string, unknown
   //   - settings.interactivity.is_enabled: true (with request_url) — Slack
   //     gates several Assistant features behind this even if our app doesn't
   //     ship interactive components today
-  // The MCP server access toggle itself is NOT a manifest field (per Slack
-  // docs) and must be flipped manually in the app's "Agents & AI Apps"
-  // section after install. The wizard's install step surfaces this.
+  //   - settings.is_mcp_enabled: true so the "Agents & AI Apps → Model
+  //     Context Protocol" toggle is on at app creation. Earlier comment
+  //     here said this wasn't a manifest field — that's now wrong; current
+  //     manifest reference lists is_mcp_enabled as a boolean. Without this,
+  //     mcp.slack.com rejects token init with "App is not enabled for Slack
+  //     MCP server access".
   return {
     display_information: {
       name: input.personaName,
@@ -109,6 +112,15 @@ export function buildManifest(input: SlackManifestInput): Record<string, unknown
         is_enabled: true,
         request_url: input.webhookUrl,
       },
+      // Pre-flips the "Agents & AI Apps → Model Context Protocol" toggle on
+      // app creation. Without this, mcp.slack.com returns 400 "App is not
+      // enabled for Slack MCP server access" on token init and the agent
+      // falls back to bash+curl for every Slack action — slow, missing
+      // typed mcp__slack__* tools. Earlier docs claimed this wasn't a
+      // manifest field; current reference (docs.slack.dev/reference/app-
+      // manifest) lists `settings.is_mcp_enabled` as boolean, verified
+      // against staging install 2026-05-19.
+      is_mcp_enabled: true,
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,

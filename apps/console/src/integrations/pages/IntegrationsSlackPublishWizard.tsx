@@ -650,35 +650,12 @@ function A1InstallStep({ link, onBack }: { link: A1InstallLink; onBack: () => vo
         </p>
       </div>
 
-      {/* Inline mcp-enable warning. Slack disables MCP server access for new
-          Apps by default — without flipping it on, the agent's MCP tool
-          registration fails (mcp.slack.com returns "App is not enabled for
-          Slack MCP server access") and the model falls back to bash+curl on
-          every Slack action. Easy to miss because everything still appears
-          to "work" — agent replies, just via the wrong path. Surface here
-          AND post-install. */}
-      <div className="rounded-md border border-warning/30 bg-warning-subtle px-3.5 py-3 text-[13px]">
-        <div className="font-medium text-fg mb-1">
-          One more thing: enable Slack MCP server access
-        </div>
-        <p className="text-fg-muted text-[12px] leading-relaxed">
-          New Slack Apps come with MCP <strong>off</strong> by default. Open your
-          App's <strong>Agents &amp; AI Apps</strong> page (or visit{" "}
-          <a
-            href="https://api.slack.com/apps"
-            target="_blank"
-            rel="noreferrer"
-            className="text-brand hover:underline"
-          >
-            api.slack.com/apps
-          </a>{" "}
-          → your App → Agents &amp; AI Apps in the sidebar) and toggle{" "}
-          <strong>Model Context Protocol</strong> to <strong>On</strong>. This
-          setting is not configurable via manifest. Without it, the agent will
-          still respond on @mentions but via bash + curl instead of typed
-          <code> mcp__slack__*</code> tools — much slower and clumsier.
-        </p>
-      </div>
+      {/* The pre-install MCP-toggle warning lived here for ~weeks because
+          Slack docs claimed `is_mcp_enabled` wasn't a manifest field. Per
+          the current manifest reference it IS — manifest.ts:96 sets it
+          true at app creation, so MCP is on out of the box. The post-
+          install probe banner (lines 156-179) is the safety net for users
+          who flip it back off manually. */}
 
       <div className="flex items-center gap-3 flex-wrap">
         <button
