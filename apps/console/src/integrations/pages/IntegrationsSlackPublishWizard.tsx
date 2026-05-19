@@ -438,6 +438,14 @@ function A1CredentialsStep(props: {
             <code>message.groups</code>, <code>message.mpim</code>,{" "}
             <code>tokens_revoked</code>, <code>app_uninstalled</code>.
           </p>
+          <p className="text-[12px] text-fg-subtle mt-2">
+            <strong>Required for MCP tools:</strong> open the App's{" "}
+            <strong>Agents &amp; AI Apps</strong> (or <em>app-assistant</em>) page and
+            enable <strong>Slack MCP server access</strong>. Without this, the
+            agent falls back to bash + curl on every Slack action because{" "}
+            <code>mcp.slack.com</code> rejects the token with{" "}
+            <code>"App is not enabled for Slack MCP server access"</code>.
+          </p>
         </div>
       </details>
 
