@@ -79,6 +79,28 @@ export class D1SlackSessionScopeRepo implements SlackSessionScopeRepo {
       .run();
   }
 
+  async reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    _now: number,
+  ): Promise<boolean> {
+    // Atomic re-bind: only swap session_id + flip to 'active' when the row
+    // is currently non-active. The status<>'active' predicate is the
+    // concurrency guard — if some other dispatcher already reactivated
+    // this scope, we leave their row alone and report false so the caller
+    // resumes the winner.
+    const result = await this.db
+      .prepare(
+        `UPDATE slack_thread_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND scope_key = ? AND status <> 'active'`,
+      )
+      .bind(newSessionId, publicationId, scopeKey)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
   async listActive(publicationId: string): Promise<readonly SessionScope[]> {
     const { results } = await this.db
       .prepare(

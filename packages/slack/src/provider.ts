@@ -24,6 +24,7 @@ import type {
   Persona,
   ProviderId,
   Publication,
+  SessionGranularity,
   StartInstallInput,
   WebhookOutcome,
   WebhookRequest,
@@ -95,6 +96,47 @@ type ClassifyDecision =
   | { kind: "drop"; reason: string }
   /** channel_rename: update the cached channel_name on the scope row but don't wake the agent. */
   | { kind: "metadata_only"; channelName: string };
+
+/**
+ * Single source of truth for `slack_thread_sessions.scope_key` shape, given
+ * a publication's session granularity. Used by both the dispatcher (to look
+ * up the active scope row) and the session-creator (to write the same row).
+ *
+ *   per_channel: `channel:${channelId}`
+ *     One running session per (publication, channel). Bot perceives a
+ *     channel as a long-lived conversation; @-mentions, DMs to threads,
+ *     and thread replies all converge on the same session id.
+ *
+ *   per_thread:  `${channelId}:${threadTs}`
+ *     One session per (publication, channel, thread). Each thread is its
+ *     own context; cross-thread events get fresh sessions. `threadTs` is
+ *     required — top-level messages with no thread anchor return null.
+ *
+ *   per_event / per_issue: null
+ *     No persistent scope; every event creates a throwaway session.
+ *
+ * Returns null when the event lacks the fields needed for the requested
+ * granularity (e.g. uninstall events with no channel; per_thread without
+ * thread_ts) — caller treats null as "no scope binding" and either drops
+ * the event or routes via per-event semantics.
+ */
+export function scopeKeyFor(
+  event: NormalizedSlackEvent,
+  granularity: SessionGranularity,
+): string | null {
+  if (!event.channelId) return null;
+  switch (granularity) {
+    case "per_channel":
+      return `channel:${event.channelId}`;
+    case "per_thread":
+      return event.threadTs ? `${event.channelId}:${event.threadTs}` : null;
+    case "per_event":
+    case "per_issue":
+      return null;
+    default:
+      return null;
+  }
+}
 
 /**
  * The kind of signal embedded in the rendered user.message text. Drives the
@@ -721,7 +763,7 @@ export class SlackProvider implements IntegrationProvider {
     // One session per (publication, channel_id). All channel events route
     // to it via intent. Top-level scan-arms throttle on a D1 watermark.
     if (publication.sessionGranularity === "per_channel" && event.channelId) {
-      const scopeKey = `channel:${event.channelId}`;
+      const scopeKey = scopeKeyFor(event, "per_channel")!;
       const existing = await this.container.sessionScopes.getByScope(
         publication.id,
         scopeKey,
@@ -905,10 +947,11 @@ export class SlackProvider implements IntegrationProvider {
     // ─── per_thread granularity (legacy) ──────────────────────────────
     const sessionEvent = this.buildSessionEvent(event, null, {});
 
-    if (publication.sessionGranularity === "per_thread" && event.scopeKey) {
+    const perThreadKey = scopeKeyFor(event, publication.sessionGranularity);
+    if (publication.sessionGranularity === "per_thread" && perThreadKey) {
       const existing = await this.container.sessionScopes.getByScope(
         publication.id,
-        event.scopeKey,
+        perThreadKey,
       );
       if (existing && existing.status === "active") {
         await this.container.sessions.resume(
@@ -936,7 +979,7 @@ export class SlackProvider implements IntegrationProvider {
       const inserted = await this.container.sessionScopes.insert({
         tenantId: publication.tenantId,
         publicationId: publication.id,
-        scopeKey: event.scopeKey,
+        scopeKey: perThreadKey,
         sessionId: created.sessionId,
         status: "active",
         createdAt: this.container.clock.nowMs(),
@@ -951,7 +994,7 @@ export class SlackProvider implements IntegrationProvider {
       // same scope can still race.)
       const winner = await this.container.sessionScopes.getByScope(
         publication.id,
-        event.scopeKey,
+        perThreadKey,
       );
       if (winner && winner.status === "active") {
         await this.container.sessions.resume(publication.userId, winner.sessionId, sessionEvent);
@@ -1020,7 +1063,17 @@ export class SlackProvider implements IntegrationProvider {
       createdAt: this.container.clock.nowMs(),
     });
     if (inserted) return created.sessionId;
-    // Race lost: re-read winner, route this event to it, abandon ours.
+    // UNIQUE collision: a row for this (publication, scopeKey) already exists.
+    // Three cases:
+    //   1. winner is active  → concurrent dispatcher beat us; resume their
+    //      session and discard the one we just created.
+    //   2. winner is inactive → leftover from a previously-closed session.
+    //      Atomically re-bind the row to our new session_id (status=active).
+    //      Without this re-bind the row would orphan our new session and
+    //      every subsequent event in the scope would fall into the same trap.
+    //   3. TOCTOU: row read returned `inactive` but reassignIfInactive
+    //      affected 0 rows (someone else activated it between our SELECT and
+    //      UPDATE). Re-read and resume the new winner.
     const winner = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
     if (winner && winner.status === "active") {
       await this.container.sessions.resume(
@@ -1029,6 +1082,22 @@ export class SlackProvider implements IntegrationProvider {
         sessionEvent,
       );
       return winner.sessionId;
+    }
+    const reassigned = await this.container.sessionScopes.reassignIfInactive(
+      publication.id,
+      scopeKey,
+      created.sessionId,
+      this.container.clock.nowMs(),
+    );
+    if (reassigned) return created.sessionId;
+    const final = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
+    if (final && final.status === "active") {
+      await this.container.sessions.resume(
+        publication.userId,
+        final.sessionId,
+        sessionEvent,
+      );
+      return final.sessionId;
     }
     return created.sessionId;
   }
@@ -1343,41 +1412,35 @@ export class SlackProvider implements IntegrationProvider {
       // Slack will also deliver app_mention for this message.
       return { kind: "drop", reason: "redundant_with_app_mention" };
     }
-    // per_channel mode: every message in a channel where we have an active
-    // session is meaningful — top-level messages arm a debounced scan,
-    // thread replies (in any thread, not only the bot's own) re-engage the
-    // session as a direct interaction. We look up by `channel:${id}`,
-    // matching the scope row created at session-create. Without this,
-    // thread replies were dropped as "not_addressed_to_bot" because the
-    // parsed scopeKey (thread-level: `${channel}:${thread_ts}`) doesn't
-    // match the stored channel-level row.
-    if (isPerChannel && event.channelId) {
-      const channelScopeKey = `channel:${event.channelId}`;
+    // Unified lookup: scopeKeyFor() returns the right scope_key shape for
+    // this publication's granularity (per_channel: `channel:${id}`,
+    // per_thread: `${channelId}:${threadTs}`, others: null). One lookup
+    // serves both granularities — no more namespace-mismatch bug where a
+    // per_channel publication had thread-shaped lookups silently miss the
+    // channel-shaped row.
+    const scopeKey = scopeKeyFor(event, publication.sessionGranularity);
+    if (scopeKey) {
       const existing = await this.container.sessionScopes.getByScope(
         publication.id,
-        channelScopeKey,
+        scopeKey,
       );
       if (existing && existing.status === "active") {
         return {
           kind: "dispatch",
-          intent: event.isTopLevel ? "scan_arm" : "direct_invocation",
+          intent: isPerChannel
+            ? event.isTopLevel
+              ? "scan_arm"
+              : "direct_invocation"
+            : "direct_invocation",
         };
       }
-      // No active channel session yet — fall through to scan_arm only on
-      // top-level (the original behavior). Thread reply with no session is
-      // genuinely not addressed to us.
-      if (event.isTopLevel) {
-        return { kind: "dispatch", intent: "scan_arm" };
-      }
     }
-    if (event.scopeKey) {
-      const existing = await this.container.sessionScopes.getByScope(
-        publication.id,
-        event.scopeKey,
-      );
-      if (existing && existing.status === "active") {
-        return { kind: "dispatch", intent: isPerChannel ? "direct_invocation" : undefined };
-      }
+    // No active scope — per_channel still arms a scan on new top-level
+    // activity so the session can be lazily created on first decision to
+    // chime. Thread replies in a channel with no active session genuinely
+    // aren't ours: drop.
+    if (isPerChannel && event.isTopLevel) {
+      return { kind: "dispatch", intent: "scan_arm" };
     }
     return { kind: "drop", reason: "not_addressed_to_bot" };
   }

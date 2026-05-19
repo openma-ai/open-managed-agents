@@ -292,6 +292,27 @@ export interface SessionScopeRepo {
     scopeKey: string,
     status: SessionScopeStatus,
   ): Promise<void>;
+  /**
+   * Atomic "re-bind a non-active scope to a fresh session" — used when the
+   * dispatcher creates a new session for a scope whose old row exists but
+   * is no longer active (status is `completed` / `failed` / `escalated` /
+   * etc.). Without this, a stale non-active row blocks every future binding
+   * indefinitely:
+   *   1. insert() rejects on UNIQUE conflict
+   *   2. getByScope() returns the non-active row
+   *   3. caller falls through, leaves scope un-rebound
+   *   4. next event repeats the cycle → no scope ever points at any session
+   * Returns true when the update touched a row (status was non-active and
+   * sessionId got replaced + status set to `active`); false when the row
+   * is missing OR currently active (race) — caller should fall back to
+   * resume()-ing the winner.
+   */
+  reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    now: number,
+  ): Promise<boolean>;
   listActive(publicationId: string): Promise<ReadonlyArray<SessionScope>>;
 }
 

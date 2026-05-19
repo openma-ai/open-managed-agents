@@ -95,6 +95,19 @@ export class FakeSlackSessionScopeRepo implements SlackSessionScopeRepo {
     if (row) this.rows.set(k, { ...row, status });
   }
 
+  async reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    _now: number,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row || row.status === "active") return false;
+    this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
+    return true;
+  }
+
   async listActive(
     publicationId: string,
   ): Promise<readonly import("../../packages/integrations-core/src/domain").SessionScope[]> {
