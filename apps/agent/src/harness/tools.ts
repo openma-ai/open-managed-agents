@@ -1172,12 +1172,6 @@ export async function buildTools(
           for (const [toolName, t] of Object.entries(remoteTools)) {
             tools[`mcp__${server.name}__${toolName}`] = t;
           }
-          // TEMP diag — confirm MCP wiring landed which tools. Remove once
-          // post-publish "agent uses bash instead of mcp__slack__*"
-          // investigation closes.
-          console.log(
-            `[mcp.diag] server="${server.name}" url="${server.url}" registered=${Object.keys(remoteTools).length} names=${Object.keys(remoteTools).slice(0, 5).join(",")}${Object.keys(remoteTools).length > 5 ? ",..." : ""}`,
-          );
         } catch (err) {
           // Connection / handshake / tools/list failure for one server
           // (e.g. main worker unreachable, vault credential missing,

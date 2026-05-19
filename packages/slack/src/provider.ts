@@ -223,23 +223,9 @@ export class SlackProvider implements IntegrationProvider {
     payload: Record<string, unknown>,
   ): Promise<InstallStep> {
     const formToken = (payload.formToken as string) ?? "";
-    const rawClientSecret = (payload.clientSecret as string) ?? "";
-    const rawSigningSecret = (payload.signingSecret as string) ?? "";
     const clientId = ((payload.clientId as string) ?? "").trim();
-    const clientSecret = rawClientSecret.trim();
-    const signingSecret = rawSigningSecret.trim();
-    // TEMP diagnostic — DO NOT MERGE. Logs the literal credentials so we
-    // can compare to what the user pasted and what Slack expects. Staging
-    // only; revert before this branch lands on main. (Tracked in commit
-    // message — grep for 'TEMP diagnostic' to find the revert target.)
-    console.log(
-      `[slack.submitCreds.diag] clientId=<${clientId}> (len=${clientId.length}) ` +
-        `clientSecret raw=<${rawClientSecret}> (len=${rawClientSecret.length}) ` +
-        `trim=<${clientSecret}> (len=${clientSecret.length}) ` +
-        `signingSecret raw=<${rawSigningSecret}> (len=${rawSigningSecret.length}) ` +
-        `trim=<${signingSecret}> (len=${signingSecret.length}) ` +
-        `clientSecret.bytes=${Array.from(new TextEncoder().encode(clientSecret)).map((b) => b.toString(16).padStart(2, "0")).join("")}`,
-    );
+    const clientSecret = ((payload.clientSecret as string) ?? "").trim();
+    const signingSecret = ((payload.signingSecret as string) ?? "").trim();
     if (!formToken || !clientId || !clientSecret || !signingSecret) {
       throw new Error(
         "submit_credentials: formToken, clientId, clientSecret, signingSecret required",
