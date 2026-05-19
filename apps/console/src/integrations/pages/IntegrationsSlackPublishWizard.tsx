@@ -38,8 +38,9 @@ export function IntegrationsSlackPublishWizard({
   loadAgents,
   loadEnvironments,
 }: PublishWizardProps) {
-  const [search] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
   const preselectedAgent = search.get("agent_id") ?? "";
+  const resumePubId = search.get("pub");
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [envs, setEnvs] = useState<EnvironmentOption[]>([]);
@@ -51,6 +52,9 @@ export function IntegrationsSlackPublishWizard({
   const [step, setStep] = useState<Step>("pick");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True while we hydrate from `?pub=` so we don't render the (empty) "pick"
+  // step while we're still resolving the existing publication's state.
+  const [hydrating, setHydrating] = useState<boolean>(Boolean(resumePubId));
 
   const [a1Form, setA1Form] = useState<A1FormStep | null>(null);
   const [clientId, setClientId] = useState("");
@@ -70,6 +74,64 @@ export function IntegrationsSlackPublishWizard({
     })();
   }, [loadAgents, loadEnvironments]);
 
+  // Refresh-resume hydration. When the user lands with `?pub=<id>` (set by
+  // a previous wizard run via replaceState) we re-issue a fresh formToken
+  // server-side and re-derive the wizard step from the publication's
+  // current status. Server is the source of truth — no sessionStorage.
+  useEffect(() => {
+    if (!resumePubId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pub = await api.slack.getPublication(resumePubId);
+        if (cancelled) return;
+        // Already-live pubs belong on the list page, not the wizard.
+        if (pub.status === "live") {
+          window.location.href = "/integrations/slack";
+          return;
+        }
+        if (pub.status === "unpublished" || pub.status === "needs_reauth") {
+          // Drop the bad ?pub= so the wizard re-renders fresh.
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setHydrating(false);
+          return;
+        }
+        // Re-issue a fresh formToken for the existing shell. Server validates
+        // ownership; we only re-render the wizard here.
+        const form = await api.slack.reissueFormToken(resumePubId);
+        if (cancelled) return;
+        setA1Form(form);
+        setAgentId(pub.agent_id);
+        setEnvId(pub.environment_id);
+        setPersonaName(pub.persona.name);
+        if (pub.persona.avatarUrl) setPersonaAvatar(pub.persona.avatarUrl);
+        // pending_setup / credentials_filled → step 2; awaiting_install → 3.
+        // Slack's adapter elides credentials_filled (jumps to awaiting_install
+        // on first setCredentials), so 'awaiting_install' is the install-step
+        // signal. We always start on credentials so the user can re-paste —
+        // the install link will be re-issued after submitCredentials.
+        setStep("a1-credentials");
+      } catch (err) {
+        if (!cancelled) {
+          // Resume failed (e.g. 404 / 409). Drop the bad ?pub= so the wizard
+          // falls back to the fresh-pick path.
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // resumePubId pinned at first render — we don't want the URL replace
+    // below to re-trigger this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!personaName && agentId) {
       const agent = agents.find((a) => a.id === agentId);
@@ -78,6 +140,15 @@ export function IntegrationsSlackPublishWizard({
   }, [agentId, agents, personaName]);
 
   const returnUrl = `${window.location.origin}/integrations/slack`;
+
+  // Stamp the active publication id into the URL so a refresh resumes from
+  // the same row instead of starting fresh. Pure URL state — no storage.
+  function pinPublicationToUrl(publicationId: string) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("pub") === publicationId) return;
+    url.searchParams.set("pub", publicationId);
+    window.history.replaceState({}, "", url.toString());
+  }
 
   async function startPublish() {
     if (!agentId || !envId || !personaName) {
@@ -96,6 +167,7 @@ export function IntegrationsSlackPublishWizard({
       });
       setA1Form(f);
       setStep("a1-credentials");
+      if (f.publicationId) pinPublicationToUrl(f.publicationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,6 +188,7 @@ export function IntegrationsSlackPublishWizard({
       });
       setA1InstallLink(link);
       setStep("a1-install");
+      if (link.publicationId) pinPublicationToUrl(link.publicationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -186,7 +259,13 @@ export function IntegrationsSlackPublishWizard({
           </div>
         )}
 
-        {step === "pick" && (
+        {hydrating && (
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+            Resuming in-progress install…
+          </div>
+        )}
+
+        {!hydrating && step === "pick" && (
           <PickStep
             agents={agents}
             envs={envs}
@@ -203,7 +282,7 @@ export function IntegrationsSlackPublishWizard({
           />
         )}
 
-        {step === "a1-credentials" && a1Form && (
+        {!hydrating && step === "a1-credentials" && a1Form && (
           <A1CredentialsStep
             form={a1Form}
             agentName={agents.find((a) => a.id === agentId)?.name ?? agentId}
@@ -221,7 +300,7 @@ export function IntegrationsSlackPublishWizard({
           />
         )}
 
-        {step === "a1-install" && a1InstallLink && (
+        {!hydrating && step === "a1-install" && a1InstallLink && (
           <A1InstallStep link={a1InstallLink} onBack={() => setStep("a1-credentials")} />
         )}
       </div>

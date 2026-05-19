@@ -48,7 +48,16 @@ export interface SlackPublication {
   installation_id: string;
   environment_id: string;
   mode: "full";
-  status: "pending_setup" | "awaiting_install" | "live" | "needs_reauth" | "unpublished";
+  /** credentials_filled is reserved — current Slack adapter elides it
+   *  (jumps pending_setup → awaiting_install on first setCredentials), but
+   *  the schema accepts it and pending-pub clients should handle it. */
+  status:
+    | "pending_setup"
+    | "credentials_filled"
+    | "awaiting_install"
+    | "live"
+    | "needs_reauth"
+    | "unpublished";
   persona: { name: string; avatarUrl: string | null };
   capabilities: string[];
   /** Slack defaults to per_thread; per_event also supported. */

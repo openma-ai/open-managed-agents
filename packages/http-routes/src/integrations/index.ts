@@ -170,6 +170,26 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
       return c.json({ data: publications.map(serializePublication) });
     });
 
+    // Lists publications owned by the calling user that are still in-progress
+    // (pending_setup / credentials_filled / awaiting_install). Powers the
+    // Console "In-progress installs" surface — without this, half-finished
+    // wizard runs (no installation yet) are invisible because everything else
+    // is keyed off the installation row.
+    sub.get("/publications", async (c) => {
+      const userId = c.get("user_id")!;
+      const status = c.req.query("status");
+      const { bag, err } = bagOr503(c, provider);
+      if (err) return err;
+      if (status !== "pending") {
+        return c.json(
+          { error: "only ?status=pending is supported on this endpoint" },
+          400,
+        );
+      }
+      const publications = await bag.publications.listPendingByUser(userId);
+      return c.json({ data: publications.map(serializePublication) });
+    });
+
     sub.get("/publications/:id", async (c) => {
       const userId = c.get("user_id")!;
       const id = c.req.param("id");
@@ -252,6 +272,41 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
       return proxy.forward({
         subpath: `${provider}/publications/handoff-link`,
         body,
+        needsInternalSecret: true,
+      });
+    });
+
+    // Re-issue a fresh formToken (Slack/GitHub) or shell-shape response
+    // (Linear) for an existing publication. Used by the Console wizard's
+    // refresh-resume path: when the user lands on the wizard with `?pub=`
+    // we re-mint the formToken JWT against the row's current state without
+    // INSERTing a new shell. Authorization gate stays in this layer (we
+    // still have user_id from the cookie/api-key middleware); the gateway
+    // proxies the underlying continueInstall call.
+    sub.post("/publications/:id/form-token", async (c) => {
+      const proxy = typeof deps.installProxy === "function" ? deps.installProxy(c) : deps.installProxy;
+      if (!proxy) {
+        return c.json({ error: "install proxy not configured" }, 503);
+      }
+      const userId = c.get("user_id")!;
+      const id = c.req.param("id");
+      const { bag, err } = bagOr503(c, provider);
+      if (err) return err;
+      const pub = await bag.publications.get(id);
+      if (!pub || pub.userId !== userId) return c.json({ error: "not found" }, 404);
+      if (
+        pub.status !== "pending_setup" &&
+        pub.status !== "credentials_filled" &&
+        pub.status !== "awaiting_install"
+      ) {
+        return c.json(
+          { error: `publication is '${pub.status}'; cannot reissue form token` },
+          409,
+        );
+      }
+      return proxy.forward({
+        subpath: `${provider}/publications/${encodeURIComponent(id)}/form-token`,
+        body: { userId },
         needsInternalSecret: true,
       });
     });

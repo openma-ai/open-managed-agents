@@ -346,6 +346,18 @@ export class InMemoryPublicationRepo implements LinearPublicationRepo {
     );
   }
 
+  async listPendingByUser(userId: string): Promise<readonly Publication[]> {
+    return [...this.rows.values()]
+      .filter(
+        (r) =>
+          r.userId === userId &&
+          (r.status === "pending_setup" ||
+            r.status === "credentials_filled" ||
+            r.status === "awaiting_install"),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   async insert(row: NewPublication): Promise<Publication> {
     this.counter += 1;
     const id = `pub_${this.counter}`;

@@ -98,6 +98,34 @@ class LinearClient {
     return r.data;
   }
 
+  /**
+   * Publications owned by the calling user that are still in-progress
+   * (pending_setup / credentials_filled / awaiting_install). Used by the
+   * Console list page to surface refresh-resumable wizard runs alongside
+   * live workspaces.
+   */
+  async listPendingPublications(): Promise<LinearPublication[]> {
+    const r = await request<{ data: LinearPublication[] }>(
+      this.basePath,
+      "/v1/integrations/linear/publications?status=pending",
+    );
+    return r.data;
+  }
+
+  /**
+   * Re-derive the publication shell (callback/webhook URLs) for an existing
+   * pub. Linear doesn't use a formToken — its wizard keys directly off
+   * publicationId — so the response shape matches `createPublication`.
+   * Server-side validates status and ownership; throws on 404 / 409.
+   */
+  async reissueFormToken(publicationId: string): Promise<LinearPublicationShell> {
+    return request<LinearPublicationShell>(
+      this.basePath,
+      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/form-token`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+  }
+
   async getPublication(id: string): Promise<LinearPublication> {
     return request<LinearPublication>(
       this.basePath,
@@ -245,6 +273,28 @@ class GitHubClient {
     return r.data;
   }
 
+  /**
+   * Publications still in-progress (pending_setup / credentials_filled /
+   * awaiting_install). Used by the list page's "In-progress installs"
+   * section so a half-finished wizard run is visible.
+   */
+  async listPendingPublications(): Promise<GitHubPublication[]> {
+    const r = await request<{ data: GitHubPublication[] }>(
+      this.basePath,
+      "/v1/integrations/github/publications?status=pending",
+    );
+    return r.data;
+  }
+
+  /** Re-issue a fresh formToken for an existing pub shell (refresh-resume). */
+  async reissueFormToken(publicationId: string): Promise<GitHubA1FormStep> {
+    return request<GitHubA1FormStep>(
+      this.basePath,
+      `/v1/integrations/github/publications/${encodeURIComponent(publicationId)}/form-token`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+  }
+
   async getPublication(id: string): Promise<GitHubPublication> {
     return request<GitHubPublication>(
       this.basePath,
@@ -332,6 +382,28 @@ class SlackClient {
       `/v1/integrations/slack/agents/${encodeURIComponent(agentId)}/publications`,
     );
     return r.data;
+  }
+
+  /**
+   * Publications still in-progress (pending_setup / credentials_filled /
+   * awaiting_install). Used by the list page's "In-progress installs"
+   * section so a half-finished wizard run is visible.
+   */
+  async listPendingPublications(): Promise<SlackPublication[]> {
+    const r = await request<{ data: SlackPublication[] }>(
+      this.basePath,
+      "/v1/integrations/slack/publications?status=pending",
+    );
+    return r.data;
+  }
+
+  /** Re-issue a fresh formToken for an existing pub shell (refresh-resume). */
+  async reissueFormToken(publicationId: string): Promise<A1FormStep> {
+    return request<A1FormStep>(
+      this.basePath,
+      `/v1/integrations/slack/publications/${encodeURIComponent(publicationId)}/form-token`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
   }
 
   async getPublication(id: string): Promise<SlackPublication> {

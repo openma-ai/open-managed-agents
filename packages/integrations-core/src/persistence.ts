@@ -103,6 +103,14 @@ export interface PublicationRepo {
     userId: UserId,
     agentId: AgentId,
   ): Promise<ReadonlyArray<Publication>>;
+  /**
+   * Lists publications owned by the given user that are still in-progress —
+   * status in {pending_setup, credentials_filled, awaiting_install}. Used by
+   * the Console "In-progress installs" surface so a wizard tab the user
+   * abandoned mid-setup is visible alongside live publications. The filter
+   * is server-side (small partial index suffices); callers don't paginate.
+   */
+  listPendingByUser(userId: UserId): Promise<ReadonlyArray<Publication>>;
   insert(row: NewPublication): Promise<Publication>;
   updateStatus(id: string, status: PublicationStatus): Promise<void>;
   updateCapabilities(id: string, capabilities: CapabilitySet): Promise<void>;

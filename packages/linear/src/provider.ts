@@ -285,6 +285,54 @@ export class LinearProvider implements IntegrationProvider {
   }
 
   /**
+   * Re-derive the publication-shell payload for an existing pub row. Used
+   * by the Console wizard's refresh-resume path: when the user lands with
+   * `?pub=<id>` we re-build the same callback/webhook URLs they pasted
+   * into Linear, without INSERTing a new shell. Caller is responsible for
+   * the ownership check.
+   *
+   * Returns the same shape `startPublication` does so the gateway route
+   * doesn't have to fork its serializer.
+   */
+  async resumePublication(input: {
+    publicationId: string;
+    userId: string;
+    returnUrl: string;
+  }): Promise<{
+    publicationId: string;
+    callbackUrl: string;
+    webhookUrl: string;
+    suggestedAppName: string;
+    suggestedAvatarUrl: string | null;
+    returnUrl: string;
+  }> {
+    if (!input.publicationId) throw new Error("resumePublication: publicationId required");
+    if (!input.userId) throw new Error("resumePublication: userId required");
+    const pub = await this.container.publications.get(input.publicationId);
+    if (!pub) throw new Error(`resumePublication: unknown publicationId ${input.publicationId}`);
+    if (pub.userId !== input.userId) {
+      throw new Error("resumePublication: publication owner mismatch");
+    }
+    if (
+      pub.status !== "pending_setup" &&
+      pub.status !== "credentials_filled" &&
+      pub.status !== "awaiting_install"
+    ) {
+      throw new Error(
+        `resumePublication: publication is '${pub.status}', cannot resume`,
+      );
+    }
+    return {
+      publicationId: pub.id,
+      callbackUrl: this.publicationCallbackUri(pub.id),
+      webhookUrl: this.publicationWebhookUri(pub.id),
+      suggestedAppName: pub.persona.name,
+      suggestedAvatarUrl: pub.persona.avatarUrl,
+      returnUrl: input.returnUrl,
+    };
+  }
+
+  /**
    * Step 2: encrypt and persist the OAuth-app credentials onto the pub
    * row, then return the Linear OAuth authorize URL the user clicks. The
    * state JWT carries the publicationId + returnUrl so step 3 can find

@@ -66,6 +66,14 @@ export class InMemoryGitHubPublicationRepo
     super(clock as Clock);
   }
 
+  // GitHub's publication-first signatures diverge from the linear-flavored
+  // ones the base InMemoryPublicationRepo now exposes (different return
+  // shape, different credential payload). The base methods exist for
+  // Linear; GitHub's specialized variants override them with stricter
+  // GH-specific shapes. ts-expect-error swallows the structural mismatch
+  // since this is a test fake — production runs against the D1 / SQL
+  // adapters which don't share the InMemory base.
+  // @ts-expect-error — github test fake intentionally diverges from base
   async insertShell(input: {
     tenantId: string;
     userId: string;
@@ -93,6 +101,7 @@ export class InMemoryGitHubPublicationRepo
     return { publication, appOmaId };
   }
 
+  // @ts-expect-error — github test fake intentionally diverges from base
   async setCredentials(
     publicationId: string,
     input: {
@@ -161,6 +170,7 @@ export class InMemoryGitHubPublicationRepo
     };
   }
 
+  // @ts-expect-error — github test fake intentionally diverges from base
   async bindInstallation(input: {
     publicationId: string;
     installationId: string;

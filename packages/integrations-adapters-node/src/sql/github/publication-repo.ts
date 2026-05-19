@@ -89,6 +89,19 @@ export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
     return (results ?? []).map((r) => this.toDomain(r));
   }
 
+  async listPendingByUser(userId: string): Promise<readonly Publication[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM github_publications
+         WHERE user_id = ?
+           AND status IN ('pending_setup', 'credentials_filled', 'awaiting_install')
+         ORDER BY created_at DESC`,
+      )
+      .bind(userId)
+      .all<Row>();
+    return (results ?? []).map((r) => this.toDomain(r));
+  }
+
   async insert(row: NewPublication): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();

@@ -52,8 +52,9 @@ export function IntegrationsLinearPublishWizard({
   loadAgents,
   loadEnvironments,
 }: PublishWizardProps) {
-  const [search] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
   const preselectedAgent = search.get("agent_id") ?? "";
+  const resumePubId = search.get("pub");
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [envs, setEnvs] = useState<EnvironmentOption[]>([]);
@@ -65,6 +66,8 @@ export function IntegrationsLinearPublishWizard({
   const [step, setStep] = useState<Step>("pick");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True while we hydrate from `?pub=`; suppresses the empty pick step.
+  const [hydrating, setHydrating] = useState<boolean>(Boolean(resumePubId));
 
   const [shell, setShell] = useState<LinearPublicationShell | null>(null);
   const [clientId, setClientId] = useState("");
@@ -84,6 +87,55 @@ export function IntegrationsLinearPublishWizard({
     })();
   }, [loadAgents, loadEnvironments]);
 
+  // Refresh-resume hydration. When the wizard renders with `?pub=<id>` set
+  // by replaceState below or the pending-pub list page, re-derive the shell
+  // payload and pre-fill the form. Linear keys directly off the publicationId
+  // (no formToken JWT), so this is just a re-fetch of the existing row plus
+  // a re-build of the callback/webhook URLs.
+  useEffect(() => {
+    if (!resumePubId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pub = await api.linear.getPublication(resumePubId);
+        if (cancelled) return;
+        if (pub.status === "live") {
+          window.location.href = "/integrations/linear";
+          return;
+        }
+        if (pub.status === "unpublished" || pub.status === "needs_reauth") {
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setHydrating(false);
+          return;
+        }
+        const re = await api.linear.reissueFormToken(resumePubId);
+        if (cancelled) return;
+        setShell(re);
+        setAgentId(pub.agent_id);
+        setEnvId(pub.environment_id);
+        setPersonaName(pub.persona.name);
+        if (pub.persona.avatarUrl) setPersonaAvatar(pub.persona.avatarUrl);
+        // Always render the credentials step on resume so the user can
+        // re-paste; the install link is re-issued by submitCredentials.
+        setStep("credentials");
+      } catch (err) {
+        if (!cancelled) {
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Resume runs once per wizard mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!personaName && agentId) {
       const agent = agents.find((a) => a.id === agentId);
@@ -92,6 +144,14 @@ export function IntegrationsLinearPublishWizard({
   }, [agentId, agents, personaName]);
 
   const returnUrl = `${window.location.origin}/integrations/linear`;
+
+  /** Stamp ?pub=<id> into the URL so a refresh resumes the wizard. */
+  function pinPublicationToUrl(publicationId: string) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("pub") === publicationId) return;
+    url.searchParams.set("pub", publicationId);
+    window.history.replaceState({}, "", url.toString());
+  }
 
   async function startPublish() {
     if (!agentId || !envId || !personaName) {
@@ -110,6 +170,7 @@ export function IntegrationsLinearPublishWizard({
       });
       setShell(s);
       setStep("credentials");
+      pinPublicationToUrl(s.publication_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -133,6 +194,7 @@ export function IntegrationsLinearPublishWizard({
       );
       setInstallLink(link);
       setStep("install");
+      pinPublicationToUrl(link.publication_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -167,7 +229,13 @@ export function IntegrationsLinearPublishWizard({
           </div>
         )}
 
-        {step === "pick" && (
+        {hydrating && (
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+            Resuming in-progress install…
+          </div>
+        )}
+
+        {!hydrating && step === "pick" && (
           <PickStep
             agents={agents}
             envs={envs}
@@ -184,7 +252,7 @@ export function IntegrationsLinearPublishWizard({
           />
         )}
 
-        {step === "credentials" && shell && (
+        {!hydrating && step === "credentials" && shell && (
           <CredentialsStep
             shell={shell}
             clientId={clientId}
@@ -198,7 +266,7 @@ export function IntegrationsLinearPublishWizard({
           />
         )}
 
-        {step === "install" && installLink && <InstallStep link={installLink} />}
+        {!hydrating && step === "install" && installLink && <InstallStep link={installLink} />}
       </div>
     </div>
   );

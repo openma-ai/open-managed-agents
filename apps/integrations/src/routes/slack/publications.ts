@@ -177,4 +177,51 @@ app.post("/handoff-link", async (c) => {
   return c.json(result.data);
 });
 
+interface FormTokenBody {
+  /** Forwarded from apps/main; identifies the publication owner. */
+  userId: string;
+  /** Optional — defaults to a Console-deep link if absent. */
+  returnUrl?: string;
+}
+
+/**
+ * POST /slack/publications/:id/form-token
+ *
+ * Re-issues a fresh formToken for an existing publication shell. Used by the
+ * Console wizard's refresh-resume path. apps/main has already verified that
+ * the calling user owns the publication (the gateway only re-checks that
+ * the publication exists and is in a resumable state).
+ */
+app.post("/:id/form-token", async (c) => {
+  if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const publicationId = c.req.param("id");
+  const body = await c.req.json<FormTokenBody>();
+  if (!body.userId) return c.json({ error: "userId required" }, 400);
+
+  const { slack } = buildProviders(c.env);
+
+  let result;
+  try {
+    result = await slack.continueInstall({
+      publicationId: null,
+      payload: {
+        kind: "reissue_form_token",
+        publicationId,
+        userId: body.userId,
+        returnUrl: body.returnUrl ?? "",
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "reissue_failed", details: msg }, 400);
+  }
+
+  if (result.kind !== "step" || result.step !== "credentials_form") {
+    return c.json({ error: "unexpected reissue result", result }, 500);
+  }
+  return c.json(result.data);
+});
+
 export default app;

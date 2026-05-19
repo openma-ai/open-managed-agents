@@ -192,4 +192,49 @@ app.post("/personal-token", async (c) => {
   }
 });
 
+interface FormTokenBody {
+  /** Forwarded from apps/main; identifies the publication owner. */
+  userId: string;
+  /** Optional — defaults to "" when the wizard doesn't track returnUrl. */
+  returnUrl?: string;
+}
+
+/**
+ * POST /linear/publications/:id/form-token
+ *
+ * Re-derive the publication-shell payload for an existing pub row. Linear
+ * doesn't use a formToken (its wizard keys directly off the publicationId),
+ * so the response shape mirrors `startPublication` — the wizard's existing
+ * step-1 render path handles it transparently.
+ */
+app.post("/:id/form-token", async (c) => {
+  if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const publicationId = c.req.param("id");
+  const body = await c.req.json<FormTokenBody>();
+  if (!body.userId) return c.json({ error: "userId required" }, 400);
+
+  const { linear } = buildProviders(c.env);
+
+  try {
+    const result = await linear.resumePublication({
+      publicationId,
+      userId: body.userId,
+      returnUrl: body.returnUrl ?? "",
+    });
+    return c.json({
+      publication_id: result.publicationId,
+      callback_url: result.callbackUrl,
+      webhook_url: result.webhookUrl,
+      suggested_app_name: result.suggestedAppName,
+      suggested_avatar_url: result.suggestedAvatarUrl,
+      return_url: result.returnUrl,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "reissue_failed", details: msg }, 400);
+  }
+});
+
 export default app;

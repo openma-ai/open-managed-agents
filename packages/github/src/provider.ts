@@ -116,6 +116,13 @@ export class GitHubProvider implements IntegrationProvider {
     if (payload.kind === "handoff_link") {
       return this.createHandoffLink(payload);
     }
+    if (payload.kind === "reissue_form_token") {
+      return this.reissueFormToken({
+        publicationId: (payload.publicationId as string) ?? "",
+        userId: (payload.userId as string) ?? "",
+        returnUrl: (payload.returnUrl as string) ?? "",
+      });
+    }
     if (payload.kind === "oauth_callback_pub") {
       return this.handleOAuthCallback(
         (payload.publicationId as string) ?? "",
@@ -132,6 +139,86 @@ export class GitHubProvider implements IntegrationProvider {
     throw new Error(
       `GitHubProvider.continueInstall: unknown payload kind '${payload.kind}'`,
     );
+  }
+
+  /**
+   * Re-mint a formToken for an existing github_publications shell. Caller
+   * (apps/main route handler) is responsible for the ownership check; this
+   * method only validates the publication exists and is in a resumable
+   * state. No new shell row is INSERTed — the same publication id + appOmaId
+   * flow back through the wizard.
+   *
+   * Returns the same `credentials_form` step shape as `startInstall` so the
+   * wizard's existing render path handles it transparently.
+   */
+  async reissueFormToken(input: {
+    publicationId: string;
+    userId: string;
+    returnUrl: string;
+  }): Promise<InstallStep> {
+    if (!input.publicationId) throw new Error("reissueFormToken: publicationId required");
+    if (!input.userId) throw new Error("reissueFormToken: userId required");
+    const pub = await this.container.publications.get(input.publicationId);
+    if (!pub) throw new Error(`reissueFormToken: unknown publicationId ${input.publicationId}`);
+    if (pub.userId !== input.userId) {
+      throw new Error("reissueFormToken: publication owner mismatch");
+    }
+    if (
+      pub.status !== "pending_setup" &&
+      pub.status !== "credentials_filled" &&
+      pub.status !== "awaiting_install"
+    ) {
+      throw new Error(
+        `reissueFormToken: publication is '${pub.status}', cannot resume`,
+      );
+    }
+    const credState = await this.container.publications.getCredentialState(input.publicationId);
+    if (!credState || !credState.appOmaId) {
+      throw new Error(
+        "reissueFormToken: publication has no app_oma_id; restart the publish flow",
+      );
+    }
+    const appOmaId = credState.appOmaId;
+
+    const formToken = await this.container.jwt.sign(
+      {
+        kind: "github.pub.form",
+        publicationId: pub.id,
+        appOmaId,
+        userId: input.userId,
+        returnUrl: input.returnUrl,
+      },
+      OAUTH_STATE_TTL_SECONDS,
+    );
+
+    return {
+      kind: "step",
+      step: "credentials_form",
+      data: {
+        formToken,
+        publicationId: pub.id,
+        appOmaId,
+        suggestedAppName: pub.persona.name,
+        suggestedAvatarUrl: pub.persona.avatarUrl,
+        setupUrl: this.publicationCallbackUri(pub.id),
+        webhookUrl: this.dedicatedWebhookUri(appOmaId),
+        manifestStartUrl: `${this.config.gatewayOrigin}/github/manifest/start/${formToken}`,
+        recommendedPermissions: {
+          contents: "write",
+          issues: "write",
+          pull_requests: "write",
+          metadata: "read",
+          actions: "read",
+        },
+        recommendedSubscriptions: [
+          "issues",
+          "issue_comment",
+          "pull_request",
+          "pull_request_review",
+          "pull_request_review_comment",
+        ],
+      },
+    };
   }
 
   // ─── A1 (full identity, BYO GitHub App) ────────────────────────────────

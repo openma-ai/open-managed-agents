@@ -51,7 +51,7 @@ type Phase = "config" | "registering" | "installing" | "done" | "error";
  */
 export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: Props) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [agentId, setAgentId] = useState<string>("");
@@ -83,6 +83,63 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
     void loadAgents().then(setAgents);
     void loadEnvironments().then(setEnvironments);
   }, [loadAgents, loadEnvironments]);
+
+  // Refresh-resume hydration. When the wizard renders with `?pub=<id>` (set
+  // by replaceState below or by the pending-pub list page), re-issue a fresh
+  // formToken against the existing shell row and pick up where we left off.
+  // Server is the source of truth — no sessionStorage / localStorage.
+  useEffect(() => {
+    const resumePubId = searchParams.get("pub");
+    if (!resumePubId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pub = await api.github.getPublication(resumePubId);
+        if (cancelled) return;
+        if (pub.status === "live") {
+          // Live pubs belong on the list page, not the wizard.
+          setPhase("done");
+          setLivePubId(pub.id);
+          return;
+        }
+        if (pub.status === "unpublished" || pub.status === "needs_reauth") {
+          searchParams.delete("pub");
+          setSearchParams(searchParams, { replace: true });
+          return;
+        }
+        // Re-issue the formToken so the manifestStartUrl works again.
+        const r = await api.github.reissueFormToken(resumePubId);
+        if (cancelled) return;
+        setForm(r);
+        setAgentId(pub.agent_id);
+        setEnvId(pub.environment_id);
+        setPersona(pub.persona.name);
+        // Pick the visible phase off the publication's current status.
+        // pending_setup → user closed the manifest tab before submitting →
+        //   re-render registering with the manifest URL ready.
+        // credentials_filled / awaiting_install → manifest finished, user
+        //   hasn't completed install → resume the install poll.
+        if (pub.status === "pending_setup") {
+          setPhase("registering");
+        } else {
+          setPhase("installing");
+          startInstallPoll(resumePubId);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          searchParams.delete("pub");
+          setSearchParams(searchParams, { replace: true });
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Resume runs once per wizard mount; don't re-trigger on unrelated URL
+    // changes (we mutate search params via replaceState).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Default persona name to the chosen agent's name.
   useEffect(() => {
@@ -125,6 +182,9 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
         returnUrl: `${window.location.origin}/integrations/github`,
       });
       setForm(r);
+      // Pin publication id to URL so refresh resumes here without losing
+      // wizard state. Server is source of truth — we just stash the id.
+      pinPublicationToUrl(r.publicationId);
       // Open manifest flow in a popup. The popup will eventually navigate
       // to our gateway callback, which auto-redirects to GitHub install.
       if (r.manifestStartUrl) {
@@ -142,6 +202,15 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
+  }
+
+  /** Stamp the active publication id into ?pub= so refresh resumes here.
+   *  Pure URL state — no storage. */
+  function pinPublicationToUrl(publicationId: string) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("pub") === publicationId) return;
+    url.searchParams.set("pub", publicationId);
+    window.history.replaceState({}, "", url.toString());
   }
 
   // Poll every 5 seconds for the publication's status to flip to 'live'.
