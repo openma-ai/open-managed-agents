@@ -21,6 +21,72 @@ import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 
 const app = new Hono<{ Bindings: Env; Variables: { services: Services } }>();
 
+/**
+ * Augment an agent snapshot with extra MCP servers, injecting BOTH the
+ * `mcp_servers` URL entry AND a matching `mcp_toolset` declaration into
+ * `tools[]` so the agent runtime actually exposes the server's tools.
+ *
+ * Why both: the harness's MCP wiring (apps/agent/src/harness/tools.ts)
+ * iterates `agentConfig.mcp_servers` to set up clients, but the model only
+ * sees a tool if there's a corresponding `mcp_toolset` declaration in
+ * `tools[]`. Pre-fix, the publish flow added the server URL but never the
+ * toolset entry — so a Slack-published agent had the slack vault + server
+ * attached, yet the model literally told users to run curl commands
+ * because no `mcp__slack__*` tool surfaced. Tracked 2026-05-19.
+ *
+ * Permission policy = always_allow for injected toolsets: the user just
+ * published the agent to this integration, so requiring a per-tool
+ * confirmation defeats the point of a teammate bot. Vault binding still
+ * gates access — unpublish to revoke.
+ *
+ * Idempotent on the toolset side: if the agent already declares an
+ * mcp_toolset for one of the injected servers (e.g. user manually added
+ * slack to the agent before publishing), the existing entry stays.
+ * Servers go through unchanged — `mcp_servers` tolerates duplicates today
+ * but the URL is what callers rely on anyway, and `tools[]` is the
+ * canonical guard.
+ */
+export function injectMcpServersIntoSnapshot(
+  snapshot: AgentConfig,
+  servers: ReadonlyArray<{ name: string; url: string; type?: string }>,
+): AgentConfig {
+  if (servers.length === 0) return snapshot;
+  const existingServers = snapshot.mcp_servers ?? [];
+  const existingTools = snapshot.tools ?? [];
+  const declaredToolsetServers = new Set(
+    existingTools
+      .filter(
+        (t): t is { type: "mcp_toolset"; mcp_server_name: string } =>
+          (t as { type?: string }).type === "mcp_toolset" &&
+          typeof (t as { mcp_server_name?: unknown }).mcp_server_name === "string",
+      )
+      .map((t) => t.mcp_server_name),
+  );
+  const toolsToInject = servers
+    .filter((s) => !declaredToolsetServers.has(s.name))
+    .map((s) => ({
+      // mcp_toolset entries carry an extension field `mcp_server_name` not
+      // represented in ToolsetConfig today — existing rows in production
+      // look identical. Cast through unknown to satisfy TS without widening
+      // the shared type for this one path.
+      type: "mcp_toolset",
+      mcp_server_name: s.name,
+      default_config: { permission_policy: { type: "always_allow" as const } },
+    })) as unknown as AgentConfig["tools"];
+  return {
+    ...snapshot,
+    mcp_servers: [
+      ...existingServers,
+      ...servers.map((s) => ({
+        name: s.name,
+        type: (s.type ?? "url") as "url" | "stdio" | "sse",
+        url: s.url,
+      })),
+    ],
+    tools: [...existingTools, ...toolsToInject],
+  };
+}
+
 // Public hostname of the integrations gateway, used to wire a hosted Linear
 // MCP server into Linear-triggered sessions. We hard-fail when the env var
 // is unset rather than fall back to a default: a silent default would have
@@ -167,18 +233,7 @@ app.post("/sessions", async (c) => {
   const { tenant_id: _atid, ...agentBase } = agentRow;
   let agentSnapshot: AgentConfig = agentBase;
   if (body.mcpServers && body.mcpServers.length > 0) {
-    const existing = agentSnapshot.mcp_servers ?? [];
-    agentSnapshot = {
-      ...agentSnapshot,
-      mcp_servers: [
-        ...existing,
-        ...body.mcpServers.map((s) => ({
-          name: s.name,
-          type: (s.type ?? "url") as "url" | "stdio" | "sse",
-          url: s.url,
-        })),
-      ],
-    };
+    agentSnapshot = injectMcpServersIntoSnapshot(agentSnapshot, body.mcpServers);
   }
 
   // Allocate the session id by inserting the row first — sessions-store owns
