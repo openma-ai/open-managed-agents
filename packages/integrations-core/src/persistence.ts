@@ -296,16 +296,22 @@ export interface SessionScopeRepo {
    * Atomic "re-bind a non-active scope to a fresh session" — used when the
    * dispatcher creates a new session for a scope whose old row exists but
    * is no longer active (status is `completed` / `failed` / `escalated` /
-   * etc.). Without this, a stale non-active row blocks every future binding
-   * indefinitely:
+   * etc.), OR a stale `pending` claim (winner crashed before fulfilling).
+   * Without this, a stale row blocks every future binding indefinitely:
    *   1. insert() rejects on UNIQUE conflict
    *   2. getByScope() returns the non-active row
    *   3. caller falls through, leaves scope un-rebound
    *   4. next event repeats the cycle → no scope ever points at any session
-   * Returns true when the update touched a row (status was non-active and
-   * sessionId got replaced + status set to `active`); false when the row
-   * is missing OR currently active (race) — caller should fall back to
-   * resume()-ing the winner.
+   * Returns true when the update touched a row (status was non-active OR
+   * stale pending, and sessionId got replaced + status set to `active`);
+   * false when the row is missing OR currently active OR pending-and-fresh
+   * (race) — caller should fall back to resume()-ing the winner or poll.
+   *
+   * `now` is used to detect stale `pending` claims: rows with status='pending'
+   * AND created_at older than the implementation's stale threshold (~60s)
+   * are eligible. Rows with status='pending' AND created_at within the
+   * threshold are skipped — they belong to a live winner that's still
+   * creating its session.
    */
   reassignIfInactive(
     publicationId: string,
@@ -313,6 +319,47 @@ export interface SessionScopeRepo {
     newSessionId: string,
     now: number,
   ): Promise<boolean>;
+  /**
+   * Two-phase scope claim — phase 1. INSERT a `(publication_id, scope_key)`
+   * row with `status='pending'` and a placeholder `session_id` (typically
+   * `_pending_<uuid>`). UNIQUE constraint is the race gate — only one
+   * concurrent caller wins. Winner then calls `sessions.create` and
+   * `fulfillPending` to write the real id; losers see the pending row in
+   * `getByScope` and poll until it flips to `active` (or goes stale).
+   *
+   * Without this two-phase pattern, concurrent webhook deliveries each
+   * call `sessions.create` (an expensive RPC) BEFORE racing the INSERT —
+   * the loser's session gets created in DB then orphaned, billing for
+   * nothing and inflating the sessions table.
+   *
+   * Returns true when the row was inserted (we won the claim).
+   */
+  claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean>;
+  /**
+   * Two-phase scope claim — phase 2. Atomically writes the real session id
+   * and flips status='pending' → 'active'. Returns true on success; false
+   * if the row isn't in pending state (claim was already taken over by
+   * staleness reclaim, or someone else fulfilled, or row was deleted).
+   * On false the caller should NOT trust the row points at their session.
+   */
+  fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean>;
+  /**
+   * Two-phase scope claim — abort. Delete the pending row if `sessions.create`
+   * failed, so a retry can re-claim. Only deletes when status='pending' —
+   * never wipes an `active` row even if its session id matches our
+   * placeholder (defensive against pathological races).
+   */
+  releasePending(publicationId: string, scopeKey: string): Promise<void>;
   listActive(publicationId: string): Promise<ReadonlyArray<SessionScope>>;
 }
 

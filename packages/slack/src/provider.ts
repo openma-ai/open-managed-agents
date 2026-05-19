@@ -1026,9 +1026,23 @@ export class SlackProvider implements IntegrationProvider {
   }
 
   /**
-   * Create a fresh per_channel session and bind the scope row. Handles the
-   * insert race the same way per_thread does — if a concurrent dispatcher
-   * won, abandon ours and route to the winner.
+   * Create a fresh per_channel session and bind the scope row.
+   *
+   * Uses a two-phase claim to keep `sessions.create` from running on the
+   * loser of a concurrent webhook race:
+   *
+   *   1. claimPending(): INSERT a row with status='pending' and a
+   *      placeholder session id. Atomic UNIQUE — only one dispatcher wins.
+   *   2a. Winner: call sessions.create, then fulfillPending() to swap the
+   *       placeholder for the real id + flip to 'active'. If sessions.create
+   *       throws, releasePending() so a retry can re-claim.
+   *   2b. Loser: poll getByScope until the winner fulfills (status='active',
+   *       resume that session) or the pending claim goes stale (fall through
+   *       to reactivation path, same as the existing non-active case).
+   *
+   * Reactivation paths (existing non-active row or stale pending) still
+   * call sessions.create + reassignIfInactive — same as before the
+   * two-phase change.
    */
   private async createChannelSession(
     publication: Publication,
@@ -1039,6 +1053,111 @@ export class SlackProvider implements IntegrationProvider {
     mcpServers: { name: string; url: string }[],
   ): Promise<string> {
     const sessionEvent = this.buildSessionEvent(event, signalKind, {});
+    const now = this.container.clock.nowMs();
+
+    // Phase 1: race-gate via pending claim.
+    const placeholderSessionId = `_pending_${this.container.ids.generate()}`;
+    const claimed = await this.container.sessionScopes.claimPending({
+      tenantId: publication.tenantId,
+      publicationId: publication.id,
+      scopeKey,
+      placeholderSessionId,
+      now,
+    });
+
+    if (claimed) {
+      // Phase 2a: we won. Create the session and fulfill the claim.
+      let created: { sessionId: string };
+      try {
+        created = await this.container.sessions.create({
+          userId: publication.userId,
+          agentId: publication.agentId,
+          environmentId: publication.environmentId,
+          vaultIds,
+          mcpServers,
+          metadata: {
+            slack: {
+              workspaceId: event.workspaceId,
+              channelId: event.channelId,
+              granularity: "per_channel",
+            },
+          },
+          initialEvent: sessionEvent,
+        });
+      } catch (err) {
+        // sessions.create threw before we wrote the binding. Release the
+        // pending row so a retry doesn't see a stuck claim. Re-throw so
+        // the caller (drainEventQueue) handles the failure normally.
+        await this.container.sessionScopes
+          .releasePending(publication.id, scopeKey)
+          .catch(() => undefined);
+        throw err;
+      }
+      const fulfilled = await this.container.sessionScopes.fulfillPending(
+        publication.id,
+        scopeKey,
+        created.sessionId,
+      );
+      if (fulfilled) return created.sessionId;
+      // TOCTOU: row got reclaimed (stale-takeover) between our claim and
+      // fulfill. Extremely rare — only happens if our own claim aged out,
+      // which means sessions.create took >PENDING_STALE_AFTER_MS. Re-read
+      // the winner and route to it; our just-created session is orphaned.
+      const winner = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
+      if (winner && winner.status === "active") {
+        await this.container.sessions.resume(
+          publication.userId,
+          winner.sessionId,
+          sessionEvent,
+        );
+        return winner.sessionId;
+      }
+      return created.sessionId;
+    }
+
+    // Phase 2b: we lost the claim. Inspect existing row.
+    const existing = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
+
+    if (existing && existing.status === "pending") {
+      // Short-circuit: if the pending claim is already stale, skip polling
+      // and fall through to the reactivation path immediately. A stale
+      // claim means the winner crashed before fulfilling; no point waiting.
+      const pendingAge = this.container.clock.nowMs() - existing.createdAt;
+      const STALE_THRESHOLD_MS = 60_000;
+      if (pendingAge < STALE_THRESHOLD_MS) {
+        // Live winner mid-create. Poll briefly for fulfillment.
+        const POLL_INTERVAL_MS = 100;
+        const POLL_MAX_MS = 5_000;
+        const deadline = Date.now() + POLL_MAX_MS;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+          const fresh = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
+          if (!fresh) break; // released — fall through to reactivation
+          if (fresh.status === "pending") continue;
+          if (fresh.status === "active") {
+            await this.container.sessions.resume(
+              publication.userId,
+              fresh.sessionId,
+              sessionEvent,
+            );
+            return fresh.sessionId;
+          }
+          break; // non-active terminal — fall through to reactivation
+        }
+        // Poll timed out OR winner released/failed. Fall through.
+      }
+    } else if (existing && existing.status === "active") {
+      await this.container.sessions.resume(
+        publication.userId,
+        existing.sessionId,
+        sessionEvent,
+      );
+      return existing.sessionId;
+    }
+
+    // Reactivation: existing row is non-active (completed/escalated/etc.),
+    // a stale pending claim, or got released after poll timeout. Create
+    // a session and atomically reassign the row.
     const created = await this.container.sessions.create({
       userId: publication.userId,
       agentId: publication.agentId,
@@ -1054,35 +1173,6 @@ export class SlackProvider implements IntegrationProvider {
       },
       initialEvent: sessionEvent,
     });
-    const inserted = await this.container.sessionScopes.insert({
-      tenantId: publication.tenantId,
-      publicationId: publication.id,
-      scopeKey,
-      sessionId: created.sessionId,
-      status: "active",
-      createdAt: this.container.clock.nowMs(),
-    });
-    if (inserted) return created.sessionId;
-    // UNIQUE collision: a row for this (publication, scopeKey) already exists.
-    // Three cases:
-    //   1. winner is active  → concurrent dispatcher beat us; resume their
-    //      session and discard the one we just created.
-    //   2. winner is inactive → leftover from a previously-closed session.
-    //      Atomically re-bind the row to our new session_id (status=active).
-    //      Without this re-bind the row would orphan our new session and
-    //      every subsequent event in the scope would fall into the same trap.
-    //   3. TOCTOU: row read returned `inactive` but reassignIfInactive
-    //      affected 0 rows (someone else activated it between our SELECT and
-    //      UPDATE). Re-read and resume the new winner.
-    const winner = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
-    if (winner && winner.status === "active") {
-      await this.container.sessions.resume(
-        publication.userId,
-        winner.sessionId,
-        sessionEvent,
-      );
-      return winner.sessionId;
-    }
     const reassigned = await this.container.sessionScopes.reassignIfInactive(
       publication.id,
       scopeKey,
@@ -1090,6 +1180,8 @@ export class SlackProvider implements IntegrationProvider {
       this.container.clock.nowMs(),
     );
     if (reassigned) return created.sessionId;
+    // TOCTOU: someone activated the row between our read and reassign.
+    // Resume their session; our newly-created one is orphaned.
     const final = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
     if (final && final.status === "active") {
       await this.container.sessions.resume(

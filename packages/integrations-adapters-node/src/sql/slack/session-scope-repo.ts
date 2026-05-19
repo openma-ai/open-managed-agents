@@ -6,6 +6,9 @@ import type {
 } from "@open-managed-agents/integrations-core";
 import type { SlackSessionScopeRepo } from "@open-managed-agents/slack";
 
+/** See cf adapter for rationale — matches `PENDING_STALE_AFTER_MS` there. */
+const PENDING_STALE_AFTER_MS = 60_000;
+
 interface Row {
   tenant_id: string;
   publication_id: string;
@@ -86,22 +89,78 @@ export class SqlSlackSessionScopeRepo implements SlackSessionScopeRepo {
     publicationId: string,
     scopeKey: string,
     newSessionId: string,
-    _now: number,
+    now: number,
   ): Promise<boolean> {
-    // Atomic re-bind: only swap session_id + flip to 'active' when the row
-    // is currently non-active. The status<>'active' predicate is the
-    // concurrency guard — if some other dispatcher already reactivated
-    // this scope, we leave their row alone and report false so the caller
-    // resumes the winner.
+    // Atomic re-bind: only swap session_id + flip to 'active' when:
+    //   - row is currently non-active AND non-pending (terminal status), OR
+    //   - row is pending but the claim is stale (winner crashed; the live
+    //     winner would have fulfilled within seconds)
+    const staleCutoff = now - PENDING_STALE_AFTER_MS;
     const result = await this.db
       .prepare(
         `UPDATE slack_thread_sessions
            SET session_id = ?, status = 'active'
-         WHERE publication_id = ? AND scope_key = ? AND status <> 'active'`,
+         WHERE publication_id = ? AND scope_key = ?
+           AND (
+             status NOT IN ('active', 'pending')
+             OR (status = 'pending' AND created_at < ?)
+           )`,
       )
-      .bind(newSessionId, publicationId, scopeKey)
+      .bind(newSessionId, publicationId, scopeKey, staleCutoff)
       .run();
     return (result.meta?.changes ?? 0) > 0;
+  }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT INTO slack_thread_sessions
+           (tenant_id, publication_id, scope_key, session_id, status, created_at,
+            pending_scan_until, last_scan_at, channel_name)
+         VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL)
+         ON CONFLICT (publication_id, scope_key) DO NOTHING`,
+      )
+      .bind(
+        args.tenantId,
+        args.publicationId,
+        args.scopeKey,
+        args.placeholderSessionId,
+        args.now,
+      )
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE slack_thread_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND scope_key = ? AND status = 'pending'`,
+      )
+      .bind(sessionId, publicationId, scopeKey)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  async releasePending(publicationId: string, scopeKey: string): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM slack_thread_sessions
+         WHERE publication_id = ? AND scope_key = ? AND status = 'pending'`,
+      )
+      .bind(publicationId, scopeKey)
+      .run();
   }
 
   async listActive(publicationId: string): Promise<readonly SessionScope[]> {

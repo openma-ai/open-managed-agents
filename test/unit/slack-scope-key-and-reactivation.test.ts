@@ -246,6 +246,151 @@ describe("createChannelSession — reactivation of inactive scope rows", () => {
   );
 });
 
+// ─── two-phase claim race: concurrent dispatchers only spawn 1 session ───
+
+describe("createChannelSession — two-phase claim prevents duplicate session creation", () => {
+  let c: FakeSlackBundle;
+  let provider: SlackProvider;
+  let appId: string;
+  let pubId: string;
+
+  beforeEach(async () => {
+    c = buildFakeSlackContainer();
+    c.hmac.verify = async (secret: string, baseString: string, hex: string) =>
+      hex === `valid${secret}${baseString}`.toLowerCase().replace(/[^a-f0-9]/g, "");
+    provider = new SlackProvider(c, {
+      gatewayOrigin: "https://gw",
+      botScopes: DEFAULT_SLACK_BOT_SCOPES,
+      userScopes: DEFAULT_SLACK_USER_SCOPES,
+      defaultCapabilities: ALL_SLACK_CAPABILITIES,
+    });
+    const seeded = await seedDedicatedSlackPublication(c, {
+      signingSecret: APP_SIGNING_SECRET,
+      sessionGranularity: "per_channel",
+    });
+    appId = seeded.appId;
+    pubId = seeded.pubId;
+    c.clock.set(1_700_000_000_000);
+  });
+
+  function validSig(rawBody: string, ts: string): string {
+    const baseString = `v0:${ts}:${rawBody}`;
+    const hex = `valid${APP_SIGNING_SECRET}${baseString}`
+      .toLowerCase()
+      .replace(/[^a-f0-9]/g, "");
+    return `v0=${hex}`;
+  }
+  async function deliver(rawBody: string) {
+    const ts = "1700000000";
+    return await provider.handleWebhook({
+      providerId: "slack",
+      installationId: appId,
+      deliveryId: null,
+      headers: {
+        "x-slack-signature": validSig(rawBody, ts),
+        "x-slack-request-timestamp": ts,
+      },
+      rawBody,
+    });
+  }
+
+  it(
+    "two concurrent webhook events on a fresh channel produce exactly one session, not two",
+    async () => {
+      // Concurrent app_mention deliveries (e.g. two threads in same channel
+      // hitting the bot simultaneously). Pre-fix this would race INSERT
+      // AFTER sessions.create — both events spawn a session, only one wins
+      // the scope row, the other is orphaned and billed forever.
+      const [a, b] = await Promise.all([
+        deliver(
+          memberJoinedChannelPayload({ channel: CHANNEL, eventId: "Ev_R1", user: BOT_USER_ID }),
+        ),
+        deliver(
+          memberJoinedChannelPayload({ channel: CHANNEL, eventId: "Ev_R2", user: BOT_USER_ID }),
+        ),
+      ]);
+      await Promise.all([a.deferredWork?.(), b.deferredWork?.()]);
+
+      // EXACTLY ONE session created (race-gate works).
+      expect(c.sessions.created).toHaveLength(1);
+
+      // Scope row points at sess_1, status active.
+      const scope = await c.sessionScopes.getByScope(pubId, CHANNEL_SCOPE);
+      expect(scope?.sessionId).toBe("sess_1");
+      expect(scope?.status).toBe("active");
+    },
+  );
+
+  it(
+    "losing the claim and polling: loser resumes the winner's session instead of creating its own",
+    async () => {
+      // Manually plant a pending claim so the next event sees a live winner
+      // mid-create. Loser should poll → see fulfillment → resume.
+      const placeholderSessionId = `_pending_${c.ids.generate()}`;
+      const claimedFirst = await c.sessionScopes.claimPending({
+        tenantId: "tn_test",
+        publicationId: pubId,
+        scopeKey: CHANNEL_SCOPE,
+        placeholderSessionId,
+        now: c.clock.nowMs(),
+      });
+      expect(claimedFirst).toBe(true);
+      // Fulfill it manually as if the winner finished creating sess_99.
+      // (Doing it before the loser polls keeps the test deterministic.)
+      const realSessionId = "sess_99";
+      await c.sessionScopes.fulfillPending(pubId, CHANNEL_SCOPE, realSessionId);
+
+      // Now deliver a member_joined event. The dispatcher tries to claim,
+      // loses (row already active), reads existing.status='active', and
+      // resumes sess_99 — no new session.
+      const out = await deliver(
+        memberJoinedChannelPayload({ channel: CHANNEL, eventId: "Ev_LR", user: BOT_USER_ID }),
+      );
+      await out.deferredWork?.();
+
+      expect(c.sessions.created).toHaveLength(0); // never called sessions.create
+      const resumed = c.sessions.resumed.map((r) => r.sessionId);
+      expect(resumed).toContain(realSessionId);
+      const scope = await c.sessionScopes.getByScope(pubId, CHANNEL_SCOPE);
+      expect(scope?.sessionId).toBe(realSessionId);
+    },
+  );
+
+  it(
+    "stale pending claim (winner crashed) gets reclaimed by next event via reassignIfInactive",
+    async () => {
+      // Plant a pending claim that's already stale (older than 60s).
+      const placeholderSessionId = `_pending_crashed_winner`;
+      await c.sessionScopes.claimPending({
+        tenantId: "tn_test",
+        publicationId: pubId,
+        scopeKey: CHANNEL_SCOPE,
+        placeholderSessionId,
+        now: c.clock.nowMs() - 120_000, // 2 min ago — well past stale threshold
+      });
+
+      // Use app_mention (direct_invocation intent) — that's the path that
+      // falls through to createChannelSession when existing.status !== 'active'.
+      // joined_channel/member_joined goes through a different branch that
+      // updateStatus's the existing row in place without recreating.
+      const out = await deliver(
+        appMentionPayload({
+          channel: CHANNEL,
+          ts: "1700000050.000100",
+          eventId: "Ev_STALE_M",
+          text: "<@U07BOT> hello",
+        }),
+      );
+      await out.deferredWork?.();
+
+      expect(c.sessions.created).toHaveLength(1);
+      const scope = await c.sessionScopes.getByScope(pubId, CHANNEL_SCOPE);
+      expect(scope?.sessionId).toBe("sess_1");
+      expect(scope?.status).toBe("active");
+    },
+  );
+});
+
 // Light type-only assertion that the SessionScope domain shape still has
 // the fields we depend on. If the domain changes, the test fails to compile,
 // which prevents this whole suite from drifting silently.

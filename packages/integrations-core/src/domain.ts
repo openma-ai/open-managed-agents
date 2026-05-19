@@ -208,6 +208,14 @@ export type PublicationStatus =
 
 export type SessionScopeStatus =
   | "active"
+  /** Race-claim placeholder: a dispatcher won the (publication, scope_key)
+   *  INSERT and is currently calling sessions.create. `session_id` is a
+   *  `_pending_<uuid>` sentinel until `fulfillPending` writes the real id
+   *  and flips to 'active'. Concurrent dispatchers see the pending row,
+   *  poll briefly, then resume the winner's session. Stale pending rows
+   *  (>60s since `created_at`, claim crashed before fulfill) become
+   *  eligible for reassignIfInactive takeover. */
+  | "pending"
   | "completed"
   | "human_handoff"
   | "rerouted"

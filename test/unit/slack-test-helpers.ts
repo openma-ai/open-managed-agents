@@ -99,13 +99,56 @@ export class FakeSlackSessionScopeRepo implements SlackSessionScopeRepo {
     publicationId: string,
     scopeKey: string,
     newSessionId: string,
-    _now: number,
+    now: number,
   ): Promise<boolean> {
     const k = this.key(publicationId, scopeKey);
     const row = this.rows.get(k);
-    if (!row || row.status === "active") return false;
+    if (!row) return false;
+    if (row.status === "active") return false;
+    if (row.status === "pending" && now - row.createdAt < 60_000) return false;
     this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
     return true;
+  }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean> {
+    const k = this.key(args.publicationId, args.scopeKey);
+    if (this.rows.has(k)) return false;
+    this.rows.set(k, {
+      tenantId: args.tenantId,
+      publicationId: args.publicationId,
+      scopeKey: args.scopeKey,
+      sessionId: args.placeholderSessionId,
+      status: "pending",
+      createdAt: args.now,
+      pendingScanUntil: null,
+      lastScanAt: null,
+      channelName: null,
+    });
+    return true;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row || row.status !== "pending") return false;
+    this.rows.set(k, { ...row, sessionId, status: "active" });
+    return true;
+  }
+
+  async releasePending(publicationId: string, scopeKey: string): Promise<void> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (row && row.status === "pending") this.rows.delete(k);
   }
 
   async listActive(
