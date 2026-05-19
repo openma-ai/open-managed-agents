@@ -33,6 +33,56 @@ function getBaseUrl(c: { req: { url: string } }): string {
   return `${url.protocol}//${url.host}`;
 }
 
+/**
+ * Probe an MCP server with a freshly-obtained bearer token. POSTs
+ * `tools/list`, classifies the response:
+ *
+ *   2xx → server accepted the token, model will see typed tools
+ *   401/403 → token rejected (likely scope-insufficient or vendor toggle off)
+ *   anything else → unknown; surface the upstream HTTP status
+ *
+ * 5s timeout. Failures here NEVER roll back the credential — it's already
+ * persisted; this is purely descriptive ("we just stored a token that
+ * works" / "we stored a token but the server rejects it; here's why").
+ */
+async function probeMcpServer(
+  url: string,
+  bearerToken: string,
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 5000);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${bearerToken}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status >= 200 && res.status < 300) return { ok: true };
+    const body = await res.text().catch(() => "");
+    // Surface vendor-specific guidance verbatim when present (e.g. Slack's
+    // "App is not enabled for Slack MCP server access. Please enable it
+    // here: <url>"). Truncate to keep the URL-encoded query param sane.
+    const slice = body.slice(0, 240).trim();
+    return {
+      ok: false,
+      message: `MCP probe HTTP ${res.status}${slice ? `: ${slice}` : ""}`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, message: `MCP probe failed: ${msg.slice(0, 120)}` };
+  }
+}
+
 // ─── MCP OAuth Metadata Discovery ───
 
 interface ProtectedResourceMeta {
@@ -578,10 +628,19 @@ app.get("/callback", async (c) => {
   // Clean up state
   await c.var.services.kv.delete(stateKey);
 
+  // Probe the MCP server with the just-obtained token. Same shape as the
+  // Slack publish probe — POST tools/list, classify the response, surface
+  // the result on the success page so the user sees ✓ or a precise warning
+  // instead of silently storing a token that won't work. 5s bound; failure
+  // here doesn't roll back the credential (it's already persisted).
+  const probeResult = await probeMcpServer(oauthState.mcp_server_url, tokens.access_token);
+
   // Redirect back to console
   const redirectUrl = new URL(oauthState.redirect_uri);
   redirectUrl.searchParams.set("oauth", "success");
   redirectUrl.searchParams.set("service", serverName);
+  redirectUrl.searchParams.set("probe_ok", probeResult.ok ? "1" : "0");
+  if (probeResult.message) redirectUrl.searchParams.set("probe_message", probeResult.message);
 
   // If opened in a popup, close it and notify parent.
   //
@@ -603,7 +662,13 @@ app.get("/callback", async (c) => {
     <p>Connected to ${serverName}. Closing…</p>
     <script>
       (function(){
-        var msg = { type: "oauth_complete", service: "${serverName}", vault_id: "${oauthState.vault_id}" };
+        var msg = {
+          type: "oauth_complete",
+          service: "${serverName}",
+          vault_id: "${oauthState.vault_id}",
+          probe_ok: ${probeResult.ok ? "true" : "false"},
+          probe_message: ${JSON.stringify(probeResult.message ?? null)},
+        };
         var notified = false;
         try {
           if (window.opener && !window.opener.closed) {

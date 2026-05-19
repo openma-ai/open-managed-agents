@@ -8,6 +8,7 @@ import { TextInput, SecretInput } from "../components/Input";
 import { LocalCombobox } from "../components/LocalCombobox";
 import { Disclosure } from "../components/Disclosure";
 import { TabsRoot, TabList, Tab, TabPanel } from "../components/Tabs";
+import { useToast } from "../components/Toast";
 import { MCP_REGISTRY, type McpRegistryEntry } from "../data/mcp-registry";
 
 interface Vault { id: string; name: string; created_at: string; archived_at?: string; }
@@ -40,6 +41,7 @@ const CAP_CLIS: Array<{ cli_id: string; label: string; helper: string; oauth?: b
 
 export function VaultsList() {
   const { api } = useApi();
+  const { toast } = useToast();
   const [showCreateVault, setShowCreateVault] = useState(false);
   const [vaultName, setVaultName] = useState("");
 
@@ -154,11 +156,27 @@ export function VaultsList() {
   // BroadcastChannel is same-origin and survives COOP, so use it as a
   // parallel channel; the popup posts to both. Either firing is enough.
   const handleOAuthMessage = useCallback((event: MessageEvent | { data: unknown }) => {
-    const data = (event as { data?: { type?: string } }).data;
+    const data = (event as { data?: { type?: string; service?: string; probe_ok?: boolean; probe_message?: string | null } }).data;
     if (data?.type === "oauth_complete" && selectedVault) {
       setConnecting(null);
       setShowAddCred(false);
       openVault(selectedVault);
+      // Surface the MCP probe result so the user knows whether the just-
+      // stored credential will actually work. probe_ok=true → green toast;
+      // false → warning toast carrying the upstream's own message verbatim
+      // (e.g. Slack's "App is not enabled for Slack MCP server access. Please
+      // enable it here: <url>") so the user has actionable next-step text.
+      const svc = data.service ?? "MCP server";
+      if (data.probe_ok === true) {
+        toast?.(`Connected to ${svc} — token verified.`, "success");
+      } else if (data.probe_ok === false) {
+        toast?.(
+          data.probe_message
+            ? `Connected to ${svc}, but: ${data.probe_message}`
+            : `Connected to ${svc}, but the server rejected our token.`,
+          "warning",
+        );
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVault]);
