@@ -76,6 +76,62 @@ export class SqlCredentialRepo implements CredentialRepo {
     return row ? await this.toRow(row) : null;
   }
 
+  async getRaw(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+  ): Promise<{ row: CredentialRow; authCipher: string } | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT id, tenant_id, vault_id, display_name, auth, created_at, updated_at, archived_at
+         FROM credentials
+         WHERE id = ? AND tenant_id = ? AND vault_id = ?`,
+      )
+      .bind(credentialId, tenantId, vaultId)
+      .first<DbCredential>();
+    if (!row) return null;
+    return { row: await this.toRow(row), authCipher: row.auth };
+  }
+
+  async updateIfAuthMatches(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+    expectedAuthCipher: string,
+    update: CredentialUpdateFields,
+  ): Promise<CredentialRow | null> {
+    if (update.auth === undefined) {
+      throw new Error("updateIfAuthMatches requires update.auth — call update() for non-auth field changes");
+    }
+    const authCipher = await this.crypto.encrypt(JSON.stringify(update.auth));
+    const result = await this.db
+      .prepare(
+        `UPDATE credentials
+            SET auth_type = ?, mcp_server_url = ?, provider = ?, auth = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ? AND vault_id = ? AND auth = ?`,
+      )
+      .bind(
+        update.auth.type,
+        update.auth.mcp_server_url ?? null,
+        update.auth.provider ?? null,
+        authCipher,
+        update.updatedAt,
+        credentialId,
+        tenantId,
+        vaultId,
+        expectedAuthCipher,
+      )
+      .run();
+    if (!result.meta?.changes) {
+      // CAS lost: another in-flight refresh persisted first. Caller's
+      // contract is to re-read and use the winner's token, so we return
+      // null instead of throwing — this isn't an error condition, it's
+      // an expected race outcome that the caller routes around.
+      return null;
+    }
+    return await this.get(tenantId, vaultId, credentialId);
+  }
+
   async list(
     tenantId: string,
     vaultId: string,
