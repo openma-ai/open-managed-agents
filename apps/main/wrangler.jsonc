@@ -5,6 +5,19 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // ─────────────────────────────────────────────────────────────────────
+  // SELF-HOST BASELINE
+  // ─────────────────────────────────────────────────────────────────────
+  // The top-level config is the self-host single-D1 deployment shape:
+  // one auth D1, one integrations D1, one KV, two R2s, no sharding.
+  // `<set-by-setup-cf-sh>` placeholders are filled in by scripts/setup-cf.sh
+  // when a fresh user runs the setup wizard.
+  //
+  // openma.dev's multi-shard production overrides ALL bindings via the
+  // env.production overlay below. Run `wrangler deploy --env production`
+  // (or `--env staging`) for the hosted deployments.
+  // ─────────────────────────────────────────────────────────────────────
+
   "assets": {
     "directory": "../console/dist",
     "binding": "ASSETS",
@@ -26,15 +39,15 @@
   ],
 
   "kv_namespaces": [
-    { "binding": "CONFIG_KV", "id": "5e49bdaec1884f5989037c86ece7b462" }
+    { "binding": "CONFIG_KV", "id": "<set-by-setup-cf-sh>" }
   ],
 
-  // Public origin of the integrations gateway. apps/main wires this into
-  // Linear-triggered sessions as the URL of the OMA-hosted Linear MCP
-  // server. Override per env via vars.
+  // Public origin of the integrations gateway. For self-host this is
+  // typically https://integrations.<your-domain> or the integrations
+  // worker's *.workers.dev URL. setup-cf.sh fills it in.
   "vars": {
-    "INTEGRATIONS_ORIGIN": "https://integrations.openma.dev",
-    "TURNSTILE_SITE_KEY": "0x4AAAAAADDow0APKUYcuXMp"
+    "INTEGRATIONS_ORIGIN": "<set-by-setup-cf-sh>",
+    "TURNSTILE_SITE_KEY": ""
   },
 
   "r2_buckets": [
@@ -46,15 +59,15 @@
     { "binding": "MEMORY_BUCKET", "bucket_name": "managed-agents-memory" }
   ],
 
-  // D1 layout (post-shard rollout) — must match OSS apps/main/wrangler.jsonc.
-  // ROUTER_DB resolves tenant→shard. AUTH_DB legacy alias = AUTH_DB_00 same id.
+  // D1 layout — single-D1 self-host baseline. AUTH_DB holds everything
+  // (control plane + tenant data); INTEGRATIONS_DB holds the
+  // linear/github/slack tables. Auto-detection in
+  // packages/services/src/index.ts buildCfTenantDbProvider() falls back
+  // to CfSharedAuthDbProvider when AUTH_DB_01 isn't bound, so signup
+  // and routing work without any shard tables.
   "d1_databases": [
-    { "binding": "AUTH_DB",    "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-    { "binding": "ROUTER_DB",  "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6" },
-    { "binding": "AUTH_DB_00", "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-    { "binding": "AUTH_DB_01", "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175" },
-    { "binding": "AUTH_DB_02", "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75" },
-    { "binding": "AUTH_DB_03", "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f" }
+    { "binding": "AUTH_DB",         "database_name": "openma-auth",         "database_id": "<set-by-setup-cf-sh>" },
+    { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations", "database_id": "<set-by-setup-cf-sh>" }
   ],
 
   "durable_objects": {
@@ -71,15 +84,13 @@
   // Workers AI for generating embeddings
   "ai": { "binding": "AI" },
 
-  // Service bindings to agent workers + hosted-only meter.
-  // USAGE_METER points at packages/billing/ (entrypoint UsageMeter); the
-  // OSS Env declares the duck-typed contract so this binding is purely
-  // a hosted-deployment concern — self-host omits.
+  // Service bindings to agent + integrations workers. USAGE_METER is a
+  // hosted-only binding (packages/billing/) and is added in
+  // env.production below — the OSS Env declares the duck-typed contract
+  // so canStartSandbox / recordUsage soft-skip when missing.
   "services": [
     { "binding": "SANDBOX_sandbox_default", "service": "sandbox-default" },
-    { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
-    { "binding": "USAGE_METER", "service": "managed-agents-billing", "entrypoint": "UsageMeter" },
-    { "binding": "USAGE_METER_HTTP", "service": "managed-agents-billing" }
+    { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" }
   ],
 
   "migrations": [
@@ -171,7 +182,92 @@
     "crons": ["* * * * *"]
   },
 
+  // ─────────────────────────────────────────────────────────────────────
+  // ENVIRONMENT OVERLAYS (hosted)
+  // ─────────────────────────────────────────────────────────────────────
+  // wrangler v4 env overlays REPLACE the top-level bindings entirely, so
+  // each env block re-declares every binding it needs. This keeps the
+  // self-host baseline (top-level) decoupled from openma.dev's hosted
+  // multi-shard prod.
+  // ─────────────────────────────────────────────────────────────────────
+
   "env": {
+    "production": {
+      "name": "managed-agents",
+      "vars": {
+        "INTEGRATIONS_ORIGIN": "https://integrations.openma.dev",
+        "TURNSTILE_SITE_KEY": "0x4AAAAAADDow0APKUYcuXMp"
+      },
+      "kv_namespaces": [
+        { "binding": "CONFIG_KV", "id": "5e49bdaec1884f5989037c86ece7b462" }
+      ],
+      "r2_buckets": [
+        { "binding": "FILES_BUCKET", "bucket_name": "managed-agents-files" },
+        { "binding": "MEMORY_BUCKET", "bucket_name": "managed-agents-memory" }
+      ],
+      // Multi-shard layout: ROUTER_DB resolves tenant→shard. AUTH_DB
+      // legacy alias = AUTH_DB_00 (same database_id). Auto-detection in
+      // buildCfTenantDbProvider() routes to MetaTableTenantDbProvider
+      // when AUTH_DB_01 is present.
+      "d1_databases": [
+        { "binding": "AUTH_DB",         "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
+        { "binding": "ROUTER_DB",       "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6" },
+        { "binding": "AUTH_DB_00",      "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
+        { "binding": "AUTH_DB_01",      "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175" },
+        { "binding": "AUTH_DB_02",      "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75" },
+        { "binding": "AUTH_DB_03",      "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f" },
+        { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations",  "database_id": "36f67512-b0d7-4300-9d57-f265cd9d3075" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom" }
+        ]
+      },
+      "send_email": [
+        { "name": "SEND_EMAIL" }
+      ],
+      "ai": { "binding": "AI" },
+      "services": [
+        { "binding": "SANDBOX_sandbox_default", "service": "sandbox-default" },
+        { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
+        { "binding": "USAGE_METER", "service": "managed-agents-billing", "entrypoint": "UsageMeter" },
+        { "binding": "USAGE_METER_HTTP", "service": "managed-agents-billing" }
+      ],
+      "limits": { "cpu_ms": 300000 },
+      "observability": { "enabled": true },
+      "analytics_engine_datasets": [
+        { "binding": "ANALYTICS", "dataset": "oma_events" }
+      ],
+      "ratelimits": [
+        { "name": "RL_AUTH_IP",         "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+        { "name": "RL_AUTH_SEND_IP",    "namespace_id": "1002", "simple": { "limit": 5,  "period": 60 } },
+        { "name": "RL_AUTH_SEND_EMAIL", "namespace_id": "1003", "simple": { "limit": 1,  "period": 60 } },
+        { "name": "RL_API_USER_WRITE",  "namespace_id": "1004", "simple": { "limit": 60, "period": 60 } },
+        { "name": "RL_API_USER_READ",   "namespace_id": "1005", "simple": { "limit": 600,"period": 60 } },
+        { "name": "RL_SESSIONS_TENANT", "namespace_id": "1006", "simple": { "limit": 5,  "period": 60 } },
+        { "name": "RL_UPLOAD_TENANT",   "namespace_id": "1007", "simple": { "limit": 30, "period": 60 } }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "managed-agents-memory-events",
+            "max_batch_size": 25,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "managed-agents-memory-events-dlq"
+          },
+          {
+            "queue": "managed-agents-memory-events-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 30,
+            "max_retries": 1
+          }
+        ]
+      },
+      "triggers": {
+        "crons": ["* * * * *"]
+      }
+    },
     "staging": {
       "name": "managed-agents-staging",
       "vars": {
