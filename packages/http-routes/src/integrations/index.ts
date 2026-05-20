@@ -306,7 +306,7 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
       }
       return proxy.forward({
         subpath: `${provider}/publications/${encodeURIComponent(id)}/form-token`,
-        body: { userId },
+        body: { userId, ...(await c.req.json().catch(() => ({}))) },
         needsInternalSecret: true,
       });
     });

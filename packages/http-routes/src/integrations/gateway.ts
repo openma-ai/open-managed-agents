@@ -314,11 +314,26 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
         state,
       });
       if (!result.returnUrl) {
-        return c.json({
-          ok: true,
-          publicationId: result.publicationId,
-          capabilityProbe: result.capabilityProbe ?? null,
-        });
+        // Defensive fallback: callers should always pass returnUrl in the
+        // form-token JWT. When they don't (early reissueFormToken bug
+        // 2026-05-20 left it empty), redirect to a known good
+        // same-origin path so the user lands on a real UI instead of a
+        // raw JSON envelope. Slack's integrations list page already
+        // honors the install=ok/probe_* query params for the success
+        // banner.
+        const fallback = new URL(c.req.url);
+        fallback.pathname = "/integrations/slack";
+        fallback.search = "";
+        fallback.searchParams.set("publication_id", result.publicationId);
+        fallback.searchParams.set("install", "ok");
+        const fbProbe = result.capabilityProbe;
+        if (fbProbe) {
+          fallback.searchParams.set("probe_kind", fbProbe.kind);
+          fallback.searchParams.set("probe_ok", fbProbe.ok ? "1" : "0");
+          if (fbProbe.message) fallback.searchParams.set("probe_message", fbProbe.message);
+          if (fbProbe.fixUrl) fallback.searchParams.set("probe_fix_url", fbProbe.fixUrl);
+        }
+        return c.redirect(fallback.pathname + fallback.search, 302);
       }
       const target = new URL(result.returnUrl);
       target.searchParams.set("publication_id", result.publicationId);

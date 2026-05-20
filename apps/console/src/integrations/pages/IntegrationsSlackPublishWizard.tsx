@@ -99,7 +99,7 @@ export function IntegrationsSlackPublishWizard({
         }
         // Re-issue a fresh formToken for the existing shell. Server validates
         // ownership; we only re-render the wizard here.
-        const form = await api.slack.reissueFormToken(resumePubId);
+        const form = await api.slack.reissueFormToken(resumePubId, returnUrl);
         if (cancelled) return;
         setA1Form(form);
         setAgentId(pub.agent_id);

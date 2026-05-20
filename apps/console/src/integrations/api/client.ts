@@ -398,11 +398,11 @@ class SlackClient {
   }
 
   /** Re-issue a fresh formToken for an existing pub shell (refresh-resume). */
-  async reissueFormToken(publicationId: string): Promise<A1FormStep> {
+  async reissueFormToken(publicationId: string, returnUrl?: string): Promise<A1FormStep> {
     return request<A1FormStep>(
       this.basePath,
       `/v1/integrations/slack/publications/${encodeURIComponent(publicationId)}/form-token`,
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify({ returnUrl: returnUrl ?? "" }) },
     );
   }
 
