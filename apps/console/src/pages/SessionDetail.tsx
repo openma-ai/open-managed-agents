@@ -116,6 +116,7 @@ export function SessionDetail() {
     threadTs?: string;
     workspaceId?: string;
     eventKind?: string;
+    publicationId?: string;
   } | null>(null);
   const [status, setStatus] = useState("idle");
   /** Lazy-fetched Trajectory v1 envelope. Drives the outcome + reward
@@ -508,7 +509,7 @@ export function SessionDetail() {
           setLinear(linearMeta);
         }
         const slackMeta = s.metadata?.slack as
-          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string }
+          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string; publicationId?: string }
           | undefined;
         if (slackMeta && (slackMeta.channelId || slackMeta.threadTs)) {
           setSlack(slackMeta);
@@ -895,15 +896,25 @@ export function SessionDetail() {
 
       {/* Slack context (when triggered by a Slack event) */}
       {slack && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet">
+        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
           <span>💬</span>
           <span className="font-medium">Slack</span>
           <span className="opacity-60">·</span>
           <span>
             {slack.channelId ? (
-              <>
-                channel <span className="font-mono">{slack.channelId}</span>
-              </>
+              slack.workspaceId ? (
+                <a
+                  href={`slack://channel?team=${slack.workspaceId}&id=${slack.channelId}`}
+                  className="font-mono underline hover:no-underline"
+                  title="Open in Slack desktop"
+                >
+                  channel {slack.channelId} ↗
+                </a>
+              ) : (
+                <>
+                  channel <span className="font-mono">{slack.channelId}</span>
+                </>
+              )
             ) : (
               "—"
             )}
@@ -918,6 +929,18 @@ export function SessionDetail() {
             <span className="opacity-60 font-mono uppercase tracking-wider text-[10px]">
               {slack.eventKind}
             </span>
+          )}
+          {slack.publicationId && (
+            <>
+              <span className="opacity-60">·</span>
+              <Link
+                to={`/integrations/slack/publish?pub=${slack.publicationId}`}
+                className="underline hover:no-underline"
+                title="Open the Slack publication this session is bound to"
+              >
+                publication →
+              </Link>
+            </>
           )}
         </div>
       )}
