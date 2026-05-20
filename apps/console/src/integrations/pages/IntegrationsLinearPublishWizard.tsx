@@ -429,25 +429,49 @@ function CredentialsStep(props: {
         <p className="text-[13px] text-fg-muted mb-3">
           Open{" "}
           <a
-            href="https://linear.app/settings/api"
+            href="https://linear.app/settings/api/applications/new"
             target="_blank"
             rel="noreferrer"
             className="text-brand hover:underline"
           >
-            Linear → Settings → API
+            Linear → Settings → API → New application
           </a>{" "}
           and register a new OAuth application with these values:
         </p>
         <div className="rounded-md border border-border bg-bg-surface/30 divide-y divide-border">
-          <CopyRow label="App name" value={props.shell.suggested_app_name} />
-          <CopyRow label="Callback URL" value={props.shell.callback_url} />
+          <CopyRow label="Application name" value={props.shell.suggested_app_name} />
+          <CopyRow label="Developer name" value={props.shell.suggested_app_name} />
+          <CopyRow label="Developer URL" value={window.location.origin} />
+          <CopyRow
+            label="Description"
+            value={`OMA-managed agent — ${props.shell.suggested_app_name}.`}
+          />
+          <CopyRow label="Callback URLs" value={props.shell.callback_url} />
           <CopyRow label="Webhook URL" value={props.shell.webhook_url} />
         </div>
-        <p className="text-[12px] text-fg-subtle mt-2">
-          Linear auto-generates the webhook signing secret on its side and ignores
-          any value pasted into the form. You'll copy it back to OMA in the next
-          step (it starts with <code>lin_wh_</code>).
-        </p>
+        <ul className="text-[12px] text-fg-muted mt-3 space-y-1.5 list-disc pl-5">
+          <li>
+            <strong className="text-fg">GitHub username</strong> — leave empty.
+            Only relevant if you also bind this OAuth app to a GitHub App with
+            <code className="mx-0.5">actor=app</code>; not used by OMA's
+            Linear-only flow.
+          </li>
+          <li>
+            <strong className="text-fg">Public</strong> — leave OFF. Public is
+            for app marketplace listings; this app is private to your workspace.
+          </li>
+          <li>
+            <strong className="text-fg">Client credentials</strong> — leave OFF.
+            OMA uses the standard authorization-code OAuth flow.
+          </li>
+          <li>
+            <strong className="text-fg">Webhooks</strong> — toggle ON, paste the
+            Webhook URL above, and subscribe to{" "}
+            <code>App user notifications</code> +{" "}
+            <code>Agent session events</code>. Linear shows the signing secret
+            (<code>lin_wh_…</code>) once you save — copy it back below.
+          </li>
+        </ul>
       </section>
 
       <section>
