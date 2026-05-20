@@ -784,6 +784,28 @@ export class LinearProvider implements IntegrationProvider {
       }
     }
 
+    // agentSessionCreated co-fires with `issueMention` (or
+    // `issueAssignedToYou` / `issueCommentMention`) when a description-@
+    // or assignment opens both the Agent panel AND a notification. Both
+    // routes used to drain into independent user.messages on the same
+    // session, producing duplicate top-level comments seconds apart
+    // (BOA-19 reproduction). Suppress the drain side of agentSessionCreated
+    // — the panel ack above is its only meaningful side-effect; the actual
+    // engagement is delivered via the AppUserNotification companion.
+    //
+    // agentSessionPrompted (follow-up prompt typed in the panel) is NOT
+    // suppressed: it carries new user content that has no notification
+    // companion.
+    if (event.kind === "agentSessionCreated") {
+      return {
+        handled: true,
+        reason: "agent_session_created_panel_only",
+        publicationId: publication.id,
+        sessionId: null,
+        tenantId: installation.tenantId,
+      };
+    }
+
     // Promote the deduped row from "audit-only" into the drain queue by
     // setting payload + event_kind + publication_id. Drain picks it up on
     // the next cron tick.
