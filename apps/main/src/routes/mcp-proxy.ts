@@ -449,7 +449,22 @@ export async function forwardWithRefresh(
   }
 
   const first = await forwardToUpstream(target, method, inboundHeaders, body);
-  if (first.status !== 401 || !target.refresh) {
+  // Trigger refresh on either 401 (canonical "your token is expired /
+  // invalid") or 403 (some MCP servers — observed on mcp.airtable.com,
+  // mcp.asana.com, mcp.sentry.dev — return Forbidden instead of
+  // Unauthorized when the bearer is expired or revoked, presumably
+  // because their auth layer treats "no usable identity" as a
+  // permission failure rather than an auth failure). 403 is ambiguous
+  // — it could also mean "scope removed" or "plan tier downgrade", in
+  // which case refresh succeeds + retry still 403s, and we surface that
+  // genuine error to the caller. The cost of an extra refresh call in
+  // the false-positive case is one HTTP round-trip + D1 write, which is
+  // cheap relative to the user-visible breakage of "token expired and
+  // nothing ever recovers" (the actual symptom — staging 2026-05-20
+  // sess-pvdx9d16zitzhw39 saw all three of airtable/asana/sentry
+  // permanently 403 across multiple sessions until manual SQL cleanup).
+  const refreshableStatus = first.status === 401 || first.status === 403;
+  if (!refreshableStatus || !target.refresh) {
     log(
       {
         op: "mcp_proxy.forward",
