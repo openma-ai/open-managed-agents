@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { LinearProvider } from "../../packages/linear/src/provider";
 import {
-  buildFakeContainer,
-  type FakeContainer,
   type FakeHttpClient,
 } from "../../packages/integrations-core/src/test-fakes";
+import {
+  buildFakeLinearContainer,
+  type FakeLinearContainer,
+} from "../../packages/linear/src/test-fakes";
 import { ALL_CAPABILITIES, DEFAULT_LINEAR_SCOPES } from "../../packages/linear/src/config";
 
-function makeProvider(c: FakeContainer): LinearProvider {
+function makeProvider(c: FakeLinearContainer): LinearProvider {
   return new LinearProvider(c, {
     gatewayOrigin: "https://gw",
     consoleOrigin: "https://console",
@@ -50,11 +52,11 @@ function queueLinearResponses(
 }
 
 describe("LinearProvider — PAT (personal_token) install", () => {
-  let c: FakeContainer;
+  let c: FakeLinearContainer;
   let provider: LinearProvider;
 
   beforeEach(() => {
-    c = buildFakeContainer();
+    c = buildFakeLinearContainer();
     provider = makeProvider(c);
     // Provide a tenantId for our test user — TenantResolver throws otherwise.
     c.tenants.set("usr_alice", "tnt_acme");
@@ -150,15 +152,15 @@ describe("LinearProvider — PAT (personal_token) install", () => {
   });
 });
 
-describe("InMemoryIssueSessionRepo — claim()", () => {
-  let c: FakeContainer;
+describe("InMemoryLinearIssueSessionRepo — claim()", () => {
+  let c: FakeLinearContainer;
 
   beforeEach(() => {
-    c = buildFakeContainer();
+    c = buildFakeLinearContainer();
   });
 
   it("returns true for a fresh slot, false for a concurrent claim", async () => {
-    const first = await c.issueSessions.claim({
+    const first = await c.linearIssueSessions.claim({
       tenantId: "tnt_acme",
       publicationId: "pub_1",
       issueId: "iss_1",
@@ -166,7 +168,7 @@ describe("InMemoryIssueSessionRepo — claim()", () => {
       nowMs: 1000,
     });
     expect(first).toBe(true);
-    const second = await c.issueSessions.claim({
+    const second = await c.linearIssueSessions.claim({
       tenantId: "tnt_acme",
       publicationId: "pub_1",
       issueId: "iss_1",
@@ -177,15 +179,15 @@ describe("InMemoryIssueSessionRepo — claim()", () => {
   });
 
   it("allows re-claim after an existing slot is no longer active", async () => {
-    await c.issueSessions.claim({
+    await c.linearIssueSessions.claim({
       tenantId: "tnt_acme",
       publicationId: "pub_1",
       issueId: "iss_1",
       sessionId: "sess_a",
       nowMs: 1000,
     });
-    await c.issueSessions.updateStatus("pub_1", "iss_1", "failed");
-    const reclaimed = await c.issueSessions.claim({
+    await c.linearIssueSessions.updateStatus("pub_1", "iss_1", "failed");
+    const reclaimed = await c.linearIssueSessions.claim({
       tenantId: "tnt_acme",
       publicationId: "pub_1",
       issueId: "iss_1",
@@ -193,18 +195,18 @@ describe("InMemoryIssueSessionRepo — claim()", () => {
       nowMs: 2000,
     });
     expect(reclaimed).toBe(true);
-    const row = await c.issueSessions.getByIssue("pub_1", "iss_1");
+    const row = await c.linearIssueSessions.getByIssue("pub_1", "iss_1");
     expect(row?.sessionId).toBe("sess_b");
     expect(row?.status).toBe("active");
   });
 });
 
 describe("LinearProvider — runDispatchSweep", () => {
-  let c: FakeContainer;
+  let c: FakeLinearContainer;
   let provider: LinearProvider;
 
   beforeEach(async () => {
-    c = buildFakeContainer();
+    c = buildFakeLinearContainer();
     provider = makeProvider(c);
     c.tenants.set("usr_alice", "tnt_acme");
 
@@ -328,14 +330,14 @@ describe("LinearProvider — runDispatchSweep", () => {
 });
 
 describe("LinearProvider — async webhook flow (persist + ack + drain)", () => {
-  let c: FakeContainer;
+  let c: FakeLinearContainer;
   let provider: LinearProvider;
   const WEBHOOK_SECRET = "wh_secret_x";
   let instId: string;
   let pubId: string;
 
   beforeEach(async () => {
-    c = buildFakeContainer();
+    c = buildFakeLinearContainer();
     provider = makeProvider(c);
     c.tenants.set("usr_a", "tnt_acme");
 

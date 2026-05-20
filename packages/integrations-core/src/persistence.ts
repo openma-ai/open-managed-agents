@@ -14,8 +14,6 @@ import type {
   DispatchRulePatch,
   GitHubAppCredentials,
   Installation,
-  IssueSession,
-  IssueSessionStatus,
   Persona,
   Publication,
   PublicationStatus,
@@ -464,94 +462,11 @@ export interface SessionScopeRepo {
   listActive(publicationId: string): Promise<ReadonlyArray<SessionScope>>;
 }
 
-/**
- * Per-issue session reuse for Linear/GitHub. Linear keys on the issue UUID;
- * GitHub keys on `<repo>#<number>`. Slack uses the parallel SessionScopeRepo
- * keyed on `${channel}:${thread_ts}`.
- */
-export interface IssueSessionRepo {
-  getByIssue(publicationId: string, issueId: string): Promise<IssueSession | null>;
-  insert(row: IssueSession): Promise<void>;
-  updateStatus(
-    publicationId: string,
-    issueId: string,
-    status: IssueSessionStatus,
-  ): Promise<void>;
-  listActive(publicationId: string): Promise<ReadonlyArray<IssueSession>>;
-  /**
-   * PAT-mode atomic claim. Used by the dispatch sweep when there is no
-   * webhook source to deduplicate against — we must guarantee at most one
-   * worker per (publication, issue) across concurrent ticks.
-   *
-   * Inserts the row if no row exists for (publicationId, issueId), or
-   * updates an existing row if its status is `inactive` (a prior worker
-   * finished). Returns true only when this caller successfully claimed.
-   *
-   * Implementations must be atomic — typically a single
-   * `INSERT ... ON CONFLICT DO UPDATE WHERE status = 'inactive' RETURNING ...`.
-   */
-  claim(input: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    sessionId: SessionId;
-    nowMs: number;
-  }): Promise<boolean>;
-
-  /**
-   * Two-phase webhook claim — phase 1. INSERT a row at status='pending'
-   * with an empty placeholder session_id. Mirrors the Slack
-   * `slack_thread_sessions` claimPending semantics: the row's existence +
-   * status='pending' is the lock. Concurrent webhooks for the same
-   * (publication, issue) all observe the pending row and short-circuit
-   * (the dispatcher drops fresh-pending duplicates upstream).
-   *
-   * Returns true when this caller wrote the row (won the claim), false
-   * when a row already existed (lost — sibling delivery is creating, OR
-   * an active session is in place; caller distinguishes by re-reading).
-   */
-  claimPending(args: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    nowMs: number;
-  }): Promise<boolean>;
-
-  /**
-   * Two-phase webhook claim — phase 2. Atomically write the real session
-   * id and flip status='active'. Returns false if the row isn't in
-   * pending state (caller's claim was reassigned via stale-takeover, or
-   * row was deleted). Pure UPDATE with WHERE status='pending' guard.
-   */
-  fulfillPending(
-    publicationId: string,
-    issueId: string,
-    sessionId: SessionId,
-  ): Promise<boolean>;
-
-  /**
-   * Two-phase webhook claim — abort. DELETE the pending row when
-   * sessions.create() failed, so a retry can re-claim. Only deletes
-   * when status='pending' to avoid clobbering a real session.
-   */
-  releasePending(publicationId: string, issueId: string): Promise<void>;
-
-  /**
-   * Atomic re-bind for stale-pending takeover. Used after a webhook
-   * winner crashed mid-create (pending row >60s old, no fulfillPending
-   * arrived). Updates session_id + status='active' only when:
-   *   - status is non-active and non-pending (terminal, retryable), OR
-   *   - status='pending' AND created_at older than the staleness cutoff.
-   * Returns true when the row was reassigned. Mirrors the Slack
-   * `slack_thread_sessions` reassignIfInactive predicate.
-   */
-  reassignIfInactive(
-    publicationId: string,
-    issueId: string,
-    newSessionId: SessionId,
-    now: number,
-  ): Promise<boolean>;
-}
+// Note: per-issue session storage (Linear's `linear_issue_sessions`,
+// GitHub's `github_issue_sessions`) lives in each provider package as
+// LinearIssueSessionRepo / GitHubIssueSessionRepo. They have different
+// shapes (Linear has PAT-mode `claim`, GitHub doesn't) and back different
+// tables — there's no shared interface here on purpose.
 
 export interface NewSetupLink {
   /** OMA tenant that owns this setup link. See NewInstallation.tenantId. */

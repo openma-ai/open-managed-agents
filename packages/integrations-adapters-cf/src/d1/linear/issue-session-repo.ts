@@ -1,12 +1,14 @@
-import type { SqlClient } from "@open-managed-agents/sql-client";
-
+import type { SessionId } from "@open-managed-agents/integrations-core";
 import type {
-  IssueSession,
-  IssueSessionRepo,
-  IssueSessionStatus,
-  SessionId,
-} from "@open-managed-agents/integrations-core";
+  LinearIssueSession,
+  LinearIssueSessionRepo,
+  LinearIssueSessionStatus,
+} from "@open-managed-agents/linear";
 
+/** Pending claims older than this are eligible for reassignIfInactive
+ *  takeover. Live claims fulfill in <1s typically (just one sessions.create
+ *  RPC), so 60s is conservatively long enough to never preempt a healthy
+ *  winner while still bounding the recovery window for crash-during-create. */
 const PENDING_STALE_AFTER_MS = 60_000;
 
 interface Row {
@@ -18,10 +20,24 @@ interface Row {
   created_at: number;
 }
 
-export class SqlIssueSessionRepo implements IssueSessionRepo {
-  constructor(private readonly db: SqlClient) {}
+/**
+ * Linear's per-issue session bookkeeping. One row per (publication, issueId)
+ * binding the OMA session that's actively handling that issue.
+ *
+ * Linear-specific: PAT mode uses `claim` (autopilot sweep), webhook mode
+ * uses `claimPending`/`fulfillPending`/`releasePending`/`reassignIfInactive`
+ * (two-phase claim against the AgentSessionEvent + AppUserNotification race).
+ *
+ * Backed by table `linear_issue_sessions`. GitHub has its own twin
+ * (D1GitHubIssueSessionRepo / `github_issue_sessions`) — strictly separate.
+ */
+export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
+  constructor(private readonly db: D1Database) {}
 
-  async getByIssue(publicationId: string, issueId: string): Promise<IssueSession | null> {
+  async getByIssue(
+    publicationId: string,
+    issueId: string,
+  ): Promise<LinearIssueSession | null> {
     const row = await this.db
       .prepare(
         `SELECT * FROM linear_issue_sessions
@@ -32,14 +48,7 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
     return row ? this.toDomain(row) : null;
   }
 
-  async insert(row: IssueSession): Promise<void> {
-    // UPSERT: per_issue mode reuses an existing row when re-delegated.
-    // Without ON CONFLICT we 500 when a stale (status='inactive') row from
-    // a prior delegation still occupies (publication_id, issue_id), which
-    // is the natural state between the previous session ending and this
-    // webhook arriving. excluded.* is SQLite syntax for the new VALUES.
-    // tenant_id is preserved on conflict — re-delegations within the same
-    // publication can never change tenant.
+  async insert(row: LinearIssueSession): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO linear_issue_sessions
@@ -57,7 +66,7 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
   async updateStatus(
     publicationId: string,
     issueId: string,
-    status: IssueSessionStatus,
+    status: LinearIssueSessionStatus,
   ): Promise<void> {
     await this.db
       .prepare(
@@ -68,7 +77,7 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
       .run();
   }
 
-  async listActive(publicationId: string): Promise<readonly IssueSession[]> {
+  async listActive(publicationId: string): Promise<readonly LinearIssueSession[]> {
     const { results } = await this.db
       .prepare(
         `SELECT * FROM linear_issue_sessions
@@ -79,27 +88,22 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
     return (results ?? []).map((r) => this.toDomain(r));
   }
 
-  private toDomain(row: Row): IssueSession {
+  private toDomain(row: Row): LinearIssueSession {
     return {
       tenantId: row.tenant_id,
       publicationId: row.publication_id,
       issueId: row.issue_id,
       sessionId: row.session_id,
-      status: row.status as IssueSessionStatus,
+      status: row.status as LinearIssueSessionStatus,
       createdAt: row.created_at,
     };
   }
 
   /**
-   * PAT-mode atomic claim. We can't use webhooks to dedupe (no app source),
-   * so the dispatch sweep MUST hold an exclusive lock on (publication, issue)
-   * before calling sessions.create() — otherwise two concurrent ticks both
-   * spawn workers for the same issue.
-   *
-   * Pattern: INSERT new row OR overwrite existing inactive row, atomically.
-   * RETURNING tells us whether we actually wrote (= claimed). An existing
-   * 'active' row blocks the WHERE on the conflict path, so RETURNING is
-   * empty for "someone else already owns this".
+   * PAT-mode atomic claim — Linear-only. PAT installs have no webhook source
+   * to dedupe against, so the autopilot sweep MUST hold an exclusive lock on
+   * (publication, issue) before calling sessions.create(). Without this, two
+   * concurrent ticks both spawn workers for the same issue.
    */
   async claim(input: {
     tenantId: string;
@@ -121,13 +125,7 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
          WHERE linear_issue_sessions.status != 'active'
          RETURNING session_id`,
       )
-      .bind(
-        input.tenantId,
-        input.publicationId,
-        input.issueId,
-        input.sessionId,
-        input.nowMs,
-      )
+      .bind(input.tenantId, input.publicationId, input.issueId, input.sessionId, input.nowMs)
       .first<{ session_id: string }>();
     return result !== null;
   }

@@ -70,7 +70,7 @@ import {
   type NormalizedWebhookEvent,
   type RawWebhookEnvelope,
 } from "./webhook/parse";
-import type { GitHubPublicationRepo } from "./ports";
+import type { GitHubIssueSessionRepo, GitHubPublicationRepo } from "./ports";
 
 // 60 minutes — covers the slow path: open the wizard, manually create the
 // App on GitHub, download the .pem, paste 4-5 fields back. The previous
@@ -83,10 +83,15 @@ const PROVIDER_ID: ProviderId = "github";
  * `publications` is narrowed to GitHubPublicationRepo so the provider can
  * reach the publication-first credential staging methods (insertShell,
  * setCredentials, getPrivateKey, bindInstallation, findByAppOmaId).
+ *
+ * `githubIssueSessions` is GitHub-specific (backs `github_issue_sessions`).
+ * Strictly separate from Linear's `linearIssueSessions` so schema changes
+ * for one provider can't bleed into the other.
  */
 export interface GitHubContainer
   extends Omit<Container, "publications"> {
   publications: GitHubPublicationRepo;
+  githubIssueSessions: GitHubIssueSessionRepo;
 }
 
 export class GitHubProvider implements IntegrationProvider {
@@ -1001,7 +1006,7 @@ export class GitHubProvider implements IntegrationProvider {
       // ms). Without claim, getByIssue→null+sessions.create→insert lets
       // both wake parallel sessions that each post a reply.
       const PENDING_FRESH_MS = 60_000;
-      const existing = await this.container.issueSessions.getByIssue(
+      const existing = await this.container.githubIssueSessions.getByIssue(
         publication.id,
         issueKey,
       );
@@ -1020,7 +1025,7 @@ export class GitHubProvider implements IntegrationProvider {
         );
         return existing.sessionId;
       }
-      const claimed = await this.container.issueSessions.claimPending({
+      const claimed = await this.container.githubIssueSessions.claimPending({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: issueKey,
@@ -1040,7 +1045,7 @@ export class GitHubProvider implements IntegrationProvider {
           },
           initialEvent: sessionEvent,
         });
-        const fulfilled = await this.container.issueSessions.fulfillPending(
+        const fulfilled = await this.container.githubIssueSessions.fulfillPending(
           publication.id,
           issueKey,
           created.sessionId,
@@ -1053,7 +1058,7 @@ export class GitHubProvider implements IntegrationProvider {
         return created.sessionId;
       } catch (err) {
         try {
-          await this.container.issueSessions.releasePending(publication.id, issueKey);
+          await this.container.githubIssueSessions.releasePending(publication.id, issueKey);
         } catch {
           // best-effort rollback
         }

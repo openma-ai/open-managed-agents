@@ -18,10 +18,14 @@ import type {
   Persona,
   Publication,
   SessionGranularity,
+  SessionId,
   Clock,
 } from "@open-managed-agents/integrations-core";
 
 import type {
+  GitHubIssueSession,
+  GitHubIssueSessionRepo,
+  GitHubIssueSessionStatus,
   GitHubPublicationCredentialState,
   GitHubPublicationRepo,
 } from "./ports";
@@ -208,6 +212,64 @@ export class InMemoryGitHubPublicationRepo
   }
 }
 
+/**
+ * In-memory fake of GitHubIssueSessionRepo. GitHub-only — webhook-mode
+ * two-phase claim, no PAT-mode `claim`. Mirrors the SQL/D1 adapter's
+ * INSERT OR IGNORE / UPDATE WHERE status='pending' / DELETE WHERE
+ * status='pending' semantics.
+ */
+export class InMemoryGitHubIssueSessionRepo implements GitHubIssueSessionRepo {
+  private rows = new Map<string, GitHubIssueSession>();
+
+  private key(publicationId: string, issueId: string): string {
+    return `${publicationId}:${issueId}`;
+  }
+
+  async getByIssue(
+    publicationId: string,
+    issueId: string,
+  ): Promise<GitHubIssueSession | null> {
+    return this.rows.get(this.key(publicationId, issueId)) ?? null;
+  }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean> {
+    const k = this.key(args.publicationId, args.issueId);
+    if (this.rows.has(k)) return false; // INSERT OR IGNORE semantics
+    this.rows.set(k, {
+      tenantId: args.tenantId,
+      publicationId: args.publicationId,
+      issueId: args.issueId,
+      sessionId: "",
+      status: "pending",
+      createdAt: args.nowMs,
+    });
+    return true;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, issueId);
+    const row = this.rows.get(k);
+    if (!row || row.status !== "pending") return false;
+    this.rows.set(k, { ...row, sessionId, status: "active" });
+    return true;
+  }
+
+  async releasePending(publicationId: string, issueId: string): Promise<void> {
+    const k = this.key(publicationId, issueId);
+    const row = this.rows.get(k);
+    if (row && row.status === "pending") this.rows.delete(k);
+  }
+}
+
 /** Strips the `enc(...)` wrapper FakeCrypto applies. Provider tests pass
  *  cipher strings produced by FakeCrypto.encrypt — we decode here so the
  *  fake's internal storage holds plaintext (mirrors what real D1 would
@@ -231,11 +293,13 @@ function decode(cipher: string): string {
  */
 export type FakeGitHubContainer = Omit<FakeContainer, "publications"> & {
   publications: InMemoryGitHubPublicationRepo;
+  githubIssueSessions: InMemoryGitHubIssueSessionRepo;
 };
 
 export function buildFakeGitHubContainer(): FakeGitHubContainer {
   const base = buildFakeContainer();
   const publications = new InMemoryGitHubPublicationRepo(base.clock);
-  return { ...base, publications };
+  const githubIssueSessions = new InMemoryGitHubIssueSessionRepo();
+  return { ...base, publications, githubIssueSessions };
 }
 

@@ -14,7 +14,6 @@ import type {
   DispatchRuleRepo,
   GitHubAppRepo,
   InstallationRepo,
-  IssueSessionRepo,
   PublicationRepo,
   SessionScopeRepo,
   SetupLinkRepo,
@@ -284,8 +283,6 @@ export interface Container {
    *  `LinearEventStore` (extends WebhookEventStore with the merged-table
    *  drain queue methods); GitHub/Slack use the base interface. */
   webhookEvents: WebhookEventStore;
-  /** Per-issue session reuse (Linear/GitHub). */
-  issueSessions: IssueSessionRepo;
   /** Cron autopilot rules — Linear only for now. */
   dispatchRules: DispatchRuleRepo;
   /** Per-thread / per-channel session reuse (Slack). */

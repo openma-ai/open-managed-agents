@@ -10,6 +10,9 @@ export type { GitHubContainer } from "./provider";
 export type {
   GitHubPublicationRepo,
   GitHubPublicationCredentialState,
+  GitHubIssueSession,
+  GitHubIssueSessionRepo,
+  GitHubIssueSessionStatus,
 } from "./ports";
 export {
   type GitHubConfig,

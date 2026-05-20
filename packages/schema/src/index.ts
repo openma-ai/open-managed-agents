@@ -577,6 +577,21 @@ export async function applyIntegrationsSchema(opts: {
       CREATE INDEX IF NOT EXISTS "idx_linear_issue_sessions_active"
         ON "linear_issue_sessions" ("publication_id", "status");
 
+      -- GitHub gets its own table so schema/ownership stays isolated. Same
+      -- shape as Linear's per-issue session bookkeeping; issue_id here is
+      -- "<owner/repo>#<number>".
+      CREATE TABLE IF NOT EXISTS "github_issue_sessions" (
+        "tenant_id"      TEXT NOT NULL,
+        "publication_id" TEXT NOT NULL,
+        "issue_id"       TEXT NOT NULL,
+        "session_id"     TEXT NOT NULL,
+        "status"         TEXT NOT NULL,
+        "created_at"     ${intT} NOT NULL,
+        PRIMARY KEY ("publication_id", "issue_id")
+      );
+      CREATE INDEX IF NOT EXISTS "idx_github_issue_sessions_active"
+        ON "github_issue_sessions" ("publication_id", "status");
+
       CREATE TABLE IF NOT EXISTS "linear_dispatch_rules" (
         "id"                     TEXT PRIMARY KEY NOT NULL,
         "tenant_id"              TEXT NOT NULL,

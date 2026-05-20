@@ -322,23 +322,13 @@ export interface GitHubAppCredentials {
   createdAt: number;
 }
 
-/**
- * Per-issue session reuse for Linear/GitHub providers. Linear binds one
- * session per issue UUID; GitHub binds one per `<repo>#<number>`. Slack uses
- * a parallel `SessionScope` keyed on `${channel}:${thread_ts}` (see below).
- */
-export interface IssueSession {
-  /** OMA tenant that owns this issue-session row. NOT NULL in storage. */
-  tenantId: string;
-  publicationId: string;
-  /** Provider-native issue id. */
-  issueId: string;
-  sessionId: SessionId;
-  status: IssueSessionStatus;
-  createdAt: number;
-}
+// Per-issue session bookkeeping moved out of core. Linear and GitHub each
+// own their own typed shape (`LinearIssueSession` / `GitHubIssueSession`)
+// in their respective provider packages, backed by separate tables. There
+// is no longer a unified `IssueSession` here on purpose — the conflation
+// is what produced the cross-provider table leak we just split out.
 
-export type IssueSessionStatus = SessionScopeStatus;
+
 
 /**
  * Generalized session-scope binding for providers whose session granularity

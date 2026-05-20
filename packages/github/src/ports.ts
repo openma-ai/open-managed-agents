@@ -132,3 +132,56 @@ export interface GitHubPublicationRepo extends PublicationRepo {
    */
   findByAppOmaId(appOmaId: string): Promise<Publication | null>;
 }
+
+// ─── per-issue session bookkeeping ─────────────────────────────────────────
+// Twin of LinearIssueSessionRepo (packages/linear/src/ports.ts), backed by
+// the separate `github_issue_sessions` table. Strictly isolated from Linear:
+// different storage, different interface, different repo class. GitHub has
+// no PAT mode (App-only install path), so there's no `claim` method here —
+// only the two-phase webhook claim used by dispatchEvent against the
+// concurrent issues.* + issue_comment.* webhook race.
+
+import type { SessionId } from "@open-managed-agents/integrations-core";
+
+export type GitHubIssueSessionStatus = "pending" | "active" | "failed" | "inactive";
+
+export interface GitHubIssueSession {
+  tenantId: string;
+  publicationId: string;
+  /** "<owner/repo>#<number>" */
+  issueId: string;
+  sessionId: SessionId;
+  status: GitHubIssueSessionStatus;
+  createdAt: number;
+}
+
+export interface GitHubIssueSessionRepo {
+  getByIssue(
+    publicationId: string,
+    issueId: string,
+  ): Promise<GitHubIssueSession | null>;
+
+  /**
+   * Two-phase webhook claim — phase 1. INSERT OR IGNORE at status='pending'
+   * with empty placeholder session_id. Returns true when this caller won
+   * the claim, false when a sibling webhook delivery beat us to it.
+   */
+  claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean>;
+
+  /** Two-phase webhook claim — phase 2. UPDATE pending → active with the
+   *  real session id. */
+  fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean>;
+
+  /** Two-phase webhook claim — abort. DELETE pending row on sessions.create
+   *  failure so a retry can re-claim. */
+  releasePending(publicationId: string, issueId: string): Promise<void>;
+}

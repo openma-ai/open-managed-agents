@@ -33,9 +33,6 @@ import type {
   Installation,
   InstallationRepo,
   InstallKind,
-  IssueSession,
-  IssueSessionRepo,
-  IssueSessionStatus,
   JwtSigner,
   NewAppCredentials,
   NewDispatchRule,
@@ -850,114 +847,6 @@ export class InMemorySessionScopeRepo implements SessionScopeRepo {
   }
 }
 
-export class InMemoryIssueSessionRepo implements IssueSessionRepo {
-  private rows = new Map<string, IssueSession>();
-
-  private key(publicationId: string, issueId: string): string {
-    return `${publicationId}:${issueId}`;
-  }
-
-  async getByIssue(publicationId: string, issueId: string): Promise<IssueSession | null> {
-    return this.rows.get(this.key(publicationId, issueId)) ?? null;
-  }
-
-  async insert(row: IssueSession): Promise<void> {
-    this.rows.set(this.key(row.publicationId, row.issueId), row);
-  }
-
-  async updateStatus(
-    publicationId: string,
-    issueId: string,
-    status: IssueSessionStatus,
-  ): Promise<void> {
-    const k = this.key(publicationId, issueId);
-    const row = this.rows.get(k);
-    if (row) this.rows.set(k, { ...row, status });
-  }
-
-  async listActive(publicationId: string): Promise<readonly IssueSession[]> {
-    return [...this.rows.values()].filter(
-      (r) => r.publicationId === publicationId && r.status === "active",
-    );
-  }
-
-  async claim(input: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    sessionId: SessionId;
-    nowMs: number;
-  }): Promise<boolean> {
-    const k = this.key(input.publicationId, input.issueId);
-    const existing = this.rows.get(k);
-    if (existing && existing.status === "active") return false;
-    this.rows.set(k, {
-      tenantId: input.tenantId,
-      publicationId: input.publicationId,
-      issueId: input.issueId,
-      sessionId: input.sessionId,
-      status: "active",
-      createdAt: input.nowMs,
-    });
-    return true;
-  }
-
-  async claimPending(args: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    nowMs: number;
-  }): Promise<boolean> {
-    const k = this.key(args.publicationId, args.issueId);
-    if (this.rows.has(k)) return false; // INSERT OR IGNORE semantics
-    this.rows.set(k, {
-      tenantId: args.tenantId,
-      publicationId: args.publicationId,
-      issueId: args.issueId,
-      sessionId: "",
-      status: "pending",
-      createdAt: args.nowMs,
-    });
-    return true;
-  }
-
-  async fulfillPending(
-    publicationId: string,
-    issueId: string,
-    sessionId: SessionId,
-  ): Promise<boolean> {
-    const k = this.key(publicationId, issueId);
-    const row = this.rows.get(k);
-    if (!row || row.status !== "pending") return false;
-    this.rows.set(k, { ...row, sessionId, status: "active" });
-    return true;
-  }
-
-  async releasePending(publicationId: string, issueId: string): Promise<void> {
-    const k = this.key(publicationId, issueId);
-    const row = this.rows.get(k);
-    if (row && row.status === "pending") this.rows.delete(k);
-  }
-
-  async reassignIfInactive(
-    publicationId: string,
-    issueId: string,
-    newSessionId: SessionId,
-    now: number,
-  ): Promise<boolean> {
-    const k = this.key(publicationId, issueId);
-    const row = this.rows.get(k);
-    if (!row) return false;
-    const PENDING_STALE_AFTER_MS = 60_000;
-    const eligible =
-      (row.status !== "active" && row.status !== "pending") ||
-      (row.status === "pending" && row.createdAt < now - PENDING_STALE_AFTER_MS);
-    if (!eligible) return false;
-    this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
-    return true;
-  }
-}
-
 export class InMemorySetupLinkRepo implements SetupLinkRepo {
   private rows = new Map<string, SetupLink>();
 
@@ -1037,7 +926,6 @@ export interface FakeContainer {
   apps: InMemoryAppRepo;
   githubApps: InMemoryGitHubAppRepo;
   webhookEvents: InMemoryWebhookEventStore;
-  issueSessions: InMemoryIssueSessionRepo;
   sessionScopes: InMemorySessionScopeRepo;
   setupLinks: InMemorySetupLinkRepo;
   dispatchRules: InMemoryDispatchRuleRepo;
@@ -1060,7 +948,6 @@ export function buildFakeContainer(): FakeContainer {
     apps: new InMemoryAppRepo(clock),
     githubApps: new InMemoryGitHubAppRepo(clock),
     webhookEvents: new InMemoryWebhookEventStore(),
-    issueSessions: new InMemoryIssueSessionRepo(),
     sessionScopes: new InMemorySessionScopeRepo(),
     setupLinks: new InMemorySetupLinkRepo(),
     dispatchRules: new InMemoryDispatchRuleRepo(clock),

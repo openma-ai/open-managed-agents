@@ -36,6 +36,7 @@ import {
   buildTokenExchangeBody,
   parseTokenResponse,
 } from "./oauth/protocol";
+import type { LinearIssueSessionRepo } from "./ports";
 import { parseWebhook, type NormalizedWebhookEvent, type RawWebhookEnvelope } from "./webhook/parse";
 
 /** Subset of Container the LinearProvider depends on. Narrows
@@ -45,6 +46,10 @@ import { parseWebhook, type NormalizedWebhookEvent, type RawWebhookEnvelope } fr
 export interface LinearContainer extends Container {
   webhookEvents: LinearEventStore;
   publications: LinearPublicationRepo;
+  /** Linear-specific per-issue session bookkeeping (`linear_issue_sessions`
+   *  table). Backed by D1LinearIssueSessionRepo / SqlLinearIssueSessionRepo
+   *  in production, InMemoryLinearIssueSessionRepo in tests. */
+  linearIssueSessions: LinearIssueSessionRepo;
 }
 
 const OAUTH_STATE_TTL_SECONDS = 30 * 60; // 30 min — covers slow OAuth UX
@@ -664,7 +669,7 @@ export class LinearProvider implements IntegrationProvider {
       if (event.actorUserId && installation.botUserId === event.actorUserId) {
         return { handled: false, reason: "comment_from_bot_self" };
       }
-      const existing = await this.container.issueSessions.getByIssue(
+      const existing = await this.container.linearIssueSessions.getByIssue(
         publication.id,
         event.issueId,
       );
@@ -842,7 +847,7 @@ export class LinearProvider implements IntegrationProvider {
       // its own message. Stale pending rows (>60s, winner crashed) fall
       // through to reassignIfInactive recovery below.
       const PENDING_FRESH_MS = 60_000;
-      const existing = await this.container.issueSessions.getByIssue(
+      const existing = await this.container.linearIssueSessions.getByIssue(
         publication.id,
         event.issueId,
       );
@@ -872,7 +877,7 @@ export class LinearProvider implements IntegrationProvider {
       }
       // Two-phase claim — phase 1: insert pending row, atomically. Loser
       // returns null (sibling is creating).
-      const claimed = await this.container.issueSessions.claimPending({
+      const claimed = await this.container.linearIssueSessions.claimPending({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: event.issueId,
@@ -898,7 +903,7 @@ export class LinearProvider implements IntegrationProvider {
           metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
           initialEvent: sessionEvent,
         });
-        const fulfilled = await this.container.issueSessions.fulfillPending(
+        const fulfilled = await this.container.linearIssueSessions.fulfillPending(
           publication.id,
           event.issueId,
           created.sessionId,
@@ -917,7 +922,7 @@ export class LinearProvider implements IntegrationProvider {
         // leave it, the row stays pending forever and events get dropped
         // until the 60s staleness window opens.
         try {
-          await this.container.issueSessions.releasePending(publication.id, event.issueId);
+          await this.container.linearIssueSessions.releasePending(publication.id, event.issueId);
         } catch {
           // best-effort rollback
         }
@@ -1483,7 +1488,7 @@ export class LinearProvider implements IntegrationProvider {
     nowMs: number;
   }): Promise<boolean> {
     const { rule, publication, installation, accessToken, issue, nowMs } = args;
-    const claimed = await this.container.issueSessions.claim({
+    const claimed = await this.container.linearIssueSessions.claim({
       tenantId: publication.tenantId,
       publicationId: publication.id,
       issueId: issue.id,
@@ -1522,7 +1527,7 @@ export class LinearProvider implements IntegrationProvider {
       sessionId = created.sessionId;
 
       // UPSERT the row with the real session id (replaces the sentinel).
-      await this.container.issueSessions.insert({
+      await this.container.linearIssueSessions.insert({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: issue.id,
@@ -1533,7 +1538,7 @@ export class LinearProvider implements IntegrationProvider {
     } catch (err) {
       // Roll back the claim so next tick can retry.
       try {
-        await this.container.issueSessions.updateStatus(
+        await this.container.linearIssueSessions.updateStatus(
           publication.id,
           issue.id,
           "failed",

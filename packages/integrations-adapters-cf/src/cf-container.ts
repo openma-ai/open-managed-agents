@@ -34,10 +34,11 @@ import { D1AppRepo } from "./d1/app-repo";
 import { D1DispatchRuleRepo } from "./d1/dispatch-rule-repo";
 import { D1GitHubAppRepo } from "./d1/github-app-repo";
 import { D1GitHubInstallationRepo } from "./d1/github/installation-repo";
+import { D1GitHubIssueSessionRepo } from "./d1/github/issue-session-repo";
 import { D1GitHubPublicationRepo } from "./d1/github/publication-repo";
 import { D1GitHubWebhookEventStore } from "./d1/github/webhook-event-store";
 import { D1InstallationRepo } from "./d1/installation-repo";
-import { D1IssueSessionRepo } from "./d1/issue-session-repo";
+import { D1LinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
 import { D1LinearEventStore } from "./d1/linear-event-store";
 import { D1PublicationRepo } from "./d1/publication-repo";
 import { D1SetupLinkRepo } from "./d1/setup-link-repo";
@@ -103,7 +104,14 @@ export function buildCfRepos(env: CfReposEnv) {
   // GitHub gets its own (github_webhook_events), completing 0009's split.
   const linearEvents = new D1LinearEventStore(idb);
   const githubWebhookEvents = new D1GitHubWebhookEventStore(idb);
-  const issueSessions = new D1IssueSessionRepo(idb);
+  // Linear and GitHub each get their own per-issue session table — same
+  // schema, different name. Until 0005_github_issue_sessions both providers
+  // wrote to `linear_issue_sessions`, which silently commingled data and
+  // tied schema changes together. Strictly separate now: separate classes,
+  // separate interfaces (LinearIssueSessionRepo / GitHubIssueSessionRepo),
+  // separate tables.
+  const linearIssueSessions = new D1LinearIssueSessionRepo(idb);
+  const githubIssueSessions = new D1GitHubIssueSessionRepo(idb);
   const setupLinks = new D1SetupLinkRepo(idb, ids);
   const dispatchRules = new D1DispatchRuleRepo(idb, ids);
   // Slack-specific repo also satisfies the Container's `sessionScopes` slot —
@@ -127,7 +135,8 @@ export function buildCfRepos(env: CfReposEnv) {
     githubApps,
     linearEvents,
     githubWebhookEvents,
-    issueSessions,
+    linearIssueSessions,
+    githubIssueSessions,
     sessionScopes,
     setupLinks,
     dispatchRules,
