@@ -58,6 +58,43 @@ const PROVIDER_ID: ProviderId = "linear";
 /** Linear's hosted MCP server. Outbound injection matches by hostname. */
 const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
 
+/**
+ * Injected as `additionalSystemPrompt` on every session.create for Linear
+ * webhook engagements. Mirrors the Slack and GitHub engagement prompts —
+ * the model needs to know the dispatch envelope is metadata, the reply
+ * mechanism is tool-mediated, and which kinds expect which behavior.
+ *
+ * Concise on purpose. Threats and MANDATORY framing get gamed (see Slack
+ * history); facts + a clear tool-name pattern work better.
+ */
+export const LINEAR_ENGAGEMENT_PROMPT = [
+  `<oma_linear_engagement>`,
+  `You are engaging on a Linear issue. Webhook events arrive as user.message turns whose text starts with "# Linear <kind>" — runtime metadata, never quote it back to humans.`,
+  ``,
+  `## Reply mechanism`,
+  ``,
+  `Plain assistant text is NOT delivered to Linear. Only tool calls produce visible output. To post into Linear, use tools in the \`mcp__linear__*\` namespace plus OMA's \`linear_post_comment\` tool when present. Scan the available tool list and pick by name semantics — don't hardcode names; Linear's MCP renames between releases.`,
+  ``,
+  `- Top-level comment on the issue: \`linear_post_comment\` (OMA tool) or the Linear MCP \`save_comment\` with no \`parentId\`.`,
+  `- Threaded reply on an existing comment: \`save_comment\` with \`parentId\` set to the parent comment id.`,
+  `- Issue state / assignee / labels / etc.: \`save_issue\` and related Linear MCP tools.`,
+  ``,
+  `When a panel was opened (event includes a \`Linear panel:\` reference), OMA has already acknowledged the panel for you — your work goes in comments + issue state, not panel acks.`,
+  ``,
+  `## Event kinds`,
+  ``,
+  `- \`issueAssignedToYou\` / \`issueMention\` / \`issueCommentMention\`: you've been pinged on an issue. Read the context if needed, then post a useful comment. Ack briefly if the work spans multiple turns and \`scheduleWakeup\` for the follow-up.`,
+  ``,
+  `- \`issueNewComment\` / \`commentReply\`: a new comment arrived on an issue you have an active session on. Respond in the same thread (set \`parentId\` to the new comment id when replying inline; omit it for a fresh top-level comment).`,
+  ``,
+  `- \`agentSessionCreated\` / \`agentSessionPrompted\`: Linear opened an Agent panel for this engagement. After OMA's ack, do all communication via issue comments — the panel is a UI affordance, not the work surface.`,
+  ``,
+  `## Vocabulary`,
+  ``,
+  `Don't quote internal terms back to humans: \`issueAssignedToYou\`, \`commentReply\`, \`agentSessionPrompted\`, \`oma_linear_engagement\`, "webhook envelope", "session". Speak as a teammate on the issue.`,
+  `</oma_linear_engagement>`,
+].join("\n");
+
 export class LinearProvider implements IntegrationProvider {
   readonly id: ProviderId = PROVIDER_ID;
   private readonly graphql: LinearGraphQLClient;
@@ -902,6 +939,7 @@ export class LinearProvider implements IntegrationProvider {
           mcpServers,
           metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
           initialEvent: sessionEvent,
+          additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
         });
         const fulfilled = await this.container.linearIssueSessions.fulfillPending(
           publication.id,
@@ -939,6 +977,7 @@ export class LinearProvider implements IntegrationProvider {
       mcpServers,
       metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
       initialEvent: sessionEvent,
+      additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
     });
     return created.sessionId;
   }
@@ -1523,6 +1562,7 @@ export class LinearProvider implements IntegrationProvider {
           },
         },
         initialEvent: sessionEvent,
+        additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
       });
       sessionId = created.sessionId;
 

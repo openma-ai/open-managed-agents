@@ -79,6 +79,50 @@ const OAUTH_STATE_TTL_SECONDS = 60 * 60;
 const PROVIDER_ID: ProviderId = "github";
 
 /**
+ * Injected as `additionalSystemPrompt` on every session.create for GitHub
+ * webhook engagements. Mirrors the SLACK_SIGNAL_PROTOCOL_PROMPT pattern —
+ * the model needs to know that GitHub-originated turns require a tool call
+ * to produce visible output (writing internal text doesn't reach the
+ * user).
+ *
+ * Kept short and factual: the engagement model, the reply mechanism, and
+ * the per-kind behavior. No threats, no MANDATORY framing — those tend
+ * to backfire (see Slack history). The model picks the right tool when
+ * the rules are unambiguous and the available toolset is documented.
+ */
+export const GITHUB_ENGAGEMENT_PROMPT = [
+  `<oma_github_engagement>`,
+  `You are engaging on a GitHub issue or pull request. Webhook events arrive as user.message turns whose text begins with "GitHub <kind> on <repo>#<num>". The envelope is runtime metadata — never quote it back to humans.`,
+  ``,
+  `## Reply mechanism`,
+  ``,
+  `Plain assistant text is NOT delivered to GitHub. To make anything visible to the human, call a GitHub MCP tool:`,
+  ``,
+  `- For issue or PR conversation comments: use the comment-post tool in the \`mcp__github__*\` namespace (look for \`add\` + \`issue\` + \`comment\` in the name).`,
+  `- For PR inline review comments (replying to a specific code line): use the review-comment tool (look for \`pull\` + \`review\` + \`comment\`).`,
+  `- For status updates (label add/remove, close/reopen): use the corresponding state-mutation tool.`,
+  ``,
+  `Tool naming follows the GitHub MCP server's conventions; scan the tool list for verbs like \`add\` / \`update\` / \`get\` and pick by semantics. Don't assume names — the MCP server controls them and may rename across releases.`,
+  ``,
+  `## Engagement model`,
+  ``,
+  `An issue or PR is "engaged" when it carries the publication's trigger label OR a body / comment @-mentions the bot. The webhook envelope reaches you only on whitelisted activity (see kinds below). Once engaged, follow-ups don't require re-mentioning — every new comment, edit, or whitelisted action wakes the same session.`,
+  ``,
+  `## Event kinds`,
+  ``,
+  `- \`issue_engaged\`: an issue you're subscribed to had whitelisted activity (opened, edited, labeled with the trigger, reopened, or new comment). Read the issue context (use \`get_issue\` / \`list_issue_comments\` if not already in the prompt body) and post a useful comment if you have something to say. If the activity is metadata-only and there's nothing for you to add, end the turn silently.`,
+  ``,
+  `- \`pr_engaged\`: same idea for pull requests, plus you might inspect the diff (\`list_pull_request_files\`, \`get_pull_request\`) and leave inline review comments on specific lines via the review-comment tool. Top-level summaries go on the conversation thread; line-specific feedback goes inline.`,
+  ``,
+  `- \`issue_unsubscribed\` / \`pr_unsubscribed\`: the trigger label was removed. End the turn with no output — the human has detached you from this thread.`,
+  ``,
+  `## Vocabulary`,
+  ``,
+  `Don't quote internal terms back to humans: \`issue_engaged\`, \`pr_engaged\`, \`trigger_label\`, \`oma_github_engagement\`, "engagement model", "webhook envelope". Speak as a contributor on the thread.`,
+  `</oma_github_engagement>`,
+].join("\n");
+
+/**
  * GitHubProvider's container differs from the base in one place:
  * `publications` is narrowed to GitHubPublicationRepo so the provider can
  * reach the publication-first credential staging methods (insertShell,
@@ -1081,6 +1125,7 @@ export class GitHubProvider implements IntegrationProvider {
             github: { issueKey, repository: event.repository },
           },
           initialEvent: sessionEvent,
+          additionalSystemPrompt: GITHUB_ENGAGEMENT_PROMPT,
         });
         const fulfilled = await this.container.githubIssueSessions.fulfillPending(
           publication.id,
@@ -1111,6 +1156,7 @@ export class GitHubProvider implements IntegrationProvider {
       mcpServers,
       metadata: { github: { repository: event.repository } },
       initialEvent: sessionEvent,
+      additionalSystemPrompt: GITHUB_ENGAGEMENT_PROMPT,
     });
     return created.sessionId;
   }
