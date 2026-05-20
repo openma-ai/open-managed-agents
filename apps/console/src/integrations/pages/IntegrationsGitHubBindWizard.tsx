@@ -24,22 +24,34 @@ type Phase = "config" | "registering" | "installing" | "done" | "error";
  *
  * Phases:
  *   config       → user picks agent + env + persona + clicks "Bind"
- *                  We POST start-a1, get formToken + manifestStartUrl.
+ *                  We POST start-a1 → backend INSERTs a github_publications
+ *                  shell row (status='pending_setup', app_oma_id minted)
+ *                  and returns formToken + manifestStartUrl + publicationId.
  *   registering  → we open manifestStartUrl in a popup. User confirms on
  *                  GitHub. GitHub redirects through our gateway which
- *                  exchanges the manifest code and writes the App row.
- *                  Meanwhile we poll listInstallations() until we see
- *                  the new appOmaId show up as a publication shell.
+ *                  exchanges the manifest code and PATCH'es credentials onto
+ *                  the publication row.
+ *                  Meanwhile we poll listInstallations() until we see the
+ *                  publication go to 'live' (after install callback runs).
  *   installing   → we open the install URL (returned from manifest
  *                  callback) in a popup. User picks org and confirms
- *                  install. Gateway completes install_callback. We poll
- *                  until publication.status === "live".
+ *                  install. Gateway calls /github/oauth/pub/<pubId>/callback
+ *                  which mints the installation token, creates the vault,
+ *                  and binds installation_id back onto the publication. We
+ *                  poll until publication.status === "live".
  *   done         → success. Show confetti-equivalent and a link to the
  *                  workspace page.
+ *
+ * The publication-first flow means even mid-flow failure (network blip on
+ * manifest exchange, OAuth callback timeout) leaves at most a publication
+ * row in 'pending_setup' or 'credentials_filled' — never a ghost
+ * installation/app pair. User can re-run the wizard to start a fresh shell
+ * or hand off the same formToken via /github-setup/<token> for an admin to
+ * complete.
  */
 export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: Props) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [agentId, setAgentId] = useState<string>("");
@@ -72,13 +84,74 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
     void loadEnvironments().then(setEnvironments);
   }, [loadAgents, loadEnvironments]);
 
-  // Default persona name to the chosen agent's name.
+  // Refresh-resume hydration. When the wizard renders with `?pub=<id>` (set
+  // by replaceState below or by the pending-pub list page), re-issue a fresh
+  // formToken against the existing shell row and pick up where we left off.
+  // Server is the source of truth — no sessionStorage / localStorage.
   useEffect(() => {
-    if (!persona && agentId) {
+    const resumePubId = searchParams.get("pub");
+    if (!resumePubId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pub = await api.github.getPublication(resumePubId);
+        if (cancelled) return;
+        if (pub.status === "live") {
+          // Live pubs belong on the list page, not the wizard.
+          setPhase("done");
+          setLivePubId(pub.id);
+          return;
+        }
+        if (pub.status === "unpublished" || pub.status === "needs_reauth") {
+          searchParams.delete("pub");
+          setSearchParams(searchParams, { replace: true });
+          return;
+        }
+        // Re-issue the formToken so the manifestStartUrl works again.
+        const r = await api.github.reissueFormToken(resumePubId);
+        if (cancelled) return;
+        setForm(r);
+        setAgentId(pub.agent_id);
+        setEnvId(pub.environment_id);
+        setPersona(pub.persona.name);
+        // Pick the visible phase off the publication's current status.
+        // pending_setup → user closed the manifest tab before submitting →
+        //   re-render registering with the manifest URL ready.
+        // credentials_filled / awaiting_install → manifest finished, user
+        //   hasn't completed install → resume the install poll.
+        if (pub.status === "pending_setup") {
+          setPhase("registering");
+        } else {
+          setPhase("installing");
+          startInstallPoll(resumePubId);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          searchParams.delete("pub");
+          setSearchParams(searchParams, { replace: true });
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Resume runs once per wizard mount; don't re-trigger on unrelated URL
+    // changes (we mutate search params via replaceState).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Default persona name to the chosen agent's name. Skip once the user has
+  // edited the field — otherwise clearing the input would refill it from the
+  // effect's persona dep, making the field feel un-clearable.
+  const personaEditedRef = useRef(false);
+  useEffect(() => {
+    if (personaEditedRef.current) return;
+    if (agentId) {
       const a = agents.find((x) => x.id === agentId);
       if (a) setPersona(a.name);
     }
-  }, [agentId, agents, persona]);
+  }, [agentId, agents]);
 
   // Tear down any in-flight poll on unmount. Without this, navigating away
   // mid-flow leaves a setInterval firing fetches against a dead component.
@@ -113,6 +186,9 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
         returnUrl: `${window.location.origin}/integrations/github`,
       });
       setForm(r);
+      // Pin publication id to URL so refresh resumes here without losing
+      // wizard state. Server is source of truth — we just stash the id.
+      pinPublicationToUrl(r.publicationId);
       // Open manifest flow in a popup. The popup will eventually navigate
       // to our gateway callback, which auto-redirects to GitHub install.
       if (r.manifestStartUrl) {
@@ -120,20 +196,32 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
       }
       // Optimistically advance to "installing" — once the user's clicked
       // through the manifest flow, GitHub takes them straight into the
-      // install screen. The poll below covers both phases until a live
-      // publication appears.
+      // install screen. The poll below covers both phases until the
+      // publication flips to live.
       setPhase("installing");
-      startInstallPoll();
+      // Track the publication id directly. We have it from start-a1 — no
+      // need to scan listInstallations until the install callback runs.
+      startInstallPoll(r.publicationId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
   }
 
-  // Poll every 5 seconds for a live publication owned by this agent. When we
-  // find one, switch to "done" and stop. Hard cap at ~5 minutes (60 ticks)
-  // so abandoned tabs don't poll forever.
-  function startInstallPoll() {
+  /** Stamp the active publication id into ?pub= so refresh resumes here.
+   *  Pure URL state — no storage. */
+  function pinPublicationToUrl(publicationId: string) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("pub") === publicationId) return;
+    url.searchParams.set("pub", publicationId);
+    window.history.replaceState({}, "", url.toString());
+  }
+
+  // Poll every 5 seconds for the publication's status to flip to 'live'.
+  // We have the publicationId up-front (publication-first flow), so we
+  // can poll it directly instead of scanning all installations. Hard cap
+  // at ~5 minutes (60 ticks) so abandoned tabs don't poll forever.
+  function startInstallPoll(pubId: string) {
     stopPolling();
     let ticks = 0;
     const TICK_MS = 5_000;
@@ -145,18 +233,12 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
         return;
       }
       try {
-        const all = await api.github.listInstallations();
-        for (const inst of all) {
-          const pubs = await api.github.listPublications(inst.id);
-          const live = pubs.find(
-            (p) => p.agent_id === agentId && p.status === "live",
-          );
-          if (live) {
-            stopPolling();
-            setPhase("done");
-            setLivePubId(live.id);
-            return;
-          }
+        const pub = await api.github.getPublication(pubId);
+        if (pub.status === "live") {
+          stopPolling();
+          setPhase("done");
+          setLivePubId(pub.id);
+          return;
         }
       } catch {
         // Network blip — keep polling. We only stop on success or timeout.
@@ -168,18 +250,12 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
   async function refresh() {
     if (!form) return;
     try {
-      const all = await api.github.listInstallations();
-      for (const inst of all) {
-        const pubs = await api.github.listPublications(inst.id);
-        const live = pubs.find(
-          (p) => p.agent_id === agentId && p.status === "live",
-        );
-        if (live) {
-          stopPolling();
-          setPhase("done");
-          setLivePubId(live.id);
-          return;
-        }
+      const pub = await api.github.getPublication(form.publicationId);
+      if (pub.status === "live") {
+        stopPolling();
+        setPhase("done");
+        setLivePubId(pub.id);
+        return;
       }
     } catch {
       // ignore — user can keep waiting
@@ -210,7 +286,7 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
             persona={persona}
             onAgent={setAgentId}
             onEnv={setEnvId}
-            onPersona={setPersona}
+            onPersona={(v) => { personaEditedRef.current = true; setPersona(v); }}
             onSubmit={startBind}
             error={error}
           />
@@ -364,6 +440,33 @@ function ConfigForm({
           required
         />
       </Field>
+
+      <div className="rounded-md border border-border bg-bg-surface/30 p-3 text-[12px] leading-relaxed text-fg-muted">
+        <p className="font-medium text-fg mb-1">How users will engage this bot</p>
+        <ul className="list-disc pl-5 space-y-1">
+          <li>
+            <strong className="text-fg">Primary:</strong> add the{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">{(persona || "<bot>").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}</code>{" "}
+            label to any issue or PR. The bot reacts to whitelisted activity on
+            labeled items (open / edit / new comment / new commits / review).
+          </li>
+          <li>
+            <strong className="text-fg">Fallback:</strong>{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">@{(persona || "&lt;bot&gt;").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}[bot]</code>{" "}
+            in any issue / PR / comment body. (GitHub doesn't autocomplete bot
+            accounts — type the full string. Functionally equivalent to the
+            label trigger.)
+          </li>
+          <li>
+            On install, OMA auto-creates the label in your selected repos. If
+            you delete it, OMA won't recreate it.
+          </li>
+          <li>
+            Removing the label from an issue stops further auto-wakeups on
+            that thread.
+          </li>
+        </ul>
+      </div>
 
       {error && (
         <p className="text-[13px] text-danger">{error}</p>

@@ -3,15 +3,19 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   CapabilityKey,
   CapabilitySet,
+  Crypto,
   IdGenerator,
   NewPublication,
   Persona,
   Publication,
   PublicationMode,
-  PublicationRepo,
   PublicationStatus,
   SessionGranularity,
 } from "@open-managed-agents/integrations-core";
+import type {
+  GitHubPublicationCredentialState,
+  GitHubPublicationRepo,
+} from "@open-managed-agents/github";
 
 interface Row {
   id: string;
@@ -28,17 +32,28 @@ interface Row {
   session_granularity: string;
   created_at: number;
   unpublished_at: number | null;
+  app_oma_id: string | null;
+  client_id: string | null;
+  client_secret_cipher: string | null;
+  app_id: string | null;
+  app_slug: string | null;
+  bot_login: string | null;
+  webhook_secret_cipher: string | null;
+  private_key_cipher: string | null;
+  vault_id: string | null;
 }
 
 /**
- * D1 publication repo for GitHub. Mirrors SqlPublicationRepo verbatim but
- * targets `github_publications`. See SqlGitHubInstallationRepo for the
- * rationale behind the per-provider split.
+ * SQL publication repo for GitHub. Mirrors D1GitHubPublicationRepo
+ * verbatim; targets `github_publications`. Implements the
+ * publication-first GitHubPublicationRepo extension on top of base
+ * PublicationRepo. See packages/github/src/ports.ts for contract.
  */
-export class SqlGitHubPublicationRepo implements PublicationRepo {
+export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
   constructor(
     private readonly db: SqlClient,
     private readonly ids: IdGenerator,
+    private readonly crypto: Crypto,
   ) {}
 
   async get(id: string): Promise<Publication | null> {
@@ -74,6 +89,19 @@ export class SqlGitHubPublicationRepo implements PublicationRepo {
     return (results ?? []).map((r) => this.toDomain(r));
   }
 
+  async listPendingByUser(userId: string): Promise<readonly Publication[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM github_publications
+         WHERE user_id = ?
+           AND status IN ('pending_setup', 'credentials_filled', 'awaiting_install')
+         ORDER BY created_at DESC`,
+      )
+      .bind(userId)
+      .all<Row>();
+    return (results ?? []).map((r) => this.toDomain(r));
+  }
+
   async insert(row: NewPublication): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();
@@ -95,7 +123,6 @@ export class SqlGitHubPublicationRepo implements PublicationRepo {
         row.mode,
         row.status,
         row.persona.name,
-        // D1 rejects undefined; coerce to null when persona has no avatar.
         row.persona.avatarUrl ?? null,
         JSON.stringify([...row.capabilities]),
         row.sessionGranularity,
@@ -118,6 +145,221 @@ export class SqlGitHubPublicationRepo implements PublicationRepo {
       unpublishedAt: null,
     };
   }
+
+  // ─── Publication-first methods (migration 0002) ────────────────────────
+
+  async insertShell(input: {
+    tenantId: string;
+    userId: string;
+    agentId: string;
+    environmentId: string;
+    persona: Persona;
+    capabilities: ReadonlySet<CapabilityKey>;
+    sessionGranularity: SessionGranularity;
+  }): Promise<{ publication: Publication; appOmaId: string }> {
+    const id = this.ids.generate();
+    const appOmaId = this.ids.generate();
+    const now = Date.now();
+    const triggerLabel = slugifyForLabel(input.persona.name);
+    await this.db
+      .prepare(
+        `INSERT INTO github_publications (
+           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
+           persona_name, persona_avatar_url, capabilities,
+           session_granularity, created_at, unpublished_at,
+           app_oma_id, trigger_label
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      )
+      .bind(
+        id,
+        input.tenantId,
+        input.userId,
+        input.agentId,
+        "",
+        input.environmentId,
+        "full",
+        "pending_setup",
+        input.persona.name,
+        input.persona.avatarUrl ?? null,
+        JSON.stringify([...input.capabilities]),
+        input.sessionGranularity,
+        now,
+        appOmaId,
+        triggerLabel,
+      )
+      .run();
+    const publication: Publication = {
+      id,
+      tenantId: input.tenantId,
+      userId: input.userId,
+      agentId: input.agentId,
+      installationId: "",
+      environmentId: input.environmentId,
+      mode: "full",
+      status: "pending_setup",
+      persona: input.persona,
+      capabilities: input.capabilities,
+      sessionGranularity: input.sessionGranularity,
+      createdAt: now,
+      unpublishedAt: null,
+    };
+    return { publication, appOmaId };
+  }
+
+  async setCredentials(
+    publicationId: string,
+    input: {
+      appId: string;
+      appSlug: string;
+      botLogin: string;
+      clientId: string | null;
+      clientSecretCipher: string | null;
+      webhookSecretCipher: string;
+      privateKeyCipher: string;
+    },
+  ): Promise<void> {
+    const row = await this.db
+      .prepare(`SELECT status FROM github_publications WHERE id = ?`)
+      .bind(publicationId)
+      .first<{ status: string }>();
+    if (!row) {
+      throw new Error(`setCredentials: publication ${publicationId} not found`);
+    }
+    if (row.status === "unpublished") {
+      throw new Error(
+        `setCredentials: publication ${publicationId} is unpublished — restart the publish flow`,
+      );
+    }
+    const promoteStatus = row.status === "pending_setup";
+    await this.db
+      .prepare(
+        `UPDATE github_publications SET
+           app_id = ?, app_slug = ?, bot_login = ?,
+           client_id = ?, client_secret_cipher = ?,
+           webhook_secret_cipher = ?, private_key_cipher = ?
+           ${promoteStatus ? ", status = 'credentials_filled'" : ""}
+         WHERE id = ?`,
+      )
+      .bind(
+        input.appId,
+        input.appSlug,
+        input.botLogin,
+        input.clientId,
+        input.clientSecretCipher,
+        input.webhookSecretCipher,
+        input.privateKeyCipher,
+        publicationId,
+      )
+      .run();
+  }
+
+  async getClientSecret(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT client_secret_cipher FROM github_publications WHERE id = ?`,
+      )
+      .bind(publicationId)
+      .first<{ client_secret_cipher: string | null }>();
+    if (!row || row.client_secret_cipher == null) return null;
+    return this.crypto.decrypt(row.client_secret_cipher);
+  }
+
+  async getWebhookSecret(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT webhook_secret_cipher FROM github_publications WHERE id = ?`,
+      )
+      .bind(publicationId)
+      .first<{ webhook_secret_cipher: string | null }>();
+    if (!row || row.webhook_secret_cipher == null) return null;
+    return this.crypto.decrypt(row.webhook_secret_cipher);
+  }
+
+  async getPrivateKey(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT private_key_cipher FROM github_publications WHERE id = ?`,
+      )
+      .bind(publicationId)
+      .first<{ private_key_cipher: string | null }>();
+    if (!row || row.private_key_cipher == null) return null;
+    return this.crypto.decrypt(row.private_key_cipher);
+  }
+
+  async getCredentialState(
+    publicationId: string,
+  ): Promise<GitHubPublicationCredentialState | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT app_oma_id, client_id, client_secret_cipher, app_id, app_slug,
+                bot_login, webhook_secret_cipher, private_key_cipher, vault_id
+         FROM github_publications WHERE id = ?`,
+      )
+      .bind(publicationId)
+      .first<{
+        app_oma_id: string | null;
+        client_id: string | null;
+        client_secret_cipher: string | null;
+        app_id: string | null;
+        app_slug: string | null;
+        bot_login: string | null;
+        webhook_secret_cipher: string | null;
+        private_key_cipher: string | null;
+        vault_id: string | null;
+      }>();
+    if (!row) return null;
+    return {
+      appOmaId: row.app_oma_id,
+      appId: row.app_id,
+      appSlug: row.app_slug,
+      botLogin: row.bot_login,
+      clientId: row.client_id,
+      hasClientSecret: row.client_secret_cipher != null,
+      hasWebhookSecret: row.webhook_secret_cipher != null,
+      hasPrivateKey: row.private_key_cipher != null,
+      vaultId: row.vault_id,
+    };
+  }
+
+  async bindInstallation(input: {
+    publicationId: string;
+    installationId: string;
+    vaultId: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE github_publications
+           SET installation_id = ?, vault_id = ?, status = 'live'
+         WHERE id = ?`,
+      )
+      .bind(input.installationId, input.vaultId, input.publicationId)
+      .run();
+  }
+
+  async findByAppOmaId(appOmaId: string): Promise<Publication | null> {
+    const row = await this.db
+      .prepare(`SELECT * FROM github_publications WHERE app_oma_id = ? LIMIT 1`)
+      .bind(appOmaId)
+      .first<Row>();
+    return row ? this.toDomain(row) : null;
+  }
+
+  async getTriggerLabel(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(`SELECT trigger_label FROM github_publications WHERE id = ?`)
+      .bind(publicationId)
+      .first<{ trigger_label: string | null }>();
+    return row?.trigger_label ?? null;
+  }
+
+  async setTriggerLabel(publicationId: string, label: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE github_publications SET trigger_label = ? WHERE id = ?`)
+      .bind(label, publicationId)
+      .run();
+  }
+
+  // ─── Base PublicationRepo: status / persona / capabilities updates ─────
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
     await this.db
@@ -171,4 +413,15 @@ export class SqlGitHubPublicationRepo implements PublicationRepo {
       unpublishedAt: row.unpublished_at,
     };
   }
+}
+
+function slugifyForLabel(name: string): string {
+  const s = name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._\-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return s.length > 0 ? s : "oma";
 }

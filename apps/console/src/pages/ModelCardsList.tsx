@@ -5,6 +5,7 @@ import { Modal } from "../components/Modal";
 import { Button } from "../components/Button";
 import { ListPage } from "../components/ListPage";
 import { TextInput, SecretInput } from "../components/Input";
+import { useToast } from "../components/Toast";
 import type { ModelCard } from "@open-managed-agents/api-types";
 
 const PROVIDERS = [
@@ -28,6 +29,7 @@ const INITIAL_FORM = {
 
 export function ModelCardsList() {
   const { api } = useApi();
+  const { toast } = useToast();
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...INITIAL_FORM });
@@ -97,7 +99,24 @@ export function ModelCardsList() {
         if (!form.api_key) delete payload.api_key;
         await api(`/v1/model_cards/${editingId}`, { method: "POST", body: JSON.stringify(payload) });
       } else {
-        await api("/v1/model_cards", { method: "POST", body: JSON.stringify(payload) });
+        // Create returns the card + a probe result. Surface it so the user
+        // finds out NOW if their api_key / base_url / model id is broken.
+        const created = await api<{ probe?: { ok: boolean | null; message?: string; reason?: string } }>(
+          "/v1/model_cards",
+          { method: "POST", body: JSON.stringify(payload) },
+        );
+        const probe = created.probe;
+        if (probe?.ok === true) {
+          toast?.(`Model card created — ${form.provider} key verified.`, "success");
+        } else if (probe?.ok === false) {
+          toast?.(
+            probe.message
+              ? `Model card saved but the key didn't work: ${probe.message}`
+              : "Model card saved but the key didn't work — check api_key / base_url / model id.",
+            "warning",
+          );
+        }
+        // ok === null (unsupported provider) → no toast, success is implicit.
       }
       closeDialog(); load();
     } catch (e: any) { setError(e?.message || "Failed to save"); }

@@ -279,6 +279,29 @@ export async function applySchema(opts: ApplySchemaOptions): Promise<void> {
   await addColumnIfMissing(sql, "sessions", "archived_at", "BIGINT");
   await addColumnIfMissing(sql, "sessions", "terminated_at", "BIGINT");
 
+  // Publication-first install (apps/main/migrations-integrations/0002):
+  // Publication-first install (apps/main/migrations-integrations/0002+):
+  // staging columns on slack_publications. All NULLABLE; existing live
+  // publications (status='live', installation_id NOT NULL) keep working.
+  await addColumnIfMissing(sql, "slack_publications", "client_id", "TEXT");
+  await addColumnIfMissing(sql, "slack_publications", "client_secret_cipher", "TEXT");
+  await addColumnIfMissing(sql, "slack_publications", "signing_secret_cipher", "TEXT");
+  await addColumnIfMissing(sql, "slack_publications", "slack_app_id", "TEXT");
+  // Same publication-first staging columns on github_publications.
+  await addColumnIfMissing(sql, "github_publications", "app_oma_id", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "client_id", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "client_secret_cipher", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "app_id", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "app_slug", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "bot_login", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "webhook_secret_cipher", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "private_key_cipher", "TEXT");
+  await addColumnIfMissing(sql, "github_publications", "vault_id", "TEXT");
+  // Trigger label for the label-based bot engagement path. Default = lower
+  // case persona_name. Users can edit it post-publish; provider auto-creates
+  // the label in installed repos.
+  await addColumnIfMissing(sql, "github_publications", "trigger_label", "TEXT");
+
   if (includeBetterAuth) {
     await applyBetterAuthSchema({ sql, dialect });
   }
@@ -517,7 +540,15 @@ export async function applyIntegrationsSchema(opts: {
         "session_granularity"   TEXT NOT NULL,
         "created_at"            ${intT} NOT NULL,
         "unpublished_at"        ${intT},
-        "environment_id"        TEXT
+        "environment_id"        TEXT,
+        -- Publication-first install fields: credentials baked at PATCH
+        -- /publications/:id/credentials before the OAuth callback runs.
+        -- See migration 0002_linear_publication_first.sql for the rationale.
+        "client_id"             TEXT,
+        "client_secret_cipher"  TEXT,
+        "webhook_secret_cipher" TEXT,
+        "signing_secret_cipher" TEXT,
+        "vault_id"              TEXT
       );
       CREATE INDEX IF NOT EXISTS "idx_linear_publications_installation"
         ON "linear_publications" ("installation_id");
@@ -549,6 +580,21 @@ export async function applyIntegrationsSchema(opts: {
       );
       CREATE INDEX IF NOT EXISTS "idx_linear_issue_sessions_active"
         ON "linear_issue_sessions" ("publication_id", "status");
+
+      -- GitHub gets its own table so schema/ownership stays isolated. Same
+      -- shape as Linear's per-issue session bookkeeping; issue_id here is
+      -- "<owner/repo>#<number>".
+      CREATE TABLE IF NOT EXISTS "github_issue_sessions" (
+        "tenant_id"      TEXT NOT NULL,
+        "publication_id" TEXT NOT NULL,
+        "issue_id"       TEXT NOT NULL,
+        "session_id"     TEXT NOT NULL,
+        "status"         TEXT NOT NULL,
+        "created_at"     ${intT} NOT NULL,
+        PRIMARY KEY ("publication_id", "issue_id")
+      );
+      CREATE INDEX IF NOT EXISTS "idx_github_issue_sessions_active"
+        ON "github_issue_sessions" ("publication_id", "status");
 
       CREATE TABLE IF NOT EXISTS "linear_dispatch_rules" (
         "id"                     TEXT PRIMARY KEY NOT NULL,
@@ -639,12 +685,34 @@ export async function applyIntegrationsSchema(opts: {
         "session_granularity"   TEXT NOT NULL,
         "created_at"            ${intT} NOT NULL,
         "unpublished_at"        ${intT},
-        "environment_id"        TEXT
+        "environment_id"        TEXT,
+        -- Publication-first credential staging (migration 0002).
+        -- app_oma_id is our internal id for the github_apps row this
+        -- publication binds to. Pre-minted at shell create so the webhook
+        -- URL — /github/webhook/app/<appOmaId> — is stable from minute one.
+        -- client_id / app_id / app_slug / bot_login are plaintext (public-ish).
+        -- *_cipher columns are AES-GCM encrypted with PLATFORM_ROOT_SECRET +
+        -- label "integrations.tokens".
+        -- vault_id is set on OAuth callback once the installation token is
+        -- minted and stashed (mirrors github_installations.vault_id).
+        "app_oma_id"             TEXT,
+        "client_id"              TEXT,
+        "client_secret_cipher"   TEXT,
+        "app_id"                 TEXT,
+        "app_slug"               TEXT,
+        "bot_login"              TEXT,
+        "webhook_secret_cipher"  TEXT,
+        "private_key_cipher"     TEXT,
+        "vault_id"               TEXT
       );
       CREATE INDEX IF NOT EXISTS "idx_github_publications_installation"
         ON "github_publications" ("installation_id");
       CREATE INDEX IF NOT EXISTS "idx_github_publications_user_agent"
         ON "github_publications" ("user_id", "agent_id");
+      CREATE INDEX IF NOT EXISTS "idx_github_publications_app_oma_id"
+        ON "github_publications" ("app_oma_id");
+      CREATE INDEX IF NOT EXISTS "idx_github_publications_app_id"
+        ON "github_publications" ("app_id");
 
       CREATE TABLE IF NOT EXISTS "github_webhook_events" (
         "delivery_id"     TEXT PRIMARY KEY NOT NULL,
@@ -705,12 +773,24 @@ export async function applyIntegrationsSchema(opts: {
         "capabilities"          TEXT NOT NULL,
         "session_granularity"   TEXT NOT NULL,
         "created_at"            ${intT} NOT NULL,
-        "unpublished_at"        ${intT}
+        "unpublished_at"        ${intT},
+        -- Publication-first credential staging (migration 0002).
+        -- client_id is plaintext (public-ish OAuth client id).
+        -- *_cipher columns are AES-GCM encrypted with PLATFORM_ROOT_SECRET +
+        -- label "integrations.tokens".
+        -- slack_app_id is the Slack-side app id (e.g. A07ABC), populated on
+        -- OAuth callback so we can find a publication by Slack-app-id later.
+        "client_id"              TEXT,
+        "client_secret_cipher"   TEXT,
+        "signing_secret_cipher"  TEXT,
+        "slack_app_id"           TEXT
       );
       CREATE INDEX IF NOT EXISTS "idx_slack_publications_installation"
         ON "slack_publications" ("installation_id");
       CREATE INDEX IF NOT EXISTS "idx_slack_publications_user_agent"
         ON "slack_publications" ("user_id", "agent_id");
+      CREATE INDEX IF NOT EXISTS "idx_slack_publications_slack_app_id"
+        ON "slack_publications" ("slack_app_id");
 
       CREATE TABLE IF NOT EXISTS "slack_webhook_events" (
         "delivery_id"     TEXT PRIMARY KEY NOT NULL,

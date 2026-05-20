@@ -14,8 +14,6 @@ import type {
   DispatchRulePatch,
   GitHubAppCredentials,
   Installation,
-  IssueSession,
-  IssueSessionStatus,
   Persona,
   Publication,
   PublicationStatus,
@@ -103,11 +101,112 @@ export interface PublicationRepo {
     userId: UserId,
     agentId: AgentId,
   ): Promise<ReadonlyArray<Publication>>;
+  /**
+   * Lists publications owned by the given user that are still in-progress —
+   * status in {pending_setup, credentials_filled, awaiting_install}. Used by
+   * the Console "In-progress installs" surface so a wizard tab the user
+   * abandoned mid-setup is visible alongside live publications. The filter
+   * is server-side (small partial index suffices); callers don't paginate.
+   */
+  listPendingByUser(userId: UserId): Promise<ReadonlyArray<Publication>>;
   insert(row: NewPublication): Promise<Publication>;
   updateStatus(id: string, status: PublicationStatus): Promise<void>;
   updateCapabilities(id: string, capabilities: CapabilitySet): Promise<void>;
   updatePersona(id: string, persona: Persona): Promise<void>;
   markUnpublished(id: string, at: number): Promise<void>;
+}
+
+/**
+ * Insert payload for a publication-first shell row. Carries everything the
+ * UX wizard collected up front; credentials and installation binding are
+ * filled in by separate calls (`setCredentials`, `bindInstallation`) once
+ * the user has registered the OAuth app on Linear's side.
+ *
+ * `installationId` is intentionally absent — the caller writes the empty
+ * string sentinel into `linear_publications.installation_id` until the
+ * OAuth callback wires up the real installation row.
+ */
+export interface NewPublicationShell {
+  tenantId: string;
+  userId: UserId;
+  agentId: AgentId;
+  environmentId: string;
+  mode: PublicationMode;
+  persona: Persona;
+  capabilities: CapabilitySet;
+  sessionGranularity: SessionGranularity;
+}
+
+/** OAuth-app credentials, plaintext on input — repo encrypts at rest. */
+export interface PublicationCredentialsInput {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  /**
+   * Reserved for upstream surfaces that distinguish HMAC-signing key from
+   * webhook secret (e.g. Slack). Linear today re-uses webhookSecret for
+   * both roles; pass null.
+   */
+  signingSecret?: string | null;
+}
+
+/** Decrypted credentials returned by `getCredentials`. */
+export interface PublicationCredentials {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  signingSecret: string | null;
+}
+
+/**
+ * Linear-specific extension of `PublicationRepo`. Linear's publication-first
+ * install flow stashes the OAuth-app credentials directly on the publication
+ * row instead of in a separate `linear_apps` table — see migration
+ * 0002_linear_publication_first.sql. The new methods are kept on a narrowed
+ * port so Slack/GitHub providers don't accidentally reach for them.
+ *
+ * Lifecycle of a publication-first install:
+ *   insertShell  (status='pending_setup')
+ *     → setCredentials (status='awaiting_install', secrets encrypted in row)
+ *     → bindInstallation (status='live', installation+vault wired in)
+ */
+export interface LinearPublicationRepo extends PublicationRepo {
+  /**
+   * Create a publication shell with status='pending_setup'. The
+   * installation_id column gets the empty string sentinel; bindInstallation
+   * replaces it once OAuth completes.
+   */
+  insertShell(row: NewPublicationShell): Promise<Publication>;
+
+  /**
+   * Persist OAuth credentials on the row and advance status to
+   * 'awaiting_install'. Encrypts client_secret / webhook_secret /
+   * signing_secret via the same Crypto port that backs token storage.
+   */
+  setCredentials(id: string, input: PublicationCredentialsInput): Promise<void>;
+
+  /**
+   * Returns the decrypted OAuth credentials, or null when the row hasn't
+   * had `setCredentials` called yet. Used by the callback handler before
+   * Linear token exchange and by the webhook receiver before HMAC check.
+   */
+  getCredentials(id: string): Promise<PublicationCredentials | null>;
+
+  /** Hot-path getter for the webhook HMAC verifier. */
+  getWebhookSecret(id: string): Promise<string | null>;
+
+  /** Hot-path getter for the OAuth `code` exchange + the refresh flow. */
+  getClientSecret(id: string): Promise<string | null>;
+
+  /**
+   * Bind the freshly-minted installation + vault onto the publication and
+   * flip status to 'live'. Idempotent on retry: callers that re-enter the
+   * callback (e.g. user double-clicked Install) get the same final state.
+   */
+  bindInstallation(
+    id: string,
+    args: { installationId: string; vaultId: string | null },
+  ): Promise<void>;
 }
 
 export interface NewAppCredentials {
@@ -292,43 +391,82 @@ export interface SessionScopeRepo {
     scopeKey: string,
     status: SessionScopeStatus,
   ): Promise<void>;
+  /**
+   * Atomic "re-bind a non-active scope to a fresh session" — used when the
+   * dispatcher creates a new session for a scope whose old row exists but
+   * is no longer active (status is `completed` / `failed` / `escalated` /
+   * etc.), OR a stale `pending` claim (winner crashed before fulfilling).
+   * Without this, a stale row blocks every future binding indefinitely:
+   *   1. insert() rejects on UNIQUE conflict
+   *   2. getByScope() returns the non-active row
+   *   3. caller falls through, leaves scope un-rebound
+   *   4. next event repeats the cycle → no scope ever points at any session
+   * Returns true when the update touched a row (status was non-active OR
+   * stale pending, and sessionId got replaced + status set to `active`);
+   * false when the row is missing OR currently active OR pending-and-fresh
+   * (race) — caller should fall back to resume()-ing the winner or poll.
+   *
+   * `now` is used to detect stale `pending` claims: rows with status='pending'
+   * AND created_at older than the implementation's stale threshold (~60s)
+   * are eligible. Rows with status='pending' AND created_at within the
+   * threshold are skipped — they belong to a live winner that's still
+   * creating its session.
+   */
+  reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    now: number,
+  ): Promise<boolean>;
+  /**
+   * Two-phase scope claim — phase 1. INSERT a `(publication_id, scope_key)`
+   * row with `status='pending'` and a placeholder `session_id` (typically
+   * `_pending_<uuid>`). UNIQUE constraint is the race gate — only one
+   * concurrent caller wins. Winner then calls `sessions.create` and
+   * `fulfillPending` to write the real id; losers see the pending row in
+   * `getByScope` and poll until it flips to `active` (or goes stale).
+   *
+   * Without this two-phase pattern, concurrent webhook deliveries each
+   * call `sessions.create` (an expensive RPC) BEFORE racing the INSERT —
+   * the loser's session gets created in DB then orphaned, billing for
+   * nothing and inflating the sessions table.
+   *
+   * Returns true when the row was inserted (we won the claim).
+   */
+  claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean>;
+  /**
+   * Two-phase scope claim — phase 2. Atomically writes the real session id
+   * and flips status='pending' → 'active'. Returns true on success; false
+   * if the row isn't in pending state (claim was already taken over by
+   * staleness reclaim, or someone else fulfilled, or row was deleted).
+   * On false the caller should NOT trust the row points at their session.
+   */
+  fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean>;
+  /**
+   * Two-phase scope claim — abort. Delete the pending row if `sessions.create`
+   * failed, so a retry can re-claim. Only deletes when status='pending' —
+   * never wipes an `active` row even if its session id matches our
+   * placeholder (defensive against pathological races).
+   */
+  releasePending(publicationId: string, scopeKey: string): Promise<void>;
   listActive(publicationId: string): Promise<ReadonlyArray<SessionScope>>;
 }
 
-/**
- * Per-issue session reuse for Linear/GitHub. Linear keys on the issue UUID;
- * GitHub keys on `<repo>#<number>`. Slack uses the parallel SessionScopeRepo
- * keyed on `${channel}:${thread_ts}`.
- */
-export interface IssueSessionRepo {
-  getByIssue(publicationId: string, issueId: string): Promise<IssueSession | null>;
-  insert(row: IssueSession): Promise<void>;
-  updateStatus(
-    publicationId: string,
-    issueId: string,
-    status: IssueSessionStatus,
-  ): Promise<void>;
-  listActive(publicationId: string): Promise<ReadonlyArray<IssueSession>>;
-  /**
-   * PAT-mode atomic claim. Used by the dispatch sweep when there is no
-   * webhook source to deduplicate against — we must guarantee at most one
-   * worker per (publication, issue) across concurrent ticks.
-   *
-   * Inserts the row if no row exists for (publicationId, issueId), or
-   * updates an existing row if its status is `inactive` (a prior worker
-   * finished). Returns true only when this caller successfully claimed.
-   *
-   * Implementations must be atomic — typically a single
-   * `INSERT ... ON CONFLICT DO UPDATE WHERE status = 'inactive' RETURNING ...`.
-   */
-  claim(input: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    sessionId: SessionId;
-    nowMs: number;
-  }): Promise<boolean>;
-}
+// Note: per-issue session storage (Linear's `linear_issue_sessions`,
+// GitHub's `github_issue_sessions`) lives in each provider package as
+// LinearIssueSessionRepo / GitHubIssueSessionRepo. They have different
+// shapes (Linear has PAT-mode `claim`, GitHub doesn't) and back different
+// tables — there's no shared interface here on purpose.
 
 export interface NewSetupLink {
   /** OMA tenant that owns this setup link. See NewInstallation.tenantId. */

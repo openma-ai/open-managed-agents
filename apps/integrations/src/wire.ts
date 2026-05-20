@@ -28,7 +28,7 @@ import {
   D1SlackWebhookEventStore,
   type CfContainerEnv,
 } from "@open-managed-agents/integrations-adapters-cf";
-import type { Container } from "@open-managed-agents/integrations-core";
+import type { GitHubContainer } from "@open-managed-agents/github";
 import type { LinearContainer } from "@open-managed-agents/linear";
 import type { SlackContainer } from "@open-managed-agents/slack";
 import type { Env } from "./env";
@@ -46,15 +46,19 @@ function cfEnvOf(env: Env): CfContainerEnv {
 /**
  * Linear container — `installations`/`publications`/`webhookEvents`
  * already point at the linear_* repos via buildCfContainer's default
- * wiring (webhookEvents = D1LinearEventStore against the merged
- * linear_events table). sessionScopes is Linear-irrelevant but required
- * by the Container shape; we hand it the Slack impl since the slot is
- * unused on the Linear path (Linear uses issueSessions instead).
+ * wiring. The Linear publication repo (`linearPublications`) implements
+ * `LinearPublicationRepo` directly (publication-first install fields live
+ * on the row), so we re-narrow the spread back to the concrete type.
+ * `webhookEvents` similarly narrows to `LinearEventStore` for the merged
+ * `linear_events` drain queue. sessionScopes is Linear-irrelevant but
+ * required by the Container shape; we hand it the Slack impl since the
+ * slot is unused on the Linear path (Linear uses issueSessions instead).
  */
 export function buildContainer(env: Env): LinearContainer {
   const base = buildCfContainer(cfEnvOf(env));
   return {
     ...base,
+    publications: base.linearPublications,
     // Narrow the webhookEvents slot from WebhookEventStore (Container shape)
     // to LinearEventStore (LinearContainer shape). The runtime instance is
     // already the narrower type — base.linearEvents — but the spread above
@@ -70,8 +74,13 @@ export function buildContainer(env: Env): LinearContainer {
  * All other shared adapters (githubApps, sessions, vaults, etc.) carry over
  * unchanged. sessionScopes follows the same unused-but-required pattern
  * as buildContainer.
+ *
+ * `publications` is narrowed to GitHubPublicationRepo so the provider can
+ * call into the publication-first credential staging methods
+ * (insertShell, setCredentials, getPrivateKey, bindInstallation,
+ * findByAppOmaId).
  */
-export function buildGitHubContainer(env: Env): Container {
+export function buildGitHubContainer(env: Env): GitHubContainer {
   const base = buildCfContainer(cfEnvOf(env));
   return {
     ...base,
@@ -96,7 +105,7 @@ export function buildSlackContainer(env: Env): SlackContainer {
   return {
     ...base,
     installations: new D1SlackInstallationRepo(env.INTEGRATIONS_DB, base.crypto, base.ids),
-    publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, base.ids),
+    publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, base.ids, base.crypto),
     apps: new D1SlackAppRepo(env.INTEGRATIONS_DB, base.crypto, base.ids),
     webhookEvents: new D1SlackWebhookEventStore(env.INTEGRATIONS_DB),
     sessionScopes: new D1SlackSessionScopeRepo(env.INTEGRATIONS_DB),

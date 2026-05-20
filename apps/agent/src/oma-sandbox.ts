@@ -298,7 +298,46 @@ export class OmaSandbox extends Sandbox {
   override async onActivityExpired(): Promise<void> {
     await this.snapshotWorkspaceNow();
     await this.unmountAllBuckets();
+    // Wedged-container guard: super.onActivityExpired() → container.stop()
+    // sends SIGTERM and waits for the process tree to exit. If the shim
+    // is in a stuck state (in-flight exec never resolved, FDs exhausted),
+    // SIGTERM is ignored → super.stop() never returns → onStop never
+    // fires → CF runtime keeps the instance "active" in billing → we
+    // pay for nothing. Observed staging 2026-05-19 sandbox-6af21a79:
+    // sleepAfter fired twice (08:43, 09:42), backup.create succeeded
+    // both times, but no onStop ever emitted; container stayed active
+    // for ~1.5h burning idle billing.
+    //
+    // Probe shim health with a 5s exec("true"). If unresponsive, skip
+    // SIGTERM (it'll just hang) and go straight to destroy() which
+    // sends SIGKILL via the SDK. SIGKILL is uncatchable → guaranteed
+    // teardown → onStop fires within seconds.
+    const responsive = await this.probeShimAlive(5_000);
+    if (!responsive) {
+      console.warn(`[oma-sandbox] onActivityExpired: shim unresponsive, force-destroying`);
+      try {
+        await this.destroy();
+      } catch (err) {
+        console.warn(`[oma-sandbox] force-destroy failed:`, err);
+      }
+      return;
+    }
     await super.onActivityExpired();
+  }
+
+  /**
+   * Quick health probe. Returns true if the container's shim answers
+   * `exec("true")` within timeoutMs. Used by onActivityExpired to decide
+   * whether to attempt graceful SIGTERM via super.stop() or skip
+   * straight to force-destroy.
+   */
+  private async probeShimAlive(timeoutMs: number): Promise<boolean> {
+    try {
+      await this.exec("true", { timeout: timeoutMs });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

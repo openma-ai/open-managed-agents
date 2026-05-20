@@ -187,10 +187,15 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Focus ring — brand-colored */
-*:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* Focus ring — brand-colored. Wrapped in @layer base so Tailwind utility
+   variants (focus-visible:outline-none, etc.) can override per-element.
+   Unlayered rules win over layered rules regardless of specificity, which
+   would otherwise make this impossible to suppress on a per-element basis. */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
 /* Scrollbar subtle styling */

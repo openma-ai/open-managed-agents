@@ -2803,17 +2803,52 @@ export class SessionDO extends DurableObject<Env> {
       // Trigger container startup with retries — local dev containers can take
       // 30-60s to start. SDK returns 503 while container port isn't listening.
       // See: https://github.com/cloudflare/containers/issues/155
+      //
+      // Health-check semantics: `exec("true")` is the smallest possible probe
+      // (no-op posix binary, no fs/network IO). Cold-start: container needs
+      // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
+      // state: a healthy container responds in <100ms — anything over a few
+      // seconds means the shim is wedged (in-flight exec never resolved,
+      // file descriptors exhausted, kernel D-state on a dead socket).
+      // Using the default 120000ms timeout made wedged-container detection
+      // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
+      // 53 min of retry-loop on a single bad container before recovery
+      // finally kicked in.
+      //
+      // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
+      // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
+      // re-creates a fresh container on the next exec since the underlying
+      // Sandbox DO is keyed on sessionId (same DO, new container instance).
+      const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
+      const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
+      const NUKE_AFTER_ATTEMPT = 3;
       let ready = false;
       let lastError = "";
+      let destroyed = false;
       for (let attempt = 0; attempt < 10; attempt++) {
+        const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
         try {
-          await sandbox.exec("true");
+          await sandbox.exec("true", timeout);
           ready = true;
           break;
         } catch (err: any) {
           lastError = err?.message || String(err);
-          const delay = 3000 * Math.pow(1.5, attempt);
-          await new Promise(r => setTimeout(r, Math.min(delay, 15000)));
+          if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
+            console.warn(
+              `[warmup] container unhealthy after ${attempt + 1} probes ` +
+                `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
+            );
+            try {
+              if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
+                await (sandbox as { destroy: () => Promise<void> }).destroy();
+              }
+            } catch (destroyErr: any) {
+              console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
+            }
+            destroyed = true;
+          }
+          const delay = 1000 * Math.pow(1.5, attempt);
+          await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
         }
       }
       if (!ready) {
@@ -5745,6 +5780,26 @@ export class SessionDO extends DurableObject<Env> {
     }
     if (flushed > 0 || ended > 0) {
       console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended} stale turns`);
+    }
+
+    // After flipping any stale rows to idle, kick the queue. Without this
+    // pending_events that arrived while the previous incarnation was
+    // wedged sit dormant: drainEventQueue only fires on new external
+    // /event POSTs, alarms only keep-alive while status='running', and
+    // _finalizeStaleTurns just updates the row — nobody triggers a drain.
+    // Net effect: bot goes silent in the channel until the user @-mentions
+    // again to nudge the dispatcher.
+    //
+    // Bounded: recoverEventQueue is the same call wired to the 5s
+    // schedule hook (line 1763) — it threadsWithPending() first and exits
+    // immediately when nothing's queued. Safe to call even when we ended
+    // zero stale turns (cold-start of a healthy session is a no-op).
+    if (this.pending) {
+      try {
+        await this.recoverEventQueue();
+      } catch (err) {
+        console.warn(`[finalize-stale] post-recovery drain failed:`, err);
+      }
     }
   }
 

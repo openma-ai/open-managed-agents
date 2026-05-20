@@ -34,10 +34,11 @@ import { D1AppRepo } from "./d1/app-repo";
 import { D1DispatchRuleRepo } from "./d1/dispatch-rule-repo";
 import { D1GitHubAppRepo } from "./d1/github-app-repo";
 import { D1GitHubInstallationRepo } from "./d1/github/installation-repo";
+import { D1GitHubIssueSessionRepo } from "./d1/github/issue-session-repo";
 import { D1GitHubPublicationRepo } from "./d1/github/publication-repo";
 import { D1GitHubWebhookEventStore } from "./d1/github/webhook-event-store";
 import { D1InstallationRepo } from "./d1/installation-repo";
-import { D1IssueSessionRepo } from "./d1/issue-session-repo";
+import { D1LinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
 import { D1LinearEventStore } from "./d1/linear-event-store";
 import { D1PublicationRepo } from "./d1/publication-repo";
 import { D1SetupLinkRepo } from "./d1/setup-link-repo";
@@ -91,9 +92,11 @@ export function buildCfRepos(env: CfReposEnv) {
   // (linear_* vs github_* tables). Slack lives in slack_* and is wired
   // separately via the slack-specific helpers in apps/integrations/wire.ts.
   const linearInstallations = new D1InstallationRepo(idb, cryptoImpl, ids);
-  const linearPublications = new D1PublicationRepo(idb, ids);
+  // D1PublicationRepo needs Crypto: the publication-first install flow
+  // stores OAuth client_secret + webhook_secret encrypted on the row.
+  const linearPublications = new D1PublicationRepo(idb, ids, cryptoImpl);
   const githubInstallations = new D1GitHubInstallationRepo(idb, cryptoImpl, ids);
-  const githubPublications = new D1GitHubPublicationRepo(idb, ids);
+  const githubPublications = new D1GitHubPublicationRepo(idb, ids, cryptoImpl);
   const apps = new D1AppRepo(idb, cryptoImpl, ids);
   const githubApps = new D1GitHubAppRepo(idb, cryptoImpl, ids);
   // Linear's webhook store is the merged `linear_events` table — narrower
@@ -101,7 +104,14 @@ export function buildCfRepos(env: CfReposEnv) {
   // GitHub gets its own (github_webhook_events), completing 0009's split.
   const linearEvents = new D1LinearEventStore(idb);
   const githubWebhookEvents = new D1GitHubWebhookEventStore(idb);
-  const issueSessions = new D1IssueSessionRepo(idb);
+  // Linear and GitHub each get their own per-issue session table — same
+  // schema, different name. Until 0005_github_issue_sessions both providers
+  // wrote to `linear_issue_sessions`, which silently commingled data and
+  // tied schema changes together. Strictly separate now: separate classes,
+  // separate interfaces (LinearIssueSessionRepo / GitHubIssueSessionRepo),
+  // separate tables.
+  const linearIssueSessions = new D1LinearIssueSessionRepo(idb);
+  const githubIssueSessions = new D1GitHubIssueSessionRepo(idb);
   const setupLinks = new D1SetupLinkRepo(idb, ids);
   const dispatchRules = new D1DispatchRuleRepo(idb, ids);
   // Slack-specific repo also satisfies the Container's `sessionScopes` slot —
@@ -125,7 +135,8 @@ export function buildCfRepos(env: CfReposEnv) {
     githubApps,
     linearEvents,
     githubWebhookEvents,
-    issueSessions,
+    linearIssueSessions,
+    githubIssueSessions,
     sessionScopes,
     setupLinks,
     dispatchRules,

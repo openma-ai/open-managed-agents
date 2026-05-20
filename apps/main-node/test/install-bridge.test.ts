@@ -2,8 +2,7 @@
 // against the same services bundle main-node uses, then exercises:
 //   - lookupLinearCredentialForSession (Linear MCP route's auth path)
 //   - refreshGithubVault is exercised against a mocked github API
-//   - GET /linear/oauth/app/:appId/callback through the package gateway
-//     drives continueInstall via a mocked Linear /oauth/token + GraphQL
+//   - startInstallation publication-first paths for Linear
 //
 // Skips the spawn-process heaviness of the existing crash-recovery /
 // promote-sandbox tests; these only need the in-process services + a
@@ -432,7 +431,35 @@ describe("NodeInstallBridge", () => {
     ).rejects.toThrow(/session_not_found/);
   });
 
-  it("startInstallation linear/start-a1 returns a credentials_form envelope matching CF", async () => {
+  it("startInstallation linear/create-publication returns a publication shell envelope (publication-first)", async () => {
+    const { bridge } = await bootstrap();
+    const result = await bridge.startInstallation({
+      provider: "linear",
+      mode: "create-publication",
+      body: {
+        userId: USER,
+        agentId: "agt_dummy",
+        environmentId: "env-local-runtime",
+        personaName: "Bot",
+        personaAvatarUrl: null,
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    expect(result.status).toBe(200);
+    expect(typeof (result.body as { publication_id?: string }).publication_id).toBe("string");
+    expect(typeof (result.body as { callback_url?: string }).callback_url).toBe("string");
+    expect(typeof (result.body as { webhook_url?: string }).webhook_url).toBe("string");
+    expect((result.body as { suggested_app_name?: string }).suggested_app_name).toBe("Bot");
+    const pubId = (result.body as { publication_id: string }).publication_id;
+    expect((result.body as { callback_url: string }).callback_url).toContain(
+      `/linear/oauth/pub/${pubId}/callback`,
+    );
+    expect((result.body as { webhook_url: string }).webhook_url).toContain(
+      `/linear/webhook/pub/${pubId}`,
+    );
+  });
+
+  it("startInstallation linear/start-a1 returns 410 — legacy flow removed", async () => {
     const { bridge } = await bootstrap();
     const result = await bridge.startInstallation({
       provider: "linear",
@@ -446,14 +473,11 @@ describe("NodeInstallBridge", () => {
         returnUrl: "https://console.example.com/done",
       },
     });
-    expect(result.status).toBe(200);
-    expect(typeof (result.body as { formToken?: string }).formToken).toBe("string");
-    expect(typeof (result.body as { callbackUrl?: string }).callbackUrl).toBe("string");
-    expect(typeof (result.body as { webhookUrl?: string }).webhookUrl).toBe("string");
-    expect((result.body as { suggestedAppName?: string }).suggestedAppName).toBe("Bot");
+    expect(result.status).toBe(410);
+    expect((result.body as { error?: string }).error).toBe("linear_legacy_install_removed");
   });
 
-  it("startInstallation linear/credentials surfaces JWT failure with form_token_invalid", async () => {
+  it("startInstallation linear/credentials returns 410 — legacy flow removed", async () => {
     const { bridge } = await bootstrap();
     const r = await bridge.startInstallation({
       provider: "linear",
@@ -465,8 +489,8 @@ describe("NodeInstallBridge", () => {
         webhookSecret: "lin_wh_x",
       },
     });
-    expect(r.status).toBe(400);
-    expect((r.body as { error?: string }).error).toBe("form_token_invalid");
+    expect(r.status).toBe(410);
+    expect((r.body as { error?: string }).error).toBe("linear_legacy_install_removed");
   });
 
   it("startInstallation github/start-a1 returns a credentials_form envelope matching CF", async () => {

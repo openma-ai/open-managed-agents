@@ -53,12 +53,12 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
     },
     github: {
       installations: new D1GitHubInstallationRepo(env.INTEGRATIONS_DB, crypto, ids),
-      publications: new D1GitHubPublicationRepo(env.INTEGRATIONS_DB, ids),
+      publications: new D1GitHubPublicationRepo(env.INTEGRATIONS_DB, ids, crypto),
       githubApps: new D1GitHubAppRepo(env.INTEGRATIONS_DB, crypto, ids),
     },
     slack: {
       installations: new D1SlackInstallationRepo(env.INTEGRATIONS_DB, crypto, ids),
-      publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, ids),
+      publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, ids, crypto),
       apps: new D1SlackAppRepo(env.INTEGRATIONS_DB, crypto, ids),
     },
   };
@@ -69,7 +69,7 @@ function installProxyFor(c: import("hono").Context<{ Bindings: Env } & Vars>): I
   if (!env.INTEGRATIONS) return null;
   const internalSecret = env.INTEGRATIONS_INTERNAL_SECRET;
   return {
-    async forward({ subpath, body, needsInternalSecret }) {
+    async forward({ subpath, body, needsInternalSecret, method }) {
       if (needsInternalSecret && !internalSecret) {
         return new Response(
           JSON.stringify({ error: "INTEGRATIONS_INTERNAL_SECRET not configured" }),
@@ -79,7 +79,7 @@ function installProxyFor(c: import("hono").Context<{ Bindings: Env } & Vars>): I
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (needsInternalSecret && internalSecret) headers["x-internal-secret"] = internalSecret;
       const res = await env.INTEGRATIONS!.fetch(`http://gateway/${subpath}`, {
-        method: "POST",
+        method: method ?? "POST",
         headers,
         body: JSON.stringify(body),
       });

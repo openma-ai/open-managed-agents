@@ -67,6 +67,7 @@ export function LocalCombobox<T>({
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
   const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
   // Track input position so the portal-rendered dropdown follows on
@@ -125,7 +126,7 @@ export function LocalCombobox<T>({
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-autocomplete="list"
-          className="flex-1 bg-transparent outline-none text-sm min-w-0"
+          className="flex-1 bg-transparent outline-none focus-visible:outline-none text-sm min-w-0"
         />
         {value && !disabled && (
           <button
@@ -160,12 +161,28 @@ export function LocalCombobox<T>({
         createPortal(
           <>
             <div
-              className="fixed inset-0 z-[9998]"
+              className="fixed inset-0 z-[9998] pointer-events-auto"
               onMouseDown={() => setOpen(false)}
             />
             <div
-              className="fixed bg-bg border border-border rounded-md shadow-xl z-[9999] overflow-y-auto"
+              ref={dropdownRef}
+              className="fixed bg-bg border border-border rounded-md shadow-xl z-[9999] overflow-y-auto pointer-events-auto"
               style={{ top: rect.top, left: rect.left, width: rect.width, maxHeight }}
+              // Manual scroll: Radix Dialog uses react-remove-scroll, which
+              // attaches a capture-phase wheel listener on document and
+              // preventDefault()s wheel events whose target isn't inside
+              // Dialog.Content. Our portal renders into document.body
+              // (sibling of Dialog.Content) to escape Modal's overflow
+              // clipping, so wheel events here get nuked. We bypass that
+              // by mutating scrollTop directly — preventDefault only kills
+              // *browser-native* scrolling; programmatic scrollTop still
+              // works.
+              onWheel={(e) => {
+                const el = dropdownRef.current;
+                if (!el) return;
+                const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+                el.scrollTop += delta;
+              }}
             >
               {matches.length === 0 ? (
                 <div className="px-3 py-4 text-center text-fg-subtle text-xs">

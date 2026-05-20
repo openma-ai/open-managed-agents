@@ -21,10 +21,19 @@ describe("buildManifest", () => {
     expect(m.features.bot_user.display_name).toBe("Triage Bot");
     expect(m.features.bot_user.always_online).toBe(true);
     expect(m.oauth_config.redirect_urls).toEqual([baseInput.redirectUrl]);
-    expect(m.oauth_config.scopes.bot).toEqual([...baseInput.botScopes]);
+    expect(m.oauth_config.scopes.bot).toEqual([
+      ...baseInput.botScopes,
+      // assistant:write is auto-injected when not present (required for
+      // Slack's Assistant API surface).
+      "assistant:write",
+    ]);
     expect(m.oauth_config.scopes.user).toEqual([...baseInput.userScopes]);
     expect(m.settings.event_subscriptions.request_url).toBe(baseInput.webhookUrl);
-    expect(m.settings.event_subscriptions.bot_events).toEqual([...baseInput.subscribedEvents]);
+    expect(m.settings.event_subscriptions.bot_events).toEqual(
+      // assistant_thread_started + _context_changed are auto-merged so the
+      // bot wakes up when the user opens the assistant pane.
+      expect.arrayContaining([...baseInput.subscribedEvents]),
+    );
   });
 
   it("sets sensible defaults for unrelated settings (no socket mode, no token rotation)", () => {
@@ -32,7 +41,13 @@ describe("buildManifest", () => {
     expect(m.settings.socket_mode_enabled).toBe(false);
     expect(m.settings.token_rotation_enabled).toBe(false);
     expect(m.settings.org_deploy_enabled).toBe(false);
-    expect(m.settings.interactivity.is_enabled).toBe(false);
+    // interactivity must be on — Slack gates several Assistant features
+    // behind it even though we don't ship interactive components today.
+    expect(m.settings.interactivity.is_enabled).toBe(true);
+    // is_mcp_enabled flips the "Agents & AI Apps → Model Context Protocol"
+    // toggle on at app creation. Without this manifest field, mcp.slack.com
+    // returns 400 on token init and the agent falls back to bash+curl.
+    expect(m.settings.is_mcp_enabled).toBe(true);
   });
 
   it("derives a default description when none supplied", () => {

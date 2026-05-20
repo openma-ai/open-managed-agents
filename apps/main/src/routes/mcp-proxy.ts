@@ -449,7 +449,22 @@ export async function forwardWithRefresh(
   }
 
   const first = await forwardToUpstream(target, method, inboundHeaders, body);
-  if (first.status !== 401 || !target.refresh) {
+  // Trigger refresh on either 401 (canonical "your token is expired /
+  // invalid") or 403 (some MCP servers — observed on mcp.airtable.com,
+  // mcp.asana.com, mcp.sentry.dev — return Forbidden instead of
+  // Unauthorized when the bearer is expired or revoked, presumably
+  // because their auth layer treats "no usable identity" as a
+  // permission failure rather than an auth failure). 403 is ambiguous
+  // — it could also mean "scope removed" or "plan tier downgrade", in
+  // which case refresh succeeds + retry still 403s, and we surface that
+  // genuine error to the caller. The cost of an extra refresh call in
+  // the false-positive case is one HTTP round-trip + D1 write, which is
+  // cheap relative to the user-visible breakage of "token expired and
+  // nothing ever recovers" (the actual symptom — staging 2026-05-20
+  // sess-pvdx9d16zitzhw39 saw all three of airtable/asana/sentry
+  // permanently 403 across multiple sessions until manual SQL cleanup).
+  const refreshableStatus = first.status === 401 || first.status === 403;
+  if (!refreshableStatus || !target.refresh) {
     log(
       {
         op: "mcp_proxy.forward",
@@ -541,20 +556,29 @@ async function tryRefreshOauth(
   // single-digit ms". Good enough for current scale; perfect mutex
   // would need a per-credential Durable Object and isn't worth it
   // until we see real concurrent-refresh damage in production logs.
+  // Read the current row WITH its raw ciphertext. We need the bytes to
+  // CAS the post-refresh write — AES-GCM uses a random IV so two
+  // encrypts of the same plaintext produce different ciphertexts; the
+  // only way to predicate "the row hasn't moved since I read it" is on
+  // the exact ciphertext bytes.
+  let expectedAuthCipher: string | null = null;
   try {
     const fresh = await services.credentials
-      .get({ tenantId, vaultId: refresh.vaultId, credentialId: refresh.credentialId })
+      .getRawForRefresh({ tenantId, vaultId: refresh.vaultId, credentialId: refresh.credentialId })
       .catch(() => null);
-    const liveAuth = (fresh as { auth?: Record<string, unknown> } | null)?.auth;
-    const liveAccessToken = liveAuth?.[tokenField];
-    if (typeof liveAccessToken === "string" && liveAccessToken !== staleAccessToken) {
-      // Someone (another in-flight call, or a manual refresh via
-      // /v1/oauth/refresh) already rotated. Use the fresh token; don't
-      // burn another token_endpoint roundtrip.
-      return liveAccessToken;
+    if (fresh) {
+      const liveAccessToken = (fresh.row.auth as unknown as Record<string, unknown>)?.[tokenField];
+      if (typeof liveAccessToken === "string" && liveAccessToken !== staleAccessToken) {
+        // Another in-flight refresh (or a manual /v1/oauth/refresh) has
+        // already rotated the token between our caller's first 401/403
+        // and us reaching this re-read. Use the live token, skip the
+        // token_endpoint roundtrip + the CAS write entirely.
+        return liveAccessToken;
+      }
+      expectedAuthCipher = fresh.authCipher;
     }
   } catch {
-    // D1 unreachable — fall through to token_endpoint refresh.
+    // D1 unreachable — fall through to token_endpoint refresh without CAS.
   }
 
   const tokenBody = new URLSearchParams({
@@ -574,7 +598,29 @@ async function tryRefreshOauth(
   } catch {
     return null;
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // token_endpoint rejected our refresh_token. Two distinct cases:
+    //   (a) Real failure: refresh_token revoked / scopes removed → no
+    //       way forward, return null and the caller surfaces the
+    //       upstream error.
+    //   (b) Race we lost: a parallel refresh on this same credential
+    //       beat us, the provider rotated refresh_token, ours is now
+    //       invalid. The winner persisted a fresh access_token to D1.
+    //       Re-read and route the caller's retry through it.
+    try {
+      const after = await services.credentials
+        .get({ tenantId, vaultId: refresh.vaultId, credentialId: refresh.credentialId })
+        .catch(() => null);
+      const winnerAuth = (after as { auth?: Record<string, unknown> } | null)?.auth;
+      const winnerAccessToken = winnerAuth?.[tokenField];
+      if (typeof winnerAccessToken === "string" && winnerAccessToken !== staleAccessToken) {
+        return winnerAccessToken;
+      }
+    } catch {
+      /* fall through */
+    }
+    return null;
+  }
 
   let tokens: { access_token?: string; refresh_token?: string; expires_in?: number };
   try {
@@ -584,26 +630,66 @@ async function tryRefreshOauth(
   }
   if (!tokens.access_token) return null;
 
-  // Best-effort persist back to D1. If the write fails we still return
-  // the new access_token — the current request gets through, future
-  // sessions just may take one extra refresh hop. Field name is
-  // credential-type-specific (cap_cli stores under `token`, mcp_oauth
-  // under `access_token`) — `tokenField` carries which one.
-  try {
-    await services.credentials.refreshAuth({
-      tenantId,
-      vaultId: refresh.vaultId,
-      credentialId: refresh.credentialId,
-      auth: {
-        [tokenField]: tokens.access_token,
-        refresh_token: tokens.refresh_token ?? refresh.refreshToken,
-        expires_at: tokens.expires_in
-          ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
-          : undefined,
-      } as Partial<import("@open-managed-agents/shared").CredentialAuth>,
-    });
-  } catch {
-    /* best-effort */
+  // Persist back to D1 via CAS. Two parallel refreshes that both made it
+  // through token_endpoint successfully (the provider didn't one-shot
+  // its refresh_token) end up here with potentially different new tokens.
+  // CAS picks a winner. Loser re-reads and uses winner's token — the
+  // ones we just got back from token_endpoint get dropped on the floor,
+  // which is fine because both are valid (the provider didn't invalidate
+  // either) and consistency-of-stored-state matters more than which
+  // valid-token-we-got is "ours".
+  if (expectedAuthCipher) {
+    const updated = await services.credentials
+      .refreshAuthCAS({
+        tenantId,
+        vaultId: refresh.vaultId,
+        credentialId: refresh.credentialId,
+        expectedAuthCipher,
+        auth: {
+          [tokenField]: tokens.access_token,
+          refresh_token: tokens.refresh_token ?? refresh.refreshToken,
+          expires_at: tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : undefined,
+        } as Partial<import("@open-managed-agents/shared").CredentialAuth>,
+      })
+      .catch(() => null);
+    if (!updated) {
+      // CAS lost — winner already wrote. Re-read and return their token.
+      try {
+        const after = await services.credentials
+          .get({ tenantId, vaultId: refresh.vaultId, credentialId: refresh.credentialId })
+          .catch(() => null);
+        const winnerToken = (after as { auth?: Record<string, unknown> } | null)?.auth?.[tokenField];
+        if (typeof winnerToken === "string") return winnerToken;
+      } catch {
+        /* fall through */
+      }
+      // Couldn't read the winner — return our just-acquired token
+      // anyway, the caller's retry will at least use a valid bearer.
+      return tokens.access_token;
+    }
+  } else {
+    // No expectedAuthCipher (D1 was unreachable when we tried to read).
+    // Fall back to non-CAS update — accepts the small "two writers
+    // clobber" risk in exchange for persisting at all when D1 was
+    // briefly unavailable on the read but recovered for the write.
+    try {
+      await services.credentials.refreshAuth({
+        tenantId,
+        vaultId: refresh.vaultId,
+        credentialId: refresh.credentialId,
+        auth: {
+          [tokenField]: tokens.access_token,
+          refresh_token: tokens.refresh_token ?? refresh.refreshToken,
+          expires_at: tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : undefined,
+        } as Partial<import("@open-managed-agents/shared").CredentialAuth>,
+      });
+    } catch {
+      /* best-effort */
+    }
   }
 
   return tokens.access_token;

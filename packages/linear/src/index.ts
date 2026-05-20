@@ -18,3 +18,8 @@ export {
   type ViewerInfo,
   type OrganizationInfo,
 } from "./graphql/client";
+export type {
+  LinearIssueSession,
+  LinearIssueSessionRepo,
+  LinearIssueSessionStatus,
+} from "./ports";

@@ -490,6 +490,16 @@ export class CloudflareSandbox implements SandboxExecutor {
       const sandbox = await this.getSandbox();
       if (typeof sandbox.destroy === "function") await sandbox.destroy();
     } catch {}
+    // Invalidate the cached stub. Next `getSandbox()` call will rebuild via
+    // `cfGetSandbox(env.SANDBOX, sessionId)`, which returns the same logical
+    // Sandbox DO (sessionId-keyed) but with a fresh RPC connection. Without
+    // this, the wrapper would hand the next caller a stub pointing at the
+    // container we just destroyed — followup exec calls would hit a stale
+    // RPC handle (observed staging 2026-05-19: "An RPC stub was not
+    // disposed properly" warning preceded the 53-min container wedge by
+    // ~12s, suggesting stale-stub reuse plays a role in the hang loop).
+    this.sandboxPromise = Promise.resolve(cfGetSandbox(this.env.SANDBOX! as any, this.sessionId));
+    this.mounted = false;
   }
 
   /**

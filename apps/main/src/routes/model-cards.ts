@@ -34,6 +34,95 @@ function toApiShape(card: ModelCardRow) {
   };
 }
 
+/**
+ * Best-effort capability probe for a freshly-created model card. Calls the
+ * provider's smallest available endpoint with the user-supplied api_key /
+ * base_url / custom_headers and returns ok=true on 2xx, otherwise ok=false
+ * with the upstream's own error message.
+ *
+ * Bounded to 6s. Failures NEVER roll back the card (it's already persisted)
+ * — purpose is "tell the user upfront whether their key / endpoint works"
+ * rather than discovering at first agent run.
+ *
+ * Provider routing:
+ *   - "ant" / "anthropic" / "ant-compatible"  → POST {base}/v1/messages with
+ *       max_tokens: 1, model: <model>, messages: [{role:user, content:"hi"}]
+ *   - "oai" / "openai" / "oai-compatible"     → POST {base}/v1/chat/completions
+ *       with max_completion_tokens: 1, model: <model>
+ *   - anything else                            → ok=null (skipped, can't probe)
+ */
+async function probeModelCard(opts: {
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string | null;
+  customHeaders: Record<string, string> | null;
+}): Promise<{ ok: boolean; message?: string } | { ok: null; reason: "unsupported_provider" }> {
+  const provider = opts.provider.toLowerCase();
+  const isAnt = /^(ant|anthropic|ant-compatible)$/.test(provider);
+  const isOai = /^(oai|openai|oai-compatible)$/.test(provider);
+  if (!isAnt && !isOai) return { ok: null, reason: "unsupported_provider" };
+
+  const url = isAnt
+    ? `${opts.baseUrl ?? "https://api.anthropic.com"}/v1/messages`
+    : `${opts.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(opts.customHeaders ?? {}),
+  };
+  let body: string;
+  if (isAnt) {
+    headers["x-api-key"] = opts.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    body = JSON.stringify({
+      model: opts.model,
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
+  } else {
+    headers["authorization"] = `Bearer ${opts.apiKey}`;
+    body = JSON.stringify({
+      model: opts.model,
+      max_completion_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
+  }
+
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 6000);
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "POST", headers, body, signal: ac.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status >= 200 && res.status < 300) return { ok: true };
+    const upstream = await res.text().catch(() => "");
+    // Try to extract the structured error.message; fall back to raw body.
+    let detail = upstream.slice(0, 240).trim();
+    try {
+      const j = JSON.parse(upstream) as { error?: { message?: string } | string };
+      const m =
+        typeof j.error === "string"
+          ? j.error
+          : typeof j.error === "object" && j.error?.message
+            ? j.error.message
+            : "";
+      if (m) detail = m.slice(0, 240);
+    } catch {
+      /* keep raw */
+    }
+    return {
+      ok: false,
+      message: `Provider returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, message: `Probe failed: ${msg.slice(0, 120)}` };
+  }
+}
+
 // POST /v1/model_cards — create
 app.post("/", async (c) => {
   const t = c.get("tenant_id");
@@ -63,7 +152,19 @@ app.post("/", async (c) => {
       customHeaders: body.custom_headers ?? null,
       makeDefault: !!body.is_default,
     });
-    return c.json(toApiShape(card), 201);
+    // Probe the model with a minimal request so the user finds out NOW
+    // whether the api_key + base_url + custom_headers actually work,
+    // instead of at first agent run. Probe is best-effort: card is
+    // already persisted and never rolled back. Result rides on the API
+    // response so the Console can toast immediately.
+    const probe = await probeModelCard({
+      provider: body.provider,
+      model: body.model ?? body.model_id,
+      apiKey: body.api_key,
+      baseUrl: body.base_url ?? null,
+      customHeaders: body.custom_headers ?? null,
+    });
+    return c.json({ ...toApiShape(card), probe }, 201);
   } catch (err) {
     if (err instanceof ModelCardDuplicateModelIdError) {
       return c.json({ error: err.message }, 409);

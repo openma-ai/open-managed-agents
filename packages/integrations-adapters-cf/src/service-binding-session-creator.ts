@@ -51,6 +51,7 @@ export class ServiceBindingSessionCreator implements SessionCreator {
         mcpServers: input.mcpServers,
         metadata: input.metadata,
         initialEvent: input.initialEvent,
+        additionalSystemPrompt: input.additionalSystemPrompt,
       }),
     });
     if (!res.ok) {

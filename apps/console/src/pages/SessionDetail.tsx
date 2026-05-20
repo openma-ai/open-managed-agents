@@ -116,6 +116,7 @@ export function SessionDetail() {
     threadTs?: string;
     workspaceId?: string;
     eventKind?: string;
+    publicationId?: string;
   } | null>(null);
   const [status, setStatus] = useState("idle");
   /** Lazy-fetched Trajectory v1 envelope. Drives the outcome + reward
@@ -508,7 +509,7 @@ export function SessionDetail() {
           setLinear(linearMeta);
         }
         const slackMeta = s.metadata?.slack as
-          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string }
+          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string; publicationId?: string }
           | undefined;
         if (slackMeta && (slackMeta.channelId || slackMeta.threadTs)) {
           setSlack(slackMeta);
@@ -895,15 +896,25 @@ export function SessionDetail() {
 
       {/* Slack context (when triggered by a Slack event) */}
       {slack && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet">
+        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
           <span>💬</span>
           <span className="font-medium">Slack</span>
           <span className="opacity-60">·</span>
           <span>
             {slack.channelId ? (
-              <>
-                channel <span className="font-mono">{slack.channelId}</span>
-              </>
+              slack.workspaceId ? (
+                <a
+                  href={`slack://channel?team=${slack.workspaceId}&id=${slack.channelId}`}
+                  className="font-mono underline hover:no-underline"
+                  title="Open in Slack desktop"
+                >
+                  channel {slack.channelId} ↗
+                </a>
+              ) : (
+                <>
+                  channel <span className="font-mono">{slack.channelId}</span>
+                </>
+              )
             ) : (
               "—"
             )}
@@ -918,6 +929,18 @@ export function SessionDetail() {
             <span className="opacity-60 font-mono uppercase tracking-wider text-[10px]">
               {slack.eventKind}
             </span>
+          )}
+          {slack.publicationId && (
+            <>
+              <span className="opacity-60">·</span>
+              <Link
+                to={`/integrations/slack/publish?pub=${slack.publicationId}`}
+                className="underline hover:no-underline"
+                title="Open the Slack publication this session is bound to"
+              >
+                publication →
+              </Link>
+            </>
           )}
         </div>
       )}
@@ -1887,17 +1910,33 @@ function EventRender({
         : typeof rawContent === "string"
           ? rawContent
           : JSON.stringify(rawContent, null, 2);
-      // State maps to the Tool badge: input-available (Running) while
-      // we have args but no result; output-available (Completed) once
-      // the paired result lands. We don't surface output-error because
-      // the OMA tool_result spec doesn't carry a failure flag.
-      const state = pairedResult ? "output-available" : "input-available";
+      // is_error is set by the agent runtime when a tool call failed
+      // (bash non-zero exit + stderr surfaced, mcp tool returned an
+      // error envelope, _finalizeStaleTurns injected an abort placeholder
+      // for DO-eviction recovery, etc.). When present we route the same
+      // payload through ToolOutput.errorText so the Tool block renders
+      // in destructive styling, and badge to 'output-error' so the
+      // header pill shows Failed instead of Completed. Without this,
+      // bash returning "Sandbox container failed to start after 10
+      // attempts..." looked identical to a successful run.
+      const isError = pairedResult
+        ? Boolean((pairedResult as { is_error?: boolean }).is_error)
+        : false;
+      const errorText = isError
+        ? (typeof output === "string" ? output : JSON.stringify(output ?? null))
+        : undefined;
+      const state = pairedResult
+        ? (isError ? "output-error" : "output-available")
+        : "input-available";
       return (
         <Tool>
           <ToolHeader type="dynamic-tool" toolName={title} state={state} />
           <ToolContent>
             <ToolInput input={event.input ?? {}} />
-            <ToolOutput output={output} errorText={undefined} />
+            <ToolOutput
+              output={isError ? undefined : output}
+              errorText={errorText}
+            />
           </ToolContent>
         </Tool>
       );

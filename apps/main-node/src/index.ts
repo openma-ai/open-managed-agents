@@ -882,7 +882,7 @@ if (platformRootSecret) {
           },
           slack: {
             installations: new SqlSlackInstallationRepo(sql, slackCrypto, slackIds),
-            publications: new SqlSlackPublicationRepo(sql, slackIds),
+            publications: new SqlSlackPublicationRepo(sql, slackIds, slackCrypto),
             apps: new SqlSlackAppRepo(sql, slackCrypto, slackIds),
           },
         };
@@ -1021,7 +1021,7 @@ if (platformRootSecret) {
           },
           slack: {
             installations: new SqlSlackInstallationRepo(sql, slackCrypto, slackIds),
-            publications: new SqlSlackPublicationRepo(sql, slackIds),
+            publications: new SqlSlackPublicationRepo(sql, slackIds, slackCrypto),
             apps: new SqlSlackAppRepo(sql, slackCrypto, slackIds),
           },
         };
@@ -1209,10 +1209,44 @@ function randomFallback(): string {
  * (e.g. "linear/publications/start-a1") routes to bridge.startInstallation.
  * Mirrors apps/main/src/routes/integrations.ts but skips the
  * INTEGRATIONS.fetch hop.
+ *
+ * Linear's publication-first endpoints use distinct subpath shapes:
+ *   - POST  linear/publications                       → mode='create-publication'
+ *   - PATCH linear/publications/<id>/credentials      → mode='submit-credentials-pub'
+ * Slack/GitHub continue using the legacy /start-a1, /credentials,
+ * /handoff-link variants until they ship their own publication-first
+ * refactors.
  */
 function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder {
   return {
-    async forward({ subpath, body }) {
+    async forward({ subpath, body, method }) {
+      // Linear publication-first endpoints first — they share a subpath
+      // prefix with the legacy ones so order matters.
+      const newPub = /^linear\/publications$/.exec(subpath);
+      if (newPub && method === "POST") {
+        const result = await bridge.startInstallation!({
+          provider: "linear",
+          mode: "create-publication",
+          body: (body ?? {}) as Record<string, unknown>,
+        });
+        return new Response(JSON.stringify(result.body), {
+          status: result.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const newCreds = /^linear\/publications\/([^/]+)\/credentials$/.exec(subpath);
+      if (newCreds && (method === "PATCH" || method === "POST")) {
+        const result = await bridge.startInstallation!({
+          provider: "linear",
+          mode: "submit-credentials-pub",
+          body: { ...(body ?? {}), publicationId: newCreds[1] } as Record<string, unknown>,
+        });
+        return new Response(JSON.stringify(result.body), {
+          status: result.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       const m = /^([^/]+)\/publications\/(start-a1|credentials|handoff-link|personal-token)$/.exec(
         subpath,
       );

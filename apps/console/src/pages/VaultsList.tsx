@@ -8,6 +8,7 @@ import { TextInput, SecretInput } from "../components/Input";
 import { LocalCombobox } from "../components/LocalCombobox";
 import { Disclosure } from "../components/Disclosure";
 import { TabsRoot, TabList, Tab, TabPanel } from "../components/Tabs";
+import { useToast } from "../components/Toast";
 import { MCP_REGISTRY, type McpRegistryEntry } from "../data/mcp-registry";
 
 interface Vault { id: string; name: string; created_at: string; archived_at?: string; }
@@ -40,6 +41,7 @@ const CAP_CLIS: Array<{ cli_id: string; label: string; helper: string; oauth?: b
 
 export function VaultsList() {
   const { api } = useApi();
+  const { toast } = useToast();
   const [showCreateVault, setShowCreateVault] = useState(false);
   const [vaultName, setVaultName] = useState("");
 
@@ -84,6 +86,36 @@ export function VaultsList() {
   const [refreshSectionOpen, setRefreshSectionOpen] = useState(false);
   const [clientCredsSectionOpen, setClientCredsSectionOpen] = useState(false);
 
+  // Reset the Add-credential form whenever the modal opens. The Modal's
+  // onClose handler resets too, but Radix only fires it for user-initiated
+  // closes (Esc, click-outside) — programmatic `setShowAddCred(false)`
+  // calls (success paths, Cancel button) bypass it, leaving state from the
+  // previous open. Resetting on open covers every entry path.
+  useEffect(() => {
+    if (!showAddCred) return;
+    setCustomForm({
+      name: "",
+      type: "oauth",
+      url: "",
+      pickedName: "",
+      pickedIcon: "",
+      token: "",
+      refreshToken: "",
+      tokenEndpoint: "",
+      authMethod: "client_secret_post",
+      clientId: "",
+      clientSecret: "",
+    });
+    setTokenSectionOpen(false);
+    setRefreshSectionOpen(false);
+    setClientCredsSectionOpen(false);
+    // Also clear any stale connecting indicator from a prior session that
+    // was X'd out mid-OAuth — otherwise the Connect button stays disabled
+    // forever because submitCustom's setConnecting(null) only runs on the
+    // success path.
+    setConnecting(null);
+  }, [showAddCred]);
+
   // Add-CLI form (cap_cli credentials). Visible inside the unified
   // Add-credential modal under the "CLI" tab.
   const [cliForm, setCliForm] = useState({
@@ -117,19 +149,54 @@ export function VaultsList() {
     refresh: load,
   } = usePagedList<Vault>("/v1/vaults", { defaultPageSize: 20 });
 
-  // Listen for OAuth popup completion
-  const handleOAuthMessage = useCallback((event: MessageEvent) => {
-    if (event.data?.type === "oauth_complete" && selectedVault) {
+  // Listen for OAuth popup completion. Two transports because COOP severs
+  // window.opener for providers like Sentry (which set
+  // Cross-Origin-Opener-Policy: same-origin on their authorize page) —
+  // postMessage from the popup back to us doesn't work in that case.
+  // BroadcastChannel is same-origin and survives COOP, so use it as a
+  // parallel channel; the popup posts to both. Either firing is enough.
+  const handleOAuthMessage = useCallback((event: MessageEvent | { data: unknown }) => {
+    const data = (event as { data?: { type?: string; service?: string; probe_ok?: boolean; probe_message?: string | null } }).data;
+    if (data?.type === "oauth_complete" && selectedVault) {
       setConnecting(null);
       setShowAddCred(false);
       openVault(selectedVault);
+      // Surface the MCP probe result so the user knows whether the just-
+      // stored credential will actually work. probe_ok=true → green toast;
+      // false → warning toast carrying the upstream's own message verbatim
+      // (e.g. Slack's "App is not enabled for Slack MCP server access. Please
+      // enable it here: <url>") so the user has actionable next-step text.
+      const svc = data.service ?? "MCP server";
+      if (data.probe_ok === true) {
+        toast?.(`Connected to ${svc} — token verified.`, "success");
+      } else if (data.probe_ok === false) {
+        toast?.(
+          data.probe_message
+            ? `Connected to ${svc}, but: ${data.probe_message}`
+            : `Connected to ${svc}, but the server rejected our token.`,
+          "warning",
+        );
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVault]);
 
   useEffect(() => {
     window.addEventListener("message", handleOAuthMessage);
-    return () => window.removeEventListener("message", handleOAuthMessage);
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("openma-oauth");
+      bc.addEventListener("message", handleOAuthMessage);
+    } catch {
+      // Old browser without BroadcastChannel — fall back to postMessage only.
+    }
+    return () => {
+      window.removeEventListener("message", handleOAuthMessage);
+      if (bc) {
+        bc.removeEventListener("message", handleOAuthMessage);
+        bc.close();
+      }
+    };
   }, [handleOAuthMessage]);
 
   const createVault = async () => {
