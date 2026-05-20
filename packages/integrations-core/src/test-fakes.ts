@@ -901,6 +901,61 @@ export class InMemoryIssueSessionRepo implements IssueSessionRepo {
     });
     return true;
   }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean> {
+    const k = this.key(args.publicationId, args.issueId);
+    if (this.rows.has(k)) return false; // INSERT OR IGNORE semantics
+    this.rows.set(k, {
+      tenantId: args.tenantId,
+      publicationId: args.publicationId,
+      issueId: args.issueId,
+      sessionId: "",
+      status: "pending",
+      createdAt: args.nowMs,
+    });
+    return true;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, issueId);
+    const row = this.rows.get(k);
+    if (!row || row.status !== "pending") return false;
+    this.rows.set(k, { ...row, sessionId, status: "active" });
+    return true;
+  }
+
+  async releasePending(publicationId: string, issueId: string): Promise<void> {
+    const k = this.key(publicationId, issueId);
+    const row = this.rows.get(k);
+    if (row && row.status === "pending") this.rows.delete(k);
+  }
+
+  async reassignIfInactive(
+    publicationId: string,
+    issueId: string,
+    newSessionId: SessionId,
+    now: number,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, issueId);
+    const row = this.rows.get(k);
+    if (!row) return false;
+    const PENDING_STALE_AFTER_MS = 60_000;
+    const eligible =
+      (row.status !== "active" && row.status !== "pending") ||
+      (row.status === "pending" && row.createdAt < now - PENDING_STALE_AFTER_MS);
+    if (!eligible) return false;
+    this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
+    return true;
+  }
 }
 
 export class InMemorySetupLinkRepo implements SetupLinkRepo {

@@ -5,6 +5,12 @@ import type {
   SessionId,
 } from "@open-managed-agents/integrations-core";
 
+/** Pending claims older than this are eligible for reassignIfInactive
+ *  takeover. Live claims fulfill in <1s typically (just one sessions.create
+ *  RPC), so 60s is conservatively long enough to never preempt a healthy
+ *  winner while still bounding the recovery window for crash-during-create. */
+const PENDING_STALE_AFTER_MS = 60_000;
+
 interface Row {
   tenant_id: string;
   publication_id: string;
@@ -126,5 +132,91 @@ export class D1IssueSessionRepo implements IssueSessionRepo {
       )
       .first<{ session_id: string }>();
     return result !== null;
+  }
+
+  /**
+   * Two-phase webhook claim — phase 1. INSERT OR IGNORE writes status='pending'
+   * with empty placeholder session_id. Concurrent webhooks see the pending row
+   * and short-circuit upstream (dispatcher checks status==='pending' + freshness).
+   * Returns true when this caller wrote the row (won the claim).
+   */
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO linear_issue_sessions
+           (tenant_id, publication_id, issue_id, session_id, status, created_at)
+         VALUES (?, ?, ?, '', 'pending', ?)`,
+      )
+      .bind(args.tenantId, args.publicationId, args.issueId, args.nowMs)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /**
+   * Two-phase webhook claim — phase 2. UPDATE the pending row with the real
+   * session id, flip status='active'. Returns false when no pending row
+   * matched — claim was reassigned via stale-takeover, or row was deleted.
+   */
+  async fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE linear_issue_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
+      )
+      .bind(sessionId, publicationId, issueId)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /**
+   * Two-phase webhook claim — abort. DELETE the pending row when
+   * sessions.create() failed, so a retry can re-claim. WHERE status='pending'
+   * guards against deleting a real session (e.g. someone else fulfilled).
+   */
+  async releasePending(publicationId: string, issueId: string): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM linear_issue_sessions
+         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
+      )
+      .bind(publicationId, issueId)
+      .run();
+  }
+
+  /**
+   * Atomic re-bind for stale-pending takeover. Sets session_id + status='active'
+   * only when the row is non-active and non-pending (terminal, retryable) OR
+   * pending but the claim is stale (winner crashed before fulfilling).
+   */
+  async reassignIfInactive(
+    publicationId: string,
+    issueId: string,
+    newSessionId: SessionId,
+    now: number,
+  ): Promise<boolean> {
+    const staleCutoff = now - PENDING_STALE_AFTER_MS;
+    const result = await this.db
+      .prepare(
+        `UPDATE linear_issue_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND issue_id = ?
+           AND (
+             status NOT IN ('active', 'pending')
+             OR (status = 'pending' AND created_at < ?)
+           )`,
+      )
+      .bind(newSessionId, publicationId, issueId, staleCutoff)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
   }
 }

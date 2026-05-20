@@ -801,7 +801,7 @@ export class LinearProvider implements IntegrationProvider {
   private async dispatchEvent(
     publication: Publication,
     event: NormalizedWebhookEvent,
-  ): Promise<string> {
+  ): Promise<string | null> {
     // Look up the installation to find the vault holding the access token.
     const installation = await this.container.installations.get(publication.installationId);
     const vaultIds = installation?.vaultId ? [installation.vaultId] : [];
@@ -834,45 +834,95 @@ export class LinearProvider implements IntegrationProvider {
     };
 
     if (publication.sessionGranularity === "per_issue" && event.issueId) {
+      // Two-phase claim race-guard: a sibling webhook (e.g. AgentSessionEvent
+      // + AppUserNotification fire concurrently for the same description-@)
+      // has just won the (publication, issue) claim and is currently in
+      // sessions.create. The pending row holds a placeholder session_id;
+      // resuming it would 404. Drop this delivery — the winner will deliver
+      // its own message. Stale pending rows (>60s, winner crashed) fall
+      // through to reassignIfInactive recovery below.
+      const PENDING_FRESH_MS = 60_000;
       const existing = await this.container.issueSessions.getByIssue(
         publication.id,
         event.issueId,
       );
-      if (existing) {
+      if (
+        existing &&
+        existing.status === "pending" &&
+        this.container.clock.nowMs() - existing.createdAt < PENDING_FRESH_MS
+      ) {
+        return null;
+      }
+      if (existing && existing.status === "active") {
         // Linear is the source of truth; we don't track session lifecycle in
         // our DB. The row's status field is just a "claim marker" — assume
-        // any existing row points at a still-resumable session. If resume
-        // fails (session was archived/deleted), fall through to create.
+        // any active row points at a still-resumable session. If resume
+        // fails (session was archived/deleted), fall through to claim.
         try {
           await this.container.sessions.resume(publication.userId, existing.sessionId, sessionEvent);
           return existing.sessionId;
         } catch (err) {
           console.warn(
-            `[linear-dispatch] resume failed for session=${existing.sessionId} issue=${event.issueId} — falling through to create. err=${
+            `[linear-dispatch] resume failed for session=${existing.sessionId} issue=${event.issueId} — falling through to claim. err=${
               err instanceof Error ? err.message : String(err)
             }`,
           );
-          // fall through
+          // fall through to claim path
         }
       }
-      const created = await this.container.sessions.create({
-        userId: publication.userId,
-        agentId: publication.agentId,
-        environmentId: publication.environmentId,
-        vaultIds,
-        mcpServers,
-        metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
-        initialEvent: sessionEvent,
-      });
-      await this.container.issueSessions.insert({
+      // Two-phase claim — phase 1: insert pending row, atomically. Loser
+      // returns null (sibling is creating).
+      const claimed = await this.container.issueSessions.claimPending({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: event.issueId,
-        sessionId: created.sessionId,
-        status: "active",
-        createdAt: this.container.clock.nowMs(),
+        nowMs: this.container.clock.nowMs(),
       });
-      return created.sessionId;
+      if (!claimed) {
+        // A row already exists. Either we lost the race to a sibling
+        // (status='pending' fresh) or there's a stale/terminal row. Try
+        // stale-takeover; if that also fails, drop.
+        // Note: we don't try to reassign with a real session id here because
+        // we haven't created one yet. Just drop and let the next event retry.
+        return null;
+      }
+
+      // Phase 2: create the session, then atomically swap real id in.
+      try {
+        const created = await this.container.sessions.create({
+          userId: publication.userId,
+          agentId: publication.agentId,
+          environmentId: publication.environmentId,
+          vaultIds,
+          mcpServers,
+          metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
+          initialEvent: sessionEvent,
+        });
+        const fulfilled = await this.container.issueSessions.fulfillPending(
+          publication.id,
+          event.issueId,
+          created.sessionId,
+        );
+        if (!fulfilled) {
+          // Pending row was reaped by stale-takeover before fulfillPending
+          // landed. The created session is now orphaned but harmless — Linear
+          // will deliver further events to whoever owns the row now.
+          console.warn(
+            `[linear-dispatch] fulfillPending lost row for issue=${event.issueId} — created session ${created.sessionId} orphaned`,
+          );
+        }
+        return created.sessionId;
+      } catch (err) {
+        // Roll back the pending row so the next webhook can re-claim. If we
+        // leave it, the row stays pending forever and events get dropped
+        // until the 60s staleness window opens.
+        try {
+          await this.container.issueSessions.releasePending(publication.id, event.issueId);
+        } catch {
+          // best-effort rollback
+        }
+        throw err;
+      }
     }
 
     // per_event (or per_issue without an issue id): always fresh session.
@@ -1288,10 +1338,12 @@ export class LinearProvider implements IntegrationProvider {
         // Linear stays the source of truth for issue state. Mark the row
         // processed with the spawned session id; 7-day retention sweep GCs
         // it later. Keeping it lets ops grep linear_events by delivery_id
-        // for "what happened to this webhook" debugging.
+        // for "what happened to this webhook" debugging. sessionId is null
+        // when the dispatcher dropped the event (e.g. lost the two-phase
+        // claim race to a sibling); record empty string in that case.
         await this.container.webhookEvents.markProcessed(
           row.deliveryId,
-          sessionId,
+          sessionId ?? "",
           nowMs,
         );
         succeeded++;

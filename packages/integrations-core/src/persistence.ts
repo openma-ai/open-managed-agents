@@ -497,6 +497,60 @@ export interface IssueSessionRepo {
     sessionId: SessionId;
     nowMs: number;
   }): Promise<boolean>;
+
+  /**
+   * Two-phase webhook claim — phase 1. INSERT a row at status='pending'
+   * with an empty placeholder session_id. Mirrors the Slack
+   * `slack_thread_sessions` claimPending semantics: the row's existence +
+   * status='pending' is the lock. Concurrent webhooks for the same
+   * (publication, issue) all observe the pending row and short-circuit
+   * (the dispatcher drops fresh-pending duplicates upstream).
+   *
+   * Returns true when this caller wrote the row (won the claim), false
+   * when a row already existed (lost — sibling delivery is creating, OR
+   * an active session is in place; caller distinguishes by re-reading).
+   */
+  claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean>;
+
+  /**
+   * Two-phase webhook claim — phase 2. Atomically write the real session
+   * id and flip status='active'. Returns false if the row isn't in
+   * pending state (caller's claim was reassigned via stale-takeover, or
+   * row was deleted). Pure UPDATE with WHERE status='pending' guard.
+   */
+  fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean>;
+
+  /**
+   * Two-phase webhook claim — abort. DELETE the pending row when
+   * sessions.create() failed, so a retry can re-claim. Only deletes
+   * when status='pending' to avoid clobbering a real session.
+   */
+  releasePending(publicationId: string, issueId: string): Promise<void>;
+
+  /**
+   * Atomic re-bind for stale-pending takeover. Used after a webhook
+   * winner crashed mid-create (pending row >60s old, no fulfillPending
+   * arrived). Updates session_id + status='active' only when:
+   *   - status is non-active and non-pending (terminal, retryable), OR
+   *   - status='pending' AND created_at older than the staleness cutoff.
+   * Returns true when the row was reassigned. Mirrors the Slack
+   * `slack_thread_sessions` reassignIfInactive predicate.
+   */
+  reassignIfInactive(
+    publicationId: string,
+    issueId: string,
+    newSessionId: SessionId,
+    now: number,
+  ): Promise<boolean>;
 }
 
 export interface NewSetupLink {

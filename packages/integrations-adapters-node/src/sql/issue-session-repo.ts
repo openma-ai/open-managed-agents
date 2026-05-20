@@ -7,6 +7,8 @@ import type {
   SessionId,
 } from "@open-managed-agents/integrations-core";
 
+const PENDING_STALE_AFTER_MS = 60_000;
+
 interface Row {
   tenant_id: string;
   publication_id: string;
@@ -128,5 +130,74 @@ export class SqlIssueSessionRepo implements IssueSessionRepo {
       )
       .first<{ session_id: string }>();
     return result !== null;
+  }
+
+  /** Two-phase webhook claim — phase 1. INSERT OR IGNORE at status='pending'. */
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    issueId: string;
+    nowMs: number;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO linear_issue_sessions
+           (tenant_id, publication_id, issue_id, session_id, status, created_at)
+         VALUES (?, ?, ?, '', 'pending', ?)`,
+      )
+      .bind(args.tenantId, args.publicationId, args.issueId, args.nowMs)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /** Two-phase webhook claim — phase 2. UPDATE pending → active with real id. */
+  async fulfillPending(
+    publicationId: string,
+    issueId: string,
+    sessionId: SessionId,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE linear_issue_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
+      )
+      .bind(sessionId, publicationId, issueId)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /** Two-phase webhook claim — abort. DELETE pending row on rollback. */
+  async releasePending(publicationId: string, issueId: string): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM linear_issue_sessions
+         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
+      )
+      .bind(publicationId, issueId)
+      .run();
+  }
+
+  /** Stale-pending takeover: re-bind only when row is terminal or pending+stale. */
+  async reassignIfInactive(
+    publicationId: string,
+    issueId: string,
+    newSessionId: SessionId,
+    now: number,
+  ): Promise<boolean> {
+    const staleCutoff = now - PENDING_STALE_AFTER_MS;
+    const result = await this.db
+      .prepare(
+        `UPDATE linear_issue_sessions
+           SET session_id = ?, status = 'active'
+         WHERE publication_id = ? AND issue_id = ?
+           AND (
+             status NOT IN ('active', 'pending')
+             OR (status = 'pending' AND created_at < ?)
+           )`,
+      )
+      .bind(newSessionId, publicationId, issueId, staleCutoff)
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
   }
 }

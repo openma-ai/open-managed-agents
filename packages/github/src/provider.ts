@@ -912,6 +912,11 @@ export class GitHubProvider implements IntegrationProvider {
     }
 
     const sessionId = await this.dispatchEvent(publication, event);
+    if (sessionId === null) {
+      // Dispatcher dropped the event (e.g. lost the two-phase claim race to
+      // a sibling webhook). Acknowledge to GitHub but report not_handled.
+      return { handled: false, reason: "race_lost_to_concurrent_create" };
+    }
     await this.container.webhookEvents.attachSession(req.deliveryId, sessionId);
 
     return {
@@ -941,7 +946,7 @@ export class GitHubProvider implements IntegrationProvider {
   private async dispatchEvent(
     publication: Publication,
     event: NormalizedWebhookEvent,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const installation = await this.container.installations.get(publication.installationId);
     const vaultIds = installation?.vaultId ? [installation.vaultId] : [];
     const mcpServers = [{ name: "github", url: this.config.mcpServerUrl }];
@@ -991,10 +996,22 @@ export class GitHubProvider implements IntegrationProvider {
         : null;
 
     if (publication.sessionGranularity === "per_issue" && issueKey) {
+      // Two-phase claim race-guard: GitHub fires multiple webhooks for the
+      // same intent (e.g. issues.assigned + issue_comment.created within
+      // ms). Without claim, getByIssue→null+sessions.create→insert lets
+      // both wake parallel sessions that each post a reply.
+      const PENDING_FRESH_MS = 60_000;
       const existing = await this.container.issueSessions.getByIssue(
         publication.id,
         issueKey,
       );
+      if (
+        existing &&
+        existing.status === "pending" &&
+        this.container.clock.nowMs() - existing.createdAt < PENDING_FRESH_MS
+      ) {
+        return null;
+      }
       if (existing && existing.status === "active") {
         await this.container.sessions.resume(
           publication.userId,
@@ -1003,26 +1020,45 @@ export class GitHubProvider implements IntegrationProvider {
         );
         return existing.sessionId;
       }
-      const created = await this.container.sessions.create({
-        userId: publication.userId,
-        agentId: publication.agentId,
-        environmentId: publication.environmentId,
-        vaultIds,
-        mcpServers,
-        metadata: {
-          github: { issueKey, repository: event.repository },
-        },
-        initialEvent: sessionEvent,
-      });
-      await this.container.issueSessions.insert({
+      const claimed = await this.container.issueSessions.claimPending({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: issueKey,
-        sessionId: created.sessionId,
-        status: "active",
-        createdAt: this.container.clock.nowMs(),
+        nowMs: this.container.clock.nowMs(),
       });
-      return created.sessionId;
+      if (!claimed) return null;
+
+      try {
+        const created = await this.container.sessions.create({
+          userId: publication.userId,
+          agentId: publication.agentId,
+          environmentId: publication.environmentId,
+          vaultIds,
+          mcpServers,
+          metadata: {
+            github: { issueKey, repository: event.repository },
+          },
+          initialEvent: sessionEvent,
+        });
+        const fulfilled = await this.container.issueSessions.fulfillPending(
+          publication.id,
+          issueKey,
+          created.sessionId,
+        );
+        if (!fulfilled) {
+          console.warn(
+            `[github-dispatch] fulfillPending lost row for issue=${issueKey} — created session ${created.sessionId} orphaned`,
+          );
+        }
+        return created.sessionId;
+      } catch (err) {
+        try {
+          await this.container.issueSessions.releasePending(publication.id, issueKey);
+        } catch {
+          // best-effort rollback
+        }
+        throw err;
+      }
     }
 
     const created = await this.container.sessions.create({
