@@ -274,18 +274,34 @@ export async function ensureTenant(
     .bind(tenantId, tenantName, now, now)
     .run();
 
-  // Shard assignment. ROUTER_DB falls back to AUTH_DB if not bound (legacy
-  // deployments still serving the 0003 migration's tables). pickShardForNewTenant
-  // returns the open shard with lowest tenant_count; null when no shards open
-  // → fall back to AUTH_DB_00 (= shard 0, the original openma-auth) so the
-  // signup never blocks on shard-pool exhaustion.
+  // Shard assignment.
+  //
+  // Single-D1 mode (auto-detected when AUTH_DB_01 binding isn't present):
+  // there's only one D1 to assign to. Skip the shard_pool query — a fresh
+  // self-host has no rows there yet — and write the tenant_shard row
+  // directly with the AUTH_DB binding name. ROUTER_DB falls back to
+  // AUTH_DB itself in this mode, so the row lives in the same DB as the
+  // tenant data — fine for single-D1 deployments.
+  //
+  // Multi-shard mode (openma.dev's --env production): pickShardForNewTenant
+  // returns the open shard with lowest tenant_count; null when no shards
+  // open → fall back to AUTH_DB_00 (= shard 0, the original openma-auth)
+  // so signup never blocks on shard-pool exhaustion.
+  const envBag = env as unknown as Record<string, unknown>;
+  const isSingleD1 = !envBag.AUTH_DB_01;
   const controlPlaneDb = env.ROUTER_DB ?? env.AUTH_DB;
-  const shardPool = createCfShardPoolService({ controlPlaneDb });
   const tenantShardDirectory = createCfTenantShardDirectoryService({ controlPlaneDb });
-  const pick = await shardPool.pickShardForNewTenant();
-  const bindingName = pick?.bindingName ?? "AUTH_DB_00";
-  await tenantShardDirectory.assign({ tenantId, bindingName });
-  await shardPool.incrementTenantCount(bindingName);
+  let bindingName: string;
+  if (isSingleD1) {
+    bindingName = "AUTH_DB";
+    await tenantShardDirectory.assign({ tenantId, bindingName });
+  } else {
+    const shardPool = createCfShardPoolService({ controlPlaneDb });
+    const pick = await shardPool.pickShardForNewTenant();
+    bindingName = pick?.bindingName ?? "AUTH_DB_00";
+    await tenantShardDirectory.assign({ tenantId, bindingName });
+    await shardPool.incrementTenantCount(bindingName);
+  }
 
   await db
     .prepare("UPDATE user SET tenantId = ?, role = ? WHERE id = ? AND tenantId IS NULL")

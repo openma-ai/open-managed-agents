@@ -337,34 +337,44 @@ export const buildCfServices = buildServices;
 /**
  * Build the TenantDbProvider used by the middleware.
  *
- * Default (PER_TENANT_DB_ENABLED unset or "true"): the meta-table router
- * that reads `tenant_shard` from the control-plane DB, with a permanent
- * per-isolate cache and AUTH_DB fallback for tenants without a shard
- * assignment. In N=1 deployments (no entries in tenant_shard) every tenant
- * resolves to AUTH_DB → behaviour identical to the pre-sharding shared-DB
- * world.
+ * Three modes, chosen in order:
  *
- * Killswitch (PER_TENANT_DB_ENABLED="false"): bypasses the meta lookup
- * entirely and returns AUTH_DB for every tenant. Use this to instantly roll
- * back if the meta table itself develops a problem.
+ * 1. **Single-D1 mode** (auto-detected, OR `SINGLE_D1_MODE="1"`, OR
+ *    `PER_TENANT_DB_ENABLED="false"`). Self-host deployments with only the
+ *    AUTH_DB binding land here — there's no shard to route to, so we skip
+ *    the meta-table read and serve every tenant from AUTH_DB directly.
+ *    Auto-detection: if the env doesn't have an `AUTH_DB_01` binding, we
+ *    assume single-D1. Self-hosters omit the shard bindings from
+ *    wrangler.jsonc and the mode kicks in without any flag.
+ *
+ * 2. **Multi-shard mode** (default for openma.dev's `--env production`).
+ *    Reads `tenant_shard` from `ROUTER_DB` (or AUTH_DB legacy fallback) and
+ *    resolves to the named binding. AUTH_DB fallback for unmapped tenants.
+ *    Per-isolate cache; no TTL (sharding is sticky).
+ *
+ * 3. **Legacy killswitch** (`PER_TENANT_DB_ENABLED="false"`). Same shape as
+ *    single-D1 mode — exists for instant rollback if the meta table itself
+ *    breaks in production.
  *
  * Tests should construct their own StaticTenantDbProvider via
  * @open-managed-agents/tenant-db/test-fakes and bypass this factory.
  */
 export function buildCfTenantDbProvider(env: Env): TenantDbProvider {
-  const flag = (env as unknown as { PER_TENANT_DB_ENABLED?: string }).PER_TENANT_DB_ENABLED;
-  const disabled = flag === "false" || flag === "0";
-  if (disabled) {
+  const envBag = env as unknown as Record<string, unknown>;
+  const perTenantFlag = envBag.PER_TENANT_DB_ENABLED;
+  const explicitDisabled = perTenantFlag === "false" || perTenantFlag === "0";
+  const explicitSingleD1 = envBag.SINGLE_D1_MODE === "1";
+  // Auto-detect: shard bindings are present iff this is a multi-shard
+  // deployment. AUTH_DB_01 is the canary because AUTH_DB_00 may be aliased
+  // to AUTH_DB on legacy single-shard deployments (see env.production
+  // overlay), but AUTH_DB_01 only ever exists when the operator opted into
+  // multi-shard.
+  const implicitSingleD1 = !envBag.AUTH_DB_01;
+  if (explicitDisabled || explicitSingleD1 || implicitSingleD1) {
     return new CfSharedAuthDbProvider(env.AUTH_DB);
   }
-  // controlPlaneDb = env.ROUTER_DB → routing tables live on the dedicated
-  //                                    router DB (no SPOF on shard 0).
-  // defaultBinding = env.AUTH_DB    → unmapped tenants fall back to shard 0.
-  // ROUTER_DB binding is optional in older deployments — fall back to
-  // env.AUTH_DB for the routing reads too in that case (legacy 0003
-  // migration left the routing tables in AUTH_DB).
   return new MetaTableTenantDbProvider(
-    env as unknown as Record<string, unknown>,
+    envBag,
     env.ROUTER_DB ?? env.AUTH_DB,
     env.AUTH_DB,
   );
