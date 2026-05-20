@@ -60,14 +60,52 @@ Workers metrics (requests, CPU time, errors) are in the Cloudflare dashboard per
 
 By default, openma is **multi-tenant on a single D1**. Every user gets a `tenant_id` row; every query is scoped by it. Adequate for most teams.
 
-For stricter isolation (e.g. one D1 per customer, common in B2B SaaS), enable per-tenant DBs:
+The codebase has two distinct mechanisms for stricter isolation; they solve different problems:
+
+### Per-tenant DB isolation (rare)
+
+For B2B SaaS use cases where each customer needs its own D1 (compliance, "noisy-neighbor" insulation, per-customer backups):
 
 ```bash
 npx wrangler secret put PER_TENANT_DB_ENABLED   # set to "true"
 npx wrangler secret put STORE_BACKENDS          # JSON config of backends
 ```
 
-See `packages/storage/README.md` for the full config schema.
+See `packages/storage/README.md` for the full config schema. This is independent of the multi-shard scaling below.
+
+### Multi-shard scaling
+
+If your deployment outgrows a single D1 (D1 has a 10 GB / 50K-row limits per database), you can fan out across N AUTH_DB shards. The shard router lives in `ROUTER_DB`; per-tenant data lands on whichever shard `tenant_shard` says owns the tenant.
+
+Activation is config-only — the wrangler files ship with `env.production` overlays that bind 4 sharded auth DBs (used by openma.dev's hosted prod). To enable for your own deployment:
+
+1. Provision the additional D1s: `wrangler d1 create openma-router`, `wrangler d1 create openma-auth-shard-01..03`
+2. Patch the IDs into `env.production` blocks of `apps/{main,agent,integrations}/wrangler.jsonc` (replacing openma.dev's IDs)
+3. Apply migrations to each shard:
+   ```bash
+   wrangler d1 migrations apply openma-auth-shard-01 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-auth-shard-02 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-auth-shard-03 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-router        --remote --config apps/main/wrangler.jsonc
+   ```
+4. Seed the shard pool:
+   ```bash
+   wrangler d1 execute openma-router --remote --command \
+     "INSERT INTO shard_pool (binding_name, status, tenant_count) VALUES \
+      ('AUTH_DB_00', 'open', 0), \
+      ('AUTH_DB_01', 'open', 0), \
+      ('AUTH_DB_02', 'open', 0), \
+      ('AUTH_DB_03', 'open', 0);"
+   ```
+5. Deploy with `--env production`:
+   ```bash
+   npx wrangler deploy --config apps/main/wrangler.jsonc --env production
+   # repeat for agent, integrations
+   ```
+
+Auto-detection in `packages/services/src/index.ts:buildCfTenantDbProvider` activates the multi-shard router as soon as `AUTH_DB_01` is bound. New signups are assigned to the least-loaded open shard.
+
+Existing tenants stay on their assigned shard; there's no automatic rebalancing tool today.
 
 ## Database backups
 
@@ -77,16 +115,34 @@ R2 has versioning; enable per bucket in the dashboard if your skill files are mu
 
 ## Upgrades
 
-Pull `main`, install, deploy:
+Pull `main`, install, redeploy:
 
 ```bash
 git pull
 pnpm install
-npx wrangler d1 migrations apply openma-auth --remote
-pnpm deploy
+npx wrangler d1 migrations apply openma-auth         --remote --config apps/main/wrangler.jsonc
+npx wrangler d1 migrations apply openma-integrations --remote --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
 ```
 
-Migrations are forward-only and additive by convention; rollbacks are not supported. Test against staging first.
+Migrations are forward-only and additive by convention; rollbacks are not supported. Test against staging first if you have one.
+
+### Migration baseline (one-time)
+
+The migration history was squashed to a single `0001_consolidated.sql` per D1. Older deploys that already ran the historical 0001-0017 files have those filenames stamped in `d1_migrations`. To stop wrangler from re-applying the new consolidated file on existing deployments, run once:
+
+```bash
+./scripts/stamp-baseline-existing-deploy.sh production
+# or: ./scripts/stamp-baseline-existing-deploy.sh staging
+```
+
+The script INSERTs the consolidated filename into each D1's `d1_migrations` table so wrangler treats it as already applied. Safe to re-run; uses `INSERT OR IGNORE`.
+
+A **fresh self-hoster does NOT run this** — `setup-cf.sh` applies the consolidated file as the very first migration, and wrangler stamps it normally.
+
+The historical migration files are kept under `apps/main/migrations/_archive/` (and same for `migrations-integrations/`, `migrations-router/`) for git-blame reference. They're not applied.
 
 ## Sandbox isolation
 
