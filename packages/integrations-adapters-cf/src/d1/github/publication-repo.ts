@@ -164,6 +164,10 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
     const id = this.ids.generate();
     const appOmaId = this.ids.generate();
     const now = Date.now();
+    // Default trigger_label = lowercased + sanitized persona name (GitHub
+    // labels allow alnum + space + dash + underscore + dot + colon). Wizard
+    // can edit later via setTriggerLabel.
+    const triggerLabel = slugifyForLabel(input.persona.name);
     // installation_id="" is the sentinel for "shell, not yet bound" — the
     // column is NOT NULL in storage so we can't use NULL. bindInstallation
     // overwrites with a real id once the install callback completes.
@@ -173,8 +177,8 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
            id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
            persona_name, persona_avatar_url, capabilities,
            session_granularity, created_at, unpublished_at,
-           app_oma_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           app_oma_id, trigger_label
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
       .bind(
         id,
@@ -191,6 +195,7 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
         input.sessionGranularity,
         now,
         appOmaId,
+        triggerLabel,
       )
       .run();
     const publication: Publication = {
@@ -353,6 +358,21 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
     return row ? this.toDomain(row) : null;
   }
 
+  async getTriggerLabel(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(`SELECT trigger_label FROM github_publications WHERE id = ?`)
+      .bind(publicationId)
+      .first<{ trigger_label: string | null }>();
+    return row?.trigger_label ?? null;
+  }
+
+  async setTriggerLabel(publicationId: string, label: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE github_publications SET trigger_label = ? WHERE id = ?`)
+      .bind(label, publicationId)
+      .run();
+  }
+
   // ─── Base PublicationRepo: status / persona / capabilities updates ─────
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
@@ -407,4 +427,22 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
       unpublishedAt: row.unpublished_at,
     };
   }
+}
+
+/**
+ * Build a default trigger_label from a persona name. GitHub label names
+ * accept most printable chars, but we keep it conservative: lowercase,
+ * alnum + hyphen + underscore + dot only; collapse runs of whitespace into
+ * single hyphens; trim. If the result is empty, fall back to "oma" so the
+ * insert never violates the column's expected non-empty content.
+ */
+function slugifyForLabel(name: string): string {
+  const s = name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._\-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return s.length > 0 ? s : "oma";
 }

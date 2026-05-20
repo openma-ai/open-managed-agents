@@ -89,6 +89,9 @@ async function bootstrapPublication(
     },
   });
   if (complete.kind !== "complete") throw new Error("expected complete");
+  // Seed a known trigger label for the test (the InMemory fake's insertShell
+  // doesn't auto-set one). Tests trigger via action="labeled" + this label.
+  await c.publications.setTriggerLabel(complete.publicationId, "coder");
   return { appOmaId, publicationId: complete.publicationId, botLogin };
 }
 
@@ -161,26 +164,27 @@ describe("GitHubProvider — webhook dispatch", () => {
     expect(out.reason).toBe("invalid_signature");
   });
 
-  it("dispatches issue_assigned to a fresh session, recording app+publication+session on the event", async () => {
-    const { appOmaId, botLogin, publicationId } = await bootstrapPublication(
+  it("dispatches issue_engaged when trigger label is added, recording app+publication+session on the event", async () => {
+    const { appOmaId, publicationId } = await bootstrapPublication(
       c, provider, "wh_secret",
     );
     const body = JSON.stringify({
-      action: "assigned",
+      action: "labeled",
+      label: { name: "coder" },
       installation: { id: 9988776 },
       repository: { id: 1, name: "api", full_name: "acme/api" },
       sender: { id: 99, login: "alice" },
       issue: {
         id: 100, number: 142, title: "Auth bug", state: "open",
-        assignees: [{ id: 1, login: botLogin }],
-        labels: [{ name: "bug" }],
+        assignees: [],
+        labels: [{ name: "coder" }],
         html_url: "https://github.com/acme/api/issues/142",
       },
     });
     const out = await provider.handleWebhook({
       providerId: "github",
       installationId: appOmaId,
-      deliveryId: "del_assigned_1",
+      deliveryId: "del_labeled_1",
       headers: {
         "x-github-event": "issues",
         "x-hub-signature-256": fakeSig("wh_secret", body),
@@ -209,23 +213,25 @@ describe("GitHubProvider — webhook dispatch", () => {
     expect(text).toContain("@alice");
 
     // webhook_events row carries the trace.
-    const wh = c.webhookEvents.rows.get("del_assigned_1");
+    const wh = c.webhookEvents.rows.get("del_labeled_1");
     expect(wh?.publicationId).toBe(publicationId);
     expect(wh?.sessionId).toBe(out.sessionId);
   });
 
-  it("a second comment on the same issue resumes the existing session (per_issue)", async () => {
-    const { appOmaId, botLogin } = await bootstrapPublication(c, provider, "wh_secret");
+  it("a second comment on the same labeled issue resumes the existing session (per_issue)", async () => {
+    const { appOmaId } = await bootstrapPublication(c, provider, "wh_secret");
 
-    // First webhook → opens session.
+    // First webhook → label added → opens session.
     const body1 = JSON.stringify({
-      action: "assigned",
+      action: "labeled",
+      label: { name: "coder" },
       installation: { id: 9988776 },
       repository: { id: 1, name: "api", full_name: "acme/api" },
       sender: { id: 99, login: "alice" },
       issue: {
         id: 100, number: 142, title: "Auth bug", state: "open",
-        assignees: [{ id: 1, login: botLogin }],
+        assignees: [],
+        labels: [{ name: "coder" }],
       },
     });
     const out1 = await provider.handleWebhook({
@@ -236,14 +242,17 @@ describe("GitHubProvider — webhook dispatch", () => {
     expect(out1.handled).toBe(true);
     const sessionId = out1.sessionId!;
 
-    // Second webhook on the same issue (a comment) → resume.
+    // Second webhook on the same labeled issue (a comment, no @ needed) → resume.
     const body2 = JSON.stringify({
       action: "created",
       installation: { id: 9988776 },
       repository: { id: 1, name: "api", full_name: "acme/api" },
       sender: { id: 99, login: "alice" },
-      issue: { id: 100, number: 142, title: "Auth bug", state: "open" },
-      comment: { id: 200, body: `@${botLogin} any progress?` },
+      issue: {
+        id: 100, number: 142, title: "Auth bug", state: "open",
+        labels: [{ name: "coder" }],
+      },
+      comment: { id: 200, body: `any progress?` },
     });
     const out2 = await provider.handleWebhook({
       providerId: "github", installationId: appOmaId, deliveryId: "del_b",
@@ -260,15 +269,17 @@ describe("GitHubProvider — webhook dispatch", () => {
   });
 
   it("duplicate delivery id is dropped (idempotency)", async () => {
-    const { appOmaId, botLogin } = await bootstrapPublication(c, provider, "wh_secret");
+    const { appOmaId } = await bootstrapPublication(c, provider, "wh_secret");
     const body = JSON.stringify({
-      action: "assigned",
+      action: "labeled",
+      label: { name: "coder" },
       installation: { id: 9988776 },
       repository: { id: 1, name: "api", full_name: "acme/api" },
       sender: { id: 99, login: "alice" },
       issue: {
         id: 100, number: 1, title: "T", state: "open",
-        assignees: [{ id: 1, login: botLogin }],
+        assignees: [],
+        labels: [{ name: "coder" }],
       },
     });
     const opts = {

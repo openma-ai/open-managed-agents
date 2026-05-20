@@ -53,8 +53,6 @@ You need your own Linear OAuth app first. See [Self-host → OAuth Apps → Line
 
 </Steps>
 
-The agent can now be triggered by PR comments or issue assignments.
-
 <Aside type="caution" title="Repo scope">
   By default, agents only act on repos you explicitly grant. Adding more repos later requires re-authorizing the GitHub App.
 </Aside>
@@ -66,6 +64,50 @@ You need your own GitHub App first. See [Self-host → OAuth Apps → GitHub](/s
 
   </TabItem>
 </Tabs>
+
+### How users engage the GitHub bot
+
+Two trigger paths, in priority order:
+
+**Label-based engagement (primary).** On install, OMA auto-creates a label
+named after your bot's persona (lowercased + slugified — e.g. persona "Coder"
+→ label `coder`) in every selected repo. To engage the bot on any issue or PR,
+**add this label**. Once labeled, the bot wakes for every whitelisted activity
+on that issue/PR — no need to re-mention for follow-ups:
+
+| Source                          | Wakes the bot? |
+| ------------------------------- | -------------- |
+| `issues.opened`                 | yes (if labeled at create) |
+| `issues.labeled` (trigger label)| yes (subscribe) |
+| `issues.unlabeled` (trigger label) | unsubscribe — bot stops responding |
+| `issues.edited` / `reopened`    | yes |
+| Other issue actions (assignee, milestone, lock, ...) | no |
+| `issue_comment.created`         | yes |
+| `pull_request.opened` / `labeled` (trigger) | yes |
+| `pull_request.synchronize` (new commits)    | yes |
+| `pull_request.ready_for_review` | yes |
+| `pull_request.edited` / `reopened` | yes |
+| Other PR actions                | no |
+| `pull_request_review.submitted` | yes |
+| `pull_request_review_comment.created` (incl. inline replies) | yes |
+
+If you delete the label from a repo, OMA will not recreate it; the bot will
+stop responding in that repo until the label is re-added.
+
+**`@`-mention fallback.** Type `@<bot-slug>[bot]` (or `@<bot-slug>`) anywhere
+in an issue body, PR body, comment, or inline review comment. GitHub doesn't
+autocomplete bot accounts in its `@` picker, so type the full handle as
+plain text — the parser still detects it. Each `@`-mention starts an
+ad-hoc engagement equivalent to having added the label.
+
+<Aside type="note" title="Why two paths?">
+  GitHub's `@`-mention autocomplete excludes Bot-type accounts. If users
+  rely only on the autocomplete dropdown they won't discover the bot. The
+  trigger label is first-class GitHub UI (autocomplete in the label picker,
+  visible at-a-glance, filterable in dashboards). The `@`-mention fallback
+  exists for muscle memory and ad-hoc one-off engagement.
+</Aside>
+
 
 ## Connect Slack
 

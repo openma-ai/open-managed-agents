@@ -131,6 +131,22 @@ export interface GitHubPublicationRepo extends PublicationRepo {
    * publication row — no JOIN through github_apps.
    */
   findByAppOmaId(appOmaId: string): Promise<Publication | null>;
+
+  /**
+   * Read the trigger label for label-based engagement. Returns the
+   * `trigger_label` column verbatim — caller is responsible for empty-string
+   * / null disambiguation. The provider uses this in the webhook parser
+   * (label match) and the install hook (auto-create label in repos).
+   */
+  getTriggerLabel(publicationId: string): Promise<string | null>;
+
+  /**
+   * Update the trigger label. Wizard "edit publication" path uses this to
+   * let users rename the label without re-publishing. Provider may also
+   * call it as part of insertShell defaults — in that case `trigger_label`
+   * is set to a slugified persona name.
+   */
+  setTriggerLabel(publicationId: string, label: string): Promise<void>;
 }
 
 // ─── per-issue session bookkeeping ─────────────────────────────────────────

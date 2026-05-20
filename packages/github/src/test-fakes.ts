@@ -210,6 +210,16 @@ export class InMemoryGitHubPublicationRepo
     }
     return null;
   }
+
+  private triggerLabels = new Map<string, string>();
+
+  async getTriggerLabel(publicationId: string): Promise<string | null> {
+    return this.triggerLabels.get(publicationId) ?? null;
+  }
+
+  async setTriggerLabel(publicationId: string, label: string): Promise<void> {
+    this.triggerLabels.set(publicationId, label);
+  }
 }
 
 /**

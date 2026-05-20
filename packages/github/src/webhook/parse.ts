@@ -34,6 +34,11 @@ export interface RawWebhookEnvelope {
   issue?: RawIssue;
   /** Pull request payloads. */
   pull_request?: RawPullRequest;
+  /** Single label payload — present on `issues.labeled` / `unlabeled` and
+   *  `pull_request.labeled` / `unlabeled`. The `issue.labels` / `pr.labels`
+   *  array reflects post-action state; this field is the specific label
+   *  that just changed. */
+  label?: { name: string; color?: string };
   /** Comment payloads. */
   comment?: RawComment;
   /** Pull request review payloads. */
@@ -105,23 +110,45 @@ export interface RawReview {
   html_url?: string;
 }
 
-/** Notification subtypes we route on. Add as we wire more event handlers. */
+/**
+ * Notification subtypes we route on.
+ *
+ * The model is **label-based engagement**: a publication has a `triggerLabel`
+ * configured (default: lowercased persona name). Users add this label to any
+ * issue or PR to "subscribe" the bot. Once subscribed, every whitelisted
+ * event on that issue/PR wakes the bot's session — no need to re-@-mention
+ * for follow-ups.
+ *
+ * `*_engaged`  — whitelisted event on a labeled issue/PR. Dispatch path:
+ *                getByIssue → resume if active session exists, otherwise
+ *                claimPending + spawn (label was just added or @-mention
+ *                fallback fired).
+ * `*_unsubscribed` — trigger label removed from an issue/PR. Dispatch path:
+ *                close the session for that issue/PR.
+ * `installation_*` — App lifecycle. `installation_repos_added` is the
+ *                opportunity to auto-create the trigger label in newly
+ *                installed repos.
+ *
+ * Whitelisted engagement actions per resource:
+ *   issues:                opened, labeled, edited, reopened
+ *   issue_comment:         created
+ *   pull_request:          opened, labeled, edited, reopened, ready_for_review,
+ *                          synchronize
+ *   pull_request_review:   submitted
+ *   pull_request_review_comment: created
+ *
+ * Everything else (assigned/reviewer changes, other-label changes, lock/
+ * milestone/transfer/pin, comment edits/deletes, review edits/dismissals)
+ * is parsed for observability but routes to kind=null.
+ */
 export type EventKind =
-  | "issue_assigned"
-  | "issue_opened"
-  | "issue_commented"
-  | "issue_mentioned"
-  | "pr_opened"
-  | "pr_assigned"
-  | "pr_review_requested"
-  | "pr_commented"
-  | "pr_review_submitted"
-  | "pr_review_comment"
-  | "pr_mentioned"
-  | "workflow_run_failed"
-  | "check_run_failed"
+  | "issue_engaged"
+  | "issue_unsubscribed"
+  | "pr_engaged"
+  | "pr_unsubscribed"
   | "installation_created"
-  | "installation_deleted";
+  | "installation_deleted"
+  | "installation_repos_added";
 
 /**
  * Normalized event consumed by the router and handler. One per dispatched
@@ -167,10 +194,17 @@ export interface ParseInput {
   raw: RawWebhookEnvelope;
   /**
    * Login of the bot user the App publishes as. Used to filter "@mention"
-   * events to only those that actually mention the bot, and to detect
-   * assigned-to-bot vs assigned-to-human.
+   * fallback (when the issue/PR isn't labeled but a comment @-mentions us)
+   * and to suppress self-loops where the bot's own activity would re-fire.
    */
   botLogin: string | null;
+  /**
+   * Trigger label name for label-based engagement. When an issue/PR carries
+   * this label, whitelisted events on it route as `*_engaged`. Comparison
+   * is case-insensitive. `null` = no label engagement; only @-mention
+   * fallback is active.
+   */
+  triggerLabel: string | null;
 }
 
 /** Parses a raw GitHub webhook into our normalized shape. Pure function. */
@@ -179,6 +213,7 @@ export function parseWebhook({
   deliveryId,
   raw,
   botLogin,
+  triggerLabel,
 }: ParseInput): NormalizedWebhookEvent | null {
   if (!deliveryId) return null;
 
@@ -224,28 +259,78 @@ export function parseWebhook({
     };
   }
 
+  // ─── installation_repositories ─────────────────────────────────────
+  // Fired when the user adds/removes repos from the App's installation
+  // selection (post-install repo-management). We only act on `added` —
+  // that's the trigger to auto-create the trigger label in the new repos.
+  // `removed` events are dropped (no cleanup; user removed the repo).
+  if (eventType === "installation_repositories") {
+    return {
+      ...base,
+      kind: action === "added" ? "installation_repos_added" : null,
+      itemNumber: null,
+      itemKind: null,
+      itemTitle: null,
+      itemBody: null,
+      commentBody: null,
+      commentId: null,
+      labels: [],
+      htmlUrl: null,
+    };
+  }
+
+  // Whitelist of actions that wake the bot when the issue/PR carries the
+  // trigger label. Anything outside this set on a labeled issue/PR is
+  // treated as metadata change and dropped to avoid noise.
+  const ISSUE_ENGAGE_ACTIONS = new Set(["opened", "labeled", "edited", "reopened"]);
+  const PR_ENGAGE_ACTIONS = new Set([
+    "opened",
+    "labeled",
+    "edited",
+    "reopened",
+    "ready_for_review",
+    "synchronize",
+  ]);
+
+  const triggerLabelLower = triggerLabel?.toLowerCase() ?? null;
+  const labelChanged = raw.label?.name?.toLowerCase() ?? null;
+  const isTriggerLabelChange =
+    triggerLabelLower != null && labelChanged === triggerLabelLower;
+
   // ─── issues ────────────────────────────────────────────────────────
   if (eventType === "issues" && raw.issue) {
     const issue = raw.issue;
-    const isAssignedToBot =
-      botLogin != null &&
-      Array.isArray(issue.assignees) &&
-      issue.assignees.some((a) => a.login === botLogin);
-    // Body-mention trigger on `opened`/`edited`: GitHub doesn't emit a
-    // separate `mentioned` action for issue bodies (only for comments),
-    // so we detect `@<bot>` in the issue body ourselves and route the
-    // opened/edited event as `issue_mentioned`. This stops short of
-    // triaging every new issue (which would be a firehose) — only issues
-    // that explicitly address the bot wake a session.
+    const labels = lowercaseLabels(issue.labels);
+    const hasTriggerLabel =
+      triggerLabelLower != null && labels.includes(triggerLabelLower);
     const bodyMentionsBot =
       botLogin != null &&
       typeof issue.body === "string" &&
       commentMentions(issue.body, botLogin);
-    const kind =
-      senderIsBot ? null :
-      action === "assigned" && isAssignedToBot ? "issue_assigned" :
-      (action === "opened" || action === "edited") && bodyMentionsBot ? "issue_mentioned" :
-      null;
+
+    let kind: EventKind | null = null;
+    if (senderIsBot) {
+      kind = null;
+    } else if (action === "unlabeled" && isTriggerLabelChange) {
+      // User removed our trigger label — explicit unsubscribe signal.
+      kind = "issue_unsubscribed";
+    } else if (action === "labeled" && isTriggerLabelChange) {
+      // User just added our trigger label — primary subscribe path.
+      kind = "issue_engaged";
+    } else if (hasTriggerLabel && ISSUE_ENGAGE_ACTIONS.has(action ?? "")) {
+      // Already-subscribed issue gets a whitelisted event — wake same session.
+      kind = "issue_engaged";
+    } else if (
+      (action === "opened" || action === "edited") &&
+      bodyMentionsBot
+    ) {
+      // @-mention fallback: issue body @-mentions us even though it isn't
+      // labeled. Treat like an ad-hoc engagement.
+      kind = "issue_engaged";
+    } else {
+      kind = null;
+    }
+
     return {
       ...base,
       kind,
@@ -255,7 +340,7 @@ export function parseWebhook({
       itemBody: issue.body ?? null,
       commentBody: null,
       commentId: null,
-      labels: lowercaseLabels(issue.labels),
+      labels,
       htmlUrl: issue.html_url ?? null,
     };
   }
@@ -263,24 +348,32 @@ export function parseWebhook({
   // ─── pull_request ───────────────────────────────────────────────────
   if (eventType === "pull_request" && raw.pull_request) {
     const pr = raw.pull_request;
-    const isAssignedToBot =
-      botLogin != null &&
-      Array.isArray(pr.assignees) &&
-      pr.assignees.some((a) => a.login === botLogin);
-    const isReviewerBot =
-      botLogin != null &&
-      Array.isArray(pr.requested_reviewers) &&
-      pr.requested_reviewers.some((u) => u.login === botLogin);
+    const labels = lowercaseLabels(pr.labels);
+    const hasTriggerLabel =
+      triggerLabelLower != null && labels.includes(triggerLabelLower);
     const bodyMentionsBot =
       botLogin != null &&
       typeof pr.body === "string" &&
       commentMentions(pr.body, botLogin);
-    const kind =
-      senderIsBot ? null :
-      action === "review_requested" && isReviewerBot ? "pr_review_requested" :
-      action === "assigned" && isAssignedToBot ? "pr_assigned" :
-      (action === "opened" || action === "edited") && bodyMentionsBot ? "pr_mentioned" :
-      null;
+
+    let kind: EventKind | null = null;
+    if (senderIsBot) {
+      kind = null;
+    } else if (action === "unlabeled" && isTriggerLabelChange) {
+      kind = "pr_unsubscribed";
+    } else if (action === "labeled" && isTriggerLabelChange) {
+      kind = "pr_engaged";
+    } else if (hasTriggerLabel && PR_ENGAGE_ACTIONS.has(action ?? "")) {
+      kind = "pr_engaged";
+    } else if (
+      (action === "opened" || action === "edited") &&
+      bodyMentionsBot
+    ) {
+      kind = "pr_engaged";
+    } else {
+      kind = null;
+    }
+
     return {
       ...base,
       kind,
@@ -290,32 +383,35 @@ export function parseWebhook({
       itemBody: pr.body ?? null,
       commentBody: null,
       commentId: null,
-      labels: lowercaseLabels(pr.labels),
+      labels,
       htmlUrl: pr.html_url ?? null,
     };
   }
 
   // ─── issue_comment ─────────────────────────────────────────────────
   // GitHub fires `issue_comment` for both issues and PR conversation comments.
+  // Routes as engaged if (a) issue/PR carries trigger label, OR (b) the
+  // comment body @-mentions the bot (fallback). Edits/deletes are dropped.
   if (eventType === "issue_comment" && raw.issue && raw.comment) {
     const issue = raw.issue;
     const comment = raw.comment;
     const isPr = !!issue.pull_request;
+    const labels = lowercaseLabels(issue.labels);
+    const hasTriggerLabel =
+      triggerLabelLower != null && labels.includes(triggerLabelLower);
     const mentionsBot = botLogin != null && commentMentions(comment.body, botLogin);
-    // Two routes for `created`:
-    //  - mentionsBot → issue_mentioned / pr_mentioned: dispatcher will
-    //    claimPending and spawn a new session if none exists.
-    //  - !mentionsBot → issue_commented / pr_commented: dispatcher will
-    //    resume the existing session for this issue if one is active, and
-    //    drop the event otherwise. Mirrors Linear's commentReply route —
-    //    once the bot is engaged on an issue, the human shouldn't need to
-    //    re-@ it to continue the thread.
-    const kind =
-      senderIsBot ? null :
-      action !== "created" ? null :
-      mentionsBot
-        ? (isPr ? "pr_mentioned" : "issue_mentioned")
-        : (isPr ? "pr_commented" : "issue_commented");
+
+    let kind: EventKind | null = null;
+    if (senderIsBot) {
+      kind = null;
+    } else if (action !== "created") {
+      kind = null;
+    } else if (hasTriggerLabel || mentionsBot) {
+      kind = isPr ? "pr_engaged" : "issue_engaged";
+    } else {
+      kind = null;
+    }
+
     return {
       ...base,
       kind,
@@ -325,24 +421,23 @@ export function parseWebhook({
       itemBody: issue.body ?? null,
       commentBody: comment.body,
       commentId: comment.id,
-      labels: lowercaseLabels(issue.labels),
+      labels,
       htmlUrl: comment.html_url ?? issue.html_url ?? null,
     };
   }
 
   // ─── pull_request_review ────────────────────────────────────────────
+  // Wakes only when PR is labeled and a NEW review is submitted by someone
+  // other than the bot. review.dismissed/edited are noise; drop.
   if (eventType === "pull_request_review" && raw.pull_request && raw.review) {
     const pr = raw.pull_request;
-    // Only act when we're the requested reviewer AND the review came from
-    // someone other than us — otherwise our own review submission would
-    // wake us up again.
-    const wasRequestedReviewer =
-      botLogin != null &&
-      Array.isArray(pr.requested_reviewers) &&
-      pr.requested_reviewers.some((u) => u.login === botLogin);
-    const kind =
+    const labels = lowercaseLabels(pr.labels);
+    const hasTriggerLabel =
+      triggerLabelLower != null && labels.includes(triggerLabelLower);
+
+    const kind: EventKind | null =
       senderIsBot ? null :
-      action === "submitted" && wasRequestedReviewer ? "pr_review_submitted" :
+      action === "submitted" && hasTriggerLabel ? "pr_engaged" :
       null;
     return {
       ...base,
@@ -353,19 +448,32 @@ export function parseWebhook({
       itemBody: pr.body ?? null,
       commentBody: raw.review.body ?? null,
       commentId: raw.review.id,
-      labels: lowercaseLabels(pr.labels),
+      labels,
       htmlUrl: raw.review.html_url ?? pr.html_url ?? null,
     };
   }
 
   // ─── pull_request_review_comment ────────────────────────────────────
+  // Inline code comments (including replies — `in_reply_to_id` field).
+  // Same rules as issue_comment: engaged if labeled or @-mentioned.
   if (eventType === "pull_request_review_comment" && raw.pull_request && raw.comment) {
     const pr = raw.pull_request;
+    const labels = lowercaseLabels(pr.labels);
+    const hasTriggerLabel =
+      triggerLabelLower != null && labels.includes(triggerLabelLower);
     const mentionsBot = botLogin != null && commentMentions(raw.comment.body, botLogin);
-    const kind =
-      senderIsBot ? null :
-      action === "created" && mentionsBot ? "pr_mentioned" :
-      null;
+
+    let kind: EventKind | null = null;
+    if (senderIsBot) {
+      kind = null;
+    } else if (action !== "created") {
+      kind = null;
+    } else if (hasTriggerLabel || mentionsBot) {
+      kind = "pr_engaged";
+    } else {
+      kind = null;
+    }
+
     return {
       ...base,
       kind,
@@ -375,7 +483,7 @@ export function parseWebhook({
       itemBody: pr.body ?? null,
       commentBody: raw.comment.body,
       commentId: raw.comment.id,
-      labels: lowercaseLabels(pr.labels),
+      labels,
       htmlUrl: raw.comment.html_url ?? pr.html_url ?? null,
     };
   }

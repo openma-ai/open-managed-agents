@@ -160,14 +160,15 @@ export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
     const id = this.ids.generate();
     const appOmaId = this.ids.generate();
     const now = Date.now();
+    const triggerLabel = slugifyForLabel(input.persona.name);
     await this.db
       .prepare(
         `INSERT INTO github_publications (
            id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
            persona_name, persona_avatar_url, capabilities,
            session_granularity, created_at, unpublished_at,
-           app_oma_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           app_oma_id, trigger_label
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
       .bind(
         id,
@@ -184,6 +185,7 @@ export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
         input.sessionGranularity,
         now,
         appOmaId,
+        triggerLabel,
       )
       .run();
     const publication: Publication = {
@@ -342,6 +344,21 @@ export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
     return row ? this.toDomain(row) : null;
   }
 
+  async getTriggerLabel(publicationId: string): Promise<string | null> {
+    const row = await this.db
+      .prepare(`SELECT trigger_label FROM github_publications WHERE id = ?`)
+      .bind(publicationId)
+      .first<{ trigger_label: string | null }>();
+    return row?.trigger_label ?? null;
+  }
+
+  async setTriggerLabel(publicationId: string, label: string): Promise<void> {
+    await this.db
+      .prepare(`UPDATE github_publications SET trigger_label = ? WHERE id = ?`)
+      .bind(label, publicationId)
+      .run();
+  }
+
   // ─── Base PublicationRepo: status / persona / capabilities updates ─────
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
@@ -396,4 +413,15 @@ export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
       unpublishedAt: row.unpublished_at,
     };
   }
+}
+
+function slugifyForLabel(name: string): string {
+  const s = name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._\-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return s.length > 0 ? s : "oma";
 }

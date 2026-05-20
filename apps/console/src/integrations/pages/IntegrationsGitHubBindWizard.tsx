@@ -441,6 +441,33 @@ function ConfigForm({
         />
       </Field>
 
+      <div className="rounded-md border border-border bg-bg-surface/30 p-3 text-[12px] leading-relaxed text-fg-muted">
+        <p className="font-medium text-fg mb-1">How users will engage this bot</p>
+        <ul className="list-disc pl-5 space-y-1">
+          <li>
+            <strong className="text-fg">Primary:</strong> add the{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">{(persona || "<bot>").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}</code>{" "}
+            label to any issue or PR. The bot reacts to whitelisted activity on
+            labeled items (open / edit / new comment / new commits / review).
+          </li>
+          <li>
+            <strong className="text-fg">Fallback:</strong>{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">@{(persona || "&lt;bot&gt;").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}[bot]</code>{" "}
+            in any issue / PR / comment body. (GitHub doesn't autocomplete bot
+            accounts — type the full string. Functionally equivalent to the
+            label trigger.)
+          </li>
+          <li>
+            On install, OMA auto-creates the label in your selected repos. If
+            you delete it, OMA won't recreate it.
+          </li>
+          <li>
+            Removing the label from an issue stops further auto-wakeups on
+            that thread.
+          </li>
+        </ul>
+      </div>
+
       {error && (
         <p className="text-[13px] text-danger">{error}</p>
       )}

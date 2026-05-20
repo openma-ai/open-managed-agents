@@ -900,6 +900,7 @@ export class GitHubProvider implements IntegrationProvider {
       deliveryId: req.deliveryId,
       raw,
       botLogin: await this.botLoginFor(publication, appOmaId),
+      triggerLabel: await this.container.publications.getTriggerLabel(publication.id),
     });
     if (!event) {
       await this.container.webhookEvents.attachError(req.deliveryId, "unparseable");
@@ -914,6 +915,29 @@ export class GitHubProvider implements IntegrationProvider {
     if (event.kind === null) {
       // Recorded for observability; nothing to dispatch.
       return { handled: false, reason: "ignored_event_kind" };
+    }
+
+    // installation_created / installation_repos_added: not a session event —
+    // these are install-lifecycle hooks. We use them to auto-create the
+    // trigger label in the newly accessible repos. Errors are logged but
+    // don't fail the webhook (label creation is best-effort UX).
+    if (event.kind === "installation_created" || event.kind === "installation_repos_added") {
+      try {
+        await this.autoCreateTriggerLabels(publication, raw);
+      } catch (err) {
+        console.warn(
+          `[github-install-hook] auto-create label failed for pub=${publication.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      return { handled: true, reason: "trigger_label_seeded", publicationId: publication.id, tenantId: tenantId ?? "" };
+    }
+    if (event.kind === "installation_deleted") {
+      // App uninstalled. Existing handlers (if any) can clean up; we don't
+      // do anything destructive here — the install row will be marked
+      // revoked elsewhere.
+      return { handled: false, reason: "installation_deleted" };
     }
 
     const sessionId = await this.dispatchEvent(publication, event);
@@ -1025,12 +1049,17 @@ export class GitHubProvider implements IntegrationProvider {
         );
         return existing.sessionId;
       }
-      // No-mention comment events (`issue_commented` / `pr_commented`): only
-      // resume an already-active session for the same issue, never spawn a
-      // new one. Mirrors Linear's commentReply route — once the bot is
-      // engaged, follow-ups don't need to re-@; without engagement, random
-      // comments shouldn't pull a session out of thin air.
-      if (event.kind === "issue_commented" || event.kind === "pr_commented") {
+      // Unsubscribe path: trigger label was removed — close the session.
+      if (event.kind === "issue_unsubscribed" || event.kind === "pr_unsubscribed") {
+        if (existing && existing.status === "active") {
+          await this.container.githubIssueSessions.releasePending(
+            publication.id,
+            issueKey,
+          );
+          // Note: there's no first-class "end session" API — we mark the
+          // claim row inactive so future events drop. The OMA session
+          // itself stays alive but is detached from new webhook deliveries.
+        }
         return null;
       }
       const claimed = await this.container.githubIssueSessions.claimPending({
@@ -1159,6 +1188,110 @@ export class GitHubProvider implements IntegrationProvider {
     });
   }
 
+  // ─── Trigger label seeding ──────────────────────────────────────────
+  /**
+   * Auto-create the publication's trigger label in repos covered by an
+   * installation event. Called from the webhook handler on
+   * `installation_created` (full repo list) and `installation_repos_added`
+   * (just the new repos). Best-effort: per-repo failures are logged and
+   * skipped — the label is a UX affordance, not a correctness requirement.
+   *
+   * Idempotent: 422 conflict (already exists with this name) is treated as
+   * success; we never modify an existing same-named label's color.
+   */
+  private async autoCreateTriggerLabels(
+    publication: Publication,
+    raw: RawWebhookEnvelope,
+  ): Promise<void> {
+    const triggerLabel = await this.container.publications.getTriggerLabel(publication.id);
+    if (!triggerLabel) return;
+
+    const installation = await this.container.installations.get(publication.installationId);
+    if (!installation || !installation.workspaceId || !installation.appId) return;
+
+    // Mint a fresh installation token (don't reuse the cached vault one;
+    // it may have been revoked in a recent App-uninstall/reinstall cycle).
+    const app = await this.container.githubApps.get(installation.appId);
+    if (!app) return;
+    let privateKey: string | null = null;
+    if (app.publicationId) {
+      privateKey = await this.container.publications.getPrivateKey(app.publicationId);
+    }
+    if (!privateKey) privateKey = await this.container.githubApps.getPrivateKey(app.id);
+    if (!privateKey) return;
+    const appJwt = await mintAppJwt(privateKey, { appId: app.appId });
+    const tokReq = buildInstallationTokenRequest(appJwt, installation.workspaceId);
+    const tokRes = await this.container.http.fetch({
+      method: "POST",
+      url: tokReq.url,
+      headers: tokReq.headers,
+      body: tokReq.body,
+    });
+    if (tokRes.status < 200 || tokRes.status >= 300) {
+      throw new Error(
+        `installation token mint: HTTP ${tokRes.status} ${tokRes.body.slice(0, 200)}`,
+      );
+    }
+    const installToken = parseInstallationTokenResponse(tokRes.body).token;
+
+    // Determine target repo list:
+    //   - installation_created: payload's `repositories` field (selected
+    //     repos at install time) — fall back to listInstallationRepos if
+    //     missing.
+    //   - installation_repos_added: payload's `repositories_added` field
+    //     (just the newly added subset).
+    let repos: Array<{ owner: string; name: string }> = [];
+    if (raw.repositories_added && Array.isArray(raw.repositories_added)) {
+      repos = raw.repositories_added.map((r) => parseRepoFullName(r.full_name));
+    } else if (raw.repositories && Array.isArray(raw.repositories)) {
+      repos = raw.repositories.map((r) => parseRepoFullName(r.full_name));
+    } else {
+      // No payload list — enumerate via API.
+      let page = 1;
+      while (true) {
+        const { repos: pageRepos, hasMore } = await this.api.listInstallationRepos(
+          installToken,
+          page,
+        );
+        repos.push(...pageRepos);
+        if (!hasMore) break;
+        page += 1;
+      }
+    }
+
+    // Brand-derived color for the label. The persona's avatarUrl might
+    // hint at a color but we don't fetch it here; just use a neutral
+    // brand-ish blue. Users can recolor in GitHub UI; we never overwrite.
+    const labelColor = "5319e7"; // GitHub default purple tone, distinct
+    const description = `Engage @${app.appSlug ?? publication.persona.name} on this issue or PR`;
+
+    // Bound concurrency to avoid hitting GitHub's secondary rate limits
+    // (~30 req/sec on writes); 8-way is plenty for typical ≤200 repo
+    // installs without measurable impact.
+    const CONCURRENCY = 8;
+    let i = 0;
+    const worker = async () => {
+      while (i < repos.length) {
+        const r = repos[i++];
+        if (!r.owner || !r.name) continue;
+        try {
+          await this.api.createIssueLabel(installToken, r.owner, r.name, {
+            name: triggerLabel,
+            color: labelColor,
+            description,
+          });
+        } catch (err) {
+          console.warn(
+            `[github-label-seed] failed pub=${publication.id} ${r.owner}/${r.name}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, repos.length) }, worker));
+  }
+
   // ─── MCP (deferred — agents talk to GitHub MCP server directly) ──────
 
   async mcpTools(_scope: McpScope): Promise<readonly McpToolDescriptor[]> {
@@ -1180,4 +1313,12 @@ export class GitHubProvider implements IntegrationProvider {
       },
     };
   }
+}
+
+/** Split "owner/repo" into components. Returns empty strings on malformed
+ *  input so callers can skip without throwing. */
+function parseRepoFullName(fullName: string): { owner: string; name: string } {
+  const idx = fullName.indexOf("/");
+  if (idx <= 0 || idx >= fullName.length - 1) return { owner: "", name: "" };
+  return { owner: fullName.slice(0, idx), name: fullName.slice(idx + 1) };
 }

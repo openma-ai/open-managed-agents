@@ -297,6 +297,10 @@ export async function applySchema(opts: ApplySchemaOptions): Promise<void> {
   await addColumnIfMissing(sql, "github_publications", "webhook_secret_cipher", "TEXT");
   await addColumnIfMissing(sql, "github_publications", "private_key_cipher", "TEXT");
   await addColumnIfMissing(sql, "github_publications", "vault_id", "TEXT");
+  // Trigger label for the label-based bot engagement path. Default = lower
+  // case persona_name. Users can edit it post-publish; provider auto-creates
+  // the label in installed repos.
+  await addColumnIfMissing(sql, "github_publications", "trigger_label", "TEXT");
 
   if (includeBetterAuth) {
     await applyBetterAuthSchema({ sql, dialect });
