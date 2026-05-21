@@ -37,7 +37,7 @@ async function bootstrap() {
   await applyTenantSchema(sql);
   await applyIntegrationsSchema({ sql, dialect: "sqlite" });
   await sql
-    .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+    .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
     .bind(TENANT, "Smoke", Date.now(), Date.now())
     .run();
   await sql
@@ -335,7 +335,7 @@ describe("NodeInstallBridge", () => {
     await applyTenantSchema(sql);
     await applyIntegrationsSchema({ sql, dialect: "sqlite" });
     await sql
-      .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+      .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
       .bind(TENANT, "Smoke", Date.now(), Date.now())
       .run();
     await sql

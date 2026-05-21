@@ -207,7 +207,7 @@ export async function ensureTenantSqlite(
   const tenantName = `${display}'s workspace`;
 
   await sql
-    .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+    .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
     .bind(tenantId, tenantName, now, now)
     .run();
 

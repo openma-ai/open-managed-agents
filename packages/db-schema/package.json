@@ -8,7 +8,8 @@
     "./cf-auth": "./src/cf-auth/index.ts",
     "./cf-integrations": "./src/cf-integrations/index.ts",
     "./cf-router": "./src/cf-router/index.ts",
-    "./node-pg": "./src/node-pg/index.ts"
+    "./node-pg": "./src/node-pg/index.ts",
+    "./node-sqlite": "./src/node-sqlite/index.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2"

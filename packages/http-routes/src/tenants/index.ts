@@ -66,7 +66,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
       const now = Date.now();
       await services.sql
         .prepare(
-          `INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+          `INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`,
         )
         .bind(tenantId, name, now, now)
         .run();

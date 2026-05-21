@@ -27,7 +27,7 @@ describe("OmaVaultResolver Node wire", () => {
     await applySchema({ sql, dialect: "sqlite" });
     await applyTenantSchema(sql);
     await sql
-      .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+      .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
       .bind(TENANT, "Cap", Date.now(), Date.now())
       .run();
 

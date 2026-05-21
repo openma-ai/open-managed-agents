@@ -37,8 +37,8 @@ CREATE TABLE "session" (
 CREATE TABLE "tenant" (
 	"id" text PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
-	"created_at" bigint NOT NULL,
-	"updated_at" bigint NOT NULL
+	"createdAt" bigint NOT NULL,
+	"updatedAt" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "user" (

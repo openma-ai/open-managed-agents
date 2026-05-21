@@ -20,7 +20,7 @@ import { describe, it, expect } from "vitest";
 import cfAuthSnap from "../../apps/main/migrations/meta/0001_snapshot.json";
 import cfIntegrationsSnap from "../../apps/main/migrations-integrations/meta/0001_snapshot.json";
 import cfRouterSnap from "../../apps/main/migrations-router/meta/0001_snapshot.json";
-import nodePgSnap from "../../apps/main-node/migrations/meta/0001_snapshot.json";
+import nodePgSnap from "../../apps/main-node/migrations/meta/0000_consolidated_snapshot.json";
 
 interface Snapshot {
   tables: Record<
@@ -82,13 +82,6 @@ describe("Schema drift across dialects", () => {
   // Adding new entries requires the table name + a comment justifying
   // why CF and PG legitimately differ today.
   const knownColumnDrift = new Map<string, { reason: string }>([
-    [
-      "tenant",
-      {
-        reason:
-          "tenant.createdAt/updatedAt is camelCase on SQLite (better-auth convention from CF D1 baseline) but snake_case on PG (applyTenantSchema PG branch). Functionally equivalent. Reconcile in a follow-up by picking one casing + ALTER on the loser.",
-      },
-    ],
     [
       "session_resources",
       {

@@ -1,5 +1,5 @@
 {
-  "id": "d70d779a-513e-4758-9a5e-974f308406e1",
+  "id": "a379c44a-f3fb-4216-a9aa-8c68716dcda9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -301,14 +301,14 @@
           "primaryKey": false,
           "notNull": true
         },
-        "created_at": {
-          "name": "created_at",
+        "createdAt": {
+          "name": "createdAt",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
-        "updated_at": {
-          "name": "updated_at",
+        "updatedAt": {
+          "name": "updatedAt",
           "type": "bigint",
           "primaryKey": false,
           "notNull": true

@@ -19,14 +19,15 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
-// NOTE: snake_case + BIGINT here vs. CF SQLite's camelCase + mode:"timestamp"
-// for tenant.createdAt — intentional drift. Phase 3 reconciliation will
-// pick a winner; until then both shapes ship as written.
+// tenant.createdAt/updatedAt: camelCase BIGINT, matching CF / SQLite. The
+// pre-Drizzle PG branch had snake_case; we aligned to camelCase so the same
+// runtime code (packages/auth-config ensureTenantSqlite) writes one shape
+// across both dialects.
 export const tenant = pgTable("tenant", {
   id: text("id").primaryKey().notNull(),
   name: text("name").notNull(),
-  created_at: bigint("created_at", { mode: "number" }).notNull(),
-  updated_at: bigint("updated_at", { mode: "number" }).notNull(),
+  createdAt: bigint("createdAt", { mode: "number" }).notNull(),
+  updatedAt: bigint("updatedAt", { mode: "number" }).notNull(),
 });
 
 export const user = pgTable("user", {

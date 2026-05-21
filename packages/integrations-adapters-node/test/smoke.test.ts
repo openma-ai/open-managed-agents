@@ -2,9 +2,15 @@
 // the integrations-core ports and round-trips data through every repo.
 // Catches schema/typo regressions when the Node port drifts from the CF port.
 
-import { describe, expect, it, beforeAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { createBetterSqlite3SqlClient, type SqlClient } from "@open-managed-agents/sql-client";
-import { applySchema, applyTenantSchema, applyIntegrationsSchema } from "@open-managed-agents/schema";
+import BetterSqlite3 from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildNodeRepos,
   WebCryptoAesGcm,
@@ -14,14 +20,21 @@ import {
 
 describe("integrations-adapters-node smoke", () => {
   let sql: SqlClient;
+  let tmpDir: string;
   beforeAll(async () => {
-    sql = await createBetterSqlite3SqlClient(":memory:");
-    await applySchema({ sql, dialect: "sqlite" });
-    await applyTenantSchema(sql);
-    await applyIntegrationsSchema({ sql, dialect: "sqlite" });
+    // Drizzle migrate runs against an on-disk DB so the SqlClient opened
+    // afterward observes the migrated schema (`:memory:` is per-connection).
+    tmpDir = mkdtempSync(join(tmpdir(), "oma-int-smoke-"));
+    const dbPath = join(tmpDir, "smoke.db");
+    const drz = drizzle(new BetterSqlite3(dbPath));
+    const migrationsFolder = fileURLToPath(
+      new URL("../../../apps/main-node/migrations-sqlite", import.meta.url),
+    );
+    migrate(drz, { migrationsFolder });
+    sql = await createBetterSqlite3SqlClient(dbPath);
     await sql
       .prepare(
-        `INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+        `INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`,
       )
       .bind("tn_test", "test", Date.now(), Date.now())
       .run();
@@ -31,6 +44,10 @@ describe("integrations-adapters-node smoke", () => {
       )
       .bind("usr_test", "tn_test", Date.now())
       .run();
+  });
+
+  afterAll(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("resolves tenant via membership", async () => {
