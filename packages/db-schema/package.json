@@ -16,11 +16,13 @@
   "peerDependencies": {
     "@cloudflare/workers-types": "*",
     "better-sqlite3": "*",
-    "pg": "*"
+    "pg": "*",
+    "postgres": "*"
   },
   "peerDependenciesMeta": {
     "@cloudflare/workers-types": { "optional": true },
     "better-sqlite3": { "optional": true },
-    "pg": { "optional": true }
+    "pg": { "optional": true },
+    "postgres": { "optional": true }
   }
 }

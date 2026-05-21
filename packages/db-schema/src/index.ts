@@ -23,3 +23,9 @@ export * as cfAuth from "./cf-auth";
 export * as cfIntegrations from "./cf-integrations";
 export * as cfRouter from "./cf-router";
 export * as nodePg from "./node-pg";
+
+// Dependency-inversion port for adapters: Drizzle DB type union + helpers
+// that paper over SQLite vs PG terminator differences (`.get()/.all()` vs
+// awaitable chains). Adapters import `OmaDb` and `getOne`/`getAll`/`runOnce`
+// from here and depend on no concrete driver.
+export * from "./_shared/oma-db";
