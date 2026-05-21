@@ -42,4 +42,10 @@ export interface Env {
   // CF Rate Limiting configured still work. Tuned in wrangler.jsonc.
   RL_WEBHOOK_IP?: RateLimit;
   RL_WEBHOOK_TENANT?: RateLimit;
+
+  // Optional shared secret gating the /admin/* debug endpoints. When set
+  // (staging only — see apps/integrations/src/index.ts), the request must
+  // present a matching `x-debug-token` header. Prod deployments leave it
+  // unset and /admin/* always returns 404.
+  TEMP_DEBUG_TOKEN?: string;
 }

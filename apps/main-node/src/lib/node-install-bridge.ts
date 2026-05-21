@@ -530,7 +530,7 @@ export class NodeInstallBridge implements InstallBridge {
       installations: new SqlSlackInstallationRepo(this.opts.db, slackCrypto, slackIds),
       publications: new SqlSlackPublicationRepo(this.opts.db, slackIds, slackCrypto),
       apps: new SqlSlackAppRepo(this.opts.db, slackCrypto, slackIds),
-      webhookEvents: new SqlSlackWebhookEventStore(this.opts.sql),
+      webhookEvents: new SqlSlackWebhookEventStore(this.opts.db),
       sessionScopes: repos.sessionScopes,
       setupLinks: new SqlSlackSetupLinkRepo(this.opts.db, slackIds),
       sessions,

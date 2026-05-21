@@ -914,9 +914,9 @@ if (platformRootSecret) {
             githubApps: repos.githubApps,
           },
           slack: {
-            installations: new SqlSlackInstallationRepo(sql, slackCrypto, slackIds),
-            publications: new SqlSlackPublicationRepo(sql, slackIds, slackCrypto),
-            apps: new SqlSlackAppRepo(sql, slackCrypto, slackIds),
+            installations: new SqlSlackInstallationRepo(drizzleDb, slackCrypto, slackIds),
+            publications: new SqlSlackPublicationRepo(drizzleDb, slackIds, slackCrypto),
+            apps: new SqlSlackAppRepo(drizzleDb, slackCrypto, slackIds),
           },
         };
       },
@@ -1054,9 +1054,9 @@ if (platformRootSecret) {
             githubApps: repos.githubApps,
           },
           slack: {
-            installations: new SqlSlackInstallationRepo(sql, slackCrypto, slackIds),
-            publications: new SqlSlackPublicationRepo(sql, slackIds, slackCrypto),
-            apps: new SqlSlackAppRepo(sql, slackCrypto, slackIds),
+            installations: new SqlSlackInstallationRepo(drizzleDb, slackCrypto, slackIds),
+            publications: new SqlSlackPublicationRepo(drizzleDb, slackIds, slackCrypto),
+            apps: new SqlSlackAppRepo(drizzleDb, slackCrypto, slackIds),
           },
         };
       },
