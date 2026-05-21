@@ -1,3 +1,13 @@
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { eval_runs } from "@open-managed-agents/db-schema/cf-auth";
 import { EvalRunNotFoundError } from "../errors";
 import type {
   EvalRunListOptions,
@@ -6,10 +16,10 @@ import type {
   NewEvalRunInput,
 } from "../ports";
 import type { EvalRunRow, EvalRunStatus } from "../types";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+
 
 /**
- * SqlClient-backed implementation of {@link EvalRunRepo}. Owns the SQL against
+ * Drizzle implementation of {@link EvalRunRepo}. Owns the queries against
  * the `eval_runs` table defined in apps/main/migrations/0012_eval_runs_table.sql.
  *
  * Atomicity:
@@ -19,111 +29,100 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
  *     cascade (trajectory blobs live in CONFIG_KV under their own keys).
  */
 export class SqlEvalRunRepo implements EvalRunRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewEvalRunInput): Promise<EvalRunRow> {
-    await this.db
-      .prepare(
-        `INSERT INTO eval_runs
-           (id, tenant_id, agent_id, environment_id, suite, status,
-            started_at, completed_at, results, score, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
-      )
-      .bind(
-        input.id,
-        input.tenantId,
-        input.agentId,
-        input.environmentId,
-        input.suite,
-        input.status,
-        input.startedAt,
-        input.results !== null && input.results !== undefined
-          ? JSON.stringify(input.results)
-          : null,
-        input.score,
-        input.error,
-      )
-      .run();
+    await runOnce(
+      this.db.insert(eval_runs).values({
+        id: input.id,
+        tenant_id: input.tenantId,
+        agent_id: input.agentId,
+        environment_id: input.environmentId,
+        suite: input.suite,
+        status: input.status,
+        started_at: input.startedAt,
+        completed_at: null,
+        results:
+          input.results !== null && input.results !== undefined
+            ? JSON.stringify(input.results)
+            : null,
+        score: input.score,
+        error: input.error,
+      }),
+    );
     const row = await this.get(input.tenantId, input.id);
     if (!row) throw new Error("eval_run vanished after insert");
     return row;
   }
 
   async get(tenantId: string, runId: string): Promise<EvalRunRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, agent_id, environment_id, suite, status,
-                started_at, completed_at, results, score, error
-         FROM eval_runs
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(runId, tenantId)
-      .first<DbEvalRun>();
+    const row = await getOne<typeof eval_runs.$inferSelect>(
+      this.db
+        .select()
+        .from(eval_runs)
+        .where(and(eq(eval_runs.id, runId), eq(eval_runs.tenant_id, tenantId))),
+    );
     return row ? toRow(row) : null;
   }
 
   async getById(runId: string): Promise<EvalRunRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, agent_id, environment_id, suite, status,
-                started_at, completed_at, results, score, error
-         FROM eval_runs
-         WHERE id = ?`,
-      )
-      .bind(runId)
-      .first<DbEvalRun>();
+    const row = await getOne<typeof eval_runs.$inferSelect>(
+      this.db
+        .select()
+        .from(eval_runs)
+        .where(eq(eval_runs.id, runId)),
+    );
     return row ? toRow(row) : null;
   }
 
   async list(tenantId: string, opts: EvalRunListOptions): Promise<EvalRunRow[]> {
-    const order = opts.order === "asc" ? "ASC" : "DESC";
-    const where: string[] = ["tenant_id = ?"];
-    const binds: unknown[] = [tenantId];
-    if (opts.agentId) {
-      where.push("agent_id = ?");
-      binds.push(opts.agentId);
-    }
+    const conds = [eq(eval_runs.tenant_id, tenantId)];
+    if (opts.agentId) conds.push(eq(eval_runs.agent_id, opts.agentId));
     if (opts.environmentId) {
-      where.push("environment_id = ?");
-      binds.push(opts.environmentId);
+      conds.push(eq(eval_runs.environment_id, opts.environmentId));
     }
-    if (opts.status) {
-      where.push("status = ?");
-      binds.push(opts.status);
-    }
-    binds.push(opts.limit);
-    const sql = `SELECT id, tenant_id, agent_id, environment_id, suite, status,
-                        started_at, completed_at, results, score, error
-                 FROM eval_runs
-                 WHERE ${where.join(" AND ")}
-                 ORDER BY started_at ${order}
-                 LIMIT ?`;
-    const result = await this.db.prepare(sql).bind(...binds).all<DbEvalRun>();
-    return (result.results ?? []).map(toRow);
+    if (opts.status) conds.push(eq(eval_runs.status, opts.status));
+    const order =
+      opts.order === "asc" ? asc(eval_runs.started_at) : desc(eval_runs.started_at);
+    const rows = await getAll<typeof eval_runs.$inferSelect>(
+      this.db
+        .select()
+        .from(eval_runs)
+        .where(and(...conds))
+        .orderBy(order)
+        .limit(opts.limit),
+    );
+    return rows.map(toRow);
   }
 
   async listActive(): Promise<EvalRunRow[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT id, tenant_id, agent_id, environment_id, suite, status,
-                started_at, completed_at, results, score, error
-         FROM eval_runs
-         WHERE status IN ('pending', 'running')
-         ORDER BY started_at ASC`,
-      )
-      .all<DbEvalRun>();
-    return (result.results ?? []).map(toRow);
+    const rows = await getAll<typeof eval_runs.$inferSelect>(
+      this.db
+        .select()
+        .from(eval_runs)
+        .where(inArray(eval_runs.status, ["pending", "running"]))
+        .orderBy(asc(eval_runs.started_at)),
+    );
+    return rows.map(toRow);
   }
 
   async hasActiveByAgent(tenantId: string, agentId: string): Promise<boolean> {
-    const row = await this.db
-      .prepare(
-        `SELECT 1 AS one FROM eval_runs
-         WHERE tenant_id = ? AND agent_id = ? AND status IN ('pending', 'running')
-         LIMIT 1`,
-      )
-      .bind(tenantId, agentId)
-      .first<{ one: number }>();
+    const row = await getOne<{ one: number }>(
+      this.db
+        .select({ one: sql<number>`1` })
+        .from(eval_runs)
+        .where(
+          and(
+            eq(eval_runs.tenant_id, tenantId),
+            eq(eval_runs.agent_id, agentId),
+            inArray(eval_runs.status, ["pending", "running"]),
+          ),
+        )
+        .limit(1),
+    );
     return !!row;
   }
 
@@ -131,14 +130,19 @@ export class SqlEvalRunRepo implements EvalRunRepo {
     tenantId: string,
     environmentId: string,
   ): Promise<boolean> {
-    const row = await this.db
-      .prepare(
-        `SELECT 1 AS one FROM eval_runs
-         WHERE tenant_id = ? AND environment_id = ? AND status IN ('pending', 'running')
-         LIMIT 1`,
-      )
-      .bind(tenantId, environmentId)
-      .first<{ one: number }>();
+    const row = await getOne<{ one: number }>(
+      this.db
+        .select({ one: sql<number>`1` })
+        .from(eval_runs)
+        .where(
+          and(
+            eq(eval_runs.tenant_id, tenantId),
+            eq(eval_runs.environment_id, environmentId),
+            inArray(eval_runs.status, ["pending", "running"]),
+          ),
+        )
+        .limit(1),
+    );
     return !!row;
   }
 
@@ -147,81 +151,72 @@ export class SqlEvalRunRepo implements EvalRunRepo {
     runId: string,
     fields: EvalRunUpdateFields,
   ): Promise<EvalRunRow> {
-    const sets: string[] = [];
-    const binds: unknown[] = [];
-    if (fields.status !== undefined) {
-      sets.push("status = ?");
-      binds.push(fields.status);
-    }
+    // Pre-check existence — Drizzle's run() result shape is dialect-specific,
+    // so we read first to throw a domain error if the row is missing.
+    const existing = await this.get(tenantId, runId);
+    if (!existing) throw new EvalRunNotFoundError();
+
+    const set: Record<string, unknown> = {};
+    if (fields.status !== undefined) set.status = fields.status;
     if (fields.results !== undefined) {
-      sets.push("results = ?");
-      binds.push(
-        fields.results !== null ? JSON.stringify(fields.results) : null,
-      );
+      set.results = fields.results !== null ? JSON.stringify(fields.results) : null;
     }
-    if (fields.score !== undefined) {
-      sets.push("score = ?");
-      binds.push(fields.score);
-    }
-    if (fields.error !== undefined) {
-      sets.push("error = ?");
-      binds.push(fields.error);
-    }
-    if (fields.completedAt !== undefined) {
-      sets.push("completed_at = ?");
-      binds.push(fields.completedAt);
-    }
-    if (!sets.length) {
+    if (fields.score !== undefined) set.score = fields.score;
+    if (fields.error !== undefined) set.error = fields.error;
+    if (fields.completedAt !== undefined) set.completed_at = fields.completedAt;
+    if (Object.keys(set).length === 0) {
       // Nothing to update — short-circuit and return the row as-is.
-      const row = await this.get(tenantId, runId);
-      if (!row) throw new EvalRunNotFoundError();
-      return row;
+      return existing;
     }
-    binds.push(runId, tenantId);
-    const result = await this.db
-      .prepare(
-        `UPDATE eval_runs SET ${sets.join(", ")}
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(...binds)
-      .run();
-    if (!result.meta?.changes) throw new EvalRunNotFoundError();
+    await runOnce(
+      this.db
+        .update(eval_runs)
+        .set(set)
+        .where(and(eq(eval_runs.id, runId), eq(eval_runs.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, runId);
     if (!row) throw new EvalRunNotFoundError();
     return row;
   }
 
   async delete(tenantId: string, runId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM eval_runs WHERE id = ? AND tenant_id = ?`)
-      .bind(runId, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(eval_runs)
+        .where(and(eq(eval_runs.id, runId), eq(eval_runs.tenant_id, tenantId))),
+    );
   }
 
   async deleteByAgent(tenantId: string, agentId: string): Promise<number> {
-    const result = await this.db
-      .prepare(`DELETE FROM eval_runs WHERE tenant_id = ? AND agent_id = ?`)
-      .bind(tenantId, agentId)
-      .run();
-    return result.meta?.changes ?? 0;
+    // Drizzle's run() shape is dialect-specific — count via SELECT first so
+    // the return value is portable across SQLite (D1, better-sqlite3) and PG.
+    const matched = await getAll<{ id: string }>(
+      this.db
+        .select({ id: eval_runs.id })
+        .from(eval_runs)
+        .where(
+          and(
+            eq(eval_runs.tenant_id, tenantId),
+            eq(eval_runs.agent_id, agentId),
+          ),
+        ),
+    );
+    if (!matched.length) return 0;
+    await runOnce(
+      this.db
+        .delete(eval_runs)
+        .where(
+          and(
+            eq(eval_runs.tenant_id, tenantId),
+            eq(eval_runs.agent_id, agentId),
+          ),
+        ),
+    );
+    return matched.length;
   }
 }
 
-interface DbEvalRun {
-  id: string;
-  tenant_id: string;
-  agent_id: string;
-  environment_id: string;
-  suite: string | null;
-  status: string;
-  started_at: number;
-  completed_at: number | null;
-  results: string | null;
-  score: number | null;
-  error: string | null;
-}
-
-function toRow(r: DbEvalRun): EvalRunRow {
+function toRow(r: typeof eval_runs.$inferSelect): EvalRunRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,

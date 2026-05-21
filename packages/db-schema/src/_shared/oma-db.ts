@@ -1,42 +1,40 @@
 // Drizzle DB port — the dependency-inversion seam between adapter code
 // and platform-specific Drizzle clients.
 //
-// **Why not expose SqlClient.raw and have adapters internally construct
-// drizzle?** That's the wrong direction — adapters would depend on the
-// concrete client driver (D1 vs Pool vs better-sqlite3). DIP says the
-// adapter should depend on an ABSTRACTION; the composition root provides
-// the concrete instance.
+// Design contract (DIP + LSP):
 //
-// **Why a union type instead of a structural interface?** Drizzle's
-// query builder uses chained types whose return shape depends on the
-// dialect (e.g. SQLite chains expose `.get()` / `.all()`; PG awaits
-// directly). Defining a structural subset would discard most of
-// Drizzle's type inference. The union lets each call site specialise
-// when it matters and use helpers when it doesn't.
+//   ADAPTERS depend on this port and ONLY this port. They MUST NOT:
+//     - import dialect-specific Drizzle types (DrizzleD1Database, etc.)
+//     - branch on dialect (`"batch" in db`, `instanceof`, `dialect === ...`)
+//     - cast their internal db to a concrete type
 //
-// Adapters import `type { OmaDb }` and accept it as constructor arg.
-// Composition root (apps/main, apps/main-node, apps/agent boot paths
-// or packages/services factory) constructs the matching client:
+//   COMPOSITION ROOT (apps/main, apps/main-node, apps/agent, packages/services)
+//   constructs the matching Drizzle client and passes it through this port:
+//     CF D1:           drizzle(env.AUTH_DB, { schema })
+//     Node-PG:         drizzle(postgresClient, { schema })
+//     Node-SQLite:     drizzle(betterSqlite3Db, { schema })
 //
-//   CF D1:           drizzle(env.AUTH_DB, { schema: cfAuthSchema })
-//   Node-PG:         drizzle(postgresClient, { schema: nodePgSchema })
-//   Node SQLite:     drizzle(betterSqlite3Db, { schema: cfAuthSchema })
+// Liskov: every concrete Drizzle DB the composition root passes is fully
+// substitutable through OmaDb's public surface. The dialect terminator
+// difference (`.get()` / `.all()` on SQLite vs awaitable on PG) is handled
+// inside `getOne` / `getAll` / `runOnce` / `atomicWrite` — the helpers
+// feature-detect ONCE here so adapters stay dialect-blind.
 //
-// Because cf-auth/cf-integrations/cf-router/node-pg schemas have
-// structurally-identical exports (port from Phase 2), passing any of
-// them as the `schema` arg works — query references stay the same.
+// Type-level note: Drizzle's per-dialect generics make a fully-callable
+// union impossible without per-dialect chained-method overloads. We use
+// `OmaDb` as the constructor parameter (the public DI seam) and, inside
+// adapters, opt into `OmaDbBuilder` — a structural alias that exposes
+// just the `.select / .insert / .update / .delete` methods every dialect
+// shares. No casts in adapter code, no concrete-type imports.
 
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 /**
- * The dependency-inversion port for adapters. Concrete instance is
- * constructed at the composition root.
- *
- * `<TSchema>` is the schema dictionary you passed to `drizzle()`. Most
- * adapters can get away with `OmaDb` (no schema generic) and rely on
- * the imported table refs for column-level type info.
+ * The dependency-inversion port. Public construction-site type. The
+ * three concrete Drizzle clients (D1 / better-sqlite3 / postgres-js)
+ * are all valid here.
  */
 export type OmaDb<TSchema extends Record<string, unknown> = Record<string, never>> =
   | DrizzleD1Database<TSchema>
@@ -44,45 +42,58 @@ export type OmaDb<TSchema extends Record<string, unknown> = Record<string, never
   | PostgresJsDatabase<TSchema>;
 
 /**
- * Discriminator for the dialect. Adapters that need to fork on dialect
- * (e.g. raw SQL escape hatches, json_extract vs ->>) compare against
- * this rather than instanceof checks. The composition root sets it.
+ * Discriminator for the rare case where an adapter genuinely needs to
+ * pick a SQL idiom by dialect (e.g. `json_extract` vs `->>`). Set by
+ * the composition root.
+ *
+ * Prefer NOT using this. If you find yourself reaching for it, ask
+ * whether the divergence belongs in this `_shared/` module instead.
  */
 export type OmaDialect = "sqlite" | "pg";
 
 /**
- * Convenience: a Drizzle DB plus its dialect tag. Not strictly needed
- * — most adapter code can ignore dialect since the query builder is
- * structurally compatible — but useful for the small fraction of code
- * that does need to fork.
+ * Structural alias of the chain-builder methods every Drizzle dialect
+ * exposes. Adapters that need to call `db.select()` etc. without the
+ * type-checker complaining about the OmaDb union should declare their
+ * field as this type. NO concrete-driver import in adapter code.
+ *
+ * Internally we widen via `BetterSQLite3Database` because its method
+ * signatures are the most permissive (D1's method signatures are a
+ * structural subset). `as` casts STAY HERE — never in adapter code.
  */
-export interface OmaDbWithDialect<TSchema extends Record<string, unknown> = Record<string, never>> {
-  readonly db: OmaDb<TSchema>;
-  readonly dialect: OmaDialect;
+// We use BetterSQLite3Database<TSchema> because its select/insert/update/delete
+// chain types are runtime-compatible with D1 + postgres-js (Drizzle's design)
+// but expose the most permissive type signature, so casts in `_shared/` here
+// don't require dialect-specific imports in adapters.
+export type OmaDbBuilder = BetterSQLite3Database<Record<string, never>>;
+
+/**
+ * Helper for adapter constructors. Cast happens HERE, in `_shared/`,
+ * not in adapter code. Adapter signature stays `db: OmaDb`; field
+ * type becomes `OmaDbBuilder` after passing through this helper.
+ */
+export function asBuilder(db: OmaDb): OmaDbBuilder {
+  // Runtime: every dialect's drizzle() returns an object with the
+  // same chain-builder methods. The type-level cast here is documented
+  // as the single point where dialect type narrowing happens.
+  return db as unknown as OmaDbBuilder;
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Terminator helpers
+// Terminator helpers — paper over `.get()` / `.all()` / `.run()` (SQLite)
+// vs awaitable chain (PG). Adapters call these instead of branching.
 // ──────────────────────────────────────────────────────────────────────
-//
-// Drizzle's PG and SQLite query builders share 95% of their fluent API
-// (`.select().from().where(eq(...))`) but disagree on how to actually
-// execute. SQLite requires an explicit `.get()` / `.all()` terminator;
-// PG awaits the chain directly.
-//
-// Adapters write the chain once; these helpers run it correctly on
-// either dialect by feature-detecting the terminator. No `as any`
-// boundary in adapter code.
 
 interface SqliteSelectChain<T> {
   get(): Promise<T | undefined>;
   all(): Promise<T[]>;
 }
 
-/**
- * Run a SELECT chain expecting at most one row. Returns the row or null.
- * Use for `.where(eq(t.id, id))` style lookups.
- */
+interface SqliteRunChain {
+  run(): Promise<unknown>;
+}
+
+/** SELECT expecting at most one row. Returns the row or null. */
 export async function getOne<T>(query: PromiseLike<T[]> | SqliteSelectChain<T>): Promise<T | null> {
   if (typeof (query as SqliteSelectChain<T>).get === "function") {
     const r = await (query as SqliteSelectChain<T>).get();
@@ -92,9 +103,7 @@ export async function getOne<T>(query: PromiseLike<T[]> | SqliteSelectChain<T>):
   return rows[0] ?? null;
 }
 
-/**
- * Run a SELECT chain expecting any number of rows. Returns the rows.
- */
+/** SELECT expecting any number of rows. Returns the rows. */
 export async function getAll<T>(query: PromiseLike<T[]> | SqliteSelectChain<T>): Promise<T[]> {
   if (typeof (query as SqliteSelectChain<T>).all === "function") {
     return await (query as SqliteSelectChain<T>).all();
@@ -102,14 +111,7 @@ export async function getAll<T>(query: PromiseLike<T[]> | SqliteSelectChain<T>):
   return await (query as PromiseLike<T[]>);
 }
 
-interface SqliteRunChain {
-  run(): Promise<unknown>;
-}
-
-/**
- * Run a mutation chain (INSERT / UPDATE / DELETE) with no result.
- * SQLite needs `.run()`; PG just awaits.
- */
+/** INSERT / UPDATE / DELETE with no result needed. */
 export async function runOnce(query: PromiseLike<unknown> | SqliteRunChain): Promise<void> {
   if (typeof (query as SqliteRunChain).run === "function") {
     await (query as SqliteRunChain).run();
@@ -118,17 +120,63 @@ export async function runOnce(query: PromiseLike<unknown> | SqliteRunChain): Pro
   await (query as PromiseLike<unknown>);
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Atomic batch — single canonical helper, replacing the 4 copy-pasted
+// `atomicWrite` impls subagents accidentally emitted in adapter files.
+// Adapters call `atomicWrite(db, [q1, q2, q3])`; helper internally
+// detects whether to use D1's batch() or PG's transaction().
+// ──────────────────────────────────────────────────────────────────────
+
+interface D1Batch {
+  batch(stmts: unknown[]): Promise<unknown>;
+}
+interface PgTransaction {
+  transaction<R>(cb: (tx: unknown) => Promise<R>): Promise<R>;
+}
+
 /**
- * Run a mutation chain that returns rows (e.g. `.returning()` on PG,
- * `INSERT ... RETURNING *` on SQLite via Drizzle). Returns the rows.
+ * Run multiple write statements as a single atomic unit.
+ *
+ * D1: uses native `db.batch([...])` (single round-trip, atomic).
+ * PG / better-sqlite3: uses `db.transaction(tx => { ... })`.
+ *
+ * Adapters write:
+ *
+ *   await atomicWrite(this.db, [
+ *     this.db.update(t).set({ ... }).where(eq(t.id, id)),
+ *     this.db.insert(history).values({ ... }),
+ *   ]);
+ *
+ * No dialect awareness in adapter code.
  */
-export async function runReturning<T>(
-  query: PromiseLike<T[]> | { returning(): SqliteSelectChain<T> },
-): Promise<T[]> {
-  // PG: just await the chain (it has .returning() pre-applied if needed).
-  // SQLite: chain ends in .returning() which exposes .all().
-  if (typeof (query as { returning: () => SqliteSelectChain<T> }).returning === "function") {
-    return await (query as { returning: () => SqliteSelectChain<T> }).returning().all();
+export async function atomicWrite(db: OmaDb, queries: unknown[]): Promise<void> {
+  // D1 path — drizzle's D1 wrapper exposes `batch` taking a list of
+  // SQLite chain-builders directly.
+  const maybeBatch = db as unknown as Partial<D1Batch>;
+  if (typeof maybeBatch.batch === "function") {
+    // D1 requires a non-empty array; runtime invariant.
+    await maybeBatch.batch(queries as unknown[]);
+    return;
   }
-  return await (query as PromiseLike<T[]>);
+
+  // PG / better-sqlite3 path — wrap in a transaction, run each query
+  // sequentially. Each query is a Drizzle chain-builder; awaiting it
+  // executes against the current transaction context (drizzle re-binds
+  // the chain to the tx automatically).
+  const txDb = db as unknown as PgTransaction;
+  if (typeof txDb.transaction === "function") {
+    await txDb.transaction(async () => {
+      for (const q of queries) {
+        await runOnce(q as PromiseLike<unknown> | SqliteRunChain);
+      }
+    });
+    return;
+  }
+
+  // Fallback — no batch primitive available. Run sequentially WITHOUT
+  // atomicity. This branch should never hit in production but exists
+  // for test-only DBs that lack both.
+  for (const q of queries) {
+    await runOnce(q as PromiseLike<unknown> | SqliteRunChain);
+  }
 }

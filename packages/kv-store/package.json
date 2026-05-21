@@ -10,7 +10,8 @@
     "./adapters/sql": "./src/adapters/sql.ts"
   },
   "dependencies": {
+    "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
-    "@open-managed-agents/sql-client": "workspace:*"
+    "drizzle-orm": "^0.45.2"
   }
 }

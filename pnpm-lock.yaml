@@ -753,12 +753,18 @@ importers:
 
   packages/agents-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/api-types: {}
 
@@ -851,12 +857,15 @@ importers:
 
   packages/credentials-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/db-schema:
     dependencies:
@@ -872,6 +881,9 @@ importers:
       pg:
         specifier: '*'
         version: 8.20.0
+      postgres:
+        specifier: '*'
+        version: 3.4.9
 
   packages/email:
     dependencies:
@@ -881,12 +893,15 @@ importers:
 
   packages/environments-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/eval-core:
     dependencies:
@@ -920,12 +935,15 @@ importers:
 
   packages/evals-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/event-log:
     dependencies:
@@ -938,12 +956,15 @@ importers:
 
   packages/files-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/github:
     dependencies:
@@ -1077,12 +1098,15 @@ importers:
 
   packages/kv-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/linear:
     dependencies:
@@ -1104,21 +1128,30 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.0.0
         version: 3.1044.0
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/model-cards-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/observability:
     dependencies:
@@ -1371,12 +1404,18 @@ importers:
 
   packages/sessions-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/shared:
     dependencies:
@@ -1415,9 +1454,15 @@ importers:
 
   packages/tenant-dbs-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
   packages/vault-forward:
     dependencies:
@@ -1434,12 +1479,18 @@ importers:
 
   packages/vaults-store:
     dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../sql-client
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260410.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
 packages:
 
