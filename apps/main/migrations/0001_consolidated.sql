@@ -1,398 +1,368 @@
--- ============================================================
--- 0001_consolidated.sql  (AUTH_DB — CF SQLite / D1)
--- ============================================================
--- Consolidated baseline replacing the 20 historical migration files
--- (now in _archive/, kept only for git-blame reference). For fresh
--- deploys this is the only migration the runner ever applies. Existing
--- openma.dev prod deployments stamp this filename via
--- scripts/stamp-baseline-existing-deploy.sh so wrangler skips reapply.
---
--- Tables owned by this DB:
---   Auth (better-auth):    user, session, account, verification, tenant,
---                          membership
---   Sessions / sandbox:    sessions, session_resources, agents,
---                          agent_versions
---   Knowledge / files:     memory_stores, memories, memory_versions,
---                          files, vaults, credentials
---   Models / configuration: model_cards, environments
---   Evals / billing:       eval_runs, usage_events, workspace_backups
---   Runtimes:              runtimes, runtime_tokens, connect_runtime_codes
---   Sharding (legacy):     tenant_shard, shard_pool — moved to ROUTER_DB
---                          binding in current architecture; left here for
---                          back-compat with deployments where ROUTER_DB
---                          falls back to AUTH_DB.
---
--- Single-D1 self-host deployments use this DB for everything. Auto-detection
--- in packages/services/src/index.ts buildCfTenantDbProvider() routes every
--- tenant to AUTH_DB when AUTH_DB_01 isn't bound, so no sharding occurs.
---
--- Multi-shard production: this DB is one of 4 sharded auth DBs (AUTH_DB =
--- AUTH_DB_00, plus AUTH_DB_01..03), all carrying identical schema. The
--- per-tenant data lands on whichever shard `tenant_shard` (in ROUTER_DB)
--- says owns that tenant.
-
-CREATE TABLE IF NOT EXISTS "tenant" (
-  "id" TEXT PRIMARY KEY NOT NULL,
-  "name" TEXT NOT NULL,
-  "createdAt" INTEGER NOT NULL,
-  "updatedAt" INTEGER NOT NULL
+CREATE TABLE `account` (
+	`id` text PRIMARY KEY NOT NULL,
+	`accountId` text NOT NULL,
+	`providerId` text NOT NULL,
+	`userId` text NOT NULL,
+	`accessToken` text,
+	`refreshToken` text,
+	`idToken` text,
+	`accessTokenExpiresAt` integer,
+	`refreshTokenExpiresAt` integer,
+	`scope` text,
+	`password` text,
+	`createdAt` integer NOT NULL,
+	`updatedAt` integer NOT NULL,
+	FOREIGN KEY (`userId`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
-CREATE TABLE IF NOT EXISTS "user" (
-  "id" TEXT PRIMARY KEY NOT NULL,
-  "name" TEXT NOT NULL,
-  "email" TEXT NOT NULL UNIQUE,
-  "emailVerified" INTEGER NOT NULL DEFAULT 0,
-  "image" TEXT,
-  "tenantId" TEXT,
-  "role" TEXT NOT NULL DEFAULT 'member',
-  "createdAt" INTEGER NOT NULL,
-  "updatedAt" INTEGER NOT NULL
+--> statement-breakpoint
+CREATE TABLE `membership` (
+	`user_id` text NOT NULL,
+	`tenant_id` text NOT NULL,
+	`role` text DEFAULT 'member' NOT NULL,
+	`created_at` integer NOT NULL,
+	PRIMARY KEY(`user_id`, `tenant_id`)
 );
-CREATE TABLE IF NOT EXISTS "session" (
-  "id" TEXT PRIMARY KEY NOT NULL,
-  "expiresAt" INTEGER NOT NULL,
-  "token" TEXT NOT NULL UNIQUE,
-  "createdAt" INTEGER NOT NULL,
-  "updatedAt" INTEGER NOT NULL,
-  "ipAddress" TEXT,
-  "userAgent" TEXT,
-  "userId" TEXT NOT NULL
+--> statement-breakpoint
+CREATE INDEX `idx_membership_user` ON `membership` (`user_id`);--> statement-breakpoint
+CREATE INDEX `idx_membership_tenant` ON `membership` (`tenant_id`);--> statement-breakpoint
+CREATE TABLE `session` (
+	`id` text PRIMARY KEY NOT NULL,
+	`expiresAt` integer NOT NULL,
+	`token` text NOT NULL,
+	`createdAt` integer NOT NULL,
+	`updatedAt` integer NOT NULL,
+	`ipAddress` text,
+	`userAgent` text,
+	`userId` text NOT NULL,
+	FOREIGN KEY (`userId`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
-CREATE TABLE IF NOT EXISTS "account" (
-  "id" TEXT PRIMARY KEY NOT NULL,
-  "accountId" TEXT NOT NULL,
-  "providerId" TEXT NOT NULL,
-  "userId" TEXT NOT NULL,
-  "accessToken" TEXT,
-  "refreshToken" TEXT,
-  "idToken" TEXT,
-  "accessTokenExpiresAt" INTEGER,
-  "refreshTokenExpiresAt" INTEGER,
-  "scope" TEXT,
-  "password" TEXT,
-  "createdAt" INTEGER NOT NULL,
-  "updatedAt" INTEGER NOT NULL
+--> statement-breakpoint
+CREATE UNIQUE INDEX `session_token_unique` ON `session` (`token`);--> statement-breakpoint
+CREATE TABLE `tenant` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`createdAt` integer NOT NULL,
+	`updatedAt` integer NOT NULL
 );
-CREATE TABLE IF NOT EXISTS "verification" (
-  "id" TEXT PRIMARY KEY NOT NULL,
-  "identifier" TEXT NOT NULL,
-  "value" TEXT NOT NULL,
-  "expiresAt" INTEGER NOT NULL,
-  "createdAt" INTEGER,
-  "updatedAt" INTEGER
+--> statement-breakpoint
+CREATE TABLE `user` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`email` text NOT NULL,
+	`emailVerified` integer DEFAULT false NOT NULL,
+	`image` text,
+	`tenantId` text,
+	`role` text DEFAULT 'member' NOT NULL,
+	`createdAt` integer NOT NULL,
+	`updatedAt` integer NOT NULL
 );
-CREATE TABLE IF NOT EXISTS "vaults" (
-  "id"          TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"   TEXT NOT NULL,
-  "name"        TEXT NOT NULL,
-  "created_at"  INTEGER NOT NULL,
-  "updated_at"  INTEGER,
-  "archived_at" INTEGER
+--> statement-breakpoint
+CREATE UNIQUE INDEX `user_email_unique` ON `user` (`email`);--> statement-breakpoint
+CREATE TABLE `verification` (
+	`id` text PRIMARY KEY NOT NULL,
+	`identifier` text NOT NULL,
+	`value` text NOT NULL,
+	`expiresAt` integer NOT NULL,
+	`createdAt` integer,
+	`updatedAt` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_vaults_tenant"
-  ON "vaults" ("tenant_id", "archived_at");
-CREATE TABLE IF NOT EXISTS "credentials" (
-  "id"             TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"      TEXT NOT NULL,
-  "vault_id"       TEXT NOT NULL,
-  "display_name"   TEXT NOT NULL,
-  "auth_type"      TEXT NOT NULL,
-  "mcp_server_url" TEXT,
-  "provider"       TEXT,
-  "auth"           TEXT NOT NULL,
-  "created_at"     INTEGER NOT NULL,
-  "updated_at"     INTEGER,
-  "archived_at"    INTEGER
+--> statement-breakpoint
+CREATE TABLE `agent_versions` (
+	`agent_id` text NOT NULL,
+	`tenant_id` text NOT NULL,
+	`version` integer NOT NULL,
+	`snapshot` text NOT NULL,
+	`created_at` integer NOT NULL,
+	PRIMARY KEY(`agent_id`, `version`)
 );
-CREATE INDEX IF NOT EXISTS "idx_credentials_vault"
-  ON "credentials" ("tenant_id", "vault_id", "archived_at");
-CREATE UNIQUE INDEX IF NOT EXISTS "idx_credentials_mcp_url_active"
-  ON "credentials" ("tenant_id", "vault_id", "mcp_server_url")
-  WHERE "mcp_server_url" IS NOT NULL AND "archived_at" IS NULL;
-CREATE INDEX IF NOT EXISTS "idx_credentials_provider"
-  ON "credentials" ("tenant_id", "vault_id", "provider")
-  WHERE "provider" IS NOT NULL;
-CREATE TABLE IF NOT EXISTS "memory_stores" (
-  "id"           TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"    TEXT NOT NULL,
-  "name"         TEXT NOT NULL,
-  "description"  TEXT,
-  "created_at"   INTEGER NOT NULL,
-  "updated_at"   INTEGER,
-  "archived_at"  INTEGER
+--> statement-breakpoint
+CREATE INDEX `idx_agent_versions_tenant_agent` ON `agent_versions` (`tenant_id`,`agent_id`,`version`);--> statement-breakpoint
+CREATE TABLE `agents` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`config` text NOT NULL,
+	`version` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_memory_stores_tenant"
-  ON "memory_stores" ("tenant_id", "created_at" DESC);
-CREATE TABLE IF NOT EXISTS "memory_versions" (
-  "id"              TEXT PRIMARY KEY NOT NULL,
-  "memory_id"       TEXT NOT NULL,
-  "store_id"        TEXT NOT NULL,
-  "operation"       TEXT NOT NULL,
-  "path"            TEXT,
-  "content"         TEXT,
-  "content_sha256"  TEXT,
-  "size_bytes"      INTEGER,
-  "actor_type"      TEXT NOT NULL,
-  "actor_id"        TEXT NOT NULL,
-  "created_at"      INTEGER NOT NULL,
-  "redacted"        INTEGER NOT NULL DEFAULT 0
+--> statement-breakpoint
+CREATE INDEX `idx_agents_tenant` ON `agents` (`tenant_id`,`archived_at`);--> statement-breakpoint
+CREATE INDEX `idx_agents_tenant_created_id` ON `agents` (`tenant_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE TABLE `session_memory_stores` (
+	`session_id` text NOT NULL,
+	`store_id` text NOT NULL,
+	`access` text DEFAULT 'read_write' NOT NULL,
+	`created_at` integer NOT NULL,
+	PRIMARY KEY(`session_id`, `store_id`)
 );
-CREATE INDEX IF NOT EXISTS "idx_memory_versions_memory"
-  ON "memory_versions" ("memory_id", "created_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_memory_versions_store"
-  ON "memory_versions" ("store_id", "created_at" DESC);
-CREATE TABLE IF NOT EXISTS "sessions" (
-  "id"                    TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"             TEXT NOT NULL,
-  "agent_id"              TEXT NOT NULL,
-  "environment_id"        TEXT NOT NULL,
-  "title"                 TEXT NOT NULL DEFAULT '',
-  "status"                TEXT NOT NULL,
-  "vault_ids"             TEXT,
-  "agent_snapshot"        TEXT,
-  "environment_snapshot"  TEXT,
-  "metadata"              TEXT,
-  "created_at"            INTEGER NOT NULL,
-  "updated_at"            INTEGER,
-  "archived_at"           INTEGER
-, "turn_id" TEXT, "turn_started_at" INTEGER, "terminated_at" INTEGER);
-CREATE INDEX IF NOT EXISTS "idx_sessions_tenant_created"
-  ON "sessions" ("tenant_id", "created_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_sessions_tenant_agent"
-  ON "sessions" ("tenant_id", "agent_id", "archived_at");
-CREATE INDEX IF NOT EXISTS "idx_sessions_tenant_environment"
-  ON "sessions" ("tenant_id", "environment_id", "archived_at");
-CREATE TABLE IF NOT EXISTS "session_resources" (
-  "id"          TEXT PRIMARY KEY NOT NULL,
-  "session_id"  TEXT NOT NULL,
-  "type"        TEXT NOT NULL,
-  "config"      TEXT NOT NULL,
-  "created_at"  INTEGER NOT NULL
+--> statement-breakpoint
+CREATE TABLE `session_resources` (
+	`id` text PRIMARY KEY NOT NULL,
+	`session_id` text NOT NULL,
+	`type` text NOT NULL,
+	`config` text NOT NULL,
+	`created_at` integer NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "idx_session_resources_session"
-  ON "session_resources" ("session_id", "created_at" ASC);
-CREATE INDEX IF NOT EXISTS "idx_session_resources_session_type"
-  ON "session_resources" ("session_id", "type");
-CREATE TABLE IF NOT EXISTS "files" (
-  "id"           TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"    TEXT NOT NULL,
-  "session_id"   TEXT,
-  "scope"        TEXT NOT NULL,
-  "filename"     TEXT NOT NULL,
-  "media_type"   TEXT NOT NULL,
-  "size_bytes"   INTEGER NOT NULL,
-  "downloadable" INTEGER NOT NULL DEFAULT 0,
-  "r2_key"       TEXT NOT NULL,
-  "created_at"   INTEGER NOT NULL
+--> statement-breakpoint
+CREATE INDEX `idx_session_resources_session` ON `session_resources` (`session_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_session_resources_session_type` ON `session_resources` (`session_id`,`type`);--> statement-breakpoint
+CREATE TABLE `sessions` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`agent_id` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`title` text DEFAULT '' NOT NULL,
+	`status` text NOT NULL,
+	`vault_ids` text,
+	`agent_snapshot` text,
+	`environment_snapshot` text,
+	`metadata` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer,
+	`turn_id` text,
+	`turn_started_at` integer,
+	`terminated_at` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_files_tenant_created"
-  ON "files" ("tenant_id", "created_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_files_tenant_session_created"
-  ON "files" ("tenant_id", "session_id", "created_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_files_session"
-  ON "files" ("session_id");
-CREATE TABLE IF NOT EXISTS "eval_runs" (
-  "id"             TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"      TEXT NOT NULL,
-  "agent_id"       TEXT NOT NULL,
-  "environment_id" TEXT NOT NULL,
-  "suite"          TEXT,
-  "status"         TEXT NOT NULL,
-  "started_at"     INTEGER NOT NULL,
-  "completed_at"   INTEGER,
-  "results"        TEXT,
-  "score"          REAL,
-  "error"          TEXT
+--> statement-breakpoint
+CREATE INDEX `idx_sessions_tenant_created` ON `sessions` (`tenant_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_sessions_tenant_agent` ON `sessions` (`tenant_id`,`agent_id`,`archived_at`);--> statement-breakpoint
+CREATE INDEX `idx_sessions_tenant_environment` ON `sessions` (`tenant_id`,`environment_id`,`archived_at`);--> statement-breakpoint
+CREATE INDEX `idx_sessions_tenant_created_id` ON `sessions` (`tenant_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE INDEX `idx_sessions_running` ON `sessions` (`tenant_id`,`id`) WHERE "status" = 'running';--> statement-breakpoint
+CREATE INDEX `idx_sessions_terminated` ON `sessions` (`tenant_id`,`terminated_at`) WHERE "terminated_at" IS NOT NULL;--> statement-breakpoint
+CREATE TABLE `memories` (
+	`id` text PRIMARY KEY NOT NULL,
+	`store_id` text NOT NULL,
+	`path` text NOT NULL,
+	`content_sha256` text NOT NULL,
+	`etag` text,
+	`size_bytes` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "idx_eval_runs_tenant_started"
-  ON "eval_runs" ("tenant_id", "started_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_eval_runs_tenant_agent_started"
-  ON "eval_runs" ("tenant_id", "agent_id", "started_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_eval_runs_tenant_environment_started"
-  ON "eval_runs" ("tenant_id", "environment_id", "started_at" DESC);
-CREATE INDEX IF NOT EXISTS "idx_eval_runs_status_active"
-  ON "eval_runs" ("status", "started_at" ASC)
-  WHERE "status" = 'pending' OR "status" = 'running';
-CREATE TABLE IF NOT EXISTS "model_cards" (
-  "id"               TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"        TEXT NOT NULL,
-  "model_id"         TEXT NOT NULL,
-  "provider"         TEXT NOT NULL,
-  "base_url"         TEXT,
-  "custom_headers"   TEXT,
-  "api_key_cipher"   TEXT NOT NULL,
-  "api_key_preview"  TEXT NOT NULL,
-  "is_default"       INTEGER NOT NULL DEFAULT 0,
-  "created_at"       INTEGER NOT NULL,
-  "updated_at"       INTEGER,
-  "archived_at"      INTEGER
-, "model" TEXT NOT NULL DEFAULT '');
-CREATE UNIQUE INDEX IF NOT EXISTS "idx_model_cards_model_id"
-  ON "model_cards" ("tenant_id", "model_id");
-CREATE UNIQUE INDEX IF NOT EXISTS "idx_model_cards_default"
-  ON "model_cards" ("tenant_id")
-  WHERE "is_default" = 1;
-CREATE INDEX IF NOT EXISTS "idx_model_cards_tenant"
-  ON "model_cards" ("tenant_id", "created_at");
-CREATE TABLE IF NOT EXISTS "agents" (
-  "id"           TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"    TEXT NOT NULL,
-  "config"       TEXT NOT NULL,
-  "version"      INTEGER NOT NULL,
-  "created_at"   INTEGER NOT NULL,
-  "updated_at"   INTEGER,
-  "archived_at"  INTEGER
+--> statement-breakpoint
+CREATE UNIQUE INDEX `memories_store_id_path_unique` ON `memories` (`store_id`,`path`);--> statement-breakpoint
+CREATE INDEX `idx_memories_store_updated` ON `memories` (`store_id`,`updated_at`);--> statement-breakpoint
+CREATE TABLE `memory_blob_poller_lease` (
+	`store_id` text PRIMARY KEY NOT NULL,
+	`owner` text NOT NULL,
+	`expires_at` integer NOT NULL,
+	`last_seen_ms` integer DEFAULT 0 NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "idx_agents_tenant"
-  ON "agents" ("tenant_id", "archived_at");
-CREATE TABLE IF NOT EXISTS "agent_versions" (
-  "agent_id"    TEXT NOT NULL,
-  "tenant_id"   TEXT NOT NULL,
-  "version"     INTEGER NOT NULL,
-  "snapshot"    TEXT NOT NULL,
-  "created_at"  INTEGER NOT NULL,
-  PRIMARY KEY ("agent_id", "version")
+--> statement-breakpoint
+CREATE TABLE `memory_stores` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`name` text NOT NULL,
+	`description` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_agent_versions_tenant_agent"
-  ON "agent_versions" ("tenant_id", "agent_id", "version");
-CREATE TABLE IF NOT EXISTS "environments" (
-  "id"                   TEXT PRIMARY KEY NOT NULL,
-  "tenant_id"            TEXT NOT NULL,
-  "name"                 TEXT NOT NULL,
-  "description"          TEXT,
-  "status"               TEXT NOT NULL,
-  "sandbox_worker_name"  TEXT,
-  "build_error"          TEXT,
-  "config"               TEXT NOT NULL,
-  "metadata"             TEXT,
-  "created_at"           INTEGER NOT NULL,
-  "updated_at"           INTEGER,
-  "archived_at"          INTEGER
-, image_strategy TEXT, image_handle TEXT);
-CREATE INDEX IF NOT EXISTS "idx_environments_tenant"
-  ON "environments" ("tenant_id", "archived_at");
-CREATE TABLE IF NOT EXISTS "tenant_shard" (
-  "tenant_id"    TEXT PRIMARY KEY NOT NULL,
-  "binding_name" TEXT NOT NULL,
-  "created_at"   INTEGER NOT NULL
+--> statement-breakpoint
+CREATE INDEX `idx_memory_stores_tenant` ON `memory_stores` (`tenant_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE `memory_versions` (
+	`id` text PRIMARY KEY NOT NULL,
+	`memory_id` text NOT NULL,
+	`store_id` text NOT NULL,
+	`operation` text NOT NULL,
+	`path` text,
+	`content` text,
+	`content_sha256` text,
+	`size_bytes` integer,
+	`actor_type` text NOT NULL,
+	`actor_id` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`redacted` integer DEFAULT 0 NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "idx_tenant_shard_binding"
-  ON "tenant_shard" ("binding_name");
-CREATE TABLE IF NOT EXISTS "shard_pool" (
-  "binding_name"  TEXT PRIMARY KEY NOT NULL,
-  "status"        TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'draining' | 'full' | 'archived'
-  "tenant_count"  INTEGER NOT NULL DEFAULT 0,
-  "size_bytes"    INTEGER,                       -- last observed (NULL = unknown)
-  "observed_at"   INTEGER,                       -- ms epoch of last observation
-  "notes"         TEXT
+--> statement-breakpoint
+CREATE INDEX `idx_memory_versions_memory` ON `memory_versions` (`memory_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_memory_versions_store` ON `memory_versions` (`store_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE `credentials` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`vault_id` text NOT NULL,
+	`display_name` text NOT NULL,
+	`auth_type` text NOT NULL,
+	`mcp_server_url` text,
+	`provider` text,
+	`auth` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_shard_pool_status"
-  ON "shard_pool" ("status", "tenant_count");
-CREATE TABLE IF NOT EXISTS "membership" (
-  "user_id"    TEXT NOT NULL,
-  "tenant_id"  TEXT NOT NULL,
-  "role"       TEXT NOT NULL DEFAULT 'member',     -- owner | admin | member
-  "created_at" INTEGER NOT NULL,                    -- unix seconds
-  PRIMARY KEY ("user_id", "tenant_id")
+--> statement-breakpoint
+CREATE INDEX `idx_credentials_vault` ON `credentials` (`tenant_id`,`vault_id`,`archived_at`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_credentials_mcp_url_active` ON `credentials` (`tenant_id`,`vault_id`,`mcp_server_url`) WHERE "mcp_server_url" IS NOT NULL AND "archived_at" IS NULL;--> statement-breakpoint
+CREATE INDEX `idx_credentials_provider` ON `credentials` (`tenant_id`,`vault_id`,`provider`) WHERE "provider" IS NOT NULL;--> statement-breakpoint
+CREATE TABLE `vaults` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`name` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer
 );
-CREATE INDEX IF NOT EXISTS "idx_membership_user"   ON "membership" ("user_id");
-CREATE INDEX IF NOT EXISTS "idx_membership_tenant" ON "membership" ("tenant_id");
-CREATE TABLE IF NOT EXISTS "memories" (
-  id              TEXT PRIMARY KEY NOT NULL,
-  store_id        TEXT NOT NULL,
-  path            TEXT NOT NULL,
-  content_sha256  TEXT NOT NULL,
-  etag            TEXT,                 -- back-filled by the data migration script
-  size_bytes      INTEGER NOT NULL,
-  created_at      INTEGER NOT NULL,
-  updated_at      INTEGER NOT NULL,
-  UNIQUE (store_id, path)
+--> statement-breakpoint
+CREATE INDEX `idx_vaults_tenant` ON `vaults` (`tenant_id`,`archived_at`);--> statement-breakpoint
+CREATE INDEX `idx_vaults_tenant_created_id` ON `vaults` (`tenant_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE TABLE `model_cards` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`model_id` text NOT NULL,
+	`provider` text NOT NULL,
+	`base_url` text,
+	`custom_headers` text,
+	`api_key_cipher` text NOT NULL,
+	`api_key_preview` text NOT NULL,
+	`is_default` integer DEFAULT 0 NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer,
+	`model` text DEFAULT '' NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_memories_store_updated
-  ON memories (store_id, updated_at DESC);
-CREATE TABLE IF NOT EXISTS "runtimes" (
-  "id"               TEXT PRIMARY KEY NOT NULL,
-  "owner_user_id"    TEXT NOT NULL,
-  "owner_tenant_id"  TEXT NOT NULL,
-  "machine_id"       TEXT NOT NULL,
-  "hostname"         TEXT NOT NULL,
-  "os"               TEXT NOT NULL,
-  "agents_json"      TEXT NOT NULL DEFAULT '[]',
-  "version"          TEXT NOT NULL,
-  "status"           TEXT NOT NULL DEFAULT 'offline',
-  "last_heartbeat"   INTEGER,
-  "created_at"       INTEGER NOT NULL
-, "local_skills_json" TEXT NOT NULL DEFAULT '{}');
-CREATE UNIQUE INDEX IF NOT EXISTS "idx_runtimes_user_machine"
-  ON "runtimes" ("owner_user_id", "machine_id");
-CREATE INDEX IF NOT EXISTS "idx_runtimes_tenant"
-  ON "runtimes" ("owner_tenant_id", "created_at" DESC);
-CREATE TABLE IF NOT EXISTS "runtime_tokens" (
-  "id"                  TEXT PRIMARY KEY NOT NULL,
-  "runtime_id"          TEXT NOT NULL,
-  "token_hash"          TEXT NOT NULL UNIQUE,
-  "created_by_user_id"  TEXT NOT NULL,
-  "revoked_at"          INTEGER,
-  "last_used_at"        INTEGER,
-  "created_at"          INTEGER NOT NULL
+--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_model_cards_model_id` ON `model_cards` (`tenant_id`,`model_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_model_cards_default` ON `model_cards` (`tenant_id`) WHERE "is_default" = 1;--> statement-breakpoint
+CREATE INDEX `idx_model_cards_tenant` ON `model_cards` (`tenant_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_model_cards_tenant_created_id` ON `model_cards` (`tenant_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE TABLE `environments` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`name` text NOT NULL,
+	`description` text,
+	`status` text NOT NULL,
+	`sandbox_worker_name` text,
+	`build_error` text,
+	`config` text NOT NULL,
+	`metadata` text,
+	`created_at` integer NOT NULL,
+	`updated_at` integer,
+	`archived_at` integer,
+	`image_strategy` text,
+	`image_handle` text
 );
-CREATE INDEX IF NOT EXISTS "idx_runtime_tokens_runtime"
-  ON "runtime_tokens" ("runtime_id", "revoked_at");
-CREATE TABLE IF NOT EXISTS "connect_runtime_codes" (
-  "code"        TEXT PRIMARY KEY NOT NULL,
-  "user_id"     TEXT NOT NULL,
-  "tenant_id"   TEXT NOT NULL,
-  "state"       TEXT NOT NULL,
-  "expires_at"  INTEGER NOT NULL,
-  "used_at"     INTEGER
+--> statement-breakpoint
+CREATE INDEX `idx_environments_tenant` ON `environments` (`tenant_id`,`archived_at`);--> statement-breakpoint
+CREATE INDEX `idx_environments_tenant_created_id` ON `environments` (`tenant_id`,`created_at`,`id`);--> statement-breakpoint
+CREATE TABLE `files` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`session_id` text,
+	`scope` text NOT NULL,
+	`filename` text NOT NULL,
+	`media_type` text NOT NULL,
+	`size_bytes` integer NOT NULL,
+	`downloadable` integer DEFAULT 0 NOT NULL,
+	`r2_key` text NOT NULL,
+	`created_at` integer NOT NULL
 );
-CREATE INDEX IF NOT EXISTS "idx_connect_runtime_codes_expires"
-  ON "connect_runtime_codes" ("expires_at");
-CREATE TABLE IF NOT EXISTS workspace_backups (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id       TEXT    NOT NULL,
-  environment_id  TEXT    NOT NULL,
-  -- Serialized DirectoryBackup handle (CF SDK type). JSON: { id, dir, localBucket? }.
-  backup_handle   TEXT    NOT NULL,
-  -- Mirrors the TTL passed to createBackup. R2 lifecycle rule on
-  -- managed-agents-backups deletes the squashfs after this — the row
-  -- should be garbage-collected around the same time (cron in apps/main).
-  created_at      INTEGER NOT NULL,
-  expires_at      INTEGER NOT NULL,
-  -- For provenance / debugging — which session created this snapshot.
-  source_session_id TEXT
+--> statement-breakpoint
+CREATE INDEX `idx_files_tenant_created` ON `files` (`tenant_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_files_tenant_session_created` ON `files` (`tenant_id`,`session_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_files_session` ON `files` (`session_id`);--> statement-breakpoint
+CREATE TABLE `workspace_backups` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`tenant_id` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`backup_handle` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`expires_at` integer NOT NULL,
+	`source_session_id` text
 );
-CREATE INDEX IF NOT EXISTS idx_workspace_backups_scope_recent
-  ON workspace_backups (tenant_id, environment_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_workspace_backups_expires
-  ON workspace_backups (expires_at);
-CREATE INDEX IF NOT EXISTS "idx_sessions_tenant_created_id"
-  ON "sessions" ("tenant_id", "created_at" DESC, "id" DESC);
-CREATE INDEX IF NOT EXISTS "idx_agents_tenant_created_id"
-  ON "agents" ("tenant_id", "created_at" DESC, "id" DESC);
-CREATE INDEX IF NOT EXISTS "idx_environments_tenant_created_id"
-  ON "environments" ("tenant_id", "created_at" DESC, "id" DESC);
-CREATE INDEX IF NOT EXISTS "idx_vaults_tenant_created_id"
-  ON "vaults" ("tenant_id", "created_at" DESC, "id" DESC);
-CREATE INDEX IF NOT EXISTS "idx_model_cards_tenant_created_id"
-  ON "model_cards" ("tenant_id", "created_at" DESC, "id" DESC);
-CREATE INDEX IF NOT EXISTS "idx_sessions_running"
-  ON "sessions" ("tenant_id", "id")
-  WHERE "status" = 'running';
-CREATE INDEX IF NOT EXISTS "idx_sessions_terminated"
-  ON "sessions" ("tenant_id", "terminated_at")
-  WHERE "terminated_at" IS NOT NULL;
-CREATE TABLE IF NOT EXISTS usage_events (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id   TEXT NOT NULL,
-  session_id  TEXT NOT NULL,
-  agent_id    TEXT,
-  kind        TEXT NOT NULL,
-  value       INTEGER NOT NULL,
-  created_at  INTEGER NOT NULL,
-  billed_at   INTEGER
+--> statement-breakpoint
+CREATE INDEX `idx_workspace_backups_scope_recent` ON `workspace_backups` (`tenant_id`,`environment_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `idx_workspace_backups_expires` ON `workspace_backups` (`expires_at`);--> statement-breakpoint
+CREATE TABLE `connect_runtime_codes` (
+	`code` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`tenant_id` text NOT NULL,
+	`state` text NOT NULL,
+	`expires_at` integer NOT NULL,
+	`used_at` integer
 );
-CREATE INDEX IF NOT EXISTS idx_usage_events_unbilled
-  ON usage_events (tenant_id, id) WHERE billed_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_usage_events_session
-  ON usage_events (session_id);
+--> statement-breakpoint
+CREATE INDEX `idx_connect_runtime_codes_expires` ON `connect_runtime_codes` (`expires_at`);--> statement-breakpoint
+CREATE TABLE `runtime_tokens` (
+	`id` text PRIMARY KEY NOT NULL,
+	`runtime_id` text NOT NULL,
+	`token_hash` text NOT NULL,
+	`created_by_user_id` text NOT NULL,
+	`revoked_at` integer,
+	`last_used_at` integer,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `runtime_tokens_token_hash_unique` ON `runtime_tokens` (`token_hash`);--> statement-breakpoint
+CREATE INDEX `idx_runtime_tokens_runtime` ON `runtime_tokens` (`runtime_id`,`revoked_at`);--> statement-breakpoint
+CREATE TABLE `runtimes` (
+	`id` text PRIMARY KEY NOT NULL,
+	`owner_user_id` text NOT NULL,
+	`owner_tenant_id` text NOT NULL,
+	`machine_id` text NOT NULL,
+	`hostname` text NOT NULL,
+	`os` text NOT NULL,
+	`agents_json` text DEFAULT '[]' NOT NULL,
+	`version` text NOT NULL,
+	`status` text DEFAULT 'offline' NOT NULL,
+	`last_heartbeat` integer,
+	`created_at` integer NOT NULL,
+	`local_skills_json` text DEFAULT '{}' NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_runtimes_user_machine` ON `runtimes` (`owner_user_id`,`machine_id`);--> statement-breakpoint
+CREATE INDEX `idx_runtimes_tenant` ON `runtimes` (`owner_tenant_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE `eval_runs` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`agent_id` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`suite` text,
+	`status` text NOT NULL,
+	`started_at` integer NOT NULL,
+	`completed_at` integer,
+	`results` text,
+	`score` real,
+	`error` text
+);
+--> statement-breakpoint
+CREATE INDEX `idx_eval_runs_tenant_started` ON `eval_runs` (`tenant_id`,`started_at`);--> statement-breakpoint
+CREATE INDEX `idx_eval_runs_tenant_agent_started` ON `eval_runs` (`tenant_id`,`agent_id`,`started_at`);--> statement-breakpoint
+CREATE INDEX `idx_eval_runs_tenant_environment_started` ON `eval_runs` (`tenant_id`,`environment_id`,`started_at`);--> statement-breakpoint
+CREATE INDEX `idx_eval_runs_status_active` ON `eval_runs` (`status`,`started_at`) WHERE "status" = 'pending' OR "status" = 'running';--> statement-breakpoint
+CREATE TABLE `usage_events` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`tenant_id` text NOT NULL,
+	`session_id` text NOT NULL,
+	`agent_id` text,
+	`kind` text NOT NULL,
+	`value` integer NOT NULL,
+	`created_at` integer NOT NULL,
+	`billed_at` integer
+);
+--> statement-breakpoint
+CREATE INDEX `idx_usage_events_unbilled` ON `usage_events` (`tenant_id`,`id`) WHERE "billed_at" IS NULL;--> statement-breakpoint
+CREATE INDEX `idx_usage_events_session` ON `usage_events` (`session_id`);--> statement-breakpoint
+CREATE TABLE `api_keys` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`user_id` text,
+	`name` text NOT NULL,
+	`prefix` text NOT NULL,
+	`hash` text NOT NULL,
+	`created_at` integer NOT NULL,
+	`last_used_at` integer,
+	`revoked_at` integer
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `api_keys_hash_unique` ON `api_keys` (`hash`);--> statement-breakpoint
+CREATE INDEX `idx_api_keys_tenant` ON `api_keys` (`tenant_id`,`revoked_at`);--> statement-breakpoint
+CREATE TABLE `kv_entries` (
+	`tenant_id` text NOT NULL,
+	`key` text NOT NULL,
+	`value` text NOT NULL,
+	`expires_at` integer,
+	PRIMARY KEY(`tenant_id`, `key`)
+);
