@@ -47,8 +47,8 @@ export interface LinearContainer extends Container {
   webhookEvents: LinearEventStore;
   publications: LinearPublicationRepo;
   /** Linear-specific per-issue session bookkeeping (`linear_issue_sessions`
-   *  table). Backed by D1LinearIssueSessionRepo / SqlLinearIssueSessionRepo
-   *  in production, InMemoryLinearIssueSessionRepo in tests. */
+   *  table). Backed by SqlLinearIssueSessionRepo in production,
+   *  InMemoryLinearIssueSessionRepo in tests. */
   linearIssueSessions: LinearIssueSessionRepo;
 }
 

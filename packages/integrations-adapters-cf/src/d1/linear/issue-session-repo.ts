@@ -1,3 +1,13 @@
+import { and, eq, lt, ne, notInArray, or } from "drizzle-orm";
+import {
+  asBuilder,
+  getOne,
+  getAll,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { linear_issue_sessions } from "@open-managed-agents/db-schema/cf-integrations";
 import type { SessionId } from "@open-managed-agents/integrations-core";
 import type {
   LinearIssueSession,
@@ -11,15 +21,6 @@ import type {
  *  winner while still bounding the recovery window for crash-during-create. */
 const PENDING_STALE_AFTER_MS = 60_000;
 
-interface Row {
-  tenant_id: string;
-  publication_id: string;
-  issue_id: string;
-  session_id: string;
-  status: string;
-  created_at: number;
-}
-
 /**
  * Linear's per-issue session bookkeeping. One row per (publication, issueId)
  * binding the OMA session that's actively handling that issue.
@@ -31,36 +32,51 @@ interface Row {
  * Backed by table `linear_issue_sessions`. GitHub has its own twin
  * (SqlGitHubIssueSessionRepo / `github_issue_sessions`) — strictly separate.
  */
-export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
-  constructor(private readonly db: D1Database) {}
+export class SqlLinearIssueSessionRepo implements LinearIssueSessionRepo {
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async getByIssue(
     publicationId: string,
     issueId: string,
   ): Promise<LinearIssueSession | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT * FROM linear_issue_sessions
-         WHERE publication_id = ? AND issue_id = ?`,
-      )
-      .bind(publicationId, issueId)
-      .first<Row>();
+    const row = await getOne<typeof linear_issue_sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_issue_sessions)
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.issue_id, issueId),
+          ),
+        ),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async insert(row: LinearIssueSession): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT INTO linear_issue_sessions
-           (tenant_id, publication_id, issue_id, session_id, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(publication_id, issue_id) DO UPDATE SET
-           session_id = excluded.session_id,
-           status     = excluded.status,
-           created_at = excluded.created_at`,
-      )
-      .bind(row.tenantId, row.publicationId, row.issueId, row.sessionId, row.status, row.createdAt)
-      .run();
+    await runOnce(
+      this.db
+        .insert(linear_issue_sessions)
+        .values({
+          tenant_id: row.tenantId,
+          publication_id: row.publicationId,
+          issue_id: row.issueId,
+          session_id: row.sessionId,
+          status: row.status,
+          created_at: row.createdAt,
+        })
+        .onConflictDoUpdate({
+          target: [linear_issue_sessions.publication_id, linear_issue_sessions.issue_id],
+          set: {
+            session_id: row.sessionId,
+            status: row.status,
+            created_at: row.createdAt,
+          },
+        }),
+    );
   }
 
   async updateStatus(
@@ -68,27 +84,35 @@ export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
     issueId: string,
     status: LinearIssueSessionStatus,
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_issue_sessions SET status = ?
-         WHERE publication_id = ? AND issue_id = ?`,
-      )
-      .bind(status, publicationId, issueId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_issue_sessions)
+        .set({ status })
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.issue_id, issueId),
+          ),
+        ),
+    );
   }
 
   async listActive(publicationId: string): Promise<readonly LinearIssueSession[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_issue_sessions
-         WHERE publication_id = ? AND status = 'active'`,
-      )
-      .bind(publicationId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof linear_issue_sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_issue_sessions)
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.status, "active"),
+          ),
+        ),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
-  private toDomain(row: Row): LinearIssueSession {
+  private toDomain(row: typeof linear_issue_sessions.$inferSelect): LinearIssueSession {
     return {
       tenantId: row.tenant_id,
       publicationId: row.publication_id,
@@ -112,21 +136,32 @@ export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
     sessionId: SessionId;
     nowMs: number;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `INSERT INTO linear_issue_sessions
-           (tenant_id, publication_id, issue_id, session_id, status, created_at)
-         VALUES (?, ?, ?, ?, 'active', ?)
-         ON CONFLICT(publication_id, issue_id) DO UPDATE SET
-           tenant_id  = excluded.tenant_id,
-           session_id = excluded.session_id,
-           status     = excluded.status,
-           created_at = excluded.created_at
-         WHERE linear_issue_sessions.status != 'active'
-         RETURNING session_id`,
-      )
-      .bind(input.tenantId, input.publicationId, input.issueId, input.sessionId, input.nowMs)
-      .first<{ session_id: string }>();
+    // INSERT … ON CONFLICT … DO UPDATE … WHERE status != 'active' RETURNING.
+    // The setWhere predicate ensures we don't overwrite an active claim;
+    // .returning() + getOne tells us whether the upsert produced a row.
+    const result = await getOne<{ session_id: string }>(
+      this.db
+        .insert(linear_issue_sessions)
+        .values({
+          tenant_id: input.tenantId,
+          publication_id: input.publicationId,
+          issue_id: input.issueId,
+          session_id: input.sessionId,
+          status: "active",
+          created_at: input.nowMs,
+        })
+        .onConflictDoUpdate({
+          target: [linear_issue_sessions.publication_id, linear_issue_sessions.issue_id],
+          set: {
+            tenant_id: input.tenantId,
+            session_id: input.sessionId,
+            status: "active",
+            created_at: input.nowMs,
+          },
+          setWhere: ne(linear_issue_sessions.status, "active"),
+        })
+        .returning({ session_id: linear_issue_sessions.session_id }),
+    );
     return result !== null;
   }
 
@@ -137,15 +172,23 @@ export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
     issueId: string;
     nowMs: number;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO linear_issue_sessions
-           (tenant_id, publication_id, issue_id, session_id, status, created_at)
-         VALUES (?, ?, ?, '', 'pending', ?)`,
-      )
-      .bind(args.tenantId, args.publicationId, args.issueId, args.nowMs)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // RETURNING tells us atomically whether the INSERT happened (row
+    // returned) or was ignored on conflict (no row).
+    const inserted = await getOne<{ publication_id: string }>(
+      this.db
+        .insert(linear_issue_sessions)
+        .values({
+          tenant_id: args.tenantId,
+          publication_id: args.publicationId,
+          issue_id: args.issueId,
+          session_id: "",
+          status: "pending",
+          created_at: args.nowMs,
+        })
+        .onConflictDoNothing()
+        .returning({ publication_id: linear_issue_sessions.publication_id }),
+    );
+    return inserted !== null;
   }
 
   /** Two-phase webhook claim — phase 2. UPDATE pending → active with real id. */
@@ -154,26 +197,37 @@ export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
     issueId: string,
     sessionId: SessionId,
   ): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE linear_issue_sessions
-           SET session_id = ?, status = 'active'
-         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
-      )
-      .bind(sessionId, publicationId, issueId)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // .returning() + getOne lets us tell whether any row matched the
+    // (publication_id, issue_id, status='pending') predicate.
+    const updated = await getOne<{ publication_id: string }>(
+      this.db
+        .update(linear_issue_sessions)
+        .set({ session_id: sessionId, status: "active" })
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.issue_id, issueId),
+            eq(linear_issue_sessions.status, "pending"),
+          ),
+        )
+        .returning({ publication_id: linear_issue_sessions.publication_id }),
+    );
+    return updated !== null;
   }
 
   /** Two-phase webhook claim — abort. DELETE pending row on rollback. */
   async releasePending(publicationId: string, issueId: string): Promise<void> {
-    await this.db
-      .prepare(
-        `DELETE FROM linear_issue_sessions
-         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
-      )
-      .bind(publicationId, issueId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(linear_issue_sessions)
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.issue_id, issueId),
+            eq(linear_issue_sessions.status, "pending"),
+          ),
+        ),
+    );
   }
 
   /** Stale-pending takeover: re-bind only when row is terminal or pending+stale. */
@@ -184,18 +238,26 @@ export class D1LinearIssueSessionRepo implements LinearIssueSessionRepo {
     now: number,
   ): Promise<boolean> {
     const staleCutoff = now - PENDING_STALE_AFTER_MS;
-    const result = await this.db
-      .prepare(
-        `UPDATE linear_issue_sessions
-           SET session_id = ?, status = 'active'
-         WHERE publication_id = ? AND issue_id = ?
-           AND (
-             status NOT IN ('active', 'pending')
-             OR (status = 'pending' AND created_at < ?)
-           )`,
-      )
-      .bind(newSessionId, publicationId, issueId, staleCutoff)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // .returning() + getOne tells us whether the predicate matched any row.
+    const updated = await getOne<{ publication_id: string }>(
+      this.db
+        .update(linear_issue_sessions)
+        .set({ session_id: newSessionId, status: "active" })
+        .where(
+          and(
+            eq(linear_issue_sessions.publication_id, publicationId),
+            eq(linear_issue_sessions.issue_id, issueId),
+            or(
+              notInArray(linear_issue_sessions.status, ["active", "pending"]),
+              and(
+                eq(linear_issue_sessions.status, "pending"),
+                lt(linear_issue_sessions.created_at, staleCutoff),
+              ),
+            ),
+          ),
+        )
+        .returning({ publication_id: linear_issue_sessions.publication_id }),
+    );
+    return updated !== null;
   }
 }

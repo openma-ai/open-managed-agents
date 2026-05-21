@@ -31,18 +31,18 @@ import { WebCryptoHmacVerifier } from "./hmac";
 import { WorkerHttpClient } from "./http";
 import { CryptoIdGenerator } from "./ids";
 import { WebCryptoJwtSigner } from "./jwt";
-import { D1AppRepo } from "./d1/app-repo";
-import { D1DispatchRuleRepo } from "./d1/dispatch-rule-repo";
+import { SqlLinearAppRepo } from "./d1/app-repo";
+import { SqlLinearDispatchRuleRepo } from "./d1/dispatch-rule-repo";
 import { SqlGitHubAppRepo } from "./d1/github-app-repo";
 import { SqlGitHubInstallationRepo } from "./d1/github/installation-repo";
 import { SqlGitHubIssueSessionRepo } from "./d1/github/issue-session-repo";
 import { SqlGitHubPublicationRepo } from "./d1/github/publication-repo";
 import { SqlGitHubWebhookEventStore } from "./d1/github/webhook-event-store";
-import { D1InstallationRepo } from "./d1/installation-repo";
-import { D1LinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
-import { D1LinearEventStore } from "./d1/linear-event-store";
-import { D1PublicationRepo } from "./d1/publication-repo";
-import { D1SetupLinkRepo } from "./d1/setup-link-repo";
+import { SqlLinearInstallationRepo } from "./d1/installation-repo";
+import { SqlLinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
+import { SqlLinearEventStore } from "./d1/linear-event-store";
+import { SqlLinearPublicationRepo } from "./d1/publication-repo";
+import { SqlLinearSetupLinkRepo } from "./d1/setup-link-repo";
 import { SqlSlackSessionScopeRepo } from "./d1/slack/session-scope-repo";
 import { D1TenantResolver } from "./d1/tenant-resolver";
 import { ServiceBindingSessionCreator } from "./service-binding-session-creator";
@@ -78,8 +78,7 @@ export interface CfContainerEnv extends CfReposEnv {
  * same PLATFORM_ROOT_SECRET root secret.
  */
 export function buildCfRepos(env: CfReposEnv) {
-  const idb = env.integrationsDb;
-  const drizzleIdb = drizzle(idb);
+  const drizzleIdb = drizzle(env.integrationsDb);
   const clock = new SystemClock();
   const ids = new CryptoIdGenerator();
   const cryptoImpl = new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "integrations.tokens");
@@ -93,18 +92,18 @@ export function buildCfRepos(env: CfReposEnv) {
   // Linear and GitHub each get their own installations/publications repos
   // (linear_* vs github_* tables). Slack lives in slack_* and is wired
   // separately via the slack-specific helpers in apps/integrations/wire.ts.
-  const linearInstallations = new D1InstallationRepo(idb, cryptoImpl, ids);
-  // D1PublicationRepo needs Crypto: the publication-first install flow
+  const linearInstallations = new SqlLinearInstallationRepo(drizzleIdb, cryptoImpl, ids);
+  // SqlLinearPublicationRepo needs Crypto: the publication-first install flow
   // stores OAuth client_secret + webhook_secret encrypted on the row.
-  const linearPublications = new D1PublicationRepo(idb, ids, cryptoImpl);
+  const linearPublications = new SqlLinearPublicationRepo(drizzleIdb, ids, cryptoImpl);
   const githubInstallations = new SqlGitHubInstallationRepo(drizzleIdb, cryptoImpl, ids);
   const githubPublications = new SqlGitHubPublicationRepo(drizzleIdb, ids, cryptoImpl);
-  const apps = new D1AppRepo(idb, cryptoImpl, ids);
+  const apps = new SqlLinearAppRepo(drizzleIdb, cryptoImpl, ids);
   const githubApps = new SqlGitHubAppRepo(drizzleIdb, cryptoImpl, ids);
   // Linear's webhook store is the merged `linear_events` table — narrower
   // type LinearEventStore extends WebhookEventStore with the queue methods.
   // GitHub gets its own (github_webhook_events), completing 0009's split.
-  const linearEvents = new D1LinearEventStore(idb);
+  const linearEvents = new SqlLinearEventStore(drizzleIdb);
   const githubWebhookEvents = new SqlGitHubWebhookEventStore(drizzleIdb);
   // Linear and GitHub each get their own per-issue session table — same
   // schema, different name. Until 0005_github_issue_sessions both providers
@@ -112,10 +111,10 @@ export function buildCfRepos(env: CfReposEnv) {
   // tied schema changes together. Strictly separate now: separate classes,
   // separate interfaces (LinearIssueSessionRepo / GitHubIssueSessionRepo),
   // separate tables.
-  const linearIssueSessions = new D1LinearIssueSessionRepo(idb);
+  const linearIssueSessions = new SqlLinearIssueSessionRepo(drizzleIdb);
   const githubIssueSessions = new SqlGitHubIssueSessionRepo(drizzleIdb);
-  const setupLinks = new D1SetupLinkRepo(idb, ids);
-  const dispatchRules = new D1DispatchRuleRepo(idb, ids);
+  const setupLinks = new SqlLinearSetupLinkRepo(drizzleIdb, ids);
+  const dispatchRules = new SqlLinearDispatchRuleRepo(drizzleIdb, ids);
   // Slack-specific repo also satisfies the Container's `sessionScopes` slot —
   // Linear/GitHub never call into it (they use issueSessions instead). Still
   // required by the Container interface. Drizzle-wrapped because the SQL

@@ -13,19 +13,19 @@ export { WorkerHttpClient } from "./http";
 export type { WorkerHttpClientOptions } from "./http";
 export { SystemClock } from "./clock";
 export { CryptoIdGenerator } from "./ids";
-export { D1InstallationRepo } from "./d1/installation-repo";
-export { D1PublicationRepo } from "./d1/publication-repo";
-export { D1AppRepo } from "./d1/app-repo";
+export { SqlLinearInstallationRepo } from "./d1/installation-repo";
+export { SqlLinearPublicationRepo } from "./d1/publication-repo";
+export { SqlLinearAppRepo } from "./d1/app-repo";
 export { SqlGitHubAppRepo } from "./d1/github-app-repo";
 // GitHub adapters — parallel to Linear's, separate github_* tables.
 export { SqlGitHubInstallationRepo } from "./d1/github/installation-repo";
 export { SqlGitHubPublicationRepo } from "./d1/github/publication-repo";
 export { SqlGitHubWebhookEventStore } from "./d1/github/webhook-event-store";
-export { D1LinearEventStore } from "./d1/linear-event-store";
-export { D1LinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
+export { SqlLinearEventStore } from "./d1/linear-event-store";
+export { SqlLinearIssueSessionRepo } from "./d1/linear/issue-session-repo";
 export { SqlGitHubIssueSessionRepo } from "./d1/github/issue-session-repo";
-export { D1SetupLinkRepo } from "./d1/setup-link-repo";
-export { D1DispatchRuleRepo } from "./d1/dispatch-rule-repo";
+export { SqlLinearSetupLinkRepo } from "./d1/setup-link-repo";
+export { SqlLinearDispatchRuleRepo } from "./d1/dispatch-rule-repo";
 export { D1TenantResolver } from "./d1/tenant-resolver";
 // Slack adapters — parallel to Linear's, separate slack_* tables.
 export { SqlSlackAppRepo } from "./d1/slack/app-repo";

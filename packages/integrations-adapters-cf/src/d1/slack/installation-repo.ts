@@ -20,7 +20,7 @@ import type {
 import type { SlackInstallationRepo } from "@open-managed-agents/slack";
 
 /**
- * SQL installation repo for Slack. Mirrors SqlInstallationRepo but uses
+ * SQL installation repo for Slack. Mirrors SqlLinearInstallationRepo but uses
  * `slack_installations` and adds two Slack-only fields: `user_token_cipher`
  * (xoxp- token for mcp.slack.com) and `bot_vault_id` (vault for direct
  * slack.com/api calls). Implements the SlackInstallationRepo extension.

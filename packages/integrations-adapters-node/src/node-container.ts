@@ -31,21 +31,21 @@ import { WebCryptoHmacVerifier } from "./hmac";
 import { WorkerHttpClient } from "./http";
 import { CryptoIdGenerator } from "./ids";
 import { WebCryptoJwtSigner } from "./jwt";
-import { SqlAppRepo } from "./sql/app-repo";
-import { SqlDispatchRuleRepo } from "./sql/dispatch-rule-repo";
 import {
   SqlGitHubAppRepo,
   SqlGitHubInstallationRepo,
   SqlGitHubIssueSessionRepo,
   SqlGitHubPublicationRepo,
   SqlGitHubWebhookEventStore,
+  SqlLinearAppRepo,
+  SqlLinearDispatchRuleRepo,
+  SqlLinearEventStore,
+  SqlLinearInstallationRepo,
+  SqlLinearIssueSessionRepo,
+  SqlLinearPublicationRepo,
+  SqlLinearSetupLinkRepo,
   SqlSlackSessionScopeRepo,
 } from "@open-managed-agents/integrations-adapters-cf";
-import { SqlInstallationRepo } from "./sql/installation-repo";
-import { SqlLinearIssueSessionRepo } from "./sql/linear/issue-session-repo";
-import { SqlLinearEventStore } from "./sql/linear-event-store";
-import { SqlPublicationRepo } from "./sql/publication-repo";
-import { SqlSetupLinkRepo } from "./sql/setup-link-repo";
 import { SqlMembershipTenantResolver } from "./sql/membership-tenant-resolver";
 
 export interface NodeReposEnv {
@@ -75,20 +75,20 @@ export function buildNodeRepos(env: NodeReposEnv) {
   const jwt = new WebCryptoJwtSigner(env.PLATFORM_ROOT_SECRET);
   const http = new WorkerHttpClient();
   const tenants = new SqlMembershipTenantResolver(sql);
-  const linearInstallations = new SqlInstallationRepo(sql, cryptoImpl, ids);
-  // SqlPublicationRepo needs Crypto: the publication-first install flow
+  const linearInstallations = new SqlLinearInstallationRepo(env.db, cryptoImpl, ids);
+  // SqlLinearPublicationRepo needs Crypto: the publication-first install flow
   // stores OAuth client_secret + webhook_secret encrypted on the row.
-  const linearPublications = new SqlPublicationRepo(sql, ids, cryptoImpl);
+  const linearPublications = new SqlLinearPublicationRepo(env.db, ids, cryptoImpl);
   const githubInstallations = new SqlGitHubInstallationRepo(env.db, cryptoImpl, ids);
   const githubPublications = new SqlGitHubPublicationRepo(env.db, ids, cryptoImpl);
-  const apps = new SqlAppRepo(sql, cryptoImpl, ids);
+  const apps = new SqlLinearAppRepo(env.db, cryptoImpl, ids);
   const githubApps = new SqlGitHubAppRepo(env.db, cryptoImpl, ids);
-  const linearEvents = new SqlLinearEventStore(sql);
+  const linearEvents = new SqlLinearEventStore(env.db);
   const githubWebhookEvents = new SqlGitHubWebhookEventStore(env.db);
-  const linearIssueSessions = new SqlLinearIssueSessionRepo(sql);
+  const linearIssueSessions = new SqlLinearIssueSessionRepo(env.db);
   const githubIssueSessions = new SqlGitHubIssueSessionRepo(env.db);
-  const setupLinks = new SqlSetupLinkRepo(sql, ids);
-  const dispatchRules = new SqlDispatchRuleRepo(sql, ids);
+  const setupLinks = new SqlLinearSetupLinkRepo(env.db, ids);
+  const dispatchRules = new SqlLinearDispatchRuleRepo(env.db, ids);
   const sessionScopes = new SqlSlackSessionScopeRepo(env.db);
 
   return {

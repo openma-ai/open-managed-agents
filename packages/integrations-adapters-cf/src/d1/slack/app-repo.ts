@@ -16,7 +16,7 @@ import type {
 } from "@open-managed-agents/integrations-core";
 
 /**
- * SQL app repo for Slack. Mirrors SqlAppRepo but uses `slack_apps` and stores
+ * SQL app repo for Slack. Mirrors SqlLinearAppRepo but uses `slack_apps` and stores
  * the per-App signing secret (not a per-webhook secret — Slack's signing
  * secret is one value per App used for ALL events). The base AppRepo
  * interface calls this slot `webhookSecret`/`getWebhookSecret`; semantically
