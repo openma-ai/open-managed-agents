@@ -19,8 +19,14 @@
 const SITE_URL = "https://openma.dev";
 const REPO_URL = "https://github.com/open-ma/open-managed-agents";
 const ORG_NAME = "Open Managed Agents";
-const ORG_LOGO = `${SITE_URL}/logo.svg`;
-const TWITTER_HANDLE = "openma_dev"; // placeholder; update if/when registered
+// Google's Organization.logo policy rejects SVG — Schema.org logo must
+// be a raster format (PNG/JPG/GIF), at least 112×112, ideally larger so
+// the SERP renderer can downscale cleanly. We use the 512×512 favicon
+// PNG that already ships in apps/web/public/ rather than a duplicate
+// brand file. SVG was the cause of Google rendering the auto-generated
+// "om" placeholder logo on SERPs instead of our actual mark.
+//   https://developers.google.com/search/docs/appearance/structured-data/logo
+const ORG_LOGO = `${SITE_URL}/favicon-512.png`;
 
 /** Word count → reading minutes. ~225 wpm matches Medium's heuristic. */
 export function readingTimeMinutes(markdown: string): number {
@@ -35,10 +41,11 @@ export function organizationSchema() {
     name: ORG_NAME,
     url: SITE_URL,
     logo: ORG_LOGO,
-    sameAs: [
-      REPO_URL,
-      `https://twitter.com/${TWITTER_HANDLE}`,
-    ],
+    // sameAs only includes verified handles. Adding a Twitter URL that
+    // 404s ("not yet registered" placeholder) drops Google's confidence
+    // in the entity — the @openma_dev handle was never registered. When
+    // we register it (or any other social account), append the URL here.
+    sameAs: [REPO_URL],
     description:
       "Open Managed Agents — open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0.",
   };
