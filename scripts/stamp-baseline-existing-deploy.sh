@@ -74,17 +74,17 @@ stamp() {
     }
 }
 
-# AUTH_DB shards (apps/main/wrangler.jsonc env.<env>.d1_databases)
+# MAIN_DB / AUTH_DB shards (apps/main/migrations/, drizzle-emitted baseline)
 echo
-echo "MAIN_DB / AUTH_DB shards (consolidated: 0001_consolidated.sql):"
+echo "MAIN_DB / AUTH_DB shards (consolidated: 0000_consolidated.sql):"
 while IFS=$'\t' read -r binding db_name; do
   case "$binding" in
-    MAIN_DB|AUTH_DB|AUTH_DB_*)  stamp "$db_name" "0001_consolidated.sql" ;;
+    MAIN_DB|AUTH_DB|AUTH_DB_*)  stamp "$db_name" "0000_consolidated.sql" ;;
     ROUTER_DB)
       stamp "$db_name" "0001_consolidated.sql"
       ;;
     INTEGRATIONS_DB)
-      # Same filename, different content — handled below from
+      # Same logical baseline, different content — handled below from
       # apps/integrations/wrangler.jsonc
       ;;
   esac
@@ -101,6 +101,7 @@ done < <(read_db_names apps/integrations/wrangler.jsonc "$ENV")
 echo
 echo "=== Done. ==="
 echo "Verify on a sample DB:"
-echo "  npx wrangler d1 migrations list <db-name> --remote"
-echo "If 0001_consolidated.sql appears alongside the historical 0001-0017 rows,"
-echo "next deploy will skip all of them."
+echo "  npx wrangler d1 migrations list <db-name> --remote --env $ENV"
+echo "The consolidated baseline (0000_consolidated.sql for main shards,"
+echo "0001_consolidated.sql for router + integrations) should appear alongside"
+echo "the historical 0001-0017 rows; next deploy will skip all of them."
