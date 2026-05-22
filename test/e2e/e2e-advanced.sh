@@ -207,7 +207,7 @@ echo "========================================"
 echo "USE CASE 9: Files API"
 echo "========================================"
 
-FILE=$(api /v1/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv"}')
+FILE=$(api /v1/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv","downloadable":true}')
 FID=$(echo "$FILE" | jq -r .id)
 check "file uploaded" "file-" "$FID"
 

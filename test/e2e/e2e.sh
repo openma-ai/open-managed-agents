@@ -87,8 +87,8 @@ echo ""
 echo "=== Open SSE Stream (background) ==="
 SSE_FILE=$(mktemp)
 # Start SSE listener in background, collect events for up to 120s
-curl -sS -N "$BASE_URL/v1/sessions/$SESSION_ID/events" \
-  -H "x-api-key: $API_KEY" \
+curl -sS -N "$BASE_URL/v1/sessions/$SESSION_ID/events/stream" \
+  -H "x-api-key: $API_KEY" -H "Accept: text/event-stream" \
   --max-time 120 > "$SSE_FILE" 2>/dev/null &
 SSE_PID=$!
 sleep 1
