@@ -124,7 +124,13 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar collapsible="icon">
+    // shadcn's default left-side Sidebar adds `border-r` to its outer
+    // fixed-position container (sidebar.tsx:236), which renders a
+    // top-to-bottom divider between the sidebar and the AppShell top
+    // toolbar — breaks the "single continuous stage" look. Negate with
+    // `border-r-0`; the rounded panel below the toolbar carries its
+    // own `border-l` so the main canvas still has a clean edge.
+    <Sidebar collapsible="icon" className="border-r-0">
       {/* Brand row — h-11 to match the AppShell top toolbar on the
           right; logo locked to 24×24 so its centre is at exactly 24px
           from the sidebar's left edge. */}
