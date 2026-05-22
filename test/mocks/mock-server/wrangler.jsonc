@@ -1,0 +1,15 @@
+{
+  "name": "oma-mock-services",
+  "main": "index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      { "name": "MOCK_STATE", "class_name": "MockStateDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MockStateDO"] }
+  ]
+}

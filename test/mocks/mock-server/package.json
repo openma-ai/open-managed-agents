@@ -1,0 +1,12 @@
+{
+  "name": "oma-mock-services",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "wrangler": "*"
+  }
+}
