@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
-import { ListPage } from "../components/ListPage";
+import { DataTable, type ColumnDef } from "../components/DataTable";
 import { Button } from "@/components/ui/button";
 import type { ModelCard } from "@open-managed-agents/api-types";
 import type { AgentRecord as Agent } from "../types/agent";
@@ -99,6 +99,73 @@ export function AgentsList() {
 
   const modelStr = (m: Agent["model"]) => (typeof m === "string" ? m : m?.id || "");
 
+  // TanStack column defs. Sorting / per-column filtering operate on
+  // loaded rows; server-side filters still flow through the toolbar
+  // search box + `agentsParams`. Required columns (id, name) opt out
+  // of hiding so the "Columns" dropdown can't accidentally leave the
+  // table with nothing identifying. Status / Created are date-y /
+  // enum-y enough that text-filter is mostly noise — disable their
+  // column filter; sorting is still meaningful so leave that on.
+  const columns = useMemo<ColumnDef<Agent>[]>(
+    () => [
+      {
+        id: "id",
+        accessorKey: "id",
+        header: "ID",
+        cell: ({ row }) => (
+          <span title={row.original.id} className="font-mono text-xs text-fg-muted">
+            {row.original.id}
+          </span>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "name",
+        accessorKey: "name",
+        header: "Name",
+        cell: ({ row }) => <span className="font-medium text-fg">{row.original.name}</span>,
+        enableHiding: false,
+      },
+      {
+        id: "model",
+        accessorFn: (a) => modelStr(a.model),
+        header: "Model",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">{modelStr(row.original.model)}</span>
+        ),
+      },
+      {
+        id: "status",
+        accessorFn: (a) => (a.archived_at ? "archived" : "active"),
+        header: "Status",
+        cell: ({ row }) => (
+          <span
+            className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
+              row.original.archived_at
+                ? "bg-bg-surface text-fg-subtle"
+                : "bg-success-subtle text-success"
+            }`}
+          >
+            {row.original.archived_at ? "archived" : "active"}
+          </span>
+        ),
+        enableColumnFilter: false,
+      },
+      {
+        id: "created",
+        accessorFn: (a) => a.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">
+            {new Date(row.original.created_at).toLocaleDateString()}
+          </span>
+        ),
+        enableColumnFilter: false,
+      },
+    ],
+    [],
+  );
+
   const displayed = agents.filter((a) => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -106,7 +173,7 @@ export function AgentsList() {
   });
 
   return (
-    <ListPage<Agent>
+    <DataTable<Agent>
       title="Agents"
       subtitle="Create and manage autonomous agents."
       createLabel="+ New agent"
@@ -114,11 +181,20 @@ export function AgentsList() {
       searchPlaceholder="Go to agent ID..."
       searchValue={search}
       onSearchChange={setSearch}
-      showArchived={showArchived}
-      onShowArchivedChange={setShowArchived}
+      filters={
+        <label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer select-none shrink-0">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+            className="accent-brand"
+          />
+          Show archived
+        </label>
+      }
       data={displayed}
       loading={loading}
-      getRowKey={(a) => a.id}
+      getRowId={(a) => a.id}
       onRowClick={(a) => nav(`/agents/${a.id}`)}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
@@ -143,42 +219,7 @@ export function AgentsList() {
           </>
         )
       }
-      columns={[
-        {
-          key: "id",
-          label: "ID",
-          className: "font-mono text-xs text-fg-muted truncate max-w-[180px]",
-          render: (a) => <span title={a.id}>{a.id}</span>,
-        },
-        { key: "name", label: "Name", className: "font-medium text-fg" },
-        {
-          key: "model",
-          label: "Model",
-          className: "text-fg-muted",
-          render: (a) => modelStr(a.model),
-        },
-        {
-          key: "status",
-          label: "Status",
-          render: (a) => (
-            <span
-              className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
-                a.archived_at
-                  ? "bg-bg-surface text-fg-subtle"
-                  : "bg-success-subtle text-success"
-              }`}
-            >
-              {a.archived_at ? "archived" : "active"}
-            </span>
-          ),
-        },
-        {
-          key: "created",
-          label: "Created",
-          className: "text-fg-muted",
-          render: (a) => new Date(a.created_at).toLocaleDateString(),
-        },
-      ]}
+      columns={columns}
     >
       <AgentFormDialog
         open={showCreate}
@@ -189,6 +230,6 @@ export function AgentsList() {
         modelCards={modelCards}
         runtimes={runtimes}
       />
-    </ListPage>
+    </DataTable>
   );
 }
