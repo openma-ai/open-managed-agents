@@ -5,7 +5,7 @@
 set -uo pipefail
 
 BASE="${1:-http://localhost:8787}"
-KEY="dev-test-key-change-me"
+KEY="${2:-dev-test-key-change-me}"
 PASS=0; FAIL=0
 
 check() {
@@ -21,7 +21,7 @@ api() { curl -sS "$BASE$1" -H "x-api-key: $KEY" -H "content-type: application/js
 
 create_agent() {
   local name="$1" system="$2"
-  api /v1/agents -X POST -d "{\"name\":\"$name\",\"model\":\"claude-sonnet-4-6\",\"system\":\"$system\",\"tools\":[{\"type\":\"agent_toolset_20260401\"}]}" | jq -r .id
+  api /v1/agents -X POST -d "{\"name\":\"$name\",\"model\":\"openai/gpt-5.4\",\"system\":\"$system\",\"tools\":[{\"type\":\"agent_toolset_20260401\"}]}" | jq -r .id
 }
 
 create_env() {
@@ -174,11 +174,11 @@ echo "========================================"
 
 VAULT=$(api /v1/vaults -X POST -d '{"name":"E2E Vault"}')
 VID=$(echo "$VAULT" | jq -r .id)
-check "vault created" "vlt_" "$VID"
+check "vault created" "vlt-" "$VID"
 
 CRED=$(api "/v1/vaults/$VID/credentials" -X POST -d '{"display_name":"Token","auth":{"type":"static_bearer","mcp_server_url":"https://mcp.e2e.com","token":"secret"}}')
 CID=$(echo "$CRED" | jq -r .id)
-check "credential created" "cred_" "$CID"
+check "credential created" "cred-" "$CID"
 check "secret stripped" "null" "$(echo "$CRED" | jq -r '.auth.token // "null"')"
 
 # ============================================================
@@ -189,7 +189,7 @@ echo "========================================"
 
 STORE=$(api /v1/memory_stores -X POST -d '{"name":"E2E Memory","description":"Test store"}')
 MSID=$(echo "$STORE" | jq -r .id)
-check "store created" "memstore_" "$MSID"
+check "store created" "memstore-" "$MSID"
 
 api "/v1/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/one.md","content":"First note"}' > /dev/null
 api "/v1/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/two.md","content":"Second note"}' > /dev/null
@@ -207,9 +207,9 @@ echo "========================================"
 echo "USE CASE 9: Files API"
 echo "========================================"
 
-FILE=$(api /v1/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv"}')
+FILE=$(api /v1/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv","downloadable":true}')
 FID=$(echo "$FILE" | jq -r .id)
-check "file uploaded" "file_" "$FID"
+check "file uploaded" "file-" "$FID"
 
 CONTENT=$(api "/v1/files/$FID/content")
 check "downloadable" "a,b" "$CONTENT"
@@ -221,7 +221,7 @@ echo "USE CASE 10: Rate limiting"
 echo "========================================"
 
 for i in $(seq 1 5); do
-  S=$(api /v1/agents -X POST -d "{\"name\":\"Rate$i\",\"model\":\"claude-sonnet-4-6\"}" -o /dev/null -w "%{http_code}")
+  S=$(api /v1/agents -X POST -d "{\"name\":\"Rate$i\",\"model\":\"openai/gpt-5.4\"}" -o /dev/null -w "%{http_code}")
   [ "$S" = "429" ] && echo "  ! Rate limited at $i" && break
 done
 check "5 requests OK" "true" "true"

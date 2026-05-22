@@ -135,13 +135,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       <meta property="article:modified_time" content={updatedAt.toISOString()} />
     )}
 
-    <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@openma_dev" />
-    <meta name="twitter:creator" content="@openma_dev" />
-    <meta name="twitter:title" content={fullTitle} />
-    <meta name="twitter:description" content={desc} />
-    <meta name="twitter:image" content={finalOgImage} />
+    <!-- Open Graph / Twitter cards: only og:* is needed. Twitter's
+         renderer falls back to og:title / og:description / og:image
+         when twitter:* is absent, so we don't need to repeat ourselves
+         and we don't claim a Twitter presence we don't have. -->
 
     <!-- RSS -->
     <link rel="alternate" type="application/rss+xml" title="Open Managed Agents — Blog" href="/blog/rss.xml" />

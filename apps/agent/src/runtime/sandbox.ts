@@ -438,7 +438,7 @@ export class CloudflareSandbox implements SandboxExecutor {
   /**
    * Hand the (tenant, env, session) tuple to the OmaSandbox container DO so
    * its `onActivityExpired` hook (fires right before sleepAfter teardown)
-   * can write the final /workspace snapshot into AUTH_DB scoped to this
+   * can write the final /workspace snapshot into MAIN_DB scoped to this
    * session. Best-effort — failure here just means the next session in
    * this scope falls back to the previous backup or empty workspace.
    */

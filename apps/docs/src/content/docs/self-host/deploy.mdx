@@ -1,167 +1,130 @@
 ---
 title: Deploy
-description: Clone the repo, configure your Cloudflare bindings and secrets, run scripts/deploy.sh.
+description: One command takes you from clone to a working CF deployment in ~5 minutes.
 ---
 
 import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
 
-End-to-end deploy of openma to your own Cloudflare account. Plan on 30–60 minutes the first time, mostly waiting for OAuth app approvals.
+`scripts/setup-cf.sh` is an interactive wizard that provisions every Cloudflare resource, patches the wrangler files, sets secrets, applies migrations, and deploys the three workers. Plan on ~5 minutes hands-on, plus a few minutes of network-bound waits.
 
 ## Prerequisites
 
 - Node 22+, `pnpm` 10+
-- A Cloudflare account on the **Workers Paid** plan
+- A Cloudflare account on the **Workers Paid** plan ($5/mo — required for Durable Objects + R2)
 - `wrangler` logged in (`npx wrangler login`)
-- A domain on your Cloudflare account
-- API keys for at least one LLM provider (Anthropic, OpenAI, or MiniMax)
+- An Anthropic API key (or OpenAI / compatible provider via a model card later)
 
-## Steps
+You do **not** need a custom domain to start — workers default to `*.workers.dev` URLs.
+
+## Three commands
 
 <Steps>
 
-1. **Clone and install.**
+1. **Clone, install, login.**
 
    ```bash
    git clone https://github.com/open-ma/open-managed-agents.git
    cd open-managed-agents
    pnpm install
+   npx wrangler login
    ```
 
-2. **Create the Cloudflare resources.**
-
-   Run these once, save the IDs they print, you'll paste them into wrangler files.
+2. **Run the setup wizard.**
 
    ```bash
-   # D1 database (shared by main + integrations)
-   npx wrangler d1 create openma-auth
-
-   # KV namespace
-   npx wrangler kv namespace create CONFIG_KV
-
-   # R2 buckets
-   npx wrangler r2 bucket create managed-agents-files
-   npx wrangler r2 bucket create managed-agents-workspace
-
-   # Vectorize index for semantic memory
-   npx wrangler vectorize create openma-memory \
-     --dimensions=1024 --metric=cosine
+   ./scripts/setup-cf.sh
    ```
 
-3. **Edit the wrangler files.**
+   The wizard:
 
-   Open `apps/main/wrangler.jsonc` and replace the placeholder IDs:
+   1. Creates 2 D1 databases (`openma-auth`, `openma-integrations`)
+   2. Creates 1 KV namespace (`CONFIG_KV`)
+   3. Creates 4 R2 buckets (`managed-agents-files`, `-workspace`, `-memory`, `-backups`)
+   4. Splices the captured IDs into `apps/{main,agent,integrations}/wrangler.jsonc` (preserving comments)
+   5. Sets secrets — auto-generates `BETTER_AUTH_SECRET`, `API_KEY`, `INTEGRATIONS_INTERNAL_SECRET`, `PLATFORM_ROOT_SECRET`; prompts for `ANTHROPIC_API_KEY`
+   6. Applies migrations (one consolidated file per D1)
+   7. Deploys main + agent + integrations
+   8. Wires the R2 → memory-events queue notification
 
-   ```jsonc
-   {
-     "d1_databases": [
-       { "binding": "AUTH_DB", "database_name": "openma-auth", "database_id": "<paste yours>" }
-     ],
-     "kv_namespaces": [
-       { "binding": "CONFIG_KV", "id": "<paste yours>" }
-     ],
-     "vectorize": [
-       { "binding": "VECTORIZE", "index_name": "openma-memory" }
-     ],
-     "routes": [
-       { "pattern": "app.yourdomain.com", "custom_domain": true }
-     ]
-   }
-   ```
+   It's idempotent: rerunning detects existing resources via `wrangler d1/kv list` and reuses their IDs. Secrets are skipped if already set unless you pass `--reset-secrets`.
 
-   Repeat for `apps/agent/wrangler.jsonc` (same D1, KV, R2 ids; agent-specific DOs are auto-created on first deploy) and `apps/integrations/wrangler.jsonc` (same D1).
+3. **Open the Console.**
 
-4. **Set secrets.**
-
-   ```bash
-   # Required
-   npx wrangler secret put ANTHROPIC_API_KEY        # or OPENAI/MINIMAX
-   npx wrangler secret put BETTER_AUTH_SECRET       # any random 32+ char string
-   npx wrangler secret put API_KEY                  # initial dev API key
-   npx wrangler secret put INTEGRATIONS_INTERNAL_SECRET   # shared between main + integrations
-   npx wrangler secret put PLATFORM_ROOT_SECRET    # at-rest encryption + outbound MCP token signing
-
-   # Per worker — repeat for apps/main, apps/agent, apps/integrations as needed
-   npx wrangler secret put ANTHROPIC_API_KEY -c apps/agent/wrangler.jsonc
-   ```
-
-   Generate random secrets with:
-   ```bash
-   openssl rand -hex 32
-   ```
-
-   See the full env table in [Reference → Configuration](/reference/configuration/#environment-variables).
-
-5. **Register OAuth apps (only the integrations you want).**
-
-   See [OAuth Apps](/self-host/oauth-apps/) — separate page because each provider's dashboard is a maze of its own.
-
-   For each, capture the client_id / client_secret / signing_secret and store them as secrets:
-   ```bash
-   npx wrangler secret put LINEAR_CLIENT_ID
-   npx wrangler secret put LINEAR_CLIENT_SECRET
-   # ... and so on for GITHUB_*, SLACK_*
-   ```
-
-6. **Apply database migrations.**
-
-   ```bash
-   npx wrangler d1 migrations apply openma-auth --remote
-   ```
-
-   The canonical schema lives at `apps/main/migrations/0001_schema.sql`.
-
-7. **Deploy.**
-
-   ```bash
-   pnpm deploy
-   ```
-
-   This runs `scripts/deploy.sh`, which:
-   1. Reads service bindings from KV.
-   2. Generates `wrangler.deploy.jsonc` with the right `services` array.
-   3. Uploads the main worker version.
-   4. Uploads sandbox worker versions in parallel.
-   5. Runs a smoke test placeholder.
-   6. Activates sandbox versions.
-   7. Activates the main worker version.
-
-   Custom domains auto-create DNS records on first deploy (cert provisioning takes ~1 min).
-
-8. **Smoke test.**
-
-   ```bash
-   curl https://app.yourdomain.com/healthz
-   # → {"ok": true}
-
-   # Sign in via the Console
-   open https://app.yourdomain.com
-   ```
-
-   On first sign-up your tenant is auto-created.
+   The main worker prints its `*.workers.dev` URL on deploy. Sign up — your first user becomes the owner of a fresh tenant. Everything works against the *.workers.dev URLs out of the box.
 
 </Steps>
 
-## Optional: deploy the docs site
+## Optional follow-ups
 
-```bash
-pnpm deploy:docs
+### Custom domain
+
+If you have a domain on this Cloudflare account, set up routes in each `apps/*/wrangler.jsonc`:
+
+```jsonc
+"routes": [
+  { "pattern": "app.yourdomain.com", "custom_domain": true }
+]
 ```
 
-Build is ~5 sec, upload is ~10 sec. Routes to `docs.yourdomain.com` (or whatever you set in `apps/docs/wrangler.jsonc`).
-
-## Optional: staging environment
-
-Every wrangler file has a `[env.staging]` block. Deploy to staging with:
+Then redeploy:
 
 ```bash
-pnpm deploy --env staging   # main + agent + integrations
-pnpm --filter open-managed-agents-docs deploy:staging   # docs
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
 ```
 
-Staging uses separate D1 / R2 / DO ids and routes to `*.staging.yourdomain.com`.
+DNS records auto-create on first deploy with a custom domain (cert provisioning ~1 min).
 
-<Aside type="caution" title="Don't share D1 between staging and prod">
-  Migrations are destructive. Always create a separate `openma-auth-staging` D1 database for staging.
+### Slack / GitHub / Linear OAuth
+
+Skip if you only want bare agent functionality. To enable them:
+
+```bash
+# Per provider — see the dashboard maze in oauth-apps.mdx
+npx wrangler secret put LINEAR_CLIENT_ID --config apps/integrations/wrangler.jsonc
+npx wrangler secret put LINEAR_CLIENT_SECRET --config apps/integrations/wrangler.jsonc
+# ... and so on for GITHUB_*, SLACK_*
+```
+
+Then redeploy `apps/integrations/`.
+
+See [OAuth Apps](/self-host/oauth-apps/) for the per-provider walkthrough.
+
+### Staging environment
+
+The wrangler files include `env.staging` overlays preconfigured against openma.dev's staging DB IDs. To use these for **your** staging deployment, you'd need to create a parallel set of staging DBs and patch those IDs in. Most self-hosters don't need this — `--env staging` is primarily for openma.dev itself.
+
+```bash
+npx wrangler deploy --config apps/main/wrangler.jsonc --env staging
+```
+
+### Multi-shard scaling
+
+The default deployment is single-D1: every tenant lives in one `openma-auth` D1. Code auto-detects this via the absence of `AUTH_DB_01` binding and skips the shard router entirely. If you need horizontal scaling later (10K+ tenants), the multi-shard mode lives in `env.production` overlay — see [Operations → Multi-shard](/self-host/operations/#multi-shard).
+
+## Redeploy after code changes
+
+```bash
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
+```
+
+You can run any subset — e.g. iterate on agent code with just `apps/agent` redeploys.
+
+## Troubleshooting
+
+<Aside type="tip" title="Idempotent setup">
+  `scripts/setup-cf.sh` is safe to rerun. If it failed partway, run it again — it picks up where it left off.
+</Aside>
+
+<Aside type="caution" title="`<set-by-setup-cf-sh>` placeholders">
+  The wrangler files ship with `<set-by-setup-cf-sh>` placeholders. The setup wizard fills them in. If you skip the wizard and try to `wrangler deploy` directly, deploys will fail until you replace the placeholders manually.
+</Aside>
+
+<Aside type="caution" title="Workers Paid plan required">
+  Free-tier accounts can't bind Durable Objects or R2 buckets. The setup wizard fails fast with a clear error in this case.
 </Aside>
 
 ## Where to go next
@@ -174,7 +137,7 @@ Staging uses separate D1 / R2 / DO ids and routes to `*.staging.yourdomain.com`.
 <LinkCard
   title="Operations"
   href="/self-host/operations/"
-  description="Custom domains, observability, multi-tenant config, troubleshooting."
+  description="Custom domains, observability, multi-shard scaling, troubleshooting."
 />
 <LinkCard
   title="Configuration reference"

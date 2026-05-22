@@ -1,3 +1,13 @@
+import { and, desc, eq, inArray } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { slack_publications } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   CapabilityKey,
   CapabilitySet,
@@ -15,108 +25,97 @@ import type {
   SlackPublicationCredentialState,
 } from "@open-managed-agents/slack";
 
-interface Row {
-  id: string;
-  tenant_id: string;
-  user_id: string;
-  agent_id: string;
-  installation_id: string;
-  environment_id: string | null;
-  mode: string;
-  status: string;
-  persona_name: string;
-  persona_avatar_url: string | null;
-  capabilities: string;
-  session_granularity: string;
-  created_at: number;
-  unpublished_at: number | null;
-  // Publication-first credential staging columns (migration 0002).
-  client_id: string | null;
-  client_secret_cipher: string | null;
-  signing_secret_cipher: string | null;
-  slack_app_id: string | null;
-}
-
-export class D1SlackPublicationRepo implements SlackPublicationRepo {
+export class SqlSlackPublicationRepo implements SlackPublicationRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly ids: IdGenerator,
     private readonly crypto: Crypto,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(id: string): Promise<Publication | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM slack_publications WHERE id = ?`)
-      .bind(id)
-      .first<Row>();
+    const row = await getOne<typeof slack_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_publications)
+        .where(eq(slack_publications.id, id)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async listByInstallation(installationId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM slack_publications WHERE installation_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(installationId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof slack_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_publications)
+        .where(eq(slack_publications.installation_id, installationId))
+        .orderBy(desc(slack_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listByUserAndAgent(
     userId: string,
     agentId: string,
   ): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM slack_publications WHERE user_id = ? AND agent_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId, agentId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof slack_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_publications)
+        .where(
+          and(
+            eq(slack_publications.user_id, userId),
+            eq(slack_publications.agent_id, agentId),
+          ),
+        )
+        .orderBy(desc(slack_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listPendingByUser(userId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM slack_publications
-         WHERE user_id = ?
-           AND status IN ('pending_setup', 'credentials_filled', 'awaiting_install')
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof slack_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_publications)
+        .where(
+          and(
+            eq(slack_publications.user_id, userId),
+            inArray(slack_publications.status, [
+              "pending_setup",
+              "credentials_filled",
+              "awaiting_install",
+            ]),
+          ),
+        )
+        .orderBy(desc(slack_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async insert(row: NewPublication): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();
-    await this.db
-      .prepare(
-        `INSERT INTO slack_publications (
-           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
-           persona_name, persona_avatar_url, capabilities,
-           session_granularity, created_at, unpublished_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(slack_publications).values({
         id,
-        row.tenantId,
-        row.userId,
-        row.agentId,
-        row.installationId,
-        row.environmentId,
-        row.mode,
-        row.status,
-        row.persona.name,
-        row.persona.avatarUrl,
-        JSON.stringify([...row.capabilities]),
-        row.sessionGranularity,
-        now,
-      )
-      .run();
+        tenant_id: row.tenantId,
+        user_id: row.userId,
+        agent_id: row.agentId,
+        installation_id: row.installationId,
+        environment_id: row.environmentId,
+        mode: row.mode,
+        status: row.status,
+        persona_name: row.persona.name,
+        persona_avatar_url: row.persona.avatarUrl,
+        capabilities: JSON.stringify([...row.capabilities]),
+        session_granularity: row.sessionGranularity,
+        created_at: now,
+        unpublished_at: null,
+      }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -149,8 +148,8 @@ export class D1SlackPublicationRepo implements SlackPublicationRepo {
       tenantId: input.tenantId,
       userId: input.userId,
       agentId: input.agentId,
-      // installation_id is NOT NULL on D1; "" sentinel until OAuth completes
-      // and bindInstallation flips it to a real id.
+      // installation_id is NOT NULL on the table; "" sentinel until OAuth
+      // completes and bindInstallation flips it to a real id.
       installationId: "",
       environmentId: input.environmentId,
       mode: "full",
@@ -165,30 +164,36 @@ export class D1SlackPublicationRepo implements SlackPublicationRepo {
     publicationId: string,
     input: { clientId: string; clientSecretCipher: string; signingSecretCipher: string },
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE slack_publications
-         SET client_id = ?, client_secret_cipher = ?, signing_secret_cipher = ?
-         WHERE id = ?`,
-      )
-      .bind(input.clientId, input.clientSecretCipher, input.signingSecretCipher, publicationId)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({
+          client_id: input.clientId,
+          client_secret_cipher: input.clientSecretCipher,
+          signing_secret_cipher: input.signingSecretCipher,
+        })
+        .where(eq(slack_publications.id, publicationId)),
+    );
   }
 
   async getClientSecret(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT client_secret_cipher FROM slack_publications WHERE id = ?`)
-      .bind(publicationId)
-      .first<{ client_secret_cipher: string | null }>();
+    const row = await getOne<{ client_secret_cipher: string | null }>(
+      this.db
+        .select({ client_secret_cipher: slack_publications.client_secret_cipher })
+        .from(slack_publications)
+        .where(eq(slack_publications.id, publicationId)),
+    );
     if (!row?.client_secret_cipher) return null;
     return this.crypto.decrypt(row.client_secret_cipher);
   }
 
   async getSigningSecret(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT signing_secret_cipher FROM slack_publications WHERE id = ?`)
-      .bind(publicationId)
-      .first<{ signing_secret_cipher: string | null }>();
+    const row = await getOne<{ signing_secret_cipher: string | null }>(
+      this.db
+        .select({ signing_secret_cipher: slack_publications.signing_secret_cipher })
+        .from(slack_publications)
+        .where(eq(slack_publications.id, publicationId)),
+    );
     if (!row?.signing_secret_cipher) return null;
     return this.crypto.decrypt(row.signing_secret_cipher);
   }
@@ -196,18 +201,22 @@ export class D1SlackPublicationRepo implements SlackPublicationRepo {
   async getCredentialState(
     publicationId: string,
   ): Promise<SlackPublicationCredentialState | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT client_id, client_secret_cipher, signing_secret_cipher, slack_app_id
-         FROM slack_publications WHERE id = ?`,
-      )
-      .bind(publicationId)
-      .first<{
-        client_id: string | null;
-        client_secret_cipher: string | null;
-        signing_secret_cipher: string | null;
-        slack_app_id: string | null;
-      }>();
+    const row = await getOne<{
+      client_id: string | null;
+      client_secret_cipher: string | null;
+      signing_secret_cipher: string | null;
+      slack_app_id: string | null;
+    }>(
+      this.db
+        .select({
+          client_id: slack_publications.client_id,
+          client_secret_cipher: slack_publications.client_secret_cipher,
+          signing_secret_cipher: slack_publications.signing_secret_cipher,
+          slack_app_id: slack_publications.slack_app_id,
+        })
+        .from(slack_publications)
+        .where(eq(slack_publications.id, publicationId)),
+    );
     if (!row) return null;
     return {
       clientId: row.client_id,
@@ -222,59 +231,69 @@ export class D1SlackPublicationRepo implements SlackPublicationRepo {
     installationId: string;
     slackAppId: string;
   }): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE slack_publications
-         SET installation_id = ?, slack_app_id = ?, status = 'live'
-         WHERE id = ?`,
-      )
-      .bind(input.installationId, input.slackAppId, input.publicationId)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({
+          installation_id: input.installationId,
+          slack_app_id: input.slackAppId,
+          status: "live",
+        })
+        .where(eq(slack_publications.id, input.publicationId)),
+    );
   }
 
   async findBySlackAppId(slackAppId: string): Promise<Publication | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM slack_publications WHERE slack_app_id = ? LIMIT 1`)
-      .bind(slackAppId)
-      .first<Row>();
+    const row = await getOne<typeof slack_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_publications)
+        .where(eq(slack_publications.slack_app_id, slackAppId))
+        .limit(1),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_publications SET status = ? WHERE id = ?`)
-      .bind(status, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({ status })
+        .where(eq(slack_publications.id, id)),
+    );
   }
 
   async updateCapabilities(id: string, capabilities: CapabilitySet): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_publications SET capabilities = ? WHERE id = ?`)
-      .bind(JSON.stringify([...capabilities]), id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({ capabilities: JSON.stringify([...capabilities]) })
+        .where(eq(slack_publications.id, id)),
+    );
   }
 
   async updatePersona(id: string, persona: Persona): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE slack_publications
-         SET persona_name = ?, persona_avatar_url = ? WHERE id = ?`,
-      )
-      .bind(persona.name, persona.avatarUrl, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({
+          persona_name: persona.name,
+          persona_avatar_url: persona.avatarUrl,
+        })
+        .where(eq(slack_publications.id, id)),
+    );
   }
 
   async markUnpublished(id: string, at: number): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE slack_publications
-         SET status = 'unpublished', unpublished_at = ? WHERE id = ?`,
-      )
-      .bind(at, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_publications)
+        .set({ status: "unpublished", unpublished_at: at })
+        .where(eq(slack_publications.id, id)),
+    );
   }
 
-  private toDomain(row: Row): Publication {
+  private toDomain(row: typeof slack_publications.$inferSelect): Publication {
     const caps = JSON.parse(row.capabilities) as CapabilityKey[];
     return {
       id: row.id,

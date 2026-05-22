@@ -2,9 +2,9 @@
 
 export { SqlCredentialRepo } from "./sql-credential-repo";
 
+import { drizzle } from "drizzle-orm/d1";
 import { SqlCredentialRepo } from "./sql-credential-repo";
-import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { Crypto, Logger } from "../ports";
 import { CredentialService } from "../service";
 
@@ -13,19 +13,20 @@ export function createCfCredentialService(
   deps: { db: D1Database },
   opts?: { logger?: Logger; crypto?: Crypto },
 ): CredentialService {
+  const drz = drizzle(deps.db);
   return new CredentialService({
-    repo: new SqlCredentialRepo(new CfD1SqlClient(deps.db), { crypto: opts?.crypto }),
+    repo: new SqlCredentialRepo(drz, { crypto: opts?.crypto }),
     logger: opts?.logger,
   });
 }
 
-/** Node deployment factory — accepts any SqlClient. */
+/** Node deployment factory — accepts any OmaDb. */
 export function createSqliteCredentialService(
-  deps: { client: SqlClient },
+  deps: { db: OmaDb },
   opts?: { logger?: Logger; crypto?: Crypto },
 ): CredentialService {
   return new CredentialService({
-    repo: new SqlCredentialRepo(deps.client, { crypto: opts?.crypto }),
+    repo: new SqlCredentialRepo(deps.db, { crypto: opts?.crypto }),
     logger: opts?.logger,
   });
 }

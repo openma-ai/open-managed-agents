@@ -227,7 +227,7 @@ export class OmaSandbox extends Sandbox {
   }
 
   /**
-   * Snapshot /workspace into BACKUP_BUCKET + record the handle in AUTH_DB
+   * Snapshot /workspace into BACKUP_BUCKET + record the handle in MAIN_DB
    * scoped to the stored backup context. Best-effort: any failure logs
    * and returns; never throws because all callers (sleepAfter teardown,
    * explicit /destroy) need to proceed even if backup fails.
@@ -242,7 +242,7 @@ export class OmaSandbox extends Sandbox {
       const ctx = (await this.ctx.storage.get(BACKUP_CTX_KEY)) as
         | BackupContext
         | undefined;
-      if (!ctx || !env.AUTH_DB) return;
+      if (!ctx || !env.MAIN_DB) return;
       const startMs = Date.now();
       const isDev = !env.R2_ENDPOINT || !env.R2_ACCESS_KEY_ID;
       const backup = await this.createBackup({

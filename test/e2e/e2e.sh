@@ -42,13 +42,13 @@ echo ""
 echo "=== Create Agent ==="
 AGENT=$(api /v1/agents -X POST -d '{
   "name": "E2E Test Agent",
-  "model": "claude-sonnet-4-6",
+  "model": "openai/gpt-5.4",
   "system": "You are a helpful coding assistant. Keep responses brief.",
   "tools": [{"type": "agent_toolset_20260401"}]
 }')
 echo "  Response: $AGENT"
 AGENT_ID=$(echo "$AGENT" | jq -r .id)
-check "agent id prefix" "agent_" "$AGENT_ID"
+check "agent id prefix" "agent-" "$AGENT_ID"
 check "agent name" "E2E Test Agent" "$AGENT"
 
 echo ""
@@ -64,7 +64,7 @@ ENV=$(api /v1/environments -X POST -d '{
 }')
 echo "  Response: $ENV"
 ENV_ID=$(echo "$ENV" | jq -r .id)
-check "env id prefix" "env_" "$ENV_ID"
+check "env id prefix" "env-" "$ENV_ID"
 
 echo ""
 echo "=== Create Session ==="
@@ -75,7 +75,7 @@ SESSION=$(api /v1/sessions -X POST -d "{
 }")
 echo "  Response: $SESSION"
 SESSION_ID=$(echo "$SESSION" | jq -r .id)
-check "session id prefix" "sess_" "$SESSION_ID"
+check "session id prefix" "sess-" "$SESSION_ID"
 check "session status idle" "idle" "$SESSION"
 
 echo ""
@@ -87,8 +87,8 @@ echo ""
 echo "=== Open SSE Stream (background) ==="
 SSE_FILE=$(mktemp)
 # Start SSE listener in background, collect events for up to 120s
-curl -sS -N "$BASE_URL/v1/sessions/$SESSION_ID/events" \
-  -H "x-api-key: $API_KEY" \
+curl -sS -N "$BASE_URL/v1/sessions/$SESSION_ID/events/stream" \
+  -H "x-api-key: $API_KEY" -H "Accept: text/event-stream" \
   --max-time 120 > "$SSE_FILE" 2>/dev/null &
 SSE_PID=$!
 sleep 1

@@ -6,7 +6,7 @@
 set -uo pipefail
 
 BASE="${1:-http://localhost:8787}"
-KEY="dev-test-key-change-me"
+KEY="${2:-dev-test-key-change-me}"
 PASS=0; FAIL=0
 
 check() {
@@ -58,7 +58,7 @@ send_msg() {
 echo "=== Setup ==="
 AGENT=$(api /v1/agents -X POST -d '{
   "name":"Tool Test Agent",
-  "model":"claude-sonnet-4-6",
+  "model":"openai/gpt-5.4",
   "system":"You are a coding assistant. When asked to create files or run commands, always use the available tools (bash, write, read). Be concise.",
   "tools":[{"type":"agent_toolset_20260401"}]
 }')

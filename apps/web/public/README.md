@@ -7,6 +7,7 @@ Static files served at the site root.
 | File | Purpose |
 |---|---|
 | `logo.svg` | Brand wordmark — header logo + SVG favicon |
+| `logo.png` | Brand wordmark, rasterized at 950×610. Used as JSON-LD `Organization.logo` since Google rejects SVG there. |
 | `og-default.svg` | Source for `og-default.png` (1200×630 OG card) |
 | `og-default.png` | Open Graph default image (1200×630) — referenced by `Base.astro` `og:image` |
 | `apple-touch-icon.png` | 180×180 iOS home-screen icon |
@@ -21,6 +22,9 @@ step at deploy time), but they can be reproduced from the source SVGs:
 
 ```bash
 cd apps/web/public
+
+# Brand logo (Google JSON-LD Organization.logo — must be PNG, not SVG)
+rsvg-convert -w 950 -h 610 logo.svg -o logo.png
 
 # OG card
 rsvg-convert -w 1200 -h 630 og-default.svg -o og-default.png

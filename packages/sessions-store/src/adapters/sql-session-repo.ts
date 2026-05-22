@@ -1,3 +1,17 @@
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  asBuilder,
+  atomicWrite,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import {
+  session_resources,
+  sessions,
+} from "@open-managed-agents/db-schema/cf-auth";
 import type {
   AgentConfig,
   EnvironmentConfig,
@@ -5,12 +19,7 @@ import type {
   SessionResource,
   SessionStatus,
 } from "@open-managed-agents/shared";
-import {
-  cursorBinds,
-  cursorWhereSql,
-  fetchN,
-  trimPage,
-} from "@open-managed-agents/shared";
+import { fetchN, trimPage } from "@open-managed-agents/shared";
 import { SessionNotFoundError } from "../errors";
 import type {
   NewSessionInput,
@@ -20,55 +29,49 @@ import type {
   SessionUpdateFields,
 } from "../ports";
 import type { SessionResourceRow, SessionRow } from "../types";
-import type { SqlClient, SqlStatement } from "@open-managed-agents/sql-client";
+
 
 /**
- * SqlClient-backed implementation of {@link SessionRepo}. Owns the SQL against
- * the `sessions` and `session_resources` tables defined in
- * apps/main/migrations/0010_sessions_tables.sql.
+ * Drizzle implementation of {@link SessionRepo}. Owns the SQL against the
+ * `sessions` and `session_resources` tables.
  *
  * Atomicity:
- *   - insertWithResources uses D1.batch so a session row + N resource rows
- *     succeed-or-fail together (replaces the multi-key non-atomic KV pattern).
- *   - deleteWithResources uses D1.batch to drop the session + cascade its
- *     resources (the schema has no FK by project convention).
- *   - deleteByAgent uses two statements — list all session ids for the agent,
- *     then DELETE both tables — wrapped in batch.
+ *   - insertWithResources batches a session row + N resource rows so they
+ *     succeed-or-fail together (D1 batch on CF, transaction on PG).
+ *   - deleteWithResources / deleteByAgent batch the cascade deletes.
  */
 export class SqlSessionRepo implements SessionRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insertWithResources(
     session: NewSessionInput,
     resources: NewSessionResourceInput[],
   ): Promise<{ session: SessionRow; resources: SessionResourceRow[] }> {
-    const stmts: SqlStatement[] = [
-      this.db
-        .prepare(
-          `INSERT INTO sessions
-             (id, tenant_id, agent_id, environment_id, title, status,
-              vault_ids, agent_snapshot, environment_snapshot, metadata,
-              created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          session.id,
-          session.tenantId,
-          session.agentId,
-          session.environmentId,
-          session.title,
-          session.status,
-          session.vaultIds !== null ? JSON.stringify(session.vaultIds) : null,
-          session.agentSnapshot !== null ? JSON.stringify(session.agentSnapshot) : null,
-          session.environmentSnapshot !== null ? JSON.stringify(session.environmentSnapshot) : null,
-          session.metadata !== null ? JSON.stringify(session.metadata) : null,
-          session.createdAt,
-        ),
-    ];
+    const insertSessionQ = this.db.insert(sessions).values({
+      id: session.id,
+      tenant_id: session.tenantId,
+      agent_id: session.agentId,
+      environment_id: session.environmentId,
+      title: session.title,
+      status: session.status,
+      vault_ids: session.vaultIds !== null ? JSON.stringify(session.vaultIds) : null,
+      agent_snapshot:
+        session.agentSnapshot !== null ? JSON.stringify(session.agentSnapshot) : null,
+      environment_snapshot:
+        session.environmentSnapshot !== null
+          ? JSON.stringify(session.environmentSnapshot)
+          : null,
+      metadata: session.metadata !== null ? JSON.stringify(session.metadata) : null,
+      created_at: session.createdAt,
+    });
+    const queries: unknown[] = [insertSessionQ];
     for (const r of resources) {
-      stmts.push(resourceInsertStmt(this.db, r));
+      queries.push(resourceInsertQuery(this.db, r));
     }
-    await this.db.batch(stmts);
+    await atomicWrite(this.db, queries);
 
     const inserted = await this.get(session.tenantId, session.id);
     if (!inserted) throw new Error("session vanished after insertWithResources");
@@ -79,54 +82,37 @@ export class SqlSessionRepo implements SessionRepo {
   }
 
   async get(tenantId: string, sessionId: string): Promise<SessionRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, agent_id, environment_id, title, status,
-                vault_ids, agent_snapshot, environment_snapshot, metadata,
-                created_at, updated_at, archived_at, terminated_at
-         FROM sessions
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(sessionId, tenantId)
-      .first<DbSession>();
+    const row = await getOne<typeof sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(sessions)
+        .where(and(eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId))),
+    );
     return row ? toSessionRow(row) : null;
   }
 
   async getById(sessionId: string): Promise<SessionRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, agent_id, environment_id, title, status,
-                vault_ids, agent_snapshot, environment_snapshot, metadata,
-                created_at, updated_at, archived_at, terminated_at
-         FROM sessions
-         WHERE id = ?`,
-      )
-      .bind(sessionId)
-      .first<DbSession>();
+    const row = await getOne<typeof sessions.$inferSelect>(
+      this.db.select().from(sessions).where(eq(sessions.id, sessionId)),
+    );
     return row ? toSessionRow(row) : null;
   }
 
   async list(tenantId: string, opts: SessionListOptions): Promise<SessionRow[]> {
-    const order = opts.order === "asc" ? "ASC" : "DESC";
-    const where: string[] = ["tenant_id = ?"];
-    const binds: unknown[] = [tenantId];
-    if (opts.agentId) {
-      where.push("agent_id = ?");
-      binds.push(opts.agentId);
-    }
-    if (!opts.includeArchived) {
-      where.push("archived_at IS NULL");
-    }
-    binds.push(opts.limit);
-    const sql = `SELECT id, tenant_id, agent_id, environment_id, title, status,
-                        vault_ids, agent_snapshot, environment_snapshot, metadata,
-                        created_at, updated_at, archived_at, terminated_at
-                 FROM sessions
-                 WHERE ${where.join(" AND ")}
-                 ORDER BY created_at ${order}
-                 LIMIT ?`;
-    const result = await this.db.prepare(sql).bind(...binds).all<DbSession>();
-    return (result.results ?? []).map(toSessionRow);
+    const conds = [eq(sessions.tenant_id, tenantId)];
+    if (opts.agentId) conds.push(eq(sessions.agent_id, opts.agentId));
+    if (!opts.includeArchived) conds.push(isNull(sessions.archived_at));
+    const orderColumn =
+      opts.order === "asc" ? asc(sessions.created_at) : desc(sessions.created_at);
+    const rows = await getAll<typeof sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(sessions)
+        .where(and(...conds))
+        .orderBy(orderColumn)
+        .limit(opts.limit),
+    );
+    return rows.map(toSessionRow);
   }
 
   async listPage(
@@ -138,41 +124,43 @@ export class SqlSessionRepo implements SessionRepo {
       after?: PageCursor;
     },
   ): Promise<{ items: SessionRow[]; hasMore: boolean }> {
-    const where: string[] = ["tenant_id = ?"];
-    const binds: unknown[] = [tenantId];
-    if (opts.agentId) {
-      where.push("agent_id = ?");
-      binds.push(opts.agentId);
+    const conds = [eq(sessions.tenant_id, tenantId)];
+    if (opts.agentId) conds.push(eq(sessions.agent_id, opts.agentId));
+    if (!opts.includeArchived) conds.push(isNull(sessions.archived_at));
+    if (opts.after) {
+      const c = opts.after;
+      conds.push(
+        or(
+          lt(sessions.created_at, c.createdAt),
+          and(eq(sessions.created_at, c.createdAt), lt(sessions.id, c.id))!,
+        )!,
+      );
     }
-    if (!opts.includeArchived) where.push("archived_at IS NULL");
-    const cursorClause = cursorWhereSql(opts.after);
-    if (cursorClause) {
-      // cursorWhereSql returns "AND (...)" — strip the leading AND since
-      // we're joining via " AND " in the WHERE composer.
-      where.push(cursorClause.replace(/^AND\s+/, ""));
-      binds.push(...cursorBinds(opts.after));
-    }
-    binds.push(fetchN(opts.limit));
-    const sql = `SELECT id, tenant_id, agent_id, environment_id, title, status,
-                        vault_ids, agent_snapshot, environment_snapshot, metadata,
-                        created_at, updated_at, archived_at, terminated_at
-                 FROM sessions
-                 WHERE ${where.join(" AND ")}
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT ?`;
-    const result = await this.db.prepare(sql).bind(...binds).all<DbSession>();
-    return trimPage((result.results ?? []).map(toSessionRow), opts.limit);
+    const rows = await getAll<typeof sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(sessions)
+        .where(and(...conds))
+        .orderBy(desc(sessions.created_at), desc(sessions.id))
+        .limit(fetchN(opts.limit)),
+    );
+    return trimPage(rows.map(toSessionRow), opts.limit);
   }
 
   async hasActiveByAgent(tenantId: string, agentId: string): Promise<boolean> {
-    const row = await this.db
-      .prepare(
-        `SELECT 1 AS one FROM sessions
-         WHERE tenant_id = ? AND agent_id = ? AND archived_at IS NULL
-         LIMIT 1`,
-      )
-      .bind(tenantId, agentId)
-      .first<{ one: number }>();
+    const row = await getOne<{ one: number }>(
+      this.db
+        .select({ one: sql<number>`1` })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.tenant_id, tenantId),
+            eq(sessions.agent_id, agentId),
+            isNull(sessions.archived_at),
+          ),
+        )
+        .limit(1),
+    );
     return !!row;
   }
 
@@ -180,14 +168,19 @@ export class SqlSessionRepo implements SessionRepo {
     tenantId: string,
     environmentId: string,
   ): Promise<boolean> {
-    const row = await this.db
-      .prepare(
-        `SELECT 1 AS one FROM sessions
-         WHERE tenant_id = ? AND environment_id = ? AND archived_at IS NULL
-         LIMIT 1`,
-      )
-      .bind(tenantId, environmentId)
-      .first<{ one: number }>();
+    const row = await getOne<{ one: number }>(
+      this.db
+        .select({ one: sql<number>`1` })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.tenant_id, tenantId),
+            eq(sessions.environment_id, environmentId),
+            isNull(sessions.archived_at),
+          ),
+        )
+        .limit(1),
+    );
     return !!row;
   }
 
@@ -195,10 +188,14 @@ export class SqlSessionRepo implements SessionRepo {
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<number> {
-    const sql = opts.includeArchived
-      ? `SELECT COUNT(*) AS c FROM sessions WHERE tenant_id = ?`
-      : `SELECT COUNT(*) AS c FROM sessions WHERE tenant_id = ? AND archived_at IS NULL`;
-    const row = await this.db.prepare(sql).bind(tenantId).first<{ c: number }>();
+    const conds = [eq(sessions.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(sessions.archived_at));
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(sessions)
+        .where(and(...conds)),
+    );
     return row?.c ?? 0;
   }
 
@@ -207,44 +204,28 @@ export class SqlSessionRepo implements SessionRepo {
     sessionId: string,
     update: SessionUpdateFields,
   ): Promise<SessionRow> {
-    const sets: string[] = [];
-    const binds: unknown[] = [];
-    if (update.title !== undefined) {
-      sets.push("title = ?");
-      binds.push(update.title);
-    }
-    if (update.status !== undefined) {
-      sets.push("status = ?");
-      binds.push(update.status);
-    }
+    const set: Record<string, unknown> = { updated_at: update.updatedAt };
+    if (update.title !== undefined) set.title = update.title;
+    if (update.status !== undefined) set.status = update.status;
     if (update.metadata !== undefined) {
-      sets.push("metadata = ?");
-      binds.push(update.metadata !== null ? JSON.stringify(update.metadata) : null);
+      set.metadata = update.metadata !== null ? JSON.stringify(update.metadata) : null;
     }
     if (update.agentSnapshot !== undefined) {
-      sets.push("agent_snapshot = ?");
-      binds.push(update.agentSnapshot !== null ? JSON.stringify(update.agentSnapshot) : null);
+      set.agent_snapshot =
+        update.agentSnapshot !== null ? JSON.stringify(update.agentSnapshot) : null;
     }
     if (update.environmentSnapshot !== undefined) {
-      sets.push("environment_snapshot = ?");
-      binds.push(
+      set.environment_snapshot =
         update.environmentSnapshot !== null
           ? JSON.stringify(update.environmentSnapshot)
-          : null,
-      );
+          : null;
     }
-    sets.push("updated_at = ?");
-    binds.push(update.updatedAt);
-    binds.push(sessionId, tenantId);
-
-    const result = await this.db
-      .prepare(
-        `UPDATE sessions SET ${sets.join(", ")}
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(...binds)
-      .run();
-    if (!result.meta?.changes) throw new SessionNotFoundError();
+    await runOnce(
+      this.db
+        .update(sessions)
+        .set(set)
+        .where(and(eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, sessionId);
     if (!row) throw new SessionNotFoundError();
     return row;
@@ -255,59 +236,54 @@ export class SqlSessionRepo implements SessionRepo {
     sessionId: string,
     archivedAt: number,
   ): Promise<SessionRow> {
-    const result = await this.db
-      .prepare(
-        `UPDATE sessions SET archived_at = ?, updated_at = ?
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(archivedAt, archivedAt, sessionId, tenantId)
-      .run();
-    if (!result.meta?.changes) throw new SessionNotFoundError();
+    await runOnce(
+      this.db
+        .update(sessions)
+        .set({ archived_at: archivedAt, updated_at: archivedAt })
+        .where(and(eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, sessionId);
     if (!row) throw new SessionNotFoundError();
     return row;
   }
 
   async deleteWithResources(tenantId: string, sessionId: string): Promise<void> {
-    // Two-statement batch: drop resources first then the session row. Atomic
-    // by D1 batch semantics. No FK needed.
-    await this.db.batch([
-      this.db
-        .prepare(`DELETE FROM session_resources WHERE session_id = ?`)
-        .bind(sessionId),
-      this.db
-        .prepare(`DELETE FROM sessions WHERE id = ? AND tenant_id = ?`)
-        .bind(sessionId, tenantId),
-    ]);
+    // Two-statement batch: drop resources first then the session row.
+    const deleteResourcesQ = this.db
+      .delete(session_resources)
+      .where(eq(session_resources.session_id, sessionId));
+    const deleteSessionQ = this.db
+      .delete(sessions)
+      .where(and(eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId)));
+    await atomicWrite(this.db, [deleteResourcesQ, deleteSessionQ]);
   }
 
   async deleteByAgent(tenantId: string, agentId: string): Promise<number> {
     // Discover session ids first so the resource cascade hits the right rows
-    // and so the caller gets a deletion count. One round-trip then a 2-stmt
-    // batch.
-    const ids = await this.db
-      .prepare(`SELECT id FROM sessions WHERE tenant_id = ? AND agent_id = ?`)
-      .bind(tenantId, agentId)
-      .all<{ id: string }>();
-    const sessionIds = (ids.results ?? []).map((r) => r.id);
+    // and so the caller gets a deletion count.
+    const ids = await getAll<{ id: string }>(
+      this.db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(and(eq(sessions.tenant_id, tenantId), eq(sessions.agent_id, agentId))),
+    );
+    const sessionIds = ids.map((r) => r.id);
     if (!sessionIds.length) return 0;
 
-    const placeholders = sessionIds.map(() => "?").join(", ");
-    await this.db.batch([
-      this.db
-        .prepare(`DELETE FROM session_resources WHERE session_id IN (${placeholders})`)
-        .bind(...sessionIds),
-      this.db
-        .prepare(`DELETE FROM sessions WHERE tenant_id = ? AND agent_id = ?`)
-        .bind(tenantId, agentId),
-    ]);
+    const deleteResourcesQ = this.db
+      .delete(session_resources)
+      .where(inArray(session_resources.session_id, sessionIds));
+    const deleteSessionsQ = this.db
+      .delete(sessions)
+      .where(and(eq(sessions.tenant_id, tenantId), eq(sessions.agent_id, agentId)));
+    await atomicWrite(this.db, [deleteResourcesQ, deleteSessionsQ]);
     return sessionIds.length;
   }
 
   // ── resource ops ──
 
   async insertResource(input: NewSessionResourceInput): Promise<SessionResourceRow> {
-    await resourceInsertStmt(this.db, input).run();
+    await runOnce(resourceInsertQuery(this.db, input) as PromiseLike<unknown>);
     const row = await this.getResource(input.sessionId, input.id);
     if (!row) throw new Error("resource vanished after insert");
     return row;
@@ -317,35 +293,38 @@ export class SqlSessionRepo implements SessionRepo {
     sessionId: string,
     resourceId: string,
   ): Promise<SessionResourceRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, session_id, type, config, created_at
-         FROM session_resources
-         WHERE id = ? AND session_id = ?`,
-      )
-      .bind(resourceId, sessionId)
-      .first<DbResource>();
+    const row = await getOne<typeof session_resources.$inferSelect>(
+      this.db
+        .select()
+        .from(session_resources)
+        .where(
+          and(
+            eq(session_resources.id, resourceId),
+            eq(session_resources.session_id, sessionId),
+          ),
+        ),
+    );
     return row ? toResourceRow(row) : null;
   }
 
   async listResources(sessionId: string): Promise<SessionResourceRow[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT id, session_id, type, config, created_at
-         FROM session_resources
-         WHERE session_id = ?
-         ORDER BY created_at ASC`,
-      )
-      .bind(sessionId)
-      .all<DbResource>();
-    return (result.results ?? []).map(toResourceRow);
+    const rows = await getAll<typeof session_resources.$inferSelect>(
+      this.db
+        .select()
+        .from(session_resources)
+        .where(eq(session_resources.session_id, sessionId))
+        .orderBy(asc(session_resources.created_at)),
+    );
+    return rows.map(toResourceRow);
   }
 
   async countResources(sessionId: string): Promise<number> {
-    const row = await this.db
-      .prepare(`SELECT COUNT(*) AS c FROM session_resources WHERE session_id = ?`)
-      .bind(sessionId)
-      .first<{ c: number }>();
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(session_resources)
+        .where(eq(session_resources.session_id, sessionId)),
+    );
     return row?.c ?? 0;
   }
 
@@ -353,20 +332,31 @@ export class SqlSessionRepo implements SessionRepo {
     sessionId: string,
     type: SessionResource["type"],
   ): Promise<number> {
-    const row = await this.db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM session_resources WHERE session_id = ? AND type = ?`,
-      )
-      .bind(sessionId, type)
-      .first<{ c: number }>();
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(session_resources)
+        .where(
+          and(
+            eq(session_resources.session_id, sessionId),
+            eq(session_resources.type, type),
+          ),
+        ),
+    );
     return row?.c ?? 0;
   }
 
   async deleteResource(sessionId: string, resourceId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM session_resources WHERE id = ? AND session_id = ?`)
-      .bind(resourceId, sessionId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(session_resources)
+        .where(
+          and(
+            eq(session_resources.id, resourceId),
+            eq(session_resources.session_id, sessionId),
+          ),
+        ),
+    );
   }
 
   async updateResource(
@@ -374,63 +364,42 @@ export class SqlSessionRepo implements SessionRepo {
     resourceId: string,
     resource: SessionResource,
   ): Promise<SessionResourceRow> {
-    await this.db
-      .prepare(
-        `UPDATE session_resources SET config = ? WHERE id = ? AND session_id = ?`,
-      )
-      .bind(JSON.stringify(resource), resourceId, sessionId)
-      .run();
+    await runOnce(
+      this.db
+        .update(session_resources)
+        .set({ config: JSON.stringify(resource) })
+        .where(
+          and(
+            eq(session_resources.id, resourceId),
+            eq(session_resources.session_id, sessionId),
+          ),
+        ),
+    );
     const row = await this.getResource(sessionId, resourceId);
     if (!row) throw new Error(`session_resources ${resourceId} vanished after update`);
     return row;
   }
 
   async deleteAllResourcesForSession(sessionId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM session_resources WHERE session_id = ?`)
-      .bind(sessionId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(session_resources)
+        .where(eq(session_resources.session_id, sessionId)),
+    );
   }
 }
 
-function resourceInsertStmt(
-  db: SqlClient,
-  r: NewSessionResourceInput,
-): SqlStatement {
-  return db
-    .prepare(
-      `INSERT INTO session_resources (id, session_id, type, config, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .bind(r.id, r.sessionId, r.resource.type, JSON.stringify(r.resource), r.createdAt);
+function resourceInsertQuery(db: OmaDbBuilder, r: NewSessionResourceInput) {
+  return db.insert(session_resources).values({
+    id: r.id,
+    session_id: r.sessionId,
+    type: r.resource.type,
+    config: JSON.stringify(r.resource),
+    created_at: r.createdAt,
+  });
 }
 
-interface DbSession {
-  id: string;
-  tenant_id: string;
-  agent_id: string;
-  environment_id: string;
-  title: string;
-  status: string;
-  vault_ids: string | null;
-  agent_snapshot: string | null;
-  environment_snapshot: string | null;
-  metadata: string | null;
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-  terminated_at: number | null;
-}
-
-interface DbResource {
-  id: string;
-  session_id: string;
-  type: string;
-  config: string;
-  created_at: number;
-}
-
-function toSessionRow(r: DbSession): SessionRow {
+function toSessionRow(r: typeof sessions.$inferSelect): SessionRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,
@@ -456,7 +425,7 @@ function toSessionRow(r: DbSession): SessionRow {
   };
 }
 
-function toResourceRow(r: DbResource): SessionResourceRow {
+function toResourceRow(r: typeof session_resources.$inferSelect): SessionResourceRow {
   const parsed = JSON.parse(r.config) as SessionResource;
   return {
     id: r.id,

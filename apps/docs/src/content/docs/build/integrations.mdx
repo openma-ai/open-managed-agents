@@ -72,7 +72,7 @@ Each is small: install/callback is ~50 lines; webhook handling is ~80; tools are
 
 ## Persistence
 
-Use the abstract repos in `packages/integrations-adapters-cf/`. They give you typed CRUD on `installations`, `oauth_state`, `publications`, and `webhook_events` against the shared `AUTH_DB` D1 instance. Don't roll your own — the adapters are the same ones Linear/GitHub/Slack use, and they handle multi-tenant scoping for you.
+Use the abstract repos in `packages/integrations-adapters-cf/`. They give you typed CRUD on `installations`, `oauth_state`, `publications`, and `webhook_events` against the shared `MAIN_DB` D1 instance. Don't roll your own — the adapters are the same ones Linear/GitHub/Slack use, and they handle multi-tenant scoping for you.
 
 ## Webhook security
 

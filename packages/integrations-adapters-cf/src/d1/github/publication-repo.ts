@@ -1,3 +1,13 @@
+import { and, desc, eq, inArray } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { github_publications } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   CapabilityKey,
   CapabilitySet,
@@ -15,124 +25,107 @@ import type {
   GitHubPublicationRepo,
 } from "@open-managed-agents/github";
 
-interface Row {
-  id: string;
-  tenant_id: string;
-  user_id: string;
-  agent_id: string;
-  installation_id: string;
-  environment_id: string | null;
-  mode: string;
-  status: string;
-  persona_name: string;
-  persona_avatar_url: string | null;
-  capabilities: string;
-  session_granularity: string;
-  created_at: number;
-  unpublished_at: number | null;
-  // Publication-first staging columns (migration 0002). All nullable on
-  // legacy rows; populated as the wizard progresses.
-  app_oma_id: string | null;
-  client_id: string | null;
-  client_secret_cipher: string | null;
-  app_id: string | null;
-  app_slug: string | null;
-  bot_login: string | null;
-  webhook_secret_cipher: string | null;
-  private_key_cipher: string | null;
-  vault_id: string | null;
-}
-
 /**
- * D1 publication repo for GitHub. Implements both the base PublicationRepo
+ * SQL publication repo for GitHub. Implements both the base PublicationRepo
  * (legacy paths) AND the publication-first GitHubPublicationRepo extension
  * (`insertShell`, `setCredentials`, `bindInstallation`, etc.) the new
  * provider flow uses. See packages/github/src/ports.ts for the contract.
  *
- * Targets `github_publications`. See D1GitHubInstallationRepo for the
+ * Targets `github_publications`. See SqlGitHubInstallationRepo for the
  * rationale behind the per-provider table split.
  */
-export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
+export class SqlGitHubPublicationRepo implements GitHubPublicationRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly ids: IdGenerator,
     private readonly crypto: Crypto,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(id: string): Promise<Publication | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM github_publications WHERE id = ?`)
-      .bind(id)
-      .first<Row>();
+    const row = await getOne<typeof github_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(github_publications)
+        .where(eq(github_publications.id, id)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async listByInstallation(installationId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM github_publications WHERE installation_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(installationId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof github_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(github_publications)
+        .where(eq(github_publications.installation_id, installationId))
+        .orderBy(desc(github_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listByUserAndAgent(
     userId: string,
     agentId: string,
   ): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM github_publications WHERE user_id = ? AND agent_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId, agentId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof github_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(github_publications)
+        .where(
+          and(
+            eq(github_publications.user_id, userId),
+            eq(github_publications.agent_id, agentId),
+          ),
+        )
+        .orderBy(desc(github_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listPendingByUser(userId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM github_publications
-         WHERE user_id = ?
-           AND status IN ('pending_setup', 'credentials_filled', 'awaiting_install')
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof github_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(github_publications)
+        .where(
+          and(
+            eq(github_publications.user_id, userId),
+            inArray(github_publications.status, [
+              "pending_setup",
+              "credentials_filled",
+              "awaiting_install",
+            ]),
+          ),
+        )
+        .orderBy(desc(github_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async insert(row: NewPublication): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();
-    await this.db
-      .prepare(
-        `INSERT INTO github_publications (
-           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
-           persona_name, persona_avatar_url, capabilities,
-           session_granularity, created_at, unpublished_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(github_publications).values({
         id,
-        row.tenantId,
-        row.userId,
-        row.agentId,
-        row.installationId,
-        row.environmentId,
-        row.mode,
-        row.status,
-        row.persona.name,
+        tenant_id: row.tenantId,
+        user_id: row.userId,
+        agent_id: row.agentId,
+        installation_id: row.installationId,
+        environment_id: row.environmentId,
+        mode: row.mode,
+        status: row.status,
+        persona_name: row.persona.name,
         // D1 rejects undefined; coerce to null when persona has no avatar.
-        row.persona.avatarUrl ?? null,
-        JSON.stringify([...row.capabilities]),
-        row.sessionGranularity,
-        now,
-      )
-      .run();
+        persona_avatar_url: row.persona.avatarUrl ?? null,
+        capabilities: JSON.stringify([...row.capabilities]),
+        session_granularity: row.sessionGranularity,
+        created_at: now,
+        unpublished_at: null,
+      }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -171,33 +164,26 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
     // installation_id="" is the sentinel for "shell, not yet bound" — the
     // column is NOT NULL in storage so we can't use NULL. bindInstallation
     // overwrites with a real id once the install callback completes.
-    await this.db
-      .prepare(
-        `INSERT INTO github_publications (
-           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
-           persona_name, persona_avatar_url, capabilities,
-           session_granularity, created_at, unpublished_at,
-           app_oma_id, trigger_label
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(github_publications).values({
         id,
-        input.tenantId,
-        input.userId,
-        input.agentId,
-        "",
-        input.environmentId,
-        "full",
-        "pending_setup",
-        input.persona.name,
-        input.persona.avatarUrl ?? null,
-        JSON.stringify([...input.capabilities]),
-        input.sessionGranularity,
-        now,
-        appOmaId,
-        triggerLabel,
-      )
-      .run();
+        tenant_id: input.tenantId,
+        user_id: input.userId,
+        agent_id: input.agentId,
+        installation_id: "",
+        environment_id: input.environmentId,
+        mode: "full",
+        status: "pending_setup",
+        persona_name: input.persona.name,
+        persona_avatar_url: input.persona.avatarUrl ?? null,
+        capabilities: JSON.stringify([...input.capabilities]),
+        session_granularity: input.sessionGranularity,
+        created_at: now,
+        unpublished_at: null,
+        app_oma_id: appOmaId,
+        trigger_label: triggerLabel,
+      }),
+    );
     const publication: Publication = {
       id,
       tenantId: input.tenantId,
@@ -228,10 +214,12 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
       privateKeyCipher: string;
     },
   ): Promise<void> {
-    const row = await this.db
-      .prepare(`SELECT status FROM github_publications WHERE id = ?`)
-      .bind(publicationId)
-      .first<{ status: string }>();
+    const row = await getOne<{ status: string }>(
+      this.db
+        .select({ status: github_publications.status })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     if (!row) {
       throw new Error(`setCredentials: publication ${publicationId} not found`);
     }
@@ -245,57 +233,55 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
     // overwrites cipher columns but leaves status alone — status flips
     // happen on bindInstallation.
     const promoteStatus = row.status === "pending_setup";
-    await this.db
-      .prepare(
-        `UPDATE github_publications SET
-           app_id = ?, app_slug = ?, bot_login = ?,
-           client_id = ?, client_secret_cipher = ?,
-           webhook_secret_cipher = ?, private_key_cipher = ?
-           ${promoteStatus ? ", status = 'credentials_filled'" : ""}
-         WHERE id = ?`,
-      )
-      .bind(
-        input.appId,
-        input.appSlug,
-        input.botLogin,
-        input.clientId,
-        input.clientSecretCipher,
-        input.webhookSecretCipher,
-        input.privateKeyCipher,
-        publicationId,
-      )
-      .run();
+    const updates: Record<string, unknown> = {
+      app_id: input.appId,
+      app_slug: input.appSlug,
+      bot_login: input.botLogin,
+      client_id: input.clientId,
+      client_secret_cipher: input.clientSecretCipher,
+      webhook_secret_cipher: input.webhookSecretCipher,
+      private_key_cipher: input.privateKeyCipher,
+    };
+    if (promoteStatus) {
+      updates.status = "credentials_filled";
+    }
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set(updates)
+        .where(eq(github_publications.id, publicationId)),
+    );
   }
 
   async getClientSecret(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT client_secret_cipher FROM github_publications WHERE id = ?`,
-      )
-      .bind(publicationId)
-      .first<{ client_secret_cipher: string | null }>();
+    const row = await getOne<{ client_secret_cipher: string | null }>(
+      this.db
+        .select({ client_secret_cipher: github_publications.client_secret_cipher })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     if (!row || row.client_secret_cipher == null) return null;
     return this.crypto.decrypt(row.client_secret_cipher);
   }
 
   async getWebhookSecret(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT webhook_secret_cipher FROM github_publications WHERE id = ?`,
-      )
-      .bind(publicationId)
-      .first<{ webhook_secret_cipher: string | null }>();
+    const row = await getOne<{ webhook_secret_cipher: string | null }>(
+      this.db
+        .select({ webhook_secret_cipher: github_publications.webhook_secret_cipher })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     if (!row || row.webhook_secret_cipher == null) return null;
     return this.crypto.decrypt(row.webhook_secret_cipher);
   }
 
   async getPrivateKey(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT private_key_cipher FROM github_publications WHERE id = ?`,
-      )
-      .bind(publicationId)
-      .first<{ private_key_cipher: string | null }>();
+    const row = await getOne<{ private_key_cipher: string | null }>(
+      this.db
+        .select({ private_key_cipher: github_publications.private_key_cipher })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     if (!row || row.private_key_cipher == null) return null;
     return this.crypto.decrypt(row.private_key_cipher);
   }
@@ -303,24 +289,32 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
   async getCredentialState(
     publicationId: string,
   ): Promise<GitHubPublicationCredentialState | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT app_oma_id, client_id, client_secret_cipher, app_id, app_slug,
-                bot_login, webhook_secret_cipher, private_key_cipher, vault_id
-         FROM github_publications WHERE id = ?`,
-      )
-      .bind(publicationId)
-      .first<{
-        app_oma_id: string | null;
-        client_id: string | null;
-        client_secret_cipher: string | null;
-        app_id: string | null;
-        app_slug: string | null;
-        bot_login: string | null;
-        webhook_secret_cipher: string | null;
-        private_key_cipher: string | null;
-        vault_id: string | null;
-      }>();
+    const row = await getOne<{
+      app_oma_id: string | null;
+      client_id: string | null;
+      client_secret_cipher: string | null;
+      app_id: string | null;
+      app_slug: string | null;
+      bot_login: string | null;
+      webhook_secret_cipher: string | null;
+      private_key_cipher: string | null;
+      vault_id: string | null;
+    }>(
+      this.db
+        .select({
+          app_oma_id: github_publications.app_oma_id,
+          client_id: github_publications.client_id,
+          client_secret_cipher: github_publications.client_secret_cipher,
+          app_id: github_publications.app_id,
+          app_slug: github_publications.app_slug,
+          bot_login: github_publications.bot_login,
+          webhook_secret_cipher: github_publications.webhook_secret_cipher,
+          private_key_cipher: github_publications.private_key_cipher,
+          vault_id: github_publications.vault_id,
+        })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     if (!row) return null;
     return {
       appOmaId: row.app_oma_id,
@@ -340,76 +334,90 @@ export class D1GitHubPublicationRepo implements GitHubPublicationRepo {
     installationId: string;
     vaultId: string;
   }): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE github_publications
-           SET installation_id = ?, vault_id = ?, status = 'live'
-         WHERE id = ?`,
-      )
-      .bind(input.installationId, input.vaultId, input.publicationId)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({
+          installation_id: input.installationId,
+          vault_id: input.vaultId,
+          status: "live",
+        })
+        .where(eq(github_publications.id, input.publicationId)),
+    );
   }
 
   async findByAppOmaId(appOmaId: string): Promise<Publication | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM github_publications WHERE app_oma_id = ? LIMIT 1`)
-      .bind(appOmaId)
-      .first<Row>();
+    const row = await getOne<typeof github_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(github_publications)
+        .where(eq(github_publications.app_oma_id, appOmaId))
+        .limit(1),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async getTriggerLabel(publicationId: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT trigger_label FROM github_publications WHERE id = ?`)
-      .bind(publicationId)
-      .first<{ trigger_label: string | null }>();
+    const row = await getOne<{ trigger_label: string | null }>(
+      this.db
+        .select({ trigger_label: github_publications.trigger_label })
+        .from(github_publications)
+        .where(eq(github_publications.id, publicationId)),
+    );
     return row?.trigger_label ?? null;
   }
 
   async setTriggerLabel(publicationId: string, label: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE github_publications SET trigger_label = ? WHERE id = ?`)
-      .bind(label, publicationId)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({ trigger_label: label })
+        .where(eq(github_publications.id, publicationId)),
+    );
   }
 
   // ─── Base PublicationRepo: status / persona / capabilities updates ─────
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
-    await this.db
-      .prepare(`UPDATE github_publications SET status = ? WHERE id = ?`)
-      .bind(status, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({ status })
+        .where(eq(github_publications.id, id)),
+    );
   }
 
   async updateCapabilities(id: string, capabilities: CapabilitySet): Promise<void> {
-    await this.db
-      .prepare(`UPDATE github_publications SET capabilities = ? WHERE id = ?`)
-      .bind(JSON.stringify([...capabilities]), id)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({ capabilities: JSON.stringify([...capabilities]) })
+        .where(eq(github_publications.id, id)),
+    );
   }
 
   async updatePersona(id: string, persona: Persona): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE github_publications
-         SET persona_name = ?, persona_avatar_url = ? WHERE id = ?`,
-      )
-      .bind(persona.name, persona.avatarUrl, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({
+          persona_name: persona.name,
+          persona_avatar_url: persona.avatarUrl,
+        })
+        .where(eq(github_publications.id, id)),
+    );
   }
 
   async markUnpublished(id: string, at: number): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE github_publications
-         SET status = 'unpublished', unpublished_at = ? WHERE id = ?`,
-      )
-      .bind(at, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(github_publications)
+        .set({ status: "unpublished", unpublished_at: at })
+        .where(eq(github_publications.id, id)),
+    );
   }
 
-  private toDomain(row: Row): Publication {
+  private toDomain(row: typeof github_publications.$inferSelect): Publication {
     const caps = JSON.parse(row.capabilities) as CapabilityKey[];
     return {
       id: row.id,

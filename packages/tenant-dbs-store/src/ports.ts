@@ -4,7 +4,7 @@
 // sharding:
 //
 //   tenant_shard  — assignment record. tenant_id → binding_name. Missing row
-//                   means tenant falls back to the default shard (AUTH_DB).
+//                   means tenant falls back to the default shard (MAIN_DB).
 //                   Permanent: never updated unless we manually migrate a
 //                   tenant between shards (rare admin op).
 //
@@ -64,7 +64,7 @@ export interface ShardPoolRepo {
   insert(row: NewShardPool): Promise<ShardPoolRow>;
   /** Pick the shard new tenants should land on. Returns the open shard with
    *  the lowest tenant_count (ties broken by smallest size_bytes). Returns
-   *  null when no shard is open — caller falls back to AUTH_DB. */
+   *  null when no shard is open — caller falls back to MAIN_DB. */
   pickOpen(): Promise<ShardPoolRow | null>;
   setStatus(bindingName: string, status: ShardStatus): Promise<void>;
   setObservedSize(bindingName: string, sizeBytes: number, observedAt: number): Promise<void>;
@@ -79,7 +79,7 @@ export interface ShardPoolRepo {
 // /v1/memory). Consumed by the R2 memory-events queue consumer to
 // resolve which AUTH_DB_NN shard owns a given memory_store — R2 events
 // carry only the storage key (`<store_id>/<path>`), no tenant_id, so
-// without this index the consumer would have to fall back to env.AUTH_DB
+// without this index the consumer would have to fall back to env.MAIN_DB
 // and write cross-shard ghost rows for any tenant not on shard 0.
 
 export interface MemoryStoreTenantRow {

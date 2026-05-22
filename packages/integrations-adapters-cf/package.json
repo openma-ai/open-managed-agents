@@ -7,10 +7,12 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/github": "workspace:*",
     "@open-managed-agents/integrations-core": "workspace:*",
     "@open-managed-agents/linear": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
-    "@open-managed-agents/slack": "workspace:*"
+    "@open-managed-agents/slack": "workspace:*",
+    "drizzle-orm": "^0.45.2"
   }
 }

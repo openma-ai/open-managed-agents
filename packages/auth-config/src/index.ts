@@ -1,6 +1,6 @@
 // Build a better-auth instance with the OMA-shared config.
 //
-// CF passes a drizzle-adapter wrapping AUTH_DB; Node passes either a
+// CF passes a drizzle-adapter wrapping MAIN_DB; Node passes either a
 // better-sqlite3 db or a pg.Pool — kysely-adapter inside better-auth
 // detects the dialect from the shape (`aggregate in db` → SqliteDialect,
 // `connect in db` → PostgresDialect).
@@ -207,7 +207,7 @@ export async function ensureTenantSqlite(
   const tenantName = `${display}'s workspace`;
 
   await sql
-    .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+    .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
     .bind(tenantId, tenantName, now, now)
     .run();
 

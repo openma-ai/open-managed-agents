@@ -48,14 +48,14 @@ export const authMiddleware = createMiddleware<{
     c.set("tenant_id", tenant_id);
     if (user_id) {
       c.set("user_id", user_id);
-    } else if (c.env.AUTH_DB) {
+    } else if (c.env.MAIN_DB) {
       // Backwards compat: legacy keys minted before user_id was tracked.
       // If the tenant has exactly one user, attribute the request to them so
       // user-scoped endpoints (e.g. /v1/integrations/*) keep working without
       // requiring everyone to regenerate. Multi-user tenants must explicitly
       // regenerate; we don't guess.
       try {
-        const r = await c.env.AUTH_DB
+        const r = await c.env.MAIN_DB
           .prepare(`SELECT id FROM "user" WHERE tenantId = ? LIMIT 2`)
           .bind(tenant_id)
           .all<{ id: string }>();
@@ -63,11 +63,11 @@ export const authMiddleware = createMiddleware<{
           c.set("user_id", r.results[0].id);
         }
       } catch (err) {
-        // AUTH_DB query failed — proceed without user_id; downstream
+        // MAIN_DB query failed — proceed without user_id; downstream
         // user-scoped routes will reject with their own clear message.
         logWarn(
           { op: "auth.tenant_user_lookup", tenant_id, err },
-          "AUTH_DB user lookup failed; proceeding without user_id",
+          "MAIN_DB user lookup failed; proceeding without user_id",
         );
       }
     }
@@ -77,7 +77,7 @@ export const authMiddleware = createMiddleware<{
   // 2. Try session cookie authentication (for Console)
   // Lazy import to avoid crashing workerd in test environments
   // where better-auth's Node.js deps aren't available
-  if (c.env.AUTH_DB) {
+  if (c.env.MAIN_DB) {
     try {
       const { createAuth, getTenantId, ensureTenant, hasMembership } = await import("./auth-config");
       const auth = createAuth(c.env);
@@ -94,7 +94,7 @@ export const authMiddleware = createMiddleware<{
         const requested = c.req.header("x-active-tenant") || "";
         let tenantId: string | null = null;
         if (requested) {
-          const ok = await hasMembership(c.env.AUTH_DB, session.user.id, requested);
+          const ok = await hasMembership(c.env.MAIN_DB, session.user.id, requested);
           if (ok) {
             tenantId = requested;
           } else {
@@ -102,7 +102,7 @@ export const authMiddleware = createMiddleware<{
           }
         }
         if (!tenantId) {
-          tenantId = await getTenantId(c.env.AUTH_DB, session.user.id);
+          tenantId = await getTenantId(c.env.MAIN_DB, session.user.id);
         }
         if (!tenantId) {
           // Self-heal: legacy users registered before the sign-up hook landed,

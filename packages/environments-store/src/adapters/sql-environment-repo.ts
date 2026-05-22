@@ -1,13 +1,15 @@
-import type { EnvironmentConfig } from "@open-managed-agents/shared";
-import type { PageCursor } from "@open-managed-agents/shared";
+import { and, asc, desc, eq, isNull, like, lt, or, sql } from "drizzle-orm";
 import {
-  cursorBinds,
-  cursorWhereSql,
-  escapeLikePattern,
-  fetchN,
-  trimPage,
-} from "@open-managed-agents/shared";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { environments } from "@open-managed-agents/db-schema/cf-auth";
+import type { EnvironmentConfig, PageCursor } from "@open-managed-agents/shared";
+import { escapeLikePattern, fetchN, trimPage } from "@open-managed-agents/shared";
 import { EnvironmentNotFoundError } from "../errors";
 import type {
   EnvironmentRepo,
@@ -16,8 +18,9 @@ import type {
 } from "../ports";
 import type { EnvironmentRow, EnvironmentStatus } from "../types";
 
+
 /**
- * SqlClient-backed implementation of {@link EnvironmentRepo}. Owns the SQL against
+ * Drizzle implementation of {@link EnvironmentRepo}. Owns the queries against
  * the `environments` table defined in apps/main/migrations/0003_environments_table.sql.
  *
  * Hot fields (status, sandbox_worker_name) live in their own columns so the
@@ -25,31 +28,31 @@ import type { EnvironmentRow, EnvironmentStatus } from "../types";
  * without parsing the `config` JSON.
  */
 export class SqlEnvironmentRepo implements EnvironmentRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewEnvironmentInput): Promise<EnvironmentRow> {
-    await this.db
-      .prepare(
-        `INSERT INTO environments
-           (id, tenant_id, name, description, status, sandbox_worker_name,
-            build_error, config, metadata, image_strategy, image_handle, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        input.id,
-        input.tenantId,
-        input.name,
-        input.description,
-        input.status,
-        input.sandboxWorkerName,
-        input.buildError,
-        JSON.stringify(input.config),
-        input.metadata !== null ? JSON.stringify(input.metadata) : null,
-        input.imageStrategy ?? null,
-        input.imageHandle !== undefined && input.imageHandle !== null ? JSON.stringify(input.imageHandle) : null,
-        input.createdAt,
-      )
-      .run();
+    await runOnce(
+      this.db.insert(environments).values({
+        id: input.id,
+        tenant_id: input.tenantId,
+        name: input.name,
+        description: input.description,
+        status: input.status,
+        sandbox_worker_name: input.sandboxWorkerName,
+        build_error: input.buildError,
+        config: JSON.stringify(input.config),
+        metadata: input.metadata !== null ? JSON.stringify(input.metadata) : null,
+        image_strategy: input.imageStrategy ?? null,
+        image_handle:
+          input.imageHandle !== undefined && input.imageHandle !== null
+            ? JSON.stringify(input.imageHandle)
+            : null,
+        created_at: input.createdAt,
+      }),
+    );
     const row = await this.get(input.tenantId, input.id);
     if (!row) throw new Error("environment vanished after insert");
     return row;
@@ -59,16 +62,17 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
     tenantId: string,
     environmentId: string,
   ): Promise<EnvironmentRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, name, description, status, sandbox_worker_name,
-                build_error, config, metadata, image_strategy, image_handle,
-                created_at, updated_at, archived_at
-         FROM environments
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(environmentId, tenantId)
-      .first<DbEnvironment>();
+    const row = await getOne<typeof environments.$inferSelect>(
+      this.db
+        .select()
+        .from(environments)
+        .where(
+          and(
+            eq(environments.id, environmentId),
+            eq(environments.tenant_id, tenantId),
+          ),
+        ),
+    );
     return row ? toRow(row) : null;
   }
 
@@ -76,18 +80,16 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<EnvironmentRow[]> {
-    const sql = opts.includeArchived
-      ? `SELECT id, tenant_id, name, description, status, sandbox_worker_name,
-                build_error, config, metadata, image_strategy, image_handle,
-                created_at, updated_at, archived_at
-         FROM environments WHERE tenant_id = ? ORDER BY created_at ASC`
-      : `SELECT id, tenant_id, name, description, status, sandbox_worker_name,
-                build_error, config, metadata, image_strategy, image_handle,
-                created_at, updated_at, archived_at
-         FROM environments WHERE tenant_id = ? AND archived_at IS NULL
-         ORDER BY created_at ASC`;
-    const result = await this.db.prepare(sql).bind(tenantId).all<DbEnvironment>();
-    return (result.results ?? []).map(toRow);
+    const conds = [eq(environments.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(environments.archived_at));
+    const rows = await getAll<typeof environments.$inferSelect>(
+      this.db
+        .select()
+        .from(environments)
+        .where(and(...conds))
+        .orderBy(asc(environments.created_at)),
+    );
+    return rows.map(toRow);
   }
 
   async listPage(
@@ -99,29 +101,46 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
       q?: string;
     },
   ): Promise<{ items: EnvironmentRow[]; hasMore: boolean }> {
-    const archived = opts.includeArchived ? "" : "AND archived_at IS NULL";
-    const qClause = opts.q ? `AND name LIKE ? ESCAPE '\\'` : "";
-    const sql =
-      `SELECT id, tenant_id, name, description, status, sandbox_worker_name, ` +
-      `build_error, config, metadata, image_strategy, image_handle, ` +
-      `created_at, updated_at, archived_at FROM environments ` +
-      `WHERE tenant_id = ? ${archived} ${qClause} ${cursorWhereSql(opts.after)} ` +
-      `ORDER BY created_at DESC, id DESC LIMIT ?`;
-    const binds: unknown[] = [tenantId];
-    if (opts.q) binds.push(`%${escapeLikePattern(opts.q)}%`);
-    binds.push(...cursorBinds(opts.after), fetchN(opts.limit));
-    const result = await this.db.prepare(sql).bind(...binds).all<DbEnvironment>();
-    return trimPage((result.results ?? []).map(toRow), opts.limit);
+    const conds = [eq(environments.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(environments.archived_at));
+    if (opts.q) {
+      conds.push(like(environments.name, `%${escapeLikePattern(opts.q)}%`));
+    }
+    if (opts.after) {
+      // Cursor: rows older than (created_at, id) DESC.
+      conds.push(
+        or(
+          lt(environments.created_at, opts.after.createdAt),
+          and(
+            eq(environments.created_at, opts.after.createdAt),
+            lt(environments.id, opts.after.id),
+          ),
+        )!,
+      );
+    }
+    const rows = await getAll<typeof environments.$inferSelect>(
+      this.db
+        .select()
+        .from(environments)
+        .where(and(...conds))
+        .orderBy(desc(environments.created_at), desc(environments.id))
+        .limit(fetchN(opts.limit)),
+    );
+    return trimPage(rows.map(toRow), opts.limit);
   }
 
   async count(
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<number> {
-    const sql = opts.includeArchived
-      ? `SELECT COUNT(*) AS c FROM environments WHERE tenant_id = ?`
-      : `SELECT COUNT(*) AS c FROM environments WHERE tenant_id = ? AND archived_at IS NULL`;
-    const row = await this.db.prepare(sql).bind(tenantId).first<{ c: number }>();
+    const conds = [eq(environments.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(environments.archived_at));
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(environments)
+        .where(and(...conds)),
+    );
     return row?.c ?? 0;
   }
 
@@ -130,56 +149,44 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
     environmentId: string,
     update: EnvironmentUpdateFields,
   ): Promise<EnvironmentRow> {
-    const sets: string[] = [];
-    const binds: unknown[] = [];
-    if (update.name !== undefined) {
-      sets.push("name = ?");
-      binds.push(update.name);
-    }
-    if (update.description !== undefined) {
-      sets.push("description = ?");
-      binds.push(update.description);
-    }
-    if (update.status !== undefined) {
-      sets.push("status = ?");
-      binds.push(update.status);
-    }
+    // Pre-check existence — Drizzle's run() result shape is dialect-specific,
+    // so we read first to throw a domain error if the row is missing.
+    const existing = await this.get(tenantId, environmentId);
+    if (!existing) throw new EnvironmentNotFoundError();
+
+    const set: Record<string, unknown> = { updated_at: update.updatedAt };
+    if (update.name !== undefined) set.name = update.name;
+    if (update.description !== undefined) set.description = update.description;
+    if (update.status !== undefined) set.status = update.status;
     if (update.sandboxWorkerName !== undefined) {
-      sets.push("sandbox_worker_name = ?");
-      binds.push(update.sandboxWorkerName);
+      set.sandbox_worker_name = update.sandboxWorkerName;
     }
-    if (update.buildError !== undefined) {
-      sets.push("build_error = ?");
-      binds.push(update.buildError);
-    }
+    if (update.buildError !== undefined) set.build_error = update.buildError;
     if (update.config !== undefined) {
-      sets.push("config = ?");
-      binds.push(JSON.stringify(update.config));
+      set.config = JSON.stringify(update.config);
     }
     if (update.metadata !== undefined) {
-      sets.push("metadata = ?");
-      binds.push(update.metadata !== null ? JSON.stringify(update.metadata) : null);
+      set.metadata = update.metadata !== null ? JSON.stringify(update.metadata) : null;
     }
     if (update.imageStrategy !== undefined) {
-      sets.push("image_strategy = ?");
-      binds.push(update.imageStrategy);
+      set.image_strategy = update.imageStrategy;
     }
     if (update.imageHandle !== undefined) {
-      sets.push("image_handle = ?");
-      binds.push(update.imageHandle !== null ? JSON.stringify(update.imageHandle) : null);
+      set.image_handle =
+        update.imageHandle !== null ? JSON.stringify(update.imageHandle) : null;
     }
-    sets.push("updated_at = ?");
-    binds.push(update.updatedAt);
-    binds.push(environmentId, tenantId);
 
-    const result = await this.db
-      .prepare(
-        `UPDATE environments SET ${sets.join(", ")}
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(...binds)
-      .run();
-    if (!result.meta?.changes) throw new EnvironmentNotFoundError();
+    await runOnce(
+      this.db
+        .update(environments)
+        .set(set)
+        .where(
+          and(
+            eq(environments.id, environmentId),
+            eq(environments.tenant_id, tenantId),
+          ),
+        ),
+    );
     const row = await this.get(tenantId, environmentId);
     if (!row) throw new EnvironmentNotFoundError();
     return row;
@@ -190,45 +197,39 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
     environmentId: string,
     archivedAt: number,
   ): Promise<EnvironmentRow> {
-    const result = await this.db
-      .prepare(
-        `UPDATE environments SET archived_at = ?, updated_at = ?
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(archivedAt, archivedAt, environmentId, tenantId)
-      .run();
-    if (!result.meta?.changes) throw new EnvironmentNotFoundError();
+    const existing = await this.get(tenantId, environmentId);
+    if (!existing) throw new EnvironmentNotFoundError();
+    await runOnce(
+      this.db
+        .update(environments)
+        .set({ archived_at: archivedAt, updated_at: archivedAt })
+        .where(
+          and(
+            eq(environments.id, environmentId),
+            eq(environments.tenant_id, tenantId),
+          ),
+        ),
+    );
     const row = await this.get(tenantId, environmentId);
     if (!row) throw new EnvironmentNotFoundError();
     return row;
   }
 
   async delete(tenantId: string, environmentId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM environments WHERE id = ? AND tenant_id = ?`)
-      .bind(environmentId, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(environments)
+        .where(
+          and(
+            eq(environments.id, environmentId),
+            eq(environments.tenant_id, tenantId),
+          ),
+        ),
+    );
   }
 }
 
-interface DbEnvironment {
-  id: string;
-  tenant_id: string;
-  name: string;
-  description: string | null;
-  status: string;
-  sandbox_worker_name: string | null;
-  build_error: string | null;
-  config: string; // JSON
-  metadata: string | null; // JSON
-  image_strategy: string | null;
-  image_handle: string | null; // JSON
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-}
-
-function toRow(r: DbEnvironment): EnvironmentRow {
+function toRow(r: typeof environments.$inferSelect): EnvironmentRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,
@@ -240,7 +241,8 @@ function toRow(r: DbEnvironment): EnvironmentRow {
     config: JSON.parse(r.config) as EnvironmentConfig["config"],
     metadata: r.metadata !== null ? (JSON.parse(r.metadata) as Record<string, unknown>) : null,
     image_strategy: (r.image_strategy as EnvironmentRow["image_strategy"]) ?? null,
-    image_handle: r.image_handle !== null ? (JSON.parse(r.image_handle) as Record<string, unknown>) : null,
+    image_handle:
+      r.image_handle !== null ? (JSON.parse(r.image_handle) as Record<string, unknown>) : null,
     created_at: msToIso(r.created_at),
     updated_at: r.updated_at !== null ? msToIso(r.updated_at) : null,
     archived_at: r.archived_at !== null ? msToIso(r.archived_at) : null,

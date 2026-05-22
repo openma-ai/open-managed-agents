@@ -5,6 +5,13 @@
   "compatibility_date": "2026-04-13",
   "compatibility_flags": ["nodejs_compat"],
 
+  // ─────────────────────────────────────────────────────────────────────
+  // SELF-HOST BASELINE (sandbox/agent worker)
+  // ─────────────────────────────────────────────────────────────────────
+  // Top-level config = single-D1 self-host shape. Multi-shard prod
+  // for openma.dev lives in env.production overlay below.
+  // ─────────────────────────────────────────────────────────────────────
+
   "containers": [
     {
       "class_name": "Sandbox",
@@ -29,23 +36,14 @@
   },
 
   "kv_namespaces": [
-    { "binding": "CONFIG_KV", "id": "5e49bdaec1884f5989037c86ece7b462" }
+    { "binding": "CONFIG_KV", "id": "<set-by-setup-cf-sh>" }
   ],
 
-  // D1 binding for memory store metadata (memory_stores / memories /
-  // memory_versions tables) — agent's memory tools use the same shared
-  // MemoryStoreService as the main worker, which requires direct D1 access.
-  // D1 layout — same shard set as apps/main. The agent worker's memory
-  // tools query AUTH_DB via the shared MemoryStoreService, so it needs
-  // to resolve the per-tenant shard. AUTH_DB legacy alias stays during
-  // call-site migration.
+  // D1 layout — single-D1 self-host baseline. Same auto-detection as
+  // apps/main/wrangler.jsonc: when AUTH_DB_01 isn't bound, the shared
+  // MemoryStoreService resolves every tenant to MAIN_DB.
   "d1_databases": [
-    { "binding": "AUTH_DB",     "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-    { "binding": "ROUTER_DB",   "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6" },
-    { "binding": "AUTH_DB_00",  "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-    { "binding": "AUTH_DB_01",  "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175" },
-    { "binding": "AUTH_DB_02",  "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75" },
-    { "binding": "AUTH_DB_03",  "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f" }
+    { "binding": "MAIN_DB", "database_name": "openma-auth", "database_id": "<set-by-setup-cf-sh>" }
   ],
 
   // Service bindings:
@@ -75,16 +73,14 @@
 
   // Resolved bucket names per env — sandbox.ts FUSE mode mounts via the
   // S3 API which takes the actual bucket name (not the binding name).
-  // Keep these in sync with r2_buckets[].bucket_name above. Override in
-  // env.staging for staging-specific bucket names.
-  // CLOUDFLARE_ACCOUNT_ID + BACKUP_BUCKET_NAME are required by sandbox
-  // SDK createBackup() to mint R2 presigned URLs for the squashfs upload
-  // (production mode). Keep these in sync across env overrides.
+  // CLOUDFLARE_ACCOUNT_ID is required by sandbox SDK createBackup() to
+  // mint R2 presigned URLs for the squashfs upload (production mode).
+  // setup-cf.sh fills in the account id (or self-hoster sets it manually).
   "vars": {
     "MEMORY_BUCKET_NAME": "managed-agents-memory",
     "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
     "BACKUP_BUCKET_NAME": "managed-agents-backups",
-    "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"
+    "CLOUDFLARE_ACCOUNT_ID": "<set-by-setup-cf-sh>"
   },
 
   "r2_buckets": [
@@ -114,18 +110,66 @@
   "limits": { "cpu_ms": 300000 },
   "observability": { "enabled": true },
 
-  // Analytics Engine for structured error/event metrics from the agent
-  // worker (SessionDO, outbound proxy, sandbox lifecycle). Same dataset as
-  // the main worker so dashboards see all OMA events together.
   "analytics_engine_datasets": [
     { "binding": "ANALYTICS", "dataset": "oma_events" }
   ],
 
-  // Staging twin: a fully separate sandbox-default-staging worker bound to
-  // the staging KV / D1 / R2 / DO namespace. Keeps prod and staging session
-  // state and tenant data fully isolated. The staging main worker's
-  // SANDBOX_sandbox_default service binding points at "sandbox-default-staging".
+  // ─────────────────────────────────────────────────────────────────────
+  // ENVIRONMENT OVERLAYS (hosted)
+  // ─────────────────────────────────────────────────────────────────────
   "env": {
+    "production": {
+      "name": "sandbox-default",
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile.sandbox",
+          "instance_type": "standard-1",
+          "max_instances": 50
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "SESSION_DO", "class_name": "SessionDO" },
+          { "name": "SANDBOX", "class_name": "Sandbox" },
+          { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom", "script_name": "managed-agents" }
+        ]
+      },
+      "kv_namespaces": [
+        { "binding": "CONFIG_KV", "id": "5e49bdaec1884f5989037c86ece7b462" }
+      ],
+      "d1_databases": [
+        { "binding": "MAIN_DB",    "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
+        { "binding": "ROUTER_DB",  "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6" },
+        { "binding": "AUTH_DB_00", "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
+        { "binding": "AUTH_DB_01", "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175" },
+        { "binding": "AUTH_DB_02", "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75" },
+        { "binding": "AUTH_DB_03", "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f" }
+      ],
+      "services": [
+        { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
+        { "binding": "MAIN_MCP", "service": "managed-agents", "entrypoint": "McpProxyRpc" }
+      ],
+      "ai": { "binding": "AI" },
+      "vars": {
+        "MEMORY_BUCKET_NAME": "managed-agents-memory",
+        "WORKSPACE_BUCKET_NAME": "managed-agents-workspace",
+        "BACKUP_BUCKET_NAME": "managed-agents-backups",
+        "CLOUDFLARE_ACCOUNT_ID": "44af79e51582ca20c9003eb926540242"
+      },
+      "r2_buckets": [
+        { "binding": "WORKSPACE_BUCKET", "bucket_name": "managed-agents-workspace" },
+        { "binding": "FILES_BUCKET", "bucket_name": "managed-agents-files" },
+        { "binding": "BACKUP_BUCKET", "bucket_name": "managed-agents-backups" },
+        { "binding": "MEMORY_BUCKET", "bucket_name": "managed-agents-memory" }
+      ],
+      "browser": { "binding": "BROWSER" },
+      "limits": { "cpu_ms": 300000 },
+      "observability": { "enabled": true },
+      "analytics_engine_datasets": [
+        { "binding": "ANALYTICS", "dataset": "oma_events" }
+      ]
+    },
     "staging": {
       "name": "sandbox-default-staging",
       "containers": [
@@ -153,7 +197,7 @@
         { "binding": "CONFIG_KV", "id": "f91ddab8abe64941bd3ef398b0c187a7" }
       ],
       "d1_databases": [
-        { "binding": "AUTH_DB",    "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6" },
+        { "binding": "MAIN_DB",    "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6" },
         { "binding": "ROUTER_DB",  "database_name": "openma-router-staging",        "database_id": "c238a338-9b6e-40c5-aaaa-48d4fe6dc63d" },
         { "binding": "AUTH_DB_00", "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6" },
         { "binding": "AUTH_DB_01", "database_name": "openma-auth-shard-01-staging", "database_id": "fe6a34d1-cd8a-48a1-bff1-29032026d006" },

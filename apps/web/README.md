@@ -80,8 +80,7 @@ What ships:
 | RSS | `/blog/rss.xml` — drafts excluded, full descriptions |
 | `robots.txt` | allows all, points at sitemap, disallows `/drafts/` |
 | Canonical URLs | per-page via `canonical` prop on Base layout |
-| Open Graph | full set (title, description, type, image, locale, article:published_time, article:modified_time) |
-| Twitter Card | summary_large_image, with creator + site handle |
+| Open Graph | full set (title, description, type, image, locale, article:published_time, article:modified_time) — Twitter renderers fall back to og:* when twitter:* is absent, so we don't duplicate |
 | JSON-LD | `Organization` + `WebSite` (with SearchAction stub) on every page; `BlogPosting` + `BreadcrumbList` on each post |
 | Reading time | computed from word count, shown on post + emitted in JSON-LD as `wordCount` if needed later |
 | theme-color | matches light/dark brand color so browser chrome blends in |
@@ -96,7 +95,6 @@ prop on `<Base>` and they're injected as `<script type="application/ld+json">`.
 Validate after deploy:
 - [Google Rich Results Test](https://search.google.com/test/rich-results) — paste a blog post URL, expect "Article" detected.
 - [Schema.org validator](https://validator.schema.org/) — paste any page URL.
-- [Twitter Card validator](https://cards-dev.twitter.com/validator) (legacy but still works).
 
 ## What's not built yet (skeleton scope)
 
@@ -107,6 +105,5 @@ Validate after deploy:
 - Newsletter signup
 - **og-default.png** — referenced in Base.astro but not committed. Drop a 1200×630 PNG at `public/og-default.png` before launch. Or wire up per-post OG image generation via `astro-og-canvas` / `satori-html` (build-time, no runtime cost) — the `BlogPostSchemaInput.image` field already supports per-post overrides.
 - Pagefind static search (`pnpm add pagefind` + post-build script). The `WebSite` JSON-LD already has the `SearchAction` stub.
-- Twitter handle `@openma_dev` is a placeholder; update `src/lib/seo.ts` `TWITTER_HANDLE` after registration.
 
 These are deliberate omissions — add when content volume justifies.
