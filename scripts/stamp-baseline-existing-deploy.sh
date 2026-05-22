@@ -76,10 +76,10 @@ stamp() {
 
 # AUTH_DB shards (apps/main/wrangler.jsonc env.<env>.d1_databases)
 echo
-echo "AUTH_DB shards (consolidated: 0001_consolidated.sql):"
+echo "MAIN_DB / AUTH_DB shards (consolidated: 0001_consolidated.sql):"
 while IFS=$'\t' read -r binding db_name; do
   case "$binding" in
-    AUTH_DB|AUTH_DB_*)  stamp "$db_name" "0001_consolidated.sql" ;;
+    MAIN_DB|AUTH_DB|AUTH_DB_*)  stamp "$db_name" "0001_consolidated.sql" ;;
     ROUTER_DB)
       stamp "$db_name" "0001_consolidated.sql"
       ;;
