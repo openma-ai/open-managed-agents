@@ -66,7 +66,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
       const now = Date.now();
       await services.sql
         .prepare(
-          `INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+          `INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`,
         )
         .bind(tenantId, name, now, now)
         .run();
@@ -101,7 +101,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
 export interface MeRoutesDeps {
   services: RouteServicesArg;
   authDisabled: boolean;
-  /** Look up the user row by id. CF queries env.AUTH_DB.user; Node
+  /** Look up the user row by id. CF queries env.MAIN_DB.user; Node
    *  returns a stub since the user lives in the better-auth db (separate
    *  connection). */
   loadUser?: (userId: string) => Promise<{

@@ -60,6 +60,7 @@ import {
   SqlSlackSetupLinkRepo,
 } from "@open-managed-agents/integrations-adapters-node";
 import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
@@ -84,6 +85,7 @@ export type AppendUserEventHook = (
 
 export interface NodeInstallBridgeOpts {
   sql: SqlClient;
+  db: OmaDb;
   platformRootSecret: string;
   gatewayOrigin: string;
   vaults: VaultService;
@@ -499,6 +501,7 @@ export class NodeInstallBridge implements InstallBridge {
   } {
     const repos = buildNodeRepos({
       sql: this.opts.sql,
+      db: this.opts.db,
       PLATFORM_ROOT_SECRET: this.opts.platformRootSecret,
     });
     const sessions = new InProcessSessionCreator(this.opts);
@@ -524,12 +527,12 @@ export class NodeInstallBridge implements InstallBridge {
     const slackIds = new CryptoIdGenerator();
     const baseSlack: SlackContainer = {
       ...repos,
-      installations: new SqlSlackInstallationRepo(this.opts.sql, slackCrypto, slackIds),
-      publications: new SqlSlackPublicationRepo(this.opts.sql, slackIds, slackCrypto),
-      apps: new SqlSlackAppRepo(this.opts.sql, slackCrypto, slackIds),
-      webhookEvents: new SqlSlackWebhookEventStore(this.opts.sql),
+      installations: new SqlSlackInstallationRepo(this.opts.db, slackCrypto, slackIds),
+      publications: new SqlSlackPublicationRepo(this.opts.db, slackIds, slackCrypto),
+      apps: new SqlSlackAppRepo(this.opts.db, slackCrypto, slackIds),
+      webhookEvents: new SqlSlackWebhookEventStore(this.opts.db),
       sessionScopes: repos.sessionScopes,
-      setupLinks: new SqlSlackSetupLinkRepo(this.opts.sql, slackIds),
+      setupLinks: new SqlSlackSetupLinkRepo(this.opts.db, slackIds),
       sessions,
       vaults,
     };

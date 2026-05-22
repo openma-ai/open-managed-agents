@@ -94,7 +94,7 @@ runtimesRoutes.post("/connect-runtime", async (c) => {
   const code = generateCode();
   const expiresAt = Math.floor(Date.now() / 1000) + CODE_TTL_SECONDS;
 
-  await c.env.AUTH_DB
+  await c.env.MAIN_DB
     .prepare(
       `INSERT INTO "connect_runtime_codes" (code, user_id, tenant_id, state, expires_at) VALUES (?, ?, ?, ?, ?)`,
     )
@@ -109,7 +109,7 @@ runtimesRoutes.get("/", async (c) => {
   const userId = c.get("user_id");
   if (!userId) return c.json({ error: "unauthorized" }, 401);
 
-  const { results } = await c.env.AUTH_DB
+  const { results } = await c.env.MAIN_DB
     .prepare(
       `SELECT id, machine_id, hostname, os, agents_json, local_skills_json, version, status, last_heartbeat, created_at
        FROM "runtimes" WHERE owner_user_id = ? ORDER BY created_at DESC`,
@@ -150,18 +150,18 @@ runtimesRoutes.delete("/:id", async (c) => {
   if (!userId) return c.json({ error: "unauthorized" }, 401);
 
   const id = c.req.param("id");
-  const owned = await c.env.AUTH_DB
+  const owned = await c.env.MAIN_DB
     .prepare(`SELECT id FROM "runtimes" WHERE id = ? AND owner_user_id = ?`)
     .bind(id, userId)
     .first<{ id: string }>();
   if (!owned) return c.json({ error: "not found" }, 404);
 
   const now = Math.floor(Date.now() / 1000);
-  await c.env.AUTH_DB.batch([
-    c.env.AUTH_DB
+  await c.env.MAIN_DB.batch([
+    c.env.MAIN_DB
       .prepare(`UPDATE "runtime_tokens" SET revoked_at = ? WHERE runtime_id = ? AND revoked_at IS NULL`)
       .bind(now, id),
-    c.env.AUTH_DB.prepare(`DELETE FROM "runtimes" WHERE id = ?`).bind(id),
+    c.env.MAIN_DB.prepare(`DELETE FROM "runtimes" WHERE id = ?`).bind(id),
   ]);
 
   return c.json({ ok: true });
@@ -190,7 +190,7 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
 
   const now = Math.floor(Date.now() / 1000);
 
-  const row = await c.env.AUTH_DB
+  const row = await c.env.MAIN_DB
     .prepare(
       `SELECT user_id, tenant_id, state, expires_at, used_at FROM "connect_runtime_codes" WHERE code = ?`,
     )
@@ -202,14 +202,14 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
   if (row.expires_at < now) return c.json({ error: "code expired" }, 400);
   if (row.state !== state) return c.json({ error: "state mismatch" }, 400);
 
-  await c.env.AUTH_DB
+  await c.env.MAIN_DB
     .prepare(`UPDATE "connect_runtime_codes" SET used_at = ? WHERE code = ?`)
     .bind(now, code)
     .run();
 
   // Idempotent runtime insert: re-running `oma bridge setup` from same UNIX
   // user / same machine reuses the existing row.
-  const existing = await c.env.AUTH_DB
+  const existing = await c.env.MAIN_DB
     .prepare(`SELECT id FROM "runtimes" WHERE owner_user_id = ? AND machine_id = ?`)
     .bind(row.user_id, machine_id)
     .first<{ id: string }>();
@@ -217,13 +217,13 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
   let runtimeId: string;
   if (existing) {
     runtimeId = existing.id;
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(`UPDATE "runtimes" SET hostname = ?, os = ?, version = ? WHERE id = ?`)
       .bind(hostname, os, version, runtimeId)
       .run();
   } else {
     runtimeId = crypto.randomUUID();
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(
         `INSERT INTO "runtimes" (id, owner_user_id, owner_tenant_id, machine_id, hostname, os, agents_json, version, status, last_heartbeat, created_at)
          VALUES (?, ?, ?, ?, ?, ?, '[]', ?, 'offline', NULL, ?)`,
@@ -238,7 +238,7 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
   const tokenPlain = generateRuntimeToken();
   const tokenHash = await sha256(tokenPlain);
   const tokenId = crypto.randomUUID();
-  await c.env.AUTH_DB
+  await c.env.MAIN_DB
     .prepare(
       `INSERT INTO "runtime_tokens" (id, runtime_id, token_hash, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?)`,
     )
@@ -530,7 +530,7 @@ export async function authenticateRuntimeToken(
   const token = bearer.startsWith("Bearer ") ? bearer.slice(7) : bearer;
   if (!token.startsWith("sk_machine_")) return null;
   const hash = await sha256(token);
-  const row = await env.AUTH_DB
+  const row = await env.MAIN_DB
     .prepare(
       `SELECT t.runtime_id AS runtime_id, r.owner_user_id AS user_id, r.owner_tenant_id AS tenant_id
        FROM "runtime_tokens" t JOIN "runtimes" r ON r.id = t.runtime_id
@@ -540,7 +540,7 @@ export async function authenticateRuntimeToken(
     .first<{ runtime_id: string; user_id: string; tenant_id: string }>();
   if (!row) return null;
   // Best-effort last_used_at refresh; don't block on it.
-  env.AUTH_DB
+  env.MAIN_DB
     .prepare(`UPDATE "runtime_tokens" SET last_used_at = unixepoch() WHERE token_hash = ?`)
     .bind(hash)
     .run()

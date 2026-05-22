@@ -430,6 +430,9 @@ app.post("/sessions/:id/events", async (c) => {
 
   const session = await c.var.services.sessions.get({ tenantId, sessionId });
   if (!session) return c.json({ error: "session not found" }, 404);
+  if (!session.environment_id) {
+    return c.json({ error: "session has no environment_id" }, 400);
+  }
 
   const envRow2 = await c.var.services.environments.get({
     tenantId,
@@ -609,9 +612,9 @@ app.post("/vaults/rotate", async (c) => {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 async function resolveTenantId(env: Env, userId: string): Promise<string | null> {
-  if (!env.AUTH_DB) return null;
+  if (!env.MAIN_DB) return null;
   // Avoid pulling better-auth into the hot path; one direct query.
-  const row = await env.AUTH_DB.prepare(`SELECT tenantId FROM "user" WHERE id = ?`)
+  const row = await env.MAIN_DB.prepare(`SELECT tenantId FROM "user" WHERE id = ?`)
     .bind(userId)
     .first<{ tenantId: string | null }>();
   return row?.tenantId ?? null;

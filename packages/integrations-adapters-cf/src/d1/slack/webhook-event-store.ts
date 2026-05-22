@@ -1,7 +1,19 @@
+import { eq } from "drizzle-orm";
+import {
+  asBuilder,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { slack_webhook_events } from "@open-managed-agents/db-schema/cf-integrations";
 import type { WebhookEventStore } from "@open-managed-agents/integrations-core";
 
-export class D1SlackWebhookEventStore implements WebhookEventStore {
-  constructor(private readonly db: D1Database) {}
+export class SqlSlackWebhookEventStore implements WebhookEventStore {
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   /**
    * Atomic insert via INSERT OR IGNORE on the primary key. Returns true if a
@@ -16,35 +28,48 @@ export class D1SlackWebhookEventStore implements WebhookEventStore {
     eventType: string,
     receivedAt: number,
   ): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO slack_webhook_events
-           (delivery_id, tenant_id, installation_id, event_type, received_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .bind(deliveryId, tenantId, installationId, eventType, receivedAt)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // RETURNING tells us atomically whether the INSERT happened (row
+    // returned) or was ignored on conflict (no row).
+    const inserted = await getOne<{ delivery_id: string }>(
+      this.db
+        .insert(slack_webhook_events)
+        .values({
+          delivery_id: deliveryId,
+          tenant_id: tenantId,
+          installation_id: installationId,
+          event_type: eventType,
+          received_at: receivedAt,
+        })
+        .onConflictDoNothing()
+        .returning({ delivery_id: slack_webhook_events.delivery_id }),
+    );
+    return inserted !== null;
   }
 
   async attachSession(deliveryId: string, sessionId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_webhook_events SET session_id = ? WHERE delivery_id = ?`)
-      .bind(sessionId, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_webhook_events)
+        .set({ session_id: sessionId })
+        .where(eq(slack_webhook_events.delivery_id, deliveryId)),
+    );
   }
 
   async attachPublication(deliveryId: string, publicationId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_webhook_events SET publication_id = ? WHERE delivery_id = ?`)
-      .bind(publicationId, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_webhook_events)
+        .set({ publication_id: publicationId })
+        .where(eq(slack_webhook_events.delivery_id, deliveryId)),
+    );
   }
 
   async attachError(deliveryId: string, error: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_webhook_events SET error = ? WHERE delivery_id = ?`)
-      .bind(error, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_webhook_events)
+        .set({ error })
+        .where(eq(slack_webhook_events.delivery_id, deliveryId)),
+    );
   }
 }

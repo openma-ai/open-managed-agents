@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@open-managed-agents/github": "workspace:*",
+    "@open-managed-agents/integrations-adapters-cf": "workspace:*",
     "@open-managed-agents/integrations-core": "workspace:*",
+    "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/linear": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",

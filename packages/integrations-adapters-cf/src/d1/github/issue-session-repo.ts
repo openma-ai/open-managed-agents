@@ -1,18 +1,18 @@
+import { and, eq } from "drizzle-orm";
+import {
+  asBuilder,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { github_issue_sessions } from "@open-managed-agents/db-schema/cf-integrations";
 import type { SessionId } from "@open-managed-agents/integrations-core";
 import type {
   GitHubIssueSession,
   GitHubIssueSessionRepo,
   GitHubIssueSessionStatus,
 } from "@open-managed-agents/github";
-
-interface Row {
-  tenant_id: string;
-  publication_id: string;
-  issue_id: string;
-  session_id: string;
-  status: string;
-  created_at: number;
-}
 
 /**
  * GitHub's per-issue session bookkeeping. One row per (publication, "<owner/
@@ -27,24 +27,31 @@ interface Row {
  * (D1LinearIssueSessionRepo / `linear_issue_sessions`) — strictly separate
  * storage and interface.
  */
-export class D1GitHubIssueSessionRepo implements GitHubIssueSessionRepo {
-  constructor(private readonly db: D1Database) {}
+export class SqlGitHubIssueSessionRepo implements GitHubIssueSessionRepo {
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async getByIssue(
     publicationId: string,
     issueId: string,
   ): Promise<GitHubIssueSession | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT * FROM github_issue_sessions
-         WHERE publication_id = ? AND issue_id = ?`,
-      )
-      .bind(publicationId, issueId)
-      .first<Row>();
+    const row = await getOne<typeof github_issue_sessions.$inferSelect>(
+      this.db
+        .select()
+        .from(github_issue_sessions)
+        .where(
+          and(
+            eq(github_issue_sessions.publication_id, publicationId),
+            eq(github_issue_sessions.issue_id, issueId),
+          ),
+        ),
+    );
     return row ? this.toDomain(row) : null;
   }
 
-  private toDomain(row: Row): GitHubIssueSession {
+  private toDomain(row: typeof github_issue_sessions.$inferSelect): GitHubIssueSession {
     return {
       tenantId: row.tenant_id,
       publicationId: row.publication_id,
@@ -61,15 +68,23 @@ export class D1GitHubIssueSessionRepo implements GitHubIssueSessionRepo {
     issueId: string;
     nowMs: number;
   }): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO github_issue_sessions
-           (tenant_id, publication_id, issue_id, session_id, status, created_at)
-         VALUES (?, ?, ?, '', 'pending', ?)`,
-      )
-      .bind(args.tenantId, args.publicationId, args.issueId, args.nowMs)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // RETURNING tells us atomically whether the INSERT happened (row
+    // returned) or was ignored on conflict (no row).
+    const inserted = await getOne<{ publication_id: string }>(
+      this.db
+        .insert(github_issue_sessions)
+        .values({
+          tenant_id: args.tenantId,
+          publication_id: args.publicationId,
+          issue_id: args.issueId,
+          session_id: "",
+          status: "pending",
+          created_at: args.nowMs,
+        })
+        .onConflictDoNothing()
+        .returning({ publication_id: github_issue_sessions.publication_id }),
+    );
+    return inserted !== null;
   }
 
   async fulfillPending(
@@ -77,24 +92,35 @@ export class D1GitHubIssueSessionRepo implements GitHubIssueSessionRepo {
     issueId: string,
     sessionId: SessionId,
   ): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE github_issue_sessions
-           SET session_id = ?, status = 'active'
-         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
-      )
-      .bind(sessionId, publicationId, issueId)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // .returning() + getOne lets us tell whether any row matched the
+    // (publication_id, issue_id, status='pending') predicate.
+    const updated = await getOne<{ publication_id: string }>(
+      this.db
+        .update(github_issue_sessions)
+        .set({ session_id: sessionId, status: "active" })
+        .where(
+          and(
+            eq(github_issue_sessions.publication_id, publicationId),
+            eq(github_issue_sessions.issue_id, issueId),
+            eq(github_issue_sessions.status, "pending"),
+          ),
+        )
+        .returning({ publication_id: github_issue_sessions.publication_id }),
+    );
+    return updated !== null;
   }
 
   async releasePending(publicationId: string, issueId: string): Promise<void> {
-    await this.db
-      .prepare(
-        `DELETE FROM github_issue_sessions
-         WHERE publication_id = ? AND issue_id = ? AND status = 'pending'`,
-      )
-      .bind(publicationId, issueId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(github_issue_sessions)
+        .where(
+          and(
+            eq(github_issue_sessions.publication_id, publicationId),
+            eq(github_issue_sessions.issue_id, issueId),
+            eq(github_issue_sessions.status, "pending"),
+          ),
+        ),
+    );
   }
 }

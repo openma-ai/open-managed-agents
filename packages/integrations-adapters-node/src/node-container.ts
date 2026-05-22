@@ -19,6 +19,7 @@
 // service-binding indirection.
 
 import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type {
   Container,
   SessionCreator,
@@ -30,19 +31,21 @@ import { WebCryptoHmacVerifier } from "./hmac";
 import { WorkerHttpClient } from "./http";
 import { CryptoIdGenerator } from "./ids";
 import { WebCryptoJwtSigner } from "./jwt";
-import { SqlAppRepo } from "./sql/app-repo";
-import { SqlDispatchRuleRepo } from "./sql/dispatch-rule-repo";
-import { SqlGitHubAppRepo } from "./sql/github-app-repo";
-import { SqlGitHubInstallationRepo } from "./sql/github/installation-repo";
-import { SqlGitHubPublicationRepo } from "./sql/github/publication-repo";
-import { SqlGitHubWebhookEventStore } from "./sql/github/webhook-event-store";
-import { SqlInstallationRepo } from "./sql/installation-repo";
-import { SqlLinearIssueSessionRepo } from "./sql/linear/issue-session-repo";
-import { SqlGitHubIssueSessionRepo } from "./sql/github/issue-session-repo";
-import { SqlLinearEventStore } from "./sql/linear-event-store";
-import { SqlPublicationRepo } from "./sql/publication-repo";
-import { SqlSetupLinkRepo } from "./sql/setup-link-repo";
-import { SqlSlackSessionScopeRepo } from "./sql/slack/session-scope-repo";
+import {
+  SqlGitHubAppRepo,
+  SqlGitHubInstallationRepo,
+  SqlGitHubIssueSessionRepo,
+  SqlGitHubPublicationRepo,
+  SqlGitHubWebhookEventStore,
+  SqlLinearAppRepo,
+  SqlLinearDispatchRuleRepo,
+  SqlLinearEventStore,
+  SqlLinearInstallationRepo,
+  SqlLinearIssueSessionRepo,
+  SqlLinearPublicationRepo,
+  SqlLinearSetupLinkRepo,
+  SqlSlackSessionScopeRepo,
+} from "@open-managed-agents/integrations-adapters-cf";
 import { SqlMembershipTenantResolver } from "./sql/membership-tenant-resolver";
 
 export interface NodeReposEnv {
@@ -51,6 +54,10 @@ export interface NodeReposEnv {
    *  resolver reads. Self-host runs one database; we don't split
    *  integrations data into a separate connection. */
   sql: SqlClient;
+  /** Drizzle wrapper for the same database — the dialect-blind port that
+   *  ported adapters consume. As more adapters move from raw SqlClient
+   *  to Drizzle this widens; until then both surfaces coexist. */
+  db: OmaDb;
   PLATFORM_ROOT_SECRET: string;
 }
 
@@ -68,21 +75,21 @@ export function buildNodeRepos(env: NodeReposEnv) {
   const jwt = new WebCryptoJwtSigner(env.PLATFORM_ROOT_SECRET);
   const http = new WorkerHttpClient();
   const tenants = new SqlMembershipTenantResolver(sql);
-  const linearInstallations = new SqlInstallationRepo(sql, cryptoImpl, ids);
-  // SqlPublicationRepo needs Crypto: the publication-first install flow
+  const linearInstallations = new SqlLinearInstallationRepo(env.db, cryptoImpl, ids);
+  // SqlLinearPublicationRepo needs Crypto: the publication-first install flow
   // stores OAuth client_secret + webhook_secret encrypted on the row.
-  const linearPublications = new SqlPublicationRepo(sql, ids, cryptoImpl);
-  const githubInstallations = new SqlGitHubInstallationRepo(sql, cryptoImpl, ids);
-  const githubPublications = new SqlGitHubPublicationRepo(sql, ids, cryptoImpl);
-  const apps = new SqlAppRepo(sql, cryptoImpl, ids);
-  const githubApps = new SqlGitHubAppRepo(sql, cryptoImpl, ids);
-  const linearEvents = new SqlLinearEventStore(sql);
-  const githubWebhookEvents = new SqlGitHubWebhookEventStore(sql);
-  const linearIssueSessions = new SqlLinearIssueSessionRepo(sql);
-  const githubIssueSessions = new SqlGitHubIssueSessionRepo(sql);
-  const setupLinks = new SqlSetupLinkRepo(sql, ids);
-  const dispatchRules = new SqlDispatchRuleRepo(sql, ids);
-  const sessionScopes = new SqlSlackSessionScopeRepo(sql);
+  const linearPublications = new SqlLinearPublicationRepo(env.db, ids, cryptoImpl);
+  const githubInstallations = new SqlGitHubInstallationRepo(env.db, cryptoImpl, ids);
+  const githubPublications = new SqlGitHubPublicationRepo(env.db, ids, cryptoImpl);
+  const apps = new SqlLinearAppRepo(env.db, cryptoImpl, ids);
+  const githubApps = new SqlGitHubAppRepo(env.db, cryptoImpl, ids);
+  const linearEvents = new SqlLinearEventStore(env.db);
+  const githubWebhookEvents = new SqlGitHubWebhookEventStore(env.db);
+  const linearIssueSessions = new SqlLinearIssueSessionRepo(env.db);
+  const githubIssueSessions = new SqlGitHubIssueSessionRepo(env.db);
+  const setupLinks = new SqlLinearSetupLinkRepo(env.db, ids);
+  const dispatchRules = new SqlLinearDispatchRuleRepo(env.db, ids);
+  const sessionScopes = new SqlSlackSessionScopeRepo(env.db);
 
   return {
     clock,

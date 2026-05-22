@@ -1,3 +1,13 @@
+import { and, desc, eq, inArray } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { linear_publications } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   CapabilityKey,
   CapabilitySet,
@@ -15,29 +25,6 @@ import type {
   SessionGranularity,
 } from "@open-managed-agents/integrations-core";
 
-interface Row {
-  id: string;
-  tenant_id: string;
-  user_id: string;
-  agent_id: string;
-  installation_id: string;
-  environment_id: string | null;
-  mode: string;
-  status: string;
-  persona_name: string;
-  persona_avatar_url: string | null;
-  capabilities: string;
-  session_granularity: string;
-  created_at: number;
-  unpublished_at: number | null;
-  // Publication-first credential columns (migration 0002).
-  client_id: string | null;
-  client_secret_cipher: string | null;
-  webhook_secret_cipher: string | null;
-  signing_secret_cipher: string | null;
-  vault_id: string | null;
-}
-
 /** Sentinel used for `installation_id` on rows that haven't bound yet. */
 const PENDING_INSTALLATION_ID = "";
 
@@ -52,9 +39,10 @@ const PENDING_INSTALLATION_ID = "";
  * via the same Crypto port that token-at-rest uses ("integrations.tokens"
  * label).
  */
-export class D1PublicationRepo implements LinearPublicationRepo {
+export class SqlLinearPublicationRepo implements LinearPublicationRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly ids: IdGenerator,
     /**
      * Optional Crypto port. Required when the publication-first methods are
@@ -63,82 +51,92 @@ export class D1PublicationRepo implements LinearPublicationRepo {
      * legacy install paths can pass undefined.
      */
     private readonly crypto?: Crypto,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(id: string): Promise<Publication | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM linear_publications WHERE id = ?`)
-      .bind(id)
-      .first<Row>();
+    const row = await getOne<typeof linear_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_publications)
+        .where(eq(linear_publications.id, id)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async listByInstallation(installationId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_publications WHERE installation_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(installationId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof linear_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_publications)
+        .where(eq(linear_publications.installation_id, installationId))
+        .orderBy(desc(linear_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listByUserAndAgent(
     userId: string,
     agentId: string,
   ): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_publications WHERE user_id = ? AND agent_id = ?
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId, agentId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof linear_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_publications)
+        .where(
+          and(
+            eq(linear_publications.user_id, userId),
+            eq(linear_publications.agent_id, agentId),
+          ),
+        )
+        .orderBy(desc(linear_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async listPendingByUser(userId: string): Promise<readonly Publication[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_publications
-         WHERE user_id = ?
-           AND status IN ('pending_setup', 'credentials_filled', 'awaiting_install')
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof linear_publications.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_publications)
+        .where(
+          and(
+            eq(linear_publications.user_id, userId),
+            inArray(linear_publications.status, [
+              "pending_setup",
+              "credentials_filled",
+              "awaiting_install",
+            ]),
+          ),
+        )
+        .orderBy(desc(linear_publications.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async insert(row: NewPublication): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();
-    await this.db
-      .prepare(
-        `INSERT INTO linear_publications (
-           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
-           persona_name, persona_avatar_url, capabilities,
-           session_granularity, created_at, unpublished_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(linear_publications).values({
         id,
-        row.tenantId,
-        row.userId,
-        row.agentId,
-        row.installationId,
-        row.environmentId,
-        row.mode,
-        row.status,
-        row.persona.name,
+        tenant_id: row.tenantId,
+        user_id: row.userId,
+        agent_id: row.agentId,
+        installation_id: row.installationId,
+        environment_id: row.environmentId,
+        mode: row.mode,
+        status: row.status,
+        persona_name: row.persona.name,
         // D1 rejects undefined; coerce to null when persona has no avatar.
-        row.persona.avatarUrl ?? null,
-        JSON.stringify([...row.capabilities]),
-        row.sessionGranularity,
-        now,
-      )
-      .run();
+        persona_avatar_url: row.persona.avatarUrl ?? null,
+        capabilities: JSON.stringify([...row.capabilities]),
+        session_granularity: row.sessionGranularity,
+        created_at: now,
+        unpublished_at: null,
+      }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -159,32 +157,26 @@ export class D1PublicationRepo implements LinearPublicationRepo {
   async insertShell(row: NewPublicationShell): Promise<Publication> {
     const id = this.ids.generate();
     const now = Date.now();
-    await this.db
-      .prepare(
-        `INSERT INTO linear_publications (
-           id, tenant_id, user_id, agent_id, installation_id, environment_id, mode, status,
-           persona_name, persona_avatar_url, capabilities,
-           session_granularity, created_at, unpublished_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(linear_publications).values({
         id,
-        row.tenantId,
-        row.userId,
-        row.agentId,
+        tenant_id: row.tenantId,
+        user_id: row.userId,
+        agent_id: row.agentId,
         // installation_id stays NOT NULL in the schema; pending pubs get
         // the empty-string sentinel until bindInstallation runs.
-        PENDING_INSTALLATION_ID,
-        row.environmentId,
-        row.mode,
-        "pending_setup",
-        row.persona.name,
-        row.persona.avatarUrl ?? null,
-        JSON.stringify([...row.capabilities]),
-        row.sessionGranularity,
-        now,
-      )
-      .run();
+        installation_id: PENDING_INSTALLATION_ID,
+        environment_id: row.environmentId,
+        mode: row.mode,
+        status: "pending_setup",
+        persona_name: row.persona.name,
+        persona_avatar_url: row.persona.avatarUrl ?? null,
+        capabilities: JSON.stringify([...row.capabilities]),
+        session_granularity: row.sessionGranularity,
+        created_at: now,
+        unpublished_at: null,
+      }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -208,48 +200,45 @@ export class D1PublicationRepo implements LinearPublicationRepo {
   ): Promise<void> {
     if (!this.crypto) {
       throw new Error(
-        "D1PublicationRepo.setCredentials: Crypto port required for publication-first flow",
+        "SqlLinearPublicationRepo.setCredentials: Crypto port required for publication-first flow",
       );
     }
     const clientSecretCipher = await this.crypto.encrypt(input.clientSecret);
     const webhookSecretCipher = await this.crypto.encrypt(input.webhookSecret);
     const signingSecretCipher =
       input.signingSecret == null ? null : await this.crypto.encrypt(input.signingSecret);
-    await this.db
-      .prepare(
-        `UPDATE linear_publications
-           SET client_id = ?,
-               client_secret_cipher = ?,
-               webhook_secret_cipher = ?,
-               signing_secret_cipher = ?,
-               status = 'awaiting_install'
-         WHERE id = ?`,
-      )
-      .bind(
-        input.clientId,
-        clientSecretCipher,
-        webhookSecretCipher,
-        signingSecretCipher,
-        id,
-      )
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({
+          client_id: input.clientId,
+          client_secret_cipher: clientSecretCipher,
+          webhook_secret_cipher: webhookSecretCipher,
+          signing_secret_cipher: signingSecretCipher,
+          status: "awaiting_install",
+        })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
   async getCredentials(id: string): Promise<PublicationCredentials | null> {
     if (!this.crypto) return null;
-    const row = await this.db
-      .prepare(
-        `SELECT client_id, client_secret_cipher, webhook_secret_cipher,
-                signing_secret_cipher
-           FROM linear_publications WHERE id = ?`,
-      )
-      .bind(id)
-      .first<{
-        client_id: string | null;
-        client_secret_cipher: string | null;
-        webhook_secret_cipher: string | null;
-        signing_secret_cipher: string | null;
-      }>();
+    const row = await getOne<{
+      client_id: string | null;
+      client_secret_cipher: string | null;
+      webhook_secret_cipher: string | null;
+      signing_secret_cipher: string | null;
+    }>(
+      this.db
+        .select({
+          client_id: linear_publications.client_id,
+          client_secret_cipher: linear_publications.client_secret_cipher,
+          webhook_secret_cipher: linear_publications.webhook_secret_cipher,
+          signing_secret_cipher: linear_publications.signing_secret_cipher,
+        })
+        .from(linear_publications)
+        .where(eq(linear_publications.id, id)),
+    );
     if (!row || !row.client_id || !row.client_secret_cipher || !row.webhook_secret_cipher) {
       return null;
     }
@@ -265,20 +254,24 @@ export class D1PublicationRepo implements LinearPublicationRepo {
 
   async getWebhookSecret(id: string): Promise<string | null> {
     if (!this.crypto) return null;
-    const row = await this.db
-      .prepare(`SELECT webhook_secret_cipher FROM linear_publications WHERE id = ?`)
-      .bind(id)
-      .first<{ webhook_secret_cipher: string | null }>();
+    const row = await getOne<{ webhook_secret_cipher: string | null }>(
+      this.db
+        .select({ webhook_secret_cipher: linear_publications.webhook_secret_cipher })
+        .from(linear_publications)
+        .where(eq(linear_publications.id, id)),
+    );
     if (!row || !row.webhook_secret_cipher) return null;
     return this.crypto.decrypt(row.webhook_secret_cipher);
   }
 
   async getClientSecret(id: string): Promise<string | null> {
     if (!this.crypto) return null;
-    const row = await this.db
-      .prepare(`SELECT client_secret_cipher FROM linear_publications WHERE id = ?`)
-      .bind(id)
-      .first<{ client_secret_cipher: string | null }>();
+    const row = await getOne<{ client_secret_cipher: string | null }>(
+      this.db
+        .select({ client_secret_cipher: linear_publications.client_secret_cipher })
+        .from(linear_publications)
+        .where(eq(linear_publications.id, id)),
+    );
     if (!row || !row.client_secret_cipher) return null;
     return this.crypto.decrypt(row.client_secret_cipher);
   }
@@ -287,53 +280,58 @@ export class D1PublicationRepo implements LinearPublicationRepo {
     id: string,
     args: { installationId: string; vaultId: string | null },
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_publications
-           SET installation_id = ?,
-               vault_id = ?,
-               status = 'live'
-         WHERE id = ?`,
-      )
-      .bind(args.installationId, args.vaultId, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({
+          installation_id: args.installationId,
+          vault_id: args.vaultId,
+          status: "live",
+        })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_publications SET status = ? WHERE id = ?`)
-      .bind(status, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({ status })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
   async updateCapabilities(id: string, capabilities: CapabilitySet): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_publications SET capabilities = ? WHERE id = ?`)
-      .bind(JSON.stringify([...capabilities]), id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({ capabilities: JSON.stringify([...capabilities]) })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
   async updatePersona(id: string, persona: Persona): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_publications
-         SET persona_name = ?, persona_avatar_url = ? WHERE id = ?`,
-      )
-      .bind(persona.name, persona.avatarUrl, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({
+          persona_name: persona.name,
+          persona_avatar_url: persona.avatarUrl,
+        })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
   async markUnpublished(id: string, at: number): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_publications
-         SET status = 'unpublished', unpublished_at = ? WHERE id = ?`,
-      )
-      .bind(at, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_publications)
+        .set({ status: "unpublished", unpublished_at: at })
+        .where(eq(linear_publications.id, id)),
+    );
   }
 
-  private toDomain(row: Row): Publication {
+  private toDomain(row: typeof linear_publications.$inferSelect): Publication {
     const caps = JSON.parse(row.capabilities) as CapabilityKey[];
     return {
       id: row.id,

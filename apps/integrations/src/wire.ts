@@ -13,21 +13,22 @@
 //
 // DB routing:
 //   - integrationsDb : env.INTEGRATIONS_DB. Holds linear_*/github_*/slack_*.
-//   - controlPlaneDb : env.AUTH_DB. TenantResolver looks up user.tenantId here.
+//   - controlPlaneDb : env.MAIN_DB. TenantResolver looks up user.tenantId here.
 // Tenant sharding (per-tenant DB) doesn't apply to integration tables — the
 // webhook entry can't resolve tenant before signature verify.
 
 import {
   buildCfContainer,
-  D1GitHubWebhookEventStore,
-  D1SlackAppRepo,
-  D1SlackInstallationRepo,
-  D1SlackPublicationRepo,
-  D1SlackSessionScopeRepo,
-  D1SlackSetupLinkRepo,
-  D1SlackWebhookEventStore,
+  SqlGitHubWebhookEventStore,
+  SqlSlackAppRepo,
+  SqlSlackInstallationRepo,
+  SqlSlackPublicationRepo,
+  SqlSlackSessionScopeRepo,
+  SqlSlackSetupLinkRepo,
+  SqlSlackWebhookEventStore,
   type CfContainerEnv,
 } from "@open-managed-agents/integrations-adapters-cf";
+import { drizzle } from "drizzle-orm/d1";
 import type { GitHubContainer } from "@open-managed-agents/github";
 import type { LinearContainer } from "@open-managed-agents/linear";
 import type { SlackContainer } from "@open-managed-agents/slack";
@@ -36,7 +37,7 @@ import type { Env } from "./env";
 function cfEnvOf(env: Env): CfContainerEnv {
   return {
     integrationsDb: env.INTEGRATIONS_DB,
-    controlPlaneDb: env.AUTH_DB,
+    controlPlaneDb: env.MAIN_DB,
     PLATFORM_ROOT_SECRET: env.PLATFORM_ROOT_SECRET,
     MAIN: env.MAIN,
     INTEGRATIONS_INTERNAL_SECRET: env.INTEGRATIONS_INTERNAL_SECRET,
@@ -64,7 +65,7 @@ export function buildContainer(env: Env): LinearContainer {
     // already the narrower type — base.linearEvents — but the spread above
     // erases it back to the wider Container shape, so re-assign explicitly.
     webhookEvents: base.linearEvents,
-    sessionScopes: new D1SlackSessionScopeRepo(env.INTEGRATIONS_DB),
+    sessionScopes: new SqlSlackSessionScopeRepo(drizzle(env.INTEGRATIONS_DB)),
   };
 }
 
@@ -86,8 +87,8 @@ export function buildGitHubContainer(env: Env): GitHubContainer {
     ...base,
     installations: base.githubInstallations,
     publications: base.githubPublications,
-    webhookEvents: new D1GitHubWebhookEventStore(env.INTEGRATIONS_DB),
-    sessionScopes: new D1SlackSessionScopeRepo(env.INTEGRATIONS_DB),
+    webhookEvents: new SqlGitHubWebhookEventStore(drizzle(env.INTEGRATIONS_DB)),
+    sessionScopes: new SqlSlackSessionScopeRepo(drizzle(env.INTEGRATIONS_DB)),
   };
 }
 
@@ -102,13 +103,14 @@ export function buildGitHubContainer(env: Env): GitHubContainer {
  */
 export function buildSlackContainer(env: Env): SlackContainer {
   const base = buildCfContainer(cfEnvOf(env));
+  const idb = drizzle(env.INTEGRATIONS_DB);
   return {
     ...base,
-    installations: new D1SlackInstallationRepo(env.INTEGRATIONS_DB, base.crypto, base.ids),
-    publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, base.ids, base.crypto),
-    apps: new D1SlackAppRepo(env.INTEGRATIONS_DB, base.crypto, base.ids),
-    webhookEvents: new D1SlackWebhookEventStore(env.INTEGRATIONS_DB),
-    sessionScopes: new D1SlackSessionScopeRepo(env.INTEGRATIONS_DB),
-    setupLinks: new D1SlackSetupLinkRepo(env.INTEGRATIONS_DB, base.ids),
+    installations: new SqlSlackInstallationRepo(idb, base.crypto, base.ids),
+    publications: new SqlSlackPublicationRepo(idb, base.ids, base.crypto),
+    apps: new SqlSlackAppRepo(idb, base.crypto, base.ids),
+    webhookEvents: new SqlSlackWebhookEventStore(idb),
+    sessionScopes: new SqlSlackSessionScopeRepo(idb),
+    setupLinks: new SqlSlackSetupLinkRepo(idb, base.ids),
   };
 }

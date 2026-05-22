@@ -1,13 +1,26 @@
-import type { AgentConfig } from "@open-managed-agents/shared";
-import type { PageCursor } from "@open-managed-agents/shared";
+import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import {
-  cursorBinds,
-  cursorWhereSql,
+  asBuilder,
+  atomicWrite,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import {
+  agent_versions,
+  agents,
+} from "@open-managed-agents/db-schema/cf-auth";
+import type {
+  AgentConfig,
+  PageCursor,
+} from "@open-managed-agents/shared";
+import {
   escapeLikePattern,
   fetchN,
   trimPage,
 } from "@open-managed-agents/shared";
-import type { SqlClient } from "@open-managed-agents/sql-client";
 import { AgentNotFoundError } from "../errors";
 import type {
   AgentRepo,
@@ -17,66 +30,57 @@ import type {
 } from "../ports";
 import type { AgentRow, AgentVersionRow } from "../types";
 
+
 /**
- * SQL implementation of {@link AgentRepo}. Owns the SQL against the `agents`
- * and `agent_versions` tables defined in apps/main/migrations/0002_agents_tables.sql.
+ * Drizzle implementation of {@link AgentRepo}. Owns the SQL against the
+ * `agents` and `agent_versions` tables.
  *
- * Backend-agnostic: takes a {@link SqlClient}, which works with Cloudflare D1
- * (CF deployments) and better-sqlite3 / Postgres (self-host). The schema is plain
- * SQLite-flavoured DDL — D1 IS SQLite, and better-sqlite3 reads the same
- * statements without modification. A future Postgres adapter would need a
- * separate migration with PG-flavour types but the repo logic stays.
+ * Backend-agnostic: takes an {@link OmaDb} (Drizzle wrapper around D1 /
+ * better-sqlite3 / postgres-js).
  *
  * Atomicity:
- *   - updateWithVersionSnapshot uses client.batch so the snapshot INSERT and
- *     the current-row UPDATE succeed-or-fail together (replaces the legacy
- *     non-atomic KV.put then KV.put pattern).
- *   - deleteWithVersions uses client.batch to drop the agent + cascade its
- *     history rows (the schema has no FK by project convention).
+ *   - updateWithVersionSnapshot batches the snapshot INSERT and the
+ *     current-row UPDATE so they succeed-or-fail together (D1 batch on CF,
+ *     transaction on PG).
+ *   - deleteWithVersions batches the cascade delete of agent_versions + agents
+ *     in the same way.
  */
 export class SqlAgentRepo implements AgentRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewAgentInput): Promise<AgentRow> {
-    await this.db
-      .prepare(
-        `INSERT INTO agents
-           (id, tenant_id, config, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        input.id,
-        input.tenantId,
-        JSON.stringify(input.config),
-        input.config.version,
-        input.createdAt,
-        input.createdAt,
-      )
-      .run();
+    await runOnce(
+      this.db.insert(agents).values({
+        id: input.id,
+        tenant_id: input.tenantId,
+        config: JSON.stringify(input.config),
+        version: input.config.version,
+        created_at: input.createdAt,
+        updated_at: input.createdAt,
+      }),
+    );
     const row = await this.get(input.tenantId, input.id);
     if (!row) throw new Error("agent vanished after insert");
     return row;
   }
 
   async get(tenantId: string, agentId: string): Promise<AgentRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, config, version, created_at, updated_at, archived_at
-         FROM agents WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(agentId, tenantId)
-      .first<DbAgent>();
+    const row = await getOne<typeof agents.$inferSelect>(
+      this.db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.tenant_id, tenantId))),
+    );
     return row ? toRow(row) : null;
   }
 
   async getById(agentId: string): Promise<AgentRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, config, version, created_at, updated_at, archived_at
-         FROM agents WHERE id = ?`,
-      )
-      .bind(agentId)
-      .first<DbAgent>();
+    const row = await getOne<typeof agents.$inferSelect>(
+      this.db.select().from(agents).where(eq(agents.id, agentId)),
+    );
     return row ? toRow(row) : null;
   }
 
@@ -84,14 +88,16 @@ export class SqlAgentRepo implements AgentRepo {
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<AgentRow[]> {
-    const sql = opts.includeArchived
-      ? `SELECT id, tenant_id, config, version, created_at, updated_at, archived_at
-         FROM agents WHERE tenant_id = ? ORDER BY created_at ASC`
-      : `SELECT id, tenant_id, config, version, created_at, updated_at, archived_at
-         FROM agents WHERE tenant_id = ? AND archived_at IS NULL
-         ORDER BY created_at ASC`;
-    const result = await this.db.prepare(sql).bind(tenantId).all<DbAgent>();
-    return (result.results ?? []).map(toRow);
+    const conds = [eq(agents.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(agents.archived_at));
+    const rows = await getAll<typeof agents.$inferSelect>(
+      this.db
+        .select()
+        .from(agents)
+        .where(and(...conds))
+        .orderBy(asc(agents.created_at)),
+    );
+    return rows.map(toRow);
   }
 
   async listPage(
@@ -103,33 +109,52 @@ export class SqlAgentRepo implements AgentRepo {
       q?: string;
     },
   ): Promise<{ items: AgentRow[]; hasMore: boolean }> {
-    const archived = opts.includeArchived ? "" : "AND archived_at IS NULL";
-    // agents.name lives in the JSON config blob, so the q-filter has to
-    // pull it out via json_extract. SQLite's LIKE is ASCII-case-insensitive
-    // by default; we explicitly bind ESCAPE '\' so a user-supplied `%`/`_`
-    // is literal, not a wildcard. See escapeLikePattern.
-    const qClause = opts.q
-      ? `AND json_extract(config, '$.name') LIKE ? ESCAPE '\\'`
-      : "";
-    const sql =
-      `SELECT id, tenant_id, config, version, created_at, updated_at, archived_at ` +
-      `FROM agents WHERE tenant_id = ? ${archived} ${qClause} ${cursorWhereSql(opts.after)} ` +
-      `ORDER BY created_at DESC, id DESC LIMIT ?`;
-    const binds: unknown[] = [tenantId];
-    if (opts.q) binds.push(`%${escapeLikePattern(opts.q)}%`);
-    binds.push(...cursorBinds(opts.after), fetchN(opts.limit));
-    const result = await this.db.prepare(sql).bind(...binds).all<DbAgent>();
-    return trimPage((result.results ?? []).map(toRow), opts.limit);
+    const conds = [eq(agents.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(agents.archived_at));
+    if (opts.q) {
+      // agents.name lives in the JSON config blob, so the q-filter has to
+      // pull it out via json_extract. SQLite's LIKE is ASCII-case-insensitive
+      // by default; we explicitly bind ESCAPE '\' so a user-supplied `%`/`_`
+      // is literal, not a wildcard. See escapeLikePattern.
+      // TODO: PG path needs json_extract → ->> rewrite (json_extract is SQLite-only).
+      const pattern = `%${escapeLikePattern(opts.q)}%`;
+      conds.push(
+        sql`json_extract(${agents.config}, '$.name') LIKE ${pattern} ESCAPE '\\'`,
+      );
+    }
+    if (opts.after) {
+      // (created_at, id) DESC composite cursor: created_at < c, OR same created_at AND id < c.
+      const c = opts.after;
+      conds.push(
+        or(
+          lt(agents.created_at, c.createdAt),
+          and(eq(agents.created_at, c.createdAt), lt(agents.id, c.id))!,
+        )!,
+      );
+    }
+    const rows = await getAll<typeof agents.$inferSelect>(
+      this.db
+        .select()
+        .from(agents)
+        .where(and(...conds))
+        .orderBy(desc(agents.created_at), desc(agents.id))
+        .limit(fetchN(opts.limit)),
+    );
+    return trimPage(rows.map(toRow), opts.limit);
   }
 
   async count(
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<number> {
-    const sql = opts.includeArchived
-      ? `SELECT COUNT(*) AS c FROM agents WHERE tenant_id = ?`
-      : `SELECT COUNT(*) AS c FROM agents WHERE tenant_id = ? AND archived_at IS NULL`;
-    const row = await this.db.prepare(sql).bind(tenantId).first<{ c: number }>();
+    const conds = [eq(agents.tenant_id, tenantId)];
+    if (!opts.includeArchived) conds.push(isNull(agents.archived_at));
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(agents)
+        .where(and(...conds)),
+    );
     return row?.c ?? 0;
   }
 
@@ -140,37 +165,29 @@ export class SqlAgentRepo implements AgentRepo {
     priorSnapshot: AgentVersionSnapshotInput,
   ): Promise<AgentRow> {
     // Two-statement batch: write the prior snapshot to history then bump the
-    // current row. Atomic by D1 batch semantics. No FK needed.
-    const result = await this.db.batch([
-      this.db
-        .prepare(
-          `INSERT INTO agent_versions
-             (agent_id, tenant_id, version, snapshot, created_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          priorSnapshot.agentId,
-          priorSnapshot.tenantId,
-          priorSnapshot.version,
-          JSON.stringify(priorSnapshot.snapshot),
-          priorSnapshot.createdAt,
-        ),
-      this.db
-        .prepare(
-          `UPDATE agents SET config = ?, version = ?, updated_at = ?
-           WHERE id = ? AND tenant_id = ?`,
-        )
-        .bind(
-          JSON.stringify(update.config),
-          update.version,
-          update.updatedAt,
-          agentId,
-          tenantId,
-        ),
-    ]);
-    // The UPDATE is the second statement — check its changes count.
-    const updateMeta = result[1]?.meta;
-    if (!updateMeta?.changes) throw new AgentNotFoundError();
+    // current row. Atomic on D1 batch / PG transaction. No FK needed.
+    const insertSnapshotQ = this.db.insert(agent_versions).values({
+      agent_id: priorSnapshot.agentId,
+      tenant_id: priorSnapshot.tenantId,
+      version: priorSnapshot.version,
+      snapshot: JSON.stringify(priorSnapshot.snapshot),
+      created_at: priorSnapshot.createdAt,
+    });
+    const updateAgentQ = this.db
+      .update(agents)
+      .set({
+        config: JSON.stringify(update.config),
+        version: update.version,
+        updated_at: update.updatedAt,
+      })
+      .where(and(eq(agents.id, agentId), eq(agents.tenant_id, tenantId)));
+
+    await atomicWrite(this.db, [insertSnapshotQ, updateAgentQ]);
+
+    // Verify the UPDATE actually hit a row. We re-read instead of inspecting
+    // the batch result (D1 surfaces meta.changes per-statement, but PG's
+    // transaction return shape is different). One extra round-trip in the
+    // success path; keeps the dialect fork small.
     const row = await this.get(tenantId, agentId);
     if (!row) throw new AgentNotFoundError();
     return row;
@@ -190,46 +207,49 @@ export class SqlAgentRepo implements AgentRepo {
       ...stripTenantId(existing),
       archived_at: msToIso(archivedAt),
     };
-    const result = await this.db
-      .prepare(
-        `UPDATE agents SET archived_at = ?, updated_at = ?, config = ?
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(archivedAt, archivedAt, JSON.stringify(nextConfig), agentId, tenantId)
-      .run();
-    if (!result.meta?.changes) throw new AgentNotFoundError();
+    await runOnce(
+      this.db
+        .update(agents)
+        .set({
+          archived_at: archivedAt,
+          updated_at: archivedAt,
+          config: JSON.stringify(nextConfig),
+        })
+        .where(and(eq(agents.id, agentId), eq(agents.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, agentId);
     if (!row) throw new AgentNotFoundError();
     return row;
   }
 
   async deleteWithVersions(tenantId: string, agentId: string): Promise<void> {
-    // Two-statement batch: drop history rows first then the agent row. Atomic
-    // by D1 batch semantics. No FK needed.
-    await this.db.batch([
-      this.db
-        .prepare(`DELETE FROM agent_versions WHERE agent_id = ?`)
-        .bind(agentId),
-      this.db
-        .prepare(`DELETE FROM agents WHERE id = ? AND tenant_id = ?`)
-        .bind(agentId, tenantId),
-    ]);
+    // Two-statement batch: drop history rows first then the agent row.
+    const deleteVersionsQ = this.db
+      .delete(agent_versions)
+      .where(eq(agent_versions.agent_id, agentId));
+    const deleteAgentQ = this.db
+      .delete(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.tenant_id, tenantId)));
+    await atomicWrite(this.db, [deleteVersionsQ, deleteAgentQ]);
   }
 
   async listVersions(
     tenantId: string,
     agentId: string,
   ): Promise<AgentVersionRow[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT agent_id, tenant_id, version, snapshot, created_at
-         FROM agent_versions
-         WHERE agent_id = ? AND tenant_id = ?
-         ORDER BY version ASC`,
-      )
-      .bind(agentId, tenantId)
-      .all<DbVersion>();
-    return (result.results ?? []).map(toVersionRow);
+    const rows = await getAll<typeof agent_versions.$inferSelect>(
+      this.db
+        .select()
+        .from(agent_versions)
+        .where(
+          and(
+            eq(agent_versions.agent_id, agentId),
+            eq(agent_versions.tenant_id, tenantId),
+          ),
+        )
+        .orderBy(asc(agent_versions.version)),
+    );
+    return rows.map(toVersionRow);
   }
 
   async getVersion(
@@ -237,37 +257,23 @@ export class SqlAgentRepo implements AgentRepo {
     agentId: string,
     version: number,
   ): Promise<AgentVersionRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT agent_id, tenant_id, version, snapshot, created_at
-         FROM agent_versions
-         WHERE agent_id = ? AND tenant_id = ? AND version = ?`,
-      )
-      .bind(agentId, tenantId, version)
-      .first<DbVersion>();
+    const row = await getOne<typeof agent_versions.$inferSelect>(
+      this.db
+        .select()
+        .from(agent_versions)
+        .where(
+          and(
+            eq(agent_versions.agent_id, agentId),
+            eq(agent_versions.tenant_id, tenantId),
+            eq(agent_versions.version, version),
+          ),
+        ),
+    );
     return row ? toVersionRow(row) : null;
   }
 }
 
-interface DbAgent {
-  id: string;
-  tenant_id: string;
-  config: string; // JSON
-  version: number;
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-}
-
-interface DbVersion {
-  agent_id: string;
-  tenant_id: string;
-  version: number;
-  snapshot: string; // JSON
-  created_at: number;
-}
-
-function toRow(r: DbAgent): AgentRow {
+function toRow(r: typeof agents.$inferSelect): AgentRow {
   const cfg = JSON.parse(r.config) as AgentConfig;
   // Surface the mutable state from the columns into the AgentRow result so
   // the JSON blob and the columns stay consistent (insert + update keep them
@@ -282,7 +288,7 @@ function toRow(r: DbAgent): AgentRow {
   };
 }
 
-function toVersionRow(r: DbVersion): AgentVersionRow {
+function toVersionRow(r: typeof agent_versions.$inferSelect): AgentVersionRow {
   return {
     agent_id: r.agent_id,
     tenant_id: r.tenant_id,

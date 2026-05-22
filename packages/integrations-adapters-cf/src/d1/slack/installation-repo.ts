@@ -1,3 +1,13 @@
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { slack_installations } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   Crypto,
   IdGenerator,
@@ -9,43 +19,26 @@ import type {
 } from "@open-managed-agents/integrations-core";
 import type { SlackInstallationRepo } from "@open-managed-agents/slack";
 
-interface Row {
-  id: string;
-  tenant_id: string;
-  user_id: string;
-  provider_id: string;
-  workspace_id: string;
-  workspace_name: string;
-  install_kind: string;
-  app_id: string | null;
-  access_token_cipher: string;
-  user_token_cipher: string | null;
-  scopes: string;
-  bot_user_id: string;
-  vault_id: string | null;
-  bot_vault_id: string | null;
-  created_at: number;
-  revoked_at: number | null;
-}
-
 /**
- * D1 installation repo for Slack. Mirrors D1InstallationRepo but uses
+ * SQL installation repo for Slack. Mirrors SqlLinearInstallationRepo but uses
  * `slack_installations` and adds two Slack-only fields: `user_token_cipher`
  * (xoxp- token for mcp.slack.com) and `bot_vault_id` (vault for direct
  * slack.com/api calls). Implements the SlackInstallationRepo extension.
  */
-export class D1SlackInstallationRepo implements SlackInstallationRepo {
+export class SqlSlackInstallationRepo implements SlackInstallationRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly crypto: Crypto,
     private readonly ids: IdGenerator,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(id: string): Promise<Installation | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM slack_installations WHERE id = ?`)
-      .bind(id)
-      .first<Row>();
+    const row = await getOne<typeof slack_installations.$inferSelect>(
+      this.db.select().from(slack_installations).where(eq(slack_installations.id, id)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
@@ -55,15 +48,22 @@ export class D1SlackInstallationRepo implements SlackInstallationRepo {
     installKind: InstallKind,
     appId: string | null,
   ): Promise<Installation | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT * FROM slack_installations
-         WHERE provider_id = ? AND workspace_id = ? AND install_kind = ?
-           AND COALESCE(app_id, '') = COALESCE(?, '') AND revoked_at IS NULL
-         LIMIT 1`,
-      )
-      .bind(providerId, workspaceId, installKind, appId)
-      .first<Row>();
+    const row = await getOne<typeof slack_installations.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_installations)
+        .where(
+          and(
+            eq(slack_installations.provider_id, providerId),
+            eq(slack_installations.workspace_id, workspaceId),
+            eq(slack_installations.install_kind, installKind),
+            // COALESCE comparison preserves the existing semantics for nullable app_id
+            sql`COALESCE(${slack_installations.app_id}, '') = COALESCE(${appId}, '')`,
+            isNull(slack_installations.revoked_at),
+          ),
+        )
+        .limit(1),
+    );
     return row ? this.toDomain(row) : null;
   }
 
@@ -71,37 +71,50 @@ export class D1SlackInstallationRepo implements SlackInstallationRepo {
     userId: string,
     providerId: ProviderId,
   ): Promise<readonly Installation[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM slack_installations
-         WHERE user_id = ? AND provider_id = ? AND revoked_at IS NULL
-         ORDER BY created_at DESC`,
-      )
-      .bind(userId, providerId)
-      .all<Row>();
-    return (results ?? []).map((r) => this.toDomain(r));
+    const rows = await getAll<typeof slack_installations.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_installations)
+        .where(
+          and(
+            eq(slack_installations.user_id, userId),
+            eq(slack_installations.provider_id, providerId),
+            isNull(slack_installations.revoked_at),
+          ),
+        )
+        .orderBy(desc(slack_installations.created_at)),
+    );
+    return rows.map((r) => this.toDomain(r));
   }
 
   async getAccessToken(id: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT access_token_cipher FROM slack_installations
-         WHERE id = ? AND revoked_at IS NULL`,
-      )
-      .bind(id)
-      .first<{ access_token_cipher: string }>();
+    const row = await getOne<{ access_token_cipher: string }>(
+      this.db
+        .select({ access_token_cipher: slack_installations.access_token_cipher })
+        .from(slack_installations)
+        .where(
+          and(
+            eq(slack_installations.id, id),
+            isNull(slack_installations.revoked_at),
+          ),
+        ),
+    );
     if (!row) return null;
     return this.crypto.decrypt(row.access_token_cipher);
   }
 
   async getUserToken(id: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT user_token_cipher FROM slack_installations
-         WHERE id = ? AND revoked_at IS NULL`,
-      )
-      .bind(id)
-      .first<{ user_token_cipher: string | null }>();
+    const row = await getOne<{ user_token_cipher: string | null }>(
+      this.db
+        .select({ user_token_cipher: slack_installations.user_token_cipher })
+        .from(slack_installations)
+        .where(
+          and(
+            eq(slack_installations.id, id),
+            isNull(slack_installations.revoked_at),
+          ),
+        ),
+    );
     if (!row || !row.user_token_cipher) return null;
     return this.crypto.decrypt(row.user_token_cipher);
   }
@@ -122,7 +135,7 @@ export class D1SlackInstallationRepo implements SlackInstallationRepo {
    */
   async setTokens(_id: string, _accessToken: string, _refreshToken: string | null): Promise<void> {
     throw new Error(
-      "D1SlackInstallationRepo.setTokens: Slack tokens are long-lived; rotation not yet supported",
+      "SqlSlackInstallationRepo.setTokens: Slack tokens are long-lived; rotation not yet supported",
     );
   }
 
@@ -133,29 +146,24 @@ export class D1SlackInstallationRepo implements SlackInstallationRepo {
     // Slack xoxb- tokens are long-lived by default; refresh-token rotation is
     // an opt-in workspace setting we don't yet support. NewInstallation.refreshToken
     // (a shared port field) is intentionally ignored here.
-    await this.db
-      .prepare(
-        `INSERT INTO slack_installations (
-           id, tenant_id, user_id, provider_id, workspace_id, workspace_name,
-           install_kind, app_id, access_token_cipher, user_token_cipher,
-           scopes, bot_user_id, created_at, revoked_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)`,
-      )
-      .bind(
+    await runOnce(
+      this.db.insert(slack_installations).values({
         id,
-        row.tenantId,
-        row.userId,
-        row.providerId,
-        row.workspaceId,
-        row.workspaceName,
-        row.installKind,
-        row.appId,
-        accessTokenCipher,
-        JSON.stringify(row.scopes),
-        row.botUserId,
-        now,
-      )
-      .run();
+        tenant_id: row.tenantId,
+        user_id: row.userId,
+        provider_id: row.providerId,
+        workspace_id: row.workspaceId,
+        workspace_name: row.workspaceName,
+        install_kind: row.installKind,
+        app_id: row.appId,
+        access_token_cipher: accessTokenCipher,
+        user_token_cipher: null,
+        scopes: JSON.stringify(row.scopes),
+        bot_user_id: row.botUserId,
+        created_at: now,
+        revoked_at: null,
+      }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -175,42 +183,52 @@ export class D1SlackInstallationRepo implements SlackInstallationRepo {
 
   async setUserToken(id: string, userToken: string): Promise<void> {
     const cipher = await this.crypto.encrypt(userToken);
-    await this.db
-      .prepare(`UPDATE slack_installations SET user_token_cipher = ? WHERE id = ?`)
-      .bind(cipher, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_installations)
+        .set({ user_token_cipher: cipher })
+        .where(eq(slack_installations.id, id)),
+    );
   }
 
   async setVaultId(id: string, vaultId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_installations SET vault_id = ? WHERE id = ?`)
-      .bind(vaultId, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_installations)
+        .set({ vault_id: vaultId })
+        .where(eq(slack_installations.id, id)),
+    );
   }
 
   async setBotVaultId(id: string, botVaultId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_installations SET bot_vault_id = ? WHERE id = ?`)
-      .bind(botVaultId, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_installations)
+        .set({ bot_vault_id: botVaultId })
+        .where(eq(slack_installations.id, id)),
+    );
   }
 
   async getBotVaultId(id: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT bot_vault_id FROM slack_installations WHERE id = ?`)
-      .bind(id)
-      .first<{ bot_vault_id: string | null }>();
+    const row = await getOne<{ bot_vault_id: string | null }>(
+      this.db
+        .select({ bot_vault_id: slack_installations.bot_vault_id })
+        .from(slack_installations)
+        .where(eq(slack_installations.id, id)),
+    );
     return row?.bot_vault_id ?? null;
   }
 
   async markRevoked(id: string, at: number): Promise<void> {
-    await this.db
-      .prepare(`UPDATE slack_installations SET revoked_at = ? WHERE id = ?`)
-      .bind(at, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_installations)
+        .set({ revoked_at: at })
+        .where(eq(slack_installations.id, id)),
+    );
   }
 
-  private toDomain(row: Row): Installation {
+  private toDomain(row: typeof slack_installations.$inferSelect): Installation {
     return {
       id: row.id,
       tenantId: row.tenant_id,

@@ -1,3 +1,12 @@
+import { eq } from "drizzle-orm";
+import {
+  asBuilder,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { linear_apps } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   AppCredentials,
   AppRepo,
@@ -6,53 +15,57 @@ import type {
   NewAppCredentials,
 } from "@open-managed-agents/integrations-core";
 
-interface Row {
-  id: string;
-  tenant_id: string;
-  publication_id: string | null;
-  client_id: string;
-  client_secret_cipher: string;
-  webhook_secret_cipher: string;
-  created_at: number;
-}
-
-export class D1AppRepo implements AppRepo {
+/**
+ * SQL app repo for Linear. Targets `linear_apps`. Stores per-publication
+ * Linear App credentials (legacy A1 install flow); the publication-first
+ * flow stores credentials directly on the linear_publications row, but
+ * existing rows still live here.
+ */
+export class SqlLinearAppRepo implements AppRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly crypto: Crypto,
     private readonly ids: IdGenerator,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(id: string): Promise<AppCredentials | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM linear_apps WHERE id = ?`)
-      .bind(id)
-      .first<Row>();
+    const row = await getOne<typeof linear_apps.$inferSelect>(
+      this.db.select().from(linear_apps).where(eq(linear_apps.id, id)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async getByPublication(publicationId: string): Promise<AppCredentials | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM linear_apps WHERE publication_id = ?`)
-      .bind(publicationId)
-      .first<Row>();
+    const row = await getOne<typeof linear_apps.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_apps)
+        .where(eq(linear_apps.publication_id, publicationId)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async getWebhookSecret(id: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT webhook_secret_cipher FROM linear_apps WHERE id = ?`)
-      .bind(id)
-      .first<{ webhook_secret_cipher: string }>();
+    const row = await getOne<{ webhook_secret_cipher: string }>(
+      this.db
+        .select({ webhook_secret_cipher: linear_apps.webhook_secret_cipher })
+        .from(linear_apps)
+        .where(eq(linear_apps.id, id)),
+    );
     if (!row) return null;
     return this.crypto.decrypt(row.webhook_secret_cipher);
   }
 
   async getClientSecret(id: string): Promise<string | null> {
-    const row = await this.db
-      .prepare(`SELECT client_secret_cipher FROM linear_apps WHERE id = ?`)
-      .bind(id)
-      .first<{ client_secret_cipher: string }>();
+    const row = await getOne<{ client_secret_cipher: string }>(
+      this.db
+        .select({ client_secret_cipher: linear_apps.client_secret_cipher })
+        .from(linear_apps)
+        .where(eq(linear_apps.id, id)),
+    );
     if (!row) return null;
     return this.crypto.decrypt(row.client_secret_cipher);
   }
@@ -68,19 +81,27 @@ export class D1AppRepo implements AppRepo {
     // publication_id are preserved (publication_id is set later via
     // setPublicationId, after OAuth completes). tenant_id is also preserved
     // on conflict — re-submits should not silently re-tenant a row.
-    await this.db
-      .prepare(
-        `INSERT INTO linear_apps (
-           id, tenant_id, publication_id, client_id, client_secret_cipher,
-           webhook_secret_cipher, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           client_id = excluded.client_id,
-           client_secret_cipher = excluded.client_secret_cipher,
-           webhook_secret_cipher = excluded.webhook_secret_cipher`,
-      )
-      .bind(id, row.tenantId, row.publicationId, row.clientId, clientSecretCipher, webhookSecretCipher, now)
-      .run();
+    await runOnce(
+      this.db
+        .insert(linear_apps)
+        .values({
+          id,
+          tenant_id: row.tenantId,
+          publication_id: row.publicationId,
+          client_id: row.clientId,
+          client_secret_cipher: clientSecretCipher,
+          webhook_secret_cipher: webhookSecretCipher,
+          created_at: now,
+        })
+        .onConflictDoUpdate({
+          target: linear_apps.id,
+          set: {
+            client_id: row.clientId,
+            client_secret_cipher: clientSecretCipher,
+            webhook_secret_cipher: webhookSecretCipher,
+          },
+        }),
+    );
     return {
       id,
       tenantId: row.tenantId,
@@ -93,17 +114,19 @@ export class D1AppRepo implements AppRepo {
   }
 
   async setPublicationId(id: string, publicationId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_apps SET publication_id = ? WHERE id = ?`)
-      .bind(publicationId, id)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_apps)
+        .set({ publication_id: publicationId })
+        .where(eq(linear_apps.id, id)),
+    );
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.prepare(`DELETE FROM linear_apps WHERE id = ?`).bind(id).run();
+    await runOnce(this.db.delete(linear_apps).where(eq(linear_apps.id, id)));
   }
 
-  private toDomain(row: Row): AppCredentials {
+  private toDomain(row: typeof linear_apps.$inferSelect): AppCredentials {
     return {
       id: row.id,
       tenantId: row.tenant_id,

@@ -1,4 +1,4 @@
-// SqlClient-backed KvStore. Schema lives in @open-managed-agents/schema
+// Drizzle-backed KvStore. Schema lives in @open-managed-agents/db-schema
 // (kv_entries table). Tenant scoping: keys are partitioned by tenant_id;
 // callers pass the active tenant via the constructor. This is the
 // self-host cousin of CfKvStore — same KvStore port, different backing.
@@ -8,6 +8,16 @@
 // scoped to a tenant. Pulling tenant_id into a separate column lets
 // "delete tenant" be one SQL statement instead of a prefix scan.
 
+import { and, asc, eq, gt, isNull, like, or, sql } from "drizzle-orm";
+import { kv_entries } from "@open-managed-agents/db-schema/cf-auth";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
 import type {
   KvListKey,
   KvListOptions,
@@ -15,32 +25,55 @@ import type {
   KvPutOptions,
   KvStore,
 } from "../ports";
-import type { SqlClient } from "@open-managed-agents/sql-client";
 
 export interface SqlKvStoreOpts {
-  sql: SqlClient;
+  // Accept any schema specialisation; the TSchema generic on `OmaDb` is
+  // invariant in Drizzle, so a caller that built `drizzle(d1, { schema:
+  // cfAuthSchema })` would not satisfy the default `OmaDb` (TSchema =
+  // Record<string, never>). Adapter doesn't read from the schema dictionary.
+  db: OmaDb<Record<string, unknown>>;
   /** Tenant scope. Required — keys never collide across tenants. Use a
    *  literal "default" for AUTH_DISABLED mode. */
   tenantId: string;
 }
 
+type Row = typeof kv_entries.$inferSelect;
+
+
 export class SqlKvStore implements KvStore {
-  constructor(private readonly opts: SqlKvStoreOpts) {}
+  private readonly db: OmaDbBuilder;
+  constructor(private readonly opts: SqlKvStoreOpts) {
+    this.db = asBuilder(opts.db);
+  }
 
   async get(key: string): Promise<string | null> {
-    const row = await this.opts.sql
-      .prepare(
-        `SELECT value, expires_at FROM kv_entries WHERE tenant_id = ? AND key = ?`,
-      )
-      .bind(this.opts.tenantId, key)
-      .first<{ value: string; expires_at: number | null }>();
+    const row = await getOne<Pick<Row, "value" | "expires_at">>(
+      this.db
+        .select({
+          value: kv_entries.value,
+          expires_at: kv_entries.expires_at,
+        })
+        .from(kv_entries)
+        .where(
+          and(
+            eq(kv_entries.tenant_id, this.opts.tenantId),
+            eq(kv_entries.key, key),
+          ),
+        ),
+    );
     if (!row) return null;
     if (row.expires_at !== null && row.expires_at <= Date.now()) {
       // Lazy purge.
-      await this.opts.sql
-        .prepare(`DELETE FROM kv_entries WHERE tenant_id = ? AND key = ?`)
-        .bind(this.opts.tenantId, key)
-        .run();
+      await runOnce(
+        this.db
+          .delete(kv_entries)
+          .where(
+            and(
+              eq(kv_entries.tenant_id, this.opts.tenantId),
+              eq(kv_entries.key, key),
+            ),
+          ),
+      );
       return null;
     }
     return row.value;
@@ -53,21 +86,37 @@ export class SqlKvStore implements KvStore {
     } else if (opts?.expiration !== undefined) {
       expiresAt = opts.expiration * 1000;
     }
-    await this.opts.sql
-      .prepare(
-        `INSERT INTO kv_entries (tenant_id, key, value, expires_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
-      )
-      .bind(this.opts.tenantId, key, value, expiresAt)
-      .run();
+    // UPSERT on (tenant_id, key) PK — second write wins, including TTL reset.
+    await runOnce(
+      this.db
+        .insert(kv_entries)
+        .values({
+          tenant_id: this.opts.tenantId,
+          key,
+          value,
+          expires_at: expiresAt,
+        })
+        .onConflictDoUpdate({
+          target: [kv_entries.tenant_id, kv_entries.key],
+          set: {
+            value: sql`excluded.value`,
+            expires_at: sql`excluded.expires_at`,
+          },
+        }),
+    );
   }
 
   async delete(key: string): Promise<void> {
-    await this.opts.sql
-      .prepare(`DELETE FROM kv_entries WHERE tenant_id = ? AND key = ?`)
-      .bind(this.opts.tenantId, key)
-      .run();
+    await runOnce(
+      this.db
+        .delete(kv_entries)
+        .where(
+          and(
+            eq(kv_entries.tenant_id, this.opts.tenantId),
+            eq(kv_entries.key, key),
+          ),
+        ),
+    );
   }
 
   async list(opts?: KvListOptions): Promise<KvListResult> {
@@ -75,15 +124,26 @@ export class SqlKvStore implements KvStore {
     const limit = Math.max(1, Math.min(opts?.limit ?? 1000, 1000));
     const offset = opts?.cursor ? parseCursor(opts.cursor) : 0;
     const now = Date.now();
-    const result = await this.opts.sql
-      .prepare(
-        `SELECT key AS name, expires_at FROM kv_entries
-          WHERE tenant_id = ? AND key LIKE ? AND (expires_at IS NULL OR expires_at > ?)
-          ORDER BY key ASC LIMIT ? OFFSET ?`,
-      )
-      .bind(this.opts.tenantId, `${prefix}%`, now, limit + 1, offset)
-      .all<{ name: string; expires_at: number | null }>();
-    const rows = result.results ?? [];
+    // Filter out keys whose TTL has elapsed without paying for a separate
+    // GC pass. Hot reads handle their own purge in get().
+    const rows = await getAll<{ name: string; expires_at: number | null }>(
+      this.db
+        .select({
+          name: kv_entries.key,
+          expires_at: kv_entries.expires_at,
+        })
+        .from(kv_entries)
+        .where(
+          and(
+            eq(kv_entries.tenant_id, this.opts.tenantId),
+            like(kv_entries.key, `${prefix}%`),
+            or(isNull(kv_entries.expires_at), gt(kv_entries.expires_at, now)),
+          ),
+        )
+        .orderBy(asc(kv_entries.key))
+        .limit(limit + 1)
+        .offset(offset),
+    );
     const has_more = rows.length > limit;
     const sliced = rows.slice(0, limit);
     return {

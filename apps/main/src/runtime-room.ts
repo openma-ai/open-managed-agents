@@ -183,7 +183,7 @@ export class RuntimeRoom extends DurableObject<Env> {
         if (hostname) { cols.push("hostname = ?"); args.push(hostname); }
         if (os) { cols.push("os = ?"); args.push(os); }
         args.push(this.runtimeId);
-        await this.env.AUTH_DB
+        await this.env.MAIN_DB
           .prepare(`UPDATE "runtimes" SET ${cols.join(", ")} WHERE id = ?`)
           .bind(...args)
           .run();
@@ -196,7 +196,7 @@ export class RuntimeRoom extends DurableObject<Env> {
 
     if (parsed.type === "ping") {
       try {
-        await this.env.AUTH_DB
+        await this.env.MAIN_DB
           .prepare(`UPDATE "runtimes" SET last_heartbeat = unixepoch(), status = 'online' WHERE id = ?`)
           .bind(this.runtimeId)
           .run();
@@ -343,7 +343,7 @@ export class RuntimeRoom extends DurableObject<Env> {
 
   private async markOnline(): Promise<void> {
     try {
-      await this.env.AUTH_DB
+      await this.env.MAIN_DB
         .prepare(`UPDATE "runtimes" SET status = 'online', last_heartbeat = unixepoch() WHERE id = ?`)
         .bind(this.runtimeId)
         .run();
@@ -355,7 +355,7 @@ export class RuntimeRoom extends DurableObject<Env> {
   private async markOffline(): Promise<void> {
     if (!this.runtimeId) return;
     try {
-      await this.env.AUTH_DB
+      await this.env.MAIN_DB
         .prepare(`UPDATE "runtimes" SET status = 'offline' WHERE id = ?`)
         .bind(this.runtimeId)
         .run();

@@ -401,7 +401,7 @@ export class SessionDO extends DurableObject<Env> {
       return this.state.agent_snapshot;
     }
     // Cross-tenant lookup — DO has no tenant scope here. Trusts the caller.
-    // Phase 1: still queries against the shared AUTH_DB. Phase 4: per-tenant
+    // Phase 1: still queries against the shared MAIN_DB. Phase 4: per-tenant
     // DB will scope this naturally — `WHERE id = ?` in the tenant's DB only
     // returns the tenant's row. Either way, this.state.tenant_id is the
     // right routing key.
@@ -1377,19 +1377,19 @@ export class SessionDO extends DurableObject<Env> {
     }
     const tenantId = this._state.tenant_id;
     // Lazy-resolve the per-tenant D1 binding. buildCfTenantDbProvider
-    // returns the AUTH_DB shard the routing table maps this tenant to.
+    // returns the MAIN_DB shard the routing table maps this tenant to.
     // We construct the SqlClient eagerly and cache the adapter — the
     // tenant doesn't change for the lifetime of a SessionDO instance.
     const provider = buildCfTenantDbProvider(this.env);
     // provider.resolve is async; we synchronously construct using a
     // wrapper SqlClient that resolves on first call. Simpler: just hold
     // a Promise-backed SqlClient. Even simpler: assume the synchronous
-    // path (env.AUTH_DB) since most deploys are single-shard. Fall back
+    // path (env.MAIN_DB) since most deploys are single-shard. Fall back
     // to async resolve via a thin wrapper when sharded.
-    const db = (this.env as unknown as { AUTH_DB?: D1Database }).AUTH_DB;
+    const db = (this.env as unknown as { MAIN_DB?: D1Database }).MAIN_DB;
     if (!db) {
       throw new Error(
-        "runtimeAdapter: env.AUTH_DB binding missing — required for unified sessions table writes",
+        "runtimeAdapter: env.MAIN_DB binding missing — required for unified sessions table writes",
       );
     }
     const sql = new CfD1SqlClient(db);
@@ -1431,7 +1431,7 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
     // Provider call only used if sharding is in play; today the lazy
-    // env.AUTH_DB path covers the single-shard default. Keep the
+    // env.MAIN_DB path covers the single-shard default. Keep the
     // import live so future per-tenant shards plug in here.
     void provider;
     return this._runtimeAdapter;
@@ -2869,7 +2869,7 @@ export class SessionDO extends DurableObject<Env> {
         sandbox instanceof CloudflareSandbox &&
         this.state.tenant_id &&
         this.state.environment_id &&
-        this.env.AUTH_DB
+        this.env.MAIN_DB
       ) {
         try {
           // If /tmp/.oma-warm is present, the container survived since a
@@ -3479,7 +3479,7 @@ export class SessionDO extends DurableObject<Env> {
     let customHeaders: Record<string, string> | undefined;
     let wireModel = handle;
 
-    if (this.env.AUTH_DB) {
+    if (this.env.MAIN_DB) {
       try {
         const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
         const tenantId = this.state.tenant_id;
@@ -4260,7 +4260,7 @@ export class SessionDO extends DurableObject<Env> {
     // the resource-mounter call. We only need MemoryStoreService here to
     // resolve store metadata for the system-prompt reminder block.
     let memoryStoreService: MemoryStoreService | null = null;
-    if (memoryAttachments.length && this.env.AUTH_DB) {
+    if (memoryAttachments.length && this.env.MAIN_DB) {
       memoryStoreService = (await getCfServicesForTenant(this.env, this.state.tenant_id)).memory;
     }
 

@@ -4,7 +4,7 @@ export interface Env {
    *  openma-auth database) for back-compat during the shard rollout. New
    *  code MUST use `getShardForTenant(env, tenantId)` from
    *  @open-managed-agents/sql-client to route to the correct shard. */
-  AUTH_DB: D1Database;
+  MAIN_DB: D1Database;
   /** Tenant→shard routing table. Holds tenant_shard + shard_pool tables.
    *  Every per-tenant query reads this first (cached in SHARD_CACHE_KV
    *  with 1hr TTL). See packages/sql-client/src/shard.ts. */
@@ -16,7 +16,7 @@ export interface Env {
   AUTH_DB_02?: D1Database;
   AUTH_DB_03?: D1Database;
   /** Integration subsystem D1 (linear_* / github_* / slack_* tables).
-   *  Separate database from AUTH_DB to isolate webhook write traffic and
+   *  Separate database from MAIN_DB to isolate webhook write traffic and
    *  let the integration subsystem evolve schema independently.
    *  Optional on workers that don't touch integration tables (sandbox /
    *  agent workers). Required on apps/main and apps/integrations. */
@@ -207,7 +207,7 @@ export interface Env {
   PLATFORM_ROOT_SECRET?: string;
   // Killswitch for per-tenant D1 routing. Unset / "true" / anything else =
   // routing enabled (the default — uses tenant_shard meta table). Set to
-  // "false" or "0" to roll back to the shared-AUTH_DB provider without
+  // "false" or "0" to roll back to the shared-MAIN_DB provider without
   // redeploying code. Implemented in
   // packages/services/src/index.ts buildCfTenantDbProvider.
   PER_TENANT_DB_ENABLED?: string;

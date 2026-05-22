@@ -9,15 +9,7 @@
 // fake fetch.
 
 import { describe, it, expect, beforeAll } from "vitest";
-import {
-  createBetterSqlite3SqlClient,
-  type SqlClient,
-} from "@open-managed-agents/sql-client";
-import {
-  applySchema,
-  applyTenantSchema,
-  applyIntegrationsSchema,
-} from "@open-managed-agents/schema";
+import { bootstrapTestDb } from "./_helpers/bootstrap-test-db";
 import { createSqliteAgentService } from "@open-managed-agents/agents-store";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
@@ -32,12 +24,9 @@ const TENANT = "tn_smoke";
 const USER = "usr_smoke";
 
 async function bootstrap() {
-  const sql: SqlClient = await createBetterSqlite3SqlClient(":memory:");
-  await applySchema({ sql, dialect: "sqlite" });
-  await applyTenantSchema(sql);
-  await applyIntegrationsSchema({ sql, dialect: "sqlite" });
+  const { sql, db } = await bootstrapTestDb();
   await sql
-    .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+    .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
     .bind(TENANT, "Smoke", Date.now(), Date.now())
     .run();
   await sql
@@ -45,13 +34,14 @@ async function bootstrap() {
     .bind(USER, TENANT, Date.now())
     .run();
 
-  const agents = createSqliteAgentService({ client: sql });
-  const vaults = createSqliteVaultService({ client: sql });
-  const credentials = createSqliteCredentialService({ client: sql });
-  const sessions = createSqliteSessionService({ client: sql });
+  const agents = createSqliteAgentService({ db });
+  const vaults = createSqliteVaultService({ db });
+  const credentials = createSqliteCredentialService({ db });
+  const sessions = createSqliteSessionService({ db });
 
   const bridge = new NodeInstallBridge({
     sql,
+    db,
     platformRootSecret: SECRET,
     gatewayOrigin: "https://gateway.test",
     vaults,
@@ -60,7 +50,7 @@ async function bootstrap() {
     agents,
     resolveTenantId: async (uid) => (uid === USER ? TENANT : null),
   });
-  return { sql, agents, vaults, credentials, sessions, bridge };
+  return { sql, db, agents, vaults, credentials, sessions, bridge };
 }
 
 describe("NodeInstallBridge", () => {
@@ -330,12 +320,9 @@ describe("NodeInstallBridge", () => {
   it("InProcessSessionCreator.resume forwards webhook → user.message via appendUserEvent", async () => {
     // Wire the bridge with an appendUserEvent callback that captures the
     // event the way NodeSessionRouter.appendEvent would on prod.
-    const sql: SqlClient = await createBetterSqlite3SqlClient(":memory:");
-    await applySchema({ sql, dialect: "sqlite" });
-    await applyTenantSchema(sql);
-    await applyIntegrationsSchema({ sql, dialect: "sqlite" });
+    const { sql, db } = await bootstrapTestDb();
     await sql
-      .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+      .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
       .bind(TENANT, "Smoke", Date.now(), Date.now())
       .run();
     await sql
@@ -343,14 +330,15 @@ describe("NodeInstallBridge", () => {
       .bind(USER, TENANT, Date.now())
       .run();
 
-    const agents = createSqliteAgentService({ client: sql });
-    const vaults = createSqliteVaultService({ client: sql });
-    const credentials = createSqliteCredentialService({ client: sql });
-    const sessions = createSqliteSessionService({ client: sql });
+    const agents = createSqliteAgentService({ db });
+    const vaults = createSqliteVaultService({ db });
+    const credentials = createSqliteCredentialService({ db });
+    const sessions = createSqliteSessionService({ db });
 
     const captured: Array<{ sid: string; tenantId: string; agentId: string; event: unknown }> = [];
     const bridge = new NodeInstallBridge({
       sql,
+      db,
       platformRootSecret: SECRET,
       gatewayOrigin: "https://gateway.test",
       vaults,

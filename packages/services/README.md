@@ -209,7 +209,7 @@ The factory layer picks an adapter based on deployment intent:
 ```ts
 // packages/credentials-store/src/adapters/index.ts
 export function createCfCredentialService(env: Env): CredentialService {
-  return new CredentialService({ repo: new D1CredentialRepo(env.AUTH_DB) });
+  return new CredentialService({ repo: new D1CredentialRepo(env.MAIN_DB) });
 }
 
 export function createCfPerTenantCredentialService(opts: {
