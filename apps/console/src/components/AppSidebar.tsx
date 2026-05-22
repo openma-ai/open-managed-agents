@@ -137,7 +137,7 @@ function UserMenu() {
       type="button"
       onClick={handleSignOut}
       title={`Sign out (${user.name || user.email})`}
-      aria-label={`Sign out (${user.name || user.email})`}
+      aria-label="Sign out"
       className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors"
     >
       <Avatar name={user.name || user.email} size="sm" />

@@ -2,7 +2,7 @@ const BASE = "";
 
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
-import { fetchEventSource } from "@microsoft/fetch-event-source";
+import { FatalSseError, streamSse } from "./sse";
 
 /**
  * Server error envelope after the Anthropic-compatible migration:
@@ -227,7 +227,8 @@ export function useApi() {
     ) => {
       const activeTenant = getActiveTenantId();
       // SSE endpoint goes through the same auth middleware so it needs the
-      // header too. fetchEventSource lets us set it; EventSource wouldn't.
+      // header too. The native fetch we use under the hood lets us set it;
+      // EventSource wouldn't.
       //
       // Console opts into both `chunks` (token-by-token rendering, pending
       // queue events, session.warning, extra spans) and `replay=1` (full
@@ -241,14 +242,8 @@ export function useApi() {
       // without these flags. See SPEC_EVENT_TYPES in @open-managed-agents/api-types.
       const path = `/v1/sessions/${sessionId}/events/stream?include=chunks&replay=1`;
 
-      // Sentinel error classes per the @microsoft/fetch-event-source README
-      // pattern — the lib doesn't export these; consumers define them locally
-      // and use instanceof in onerror to choose retry vs. abort.
-      class FatalError extends Error {}
-      class RetriableError extends Error {}
-
       // Reconnect schedule for transient failures (network blip, 5xx, EOF).
-      // Resets to zero on a successful onopen so a healthy session that
+      // Resets to zero on a successful onOpen so a healthy session that
       // briefly drops doesn't keep accumulating backoff. After 5 consecutive
       // failures we surface a single "Reconnecting…" toast — silent before
       // that so a 1-second blip doesn't pop UI noise.
@@ -256,17 +251,10 @@ export function useApi() {
       let consecutiveFailures = 0;
       let reconnectToastShown = false;
 
-      void fetchEventSource(path, {
-        credentials: "include",
+      void streamSse(path, {
         signal,
-        // Keep the stream alive when the tab is hidden. Default behavior
-        // closes on visibilitychange and reopens on focus, which forces an
-        // unwanted full replay every time the user tabs away from a long
-        // session. The original fetch() impl had no visibility handling, so
-        // this preserves that behavior.
-        openWhenHidden: true,
         headers: activeTenant ? { "x-active-tenant": activeTenant } : {},
-        async onopen(response) {
+        async onOpen(response) {
           if (response.ok) {
             // Connection (re)established — clear the failure counter so the
             // next drop starts a fresh backoff schedule, and clear the toast
@@ -285,42 +273,25 @@ export function useApi() {
             toast.error(`/v1/sessions/${sessionId}/events/stream: ${message}`);
             // Non-retriable: 401/403/404 won't fix themselves on retry, and
             // hammering a 5xx that's surfaced to the user is also pointless.
-            // FatalError signals onerror to stop the loop.
-            throw new FatalError(message);
+            throw new FatalSseError(message);
           }
-          // Anything non-ok that isn't ≥400 (3xx etc.) — let the lib retry.
-          throw new RetriableError(`status ${response.status}`);
+          // Anything non-ok that isn't ≥400 (3xx etc.) — fall through to
+          // onError for the retry decision.
+          throw new Error(`status ${response.status}`);
         },
-        onmessage(ev) {
-          // Heartbeat / keepalive ping — the server periodically emits empty
-          // SSE frames to keep CF from idling the connection. Skip silently.
-          if (!ev.data) return;
+        onMessage(data) {
           try {
-            onEvent(JSON.parse(ev.data) as Record<string, unknown>);
+            onEvent(JSON.parse(data) as Record<string, unknown>);
           } catch {
             // Malformed payload — silently skip, matches prior behavior.
           }
         },
-        onclose() {
-          // Server closed the stream cleanly without an abort. Throw to force
-          // a reconnect — Cloudflare Workers cap streamed responses at a few
-          // minutes, and the user expects the timeline to keep updating across
-          // reconnects. Replay=1 + SessionDetail's seenKeys dedup makes the
-          // refill safe.
-          throw new RetriableError("server closed");
-        },
-        onerror(err) {
-          if (err instanceof DOMException && err.name === "AbortError") {
-            // Caller unmounted (component cleanup) — stop retrying. The lib
-            // normally short-circuits on the input signal abort before we
-            // get here, but defending against the edge case is cheap.
-            throw err;
-          }
-          if (err instanceof FatalError) {
-            // 401/403/404/5xx surfaced from onopen — toast already shown,
-            // rethrow so the lib stops retrying.
-            throw err;
-          }
+        onError(err) {
+          // FatalSseError or caller abort never reach here — streamSse
+          // re-throws them directly. Everything else is a transient
+          // failure: stream closed cleanly, network blip, transient
+          // 5xx. Apply the backoff schedule and reconnect.
+          if (err instanceof FatalSseError) return null;
           consecutiveFailures += 1;
           if (consecutiveFailures === 5 && !reconnectToastShown) {
             reconnectToastShown = true;
@@ -330,9 +301,8 @@ export function useApi() {
           return backoffMs[idx];
         },
       }).catch(() => {
-        // Promise rejects on FatalError or AbortError — both are expected
-        // terminal states. FatalError already toasted from onopen; AbortError
-        // is caller-initiated cleanup. Nothing more to do.
+        // Promise rejects on FatalSseError (already toasted) or an abort
+        // we missed — both are expected terminal states. Nothing more to do.
       });
     },
     [],

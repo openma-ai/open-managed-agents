@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { useLocation } from "react-router";
+import { useMatches, type UIMatch } from "react-router";
 import { ChevronRightIcon } from "lucide-react";
 
 import {
@@ -12,61 +12,44 @@ import {
 } from "@/components/ui/breadcrumb";
 
 /**
- * Path-segment fallback when the URL doesn't map to a known top-level
- * route. Unknown segments fall back to start-cased text; the "" empty
- * segment for "/" is filtered out earlier.
+ * Route handle contract for breadcrumbs. Each route in main.tsx can
+ * declare:
  *
- * (Earlier draft used react-router's `useMatches()` to read per-route
- * `handle.crumb` overrides, but that hook is data-router-only and the
- * console mounts under `<BrowserRouter>` + declarative `<Routes>`, so
- * it throws at runtime: "useMatches must be used within a data router".
- * Until/unless we migrate main.tsx to `createBrowserRouter` +
- * `<RouterProvider>`, breadcrumbs derive purely from the URL.)
+ *   handle: { crumb: "Sessions" }                          // fixed label
+ *   handle: { crumb: (m) => ({ label: m.data.name }) }      // dynamic
+ *
+ * Pages that don't publish a `crumb` are skipped — the URL segment
+ * fallback that an earlier draft used was dropped because it added
+ * noise for placeholder routes that aren't navigated to as themselves
+ * (e.g. `/integrations` parent that just hosts children).
  */
-const FALLBACK_LABELS: Record<string, string> = {
-  agents: "Agents",
-  sessions: "Sessions",
-  files: "Files",
-  evals: "Eval Runs",
-  environments: "Environments",
-  vaults: "Credential Vaults",
-  skills: "Skills",
-  memory: "Memory Stores",
-  "model-cards": "Model Cards",
-  "api-keys": "API Keys",
-  runtimes: "Local Runtimes",
-  integrations: "Integrations",
-  linear: "Linear",
-  github: "GitHub",
-  slack: "Slack",
-  billing: "Billing",
-};
-
-function titleize(seg: string): string {
-  const known = FALLBACK_LABELS[seg];
-  if (known) return known;
-  return seg
-    .split("-")
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join(" ");
-}
+type CrumbValue = string | { label: string; to?: string };
+type CrumbHandle = { crumb?: CrumbValue | ((m: UIMatch) => CrumbValue) };
 
 /**
- * AppShell breadcrumb. Splits the current pathname into cumulative
- * crumbs ("/sessions/abc123" → [Sessions, abc123]) and renders them in
- * the top toolbar. Hidden on the root path because the brand already
- * identifies the workspace there.
+ * AppShell breadcrumb. Walks the active route match chain via
+ * `useMatches()` (data-router-only — main.tsx switched to
+ * `createBrowserRouter` so this works) and renders the per-route
+ * `handle.crumb` values, last as plain text and preceding as links.
+ *
+ * Hidden when there are no crumbs (root index route or routes without
+ * a `crumb` handle) so the top toolbar reads clean.
  */
 export function AppBreadcrumb() {
-  const { pathname } = useLocation();
+  const matches = useMatches();
 
-  const segs = pathname.split("/").filter(Boolean);
-  if (segs.length === 0) return null;
+  const crumbs = matches
+    .map((m) => {
+      const handle = (m.handle ?? {}) as CrumbHandle;
+      const raw =
+        typeof handle.crumb === "function" ? handle.crumb(m) : handle.crumb;
+      if (!raw) return null;
+      const c = typeof raw === "string" ? { label: raw } : raw;
+      return { label: c.label, to: c.to ?? m.pathname };
+    })
+    .filter((c): c is { label: string; to: string } => c !== null);
 
-  const crumbs = segs.map((seg, i) => ({
-    label: titleize(seg),
-    to: "/" + segs.slice(0, i + 1).join("/"),
-  }));
+  if (crumbs.length === 0) return null;
 
   return (
     <ShadcnBreadcrumb>
@@ -74,7 +57,7 @@ export function AppBreadcrumb() {
         {crumbs.map((c, i) => {
           const isLast = i === crumbs.length - 1;
           return (
-            <Fragment key={c.to}>
+            <Fragment key={`${c.to}-${i}`}>
               {i > 0 && (
                 <BreadcrumbSeparator>
                   <ChevronRightIcon className="size-3.5" />

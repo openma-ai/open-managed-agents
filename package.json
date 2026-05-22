@@ -35,6 +35,7 @@
     "test": "vitest run && pnpm run test:packages && pnpm run test:console",
     "test:packages": "pnpm --filter @open-managed-agents/session-runtime test && pnpm --filter @open-managed-agents/main-node test && pnpm --filter @open-managed-agents/cap test",
     "test:console": "pnpm --filter managed-agents-console test",
+    "test:e2e": "playwright test --config=playwright.config.ts",
     "db:generate:cf-auth": "drizzle-kit generate --config=drizzle.cf-auth.config.ts",
     "db:generate:cf-integrations": "drizzle-kit generate --config=drizzle.cf-integrations.config.ts",
     "db:generate:cf-router": "drizzle-kit generate --config=drizzle.cf-router.config.ts",
