@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useApi } from "../lib/api";
-import { usePagedList } from "../lib/usePagedList";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { ListPage } from "../components/ListPage";
@@ -139,14 +139,11 @@ export function VaultsList() {
   const {
     items: vaults,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: load,
-  } = usePagedList<Vault>("/v1/vaults", { defaultPageSize: 20 });
+  } = useInfiniteApiQuery<Vault>("/v1/vaults", { limit: 20 });
 
   // Listen for OAuth popup completion. Two transports because COOP severs
   // window.opener for providers like Sentry (which set
@@ -427,13 +424,9 @@ export function VaultsList() {
       loading={loading}
       getRowKey={(v) => v.id}
       onRowClick={openVault}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      hasNext={hasNext}
-      knownPages={knownPages}
-      pageSizeOptions={[10, 20, 50, 100]}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       emptyTitle="No vaults yet"
       emptyKind="vault"
       emptyAction={

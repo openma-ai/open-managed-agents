@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { useApi } from "../lib/api";
-import { usePagedList } from "../lib/usePagedList";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { ListPage } from "../components/ListPage";
 import { Button } from "@/components/ui/button";
 import type { ModelCard } from "@open-managed-agents/api-types";
@@ -52,14 +52,11 @@ export function AgentsList() {
   const {
     items: agents,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: refreshAgents,
-  } = usePagedList<Agent>("/v1/agents", { defaultPageSize: 20, params: agentsParams });
+  } = useInfiniteApiQuery<Agent>("/v1/agents", { limit: 20, params: agentsParams });
 
   // Aux fetches that aren't paginated UI surfaces — refreshed on mount and
   // after agent CRUD. Pull all agents (for the callable-agents dropdown)
@@ -123,13 +120,9 @@ export function AgentsList() {
       loading={loading}
       getRowKey={(a) => a.id}
       onRowClick={(a) => nav(`/agents/${a.id}`)}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      hasNext={hasNext}
-      knownPages={knownPages}
-      pageSizeOptions={[10, 20, 50, 100]}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       emptyTitle={search ? "No matching agents" : "No agents yet"}
       emptyKind="agent"
       emptyAction={

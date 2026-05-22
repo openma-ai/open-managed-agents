@@ -106,20 +106,33 @@ interface PageResponse<T> {
   next_cursor?: string;
 }
 
-export interface InfiniteApiQueryOpts {
+export interface InfiniteApiQueryOpts<T = unknown> {
   /** Per-page limit. Mirrors `useCursorList`'s `limit`. */
   limit?: number;
   /** Stable identity recommended (pass `useMemo` if reactive). */
   params?: Record<string, string | undefined>;
   /** When false, skip the initial fetch. Defaults to true. */
   enabled?: boolean;
+  /** Cursor query param name. Defaults to `cursor` (most OMA endpoints).
+   *  Override for endpoints that follow a different convention — e.g.
+   *  Anthropic Files uses `before_id`. */
+  cursorParam?: string;
+  /** Custom extractor for the next-cursor in the response body. Defaults
+   *  to `res.next_cursor`. Override for endpoints that return it under
+   *  a different key — e.g. Anthropic Files returns `last_id` only when
+   *  `has_more` is true. */
+  getNextCursor?: (res: unknown) => string | undefined;
 }
 
 export function useInfiniteApiQuery<T>(
   endpoint: string,
-  opts: InfiniteApiQueryOpts = {},
+  opts: InfiniteApiQueryOpts<T> = {},
 ) {
   const { api } = useApi();
+  const cursorParam = opts.cursorParam ?? "cursor";
+  const getNextCursor =
+    opts.getNextCursor ??
+    ((res: unknown) => (res as PageResponse<T>).next_cursor);
 
   // JSON.stringify keeps the queryKey stable across inline-object renders.
   // Same trick `useCursorList` used internally for its effect deps; with
@@ -130,7 +143,7 @@ export function useInfiniteApiQuery<T>(
   );
 
   const query = useInfiniteQuery<PageResponse<T>>({
-    queryKey: [endpoint, "infinite", opts.limit ?? null, paramsKey],
+    queryKey: [endpoint, "infinite", opts.limit ?? null, paramsKey, cursorParam],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       api<PageResponse<T>>(
@@ -139,12 +152,12 @@ export function useInfiniteApiQuery<T>(
           opts.params,
           {
             limit: opts.limit ? String(opts.limit) : undefined,
-            cursor: typeof pageParam === "string" ? pageParam : undefined,
+            [cursorParam]: typeof pageParam === "string" ? pageParam : undefined,
           },
         ),
         { signal },
       ),
-    getNextPageParam: (lastPage) => lastPage.next_cursor,
+    getNextPageParam: (lastPage) => getNextCursor(lastPage),
     enabled: opts.enabled ?? true,
   });
 

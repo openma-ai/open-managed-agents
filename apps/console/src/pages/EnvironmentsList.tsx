@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useApi } from "../lib/api";
-import { usePagedList } from "../lib/usePagedList";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { Select, SelectOption } from "../components/Select";
@@ -18,14 +18,11 @@ export function EnvironmentsList() {
   const {
     items: envs,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: load,
-  } = usePagedList<Env>("/v1/environments", { defaultPageSize: 20 });
+  } = useInfiniteApiQuery<Env>("/v1/environments", { limit: 20 });
 
   const create = async () => {
     await api("/v1/environments", {
@@ -63,13 +60,9 @@ export function EnvironmentsList() {
       data={displayed}
       loading={loading}
       getRowKey={(e) => e.id}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      hasNext={hasNext}
-      knownPages={knownPages}
-      pageSizeOptions={[10, 20, 50, 100]}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       emptyTitle="No environments yet"
       emptyKind="env"
       emptySubtitle="Create your first environment to get started."

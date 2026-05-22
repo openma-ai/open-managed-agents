@@ -4,7 +4,7 @@ import { Controller, useFieldArray, useForm, type Resolver } from "react-hook-fo
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useApi, ApiError } from "../lib/api";
-import { usePagedList } from "../lib/usePagedList";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "../components/Combobox";
@@ -242,14 +242,11 @@ export function SessionsList() {
   const {
     items: sessions,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: refreshSessions,
-  } = usePagedList<Session>("/v1/sessions", { defaultPageSize: 20, params: sessionsParams });
+  } = useInfiniteApiQuery<Session>("/v1/sessions", { limit: 20, params: sessionsParams });
 
   // ── Form (react-hook-form + zod) ──
   // The schema's `environment_id` requirement depends on whether the
@@ -654,13 +651,9 @@ export function SessionsList() {
       loading={loading}
       getRowKey={(s) => s.id}
       onRowClick={(s) => nav(`/sessions/${s.id}`)}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      hasNext={hasNext}
-      knownPages={knownPages}
-      pageSizeOptions={[10, 20, 50, 100]}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       emptyTitle={search || filterAgent ? "No matching sessions" : "No sessions yet"}
       emptyKind="session"
       emptyAction={!search && !filterAgent && (

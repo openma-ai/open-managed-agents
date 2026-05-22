@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { useApi, getActiveTenantId } from "../lib/api";
 import { toast } from "sonner";
 import { ListPage } from "../components/ListPage";
-import { usePagedList } from "../lib/usePagedList";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import type { FileRecord } from "@open-managed-agents/api-types";
 
 interface ListResponse {
@@ -29,15 +29,12 @@ export function FilesList() {
   const {
     items,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: refreshFiles,
-  } = usePagedList<FileRecord>("/v1/files", {
-    defaultPageSize: 20,
+  } = useInfiniteApiQuery<FileRecord>("/v1/files", {
+    limit: 20,
     params: filesParams,
     cursorParam: "before_id",
     getNextCursor: (res) => {
@@ -118,12 +115,9 @@ export function FilesList() {
       }
       data={filtered}
       loading={loading}
-      hasNext={hasNext && !search}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      knownPages={knownPages}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
+      hasMore={hasMore && !search}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       getRowKey={(f) => f.id}
       emptyTitle={scopeFilter ? "No files in this scope" : "No files yet"}
       emptyKind="file"
