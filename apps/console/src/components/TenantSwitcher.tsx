@@ -73,18 +73,19 @@ export function TenantSwitcher() {
     window.location.reload();
   };
 
-  // Hide entirely when there's nothing to switch and no chance of needing
-  // to (single tenant, never had multi). Plus button still useful if user
-  // wants to spin up a second workspace.
-  if (tenants.length === 0) return null;
-
+  // Always render the row — even before `/v1/me/tenants` resolves —
+  // so the sidebar layout doesn't change height between empty and
+  // loaded states. Previously this returned null pre-fetch, which made
+  // the SidebarFooter shorter on first paint and then grew by 44 px
+  // when tenants landed, shifting the user-profile row below it
+  // downward in a visible "jump together with the avatar" twitch.
   const current = tenants.find((t) => t.id === active);
 
-  // Initial render after tenants land but BEFORE the useEffect picks an
-  // active id: `current` is undefined. Previously we rendered the Avatar
-  // with `name="?"` here, which then visibly snapped to the real initial
-  // letter ("?" → "M") on the next tick. Hold the row at the same shape
-  // until current is resolved so nothing jumps.
+  // `current` resolves on the second pass (after the useEffect picks
+  // the active tenant from the loaded list). Until then the row holds
+  // its 44 px footprint with a brand-tinted skeleton avatar so the
+  // only visual change when data lands is the initial letter + name
+  // appearing on top of the existing block.
   const ready = current != null;
 
   return (

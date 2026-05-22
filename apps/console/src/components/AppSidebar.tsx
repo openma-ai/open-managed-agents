@@ -133,6 +133,12 @@ export function AppSidebar() {
         </span>
       </SidebarHeader>
 
+      {/* Tenant switcher sits directly under the brand — Slack / Linear
+          pattern. Held inside the always-mounted row (no return-null
+          before fetch) so its presence doesn't shift the nav below it
+          when /v1/me/tenants resolves. */}
+      <TenantSwitcher />
+
       <SidebarContent className="bg-sidebar">
         {groups.map((group) => (
           <SidebarGroup key={group.label}>
@@ -162,14 +168,7 @@ export function AppSidebar() {
         ))}
       </SidebarContent>
 
-      {/* Footer hosts tenant switcher → user profile. Together they're
-          the "who am I" stack — workspace context + signed-in identity
-          live at the bottom of the sidebar so nav doesn't have to
-          scroll past them. Order matches Linear / Vercel: tenant first
-          (higher up), user last (closest to bottom-left corner where
-          the eye lands). */}
       <SidebarFooter className="bg-sidebar p-0">
-        <TenantSwitcher />
         <UserProfile />
       </SidebarFooter>
     </Sidebar>
