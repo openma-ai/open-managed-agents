@@ -22,6 +22,7 @@ import { useChordKeybinding, type ChordBinding } from "../lib/useChordKeybinding
 import { ROUTE_CHORDS } from "../lib/route-chords";
 
 import { AppSidebar } from "./AppSidebar";
+import { AppBreadcrumb } from "./AppBreadcrumb";
 import { BrandLoader } from "./BrandLoader";
 import { CommandPalette } from "./CommandPalette";
 import { NavigationProgress } from "./NavigationProgress";
@@ -145,15 +146,18 @@ export function AppShell() {
           <AppSidebar />
 
           <div className="flex-1 min-w-0 flex flex-col min-h-0">
-            {/* Top toolbar on stage — sidebar collapse trigger + mobile
-                brand. Never scrolls. Lives outside the rounded panel
-                so the panel's top corner can round cleanly. */}
-            <header className="h-11 shrink-0 flex items-center gap-2 px-2 bg-sidebar">
+            {/* Top toolbar on stage — sits at the SAME h-11 baseline as
+                the sidebar brand row so the logo, openma text,
+                SidebarTrigger and breadcrumb all share one horizontal
+                axis. Never scrolls; lives outside the rounded panel so
+                the panel's top corner can round cleanly. */}
+            <header className="h-11 shrink-0 flex items-center gap-2 px-2 bg-sidebar text-sm text-fg-muted">
               <SidebarTrigger className="h-7 w-7 text-fg-muted hover:text-fg" />
               <div className="flex items-center gap-1.5 md:hidden">
-                <Logo size="sm" />
+                <Logo size="sm" className="!h-6 !w-6" />
                 <span className="font-mono font-bold text-sm text-brand">openma</span>
               </div>
+              <AppBreadcrumb />
             </header>
 
             {/* Rounded panel — top-left rounded only so it visually fuses

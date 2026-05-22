@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { ComponentType } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router";
-import { LogOutIcon, BookOpenIcon } from "lucide-react";
+import { NavLink, useLocation } from "react-router";
+import { BookOpenIcon, LogOutIcon } from "lucide-react";
 
 import {
   Sidebar,
@@ -15,7 +15,6 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -104,7 +103,7 @@ const themeOptions = [
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   return (
-    <div className="flex items-center rounded-md bg-sidebar-accent p-0.5 gap-0.5">
+    <div className="flex items-center rounded-md bg-sidebar-accent p-0.5 gap-0.5 mx-2">
       {themeOptions.map((opt) => (
         <button
           key={opt.value}
@@ -129,45 +128,55 @@ function UserMenu() {
     await authClient.signOut();
     window.location.href = "/login";
   };
+  // h-11 px-3 + size="sm" avatar (24x24) puts the avatar's center on
+  // the same x as the brand logo, tenant-switcher avatar, and the
+  // SidebarMenuButton icons in <SidebarContent> — single 24px-from-edge
+  // vertical axis for every icon in the column.
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5">
-      <Avatar name={user.name || user.email} size="md" />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-sidebar-foreground truncate">{user.name}</div>
-        <div className="text-xs text-fg-subtle truncate">{user.email}</div>
+    <button
+      type="button"
+      onClick={handleSignOut}
+      title={`Sign out (${user.name || user.email})`}
+      aria-label={`Sign out (${user.name || user.email})`}
+      className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors"
+    >
+      <Avatar name={user.name || user.email} size="sm" />
+      <div className="flex-1 min-w-0 text-left leading-tight group-data-[collapsible=icon]:hidden">
+        <div className="text-sm text-sidebar-foreground truncate">
+          {user.name || user.email}
+        </div>
+        {user.email && user.name && (
+          <div className="text-[11px] text-fg-subtle truncate">{user.email}</div>
+        )}
       </div>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        onClick={handleSignOut}
-        aria-label="Sign out"
-        title="Sign out"
-      >
-        <LogOutIcon />
-      </Button>
-    </div>
+      <LogOutIcon className="size-4 text-fg-subtle group-hover:text-fg-muted shrink-0 group-data-[collapsible=icon]:hidden" />
+    </button>
   );
 }
 
 /**
- * Console sidebar — composed of shadcn `Sidebar` primitives so collapse,
- * mobile sheet, keyboard shortcut, and tooltip-on-collapsed all come for
- * free from `SidebarProvider`. The nav groups themselves are still
- * driven by the same `navGroups` list previously hand-rolled in Layout.
+ * Console sidebar. Single vertical "icon axis" runs at 24px from the
+ * sidebar's left edge — brand logo, tenant avatar, nav-item icons,
+ * and footer doc/logout/user avatar all centre on that x:
  *
- * Active-route highlighting uses `useLocation` + `isActive` on each
- * menu button — `NavLink` from react-router would also work, but the
- * shadcn `SidebarMenuButton` already styles the `data-[active]` state
- * with the brand-tinted accent, so we forward isActive via that prop
- * and skip the className branching.
+ *   - Custom rows (brand, tenant trigger, user menu) use
+ *     `h-11 px-3 flex items-center gap-2` + 24-square element (logo /
+ *     avatar) → centre at 12 + 12 = 24px.
+ *   - `SidebarMenuButton`-driven rows (nav items, doc link, theme
+ *     toggle) inherit shadcn's `px-2` group wrapper + button's own
+ *     `px-2` + `size-4` icon → centre at 8 + 8 + 8 = 24px.
+ *
+ * Active-route highlighting uses `useLocation` rather than `NavLink`'s
+ * isActive because `SidebarMenuButton` already renders the brand-tinted
+ * active state via `data-[active]` — passing it through `isActive` keeps
+ * the styling consistent with everything else in shadcn.
  */
 export function AppSidebar() {
   const { pathname } = useLocation();
-  const navigate = useNavigate();
 
   // Plugin-contributed groups (hosted-only extensions). Default empty
   // in OSS — hosted overlay-replaces plugins/registry.ts to add
-  // billing / etc. Memoized so plugin lookup doesn't re-run every render.
+  // billing / etc.
   const groups = useMemo(
     () => [...navGroups, ...consolePlugins.flatMap((p) => p.navGroups ?? [])],
     [],
@@ -179,17 +188,18 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar collapsible="icon" variant="inset">
-      <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-1.5 text-brand group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-          <Logo size="sm" />
+    <Sidebar collapsible="icon">
+      {/* Brand row — h-11 to match the AppShell top toolbar on the
+          right; logo locked to 24×24 so its centre is at exactly 24px
+          from the sidebar's left edge. */}
+      <SidebarHeader className="p-0">
+        <div className="h-11 px-3 flex items-center gap-2 text-brand group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center">
+          <Logo size="sm" className="!h-6 !w-6" />
           <span className="font-mono font-bold text-base group-data-[collapsible=icon]:hidden">
             openma
           </span>
         </div>
-        <div className="group-data-[collapsible=icon]:hidden">
-          <TenantSwitcher />
-        </div>
+        <TenantSwitcher />
       </SidebarHeader>
 
       <SidebarContent>
@@ -221,32 +231,25 @@ export function AppSidebar() {
         ))}
       </SidebarContent>
 
-      <SidebarFooter>
-        <div className="group-data-[collapsible=icon]:hidden space-y-2">
-          <a
-            href="https://docs.openma.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-2 py-1.5 text-sm text-fg-muted hover:text-sidebar-foreground hover:bg-sidebar-accent rounded-md transition-colors"
-          >
-            <BookOpenIcon className="size-4 opacity-60" />
-            Documentation
-          </a>
+      <SidebarFooter className="p-0">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild tooltip="Documentation">
+              <a
+                href="https://docs.openma.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <BookOpenIcon className="size-4 opacity-80" />
+                <span>Documentation</span>
+              </a>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+        <div className="group-data-[collapsible=icon]:hidden">
           <ThemeToggle />
-          <UserMenu />
         </div>
-        {/* Collapsed footer: doc icon + avatar */}
-        <div className="hidden group-data-[collapsible=icon]:flex flex-col items-center gap-1">
-          <a
-            href="https://docs.openma.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Documentation"
-            className="flex items-center justify-center size-8 text-fg-muted hover:text-sidebar-foreground hover:bg-sidebar-accent rounded-md"
-          >
-            <BookOpenIcon className="size-4" />
-          </a>
-        </div>
+        <UserMenu />
       </SidebarFooter>
     </Sidebar>
   );

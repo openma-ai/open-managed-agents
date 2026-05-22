@@ -82,17 +82,17 @@ export function TenantSwitcher() {
 
   return (
     <>
-      <div className="px-3 pt-1 pb-2 relative" ref={dropdownRef}>
+      <div className="relative" ref={dropdownRef}>
         <button
           type="button"
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label="Switch workspace"
           onClick={() => setOpen((o) => !o)}
-          className="w-full flex items-center gap-2 px-2.5 py-2 min-h-11 sm:min-h-0 rounded-md hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] text-left group"
+          className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left group group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center"
         >
           <Avatar name={current?.name ?? "?"} size="sm" squared />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
             <div className="text-sm font-medium truncate text-fg">
               {current ? displayName(current) : "Workspace"}
             </div>
@@ -102,7 +102,7 @@ export function TenantSwitcher() {
               </div>
             )}
           </div>
-          <svg className="w-3.5 h-3.5 text-fg-subtle shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+          <svg className="w-3.5 h-3.5 text-fg-subtle shrink-0 group-data-[collapsible=icon]:hidden" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
             <polyline points="6 9 12 15 18 9" />
           </svg>
         </button>
