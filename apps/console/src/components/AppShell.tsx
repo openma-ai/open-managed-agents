@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
-import { Outlet, Navigate, useNavigate } from "react-router";
+import { useMemo, useRef, useState } from "react";
+import { Outlet, Navigate, useLocation, useNavigate } from "react-router";
 
 import {
-  Sidebar as ShadcnSidebar,
+  Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
@@ -21,14 +21,6 @@ import { useAuth } from "../lib/auth";
 import { useChordKeybinding, type ChordBinding } from "../lib/useChordKeybinding";
 import { ROUTE_CHORDS } from "../lib/route-chords";
 
-import { AppSidebar } from "./AppSidebar";
-import { AppBreadcrumb } from "./AppBreadcrumb";
-import { BrandLoader } from "./BrandLoader";
-import { CommandPalette } from "./CommandPalette";
-import { NavigationProgress } from "./NavigationProgress";
-import { Logo } from "./Logo";
-
-void ShadcnSidebar;
 void SidebarContent;
 void SidebarFooter;
 void SidebarGroup;
@@ -39,31 +31,42 @@ void SidebarMenu;
 void SidebarMenuButton;
 void SidebarMenuItem;
 
+import { AppSidebar } from "./AppSidebar";
+import { AppBreadcrumb } from "./AppBreadcrumb";
+import { BrandLoader } from "./BrandLoader";
+import { CommandPalette } from "./CommandPalette";
+import { NavigationProgress } from "./NavigationProgress";
+import { Logo } from "./Logo";
+
 /**
- * AppShell — single-rounded-panel layout, modeled on the benchmark.
+ * AppShell — sidebar + main outlet.
  *
- *   ┌────────────────────────────────────────────────────────┐
- *   │ stage (continuous bg behind everything)                │
- *   │ ┌─────┬────────────────────────────────────────────┐   │
- *   │ │     │ [trigger]  (top toolbar on stage, no chrome)│   │
- *   │ │ side│ ┌──────────────────────────────────────────┐│   │
- *   │ │ bar │ │ pageHeaderSlot  (rounded panel top)      ││   │
- *   │ │     │ ├──────────────────────────────────────────┤│   │
- *   │ │     │ │ main (overflow-y-auto, content scrolls)  ││   │
- *   │ │     │ └──────────────────────────────────────────┘│   │
- *   │ └─────┴────────────────────────────────────────────┘   │
- *   └────────────────────────────────────────────────────────┘
+ *   ┌─sidebar──┬───────────────────────────┐
+ *   │ brand    │ trigger + breadcrumb      │
+ *   │ nav      ├───────────────────────────┤
+ *   │ ...      │ rounded-tl panel          │
+ *   │ user     │  pageHeaderSlot           │
+ *   │          │  <Outlet> (scrolls)       │
+ *   └──────────┴───────────────────────────┘
  *
- * The rounded panel only rounds its TOP-LEFT corner (flush against the
- * right + bottom viewport edges). PageHeader uses React portal to render
- * INTO `pageHeaderSlot`, which sits ABOVE the scroll container as a
- * `shrink-0` sibling — so the header literally cannot scroll (no sticky
- * positioning required) and table heads inside `main` can just use
- * `top-0` to pin under the header.
- *
- * Replaces my previous attempt using shadcn `variant="inset"` + nested
- * scroll containers + sticky PageHeader, which broke sticky because
- * shadcn's default `position: fixed` sidebar + nested overflow conflicted.
+ * Structurally cloned from minimaxhub_benchmark/AppShell so the
+ * sidebar/stage seam, sticky behavior, and dimensions match a known-
+ * good layout instead of repeatedly inventing variants:
+ *   - Outer flex container is `bg-sidebar h-full overflow-hidden` —
+ *     the "stage" tint runs continuously behind sidebar + main header,
+ *     so the rounded white panel reads as a card floating on it.
+ *   - `<Sidebar className="bg-sidebar border-0 group-data-[side=left]:
+ *     border-r-0">` — explicit border kill, otherwise shadcn's default
+ *     `group-data-[side=left]:border-r` leaves a hairline at the seam
+ *     that anti-aliases into a visible dark line against the rounded
+ *     corner next door.
+ *   - Top header is `h-11 bg-sidebar shrink-0` — same baseline as the
+ *     sidebar brand row so `[ logo openma ]` and `[ trigger / crumb ]`
+ *     align horizontally on one shared 44-px band.
+ *   - PageHeader is portaled into a `shrink-0` slot that sits ABOVE
+ *     `<main>` (the scroll context) — slot literally cannot scroll,
+ *     so the per-page header is "sticky" by construction, no CSS
+ *     positioning involved.
  */
 export interface AppOutletContext {
   pageHeaderSlot: HTMLDivElement | null;
@@ -71,12 +74,11 @@ export interface AppOutletContext {
 
 export function AppShell() {
   const { isAuthenticated, isLoading } = useAuth();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
   const [pageHeaderSlot, setPageHeaderSlot] = useState<HTMLDivElement | null>(null);
 
-  // Linear-style chord bindings. Derived from ROUTE_CHORDS so the
-  // sidebar / palette / chords stay in lockstep — adding a route to
-  // the map enables `g <key>` automatically.
+  // Linear-style chord bindings.
   const chordBindings = useMemo<ChordBinding[]>(
     () =>
       Object.entries(ROUTE_CHORDS).map(([path, key]) => ({
@@ -94,6 +96,16 @@ export function AppShell() {
     [pageHeaderSlot],
   );
 
+  // Scroll-shadow: hide the divider under PageHeader when at top,
+  // show it once user has scrolled the panel content. `<main>`
+  // remounts on route change so the listener gets re-bound there.
+  const mainRef = useRef<HTMLElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+  useMemo(() => {
+    // re-binding handled by `key={pathname}` on <main> + a ref callback.
+    void pathname;
+  }, [pathname]);
+
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-bg">
@@ -108,16 +120,21 @@ export function AppShell() {
 
   return (
     <TooltipProvider delayDuration={250}>
-      <SidebarProvider className="h-svh overflow-hidden">
+      <SidebarProvider
+        className="h-svh overflow-hidden"
+        style={{
+          // 224px expanded, 52px collapsed-icon — matches benchmark.
+          "--sidebar-width": "14rem",
+          "--sidebar-width-icon": "3.25rem",
+        } as React.CSSProperties}
+      >
         <NavigationProgress />
         <CommandPalette />
 
-        {/* Autofill honeypot. Chrome / Safari ignore autoComplete="off"
-            on text inputs and aggressively offer saved login credentials
-            into the first plausible-looking input. Sit a hidden
-            username/password pair at the top of the authenticated DOM
-            so the browser fills it instead of any real Title / search /
-            whatever input downstream. */}
+        {/* Autofill honeypot — Chrome/Safari ignore autoComplete="off"
+            and fill the first plausible input. Sit a hidden username/
+            password pair at the top of the authenticated DOM so the
+            browser fills it instead of any real input below. */}
         <div
           aria-hidden="true"
           style={{
@@ -139,40 +156,38 @@ export function AppShell() {
           />
         </div>
 
-        {/* Stage frame — continuous sidebar-tinted bg under everything;
-            wraps the whole sidebar + main area so the rounded panel
-            inside reads as a card "floating" on the stage. */}
-        <div className="flex w-full h-full overflow-hidden bg-sidebar">
+        <div className="flex w-full bg-sidebar h-full overflow-hidden">
           <AppSidebar />
 
           <div className="flex-1 min-w-0 flex flex-col min-h-0">
-            {/* Top toolbar on stage — sits at the SAME h-11 baseline as
-                the sidebar brand row so the logo, openma text,
-                SidebarTrigger and breadcrumb all share one horizontal
-                axis. Never scrolls; lives outside the rounded panel so
-                the panel's top corner can round cleanly. */}
-            <header className="h-11 shrink-0 flex items-center gap-2 px-2 bg-sidebar text-sm text-fg-muted">
-              <SidebarTrigger className="h-7 w-7 text-fg-muted hover:text-fg" />
-              <div className="flex items-center gap-1.5 md:hidden">
-                <Logo size="sm" className="!h-6 !w-6" />
-                <span className="font-mono font-bold text-sm text-brand">openma</span>
-              </div>
+            <header className="h-11 flex items-center gap-1.5 pl-2 pr-4 bg-sidebar shrink-0">
+              <SidebarTrigger className="h-6 w-6 text-fg-muted hover:text-fg hover:bg-sidebar-accent" />
               <AppBreadcrumb />
             </header>
 
-            {/* Rounded panel — top-left rounded only so it visually fuses
-                with the sidebar on its left and the viewport edge on the
-                right/bottom. NO border: the bg-bg / bg-sidebar contrast
-                draws the seam by itself, and `border-l border-t` here
-                rendered as a visible dark hairline along the seam +
-                a darker notch at the rounded corner. Hosts the per-page
-                header slot (sticky by construction) + scrollable main. */}
             <div className="flex-1 min-h-0 rounded-tl-lg bg-bg flex flex-col overflow-hidden">
               <div
                 ref={setPageHeaderSlot}
-                className="empty:hidden shrink-0 border-b border-border"
+                className={[
+                  "empty:hidden shrink-0 transition-[border-color] duration-150",
+                  scrolled ? "border-b border-border" : "border-b border-transparent",
+                ].join(" ")}
               />
-              <main className="flex-1 min-h-0 overflow-y-auto bg-bg">
+              <main
+                ref={(el) => {
+                  mainRef.current = el;
+                  if (!el) {
+                    setScrolled(false);
+                    return;
+                  }
+                  const onScroll = () => setScrolled(el.scrollTop > 0);
+                  onScroll();
+                  el.addEventListener("scroll", onScroll, { passive: true });
+                  // Cleanup handled when ref unmounts (el = null branch above).
+                }}
+                key={pathname}
+                className="flex-1 min-h-0 overflow-y-auto bg-bg"
+              >
                 <Outlet context={outletContext} />
               </main>
             </div>

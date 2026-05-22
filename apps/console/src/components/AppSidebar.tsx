@@ -91,28 +91,26 @@ const navGroups: NavGroup[] = [
 ];
 
 /**
- * Console sidebar. Single vertical "icon axis" runs at 24px from the
- * sidebar's left edge — brand logo, tenant avatar, every nav-item icon,
- * and the footer user avatar all centre on that x:
+ * Console sidebar — cloned from minimaxhub_benchmark/AppShell so the
+ * brand-row recipe matches a known-good layout:
  *
- *   - Custom rows (brand, tenant trigger, user-profile trigger) use
- *     `h-11 px-3 flex items-center gap-2` + a 24-square element
- *     (Logo h-6 w-6, Avatar size="sm") → centre at 12 + 12 = 24px.
- *   - `SidebarMenuButton`-driven rows (nav items) inherit shadcn's
- *     `px-2` group wrapper + button's own `px-2` + `size-4` icon
- *     → centre at 8 + 8 + 8 = 24px.
+ *   `<SidebarHeader className="bg-sidebar h-11 px-3 flex-row items-
+ *   center gap-2">` directly hosts the brand row (no nested wrapper
+ *   div). `flex-row` overrides shadcn's default `flex-col`, putting
+ *   logo + name on one line aligned with the AppShell top toolbar.
  *
- * Footer hosts a single `UserProfile` dropdown that bundles
- * Documentation, theme picker, and Sign out — previously three
- * separate rows; consolidated because they all belong to "the
- * signed-in user's account menu", not navigation.
+ *   `<Sidebar className="bg-sidebar border-0 group-data-[side=left]:
+ *   border-r-0">` — bg-sidebar matches the AppShell outer wrapper so
+ *   they read as one continuous stage; the border-0 + border-r-0
+ *   pair strips shadcn's default right border which otherwise anti-
+ *   aliases into a dark hairline against the rounded main panel.
+ *
+ * Footer also gets `bg-sidebar p-0` so the UserProfile row sits flush
+ * on the stage instead of in a padded card.
  */
 export function AppSidebar() {
   const { pathname } = useLocation();
 
-  // Plugin-contributed groups (hosted-only extensions). Default empty
-  // in OSS — hosted overlay-replaces plugins/registry.ts to add
-  // billing / etc.
   const groups = useMemo(
     () => [...navGroups, ...consolePlugins.flatMap((p) => p.navGroups ?? [])],
     [],
@@ -124,21 +122,20 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar collapsible="icon">
-      {/* Brand row — h-11 to match the AppShell top toolbar on the
-          right; logo locked to 24×24 so its centre is at exactly 24px
-          from the sidebar's left edge. */}
-      <SidebarHeader className="p-0">
-        <div className="h-11 px-3 flex items-center gap-2 text-brand group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center">
-          <Logo size="sm" className="!h-6 !w-6" />
-          <span className="font-mono font-bold text-base group-data-[collapsible=icon]:hidden">
-            openma
-          </span>
-        </div>
-        <TenantSwitcher />
+    <Sidebar
+      collapsible="icon"
+      className="bg-sidebar border-0 group-data-[side=left]:border-r-0"
+    >
+      <SidebarHeader className="bg-sidebar h-11 px-3 flex-row items-center gap-2">
+        <Logo size="sm" />
+        <span className="font-mono font-bold text-base text-brand group-data-[collapsible=icon]:hidden">
+          openma
+        </span>
       </SidebarHeader>
 
-      <SidebarContent>
+      <TenantSwitcher />
+
+      <SidebarContent className="bg-sidebar">
         {groups.map((group) => (
           <SidebarGroup key={group.label}>
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
@@ -167,10 +164,9 @@ export function AppSidebar() {
         ))}
       </SidebarContent>
 
-      <SidebarFooter className="p-0">
+      <SidebarFooter className="bg-sidebar p-0">
         <UserProfile />
       </SidebarFooter>
     </Sidebar>
   );
 }
-
