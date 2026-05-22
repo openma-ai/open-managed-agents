@@ -234,38 +234,42 @@ export function ListPage<T>({
         </div>
       ) : (
         <div className="px-4 md:px-8 lg:px-10">
-          <div className="border border-border rounded-lg overflow-hidden">
-            <TableShell columns={columns} headSticky={tableHeadSticky}>
-              {data.map((item) => (
-                <TableRow
-                  key={getRowKey(item)}
-                  onClick={onRowClick ? () => onRowClick(item) : undefined}
-                  className={onRowClick ? "cursor-pointer" : undefined}
-                >
-                  {columns.map((col) => (
-                    <TableCell key={col.key} className={col.className}>
-                      {col.render
-                        ? col.render(item)
-                        : String((item as Record<string, unknown>)[col.key] ?? "")}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
-            </TableShell>
-            {onPageChange && onPageSizeChange && (
-              <Pagination
-                pageIndex={pageIndex ?? 0}
-                pageSize={pageSize ?? 20}
-                hasNext={hasNext ?? false}
-                knownPages={knownPages ?? 1}
-                itemCount={data.length}
-                pageSizeOptions={pageSizeOptions}
-                loading={loading}
-                onPageChange={onPageChange}
-                onPageSizeChange={onPageSizeChange}
-              />
-            )}
-          </div>
+          {/* No outer bordered/overflow-hidden card here on purpose.
+              The previous wrapper trapped the sticky <thead> inside its
+              own scrolling context (overflow-hidden creates a scroll
+              container even if hidden), so the head never pinned to
+              <main> on scroll. Rendering the Table directly lets
+              `sticky top-0` resolve to <main> like it should. */}
+          <TableShell columns={columns} headSticky={tableHeadSticky}>
+            {data.map((item) => (
+              <TableRow
+                key={getRowKey(item)}
+                onClick={onRowClick ? () => onRowClick(item) : undefined}
+                className={onRowClick ? "cursor-pointer" : undefined}
+              >
+                {columns.map((col) => (
+                  <TableCell key={col.key} className={col.className}>
+                    {col.render
+                      ? col.render(item)
+                      : String((item as Record<string, unknown>)[col.key] ?? "")}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableShell>
+          {onPageChange && onPageSizeChange && (
+            <Pagination
+              pageIndex={pageIndex ?? 0}
+              pageSize={pageSize ?? 20}
+              hasNext={hasNext ?? false}
+              knownPages={knownPages ?? 1}
+              itemCount={data.length}
+              pageSizeOptions={pageSizeOptions}
+              loading={loading}
+              onPageChange={onPageChange}
+              onPageSizeChange={onPageSizeChange}
+            />
+          )}
         </div>
       )}
 
@@ -283,12 +287,18 @@ interface TableShellProps<T> {
 function TableShell<T>({ columns, headSticky, children }: TableShellProps<T>) {
   return (
     <Table>
+      {/* Cleaner thead — normal-case xs text with a bg tint that matches
+          the rest of the canvas (bg-bg/95 + backdrop-blur lets the row
+          beneath bleed through faintly as the user scrolls under it).
+          The previous uppercase tracking-wider treatment read as
+          dashboard-y / Bootstrap-era; modern app tables (Linear, Vercel,
+          Plane) use plain case + subtle weight. */}
       <TableHeader
-        className={`${headSticky} bg-bg-surface text-fg-subtle text-xs font-medium uppercase tracking-wider`}
+        className={`${headSticky} bg-bg/95 backdrop-blur supports-[backdrop-filter]:bg-bg/80 text-fg-muted`}
       >
-        <TableRow>
+        <TableRow className="border-b border-border hover:bg-transparent">
           {columns.map((col) => (
-            <TableHead key={col.key} className={col.className}>
+            <TableHead key={col.key} className={`h-9 text-xs font-medium ${col.className ?? ""}`}>
               {col.label}
             </TableHead>
           ))}
