@@ -92,9 +92,13 @@ function computePresetRange(
   }
 }
 
-/** Compact chip-style filter trigger. Pill with label + active value +
- *  chevron when idle, label + value + clear-X when a value is set.
- *  Mirrors the LangSmith/Linear filter row chip recipe. */
+/** Compact filter trigger that lives in the toolbar alongside the
+ *  primary CTA and search input. Shape and height are intentionally
+ *  identical to shadcn `Button` (h-9, rounded-md, border-border), so
+ *  the whole row reads as one visual family — the `+ New` primary
+ *  button, the chips, and the search box on the right all share the
+ *  same baseline + corner radius. Active state stays subtle: brand
+ *  text + a `bg-brand-subtle` wash, no pill silhouette change. */
 function FilterChip({
   label,
   active,
@@ -112,22 +116,24 @@ function FilterChip({
     <Popover>
       <div
         className={cn(
-          "inline-flex items-center gap-1 h-8 rounded-full border text-sm shrink-0 transition-colors",
+          "inline-flex items-center h-9 rounded-md border text-sm shrink-0 transition-colors overflow-hidden",
           active
-            ? "border-brand text-brand bg-brand-subtle"
-            : "border-border text-fg-muted hover:text-fg hover:border-border-strong bg-transparent",
+            ? "border-brand/40 text-brand bg-brand-subtle"
+            : "border-border text-fg hover:bg-bg-surface bg-transparent",
         )}
       >
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="inline-flex items-center gap-1 pl-3 pr-2 h-full"
+            className="inline-flex items-center gap-1.5 px-3 h-full"
           >
-            <span className="font-medium">{label}</span>
+            <span className={cn(active ? "font-medium" : "text-fg-muted")}>
+              {label}
+            </span>
             {display && (
               <>
-                <span className="text-fg-subtle">:</span>
-                <span>{display}</span>
+                <span className="text-fg-subtle">·</span>
+                <span className="font-medium">{display}</span>
               </>
             )}
             {!active && <ChevronDownIcon className="size-3.5 opacity-60" />}
@@ -140,10 +146,10 @@ function FilterChip({
               e.stopPropagation();
               onClear();
             }}
-            className="inline-flex items-center justify-center size-5 mr-1.5 rounded-full hover:bg-brand/10"
+            className="inline-flex items-center justify-center w-7 h-full border-l border-brand/20 hover:bg-brand/10"
             aria-label={`Clear ${label} filter`}
           >
-            <XIcon className="size-3" />
+            <XIcon className="size-3.5" />
           </button>
         )}
       </div>
