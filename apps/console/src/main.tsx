@@ -57,40 +57,6 @@ import {
 import { consolePlugins } from "./plugins/registry";
 
 /**
- * Wrap a `lazy()` route loader so a 404 on the chunk (stale hashes
- * after a redeploy — user's cached index.html points at filenames the
- * CDN no longer serves) triggers a hard reload to pick up the fresh
- * index.html. Without this, navigating to a lazy route post-deploy
- * just throws "Failed to fetch dynamically imported module" into the
- * react-router default error boundary.
- *
- * Reload is one-shot and gated by a sessionStorage flag so a genuine
- * persistent network failure can't trap the user in a refresh loop.
- */
-const RELOAD_FLAG = "oma_lazy_reload_attempted";
-async function loadChunkOrReload<T>(loader: () => Promise<T>): Promise<T> {
-  try {
-    const out = await loader();
-    sessionStorage.removeItem(RELOAD_FLAG);
-    return out;
-  } catch (err) {
-    const isImportFailure =
-      err instanceof Error &&
-      /dynamically imported module|Failed to fetch|Importing a module script failed/i.test(
-        err.message,
-      );
-    if (isImportFailure && !sessionStorage.getItem(RELOAD_FLAG)) {
-      sessionStorage.setItem(RELOAD_FLAG, "1");
-      window.location.reload();
-      // Return a placeholder while the reload kicks in — never actually
-      // renders because the page is about to navigate.
-      return { Component: () => null } as unknown as T;
-    }
-    throw err;
-  }
-}
-
-/**
  * Router config. Migrated from declarative `<BrowserRouter><Routes>` to
  * the data router (`createBrowserRouter` + `<RouterProvider>`) so we
  * can use `useMatches()` / per-route `handle` / loaders / actions.
@@ -134,11 +100,10 @@ const protectedRoutes: RouteObject[] = [
         // Streamdown + mermaid + dozens of language defs (~500 kB
         // gzipped). Splitting it out keeps the initial bundle for
         // /agents, /sessions list, etc. under 350 kB.
-        lazy: () =>
-          loadChunkOrReload(async () => {
-            const { SessionDetail } = await import("./pages/SessionDetail");
-            return { Component: SessionDetail };
-          }),
+        lazy: async () => {
+          const { SessionDetail } = await import("./pages/SessionDetail");
+          return { Component: SessionDetail };
+        },
       },
     ],
   },

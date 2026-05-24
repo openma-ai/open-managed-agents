@@ -229,18 +229,6 @@ body {
   background: var(--fg-subtle);
 }
 
-/* `no-scrollbar` utility — hides scrollbar UI on every browser while
- *  keeping the element scrollable. Used by surfaces that scroll quietly
- *  (sidebar nav, command palette list) where a visible track would
- *  read as visual noise against the calm stage. */
-.no-scrollbar {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
 /* Dark mode code highlights — github.css ships light-mode token colors
    (greens, blues, purples) that look dim against --bg-surface in dark
    mode. Override with github-dark token palette so syntax stays readable. */

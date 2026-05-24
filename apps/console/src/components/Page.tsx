@@ -23,7 +23,7 @@ export function Page({ header, children, className = "" }: PageProps) {
     <>
       {header}
       <div className={`py-4 md:py-8 lg:py-10 ${className}`.trim()}>
-        {header ? children : <div className="px-2">{children}</div>}
+        {header ? children : <div className="px-4 md:px-8 lg:px-10">{children}</div>}
       </div>
     </>
   );

@@ -79,12 +79,8 @@ export function Dashboard() {
   ];
 
   if (loading) {
-    // `<main>` in AppShell is `overflow-y-auto` but not flex, so a
-    // `flex-1` child collapses to its intrinsic size and the loader
-    // ended up pinned to the top-left. Use a viewport-relative min
-    // height so the centering actually has vertical space to work in.
     return (
-      <div className="min-h-[60svh] flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center">
         <BrandLoader size="lg" label="Loading dashboard" />
       </div>
     );

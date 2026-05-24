@@ -23,6 +23,13 @@ import type { AppOutletContext } from "./AppShell";
  *                      table here so column labels physically live
  *                      outside the scroll container and CAN'T move.
  *
+ * Sections flow into each other WITHOUT internal dividers — the only
+ * border is the scroll-shadow line added by AppShell's pageHeaderSlot
+ * wrapper, which fades in once the user scrolls the panel content
+ * under the header. Matches the LangSmith / Linear / Vercel pattern:
+ * a flat header block, separator appears only when there's content
+ * actually being hidden by it.
+ *
  * Returns null when the slot isn't mounted, or when no slot has content.
  */
 interface PageHeaderProps {
@@ -52,7 +59,7 @@ export function PageHeader({
   return createPortal(
     <div className={cn("bg-bg", className)}>
       {hasTopRow && (
-        <div className="flex items-start gap-4 px-2 py-3">
+        <div className="flex items-start gap-4 px-4 pt-3 md:px-8 lg:px-10">
           <div className="min-w-0 flex-1">
             {title && (
               <h1 className="text-xl font-semibold tracking-tight truncate">
@@ -69,12 +76,12 @@ export function PageHeader({
         </div>
       )}
       {toolbar && (
-        <div className="flex items-center gap-2 px-2 py-3 overflow-x-auto">
+        <div className="flex items-center gap-2 px-4 py-3 md:px-8 lg:px-10 overflow-x-auto">
           {toolbar}
         </div>
       )}
       {tableHeader && (
-        <div className="px-2 border-t border-border">
+        <div className="px-4 md:px-8 lg:px-10">
           {tableHeader}
         </div>
       )}

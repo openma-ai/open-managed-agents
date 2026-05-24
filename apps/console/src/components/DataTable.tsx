@@ -233,16 +233,21 @@ export function DataTable<T>({
       {colgroup}
       <thead>
         {table.getHeaderGroups().map((headerGroup) => (
-          <tr key={headerGroup.id}>
+          <tr key={headerGroup.id} className="border-b border-border">
             {headerGroup.headers.map((header) => (
               <th
                 key={header.id}
                 className="h-9 px-3 text-left text-xs font-medium align-middle whitespace-nowrap"
               >
                 {header.isPlaceholder ? null : (
-                  <SortableHeader column={header.column}>
-                    {flexRender(header.column.columnDef.header, header.getContext())}
-                  </SortableHeader>
+                  <div className="flex items-center gap-1">
+                    <SortableHeader column={header.column}>
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </SortableHeader>
+                    {header.column.getCanFilter() && (
+                      <ColumnFilterPopover column={header.column} />
+                    )}
+                  </div>
                 )}
               </th>
             ))}
@@ -267,7 +272,7 @@ export function DataTable<T>({
       {loading ? (
         <SkeletonRows colSpan={visibleColumnCount} />
       ) : isEmpty ? (
-        <div className="px-2 py-4">
+        <div className="px-4 py-4 md:px-8 lg:px-10">
           <EmptyState
             title={emptyTitle}
             body={emptySubtitle}
@@ -278,13 +283,11 @@ export function DataTable<T>({
           />
         </div>
       ) : (
-        <div className="px-2">
-          {/* Body table: zebra-striped rows, no inter-row borders, no
-              outer card frame. Cleaner than the pill recipe — matches
-              the reference design where rows alternate a subtle bg
-              and dividers are absent. Same colgroup as the frozen
-              header above keeps columns pixel-aligned. */}
-          <table className="w-full table-fixed">
+        <div className="px-4 md:px-8 lg:px-10">
+          {/* Body table: same colgroup as the frozen header so columns
+              align. `border-separate border-spacing-y-1.5` turns each
+              <tr> into a pill (rounded ends, gap between rows). */}
+          <table className="w-full table-fixed border-separate border-spacing-y-1.5">
             {colgroup}
             <tbody>
               {filteredRows.map((row) => {
@@ -294,17 +297,15 @@ export function DataTable<T>({
                     key={row.id}
                     onClick={onRowClick ? () => onRowClick(row.original) : undefined}
                     className={cn(
-                      "transition-colors",
-                      "even:bg-bg-surface/40",
-                      "hover:bg-bg-surface",
+                      "bg-bg-surface/60 hover:bg-bg-surface transition-colors",
+                      "[&>td]:border-y [&>td]:border-border [&>td]:bg-transparent [&>td]:px-3 [&>td]:py-2 [&>td]:align-middle [&>td]:text-sm",
+                      "[&>td:first-child]:border-l [&>td:first-child]:rounded-l-lg",
+                      "[&>td:last-child]:border-r [&>td:last-child]:rounded-r-lg",
                       onRowClick && "cursor-pointer",
                     )}
                   >
                     {cells.map((cell) => (
-                      <td
-                        key={cell.id}
-                        className="px-3 py-2 align-middle text-sm truncate"
-                      >
+                      <td key={cell.id} className="truncate">
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
@@ -328,11 +329,8 @@ export function DataTable<T>({
   );
 }
 
-/** Header content + (when sorted) ▲▼ sort indicator. Clicking
- *  toggles asc → desc → clear. The indicator only shows when the
- *  column is actively sorted — unsorted columns stay clean (no
- *  perma-visible ↕ glyph) so the header row reads as a label, not a
- *  control panel. Columns can opt out via `enableSorting: false`. */
+/** Header content + ▲▼ sort indicator. Clicking toggles asc → desc →
+ *  clear. Columns can opt out via `enableSorting: false`. */
 function SortableHeader<T>({
   column,
   children,
@@ -343,7 +341,10 @@ function SortableHeader<T>({
   const canSort = column.getCanSort();
   const sortDir = column.getIsSorted();
 
-  if (!canSort) return <span className="text-fg-muted">{children}</span>;
+  if (!canSort) return <span className="font-medium">{children}</span>;
+
+  const Icon =
+    sortDir === "asc" ? ArrowUpIcon : sortDir === "desc" ? ArrowDownIcon : ArrowUpDownIcon;
 
   return (
     <button
@@ -353,13 +354,12 @@ function SortableHeader<T>({
         column.toggleSorting(undefined, e.shiftKey);
       }}
       className={cn(
-        "inline-flex items-center gap-1 hover:text-fg",
-        sortDir ? "text-fg" : "text-fg-muted",
+        "inline-flex items-center gap-1 font-medium hover:text-fg",
+        sortDir && "text-fg",
       )}
     >
       {children}
-      {sortDir === "asc" && <ArrowUpIcon className="size-3" />}
-      {sortDir === "desc" && <ArrowDownIcon className="size-3" />}
+      <Icon className={cn("size-3", !sortDir && "opacity-40")} />
     </button>
   );
 }
@@ -458,7 +458,7 @@ function ColumnVisibilityMenu<T>({ table }: { table: TanstackTable<T> }) {
  *  across both list variants. */
 function SkeletonRows({ colSpan }: { colSpan: number }) {
   return (
-    <div className="px-2">
+    <div className="px-4 md:px-8 lg:px-10">
       <Table>
         <TableBody>
           {Array.from({ length: 10 }).map((_, rowIdx) => (
