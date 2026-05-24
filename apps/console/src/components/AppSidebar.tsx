@@ -190,9 +190,22 @@ export function AppSidebar() {
       <TenantSwitcher />
 
       <SidebarContent className="bg-sidebar [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
-        <SidebarMenu>
-          {flatGroups.flatMap((g) => g.items).map(renderItem)}
-        </SidebarMenu>
+        {/* Both sections live in a SidebarGroup so they share the same
+            `p-2` indentation — without it the flat group's icons sit
+            8px further left than the Integrations icons below, which
+            reads as misaligned. The top group collapses the 4 source
+            navGroups (Overview / Managed Agents / Infrastructure /
+            Configuration) under a single 'Managed Agents' label per
+            user request — 'just add one title' rather than restoring
+            every original group header. */}
+        {flatGroups.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Managed Agents</SidebarGroupLabel>
+            <SidebarMenu>
+              {flatGroups.flatMap((g) => g.items).map(renderItem)}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
         {labeledGroups.map((g) => (
           <SidebarGroup key={g.label}>
             <SidebarGroupLabel>{g.label}</SidebarGroupLabel>
