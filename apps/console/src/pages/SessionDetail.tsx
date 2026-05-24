@@ -756,7 +756,7 @@ export function SessionDetail() {
           trail and the entity id. Stop + Files actions live at the
           right (`ml-auto`) of the badges row so the page-level chrome
           stays one band tall. */}
-      <div className="px-4 sm:px-8 py-3 flex flex-col gap-2 shrink-0">
+      <div className="pl-3 pr-4 py-3 flex flex-col gap-2 shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
           {/* Trajectory outcome chip — only when the trajectory has actually
@@ -848,7 +848,7 @@ export function SessionDetail() {
       )}
 
       {/* View tabs */}
-      <div role="tablist" aria-label="Session view" className="px-4 sm:px-8 flex items-center gap-1 shrink-0">
+      <div role="tablist" aria-label="Session view" className="pl-3 pr-4 flex items-center gap-1 shrink-0">
         <ViewTab label="Conversation" active={view === "chat"} onClick={() => setView("chat")} />
         <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
         {view === "timeline" && (
@@ -876,7 +876,7 @@ export function SessionDetail() {
 
       {/* Linear context (when triggered by a Linear webhook) */}
       {linear && (
-        <div className="px-4 sm:px-8 py-2 bg-info-subtle text-xs flex items-center gap-2 text-info">
+        <div className="pl-3 pr-4 py-2 bg-info-subtle text-xs flex items-center gap-2 text-info">
           <span>🔗</span>
           <span className="font-medium">Linear</span>
           <span className="opacity-60">·</span>
@@ -899,7 +899,7 @@ export function SessionDetail() {
 
       {/* Slack context (when triggered by a Slack event) */}
       {slack && (
-        <div className="px-4 sm:px-8 py-2 bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
+        <div className="pl-3 pr-4 py-2 bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
           <span>💬</span>
           <span className="font-medium">Slack</span>
           <span className="opacity-60">·</span>
@@ -972,7 +972,7 @@ export function SessionDetail() {
                 7) typing dots when only the agent is "thinking" with
                    nothing else streaming yet */}
           <Conversation className="flex-1 min-h-0">
-            <ConversationContent className="px-4 sm:px-8 py-6 gap-4">
+            <ConversationContent className="pl-3 pr-4 py-6 gap-4">
               {(() => {
                 // Server-returned events are now in canonical drain order
                 // (events.seq = INSERT order = what the model saw). The
@@ -1196,7 +1196,7 @@ export function SessionDetail() {
               conversation above on a `bg-bg` (white) surface — no
               line, no top padding, just `pb-4` for breathing room
               below. */}
-          <div className="px-4 sm:px-8 pb-4 bg-bg shrink-0">
+          <div className="pl-3 pr-4 pb-4 bg-bg shrink-0">
             <PromptInput
               accept="image/*"
               multiple
@@ -1377,8 +1377,8 @@ function ThreadTree({
   // is actually readable.
   const isFlat = maxDepth <= 1;
   const containerClass = isFlat
-    ? "px-4 sm:px-8 flex items-center gap-1 shrink-0 overflow-x-auto"
-    : "px-4 sm:px-8 py-1 flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
+    ? "pl-3 pr-4 flex items-center gap-1 shrink-0 overflow-x-auto"
+    : "pl-3 pr-4 py-1 flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
   return (
     <div role="tablist" aria-label="Threads" className={containerClass}>
       {flat.map((n) => (

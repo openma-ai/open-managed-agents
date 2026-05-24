@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { TrashIcon, XCircleIcon } from "lucide-react";
 
+import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import { PopoverContent } from "@/components/ui/popover";
 
 interface EvalRunSummary {
@@ -77,6 +80,7 @@ function passRateStr(r: EvalRunSummary): string {
 
 export function EvalRunsList() {
   const nav = useNavigate();
+  const { api } = useApi();
 
   // Server-driven status filter. "any" → omit the param entirely so the
   // server returns all runs; anything else is whitelisted by the route's
@@ -96,7 +100,7 @@ export function EvalRunsList() {
   // run reaching a terminal state pauses the poll on its own — matches
   // the previous `anyActive` guard without the manual setInterval +
   // cancelled flag dance.
-  const { data: runsRes, isLoading: loading } = useApiQuery<{ data: EvalRunSummary[] }>(
+  const { data: runsRes, isLoading: loading, refetch } = useApiQuery<{ data: EvalRunSummary[] }>(
     "/v1/evals/runs",
     params,
     {
@@ -190,8 +194,53 @@ export function EvalRunsList() {
           <span className="font-mono text-xs text-fg-muted">{row.original.agent_id}</span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const r = row.original;
+          const isActive = r.status === "pending" || r.status === "running";
+          return (
+            <RowActionsMenu
+              label={`Actions for ${r.id}`}
+              actions={[
+                {
+                  label: "Cancel",
+                  icon: <XCircleIcon className="size-4" />,
+                  // Cancel and Delete both hit the same DELETE endpoint
+                  // (it cancels in-flight runs by flipping status to
+                  // failed, then deletes the row). The two menu items
+                  // give the user the right verb for the row's state.
+                  disabled: !isActive,
+                  onSelect: async () => {
+                    if (!confirm(`Cancel eval run ${r.id}? In-flight tasks will be marked failed.`)) return;
+                    try {
+                      await api(`/v1/evals/runs/${r.id}`, { method: "DELETE" });
+                      void refetch();
+                    } catch {}
+                  },
+                },
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: async () => {
+                    if (!confirm(`Delete eval run ${r.id}? This can't be undone.`)) return;
+                    try {
+                      await api(`/v1/evals/runs/${r.id}`, { method: "DELETE" });
+                      void refetch();
+                    } catch {}
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
     ],
-    [],
+    [api, refetch],
   );
 
   // Active-filter chip display — kept null when matching the default so

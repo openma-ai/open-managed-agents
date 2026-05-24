@@ -221,7 +221,7 @@ export function VaultDetail() {
         />
       }
     >
-      <div className="px-4 md:px-8 lg:px-10">
+      <div>
         <section>
           <header className="flex items-center gap-3 mb-3 flex-wrap">
             <h2 className="font-display text-base font-semibold text-fg mr-auto">

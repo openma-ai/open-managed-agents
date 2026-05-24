@@ -270,27 +270,6 @@ export function ModelCardsList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "Actions",
-        cell: ({ row }) => (
-          <div className="text-right">
-            <button
-              onClick={() => startEdit(row.original)}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg mr-1 sm:mr-3"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => remove(row.original.id)}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger"
-            >
-              Delete
-            </button>
-          </div>
-        ),
-        enableHiding: false,
-      },
     ],
     // Intentionally empty: startEdit + remove close over `form`/`api`
     // but the column defs only need to reflect identity, not capture a
@@ -344,6 +323,7 @@ export function ModelCardsList() {
       filters={filters}
       data={cards}
       loading={loading}
+      onRowClick={(c) => startEdit(c)}
       getRowId={(c) => c.id}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
@@ -372,7 +352,25 @@ export function ModelCardsList() {
       columns={columns}
     >
       <Modal open={showCreate} onClose={closeDialog} title={editingId ? "Edit Model Card" : "New Model Card"}
-        footer={<><Button variant="ghost" onClick={closeDialog}>Cancel</Button><Button onClick={save} disabled={!form.model_id || (!editingId && !form.api_key)}>{editingId ? "Save" : "Create"}</Button></>}>
+        footer={
+          <>
+            {editingId && (
+              <Button
+                variant="ghost"
+                onClick={async () => {
+                  if (!confirm(`Delete model card ${form.model_id}? This can't be undone.`)) return;
+                  await remove(editingId);
+                  closeDialog();
+                }}
+                className="text-danger hover:text-danger hover:bg-danger-subtle mr-auto"
+              >
+                Delete
+              </Button>
+            )}
+            <Button variant="ghost" onClick={closeDialog}>Cancel</Button>
+            <Button onClick={save} disabled={!form.model_id || (!editingId && !form.api_key)}>{editingId ? "Save" : "Create"}</Button>
+          </>
+        }>
         <form autoComplete="off" onSubmit={(e) => e.preventDefault()} className="space-y-3">
           {error && <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">{error}</div>}
           <div>

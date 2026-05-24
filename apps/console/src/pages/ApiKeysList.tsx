@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { XCircleIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useAsyncAction } from "../hooks/useAsyncAction";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "../components/DataTable";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 interface ApiKey {
   id: string;
@@ -108,18 +110,24 @@ export function ApiKeysList() {
       },
       {
         id: "actions",
-        header: "Actions",
+        header: "",
         cell: ({ row }) => (
-          <div className="text-right">
-            <button
-              onClick={() => remove(row.original.id)}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger"
-            >
-              Revoke
-            </button>
-          </div>
+          <RowActionsMenu
+            label={`Actions for ${row.original.name}`}
+            actions={[
+              {
+                label: "Revoke",
+                icon: <XCircleIcon className="size-4" />,
+                destructive: true,
+                onSelect: () => {
+                  void remove(row.original.id);
+                },
+              },
+            ]}
+          />
         ),
         enableHiding: false,
+        size: 56,
       },
     ],
     [],

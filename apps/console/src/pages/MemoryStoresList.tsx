@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { ArchiveIcon, TrashIcon } from "lucide-react";
 
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
@@ -135,8 +137,51 @@ export function MemoryStoresList() {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const s = row.original;
+          const archived = !!s.archived_at;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${s.name}`}
+              actions={[
+                {
+                  label: "Archive",
+                  icon: <ArchiveIcon className="size-4" />,
+                  disabled: archived,
+                  onSelect: async () => {
+                    try {
+                      await api(`/v1/memory_stores/${s.id}/archive`, {
+                        method: "POST",
+                        body: "{}",
+                      });
+                      void refetch();
+                    } catch {}
+                  },
+                },
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: async () => {
+                    if (!confirm(`Delete memory store ${s.name}? This can't be undone.`)) return;
+                    try {
+                      await api(`/v1/memory_stores/${s.id}`, { method: "DELETE" });
+                      void refetch();
+                    } catch {}
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
     ],
-    [],
+    [api, refetch],
   );
 
   // Active-filter chip display — kept undefined when matching the default

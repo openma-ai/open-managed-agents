@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { ArchiveIcon, TrashIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
@@ -9,6 +10,7 @@ import { Select, SelectOption } from "../components/Select";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 interface Env {
   id: string;
@@ -130,8 +132,51 @@ export function EnvironmentsList() {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const e = row.original;
+          const archived = !!e.archived_at;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${e.name}`}
+              actions={[
+                {
+                  label: "Archive",
+                  icon: <ArchiveIcon className="size-4" />,
+                  disabled: archived,
+                  onSelect: async () => {
+                    try {
+                      await api(`/v1/environments/${e.id}/archive`, {
+                        method: "POST",
+                        body: "{}",
+                      });
+                      load();
+                    } catch {}
+                  },
+                },
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: async () => {
+                    if (!confirm(`Delete environment ${e.name}? This can't be undone.`)) return;
+                    try {
+                      await api(`/v1/environments/${e.id}`, { method: "DELETE" });
+                      load();
+                    } catch {}
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
     ],
-    [],
+    [api, load],
   );
 
   // Active-filter chip displays — kept null when matching the default so

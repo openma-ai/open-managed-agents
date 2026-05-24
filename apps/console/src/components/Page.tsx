@@ -6,6 +6,12 @@ import type { ReactNode } from "react";
  * scroll context (`<SidebarInset>` → body scroll) without being offset
  * by Page's own padding.
  *
+ * Padding is fixed (no responsive scaling) so the left edge stays
+ * aligned with the SidebarTrigger icon glyph axis (12 px / `pl-3`) at
+ * every viewport. PageHeader owns its own top padding (`pt-3`), so the
+ * content area below adds only `pb-4` — no `pt-*` here or the
+ * header→content gap would double up.
+ *
  * Use for content/detail/list pages. Pages with custom chrome (chat-
  * style shells like SessionDetail) keep their own layout.
  */
@@ -22,9 +28,7 @@ export function Page({ header, children, className = "" }: PageProps) {
   return (
     <>
       {header}
-      <div className={`py-4 md:py-8 lg:py-10 ${className}`.trim()}>
-        {header ? children : <div className="px-4 md:px-8 lg:px-10">{children}</div>}
-      </div>
+      <div className={`pl-3 pr-4 pb-4 ${className}`.trim()}>{children}</div>
     </>
   );
 }

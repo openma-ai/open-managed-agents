@@ -204,4 +204,23 @@ app.post("/:id/archive", async (c) => {
   }
 });
 
+// DELETE /v1/environments/:id — hard delete. Pairs with POST archive
+// for the two-tier delete UX the console exposes via RowActionsMenu.
+app.delete("/:id", async (c) => {
+  const t = c.get("tenant_id");
+  const id = c.req.param("id");
+  try {
+    await c.var.services.environments.delete({
+      tenantId: t,
+      environmentId: id,
+    });
+    return c.json({ deleted: true });
+  } catch (err) {
+    if (err instanceof EnvironmentNotFoundError) {
+      return c.json({ error: "Environment not found" }, 404);
+    }
+    throw err;
+  }
+});
+
 export default app;

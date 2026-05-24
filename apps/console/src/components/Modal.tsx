@@ -10,6 +10,16 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
+// Tailwind JIT safelist hint — these literal `!max-w-*` strings exist
+// here so the bundler picks them up; the Modal component picks one of
+// them at runtime via `${"!"}${maxWidth}`. shadcn's <DialogContent>
+// bakes `sm:max-w-sm` (24rem) into its base className which would
+// otherwise cap every modal at 384 px on desktop; the `!` prefix lifts
+// our chosen width over it. Add new entries here if a caller starts
+// passing a wider value.
+//
+// !max-w-sm !max-w-md !max-w-lg !max-w-xl !max-w-2xl !max-w-3xl !max-w-4xl
+
 /**
  * Project-level modal convention built on shadcn `Dialog` primitives.
  * Keeps a small controlled API (open/onClose/title/subtitle/maxWidth/
@@ -33,9 +43,9 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   subtitle?: string;
-  /** Tailwind class controlling the dialog's max width — defaults to
-   *  `max-w-lg` (matches the legacy wrapper). Pass a custom class to
-   *  override (e.g. `max-w-2xl` for wider forms). */
+  /** Tailwind max-width class WITHOUT the `!` prefix (e.g. `max-w-lg`,
+   *  `max-w-2xl`). Modal applies `!important` internally to beat
+   *  shadcn's baked-in `sm:max-w-sm` cap. Default: `max-w-lg`. */
   maxWidth?: string;
   children: ReactNode;
   footer?: ReactNode;
@@ -50,6 +60,10 @@ export function Modal({
   children,
   footer,
 }: ModalProps): JSX.Element {
+  // Strip a stray `!` prefix from caller for back-compat, then apply
+  // our own — guarantees exactly one `!` is present in the final class.
+  const widthClass = `!${maxWidth.replace(/^!/, "")}`;
+
   return (
     <Dialog
       open={open}
@@ -60,10 +74,7 @@ export function Modal({
       <DialogContent
         className={cn(
           "max-h-[85vh] flex flex-col gap-0 p-0",
-          // shadcn's default ceiling is sm:max-w-sm — bump to the
-          // caller's choice (or the lg fallback) so forms aren't cramped.
-          "sm:max-w-[unset]",
-          maxWidth,
+          widthClass,
         )}
       >
         <DialogHeader className="px-6 py-4 border-b border-border gap-1">

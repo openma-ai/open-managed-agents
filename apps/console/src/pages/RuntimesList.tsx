@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { XCircleIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { Modal } from "../components/Modal";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 interface LocalSkill {
   id: string;
@@ -189,18 +191,24 @@ export function RuntimesList() {
       },
       {
         id: "actions",
-        header: "Actions",
+        header: "",
         cell: ({ row }) => (
-          <div className="text-right">
-            <button
-              onClick={() => remove(row.original.id)}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger"
-            >
-              Revoke
-            </button>
-          </div>
+          <RowActionsMenu
+            label={`Actions for ${row.original.hostname}`}
+            actions={[
+              {
+                label: "Revoke",
+                icon: <XCircleIcon className="size-4" />,
+                destructive: true,
+                onSelect: () => {
+                  void remove(row.original.id);
+                },
+              },
+            ]}
+          />
         ),
         enableHiding: false,
+        size: 56,
       },
     ],
     // `remove` is closed over from this scope; it captures `api` + `refetch`

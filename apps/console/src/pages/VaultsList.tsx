@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { ArchiveIcon, TrashIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
@@ -8,6 +9,7 @@ import { PopoverContent } from "@/components/ui/popover";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 interface Vault { id: string; name: string; created_at: string; archived_at?: string; }
 
@@ -110,8 +112,52 @@ export function VaultsList() {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const v = row.original;
+          const archived = !!v.archived_at;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${v.name}`}
+              actions={[
+                {
+                  label: "Archive",
+                  icon: <ArchiveIcon className="size-4" />,
+                  disabled: archived,
+                  onSelect: async () => {
+                    if (!confirm(`Archive vault ${v.name}? All its credentials will also be archived. Archive is one-way.`)) return;
+                    try {
+                      await api(`/v1/vaults/${v.id}/archive`, {
+                        method: "POST",
+                        body: "{}",
+                      });
+                      load();
+                    } catch {}
+                  },
+                },
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: async () => {
+                    if (!confirm(`Delete vault ${v.name}? This can't be undone.`)) return;
+                    try {
+                      await api(`/v1/vaults/${v.id}`, { method: "DELETE" });
+                      load();
+                    } catch {}
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
     ],
-    [],
+    [api, load],
   );
 
   // Active-filter chip display — null at the default so the chip reads

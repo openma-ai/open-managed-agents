@@ -110,7 +110,7 @@ export function AgentDetail() {
         />
       }
     >
-      <div className="px-4 md:px-8 lg:px-10 space-y-6">
+      <div className="space-y-6">
         {/* Properties grid */}
         <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 max-w-2xl text-sm">
           <span className="text-fg-muted">ID</span><span className="font-mono text-xs">{agent.id}</span>

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { TrashIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
@@ -7,6 +8,7 @@ import { PopoverContent } from "@/components/ui/popover";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 /* ---------- types ---------- */
 
@@ -265,6 +267,18 @@ export function SkillsList() {
     } catch {}
   };
 
+  // Row-level delete invoked from the per-row actions menu. Separate from
+  // the modal's deleteSkill because the row's confirm copy uses the
+  // skill's own title and there's no detail dialog to close after.
+  const deleteSkillById = async (skill: Skill) => {
+    const name = skill.display_title || skill.name;
+    if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
+    try {
+      await api(`/v1/skills/${skill.id}`, { method: "DELETE" });
+      load();
+    } catch {}
+  };
+
   /* ---- helpers ---- */
 
   const inputCls =
@@ -332,6 +346,35 @@ export function SkillsList() {
             {new Date(row.original.created_at).toLocaleDateString()}
           </span>
         ),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const s = row.original;
+          // Anthropic built-in skills aren't user-editable; render the
+          // item as disabled so the menu layout stays uniform across
+          // rows but the user can't trigger a 4xx.
+          const isBuiltIn = s.source === "anthropic";
+          return (
+            <RowActionsMenu
+              label={`Actions for ${s.display_title || s.name}`}
+              actions={[
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  disabled: isBuiltIn,
+                  onSelect: () => {
+                    void deleteSkillById(s);
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
       },
     ],
     [],

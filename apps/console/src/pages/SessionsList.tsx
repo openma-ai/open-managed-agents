@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Controller, useFieldArray, useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { ArchiveIcon, TrashIcon } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
@@ -12,6 +13,7 @@ import { Combobox } from "../components/Combobox";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 import type { SessionRecord as Session } from "../types/session";
 
@@ -595,10 +597,6 @@ export function SessionsList() {
 
   const displayed = sessions;
 
-  // Compatibility shim: keep `load()` reference for any future caller.
-  // Currently unused after refresh-on-create kicks off via refreshSessions.
-  void refreshSessions;
-
   // Active-filter chip displays — kept undefined when matching the
   // default so the chip reads "Status ▾" rather than "Status: All ▾".
   // The clear-X only renders when the chip is in non-default state.
@@ -765,8 +763,52 @@ export function SessionsList() {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const s = row.original;
+          const archived = !!s.archived_at;
+          const label = s.title?.trim() || s.id;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${label}`}
+              actions={[
+                {
+                  label: archived ? "Unarchive" : "Archive",
+                  icon: <ArchiveIcon className="size-4" />,
+                  disabled: archived,
+                  onSelect: async () => {
+                    try {
+                      await api(`/v1/sessions/${s.id}/archive`, {
+                        method: "POST",
+                        body: "{}",
+                      });
+                      refreshSessions();
+                    } catch {}
+                  },
+                },
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: async () => {
+                    if (!confirm(`Delete session "${label}"? This can't be undone.`)) return;
+                    try {
+                      await api(`/v1/sessions/${s.id}`, { method: "DELETE" });
+                      refreshSessions();
+                    } catch {}
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
     ],
-    [],
+    [api, refreshSessions],
   );
 
   const hasActiveFilter = !!search || !!filterAgent || status !== "any" || created.after !== undefined || created.before !== undefined;

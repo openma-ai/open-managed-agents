@@ -139,7 +139,7 @@ export function MemoryStoreDetail() {
         />
       }
     >
-      <div className="px-4 md:px-8 lg:px-10">
+      <div>
         <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} aria-label="Memory store sections" className="mt-2">
           <TabsList className="mb-6">
             <TabsTrigger value="memories">Memories</TabsTrigger>

@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
+import { DownloadIcon, TrashIcon } from "lucide-react";
 import { useApi, getActiveTenantId } from "../lib/api";
 import { toast } from "sonner";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useApiQuery, useInfiniteApiQuery } from "../lib/useApiQuery";
 import { PopoverContent } from "@/components/ui/popover";
 import type { FileRecord } from "@open-managed-agents/api-types";
@@ -210,25 +212,37 @@ export function FilesList() {
       {
         id: "actions",
         header: "",
-        cell: ({ row }) => (
-          <div className="text-right whitespace-nowrap">
-            {row.original.downloadable && (
-              <button
-                onClick={(e) => { e.stopPropagation(); void download(row.original); }}
-                className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-xs text-fg-muted hover:text-fg mr-1 sm:mr-3 px-2"
-              >
-                Download
-              </button>
-            )}
-            <button
-              onClick={(e) => { e.stopPropagation(); void remove(row.original); }}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-xs text-danger hover:text-danger/80 px-2"
-            >
-              Delete
-            </button>
-          </div>
-        ),
+        cell: ({ row }) => {
+          const f = row.original;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${f.filename}`}
+              actions={[
+                ...(f.downloadable
+                  ? [
+                      {
+                        label: "Download",
+                        icon: <DownloadIcon className="size-4" />,
+                        onSelect: () => {
+                          void download(f);
+                        },
+                      },
+                    ]
+                  : []),
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: () => {
+                    void remove(f);
+                  },
+                },
+              ]}
+            />
+          );
+        },
         enableHiding: false,
+        size: 56,
       },
     ],
     // `download` / `remove` close over `api` and `refreshFiles`, both
