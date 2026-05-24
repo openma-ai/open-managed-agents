@@ -203,28 +203,50 @@ export function DataTable<T>({
   );
 
   const frozenHeader = !loading && !isEmpty ? (
-    <table className="w-full table-fixed text-fg-muted">
-      {colgroup}
-      <thead>
-        {table.getHeaderGroups().map((headerGroup) => (
-          <tr key={headerGroup.id}>
-            {headerGroup.headers.map((header) => (
-              <th
-                key={header.id}
-                className="h-9 px-3 text-left text-xs font-medium align-middle whitespace-nowrap"
-              >
-                {header.isPlaceholder ? null : (
-                  <span className="font-medium">
-                    {flexRender(header.column.columnDef.header, header.getContext())}
-                  </span>
-                )}
-              </th>
-            ))}
-          </tr>
-        ))}
-      </thead>
-    </table>
+    // Wrap the header table in an overflow-x:hidden container with a
+    // stable id so the body's horizontal scroll can drive scrollLeft
+    // on this element — see the useEffect below. Without this sync,
+    // wide tables (many columns / long URLs) horizontal-scroll the
+    // body but the header stays put → cells lose alignment.
+    <div id="dt-header-scroll" className="overflow-x-hidden">
+      <table className="w-full table-fixed text-fg-muted">
+        {colgroup}
+        <thead>
+          {table.getHeaderGroups().map((headerGroup) => (
+            <tr key={headerGroup.id}>
+              {headerGroup.headers.map((header) => (
+                <th
+                  key={header.id}
+                  className="h-9 px-3 text-left text-xs font-medium align-middle whitespace-nowrap"
+                >
+                  {header.isPlaceholder ? null : (
+                    <span className="font-medium">
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          ))}
+        </thead>
+      </table>
+    </div>
   ) : undefined;
+
+  // Sync the frozen header's horizontal scroll to the body's. Both
+  // elements are identified by id (single DataTable per page is the
+  // current usage; lift to refs + context if we ever stack two on the
+  // same page). passive listener — we're only reading scrollLeft.
+  useEffect(() => {
+    const body = document.getElementById("dt-body-scroll");
+    const header = document.getElementById("dt-header-scroll");
+    if (!body || !header) return;
+    const onScroll = () => {
+      header.scrollLeft = body.scrollLeft;
+    };
+    body.addEventListener("scroll", onScroll, { passive: true });
+    return () => body.removeEventListener("scroll", onScroll);
+  }, [loading, isEmpty]);
 
   return (
     <>
@@ -247,13 +269,13 @@ export function DataTable<T>({
           />
         </div>
       ) : (
-        <div className="pl-3 pr-4 pb-4">
+        <div id="dt-body-scroll" className="pl-3 pr-4 pb-4 overflow-x-auto">
           {/* Body sits flush against the frozen header in the slot —
               no extra top padding so the gap between header and first
               row is only the row pill's own `border-spacing-y-1.5`
-              (6 px). The scroll-shadow line on AppShell's
-              pageHeaderSlot is the only horizontal divider that
-              appears (only on scroll). */}
+              (6 px). overflow-x-auto lets wide tables scroll
+              horizontally; the useEffect above mirrors scrollLeft to
+              the frozen header so column alignment is preserved. */}
           <table className="w-full table-fixed border-separate border-spacing-y-1.5">
             {colgroup}
             <tbody>

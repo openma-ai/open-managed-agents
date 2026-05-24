@@ -125,7 +125,7 @@ export function TrajectoryViewerModal({
         <div className="text-sm text-fg-subtle">No trajectory loaded yet.</div>
       )}
       {ready && (
-        <pre className="font-mono text-[11px] bg-bg-surface border border-border rounded px-3 py-2 overflow-auto max-h-[60vh] text-fg whitespace-pre">
+        <pre className="font-mono text-[11px] bg-bg-surface rounded px-3 py-2 overflow-auto max-h-[60vh] text-fg whitespace-pre">
           {json}
         </pre>
       )}

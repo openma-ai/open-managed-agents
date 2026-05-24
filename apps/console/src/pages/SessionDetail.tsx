@@ -756,7 +756,7 @@ export function SessionDetail() {
           trail and the entity id. Stop + Files actions live at the
           right (`ml-auto`) of the badges row so the page-level chrome
           stays one band tall. */}
-      <div className="px-4 sm:px-8 py-3 border-b border-border flex flex-col gap-2 shrink-0">
+      <div className="px-4 sm:px-8 py-3 flex flex-col gap-2 shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
           {/* Trajectory outcome chip — only when the trajectory has actually
@@ -811,7 +811,7 @@ export function SessionDetail() {
               <button
                 onClick={() => void interrupt()}
                 disabled={interrupting}
-                className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border border-border bg-bg-surface text-fg-muted hover:text-fg hover:border-border-strong disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium bg-bg-surface/60 text-fg-muted hover:bg-bg-surface hover:text-fg disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                 title="Interrupt the active turn on this thread"
               >
                 {interrupting ? "Stopping…" : "Stop"}
@@ -819,10 +819,10 @@ export function SessionDetail() {
             )}
             <button
               onClick={() => setShowFiles((v) => !v)}
-              className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+              className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
                 showFiles
-                  ? "bg-bg-surface text-fg border-border-strong"
-                  : "bg-bg-surface text-fg-muted border-border hover:text-fg hover:border-border-strong"
+                  ? "bg-bg-surface text-fg"
+                  : "bg-bg-surface/60 text-fg-muted hover:bg-bg-surface hover:text-fg"
               }`}
               title="Files the agent wrote to /mnt/session/outputs/"
             >
@@ -848,7 +848,7 @@ export function SessionDetail() {
       )}
 
       {/* View tabs */}
-      <div role="tablist" aria-label="Session view" className="px-4 sm:px-8 border-b border-border flex items-center gap-1 shrink-0">
+      <div role="tablist" aria-label="Session view" className="px-4 sm:px-8 flex items-center gap-1 shrink-0">
         <ViewTab label="Conversation" active={view === "chat"} onClick={() => setView("chat")} />
         <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
         {view === "timeline" && (
@@ -861,7 +861,7 @@ export function SessionDetail() {
         <button
           onClick={() => setShowTrajectory(true)}
           disabled={trajectory === undefined || trajectory === "loading"}
-          className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed border border-border hover:border-border-strong rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
+          className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed bg-bg-surface/60 hover:bg-bg-surface rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
           title={
             trajectory === "loading"
               ? "Loading trajectory…"
@@ -876,7 +876,7 @@ export function SessionDetail() {
 
       {/* Linear context (when triggered by a Linear webhook) */}
       {linear && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-info-subtle text-xs flex items-center gap-2 text-info">
+        <div className="px-4 sm:px-8 py-2 bg-info-subtle text-xs flex items-center gap-2 text-info">
           <span>🔗</span>
           <span className="font-medium">Linear</span>
           <span className="opacity-60">·</span>
@@ -899,7 +899,7 @@ export function SessionDetail() {
 
       {/* Slack context (when triggered by a Slack event) */}
       {slack && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
+        <div className="px-4 sm:px-8 py-2 bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
           <span>💬</span>
           <span className="font-medium">Slack</span>
           <span className="opacity-60">·</span>
@@ -1190,8 +1190,13 @@ export function SessionDetail() {
               /events) stays the source of truth. The + button only
               accepts images — they go inline to the model as vision
               inputs. Non-image attachments belong on the mount-based
-              session resources path, not this button. */}
-          <div className="px-4 sm:px-8 py-4 border-t border-border shrink-0">
+              session resources path, not this button.
+
+              Wireless treatment: dropped the previous `border-t` and
+              instead tinted the wrapper with `bg-bg-surface/40`. The
+              fill change is what separates the composer from the
+              conversation above — no line needed. */}
+          <div className="px-4 sm:px-8 py-4 bg-bg-surface/40 shrink-0">
             <PromptInput
               accept="image/*"
               multiple
@@ -1263,16 +1268,23 @@ export function SessionDetail() {
  *  squelched here — StatusPill already renders the live status. */
 
 function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  // Wireless tab marker: picked the ghost-pill option (bg-bg-surface)
+  // over an underline or accent dot because the entire session-detail
+  // surface drops outer dividers in this refactor — leaving a per-tab
+  // underline behind would have re-introduced exactly the stacked-lines
+  // look the page is trying to escape. Bold + brand text + a subtle
+  // surface fill keeps the active state clearly distinguishable without
+  // any line at all.
   return (
     <button
       onClick={onClick}
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      className={`inline-flex items-center justify-center px-3 py-2.5 min-h-11 sm:min-h-0 text-sm border-b-2 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+      className={`inline-flex items-center justify-center px-3 py-2 min-h-11 sm:min-h-0 text-sm rounded-md my-1.5 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
         active
-          ? "border-brand text-fg font-medium"
-          : "border-transparent text-fg-subtle hover:text-fg-muted"
+          ? "bg-bg-surface text-brand font-semibold"
+          : "text-fg-subtle hover:text-fg-muted hover:bg-bg-surface/60"
       }`}
     >
       {label}
@@ -1300,10 +1312,10 @@ function ThreadTab({
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      className={`py-1.5 min-h-11 sm:min-h-0 text-xs whitespace-nowrap border-b-2 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] flex items-center gap-1 ${
+      className={`py-1 min-h-11 sm:min-h-0 text-xs whitespace-nowrap rounded-md my-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] flex items-center gap-1 ${
         active
-          ? "border-info text-fg font-medium"
-          : "border-transparent text-fg-subtle hover:text-fg-muted"
+          ? "bg-bg-surface text-info font-semibold"
+          : "text-fg-subtle hover:text-fg-muted hover:bg-bg-surface/60"
       }`}
       style={{ paddingLeft: `${0.75 + depth * 0.75}rem`, paddingRight: "0.75rem" }}
     >
@@ -1365,8 +1377,8 @@ function ThreadTree({
   // is actually readable.
   const isFlat = maxDepth <= 1;
   const containerClass = isFlat
-    ? "px-4 sm:px-8 border-b border-border flex items-center gap-1 shrink-0 overflow-x-auto"
-    : "px-4 sm:px-8 py-1 border-b border-border flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
+    ? "px-4 sm:px-8 flex items-center gap-1 shrink-0 overflow-x-auto"
+    : "px-4 sm:px-8 py-1 flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
   return (
     <div role="tablist" aria-label="Threads" className={containerClass}>
       {flat.map((n) => (
@@ -1544,7 +1556,7 @@ function EventRender({
                 Scheduled wakeup
               </span>
             </div>
-            <MessageContent className="border border-info/30 rounded-2xl rounded-bl-sm px-4 py-3 bg-bg-surface">
+            <MessageContent className="rounded-2xl rounded-bl-sm px-4 py-3 bg-info-subtle text-info">
               {text}
             </MessageContent>
           </Message>
@@ -1556,8 +1568,13 @@ function EventRender({
       // border + hourglass label since drainEventQueue hasn't picked it
       // up yet. Live: default ai-elements user bubble (right-aligned,
       // bg-secondary which we've aliased to OMA's bg-surface).
-      const cancelledOverride = "border border-border-strong line-through opacity-70";
-      const pendingOverride = "border border-border-strong";
+      // Wireless: dropped the border-border-strong outline on both
+      // override states — line-through + opacity (cancelled) and the
+      // ⏳/Pending label above the bubble (pending) carry the signal
+      // without a per-bubble outline competing with the surrounding
+      // air.
+      const cancelledOverride = "line-through opacity-70";
+      const pendingOverride = "opacity-80";
       return (
         <Message from="user">
           {(isPending || isCancelled) && (
@@ -1689,10 +1706,10 @@ function EventRender({
 
     case "session.error":
       return (
-        <div className="max-w-2xl bg-danger-subtle border border-danger/30 rounded-lg px-4 py-2.5 text-sm text-danger">
+        <div className="max-w-2xl bg-danger-subtle rounded-lg px-4 py-2.5 text-sm text-danger">
           <div>Error: {event.error}</div>
           {modelErrorCause && (
-            <div className="mt-1.5 pt-1.5 border-t border-danger/20 text-[12px] opacity-90">
+            <div className="mt-1.5 pt-1.5 text-[12px] opacity-90">
               <span className="font-medium">Cause</span>
               {modelErrorCause.model && (
                 <span className="ml-1 font-mono opacity-75">({modelErrorCause.model})</span>
@@ -1705,7 +1722,7 @@ function EventRender({
 
     case "session.warning":
       return (
-        <div className="max-w-2xl bg-warning-subtle border border-warning/30 rounded-lg px-4 py-2.5 text-sm text-warning">
+        <div className="max-w-2xl bg-warning-subtle rounded-lg px-4 py-2.5 text-sm text-warning">
           <div className="font-medium mb-0.5">Warning ({String(event.source ?? "")})</div>
           <div>{String(event.message ?? "")}</div>
         </div>

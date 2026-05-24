@@ -62,8 +62,8 @@ export function ResourcePanel({
   const description = (data?.description as string | undefined) ?? null;
 
   return (
-    <aside className="w-[420px] shrink-0 border-l border-border bg-bg flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-border flex items-start gap-3 shrink-0">
+    <aside className="w-[420px] shrink-0 bg-bg-surface/30 flex flex-col min-h-0">
+      <div className="px-4 py-3 flex items-start gap-3 shrink-0">
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-wide text-fg-subtle font-mono">
             {titleKind}
@@ -87,12 +87,12 @@ export function ResourcePanel({
         {err && <div className="text-danger">Failed to load: {err}</div>}
         {!data && !err && <div className="text-fg-subtle">Loading…</div>}
         {data && (
-          <pre className="font-mono text-fg-muted bg-bg-surface/40 border border-border/40 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
+          <pre className="font-mono text-fg-muted bg-bg-surface/60 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
             {JSON.stringify(data, null, 2)}
           </pre>
         )}
       </div>
-      <div className="px-4 py-3 border-t border-border shrink-0">
+      <div className="px-4 py-3 shrink-0">
         <Link
           to={linkPath}
           className="inline-flex items-center gap-1.5 text-sm text-info hover:text-info/80 font-medium"
@@ -142,8 +142,8 @@ export function FilesPanel({
   }, [sessionId]);
 
   return (
-    <aside className="w-[420px] shrink-0 border-l border-border bg-bg flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-border flex items-start gap-3 shrink-0">
+    <aside className="w-[420px] shrink-0 bg-bg-surface/30 flex flex-col min-h-0">
+      <div className="px-4 py-3 flex items-start gap-3 shrink-0">
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-wide text-fg-subtle font-mono">
             Files
@@ -171,11 +171,11 @@ export function FilesPanel({
           </div>
         )}
         {files && files.length > 0 && (
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {files.map((f) => (
               <li
                 key={f.filename}
-                className="flex items-center gap-3 py-2 border-b border-border/40 last:border-b-0"
+                className="flex items-center gap-3 py-2"
               >
                 <div className="min-w-0 flex-1">
                   <a

@@ -118,14 +118,6 @@ export function SkillsList() {
   const [nvError, setNvError] = useState("");
   const nvInputRef = useRef<HTMLInputElement>(null);
 
-  /* clawhub install */
-  const [showClawHub, setShowClawHub] = useState(false);
-  const [chQuery, setChQuery] = useState("");
-  const [chResults, setChResults] = useState<Array<{ slug: string; name: string; description: string }>>([]);
-  const [chSearching, setChSearching] = useState(false);
-  const [chInstalling, setChInstalling] = useState("");
-  const [chError, setChError] = useState("");
-
   /* ---- loaders ---- */
 
   /* ---- create ---- */
@@ -273,44 +265,6 @@ export function SkillsList() {
     } catch {}
   };
 
-  /* ---- clawhub ---- */
-
-  const searchClawHub = async () => {
-    if (!chQuery.trim()) return;
-    setChSearching(true);
-    setChError("");
-    try {
-      const res = await api<{ data: Array<{ slug: string; name: string; description: string }> }>(
-        `/v1/clawhub/search?q=${encodeURIComponent(chQuery)}`
-      );
-      setChResults(res.data || []);
-    } catch (e: any) {
-      setChError(e.message || "Search failed");
-      setChResults([]);
-    } finally {
-      setChSearching(false);
-    }
-  };
-
-  const installFromClawHub = async (slug: string) => {
-    setChInstalling(slug);
-    setChError("");
-    try {
-      await api("/v1/clawhub/install", {
-        method: "POST",
-        body: JSON.stringify({ slug }),
-      });
-      setShowClawHub(false);
-      setChQuery("");
-      setChResults([]);
-      load();
-    } catch (e: any) {
-      setChError(e.message || "Install failed");
-    } finally {
-      setChInstalling("");
-    }
-  };
-
   /* ---- helpers ---- */
 
   const inputCls =
@@ -426,11 +380,6 @@ export function SkillsList() {
       subtitle="Manage pre-built and custom skills for your agents."
       createLabel="+ New skill"
       onCreate={() => setShowCreate(true)}
-      headerActions={
-        <Button variant="ghost" onClick={() => setShowClawHub(true)}>
-          ClawHub
-        </Button>
-      }
       filters={filters}
       data={skills}
       loading={loading}
@@ -732,65 +681,6 @@ export function SkillsList() {
             </div>
           </div>
         ) : null}
-      </Modal>
-
-      {/* ===== ClawHub Dialog ===== */}
-      <Modal
-        open={showClawHub}
-        onClose={() => { setShowClawHub(false); setChQuery(""); setChResults([]); setChError(""); }}
-        title="Install from ClawHub"
-        subtitle="Search and install community skills from clawhub.ai"
-        maxWidth="max-w-2xl"
-        footer={
-          <Button variant="ghost" onClick={() => { setShowClawHub(false); setChQuery(""); setChResults([]); setChError(""); }}>
-            Close
-          </Button>
-        }
-      >
-        <div className="space-y-4">
-          {chError && (
-            <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
-              {chError}
-            </div>
-          )}
-          <div className="flex gap-2">
-            <input
-              value={chQuery}
-              onChange={(e) => setChQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") searchClawHub(); }}
-              aria-label="Search ClawHub skills"
-              className={inputCls + " flex-1"}
-              placeholder="Search skills... e.g. git, docker, research"
-              autoFocus
-            />
-            <Button onClick={searchClawHub} disabled={chSearching || !chQuery.trim()}>
-              {chSearching ? "Searching..." : "Search"}
-            </Button>
-          </div>
-          {chResults.length > 0 && (
-            <div className="border border-border rounded-lg overflow-hidden max-h-80 overflow-y-auto">
-              {chResults.map((s) => (
-                <div key={s.slug} className="flex items-start justify-between gap-3 px-4 py-3 border-b border-border last:border-b-0 hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]">
-                  <div className="min-w-0">
-                    <div className="font-medium text-fg text-sm">{s.name || s.slug}</div>
-                    <div className="text-xs text-fg-subtle font-mono">{s.slug}</div>
-                    {s.description && <div className="text-xs text-fg-muted mt-0.5 line-clamp-2">{s.description}</div>}
-                  </div>
-                  <button
-                    onClick={() => installFromClawHub(s.slug)}
-                    disabled={chInstalling === s.slug}
-                    className="shrink-0 inline-flex items-center justify-center px-3 py-1 min-h-11 sm:min-h-0 text-xs font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                  >
-                    {chInstalling === s.slug ? "Installing..." : "Install"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {chResults.length === 0 && chQuery && !chSearching && (
-            <p className="text-sm text-fg-subtle text-center py-4">No results. Try a different search term.</p>
-          )}
-        </div>
       </Modal>
     </DataTable>
   );
