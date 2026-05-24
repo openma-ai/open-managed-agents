@@ -172,12 +172,26 @@ export class ModelCardService {
     limit?: number;
     cursor?: string;
     q?: string;
+    /** Exact-match filter on `provider`. Route layer is responsible for
+     *  whitelisting against the enum. */
+    provider?: string;
+    /** Lower bound on created_at (epoch ms, inclusive). */
+    createdAfter?: number;
+    /** Upper bound on created_at (epoch ms, exclusive). */
+    createdBefore?: number;
   }): Promise<{ items: ModelCardRow[]; nextCursor?: string }> {
     return paginateVia({
       cursor: opts.cursor,
       limit: opts.limit,
       fetch: (after, limit) =>
-        this.repo.listPage(opts.tenantId, { limit, after, q: opts.q }),
+        this.repo.listPage(opts.tenantId, {
+          limit,
+          after,
+          q: opts.q,
+          provider: opts.provider,
+          createdAfter: opts.createdAfter,
+          createdBefore: opts.createdBefore,
+        }),
       extractCursor: (r) => ({
         createdAt: new Date(r.created_at).getTime(),
         id: r.id,

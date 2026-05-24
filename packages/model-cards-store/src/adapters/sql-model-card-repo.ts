@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, like, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, like, lt, ne, or, sql } from "drizzle-orm";
 import {
   asBuilder,
   atomicWrite,
@@ -110,6 +110,9 @@ export class SqlModelCardRepo implements ModelCardRepo {
       limit: number;
       after?: PageCursor;
       q?: string;
+      provider?: string;
+      createdAfter?: number;
+      createdBefore?: number;
     },
   ): Promise<{ items: ModelCardRow[]; hasMore: boolean }> {
     const conds = [eq(model_cards.tenant_id, tenantId)];
@@ -125,6 +128,13 @@ export class SqlModelCardRepo implements ModelCardRepo {
         )!,
       );
     }
+    if (opts.provider !== undefined) {
+      conds.push(eq(model_cards.provider, opts.provider));
+    }
+    if (opts.createdAfter !== undefined)
+      conds.push(gte(model_cards.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conds.push(lt(model_cards.created_at, opts.createdBefore));
     if (opts.after) {
       conds.push(
         or(

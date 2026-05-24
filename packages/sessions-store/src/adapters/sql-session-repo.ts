@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
 import {
   asBuilder,
   atomicWrite,
@@ -19,7 +19,7 @@ import type {
   SessionResource,
   SessionStatus,
 } from "@open-managed-agents/shared";
-import { fetchN, trimPage } from "@open-managed-agents/shared";
+import { escapeLikePattern, fetchN, trimPage } from "@open-managed-agents/shared";
 import { SessionNotFoundError } from "../errors";
 import type {
   NewSessionInput,
@@ -122,11 +122,21 @@ export class SqlSessionRepo implements SessionRepo {
       includeArchived: boolean;
       limit: number;
       after?: PageCursor;
+      status?: SessionStatus;
+      q?: string;
     },
   ): Promise<{ items: SessionRow[]; hasMore: boolean }> {
     const conds = [eq(sessions.tenant_id, tenantId)];
     if (opts.agentId) conds.push(eq(sessions.agent_id, opts.agentId));
     if (!opts.includeArchived) conds.push(isNull(sessions.archived_at));
+    if (opts.status) conds.push(eq(sessions.status, opts.status));
+    if (opts.q) {
+      // title is a regular TEXT column, no json_extract needed. SQLite LIKE
+      // is ASCII-case-insensitive; ESCAPE '\' keeps any user-supplied %/_
+      // literal (see escapeLikePattern).
+      const pattern = `%${escapeLikePattern(opts.q)}%`;
+      conds.push(like(sessions.title, pattern));
+    }
     if (opts.after) {
       const c = opts.after;
       conds.push(

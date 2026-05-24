@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Button } from "@/components/ui/button";
@@ -178,10 +178,7 @@ export function EnvironmentDetail() {
   if (loadError) {
     return (
       <div className="flex-1 p-8">
-        <Link to="/environments" className="text-sm text-fg-muted hover:text-fg">
-          &larr; Environments
-        </Link>
-        <div className="mt-4 bg-danger-subtle border border-danger/30 rounded-lg p-4 text-danger text-sm">
+        <div className="bg-danger-subtle border border-danger/30 rounded-lg p-4 text-danger text-sm">
           {loadError}
         </div>
       </div>
@@ -193,15 +190,6 @@ export function EnvironmentDetail() {
 
   return (
     <Page>
-      {/* Breadcrumb */}
-      <div className="text-sm text-fg-muted mb-4 flex items-center gap-1.5">
-        <Link to="/environments" className="hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]">
-          Environments
-        </Link>
-        <span className="text-fg-subtle">/</span>
-        <span className="text-fg truncate" title={env.name}>{env.name}</span>
-      </div>
-
       <div className="max-w-3xl space-y-6">
         {/* Header: name input + Cloud badge + status */}
         <section className="space-y-3">

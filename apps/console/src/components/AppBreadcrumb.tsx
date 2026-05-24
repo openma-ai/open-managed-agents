@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { useMatches, type UIMatch } from "react-router";
+import { Link, useMatches, type UIMatch } from "react-router";
 import { ChevronRightIcon } from "lucide-react";
 
 import {
@@ -17,6 +17,13 @@ import {
  *
  *   handle: { crumb: "Sessions" }                          // fixed label
  *   handle: { crumb: (m) => ({ label: m.data.name }) }      // dynamic
+ *   handle: { crumb: (m) => m.params.id ?? "Session" }     // route param
+ *
+ * Detail routes use the callback form so the leaf crumb displays the
+ * real entity id (e.g. `sess-7ywhtwnwvpdtoy31`) — the in-page
+ * `← Sessions / sess-xxx` row has been removed, so the breadcrumb is
+ * now the canonical place to read the id. Truncation in the leaf
+ * `<BreadcrumbPage>` keeps long ids from pushing the toolbar wider.
  *
  * Pages that don't publish a `crumb` are skipped — the URL segment
  * fallback that an earlier draft used was dropped because it added
@@ -65,9 +72,21 @@ export function AppBreadcrumb() {
               )}
               <BreadcrumbItem>
                 {isLast ? (
-                  <BreadcrumbPage>{c.label}</BreadcrumbPage>
+                  <BreadcrumbPage
+                    className="truncate max-w-[200px] sm:max-w-[280px]"
+                    title={c.label}
+                  >
+                    {c.label}
+                  </BreadcrumbPage>
                 ) : (
-                  <BreadcrumbLink href={c.to}>{c.label}</BreadcrumbLink>
+                  // asChild + React Router <Link> gives an SPA-style
+                  // navigation. Without this, BreadcrumbLink renders a
+                  // bare <a href> and clicking the breadcrumb does a
+                  // full browser reload — losing all in-memory state
+                  // (TQ cache, route state, dialogs).
+                  <BreadcrumbLink asChild>
+                    <Link to={c.to}>{c.label}</Link>
+                  </BreadcrumbLink>
                 )}
               </BreadcrumbItem>
             </Fragment>

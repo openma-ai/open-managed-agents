@@ -1,10 +1,12 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
-import { EmptyState } from "../components/EmptyState";
-import { Page } from "../components/Page";
+import { PopoverContent } from "@/components/ui/popover";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip } from "../components/FilterChip";
 
 /* ---------- types ---------- */
 
@@ -35,6 +37,14 @@ interface VersionDetail {
   files: SkillFile[];
 }
 
+type SourceValue = "any" | "anthropic" | "custom";
+
+const SOURCE_OPTIONS: { value: SourceValue; label: string }[] = [
+  { value: "any", label: "All" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "custom", label: "Custom" },
+];
+
 /* ---------- constants ---------- */
 
 // Mirrors the default UPLOAD_MAX_BYTES on the server (apps/main/src/quotas.ts).
@@ -63,6 +73,15 @@ function isZipFile(file: File): boolean {
 export function SkillsList() {
   const { api } = useApi();
 
+  /* Server-driven filter state. `source` flows into skillsParams below
+   * → useApiQuery reruns when params change → list reflects exactly
+   * what the server returned (no client-side split on s.source). */
+  const [source, setSource] = useState<SourceValue>("any");
+  const skillsParams = useMemo(
+    () => (source !== "any" ? { source } : {}),
+    [source],
+  );
+
   /* list state — TQ owns the fetch lifecycle. `load()` becomes
    * `refetch`, which kicks off a background refetch that leaves
    * the prior items on screen until the new payload lands. */
@@ -70,7 +89,7 @@ export function SkillsList() {
     data: skillsRes,
     isLoading: loading,
     refetch: refetchSkills,
-  } = useApiQuery<{ data: Skill[] }>("/v1/skills");
+  } = useApiQuery<{ data: Skill[] }>("/v1/skills", skillsParams);
   const skills = skillsRes?.data ?? [];
   const load = () => {
     void refetchSkills();
@@ -297,145 +316,132 @@ export function SkillsList() {
   const inputCls =
     "w-full border border-border rounded-lg px-3 py-2 min-h-11 sm:min-h-0 text-sm outline-none focus:border-border-strong transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] bg-bg text-fg";
 
-  const anthropicSkills = skills.filter((s) => s.source === "anthropic");
-  const customSkills = skills.filter((s) => s.source === "custom");
+  // TanStack column defs. Single table for both Anthropic built-in + custom
+  // skills; the Source column lets the user tell them apart at a glance.
+  // No click sort / no per-column filter — Source filter chip drives the
+  // server `source` param instead.
+  const columns = useMemo<ColumnDef<Skill>[]>(
+    () => [
+      {
+        id: "name",
+        accessorKey: "display_title",
+        header: "Name",
+        cell: ({ row }) => (
+          <div className="min-w-0">
+            <div className="font-medium text-fg truncate">
+              {row.original.display_title || row.original.name}
+            </div>
+            <div className="text-xs text-fg-subtle font-mono truncate">
+              {row.original.source === "anthropic" ? row.original.name : row.original.id}
+            </div>
+          </div>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "description",
+        accessorKey: "description",
+        header: "Description",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">{row.original.description}</span>
+        ),
+      },
+      {
+        id: "source",
+        accessorKey: "source",
+        header: "Source",
+        cell: ({ row }) =>
+          row.original.source === "anthropic" ? (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-subtle text-warning">
+              built-in
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-bg-surface text-fg-muted">
+              custom
+            </span>
+          ),
+      },
+      {
+        id: "version",
+        accessorFn: (s) => s.latest_version,
+        header: "Version",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">v{row.original.latest_version}</span>
+        ),
+      },
+      {
+        id: "created",
+        accessorFn: (s) => s.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">
+            {new Date(row.original.created_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+
+  // Active-filter chip displays — kept undefined when matching the default
+  // so the chip reads "Source ▾" rather than "Source: All ▾". The clear-X
+  // only renders when the chip is in non-default state.
+  const sourceDisplay =
+    source === "any" ? undefined : SOURCE_OPTIONS.find((o) => o.value === source)?.label;
+
+  const filters = (
+    <FilterChip
+      label="Source"
+      active={source !== "any"}
+      display={sourceDisplay}
+      onClear={() => setSource("any")}
+    >
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        collisionPadding={8}
+        className="w-48 p-0"
+      >
+        <FacetedFilter
+          options={SOURCE_OPTIONS}
+          value={source}
+          onValueChange={(v) => setSource(v as SourceValue)}
+          searchPlaceholder="Source..."
+        />
+      </PopoverContent>
+    </FilterChip>
+  );
+
+  // Built-in (anthropic) skills aren't user-editable; click on those rows
+  // is a no-op so we don't open a half-empty detail dialog that would 404
+  // on its version fetches.
+  const handleRowClick = (s: Skill) => {
+    if (s.source === "custom") openDetail(s);
+  };
 
   /* ---- render ---- */
 
   return (
-    <Page>
-      {/* header */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="font-display text-xl font-semibold tracking-tight">
-            Skills
-          </h1>
-          <p className="text-fg-muted text-sm">
-            Manage pre-built and custom skills for your agents.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setShowClawHub(true)}>
-            ClawHub
-          </Button>
-          <Button onClick={() => setShowCreate(true)}>
-            + New skill
-          </Button>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="text-fg-subtle text-sm py-8 text-center">
-          Loading...
-        </div>
-      ) : skills.length === 0 ? (
-        <EmptyState
-          size="lg"
-          kind="skill"
-          title="No skills yet"
-          body="Create a skill to give your agents domain expertise."
-        />
-      ) : (
-        <>
-          {/* Anthropic built-in skills */}
-          {anthropicSkills.length > 0 && (
-            <>
-              <h3 className="text-sm font-medium text-fg mb-3">
-                Anthropic Pre-built Skills
-              </h3>
-              <div className="border border-border rounded-lg overflow-x-auto mb-6">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                      <th className="text-left px-4 py-2.5">Name</th>
-                      <th className="text-left px-4 py-2.5">Description</th>
-                      <th className="text-left px-4 py-2.5">Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {anthropicSkills.map((s) => (
-                      <tr
-                        key={s.id}
-                        className="border-t border-border"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-medium">
-                            {s.display_title || s.name}
-                          </div>
-                          <div className="text-xs text-fg-subtle font-mono">
-                            {s.name}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-fg-muted">
-                          {s.description}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-subtle text-warning">
-                            built-in
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-          {/* Custom skills */}
-          <h3 className="text-sm font-medium text-fg mb-3">
-            Custom Skills
-          </h3>
-          {customSkills.length === 0 ? (
-            <EmptyState
-              kind="skill"
-              title="No custom skills yet"
-              body="Upload a skill folder as a .zip with SKILL.md at the root."
-            />
-          ) : (
-            <div className="border border-border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-2.5">Name</th>
-                    <th className="text-left px-4 py-2.5">Description</th>
-                    <th className="text-left px-4 py-2.5">Version</th>
-                    <th className="text-left px-4 py-2.5">Created</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {customSkills.map((s) => (
-                    <tr
-                      key={s.id}
-                      onClick={() => openDetail(s)}
-                      className="border-t border-border hover:bg-bg-surface cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-medium">
-                          {s.display_title || s.name}
-                        </div>
-                        <div className="text-xs text-fg-subtle font-mono">
-                          {s.id}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted max-w-xs truncate">
-                        {s.description}
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted">
-                        v{s.latest_version}
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted">
-                        {new Date(s.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-
+    <DataTable<Skill>
+      subtitle="Manage pre-built and custom skills for your agents."
+      createLabel="+ New skill"
+      onCreate={() => setShowCreate(true)}
+      headerActions={
+        <Button variant="ghost" onClick={() => setShowClawHub(true)}>
+          ClawHub
+        </Button>
+      }
+      filters={filters}
+      data={skills}
+      loading={loading}
+      getRowId={(s) => s.id}
+      onRowClick={handleRowClick}
+      columns={columns}
+      emptyTitle="No skills yet"
+      emptyKind="skill"
+      emptySubtitle="Create a skill to give your agents domain expertise."
+      emptyAction={<Button onClick={() => setShowCreate(true)}>+ New skill</Button>}
+    >
       {/* ===== Create Dialog ===== */}
       <Modal
         open={showCreate}
@@ -786,7 +792,7 @@ export function SkillsList() {
           )}
         </div>
       </Modal>
-    </Page>
+    </DataTable>
   );
 }
 

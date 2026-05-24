@@ -254,13 +254,17 @@ export class SessionService {
   }
 
   /** Cursor-paginated list. Order: created_at DESC, id DESC tie-break.
-   *  Optional `agentId` narrows to one agent's sessions. */
+   *  Optional `agentId` narrows to one agent's sessions. `status` filters by
+   *  the session lifecycle column; `q` is a case-insensitive substring filter
+   *  on title. */
   async listPage(opts: {
     tenantId: string;
     agentId?: string;
     includeArchived?: boolean;
     limit?: number;
     cursor?: string;
+    status?: SessionStatus;
+    q?: string;
   }): Promise<{ items: SessionRow[]; nextCursor?: string }> {
     return paginateVia({
       cursor: opts.cursor,
@@ -271,6 +275,8 @@ export class SessionService {
           includeArchived: opts.includeArchived ?? false,
           limit,
           after,
+          status: opts.status,
+          q: opts.q,
         }),
       extractCursor: (r) => ({
         createdAt: new Date(r.created_at).getTime(),

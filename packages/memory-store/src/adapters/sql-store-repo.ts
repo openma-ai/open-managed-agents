@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
 import {
   asBuilder,
   atomicWrite,
@@ -66,10 +66,24 @@ export class SqlMemoryStoreRepo implements MemoryStoreRepo {
 
   async list(
     tenantId: string,
-    opts: { includeArchived: boolean },
+    opts: {
+      includeArchived: boolean;
+      status?: "active" | "archived" | "any";
+      createdAfter?: number;
+      createdBefore?: number;
+    },
   ): Promise<MemoryStoreRow[]> {
     const conds = [eq(memory_stores.tenant_id, tenantId)];
-    if (!opts.includeArchived) conds.push(isNull(memory_stores.archived_at));
+    // `status` is the canonical 3-way filter; fall back to includeArchived
+    // when callers haven't been migrated yet. `'any'` is a no-op WHERE.
+    const status =
+      opts.status ?? (opts.includeArchived ? "any" : "active");
+    if (status === "active") conds.push(isNull(memory_stores.archived_at));
+    else if (status === "archived") conds.push(isNotNull(memory_stores.archived_at));
+    if (opts.createdAfter !== undefined)
+      conds.push(gte(memory_stores.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conds.push(lt(memory_stores.created_at, opts.createdBefore));
     const rows = await getAll<typeof memory_stores.$inferSelect>(
       this.db
         .select()

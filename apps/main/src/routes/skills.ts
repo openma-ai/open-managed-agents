@@ -612,11 +612,31 @@ app.post("/upload", async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get("/", async (c) => {
-  // Anthropic SDK + Console use `source=anthropic`; legacy callers may pass
-  // `source=builtin`. Treat both as the built-in filter; `source=custom` keeps
-  // its meaning. Anything else returns the union (built-in + tenant custom).
-  const sourceParam = c.req.query("source");
-  const onlyBuiltin = sourceParam === "builtin" || sourceParam === "anthropic";
+  // source: enum filter. Whitelist strictly — anything other than
+  // anthropic|custom|any is a 400, NOT a silent fallback. Lets the
+  // console drive a single-select chip without the server quietly
+  // ignoring typos. Output `source` is always normalized to `anthropic`
+  // via toApiSkill(), so the input enum doesn't need to know about the
+  // legacy `builtin` storage value.
+  const sourceRaw = c.req.query("source");
+  let source: "anthropic" | "custom" | "any" | undefined;
+  if (sourceRaw !== undefined) {
+    if (sourceRaw === "anthropic" || sourceRaw === "custom" || sourceRaw === "any") {
+      source = sourceRaw;
+    } else {
+      return c.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_source",
+            message: `Invalid source '${sourceRaw}'; expected one of anthropic|custom|any.`,
+          },
+        },
+        400,
+      );
+    }
+  }
+  const onlyBuiltin = source === "anthropic";
   let customs: SkillMeta[] = [];
   if (!onlyBuiltin) {
     const t = c.get("tenant_id");
@@ -639,7 +659,7 @@ app.get("/", async (c) => {
       )
     ).filter((s): s is SkillMeta => s !== null);
   }
-  const builtins = sourceParam === "custom" ? [] : BUILTIN_SKILLS;
+  const builtins = source === "custom" ? [] : BUILTIN_SKILLS;
   // Skills LIST returns all builtins + all tenant customs in one shot — no
   // pagination today. Emit the Anthropic-required `has_more` + `next_page`
   // fields explicitly: BetaListSkillsResponse marks both required even when

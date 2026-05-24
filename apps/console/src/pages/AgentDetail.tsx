@@ -97,14 +97,6 @@ export function AgentDetail() {
       header={
         <PageHeader
           title={agent.name}
-          subtitle={
-            <Link
-              to="/agents"
-              className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg-muted transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-            >
-              &larr; Agents
-            </Link>
-          }
           actions={
             <>
               <Button variant="outline" size="sm" onClick={archive}>

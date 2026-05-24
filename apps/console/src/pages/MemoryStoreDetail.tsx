@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
 import { PageHeader } from "../components/PageHeader";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface MemoryStore {
@@ -45,6 +46,8 @@ type TabKey = "memories" | "versions" | "settings";
 
 export function MemoryStoreDetail() {
   const { id: storeId } = useParams<{ id: string }>();
+  const nav = useNavigate();
+  const { api } = useApi();
   const [tab, setTab] = useState<TabKey>("memories");
   const [error, setError] = useState<string | null>(null);
 
@@ -57,11 +60,46 @@ export function MemoryStoreDetail() {
     if (storeError) setError(errMsg(storeError));
   }, [storeError]);
 
+  // Archive/Delete moved up from the list page when MemoryStoresList
+  // adopted the AgentsList chrome — the list rows no longer carry inline
+  // actions, so this is where users perform store-level lifecycle ops.
+  // Matches AgentDetail's header-actions pattern.
+  const archive = async () => {
+    if (!storeId) return;
+    if (
+      !confirm(
+        "Archive this store? It will become read-only and no new sessions can attach it. Archive is one-way.",
+      )
+    )
+      return;
+    try {
+      await api(`/v1/memory_stores/${storeId}/archive`, { method: "POST" });
+      nav("/memory");
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
+  const del = async () => {
+    if (!storeId) return;
+    if (
+      !confirm(
+        "Delete this store and ALL its memories + version history? This cannot be undone.",
+      )
+    )
+      return;
+    try {
+      await api(`/v1/memory_stores/${storeId}`, { method: "DELETE" });
+      nav("/memory");
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
   if (!storeId) return <div className="p-8">Missing store id.</div>;
   if (error) return (
     <div className="flex-1 p-8">
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
-      <Link to="/memory" className="text-sm text-fg-muted hover:text-fg">← Back to memory stores</Link>
     </div>
   );
   if (!store) return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
@@ -73,11 +111,8 @@ export function MemoryStoreDetail() {
           title={store.name}
           subtitle={
             <>
-              <Link to="/memory" className="text-sm text-fg-muted hover:text-fg">
-                ← Memory stores
-              </Link>
               {store.description && (
-                <span className="ml-3 text-fg-muted">· {store.description}</span>
+                <span className="text-fg-muted">{store.description}</span>
               )}
               <span className="block text-fg-subtle text-xs font-mono mt-1">
                 {store.id} · /mnt/memory/{store.name}/
@@ -87,6 +122,18 @@ export function MemoryStoreDetail() {
                   </span>
                 )}
               </span>
+            </>
+          }
+          actions={
+            <>
+              {!store.archived_at && (
+                <Button variant="outline" size="sm" onClick={archive}>
+                  Archive
+                </Button>
+              )}
+              <Button variant="destructive" size="sm" onClick={del}>
+                Delete
+              </Button>
             </>
           }
         />
@@ -564,7 +611,7 @@ function SettingsPanel({ store, archived }: { store: MemoryStore; archived: bool
         </div>
       )}
       <p className="text-fg-subtle text-xs pt-4 border-t border-border">
-        To archive or delete this store, use the actions on the store list.
+        To archive or delete this store, use the actions in the page header.
       </p>
     </div>
   );

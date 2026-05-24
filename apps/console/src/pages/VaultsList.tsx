@@ -1,9 +1,12 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
-import { ListPage } from "../components/ListPage";
+import { PopoverContent } from "@/components/ui/popover";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { TextInput, SecretInput } from "../components/Input";
 import { LocalCombobox } from "../components/LocalCombobox";
 import { Disclosure } from "../components/Disclosure";
@@ -37,6 +40,14 @@ const CAP_CLIS: Array<{ cli_id: string; label: string; helper: string; oauth?: b
   { cli_id: "kubectl", label: "kubectl", helper: "Bearer token for the API server" },
   { cli_id: "docker", label: "Docker registry", helper: "Registry password / PAT" },
   { cli_id: "git", label: "git (HTTPS remotes)", helper: "Personal access token" },
+];
+
+type StatusValue = "any" | "active" | "archived";
+
+const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
+  { value: "any", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "archived", label: "Archived" },
 ];
 
 export function VaultsList() {
@@ -136,6 +147,25 @@ export function VaultsList() {
     error?: string;
   } | null>(null);
 
+  // Server-driven filter state. Any change to these flows into vaultParams
+  // → useInfiniteApiQuery resets to page 1 on params change → the list
+  // reflects exactly what the server returned (no client-side faking).
+  const [status, setStatus] = useState<StatusValue>("active");
+  const [created, setCreated] = useState<{ after?: number; before?: number }>({});
+
+  const vaultParams = useMemo(
+    () => ({
+      status,
+      ...(created.after !== undefined
+        ? { created_after: new Date(created.after).toISOString() }
+        : {}),
+      ...(created.before !== undefined
+        ? { created_before: new Date(created.before).toISOString() }
+        : {}),
+    }),
+    [status, created.after, created.before],
+  );
+
   const {
     items: vaults,
     isLoading: loading,
@@ -143,7 +173,7 @@ export function VaultsList() {
     isLoadingMore,
     loadMore,
     refresh: load,
-  } = useInfiniteApiQuery<Vault>("/v1/vaults", { limit: 20 });
+  } = useInfiniteApiQuery<Vault>("/v1/vaults", { limit: 20, params: vaultParams });
 
   // Listen for OAuth popup completion. Two transports because COOP severs
   // window.opener for providers like Sentry (which set
@@ -394,33 +424,100 @@ export function VaultsList() {
   // Already connected MCP server URLs
   const connectedUrls = new Set(credentials.map((c) => c.auth.mcp_server_url).filter(Boolean));
 
-  const [vaultTab, setVaultTab] = useState<"all" | "active">("active");
-  const displayedVaults = vaultTab === "active" ? vaults.filter((v) => !v.archived_at) : vaults;
+  // TanStack column defs. Order, filtering, and search all flow through
+  // server params now — no per-column sort/filter UI. Required columns
+  // (id, name) opt out of the Columns hide menu so the user can't end up
+  // with a table that has nothing identifying.
+  const columns = useMemo<ColumnDef<Vault>[]>(
+    () => [
+      {
+        id: "name",
+        accessorKey: "name",
+        header: "Name",
+        cell: ({ row }) => <span className="font-medium text-fg">{row.original.name}</span>,
+        enableHiding: false,
+      },
+      {
+        id: "id",
+        accessorKey: "id",
+        header: "ID",
+        cell: ({ row }) => (
+          <span title={row.original.id} className="font-mono text-xs text-fg-muted">
+            {row.original.id}
+          </span>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "status",
+        accessorFn: (v) => (v.archived_at ? "archived" : "active"),
+        header: "Status",
+        cell: ({ row }) => (
+          <span
+            className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
+              row.original.archived_at
+                ? "bg-bg-surface text-fg-subtle"
+                : "bg-success-subtle text-success"
+            }`}
+          >
+            {row.original.archived_at ? "archived" : "active"}
+          </span>
+        ),
+      },
+      {
+        id: "created",
+        accessorFn: (v) => v.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">
+            {new Date(row.original.created_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
-  const tabs = (
-    <div className="flex gap-1">
-      {(["all", "active"] as const).map((t) => (
-        <button
-          key={t}
-          onClick={() => setVaultTab(t)}
-          className={`inline-flex items-center justify-center px-3 py-1.5 min-h-11 sm:min-h-0 text-sm rounded-md transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
-            vaultTab === t ? "bg-brand text-brand-fg" : "text-fg-muted hover:bg-bg-surface"
-          }`}
+  // Active-filter chip display — null at the default so the chip reads
+  // "Status ▾" rather than "Status: All ▾". Mirrors AgentsList.
+  const statusDisplay =
+    status === "any" ? undefined : STATUS_OPTIONS.find((o) => o.value === status)?.label;
+
+  const filters = (
+    <>
+      <FilterChip
+        label="Status"
+        active={status !== "any"}
+        display={statusDisplay}
+        onClear={() => setStatus("any")}
+      >
+        <PopoverContent
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="w-48 p-0"
         >
-          {t === "all" ? "All" : "Active"}
-        </button>
-      ))}
-    </div>
+          <FacetedFilter
+            options={STATUS_OPTIONS}
+            value={status}
+            onValueChange={(v) => setStatus(v as StatusValue)}
+            searchPlaceholder="Status..."
+          />
+        </PopoverContent>
+      </FilterChip>
+
+      <CreatedFilterChip value={created} onChange={setCreated} />
+    </>
   );
 
   return (
-    <ListPage<Vault>
+    <DataTable<Vault>
       createLabel="+ New vault"
       onCreate={() => setShowCreateVault(true)}
-      filters={tabs}
-      data={displayedVaults}
+      filters={filters}
+      data={vaults}
       loading={loading}
-      getRowKey={(v) => v.id}
+      getRowId={(v) => v.id}
       onRowClick={openVault}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
@@ -430,16 +527,7 @@ export function VaultsList() {
       emptyAction={
         <Button onClick={() => setShowCreateVault(true)}>+ New vault</Button>
       }
-      columns={[
-        { key: "name", label: "Name", className: "font-medium text-fg" },
-        { key: "id", label: "ID", className: "font-mono text-xs text-fg-muted" },
-        {
-          key: "created",
-          label: "Created",
-          className: "text-fg-muted",
-          render: (v) => new Date(v.created_at).toLocaleDateString(),
-        },
-      ]}
+      columns={columns}
     >
       {/* Create Vault */}
       <Modal
@@ -831,6 +919,6 @@ export function VaultsList() {
         </Tabs>
       </Modal>
 
-    </ListPage>
+    </DataTable>
   );
 }

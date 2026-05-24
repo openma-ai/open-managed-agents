@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
 import {
   asBuilder,
   getAll,
@@ -95,14 +95,29 @@ export class SqlEnvironmentRepo implements EnvironmentRepo {
   async listPage(
     tenantId: string,
     opts: {
+      status?: "active" | "archived" | "any";
       includeArchived: boolean;
+      createdAfter?: number;
+      createdBefore?: number;
       limit: number;
       after?: PageCursor;
       q?: string;
     },
   ): Promise<{ items: EnvironmentRow[]; hasMore: boolean }> {
     const conds = [eq(environments.tenant_id, tenantId)];
-    if (!opts.includeArchived) conds.push(isNull(environments.archived_at));
+    // Prefer the new 3-way `status` filter. When unset, fall back to the
+    // legacy includeArchived boolean so older callers keep working.
+    if (opts.status === "active") {
+      conds.push(isNull(environments.archived_at));
+    } else if (opts.status === "archived") {
+      conds.push(isNotNull(environments.archived_at));
+    } else if (opts.status === undefined && !opts.includeArchived) {
+      conds.push(isNull(environments.archived_at));
+    }
+    if (opts.createdAfter !== undefined)
+      conds.push(gte(environments.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conds.push(lt(environments.created_at, opts.createdBefore));
     if (opts.q) {
       conds.push(like(environments.name, `%${escapeLikePattern(opts.q)}%`));
     }

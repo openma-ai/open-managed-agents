@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import type { Trajectory } from "../lib/trajectory";
@@ -74,7 +74,6 @@ function durationStr(start?: string, end?: string): string {
 export function EvalRunDetail() {
   const { id } = useParams<{ id: string }>();
   const { api } = useApi();
-  const nav = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   /** Cache of trajectory fetches keyed by session_id. Populated lazily when
    *  the user expands a task row — we don't pull every trial's trajectory
@@ -172,23 +171,15 @@ export function EvalRunDetail() {
 
   return (
     <div className="space-y-6">
+      {/* Page header — AppBreadcrumb above renders `Eval Runs > <run.id>`,
+          so the previous `← All runs` back-link + duplicated `<h1>{run.id}</h1>`
+          have been removed. Status pill + submitted timestamp stay as
+          page-specific metadata. */}
       <div>
-        <button
-          onClick={() => nav("/evals")}
-          className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-        >
-          ← All runs
-        </button>
-      </div>
-
-      <div>
-        <div className="flex items-center gap-3 mb-1">
-          <h1 className="font-display text-xl font-semibold tracking-tight text-fg font-mono">{run.id}</h1>
-          <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(run.status)}`}>
-            {run.status}
-          </span>
-        </div>
-        <p className="text-fg-muted text-sm">Submitted {new Date(run.started_at).toLocaleString()}</p>
+        <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(run.status)}`}>
+          {run.status}
+        </span>
+        <p className="text-fg-muted text-sm mt-2">Submitted {new Date(run.started_at).toLocaleString()}</p>
       </div>
 
       <div className="grid grid-cols-4 gap-3">

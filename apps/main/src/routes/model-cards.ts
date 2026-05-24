@@ -175,9 +175,72 @@ app.post("/", async (c) => {
 
 // GET /v1/model_cards — list (cursor-paginated)
 app.get("/", async (c) => {
+  // provider: enum filter. Whitelist strictly — any unknown value is a
+  // 400, NOT a silent fallback to "all". The enum mirrors what the
+  // Console + agent worker recognize (api-types/src/types.ts:9).
+  // Allowing arbitrary strings here would mask client bugs (typo'd
+  // "ant " returning nothing looks like "no rows for that provider").
+  const providerRaw = c.req.query("provider");
+  const PROVIDERS = ["ant", "ant-compatible", "oai", "oai-compatible"] as const;
+  let provider: (typeof PROVIDERS)[number] | undefined;
+  if (providerRaw !== undefined) {
+    if ((PROVIDERS as readonly string[]).includes(providerRaw)) {
+      provider = providerRaw as (typeof PROVIDERS)[number];
+    } else {
+      return c.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_provider",
+            message: `Invalid provider '${providerRaw}'; expected one of ${PROVIDERS.join("|")}.`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // created_after / created_before: ISO timestamps → epoch ms. Reject
+  // unparseable values explicitly so the client knows it's a malformed
+  // request, not just "no results".
+  const parseMs = (
+    raw: string | undefined,
+    field: string,
+  ): { value: number | undefined; err?: Response } => {
+    if (raw === undefined) return { value: undefined };
+    const ms = Date.parse(raw);
+    if (Number.isNaN(ms)) {
+      return {
+        value: undefined,
+        err: c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_timestamp",
+              message: `Invalid ${field} '${raw}'; expected ISO-8601 timestamp.`,
+            },
+          },
+          400,
+        ),
+      };
+    }
+    return { value: ms };
+  };
+  const createdAfterRes = parseMs(c.req.query("created_after"), "created_after");
+  if (createdAfterRes.err) return createdAfterRes.err;
+  const createdBeforeRes = parseMs(c.req.query("created_before"), "created_before");
+  if (createdBeforeRes.err) return createdBeforeRes.err;
+
   const page = await c.var.services.modelCards.listPage({
     tenantId: c.get("tenant_id"),
     ...parsePageQuery(c),
+    ...(provider !== undefined ? { provider } : {}),
+    ...(createdAfterRes.value !== undefined
+      ? { createdAfter: createdAfterRes.value }
+      : {}),
+    ...(createdBeforeRes.value !== undefined
+      ? { createdBefore: createdBeforeRes.value }
+      : {}),
   });
   // Hide archived cards (forward-compat with soft-delete; today archived_at
   // is always null but the legacy KV path also filtered, so preserve parity).

@@ -1,13 +1,20 @@
-import { useState, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
-import { ListPage } from "../components/ListPage";
+import { PopoverContent } from "@/components/ui/popover";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { TextInput, SecretInput } from "../components/Input";
 import { toast } from "sonner";
 import type { ModelCard } from "@open-managed-agents/api-types";
 
+// Provider enum — mirrors the whitelist on the server
+// (apps/main/src/routes/model-cards.ts GET handler). Anything outside
+// these four values is rejected with a 400 there, so the chip's option
+// set + the form's tile picker must stay in sync with this list.
 const PROVIDERS = [
   { value: "ant", label: "Anthropic", desc: "Claude models" },
   { value: "ant-compatible", label: "Anthropic-compatible", desc: "Proxies speaking Anthropic API" },
@@ -15,10 +22,17 @@ const PROVIDERS = [
   { value: "oai-compatible", label: "OpenAI-compatible", desc: "DeepSeek, Groq, Together, Ollama, etc." },
 ] as const;
 
+type ProviderValue = (typeof PROVIDERS)[number]["value"];
+
+const PROVIDER_FILTER_OPTIONS: { value: ProviderValue | "any"; label: string }[] = [
+  { value: "any", label: "All" },
+  ...PROVIDERS.map((p) => ({ value: p.value, label: p.label })),
+];
+
 const OFFICIAL_PROVIDERS = new Set(["ant", "oai"]);
 
 const INITIAL_FORM = {
-  provider: "ant",
+  provider: "ant" as ProviderValue,
   model_id: "",
   model: "",
   api_key: "",
@@ -37,6 +51,27 @@ export function ModelCardsList() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [showModelSuggestions, setShowModelSuggestions] = useState(false);
 
+  // Server-driven filter state. Each piece flows into cardsParams below
+  // → useInfiniteApiQuery resets to page 1 on params change → the list
+  // reflects exactly what the server returned (no client-side faking).
+  const [provider, setProvider] = useState<ProviderValue | "any">("any");
+  const [created, setCreated] = useState<{ after?: number; before?: number }>({});
+  const [search, setSearch] = useState("");
+
+  const cardsParams = useMemo(
+    () => ({
+      ...(provider !== "any" ? { provider } : {}),
+      ...(created.after !== undefined
+        ? { created_after: new Date(created.after).toISOString() }
+        : {}),
+      ...(created.before !== undefined
+        ? { created_before: new Date(created.before).toISOString() }
+        : {}),
+      ...(search ? { q: search } : {}),
+    }),
+    [provider, created.after, created.before, search],
+  );
+
   const {
     items: cards,
     isLoading: loading,
@@ -44,7 +79,7 @@ export function ModelCardsList() {
     isLoadingMore,
     loadMore,
     refresh: load,
-  } = useInfiniteApiQuery<ModelCard>("/v1/model_cards", { limit: 20 });
+  } = useInfiniteApiQuery<ModelCard>("/v1/model_cards", { limit: 20, params: cardsParams });
 
   // Fetch models from official API using the user's key
   const fetchModels = useCallback(async (provider: string, apiKey: string) => {
@@ -127,7 +162,10 @@ export function ModelCardsList() {
       : [{ key: "", value: "" }];
     if (hdrs.length === 0) hdrs.push({ key: "", value: "" });
     setForm({
-      provider: card.provider,
+      // Older rows on disk may carry a provider value outside the current
+      // enum (e.g. legacy "anthropic"); the tile picker simply leaves none
+      // selected in that case. Cast keeps the form state strictly typed.
+      provider: card.provider as ProviderValue,
       model_id: card.model_id,
       model: card.model,
       api_key: "",
@@ -146,87 +184,192 @@ export function ModelCardsList() {
 
   const providerLabel = (p: string) => PROVIDERS.find((x) => x.value === p)?.label || p;
 
-  const providerBadge = (provider: string) => {
-    if (provider === "ant" || provider === "ant-compatible") return "bg-warning-subtle text-warning";
-    if (provider === "oai" || provider === "oai-compatible") return "bg-success-subtle text-success";
+  const providerBadge = (p: string) => {
+    if (p === "ant" || p === "ant-compatible") return "bg-warning-subtle text-warning";
+    if (p === "oai" || p === "oai-compatible") return "bg-success-subtle text-success";
     return "bg-bg-surface text-fg-muted";
   };
 
+  // TanStack column defs. Order, filtering, and search all flow through
+  // server params now — no per-column sort/filter UI. The id+model_id
+  // pair opts out of the Columns hide menu so the user can't end up
+  // with a table that has nothing identifying. Actions also stays
+  // visible — without Edit/Delete the table is read-only and there's
+  // no detail page to drill into.
+  const columns = useMemo<ColumnDef<ModelCard>[]>(
+    () => [
+      {
+        id: "model_id",
+        accessorKey: "model_id",
+        header: "Model ID",
+        cell: ({ row }) => (
+          <>
+            <div className="font-medium text-fg">{row.original.model_id}</div>
+            <div className="text-xs text-fg-subtle font-mono">{row.original.id}</div>
+          </>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "provider",
+        accessorKey: "provider",
+        header: "API Format",
+        cell: ({ row }) => (
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${providerBadge(row.original.provider)}`}>
+            {providerLabel(row.original.provider)}
+          </span>
+        ),
+      },
+      {
+        id: "model",
+        accessorKey: "model",
+        header: "Wire Model",
+        cell: ({ row }) =>
+          row.original.model === row.original.model_id ? (
+            <span className="text-fg-subtle">(same)</span>
+          ) : (
+            <span className="font-mono text-xs text-fg-muted">{row.original.model}</span>
+          ),
+      },
+      {
+        id: "api_key",
+        accessorFn: (c) => c.api_key_preview ?? "",
+        header: "API Key",
+        cell: ({ row }) => (
+          <span className="font-mono text-xs text-fg-subtle">
+            ****{row.original.api_key_preview}
+          </span>
+        ),
+      },
+      {
+        id: "base_url",
+        accessorFn: (c) => c.base_url ?? "",
+        header: "Base URL",
+        cell: ({ row }) => (
+          <span className="text-fg-muted text-xs">{row.original.base_url || "—"}</span>
+        ),
+      },
+      {
+        id: "default",
+        accessorFn: (c) => (c.is_default ? "default" : ""),
+        header: "Default",
+        cell: ({ row }) =>
+          row.original.is_default ? (
+            <span className="text-xs text-fg-muted bg-bg-surface px-1.5 py-0.5 rounded">
+              default
+            </span>
+          ) : null,
+      },
+      {
+        id: "created",
+        accessorFn: (c) => c.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">
+            {new Date(row.original.created_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "Actions",
+        cell: ({ row }) => (
+          <div className="text-right">
+            <button
+              onClick={() => startEdit(row.original)}
+              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg mr-1 sm:mr-3"
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => remove(row.original.id)}
+              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger"
+            >
+              Delete
+            </button>
+          </div>
+        ),
+        enableHiding: false,
+      },
+    ],
+    // Intentionally empty: startEdit + remove close over `form`/`api`
+    // but the column defs only need to reflect identity, not capture a
+    // fresh closure on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // Active-filter chip displays — kept null when matching the default so
+  // the chip reads "Provider ▾" rather than "Provider: All ▾". The
+  // clear-X only renders when the chip is in non-default state.
+  const providerDisplay =
+    provider === "any"
+      ? undefined
+      : PROVIDER_FILTER_OPTIONS.find((o) => o.value === provider)?.label;
+
+  const filters = (
+    <>
+      <FilterChip
+        label="Provider"
+        active={provider !== "any"}
+        display={providerDisplay}
+        onClear={() => setProvider("any")}
+      >
+        <PopoverContent
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="w-56 p-0"
+        >
+          <FacetedFilter
+            options={PROVIDER_FILTER_OPTIONS}
+            value={provider}
+            onValueChange={(v) => setProvider(v as ProviderValue | "any")}
+            searchPlaceholder="Provider..."
+          />
+        </PopoverContent>
+      </FilterChip>
+
+      <CreatedFilterChip value={created} onChange={setCreated} />
+    </>
+  );
+
   return (
-    <ListPage<ModelCard>
+    <DataTable<ModelCard>
       createLabel="+ New model card"
       onCreate={() => { setShowCreate(true); setError(""); }}
+      searchPlaceholder="Search model cards..."
+      searchValue={search}
+      onSearchChange={setSearch}
+      filters={filters}
       data={cards}
       loading={loading}
-      getRowKey={(c) => c.id}
+      getRowId={(c) => c.id}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
-      emptyTitle="No model cards yet"
+      emptyTitle={search ? "No matching model cards" : "No model cards yet"}
       emptyKind="model_card"
-      emptySubtitle={
-        <>
-          <p>Add a model card to configure API credentials for your agents.</p>
-          <p className="text-xs mt-3">Without model cards, agents use the environment ANTHROPIC_API_KEY.</p>
-        </>
+      emptyAction={
+        !search && (
+          <Button onClick={() => { setShowCreate(true); setError(""); }}>
+            + New model card
+          </Button>
+        )
       }
-      columns={[
-        {
-          key: "model_id",
-          label: "Model ID",
-          render: (c) => (
-            <>
-              <div className="font-medium text-fg">{c.model_id}</div>
-              <div className="text-xs text-fg-subtle font-mono">{c.id}</div>
-            </>
-          ),
-        },
-        {
-          key: "provider",
-          label: "API Format",
-          render: (c) => (
-            <span className={`px-2 py-0.5 rounded text-xs font-medium ${providerBadge(c.provider)}`}>
-              {providerLabel(c.provider)}
-            </span>
-          ),
-        },
-        {
-          key: "model",
-          label: "Wire Model",
-          className: "text-fg-muted font-mono text-xs",
-          render: (c) => c.model === c.model_id
-            ? <span className="text-fg-subtle">(same)</span>
-            : c.model,
-        },
-        {
-          key: "api_key",
-          label: "API Key",
-          className: "text-fg-subtle font-mono text-xs",
-          render: (c) => `****${c.api_key_preview}`,
-        },
-        {
-          key: "base_url",
-          label: "Base URL",
-          className: "text-fg-muted text-xs truncate max-w-[200px]",
-          render: (c) => c.base_url || "—",
-        },
-        {
-          key: "default",
-          label: "Default",
-          render: (c) => c.is_default ? <span className="text-xs text-fg-muted bg-bg-surface px-1.5 py-0.5 rounded">default</span> : null,
-        },
-        {
-          key: "actions",
-          label: "Actions",
-          className: "text-right",
-          render: (c) => (
-            <>
-              <button onClick={() => startEdit(c)} className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg mr-1 sm:mr-3">Edit</button>
-              <button onClick={() => remove(c.id)} className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger">Delete</button>
-            </>
-          ),
-        },
-      ]}
+      emptySubtitle={
+        search ? (
+          "Try a different search term."
+        ) : (
+          <>
+            <p>Add a model card to configure API credentials for your agents.</p>
+            <p className="text-xs mt-3">
+              Without model cards, agents use the environment ANTHROPIC_API_KEY.
+            </p>
+          </>
+        )
+      }
+      columns={columns}
     >
       <Modal open={showCreate} onClose={closeDialog} title={editingId ? "Edit Model Card" : "New Model Card"}
         footer={<><Button variant="ghost" onClick={closeDialog}>Cancel</Button><Button onClick={save} disabled={!form.model_id || (!editingId && !form.api_key)}>{editingId ? "Save" : "Create"}</Button></>}>
@@ -343,6 +486,6 @@ export function ModelCardsList() {
           </label>
         </form>
       </Modal>
-    </ListPage>
+    </DataTable>
   );
 }

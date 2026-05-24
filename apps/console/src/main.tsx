@@ -5,6 +5,7 @@ import {
   RouterProvider,
   createBrowserRouter,
   type RouteObject,
+  type UIMatch,
 } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 // Bundled font (woff2 shipped with the app) so Logo's `[ ]` brackets render
@@ -85,7 +86,11 @@ const protectedRoutes: RouteObject[] = [
     handle: { crumb: "Agents" },
     children: [
       { index: true, element: <AgentsList /> },
-      { path: ":id", element: <AgentDetail />, handle: { crumb: "Agent" } },
+      {
+        path: ":id",
+        element: <AgentDetail />,
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Agent" },
+      },
     ],
   },
   {
@@ -95,7 +100,7 @@ const protectedRoutes: RouteObject[] = [
       { index: true, element: <SessionsList /> },
       {
         path: ":id",
-        handle: { crumb: "Session" },
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Session" },
         // SessionDetail lazy-loads — it pulls in ai-elements + Shiki +
         // Streamdown + mermaid + dozens of language defs (~500 kB
         // gzipped). Splitting it out keeps the initial bundle for
@@ -113,7 +118,11 @@ const protectedRoutes: RouteObject[] = [
     handle: { crumb: "Eval Runs" },
     children: [
       { index: true, element: <EvalRunsList /> },
-      { path: ":id", element: <EvalRunDetail />, handle: { crumb: "Eval Run" } },
+      {
+        path: ":id",
+        element: <EvalRunDetail />,
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Eval Run" },
+      },
     ],
   },
   {
@@ -124,7 +133,7 @@ const protectedRoutes: RouteObject[] = [
       {
         path: ":id",
         element: <EnvironmentDetail />,
-        handle: { crumb: "Environment" },
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Environment" },
       },
     ],
   },
@@ -138,7 +147,7 @@ const protectedRoutes: RouteObject[] = [
       {
         path: ":id",
         element: <MemoryStoreDetail />,
-        handle: { crumb: "Memory Store" },
+        handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Memory Store" },
       },
     ],
   },

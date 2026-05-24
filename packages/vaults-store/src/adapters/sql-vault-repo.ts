@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { vaults } from "@open-managed-agents/db-schema/cf-auth";
 import {
   asBuilder,
@@ -91,14 +91,29 @@ export class SqlVaultRepo implements VaultRepo {
   async listPage(
     tenantId: string,
     opts: {
+      status?: "active" | "archived" | "any";
       includeArchived: boolean;
+      createdAfter?: number;
+      createdBefore?: number;
       limit: number;
       after?: PageCursor;
       q?: string;
     },
   ): Promise<{ items: VaultRow[]; hasMore: boolean }> {
     const conditions = [eq(vaults.tenant_id, tenantId)];
-    if (!opts.includeArchived) conditions.push(isNull(vaults.archived_at));
+    // Prefer the new 3-way `status` filter. When unset, fall back to the
+    // legacy includeArchived boolean so older callers keep working.
+    if (opts.status === "active") {
+      conditions.push(isNull(vaults.archived_at));
+    } else if (opts.status === "archived") {
+      conditions.push(isNotNull(vaults.archived_at));
+    } else if (opts.status === undefined && !opts.includeArchived) {
+      conditions.push(isNull(vaults.archived_at));
+    }
+    if (opts.createdAfter !== undefined)
+      conditions.push(gte(vaults.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conditions.push(lt(vaults.created_at, opts.createdBefore));
     if (opts.q) {
       // Substring filter for the Combobox typeahead. SQLite's LIKE is
       // ASCII-case-insensitive by default and PG honours ESCAPE the same

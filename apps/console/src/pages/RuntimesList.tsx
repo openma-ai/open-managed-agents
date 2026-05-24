@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Button } from "@/components/ui/button";
+import { PopoverContent } from "@/components/ui/popover";
 import { Modal } from "../components/Modal";
-import { ListPage } from "../components/ListPage";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip } from "../components/FilterChip";
 
 interface LocalSkill {
   id: string;
@@ -31,6 +34,14 @@ interface Runtime {
   created_at: number;
 }
 
+type StatusValue = "any" | "online" | "offline";
+
+const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
+  { value: "any", label: "All" },
+  { value: "online", label: "Online" },
+  { value: "offline", label: "Offline" },
+];
+
 /** Local Runtimes — user-registered laptops/VMs running `oma bridge daemon`.
  *  Each runtime can host ACP-compatible agents. An OMA agent with
  *  `harness: "acp-proxy"` and `runtime_binding` set delegates its loop
@@ -38,6 +49,7 @@ interface Runtime {
 export function RuntimesList() {
   const { api } = useApi();
   const [showInstructions, setShowInstructions] = useState(false);
+  const [status, setStatus] = useState<StatusValue>("any");
 
   // Auto-refresh every 15s via TQ's `refetchInterval` so a freshly-attached
   // daemon shows up without a hard reload. Cheap query — single SELECT
@@ -54,6 +66,18 @@ export function RuntimesList() {
   );
   const runtimes = runtimesRes?.runtimes ?? [];
 
+  // Client-side status filter. Unlike AgentsList (server-paginated, server-
+  // filtered), this list is small — a handful of runtimes per tenant — and
+  // already fully loaded by `/v1/runtimes`. The 15s heartbeat poll keeps
+  // online/offline fresh, so filtering the array in-memory dodges a server
+  // round-trip per chip toggle and avoids resetting the polled query each
+  // time the user flips the chip. If runtimes ever grow into the hundreds
+  // we'd flip this to a server param like AgentsList does.
+  const filtered = useMemo(
+    () => (status === "any" ? runtimes : runtimes.filter((r) => r.status === status)),
+    [runtimes, status],
+  );
+
   const remove = async (id: string) => {
     if (!confirm("Revoke this runtime? Daemon on that machine will stop being able to attach.")) return;
     try {
@@ -62,70 +86,68 @@ export function RuntimesList() {
     } catch { /* ignore */ }
   };
 
-  return (
-    <ListPage<Runtime>
-      createLabel="+ Connect machine"
-      onCreate={() => setShowInstructions(true)}
-      data={runtimes}
-      loading={loading}
-      getRowKey={(r) => r.id}
-      emptyTitle="No runtimes connected"
-      emptyKind="runtime"
-      emptySubtitle={
-        <>
-          Run <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">npx @openma/cli bridge setup</code> on the machine you want to connect.
-        </>
-      }
-      columns={[
-        {
-          key: "hostname",
-          label: "Hostname",
-          render: (r) => {
-            const totalSkills = Object.values(r.local_skills ?? {}).reduce(
-              (n, arr) => n + (arr?.length ?? 0),
-              0,
-            );
-            return (
-              <>
-                <div className="font-medium text-fg">{r.hostname}</div>
-                <div className="text-xs text-fg-subtle font-mono">{r.id}</div>
-                {totalSkills > 0 && (
-                  <details className="mt-2 text-xs">
-                    <summary className="cursor-pointer text-fg-muted hover:text-fg select-none">
-                      {totalSkills} local skill{totalSkills === 1 ? "" : "s"} detected
-                    </summary>
-                    <div className="mt-1.5 ml-2 space-y-1.5">
-                      {Object.entries(r.local_skills ?? {}).map(([acpId, skills]) =>
-                        !skills?.length ? null : (
-                          <div key={acpId}>
-                            <div className="text-fg-subtle text-[10px] uppercase tracking-wider mb-0.5">
-                              for {acpId}
-                            </div>
-                            <ul className="space-y-0.5">
-                              {skills.map((s) => (
-                                <li key={`${acpId}/${s.source_label ?? ""}/${s.id}`} className="font-mono">
-                                  <span className="text-fg">{s.id}</span>
-                                  <span className="text-fg-subtle ml-1">
-                                    ({s.source ?? "global"}{s.source_label ? `:${s.source_label}` : ""})
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
+  const columns = useMemo<ColumnDef<Runtime>[]>(
+    () => [
+      {
+        id: "hostname",
+        accessorKey: "hostname",
+        header: "Hostname",
+        cell: ({ row }) => {
+          const r = row.original;
+          const totalSkills = Object.values(r.local_skills ?? {}).reduce(
+            (n, arr) => n + (arr?.length ?? 0),
+            0,
+          );
+          return (
+            <>
+              <div className="font-medium text-fg">{r.hostname}</div>
+              <div className="text-xs text-fg-subtle font-mono">{r.id}</div>
+              {totalSkills > 0 && (
+                <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer text-fg-muted hover:text-fg select-none">
+                    {totalSkills} local skill{totalSkills === 1 ? "" : "s"} detected
+                  </summary>
+                  <div className="mt-1.5 ml-2 space-y-1.5">
+                    {Object.entries(r.local_skills ?? {}).map(([acpId, skills]) =>
+                      !skills?.length ? null : (
+                        <div key={acpId}>
+                          <div className="text-fg-subtle text-[10px] uppercase tracking-wider mb-0.5">
+                            for {acpId}
                           </div>
-                        ),
-                      )}
-                    </div>
-                  </details>
-                )}
-              </>
-            );
-          },
+                          <ul className="space-y-0.5">
+                            {skills.map((s) => (
+                              <li key={`${acpId}/${s.source_label ?? ""}/${s.id}`} className="font-mono">
+                                <span className="text-fg">{s.id}</span>
+                                <span className="text-fg-subtle ml-1">
+                                  ({s.source ?? "global"}{s.source_label ? `:${s.source_label}` : ""})
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </details>
+              )}
+            </>
+          );
         },
-        { key: "os", label: "OS", className: "text-fg-muted", render: (r) => r.os },
-        {
-          key: "status",
-          label: "Status",
-          render: (r) => (
+        enableHiding: false,
+      },
+      {
+        id: "os",
+        accessorKey: "os",
+        header: "OS",
+        cell: ({ row }) => <span className="text-fg-muted">{row.original.os}</span>,
+      },
+      {
+        id: "status",
+        accessorFn: (r) => r.status,
+        header: "Status",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
             <span
               className={
                 r.status === "online"
@@ -142,34 +164,99 @@ export function RuntimesList() {
               />
               {r.status}
             </span>
-          ),
+          );
         },
-        {
-          key: "agents",
-          label: "Agents detected",
-          className: "font-mono text-xs text-fg-muted",
-          render: (r) => (r.agents.length === 0 ? "—" : r.agents.map((a) => a.id).join(", ")),
-        },
-        {
-          key: "heartbeat",
-          label: "Heartbeat",
-          className: "text-fg-muted text-xs",
-          render: (r) => (r.last_heartbeat ? formatHeartbeat(r.last_heartbeat) : "—"),
-        },
-        {
-          key: "actions",
-          label: "Actions",
-          className: "text-right",
-          render: (r) => (
+      },
+      {
+        id: "agents",
+        accessorFn: (r) => r.agents.map((a) => a.id).join(", "),
+        header: "Agents detected",
+        cell: ({ row }) => (
+          <span className="font-mono text-xs text-fg-muted">
+            {row.original.agents.length === 0 ? "—" : row.original.agents.map((a) => a.id).join(", ")}
+          </span>
+        ),
+      },
+      {
+        id: "heartbeat",
+        accessorFn: (r) => r.last_heartbeat ?? 0,
+        header: "Heartbeat",
+        cell: ({ row }) => (
+          <span className="text-fg-muted text-xs">
+            {row.original.last_heartbeat ? formatHeartbeat(row.original.last_heartbeat) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "Actions",
+        cell: ({ row }) => (
+          <div className="text-right">
             <button
-              onClick={() => remove(r.id)}
+              onClick={() => remove(row.original.id)}
               className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger"
             >
               Revoke
             </button>
-          ),
-        },
-      ]}
+          </div>
+        ),
+        enableHiding: false,
+      },
+    ],
+    // `remove` is closed over from this scope; it captures `api` + `refetch`
+    // which are stable enough not to thrash the memo. Re-derive on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // Active-filter chip display — null when at the "any" default so the chip
+  // reads "Status ▾" rather than "Status: All ▾". Matches AgentsList.
+  const statusDisplay =
+    status === "any" ? undefined : STATUS_OPTIONS.find((o) => o.value === status)?.label;
+
+  const filters = (
+    <FilterChip
+      label="Status"
+      active={status !== "any"}
+      display={statusDisplay}
+      onClear={() => setStatus("any")}
+    >
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        collisionPadding={8}
+        className="w-48 p-0"
+      >
+        <FacetedFilter
+          options={STATUS_OPTIONS}
+          value={status}
+          onValueChange={(v) => setStatus(v as StatusValue)}
+          searchPlaceholder="Status..."
+        />
+      </PopoverContent>
+    </FilterChip>
+  );
+
+  return (
+    <DataTable<Runtime>
+      createLabel="+ Connect machine"
+      onCreate={() => setShowInstructions(true)}
+      filters={filters}
+      data={filtered}
+      loading={loading}
+      getRowId={(r) => r.id}
+      emptyTitle={status === "any" ? "No runtimes connected" : "No matching runtimes"}
+      emptyKind="runtime"
+      emptySubtitle={
+        status === "any" ? (
+          <>
+            Run <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">npx @openma/cli bridge setup</code> on the machine you want to connect.
+          </>
+        ) : (
+          "Try a different status filter."
+        )
+      }
+      columns={columns}
     >
       <Modal
         open={showInstructions}
@@ -219,7 +306,7 @@ export function RuntimesList() {
           </p>
         </div>
       </Modal>
-    </ListPage>
+    </DataTable>
   );
 }
 

@@ -94,7 +94,6 @@ export function SessionDetail() {
   // (we never let two POSTs be in flight at once — Send is disabled
   // while `sending`). Set to null when SSE confirms or POST settles.
   const [localPending, setLocalPending] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
   const [agentId, setAgentId] = useState("");
   const [sessionMeta, setSessionMeta] = useState<{
     environmentId?: string;
@@ -459,7 +458,6 @@ export function SessionDetail() {
     setStreams(new Map());
     setThinkingStreams(new Map());
     setToolInputStreams(new Map());
-    setTitle("");
     setAgentId("");
     setSessionMeta({});
     setStatus("idle");
@@ -471,7 +469,6 @@ export function SessionDetail() {
 
     // Load session info
     api<{
-      title?: string | null;
       environment_id?: string;
       vault_ids?: string[];
       created_at?: string;
@@ -479,7 +476,6 @@ export function SessionDetail() {
       metadata?: Record<string, unknown>;
     }>(`/v1/sessions/${id}`)
       .then((s) => {
-        setTitle(s.title || id);
         setAgentId(s.agent?.id || "");
         setSessionMeta({
           environmentId: s.environment_id,
@@ -754,40 +750,13 @@ export function SessionDetail() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Header — badges row + page-specific action buttons.
+          The redundant `← Sessions / sess-xxx` back-link + id heading
+          was removed; AppBreadcrumb above the page now carries the
+          trail and the entity id. Stop + Files actions live at the
+          right (`ml-auto`) of the badges row so the page-level chrome
+          stays one band tall. */}
       <div className="px-4 sm:px-8 py-3 border-b border-border flex flex-col gap-2 shrink-0">
-        <div className="flex items-center gap-3">
-          <Link to="/sessions" className="text-fg-subtle hover:text-fg-muted text-sm">&larr; Sessions</Link>
-          <span className="text-fg-subtle">/</span>
-          <h1 className="font-mono text-sm text-fg-muted truncate flex-1" title={id}>{title}</h1>
-          {/* Stop / Interrupt — only while the session is actively running.
-              Posts user.interrupt scoped to the active thread; server fires
-              thread AbortController + flushes pending events + emits
-              status_idle. Recovery path for stuck-Running sessions where a
-              DO eviction killed the stream and no clean status_idle ever
-              landed. */}
-          {status === "running" && (
-            <button
-              onClick={() => void interrupt()}
-              disabled={interrupting}
-              className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border border-border bg-bg-surface text-fg-muted hover:text-fg hover:border-border-strong disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-              title="Interrupt the active turn on this thread"
-            >
-              {interrupting ? "Stopping…" : "Stop"}
-            </button>
-          )}
-          <button
-            onClick={() => setShowFiles((v) => !v)}
-            className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
-              showFiles
-                ? "bg-bg-surface text-fg border-border-strong"
-                : "bg-bg-surface text-fg-muted border-border hover:text-fg hover:border-border-strong"
-            }`}
-            title="Files the agent wrote to /mnt/session/outputs/"
-          >
-            Files
-          </button>
-        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
           {/* Trajectory outcome chip — only when the trajectory has actually
@@ -831,6 +800,35 @@ export function SessionDetail() {
           ))}
           <SessionDurationBadge events={events} />
           {sessionMeta.createdAt && <RelativeTimeBadge iso={sessionMeta.createdAt} />}
+          <div className="ml-auto flex items-center gap-2">
+            {/* Stop / Interrupt — only while the session is actively running.
+                Posts user.interrupt scoped to the active thread; server fires
+                thread AbortController + flushes pending events + emits
+                status_idle. Recovery path for stuck-Running sessions where a
+                DO eviction killed the stream and no clean status_idle ever
+                landed. */}
+            {status === "running" && (
+              <button
+                onClick={() => void interrupt()}
+                disabled={interrupting}
+                className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border border-border bg-bg-surface text-fg-muted hover:text-fg hover:border-border-strong disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                title="Interrupt the active turn on this thread"
+              >
+                {interrupting ? "Stopping…" : "Stop"}
+              </button>
+            )}
+            <button
+              onClick={() => setShowFiles((v) => !v)}
+              className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+                showFiles
+                  ? "bg-bg-surface text-fg border-border-strong"
+                  : "bg-bg-surface text-fg-muted border-border hover:text-fg hover:border-border-strong"
+              }`}
+              title="Files the agent wrote to /mnt/session/outputs/"
+            >
+              Files
+            </button>
+          </div>
         </div>
       </div>
 
