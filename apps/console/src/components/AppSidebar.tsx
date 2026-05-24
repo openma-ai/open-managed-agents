@@ -8,7 +8,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -133,10 +132,9 @@ export function AppSidebar() {
         </span>
       </SidebarHeader>
 
-      <SidebarContent className="bg-sidebar">
+      <SidebarContent className="bg-sidebar [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
         {groups.map((group) => (
           <SidebarGroup key={group.label}>
-            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {group.items.map((item) => {
@@ -147,6 +145,14 @@ export function AppSidebar() {
                         asChild
                         isActive={active}
                         tooltip={item.label}
+                        // Resting + hover stay transparent; ONLY the
+                        // active route paints the gray pill. Shadcn's
+                        // default applies bg-sidebar-accent on hover
+                        // too, which made every row look "interactive
+                        // for no reason" — Linear / Vercel / Notion
+                        // all keep hover quiet and reserve the fill
+                        // for the actually-selected item.
+                        className="hover:bg-transparent hover:text-sidebar-foreground data-[active=true]:bg-sidebar-accent"
                       >
                         <NavLink to={item.to} end={item.end}>
                           <item.icon className="size-4 opacity-80" />
