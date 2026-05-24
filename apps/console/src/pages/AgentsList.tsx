@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { ModelCard } from "@open-managed-agents/api-types";
 import type { AgentRecord as Agent } from "../types/agent";
@@ -97,7 +106,12 @@ function computePresetRange(
  *  the actually-selected chip gets the brand pill outline + bg. Idle
  *  chips are bare `label ▾` text so an empty filter row visually
  *  weighs nothing; the toolbar reads as "nothing's filtered" without
- *  having to scan every chip for a value. */
+ *  having to scan every chip for a value.
+ *
+ *  Built on shadcn DropdownMenu (Radix + Floating UI under the hood)
+ *  for collision-aware positioning — auto-flips when there isn't
+ *  enough room below, shifts to stay on screen, no hand-rolled
+ *  positioning. */
 function FilterChip({
   label,
   active,
@@ -112,7 +126,7 @@ function FilterChip({
   children: React.ReactNode;
 }) {
   return (
-    <Popover>
+    <DropdownMenu>
       <div
         className={cn(
           "inline-flex items-center gap-1 h-8 text-sm shrink-0 transition-colors",
@@ -121,11 +135,11 @@ function FilterChip({
             : "text-fg-muted hover:text-fg",
         )}
       >
-        <PopoverTrigger asChild>
+        <DropdownMenuTrigger asChild>
           <button
             type="button"
             className={cn(
-              "inline-flex items-center gap-1 h-full",
+              "inline-flex items-center gap-1 h-full outline-none",
               active ? "pl-3 pr-2" : "px-2",
             )}
           >
@@ -138,7 +152,7 @@ function FilterChip({
             )}
             {!active && <ChevronDownIcon className="size-3.5 opacity-60" />}
           </button>
-        </PopoverTrigger>
+        </DropdownMenuTrigger>
         {active && onClear && (
           <button
             type="button"
@@ -154,7 +168,7 @@ function FilterChip({
         )}
       </div>
       {children}
-    </Popover>
+    </DropdownMenu>
   );
 }
 
@@ -348,23 +362,23 @@ export function AgentsList() {
         display={statusDisplay}
         onClear={() => setStatus("any")}
       >
-        <PopoverContent align="start" className="w-44 p-1">
-          {STATUS_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setStatus(opt.value)}
-              className={cn(
-                "w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded text-sm",
-                "hover:bg-bg-surface",
-                status === opt.value && "text-fg font-medium",
-              )}
-            >
-              {opt.label}
-              {status === opt.value && <CheckIcon className="size-3.5 text-brand" />}
-            </button>
-          ))}
-        </PopoverContent>
+        <DropdownMenuContent
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="w-44"
+        >
+          <DropdownMenuRadioGroup
+            value={status}
+            onValueChange={(v) => setStatus(v as StatusValue)}
+          >
+            {STATUS_OPTIONS.map((opt) => (
+              <DropdownMenuRadioItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
       </FilterChip>
 
       <FilterChip
@@ -377,58 +391,73 @@ export function AgentsList() {
           setCustomBefore(undefined);
         }}
       >
-        <PopoverContent align="start" className="w-60 p-1">
-          {(Object.keys(CREATED_PRESET_LABELS) as CreatedPreset[]).map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => setCreatedPreset(preset)}
-              className={cn(
-                "w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded text-sm",
-                "hover:bg-bg-surface",
-                createdPreset === preset && "text-fg font-medium",
-              )}
-            >
-              {CREATED_PRESET_LABELS[preset]}
-              {createdPreset === preset && <CheckIcon className="size-3.5 text-brand" />}
-            </button>
-          ))}
+        <DropdownMenuContent
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="w-60"
+        >
+          <DropdownMenuRadioGroup
+            value={createdPreset}
+            onValueChange={(v) => setCreatedPreset(v as CreatedPreset)}
+          >
+            {(Object.keys(CREATED_PRESET_LABELS) as CreatedPreset[]).map((preset) => (
+              <DropdownMenuRadioItem key={preset} value={preset}>
+                {CREATED_PRESET_LABELS[preset]}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
           {createdPreset === "custom" && (
-            <div className="mt-1 pt-2 border-t border-border space-y-2 px-1 pb-1">
-              <label className="block">
-                <span className="text-xs text-fg-muted mb-1 block">From</span>
-                <Input
-                  type="date"
-                  value={msToDateInput(customAfter)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setCustomAfter(v ? new Date(v).getTime() : undefined);
-                  }}
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs text-fg-muted mb-1 block">To</span>
-                <Input
-                  type="date"
-                  value={msToDateInput(customBefore)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    // End of selected day so "<= that day" works as the
-                    // user expects (otherwise picking 2026-05-24 would
-                    // exclude that whole day since the filter is `<`).
-                    if (!v) {
-                      setCustomBefore(undefined);
-                      return;
-                    }
-                    const d = new Date(v);
-                    d.setDate(d.getDate() + 1);
-                    setCustomBefore(d.getTime());
-                  }}
-                />
-              </label>
-            </div>
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium pt-0">
+                Range
+              </DropdownMenuLabel>
+              {/* Date inputs sit inside the menu but must NOT close it
+                  on interaction — DropdownMenuItem closes by default;
+                  we use a plain div + stop pointer/key events so Radix's
+                  menu typeahead and focus traps don't intercept the
+                  input. */}
+              <div
+                className="px-2 pb-2 space-y-2"
+                onPointerDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <label className="block">
+                  <span className="text-xs text-fg-muted mb-1 block">From</span>
+                  <Input
+                    type="date"
+                    value={msToDateInput(customAfter)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCustomAfter(v ? new Date(v).getTime() : undefined);
+                    }}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-fg-muted mb-1 block">To</span>
+                  <Input
+                    type="date"
+                    value={msToDateInput(customBefore)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      // End of selected day so "<= that day" works as the
+                      // user expects (otherwise picking 2026-05-24 would
+                      // exclude that whole day since the filter is `<`).
+                      if (!v) {
+                        setCustomBefore(undefined);
+                        return;
+                      }
+                      const d = new Date(v);
+                      d.setDate(d.getDate() + 1);
+                      setCustomBefore(d.getTime());
+                    }}
+                  />
+                </label>
+              </div>
+            </>
           )}
-        </PopoverContent>
+        </DropdownMenuContent>
       </FilterChip>
     </>
   );

@@ -312,7 +312,7 @@ function ColumnVisibilityMenu<T>({ table }: { table: TanstackTable<T> }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="ml-auto shrink-0">
+        <Button variant="outline" className="ml-auto shrink-0">
           <SettingsIcon className="size-3.5" />
           Columns
         </Button>
