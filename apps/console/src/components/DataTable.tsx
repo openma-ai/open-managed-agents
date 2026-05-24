@@ -38,6 +38,7 @@ import { EmptyState, type EmptyStateKind } from "./EmptyState";
 import { PageHeader } from "./PageHeader";
 import { Skeleton } from "./Skeleton";
 import { cn } from "@/lib/utils";
+import { useLocation } from "react-router";
 
 /**
  * DataTable — list page chrome with a frozen, column-aligned header.
@@ -139,7 +140,31 @@ export function DataTable<T>({
   loadingMore,
   children,
 }: DataTableProps<T>) {
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  // Column visibility persists per route in localStorage — toggling
+  // Columns on /agents doesn't leak to /sessions, but coming back to
+  // /agents restores the user's last choice. Auto-keyed by pathname
+  // so callers don't need to pass anything; lift to a `tableId` prop
+  // if a page ever stacks two DataTables.
+  const { pathname } = useLocation();
+  const storageKey = `dt-cols:${pathname}`;
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
+    () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        return raw ? (JSON.parse(raw) as VisibilityState) : {};
+      } catch {
+        return {};
+      }
+    },
+  );
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(columnVisibility));
+    } catch {
+      // localStorage unavailable (private mode / quota) — silently skip;
+      // visibility just won't persist this session.
+    }
+  }, [storageKey, columnVisibility]);
 
   const table = useReactTable({
     data,
