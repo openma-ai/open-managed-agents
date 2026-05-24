@@ -85,7 +85,6 @@ export function EvalRunsList() {
 
   return (
     <ListPage<EvalRunSummary>
-      title="Eval Runs"
       subtitle="Benchmark trajectories submitted via the eval API."
       data={runs}
       loading={loading}

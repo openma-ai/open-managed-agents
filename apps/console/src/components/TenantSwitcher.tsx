@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { BuildingIcon, ChevronsUpDownIcon } from "lucide-react";
+
 import { useApi, getActiveTenantId, setActiveTenantId } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "./Modal";
 import { Button } from "@/components/ui/button";
+import {
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
 import { Avatar } from "./Avatar";
 
 // Slot beneath the logo in the sidebar. Hidden when the user has only one
@@ -90,83 +97,83 @@ export function TenantSwitcher() {
 
   return (
     <>
-      <div className="relative" ref={dropdownRef}>
-        <button
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label="Switch workspace"
-          onClick={() => ready && setOpen((o) => !o)}
-          disabled={!ready}
-          className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left group group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center disabled:cursor-default disabled:hover:bg-transparent"
-        >
-          {ready ? (
-            <Avatar name={current.name} size="sm" squared />
-          ) : (
-            // Skeleton avatar — same 24×24 box AND same bg tint as the
-            // real Avatar's `AvatarFallback` (bg-brand-subtle), so when
-            // `current` resolves the only visual change is the initial
-            // letter appearing on top of an already-correct color.
-            // Previously this was bg-sidebar-accent (gray) → the color
-            // jump from gray to coral read as a flicker.
-            <div className="size-6 rounded-md bg-brand-subtle shrink-0" aria-hidden="true" />
-          )}
-          <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-            <div className="text-sm font-medium truncate text-fg">
-              {ready ? displayName(current) : " "}
-            </div>
-            {ready && tenants.length > 1 && (
-              <div className="text-[10px] text-fg-subtle uppercase tracking-wider">
-                {current.role}
+      <SidebarMenu className="px-2">
+        <SidebarMenuItem>
+          <div className="relative" ref={dropdownRef}>
+            <SidebarMenuButton
+              size="lg"
+              tooltip={ready ? displayName(current) : "Workspace"}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              aria-label="Switch workspace"
+              onClick={() => ready && setOpen((o) => !o)}
+              disabled={!ready}
+              className="data-[state=open]:bg-sidebar-accent"
+            >
+              {ready ? (
+                <Avatar
+                  name={current.name}
+                  size="sm"
+                  squared
+                  className="size-4 text-[10px] !rounded"
+                />
+              ) : (
+                <BuildingIcon className="size-4 opacity-80" />
+              )}
+              <div className="min-w-0 flex-1 leading-tight">
+                <div className="text-sm font-medium truncate text-fg">
+                  {ready ? displayName(current) : "Workspace"}
+                </div>
+                {ready && tenants.length > 1 && (
+                  <div className="text-[10px] text-fg-subtle uppercase tracking-wider">
+                    {current.role}
+                  </div>
+                )}
+              </div>
+              {ready && <ChevronsUpDownIcon className="ml-auto size-3.5 text-fg-subtle" />}
+            </SidebarMenuButton>
+
+            {open && (
+              <div role="menu" aria-label="Workspaces" className="absolute left-0 right-0 top-full mt-1 z-30 bg-bg border border-border rounded-lg shadow-lg overflow-hidden">
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {tenants.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={t.id === active}
+                      onClick={() => switchTo(t.id)}
+                      className={`w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm hover:bg-bg-surface flex items-center gap-2 ${t.id === active ? "bg-bg-surface/60" : ""}`}
+                    >
+                      <Avatar name={displayName(t)} size="xs" squared />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate">{displayName(t)}</div>
+                        <div className="text-[10px] text-fg-subtle font-mono">{t.id}</div>
+                      </div>
+                      {t.id === active && (
+                        <svg className="w-3.5 h-3.5 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="border-t border-border">
+                  <button
+                    onClick={() => { setOpen(false); setCreateOpen(true); }}
+                    className="w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm text-fg-muted hover:bg-bg-surface flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Create workspace…
+                  </button>
+                </div>
               </div>
             )}
           </div>
-          {ready && (
-            <svg className="w-3.5 h-3.5 text-fg-subtle shrink-0 group-data-[collapsible=icon]:hidden" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          )}
-        </button>
-
-        {open && (
-          <div role="menu" aria-label="Workspaces" className="absolute left-3 right-3 top-full mt-1 z-30 bg-bg border border-border rounded-lg shadow-lg overflow-hidden">
-            <div className="max-h-72 overflow-y-auto py-1">
-              {tenants.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={t.id === active}
-                  onClick={() => switchTo(t.id)}
-                  className={`w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm hover:bg-bg-surface flex items-center gap-2 ${t.id === active ? "bg-bg-surface/60" : ""}`}
-                >
-                  <Avatar name={displayName(t)} size="xs" squared />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{displayName(t)}</div>
-                    <div className="text-[10px] text-fg-subtle font-mono">{t.id}</div>
-                  </div>
-                  {t.id === active && (
-                    <svg className="w-3.5 h-3.5 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  )}
-                </button>
-              ))}
-            </div>
-            <div className="border-t border-border">
-              <button
-                onClick={() => { setOpen(false); setCreateOpen(true); }}
-                className="w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm text-fg-muted hover:bg-bg-surface flex items-center gap-2"
-              >
-                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                Create workspace…
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        </SidebarMenuItem>
+      </SidebarMenu>
 
       <CreateTenantModal
         open={createOpen}

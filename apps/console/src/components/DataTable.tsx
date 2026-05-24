@@ -87,8 +87,13 @@ import { cn } from "@/lib/utils";
  * their large views.
  */
 export interface DataTableProps<T> {
-  title: string;
-  subtitle: ReactNode;
+  /** Page title — usually omitted for list pages where AppBreadcrumb
+   *  already names the route at the top of the shell. Detail/sub-views
+   *  that need a richer label (entity name) still pass it. */
+  title?: string;
+  /** Brief one-liner under the title — kept even when title is hidden
+   *  so list pages can publish a description. */
+  subtitle?: ReactNode;
 
   /** Primary "create" button. Both must be set to render. */
   createLabel?: string;
@@ -227,10 +232,20 @@ export function DataTable<T>({
         </div>
       ) : (
         <div className="px-4 md:px-8 lg:px-10">
-          <Table>
+          {/* `border-separate` + `border-spacing-y` turns each <tr> into
+              a visually-separate pill — there's a small vertical gap
+              between rows that the row bg fills as a rounded surface.
+              Each pill has its first cell rounded-l-lg and last cell
+              rounded-r-lg so the corners only round at the row edges,
+              not on every cell. Header stays plain (no pill) so it
+              reads as toolbar above the list. */}
+          <Table className="border-separate border-spacing-y-1.5">
             <TableHeader className="sticky top-0 z-10 bg-bg/95 backdrop-blur supports-[backdrop-filter]:bg-bg/80 text-fg-muted">
               {table.getHeaderGroups().map((headerGroup) => (
-                <TableRow key={headerGroup.id} className="border-b border-border hover:bg-transparent">
+                <TableRow
+                  key={headerGroup.id}
+                  className="hover:bg-transparent border-b border-border"
+                >
                   {headerGroup.headers.map((header) => (
                     <TableHead key={header.id} className="h-9 text-xs font-medium">
                       {header.isPlaceholder ? null : (
@@ -249,19 +264,28 @@ export function DataTable<T>({
               ))}
             </TableHeader>
             <TableBody>
-              {filteredRows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-                  className={onRowClick ? "cursor-pointer" : undefined}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
+              {filteredRows.map((row) => {
+                const cells = row.getVisibleCells();
+                return (
+                  <TableRow
+                    key={row.id}
+                    onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                    className={cn(
+                      "bg-bg-surface/60 hover:bg-bg-surface transition-colors",
+                      "[&>td]:border-y [&>td]:border-border [&>td]:bg-transparent",
+                      "[&>td:first-child]:border-l [&>td:first-child]:rounded-l-lg",
+                      "[&>td:last-child]:border-r [&>td:last-child]:rounded-r-lg",
+                      onRowClick && "cursor-pointer",
+                    )}
+                  >
+                    {cells.map((cell) => (
+                      <TableCell key={cell.id}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                );
+              })}
               {onLoadMore && hasMore && (
                 <LoadMoreRow
                   colSpan={visibleColumnCount}

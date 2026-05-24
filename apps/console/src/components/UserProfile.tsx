@@ -5,6 +5,7 @@ import {
   MonitorIcon,
   MoonIcon,
   SunIcon,
+  UserIcon,
 } from "lucide-react";
 
 import {
@@ -16,6 +17,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
 
 import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
@@ -56,30 +62,33 @@ export function UserProfile() {
   const label = user.name || user.email || "Account";
 
   return (
-    <DropdownMenu>
-      {/* Trigger row — matches the h-11 px-3 + size-sm-avatar recipe
-          used by the brand and tenant rows above, so the user avatar
-          sits on the same 24px-from-edge vertical axis as every other
-          icon in the sidebar. */}
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="Account menu"
-          className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:justify-center"
-        >
-          <Avatar name={label} size="sm" />
-          <div className="flex-1 min-w-0 text-left leading-tight group-data-[collapsible=icon]:hidden">
-            <div className="text-sm text-sidebar-foreground truncate">
-              {user.name || user.email}
-            </div>
-            {user.email && user.name && (
-              <div className="text-[11px] text-fg-subtle truncate">
-                {user.email}
+    <SidebarMenu className="px-2">
+      <SidebarMenuItem>
+        <DropdownMenu>
+          {/* Trigger uses shadcn `SidebarMenuButton size="lg"` so the
+              collapse behaviour is identical to every nav row — when
+              the sidebar shrinks to icon mode the button auto-resizes
+              to 32×32 + p-2, with only the leading 16-px icon
+              visible. Previously this was a custom `<button h-11 px-3>`
+              that just hid the text on collapse without resizing the
+              button itself — the avatar stayed at its expanded x
+              position while everything else snapped to centre, hence
+              the "behaviour is different" the user called out. */}
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton size="lg" tooltip={label}>
+              <UserIcon className="size-4 opacity-80" />
+              <div className="flex-1 min-w-0 text-left leading-tight">
+                <div className="text-sm text-sidebar-foreground truncate">
+                  {user.name || user.email}
+                </div>
+                {user.email && user.name && (
+                  <div className="text-[11px] text-fg-subtle truncate">
+                    {user.email}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </button>
-      </DropdownMenuTrigger>
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
 
       <DropdownMenuContent
         side="top"
@@ -154,6 +163,8 @@ export function UserProfile() {
           Sign out
         </DropdownMenuItem>
       </DropdownMenuContent>
-    </DropdownMenu>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
   );
 }

@@ -71,7 +71,6 @@ export function ApiKeysList() {
 
   return (
     <ListPage<ApiKey>
-      title="API Keys"
       subtitle="Manage API keys for programmatic access (CLI, SDK)."
       createLabel="+ New API key"
       onCreate={() => setShowCreate(true)}

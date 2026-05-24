@@ -76,7 +76,6 @@ export function MemoryStoresList() {
 
   return (
     <ListPage<MemoryStore>
-      title="Memory Stores"
       subtitle={
         <>
           Persistent memory for agents. Each store is mounted into a session at <code className="text-xs">/mnt/memory/&lt;name&gt;/</code>.

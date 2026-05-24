@@ -31,11 +31,13 @@ interface Column<T> {
 }
 
 interface ListPageProps<T> {
-  /** Page title rendered in the sticky PageHeader. */
-  title: string;
+  /** Page title — usually omitted for list pages where AppBreadcrumb
+   *  already names the route at the top of the shell. Detail/sub-views
+   *  that need a richer label (entity name) still pass it. */
+  title?: string;
   /** Subtitle below the title — accepts ReactNode so callers can drop in
    *  inline `<code>` snippets, links, etc. */
-  subtitle: ReactNode;
+  subtitle?: ReactNode;
 
   /** Primary "create" button. Both must be set for the button to render —
    *  read-only pages (EvalRunsList) just omit them. */

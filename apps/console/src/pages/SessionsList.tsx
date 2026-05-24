@@ -639,7 +639,6 @@ export function SessionsList() {
 
   return (
     <ListPage<Session>
-      title="Sessions"
       subtitle="Trace and debug agent sessions."
       createLabel="+ New session"
       onCreate={openModal}

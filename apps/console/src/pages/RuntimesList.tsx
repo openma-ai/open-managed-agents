@@ -64,7 +64,6 @@ export function RuntimesList() {
 
   return (
     <ListPage<Runtime>
-      title="Local Runtimes"
       subtitle={
         <>
           Your own laptops or servers, registered with OMA. Bind an agent to a runtime to run its turns

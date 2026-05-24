@@ -94,7 +94,6 @@ export function FilesList() {
 
   return (
     <ListPage<FileRecord>
-      title="Files"
       subtitle={
         <>
           Tenant-scoped file storage (<code className="text-xs">/v1/files</code>). Used by agents for inputs, attachments, and session outputs.
