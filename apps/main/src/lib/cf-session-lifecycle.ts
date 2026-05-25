@@ -306,8 +306,8 @@ async function refreshProviderCredentialsForSession(
 ): Promise<SessionEvent[]> {
   if (!vaultIds.length) return [];
   if (!env.INTEGRATIONS || !env.INTEGRATIONS_INTERNAL_SECRET) return [];
-  if (!env.AUTH_DB) return [];
-  const userRow = await env.AUTH_DB
+  if (!env.MAIN_DB) return [];
+  const userRow = await env.MAIN_DB
     .prepare(`SELECT id FROM "user" WHERE tenantId = ? LIMIT 1`)
     .bind(tenantId)
     .first<{ id: string }>();
@@ -388,16 +388,16 @@ async function tryGitHubBindingFastPath(
   tenantId: string,
   repoUrl: string,
 ): Promise<{ token: string; vaultId: string } | null> {
-  if (!env.INTEGRATIONS || !env.INTEGRATIONS_INTERNAL_SECRET || !env.AUTH_DB) return null;
+  if (!env.INTEGRATIONS || !env.INTEGRATIONS_INTERNAL_SECRET || !env.MAIN_DB) return null;
   const org = parseGitHubOrg(repoUrl);
   if (!org) return null;
-  const userRow = await env.AUTH_DB
+  const userRow = await env.MAIN_DB
     .prepare(`SELECT id FROM "user" WHERE tenantId = ? LIMIT 1`)
     .bind(tenantId)
     .first<{ id: string }>();
   const userId = userRow?.id;
   if (!userId) return null;
-  const row = await env.AUTH_DB
+  const row = await env.MAIN_DB
     .prepare(
       `SELECT id, vault_id FROM linear_installations
          WHERE user_id = ? AND provider_id = 'github'

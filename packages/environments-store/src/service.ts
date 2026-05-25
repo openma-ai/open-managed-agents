@@ -175,20 +175,37 @@ export class EnvironmentService {
    */
   async listPage(opts: {
     tenantId: string;
+    /** Row archive state. Pass `'active'` to exclude archived,
+     *  `'archived'` for only-archived, `'any'` for both. Replaces the
+     *  legacy `includeArchived` boolean for any 3-way intent. */
+    status?: "active" | "archived" | "any";
+    /** Legacy 2-way archive toggle. Maps to status when status is unset:
+     *  true→any, false→active. Prefer `status` for new callers. */
     includeArchived?: boolean;
+    /** Lower bound on created_at (epoch ms, inclusive). */
+    createdAfter?: number;
+    /** Upper bound on created_at (epoch ms, exclusive). */
+    createdBefore?: number;
     limit?: number;
     cursor?: string;
     q?: string;
   }): Promise<{ items: EnvironmentRow[]; nextCursor?: string }> {
+    // Default keeps the legacy "includes archived" behavior — same default
+    // as `list()` above — when neither status nor includeArchived is set.
+    const status: "active" | "archived" | "any" =
+      opts.status ?? (opts.includeArchived === false ? "active" : "any");
     return paginateVia({
       cursor: opts.cursor,
       limit: opts.limit,
       fetch: (after, limit) =>
         this.repo.listPage(opts.tenantId, {
+          status,
           includeArchived: opts.includeArchived ?? true,
           limit,
           after,
           q: opts.q,
+          createdAfter: opts.createdAfter,
+          createdBefore: opts.createdBefore,
         }),
       extractCursor: (r) => ({
         createdAt: new Date(r.created_at).getTime(),

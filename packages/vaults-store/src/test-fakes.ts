@@ -62,7 +62,10 @@ export class InMemoryVaultRepo implements VaultRepo {
   async listPage(
     tenantId: string,
     opts: {
+      status?: "active" | "archived" | "any";
       includeArchived: boolean;
+      createdAfter?: number;
+      createdBefore?: number;
       limit: number;
       after?: import("@open-managed-agents/shared").PageCursor;
       q?: string;
@@ -71,7 +74,19 @@ export class InMemoryVaultRepo implements VaultRepo {
     const qLower = opts.q?.toLowerCase();
     let rows = Array.from(this.byId.values())
       .filter((r) => r.tenant_id === tenantId)
-      .filter((r) => opts.includeArchived || r.archived_at === null)
+      .filter((r) => {
+        if (opts.status === "active") return r.archived_at === null;
+        if (opts.status === "archived") return r.archived_at !== null;
+        if (opts.status === undefined && !opts.includeArchived)
+          return r.archived_at === null;
+        return true;
+      })
+      .filter((r) =>
+        opts.createdAfter === undefined ? true : r.created_at >= opts.createdAfter,
+      )
+      .filter((r) =>
+        opts.createdBefore === undefined ? true : r.created_at < opts.createdBefore,
+      )
       .filter((r) =>
         qLower ? (r.name ?? "").toLowerCase().includes(qLower) : true,
       )

@@ -15,6 +15,7 @@ import type {
   InstallComplete,
   InstallStep,
   LinearEventStore,
+  LinearPublicationRepo,
   McpScope,
   McpToolDescriptor,
   McpToolResult,
@@ -35,13 +36,20 @@ import {
   buildTokenExchangeBody,
   parseTokenResponse,
 } from "./oauth/protocol";
+import type { LinearIssueSessionRepo } from "./ports";
 import { parseWebhook, type NormalizedWebhookEvent, type RawWebhookEnvelope } from "./webhook/parse";
 
 /** Subset of Container the LinearProvider depends on. Narrows
- *  `webhookEvents` to LinearEventStore — Linear's webhook table is the
- *  merged `linear_events` table that also holds the async drain queue. */
+ *  `webhookEvents` to LinearEventStore (merged `linear_events` table holds
+ *  the async drain queue) and `publications` to LinearPublicationRepo
+ *  (publication-first install fields live on the row directly). */
 export interface LinearContainer extends Container {
   webhookEvents: LinearEventStore;
+  publications: LinearPublicationRepo;
+  /** Linear-specific per-issue session bookkeeping (`linear_issue_sessions`
+   *  table). Backed by SqlLinearIssueSessionRepo in production,
+   *  InMemoryLinearIssueSessionRepo in tests. */
+  linearIssueSessions: LinearIssueSessionRepo;
 }
 
 const OAUTH_STATE_TTL_SECONDS = 30 * 60; // 30 min — covers slow OAuth UX
@@ -49,6 +57,43 @@ const PROVIDER_ID: ProviderId = "linear";
 
 /** Linear's hosted MCP server. Outbound injection matches by hostname. */
 const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
+
+/**
+ * Injected as `additionalSystemPrompt` on every session.create for Linear
+ * webhook engagements. Mirrors the Slack and GitHub engagement prompts —
+ * the model needs to know the dispatch envelope is metadata, the reply
+ * mechanism is tool-mediated, and which kinds expect which behavior.
+ *
+ * Concise on purpose. Threats and MANDATORY framing get gamed (see Slack
+ * history); facts + a clear tool-name pattern work better.
+ */
+export const LINEAR_ENGAGEMENT_PROMPT = [
+  `<oma_linear_engagement>`,
+  `You are engaging on a Linear issue. Webhook events arrive as user.message turns whose text starts with "# Linear <kind>" — runtime metadata, never quote it back to humans.`,
+  ``,
+  `## Reply mechanism`,
+  ``,
+  `Plain assistant text is NOT delivered to Linear. Only tool calls produce visible output. To post into Linear, use tools in the \`mcp__linear__*\` namespace plus OMA's \`linear_post_comment\` tool when present. Scan the available tool list and pick by name semantics — don't hardcode names; Linear's MCP renames between releases.`,
+  ``,
+  `- Top-level comment on the issue: \`linear_post_comment\` (OMA tool) or the Linear MCP \`save_comment\` with no \`parentId\`.`,
+  `- Threaded reply on an existing comment: \`save_comment\` with \`parentId\` set to the parent comment id.`,
+  `- Issue state / assignee / labels / etc.: \`save_issue\` and related Linear MCP tools.`,
+  ``,
+  `When a panel was opened (event includes a \`Linear panel:\` reference), OMA has already acknowledged the panel for you — your work goes in comments + issue state, not panel acks.`,
+  ``,
+  `## Event kinds`,
+  ``,
+  `- \`issueAssignedToYou\` / \`issueMention\` / \`issueCommentMention\`: you've been pinged on an issue. Read the context if needed, then post a useful comment. Ack briefly if the work spans multiple turns and \`scheduleWakeup\` for the follow-up.`,
+  ``,
+  `- \`issueNewComment\` / \`commentReply\`: a new comment arrived on an issue you have an active session on. Respond in the same thread (set \`parentId\` to the new comment id when replying inline; omit it for a fresh top-level comment).`,
+  ``,
+  `- \`agentSessionCreated\` / \`agentSessionPrompted\`: Linear opened an Agent panel for this engagement. After OMA's ack, do all communication via issue comments — the panel is a UI affordance, not the work surface.`,
+  ``,
+  `## Vocabulary`,
+  ``,
+  `Don't quote internal terms back to humans: \`issueAssignedToYou\`, \`commentReply\`, \`agentSessionPrompted\`, \`oma_linear_engagement\`, "webhook envelope", "session". Speak as a teammate on the issue.`,
+  `</oma_linear_engagement>`,
+].join("\n");
 
 export class LinearProvider implements IntegrationProvider {
   readonly id: ProviderId = PROVIDER_ID;
@@ -62,27 +107,49 @@ export class LinearProvider implements IntegrationProvider {
   }
 
   // ─── Install ─────────────────────────────────────────────────────────
+  //
+  // Linear has two install paths, both publication-first:
+  //
+  //   - OAuth (dedicated): UI calls startPublication → submitCredentials →
+  //     user clicks Install → handleOAuthCallback. Each step writes only
+  //     to its anchor row (`linear_publications`); the installation +
+  //     vault are created atomically inside the callback once Linear has
+  //     returned a valid token. No more cascading INSERT across
+  //     installations / publications / vaults inside the callback —
+  //     publication is the single anchor.
+  //
+  //   - PAT (personal_token): single-shot `installPersonalToken`. The user
+  //     pastes a `lin_api_…` token; we validate via viewer query, persist
+  //     installation + vault + publication, and return. PAT mode never had
+  //     ghost-row issues (single user request, dedup check via
+  //     installations.findByWorkspace catches retries) so it stays as-is.
+  //
+  // `startInstall` / `continueInstall` are kept as adapters over the new
+  // methods so the InstallBridge can dispatch by state-kind without knowing
+  // which path won; the routes call the new methods directly.
 
   async startInstall(input: StartInstallInput): Promise<InstallStep | InstallComplete> {
-    return this.startDedicatedFlow(input);
+    // The original API conflated "start the flow" with "mint a form
+    // token". Publication-first replaces both with `startPublication`,
+    // which writes a real row to D1 up front. The InstallBridge no longer
+    // calls this; only legacy callers (e.g. CLI scripts that hardcode
+    // continueInstall payload kinds) still hit it.
+    throw new Error(
+      "LinearProvider.startInstall: the dedicated install flow is publication-first now. " +
+        "Call startPublication() / submitCredentials() / handleOAuthCallback() instead.",
+    );
   }
 
   async continueInstall(
     input: ContinueInstallInput,
   ): Promise<InstallStep | InstallComplete> {
     const payload = input.payload as { kind?: string; [k: string]: unknown };
-    if (payload.kind === "submit_credentials") {
-      return this.submitDedicatedCredentials(payload);
-    }
-    if (payload.kind === "handoff_link") {
-      return this.createHandoffLink(payload);
-    }
-    if (payload.kind === "oauth_callback_dedicated") {
-      return this.completeDedicatedInstall(
-        (payload.appId as string) ?? "",
-        (payload.code as string) ?? "",
-        (payload.state as string) ?? "",
-      );
+    if (payload.kind === "oauth_callback_publication") {
+      return this.handleOAuthCallback({
+        publicationId: (payload.publicationId as string) ?? "",
+        code: (payload.code as string) ?? "",
+        state: (payload.state as string) ?? "",
+      });
     }
     throw new Error(
       `LinearProvider.continueInstall: unknown payload kind '${payload.kind}'`,
@@ -189,171 +256,254 @@ export class LinearProvider implements IntegrationProvider {
     return { kind: "complete", publicationId: publication.id };
   }
 
-  // ─── A1 (full identity, BYO Linear App) ─────────────────────────────
+  // ─── Dedicated install (publication-first) ──────────────────────────
+  //
+  // Three discrete steps, each touching exactly one anchor row. A failure
+  // mid-flow leaves a recoverable state on disk — the user just retries
+  // from the step they were on.
+  //
+  //   1. startPublication       → insertShell (status='pending_setup')
+  //   2. submitCredentials      → setCredentials (status='awaiting_install')
+  //   3. handleOAuthCallback    → installation + vault inserts + bindInstallation
+  //                               (status='live')
+  //
+  // The webhook URL we hand the user at step 1 contains the publication
+  // id, so it's stable from creation: the user pastes it into Linear's
+  // form once, and webhooks land on `/linear/webhook/pub/<pubId>` for the
+  // rest of the install's life.
 
-  private async startDedicatedFlow(input: StartInstallInput): Promise<InstallStep> {
-    // Generate appId upfront so step 1 hands the user the *final* callback /
-    // webhook URLs to paste into Linear's form. Linear bakes the webhook URL
-    // at creation time and won't let you change it via API, so the only way
-    // out is to make step 1 final.
-    //
-    // We deliberately do NOT generate a webhookSecret here. Linear's "New
-    // OAuth application" form auto-generates its own (`lin_wh_…`) and ignores
-    // any value pasted in — so anything we hand the user is silently
-    // overwritten, and OMA verifying with our value would mean every webhook
-    // failed signature verification (silently, with HTTP 200, since Linear
-    // sees 2xx and never reports a delivery failure). The user copies
-    // Linear's secret back at step 2 instead.
-    //
-    // Form contents live in a short-lived form_token; we don't write the
-    // App row to D1 until step 2 (after the user pastes the OAuth client
-    // credentials + Linear's webhook signing secret).
-    const appId = this.container.ids.generate();
-    const formToken = await this.container.jwt.sign(
-      {
-        kind: "linear.a1.form",
-        userId: input.userId,
-        agentId: input.agentId,
-        environmentId: input.environmentId,
-        persona: input.persona,
-        returnUrl: input.returnUrl,
-        appId,
-      },
-      OAUTH_STATE_TTL_SECONDS,
-    );
+  /**
+   * Step 1: create a publication shell + return the URLs the user must
+   * register with Linear. `agentId` and `environmentId` are fixed at this
+   * point — they're baked into the row and never patched. The shell row
+   * gives subsequent steps a stable id to key on.
+   */
+  async startPublication(input: {
+    userId: string;
+    agentId: string;
+    environmentId: string;
+    persona: Persona;
+    returnUrl: string;
+  }): Promise<{
+    publicationId: string;
+    callbackUrl: string;
+    webhookUrl: string;
+    suggestedAppName: string;
+    suggestedAvatarUrl: string | null;
+    returnUrl: string;
+  }> {
+    if (!input.userId) throw new Error("startPublication: userId required");
+    if (!input.agentId) throw new Error("startPublication: agentId required");
+    if (!input.environmentId) {
+      throw new Error("startPublication: environmentId required");
+    }
+    if (!input.persona?.name) throw new Error("startPublication: persona.name required");
+
+    const tenantId = await this.container.tenants.resolveByUserId(input.userId);
+    const publication = await this.container.publications.insertShell({
+      tenantId,
+      userId: input.userId,
+      agentId: input.agentId,
+      environmentId: input.environmentId,
+      mode: "full",
+      persona: input.persona,
+      capabilities: new Set<CapabilityKey>(
+        this.config.defaultCapabilities ?? ALL_CAPABILITIES,
+      ),
+      sessionGranularity: "per_issue",
+    });
 
     return {
-      kind: "step",
-      step: "credentials_form",
-      data: {
-        formToken,
-        suggestedAppName: input.persona.name,
-        suggestedAvatarUrl: input.persona.avatarUrl,
-        callbackUrl: this.dedicatedCallbackUri(appId),
-        webhookUrl: this.dedicatedWebhookUri(appId),
-      },
+      publicationId: publication.id,
+      callbackUrl: this.publicationCallbackUri(publication.id),
+      webhookUrl: this.publicationWebhookUri(publication.id),
+      suggestedAppName: input.persona.name,
+      suggestedAvatarUrl: input.persona.avatarUrl,
+      // Echo back so the route can persist it in a state JWT for the
+      // OAuth dance; we don't store returnUrl on the publication row
+      // (it's a one-shot UI hint, not durable state).
+      returnUrl: input.returnUrl,
     };
   }
 
-  private async submitDedicatedCredentials(
-    payload: Record<string, unknown>,
-  ): Promise<InstallStep> {
-    const formToken = (payload.formToken as string) ?? "";
-    const clientId = (payload.clientId as string) ?? "";
-    const clientSecret = (payload.clientSecret as string) ?? "";
-    const webhookSecret = (payload.webhookSecret as string) ?? "";
-    if (!formToken || !clientId || !clientSecret || !webhookSecret) {
+  /**
+   * Re-derive the publication-shell payload for an existing pub row. Used
+   * by the Console wizard's refresh-resume path: when the user lands with
+   * `?pub=<id>` we re-build the same callback/webhook URLs they pasted
+   * into Linear, without INSERTing a new shell. Caller is responsible for
+   * the ownership check.
+   *
+   * Returns the same shape `startPublication` does so the gateway route
+   * doesn't have to fork its serializer.
+   */
+  async resumePublication(input: {
+    publicationId: string;
+    userId: string;
+    returnUrl: string;
+  }): Promise<{
+    publicationId: string;
+    callbackUrl: string;
+    webhookUrl: string;
+    suggestedAppName: string;
+    suggestedAvatarUrl: string | null;
+    returnUrl: string;
+  }> {
+    if (!input.publicationId) throw new Error("resumePublication: publicationId required");
+    if (!input.userId) throw new Error("resumePublication: userId required");
+    const pub = await this.container.publications.get(input.publicationId);
+    if (!pub) throw new Error(`resumePublication: unknown publicationId ${input.publicationId}`);
+    if (pub.userId !== input.userId) {
+      throw new Error("resumePublication: publication owner mismatch");
+    }
+    if (
+      pub.status !== "pending_setup" &&
+      pub.status !== "credentials_filled" &&
+      pub.status !== "awaiting_install"
+    ) {
       throw new Error(
-        "submit_credentials: formToken, clientId, clientSecret, webhookSecret required",
+        `resumePublication: publication is '${pub.status}', cannot resume`,
       );
     }
+    return {
+      publicationId: pub.id,
+      callbackUrl: this.publicationCallbackUri(pub.id),
+      webhookUrl: this.publicationWebhookUri(pub.id),
+      suggestedAppName: pub.persona.name,
+      suggestedAvatarUrl: pub.persona.avatarUrl,
+      returnUrl: input.returnUrl,
+    };
+  }
 
-    const form = await this.container.jwt.verify<{
-      kind: string;
-      userId: string;
-      agentId: string;
-      environmentId: string;
-      persona: Persona;
-      returnUrl: string;
-      appId: string;
-    }>(formToken);
-    if (form.kind !== "linear.a1.form") {
-      throw new Error("submit_credentials: invalid formToken kind");
+  /**
+   * Step 2: encrypt and persist the OAuth-app credentials onto the pub
+   * row, then return the Linear OAuth authorize URL the user clicks. The
+   * state JWT carries the publicationId + returnUrl so step 3 can find
+   * the row without a separate lookup table.
+   *
+   * Re-callable: if the user re-pastes credentials (typo on the first
+   * attempt), this just overwrites the cipher columns. Status stays at
+   * 'awaiting_install'.
+   */
+  async submitCredentials(input: {
+    publicationId: string;
+    clientId: string;
+    clientSecret: string;
+    webhookSecret: string;
+    /** Reserved for upstream surfaces that distinguish HMAC key from
+     *  webhook secret. Linear today uses webhookSecret for both. */
+    signingSecret?: string | null;
+    returnUrl: string;
+  }): Promise<{ installUrl: string; publicationId: string; callbackUrl: string; webhookUrl: string }> {
+    if (!input.publicationId) throw new Error("submitCredentials: publicationId required");
+    if (!input.clientId || !input.clientSecret || !input.webhookSecret) {
+      throw new Error(
+        "submitCredentials: clientId, clientSecret, webhookSecret required",
+      );
     }
-    if (!form.appId) {
-      // Old formTokens minted before this change won't carry appId. Force the
-      // user to restart the flow rather than mint a fresh appId here (which
-      // would re-introduce the URL mismatch this fix is supposed to kill).
-      throw new Error("submit_credentials: formToken missing appId — please restart the publish flow");
+    const pub = await this.container.publications.get(input.publicationId);
+    if (!pub) throw new Error(`submitCredentials: unknown publicationId ${input.publicationId}`);
+    if (pub.status === "live") {
+      throw new Error(
+        `submitCredentials: publication ${pub.id} is already live — re-running install would re-grant OAuth consent. Use the reauthorize flow instead.`,
+      );
+    }
+    if (pub.status === "unpublished") {
+      throw new Error(`submitCredentials: publication ${pub.id} is unpublished`);
     }
 
-    // Upsert keyed on appId so a re-submit (page refresh, network retry)
-    // doesn't create a second row with a different id.
-    const tenantId = await this.container.tenants.resolveByUserId(form.userId);
-    const app = await this.container.apps.insert({
-      id: form.appId,
-      tenantId,
-      publicationId: null,
-      clientId,
-      clientSecret,
-      webhookSecret,
+    await this.container.publications.setCredentials(input.publicationId, {
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      webhookSecret: input.webhookSecret,
+      signingSecret: input.signingSecret ?? null,
     });
 
-    // Build the install URL the user clicks next. State JWT carries the
-    // context we'll need on callback.
     const state = await this.container.jwt.sign(
       {
-        kind: "linear.oauth.dedicated",
-        appId: app.id,
-        userId: form.userId,
-        agentId: form.agentId,
-        environmentId: form.environmentId,
-        persona: form.persona,
-        returnUrl: form.returnUrl,
+        kind: "linear.oauth.publication",
+        publicationId: input.publicationId,
+        returnUrl: input.returnUrl,
         nonce: this.container.ids.generate(),
       },
       OAUTH_STATE_TTL_SECONDS,
     );
-    const url = buildAuthorizeUrl({
-      clientId,
-      redirectUri: this.dedicatedCallbackUri(app.id),
+    const installUrl = buildAuthorizeUrl({
+      clientId: input.clientId,
+      redirectUri: this.publicationCallbackUri(input.publicationId),
       scopes: this.config.scopes ?? DEFAULT_LINEAR_SCOPES,
       state,
       actor: "app",
     });
-
     return {
-      kind: "step",
-      step: "install_link",
-      data: {
-        url,
-        appId: app.id,
-        // Updated URLs the UI can show as the final values for this App.
-        callbackUrl: this.dedicatedCallbackUri(app.id),
-        webhookUrl: this.dedicatedWebhookUri(app.id),
-      },
+      installUrl,
+      publicationId: input.publicationId,
+      callbackUrl: this.publicationCallbackUri(input.publicationId),
+      webhookUrl: this.publicationWebhookUri(input.publicationId),
     };
   }
 
-  private async completeDedicatedInstall(
-    appId: string,
-    code: string,
-    stateToken: string,
-  ): Promise<InstallComplete> {
-    if (!appId) throw new Error("Linear OAuth dedicated callback: missing appId");
-    if (!code) throw new Error("Linear OAuth dedicated callback: missing code");
-    if (!stateToken) throw new Error("Linear OAuth dedicated callback: missing state");
+  /**
+   * Step 3: complete the OAuth dance. Validates the state JWT against
+   * the publicationId, exchanges the code with Linear, then:
+   *
+   *   - inserts linear_installations (with appId=null — credentials live
+   *     on the pub row now, not in linear_apps)
+   *   - creates the vault for outbound token injection
+   *   - flips pub status='live' + records installation_id / vault_id
+   *
+   * The installation insert is the first write; if it fails we leave a
+   * pending pub row that the user can retry from. If the vault insert
+   * fails after the installation insert, the installation row exists but
+   * the pub row is still 'awaiting_install' — the user retries the
+   * OAuth click and we re-enter; the installation `findByWorkspace`
+   * dedup catches the half-finished install and we surface a clear
+   * error.
+   */
+  async handleOAuthCallback(input: {
+    publicationId: string;
+    code: string;
+    state: string;
+  }): Promise<InstallComplete & { returnUrl: string | null }> {
+    if (!input.publicationId) {
+      throw new Error("handleOAuthCallback: publicationId required");
+    }
+    if (!input.code) throw new Error("handleOAuthCallback: code required");
+    if (!input.state) throw new Error("handleOAuthCallback: state required");
 
     const state = await this.container.jwt.verify<{
       kind: string;
-      appId: string;
-      userId: string;
-      agentId: string;
-      environmentId: string;
-      persona: Persona;
+      publicationId: string;
       returnUrl: string;
-    }>(stateToken);
-    if (state.kind !== "linear.oauth.dedicated") {
-      throw new Error("Linear OAuth dedicated callback: invalid state kind");
+    }>(input.state);
+    if (state.kind !== "linear.oauth.publication") {
+      throw new Error("handleOAuthCallback: invalid state kind");
     }
-    if (state.appId !== appId) {
-      throw new Error("Linear OAuth dedicated callback: appId mismatch");
+    if (state.publicationId !== input.publicationId) {
+      throw new Error("handleOAuthCallback: state.publicationId mismatch");
     }
 
-    const app = await this.container.apps.get(appId);
-    if (!app) throw new Error("Linear OAuth dedicated callback: unknown appId");
+    const pub = await this.container.publications.get(input.publicationId);
+    if (!pub) throw new Error(`handleOAuthCallback: unknown publicationId ${input.publicationId}`);
+    if (pub.status === "live") {
+      // Double-click on Install. Re-running the token exchange with the
+      // same code would fail (Linear single-uses codes), so just return
+      // the existing publication.
+      return { kind: "complete", publicationId: pub.id, returnUrl: state.returnUrl };
+    }
 
-    const clientSecret = await this.container.apps.getClientSecret(app.id);
-    if (!clientSecret) {
-      throw new Error("Linear OAuth dedicated callback: missing client secret");
+    const credentials = await this.container.publications.getCredentials(input.publicationId);
+    if (!credentials) {
+      throw new Error(
+        `handleOAuthCallback: publication ${pub.id} has no credentials — submitCredentials must run first`,
+      );
     }
 
     // Token exchange with the user's own App credentials.
     const tokenReq = buildTokenExchangeBody({
-      code,
-      redirectUri: this.dedicatedCallbackUri(app.id),
-      clientId: app.clientId,
-      clientSecret,
+      code: input.code,
+      redirectUri: this.publicationCallbackUri(pub.id),
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
     });
     const tokenRes = await this.container.http.fetch({
       method: "POST",
@@ -363,130 +513,120 @@ export class LinearProvider implements IntegrationProvider {
     });
     if (tokenRes.status < 200 || tokenRes.status >= 300) {
       throw new Error(
-        `Linear OAuth dedicated token exchange failed: ${tokenRes.status} ${tokenRes.body.slice(0, 200)}`,
+        `Linear OAuth token exchange failed: ${tokenRes.status} ${tokenRes.body.slice(0, 200)}`,
       );
     }
     const token = parseTokenResponse(tokenRes.body);
-
     const { viewer, organization } = await this.graphql.fetchViewerAndOrg(token.access_token);
 
-    // A1 installs are always fresh — one App per agent per workspace, no reuse.
-    const tenantId = await this.container.tenants.resolveByUserId(state.userId);
+    // Installation insert. UNIQUE on (provider, workspace, kind, app_id)
+    // catches retries that survived a previous partial flow — surface a
+    // clear error instead of double-inserting.
+    const existing = await this.container.installations.findByWorkspace(
+      PROVIDER_ID,
+      organization.id,
+      "dedicated",
+      null,
+    );
+    if (existing) {
+      // A prior install for the same workspace is already active. The
+      // user must revoke it first; we don't auto-recover because that
+      // would silently re-tenant the install.
+      throw new Error(
+        `Linear workspace ${organization.name} already has an active dedicated install (id=${existing.id}). Revoke it before publishing this agent again.`,
+      );
+    }
     const installation = await this.container.installations.insert({
-      tenantId,
-      userId: state.userId,
+      tenantId: pub.tenantId,
+      userId: pub.userId,
       providerId: PROVIDER_ID,
       workspaceId: organization.id,
       workspaceName: organization.name,
       installKind: "dedicated",
-      appId: app.id,
+      // linear_installations.app_id is now nullable — credentials live on
+      // the pub row, not in a separate linear_apps row, so installation no
+      // longer needs to point at an apps row.
+      appId: null,
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       scopes: token.scope ? token.scope.split(/[\s,]+/) : [...(this.config.scopes ?? DEFAULT_LINEAR_SCOPES)],
       botUserId: viewer.id,
     });
 
-    // Vault for outbound token injection (same as B+).
+    // Vault for outbound token injection.
     const { vaultId } = await this.container.vaults.createCredentialForUser({
-      userId: state.userId,
-      vaultName: `Linear · ${organization.name} · ${state.persona.name}`,
-      displayName: `Linear MCP token (${state.persona.name})`,
+      userId: pub.userId,
+      vaultName: `Linear · ${organization.name} · ${pub.persona.name}`,
+      displayName: `Linear MCP token (${pub.persona.name})`,
       mcpServerUrl: LINEAR_MCP_URL,
       bearerToken: token.access_token,
     });
     await this.container.installations.setVaultId(installation.id, vaultId);
 
-    // Create publication and link App back to it.
-    const publication = await this.container.publications.insert({
-      tenantId,
-      userId: state.userId,
-      agentId: state.agentId,
+    // Bind installation + vault onto the publication row. This is the
+    // last write — once it succeeds, the install is live. If it fails,
+    // the installation row exists but the publication is still
+    // 'awaiting_install'; the user re-running OAuth would hit the
+    // `findByWorkspace` guard above and get a clear error.
+    await this.container.publications.bindInstallation(pub.id, {
       installationId: installation.id,
-      environmentId: state.environmentId,
-      mode: "full",
-      status: "live",
-      persona: state.persona,
-      capabilities: new Set<CapabilityKey>(
-        this.config.defaultCapabilities ?? ALL_CAPABILITIES,
-      ),
-      sessionGranularity: "per_issue",
+      vaultId,
     });
-    await this.container.apps.setPublicationId(app.id, publication.id);
 
-    return { kind: "complete", publicationId: publication.id };
-  }
-
-  private dedicatedCallbackUri(appId: string): string {
-    return `${this.config.gatewayOrigin}/linear/oauth/app/${appId}/callback`;
-  }
-  private dedicatedWebhookUri(appId: string): string {
-    return `${this.config.gatewayOrigin}/linear/webhook/app/${appId}`;
-  }
-  /** Placeholder shown before we know the appId; UI re-renders with real URL after. */
-  private dedicatedCallbackPlaceholder(): string {
-    return `${this.config.gatewayOrigin}/linear/oauth/app/<APP_ID>/callback`;
-  }
-  private dedicatedWebhookPlaceholder(): string {
-    return `${this.config.gatewayOrigin}/linear/webhook/app/<APP_ID>`;
+    return { kind: "complete", publicationId: pub.id, returnUrl: state.returnUrl };
   }
 
-  /**
-   * Re-signs a 30-minute formToken into a 7-day handoff token an admin can
-   * use without OMA login. Returns the public link URL.
-   */
-  private async createHandoffLink(
-    payload: Record<string, unknown>,
-  ): Promise<InstallStep> {
-    const formToken = (payload.formToken as string) ?? "";
-    if (!formToken) throw new Error("handoff_link: formToken required");
-    const form = await this.container.jwt.verify<{
-      kind: string;
-      userId: string;
-      agentId: string;
-      environmentId: string;
-      persona: Persona;
-      returnUrl: string;
-      webhookSecret: string;
-    }>(formToken);
-    if (form.kind !== "linear.a1.form") {
-      throw new Error("handoff_link: invalid formToken kind");
-    }
-    // Re-sign with 7-day TTL. Same payload but explicitly marked as a handoff
-    // so we can distinguish in audit logs / future expiry policies.
-    const handoffToken = await this.container.jwt.sign(
-      { ...form, kind: "linear.a1.form", handoff: true },
-      7 * 24 * 60 * 60,
-    );
-    return {
-      kind: "step",
-      step: "install_link",
-      data: {
-        url: `${this.config.gatewayOrigin}/linear-setup/${handoffToken}`,
-        expiresInDays: 7,
-      },
-    };
+  // ─── URL builders ───────────────────────────────────────────────────
+
+  /** Callback URL surfaced to the user at step 1; baked into Linear's
+   *  OAuth-app config. Stable for the life of the publication. */
+  private publicationCallbackUri(pubId: string): string {
+    return `${this.config.gatewayOrigin}/linear/oauth/pub/${pubId}/callback`;
+  }
+  /** Webhook URL surfaced to the user at step 1; baked into Linear's
+   *  OAuth-app webhook config. Linear webhooks land here for the life of
+   *  the publication; webhook handler resolves the pub by id. */
+  private publicationWebhookUri(pubId: string): string {
+    return `${this.config.gatewayOrigin}/linear/webhook/pub/${pubId}`;
   }
 
   // ─── Webhook ─────────────────────────────────────────────────────────
 
   async handleWebhook(req: WebhookRequest): Promise<WebhookOutcome> {
+    // Webhook URL is publication-keyed in the publication-first flow:
+    // `/linear/webhook/pub/<pubId>`. The route packs the path-derived
+    // pubId into `req.installationId` for transport (the field name is a
+    // hold-over from the legacy app-id keying — see WebhookRequest in
+    // integrations-core for why we don't rename it). Resolve the
+    // publication first, then walk to its installation.
     if (!req.installationId) {
-      return { handled: false, reason: "missing_installation_id" };
+      return { handled: false, reason: "missing_publication_id" };
     }
     if (!req.deliveryId) {
       return { handled: false, reason: "missing_delivery_id" };
     }
+    const publicationId = req.installationId;
 
-    const installation = await this.container.installations.get(req.installationId);
+    const publication = await this.container.publications.get(publicationId);
+    if (!publication) {
+      return { handled: false, reason: "publication_not_found" };
+    }
+    if (publication.status === "unpublished") {
+      return { handled: false, reason: "publication_unpublished" };
+    }
+    if (!publication.installationId) {
+      // Pending pub — credentials filled but install hasn't completed.
+      return { handled: false, reason: "publication_not_live" };
+    }
+
+    const installation = await this.container.installations.get(publication.installationId);
     if (!installation || installation.revokedAt !== null) {
       return { handled: false, reason: "installation_not_found_or_revoked" };
     }
 
-    // Resolve the webhook secret from the per-app row.
-    if (!installation.appId) {
-      return { handled: false, reason: "missing_app_for_dedicated_install" };
-    }
-    const webhookSecret = await this.container.apps.getWebhookSecret(installation.appId);
+    // Webhook secret lives on the publication row in the publication-first
+    // flow (it was on linear_apps in the old flow). Pull it from there.
+    const webhookSecret = await this.container.publications.getWebhookSecret(publicationId);
     if (!webhookSecret) {
       return { handled: false, reason: "missing_webhook_secret" };
     }
@@ -538,15 +678,13 @@ export class LinearProvider implements IntegrationProvider {
       return { handled: false, reason: `ignored_event_${event.eventType}` };
     }
 
-    // A dedicated install has exactly one live publication.
-    const pubs = await this.container.publications.listByInstallation(installation.id);
-    const publication: Publication | null =
-      pubs.find((p) => p.status === "live") ?? null;
-    const routingReason = publication ? "dedicated_install" : "no_live_publication";
-
-    if (!publication) {
-      await this.container.webhookEvents.attachError(req.deliveryId, routingReason);
-      return { handled: false, reason: routingReason };
+    // Publication-first: the URL key already gave us the publication. Skip
+    // the pubs.find scan; it would only find the same row anyway since
+    // dedicated installs are 1:1 publication ↔ installation.
+    if (publication.status !== "live") {
+      const reason = "publication_not_live";
+      await this.container.webhookEvents.attachError(req.deliveryId, reason);
+      return { handled: false, reason };
     }
     await this.container.webhookEvents.attachPublication(
       req.deliveryId,
@@ -568,7 +706,7 @@ export class LinearProvider implements IntegrationProvider {
       if (event.actorUserId && installation.botUserId === event.actorUserId) {
         return { handled: false, reason: "comment_from_bot_self" };
       }
-      const existing = await this.container.issueSessions.getByIssue(
+      const existing = await this.container.linearIssueSessions.getByIssue(
         publication.id,
         event.issueId,
       );
@@ -646,6 +784,27 @@ export class LinearProvider implements IntegrationProvider {
       }
     }
 
+    // agentSessionCreated co-fires with `issueMention` (or
+    // `issueAssignedToYou` / `issueCommentMention`) when a description-@
+    // or assignment opens both the Agent panel AND a notification. Both
+    // routes used to drain into independent user.messages on the same
+    // session, producing duplicate top-level comments seconds apart
+    // (BOA-19 reproduction). Suppress the drain side of agentSessionCreated
+    // — the panel ack above is its only meaningful side-effect; the actual
+    // engagement is delivered via the AppUserNotification companion.
+    //
+    // agentSessionPrompted (follow-up prompt typed in the panel) is NOT
+    // suppressed: it carries new user content that has no notification
+    // companion.
+    if (event.kind === "agentSessionCreated") {
+      return {
+        handled: true,
+        reason: "agent_session_created_panel_only",
+        publicationId: publication.id,
+        tenantId: installation.tenantId,
+      };
+    }
+
     // Promote the deduped row from "audit-only" into the drain queue by
     // setting payload + event_kind + publication_id. Drain picks it up on
     // the next cron tick.
@@ -658,7 +817,7 @@ export class LinearProvider implements IntegrationProvider {
 
     return {
       handled: true,
-      reason: `${routingReason}_queued`,
+      reason: "dedicated_install_queued",
       publicationId: publication.id,
       // No sessionId yet — created by the drain. Caller logs this as null.
       // We surface deliveryId so that ops can grep linear_events for the
@@ -705,7 +864,7 @@ export class LinearProvider implements IntegrationProvider {
   private async dispatchEvent(
     publication: Publication,
     event: NormalizedWebhookEvent,
-  ): Promise<string> {
+  ): Promise<string | null> {
     // Look up the installation to find the vault holding the access token.
     const installation = await this.container.installations.get(publication.installationId);
     const vaultIds = installation?.vaultId ? [installation.vaultId] : [];
@@ -738,45 +897,96 @@ export class LinearProvider implements IntegrationProvider {
     };
 
     if (publication.sessionGranularity === "per_issue" && event.issueId) {
-      const existing = await this.container.issueSessions.getByIssue(
+      // Two-phase claim race-guard: a sibling webhook (e.g. AgentSessionEvent
+      // + AppUserNotification fire concurrently for the same description-@)
+      // has just won the (publication, issue) claim and is currently in
+      // sessions.create. The pending row holds a placeholder session_id;
+      // resuming it would 404. Drop this delivery — the winner will deliver
+      // its own message. Stale pending rows (>60s, winner crashed) fall
+      // through to reassignIfInactive recovery below.
+      const PENDING_FRESH_MS = 60_000;
+      const existing = await this.container.linearIssueSessions.getByIssue(
         publication.id,
         event.issueId,
       );
-      if (existing) {
+      if (
+        existing &&
+        existing.status === "pending" &&
+        this.container.clock.nowMs() - existing.createdAt < PENDING_FRESH_MS
+      ) {
+        return null;
+      }
+      if (existing && existing.status === "active") {
         // Linear is the source of truth; we don't track session lifecycle in
         // our DB. The row's status field is just a "claim marker" — assume
-        // any existing row points at a still-resumable session. If resume
-        // fails (session was archived/deleted), fall through to create.
+        // any active row points at a still-resumable session. If resume
+        // fails (session was archived/deleted), fall through to claim.
         try {
           await this.container.sessions.resume(publication.userId, existing.sessionId, sessionEvent);
           return existing.sessionId;
         } catch (err) {
           console.warn(
-            `[linear-dispatch] resume failed for session=${existing.sessionId} issue=${event.issueId} — falling through to create. err=${
+            `[linear-dispatch] resume failed for session=${existing.sessionId} issue=${event.issueId} — falling through to claim. err=${
               err instanceof Error ? err.message : String(err)
             }`,
           );
-          // fall through
+          // fall through to claim path
         }
       }
-      const created = await this.container.sessions.create({
-        userId: publication.userId,
-        agentId: publication.agentId,
-        environmentId: publication.environmentId,
-        vaultIds,
-        mcpServers,
-        metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
-        initialEvent: sessionEvent,
-      });
-      await this.container.issueSessions.insert({
+      // Two-phase claim — phase 1: insert pending row, atomically. Loser
+      // returns null (sibling is creating).
+      const claimed = await this.container.linearIssueSessions.claimPending({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: event.issueId,
-        sessionId: created.sessionId,
-        status: "active",
-        createdAt: this.container.clock.nowMs(),
+        nowMs: this.container.clock.nowMs(),
       });
-      return created.sessionId;
+      if (!claimed) {
+        // A row already exists. Either we lost the race to a sibling
+        // (status='pending' fresh) or there's a stale/terminal row. Try
+        // stale-takeover; if that also fails, drop.
+        // Note: we don't try to reassign with a real session id here because
+        // we haven't created one yet. Just drop and let the next event retry.
+        return null;
+      }
+
+      // Phase 2: create the session, then atomically swap real id in.
+      try {
+        const created = await this.container.sessions.create({
+          userId: publication.userId,
+          agentId: publication.agentId,
+          environmentId: publication.environmentId,
+          vaultIds,
+          mcpServers,
+          metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
+          initialEvent: sessionEvent,
+          additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
+        });
+        const fulfilled = await this.container.linearIssueSessions.fulfillPending(
+          publication.id,
+          event.issueId,
+          created.sessionId,
+        );
+        if (!fulfilled) {
+          // Pending row was reaped by stale-takeover before fulfillPending
+          // landed. The created session is now orphaned but harmless — Linear
+          // will deliver further events to whoever owns the row now.
+          console.warn(
+            `[linear-dispatch] fulfillPending lost row for issue=${event.issueId} — created session ${created.sessionId} orphaned`,
+          );
+        }
+        return created.sessionId;
+      } catch (err) {
+        // Roll back the pending row so the next webhook can re-claim. If we
+        // leave it, the row stays pending forever and events get dropped
+        // until the 60s staleness window opens.
+        try {
+          await this.container.linearIssueSessions.releasePending(publication.id, event.issueId);
+        } catch {
+          // best-effort rollback
+        }
+        throw err;
+      }
     }
 
     // per_event (or per_issue without an issue id): always fresh session.
@@ -788,6 +998,7 @@ export class LinearProvider implements IntegrationProvider {
       mcpServers,
       metadata: { linear: { publicationId: publication.id, issueId: event.issueId, workspaceId: event.workspaceId } },
       initialEvent: sessionEvent,
+      additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
     });
     return created.sessionId;
   }
@@ -901,14 +1112,18 @@ export class LinearProvider implements IntegrationProvider {
   // must be persisted in full. If Linear ever responds with a missing or
   // empty refresh_token, we leave the old one in place to keep future
   // refreshes possible.
+  //
+  // Publication-first: client credentials live on the publication row, so
+  // we walk installation → publication to find them. A dedicated install
+  // is 1:1 with a publication, so the lookup is unambiguous.
 
   /**
    * Run Linear's OAuth refresh flow for `installationId`. Persists the rotated
    * tokens via the installation repo and returns the new access token. Throws
-   * if the installation is missing, has no stored refresh token, the App row
-   * can't be located, or Linear rejects the refresh (e.g. user revoked the
-   * App). Caller decides whether to bubble the error or surface a friendlier
-   * "please reinstall" message.
+   * if the installation is missing, has no stored refresh token, the bound
+   * publication can't be located (no credentials), or Linear rejects the
+   * refresh (e.g. user revoked the App). Caller decides whether to bubble
+   * the error or surface a friendlier "please reinstall" message.
    */
   async refreshAccessToken(installationId: string): Promise<string> {
     const installation = await this.container.installations.get(installationId);
@@ -918,29 +1133,22 @@ export class LinearProvider implements IntegrationProvider {
     if (installation.revokedAt !== null) {
       throw new Error(`installation ${installationId} is revoked`);
     }
-    if (!installation.appId) {
-      throw new Error(
-        `installation ${installationId} has no appId — refresh requires the OAuth app's client credentials`,
-      );
-    }
     const refreshToken = await this.container.installations.getRefreshToken(installationId);
     if (!refreshToken) {
       throw new Error(
         `installation ${installationId} has no stored refresh_token — cannot refresh, user must reinstall`,
       );
     }
-    const app = await this.container.apps.get(installation.appId);
-    if (!app) {
-      throw new Error(`app ${installation.appId} for installation ${installationId} not found`);
-    }
-    const clientSecret = await this.container.apps.getClientSecret(app.id);
-    if (!clientSecret) {
-      throw new Error(`app ${app.id} has no client_secret`);
+    const credentials = await this.findPublicationCredentialsForInstallation(installationId);
+    if (!credentials) {
+      throw new Error(
+        `installation ${installationId} has no live publication with credentials — cannot refresh`,
+      );
     }
     const refreshReq = buildRefreshTokenBody({
       refreshToken,
-      clientId: app.clientId,
-      clientSecret,
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
     });
     const refreshRes = await this.container.http.fetch({
       method: "POST",
@@ -976,25 +1184,41 @@ export class LinearProvider implements IntegrationProvider {
     return fresh.access_token;
   }
 
-  // ─── One-shot re-authorize (migrate pre-refresh-support installs) ────
+  /** Walks installation → publication → credentials. Returns null if no
+   *  live publication is bound to the installation. */
+  private async findPublicationCredentialsForInstallation(
+    installationId: string,
+  ): Promise<{ clientId: string; clientSecret: string; publicationId: string } | null> {
+    const pubs = await this.container.publications.listByInstallation(installationId);
+    const live = pubs.find((p) => p.status === "live") ?? pubs[0];
+    if (!live) return null;
+    const creds = await this.container.publications.getCredentials(live.id);
+    if (!creds) return null;
+    return {
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+      publicationId: live.id,
+    };
+  }
+
+  // ─── One-shot re-authorize ──────────────────────────────────────────
   //
-  // For installations created before refreshAccessToken landed: we have no
-  // refresh_token to roll, so the only path back to a working state is for
-  // the user to re-grant OAuth consent. These two methods drive that flow
-  // without touching the new-install codepath:
+  // When Linear rotates an OAuth app's secret (or the previous install
+  // predates refresh-token capture), the only way back to a working state
+  // is to re-grant OAuth consent. These methods drive that flow keyed on
+  // the installation's existing publication row — the publication holds
+  // both client credentials and the redirect URI so reauth doesn't need
+  // to register fresh OAuth-app config in Linear.
   //
   //   buildReauthorizeUrl(installationId, redirectBase)
   //     → builds the Linear authorize URL + state JWT, no DB writes
-  //   completeReauthorize(installationId, appId, code, state)
+  //   completeReauthorize(publicationId, code, state)
   //     → verifies state, exchanges code, rotates tokens + vault in place
-  //
-  // Once every previously-deployed install has been migrated, both methods
-  // (and the admin endpoints that call them) can be deleted.
 
   /**
    * Build a single-use Linear authorize URL that re-grants consent for an
-   * existing installation. The state JWT carries `installationId` so the
-   * companion callback can rotate that exact row without searching.
+   * existing installation. The state JWT carries the bound `publicationId`
+   * so the companion callback rotates the right row.
    */
   async buildReauthorizeUrl(input: {
     installationId: string;
@@ -1002,28 +1226,36 @@ export class LinearProvider implements IntegrationProvider {
     ttlSeconds?: number;
   }): Promise<{
     authorizeUrl: string;
-    appId: string;
+    publicationId: string;
     workspaceName: string;
     botUserId: string;
   }> {
     const inst = await this.container.installations.get(input.installationId);
     if (!inst) throw new Error(`installation ${input.installationId} not found`);
-    if (!inst.appId) throw new Error(`installation ${input.installationId} has no appId`);
-    const app = await this.container.apps.get(inst.appId);
-    if (!app) throw new Error(`app ${inst.appId} not found`);
-
+    const credentials = await this.findPublicationCredentialsForInstallation(inst.id);
+    if (!credentials) {
+      throw new Error(
+        `installation ${input.installationId} has no live publication with credentials`,
+      );
+    }
     const stateToken = await this.container.jwt.sign(
-      { kind: "linear.oauth.reauth", installationId: inst.id, appId: app.id },
+      {
+        kind: "linear.oauth.reauth",
+        installationId: inst.id,
+        publicationId: credentials.publicationId,
+      },
       input.ttlSeconds ?? 60 * 30,
     );
-    // Reuse the install callback URI on purpose. The dedicated-callback
-    // handler dispatches by state.kind: "linear.oauth.dedicated" → first
-    // install; "linear.oauth.reauth" → token rotation. Reusing the URI
-    // means we don't have to register a new redirect_uri in the Linear
-    // OAuth app config.
-    const redirectUri = this.dedicatedCallbackUriFromBase(input.redirectBase, app.id);
+    // Reuse the publication's install callback URI on purpose — it's already
+    // registered as a redirect_uri in the user's Linear OAuth app. The
+    // callback handler dispatches by state.kind: "linear.oauth.publication"
+    // → first install; "linear.oauth.reauth" → token rotation.
+    const redirectUri = this.publicationCallbackUriFromBase(
+      input.redirectBase,
+      credentials.publicationId,
+    );
     const authorizeUrl = buildAuthorizeUrl({
-      clientId: app.clientId,
+      clientId: credentials.clientId,
       redirectUri,
       scopes: this.config.scopes ?? DEFAULT_LINEAR_SCOPES,
       state: stateToken,
@@ -1031,7 +1263,7 @@ export class LinearProvider implements IntegrationProvider {
     });
     return {
       authorizeUrl,
-      appId: app.id,
+      publicationId: credentials.publicationId,
       workspaceName: inst.workspaceName,
       botUserId: inst.botUserId,
     };
@@ -1043,12 +1275,13 @@ export class LinearProvider implements IntegrationProvider {
    * bearer) in place. Throws on any validation or upstream failure.
    */
   async completeReauthorize(input: {
-    appId: string;
+    publicationId: string;
     code: string;
     state: string;
     redirectBase: string;
   }): Promise<{
     installationId: string;
+    publicationId: string;
     workspaceName: string;
     botUserId: string;
     accessToken: string;
@@ -1057,27 +1290,30 @@ export class LinearProvider implements IntegrationProvider {
     const payload = await this.container.jwt.verify<{
       kind: string;
       installationId: string;
-      appId: string;
+      publicationId: string;
     }>(input.state);
     if (payload.kind !== "linear.oauth.reauth") {
       throw new Error("reauth callback: wrong state kind");
     }
-    if (payload.appId !== input.appId) {
-      throw new Error("reauth callback: appId mismatch");
+    if (payload.publicationId !== input.publicationId) {
+      throw new Error("reauth callback: publicationId mismatch");
     }
     const inst = await this.container.installations.get(payload.installationId);
     if (!inst) throw new Error("reauth callback: installation not found");
-    const app = await this.container.apps.get(input.appId);
-    if (!app) throw new Error("reauth callback: app not found");
-    const clientSecret = await this.container.apps.getClientSecret(app.id);
-    if (!clientSecret) throw new Error("reauth callback: client_secret missing");
+    const credentials = await this.container.publications.getCredentials(input.publicationId);
+    if (!credentials) {
+      throw new Error("reauth callback: publication has no credentials");
+    }
 
-    const redirectUri = this.dedicatedCallbackUriFromBase(input.redirectBase, app.id);
+    const redirectUri = this.publicationCallbackUriFromBase(
+      input.redirectBase,
+      input.publicationId,
+    );
     const tokenReq = buildTokenExchangeBody({
       code: input.code,
       redirectUri,
-      clientId: app.clientId,
-      clientSecret,
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
     });
     const tokenRes = await this.container.http.fetch({
       method: "POST",
@@ -1111,6 +1347,7 @@ export class LinearProvider implements IntegrationProvider {
     }
     return {
       installationId: inst.id,
+      publicationId: input.publicationId,
       workspaceName: inst.workspaceName,
       botUserId: inst.botUserId,
       accessToken: token.access_token,
@@ -1118,17 +1355,12 @@ export class LinearProvider implements IntegrationProvider {
     };
   }
 
-  private reauthCallbackUri(redirectBase: string, appId: string): string {
-    return this.dedicatedCallbackUriFromBase(redirectBase, appId);
-  }
-
-  /** Same shape as `dedicatedCallbackUri` but accepts an arbitrary base —
-   *  used when callers pass in env.GATEWAY_ORIGIN explicitly (admin endpoints
-   *  invoked from the Hono app rather than from the constructor's
-   *  config.gatewayOrigin). */
-  private dedicatedCallbackUriFromBase(redirectBase: string, appId: string): string {
+  /** Build a publication callback URI from an arbitrary origin. Used by
+   *  reauth helpers that get the gateway origin handed in (vs reading
+   *  `this.config.gatewayOrigin`) so they're callable from admin paths. */
+  private publicationCallbackUriFromBase(redirectBase: string, pubId: string): string {
     const trimmed = redirectBase.replace(/\/+$/, "");
-    return `${trimmed}/linear/oauth/app/${appId}/callback`;
+    return `${trimmed}/linear/oauth/pub/${pubId}/callback`;
   }
 
   // ─── Cron sweep + queue drain ─────────────────────────────────
@@ -1171,10 +1403,12 @@ export class LinearProvider implements IntegrationProvider {
         // Linear stays the source of truth for issue state. Mark the row
         // processed with the spawned session id; 7-day retention sweep GCs
         // it later. Keeping it lets ops grep linear_events by delivery_id
-        // for "what happened to this webhook" debugging.
+        // for "what happened to this webhook" debugging. sessionId is null
+        // when the dispatcher dropped the event (e.g. lost the two-phase
+        // claim race to a sibling); record empty string in that case.
         await this.container.webhookEvents.markProcessed(
           row.deliveryId,
-          sessionId,
+          sessionId ?? "",
           nowMs,
         );
         succeeded++;
@@ -1314,7 +1548,7 @@ export class LinearProvider implements IntegrationProvider {
     nowMs: number;
   }): Promise<boolean> {
     const { rule, publication, installation, accessToken, issue, nowMs } = args;
-    const claimed = await this.container.issueSessions.claim({
+    const claimed = await this.container.linearIssueSessions.claim({
       tenantId: publication.tenantId,
       publicationId: publication.id,
       issueId: issue.id,
@@ -1349,11 +1583,12 @@ export class LinearProvider implements IntegrationProvider {
           },
         },
         initialEvent: sessionEvent,
+        additionalSystemPrompt: LINEAR_ENGAGEMENT_PROMPT,
       });
       sessionId = created.sessionId;
 
       // UPSERT the row with the real session id (replaces the sentinel).
-      await this.container.issueSessions.insert({
+      await this.container.linearIssueSessions.insert({
         tenantId: publication.tenantId,
         publicationId: publication.id,
         issueId: issue.id,
@@ -1364,7 +1599,7 @@ export class LinearProvider implements IntegrationProvider {
     } catch (err) {
       // Roll back the claim so next tick can retry.
       try {
-        await this.container.issueSessions.updateStatus(
+        await this.container.linearIssueSessions.updateStatus(
           publication.id,
           issue.id,
           "failed",

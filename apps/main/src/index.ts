@@ -105,7 +105,7 @@ app.get("/health", (c) => c.json({ status: "ok" }));
 // Lazy import to avoid crashing workerd in test environments
 app.use("/auth/*", authRateLimitMiddleware);
 app.on(["GET", "POST"], "/auth/*", async (c) => {
-  if (!c.env.AUTH_DB) return c.json({ error: "Auth not configured" }, 503);
+  if (!c.env.MAIN_DB) return c.json({ error: "Auth not configured" }, 503);
   const { createAuth } = await import("./auth-config");
   return createAuth(c.env).handler(c.req.raw);
 });
@@ -127,7 +127,7 @@ app.get("/auth-info", (c) => {
 app.use("/v1/*", authMiddleware);
 app.use("/v1/*", rateLimitMiddleware);
 // Resolve the per-tenant D1 database for this request. Phase 1: returns the
-// shared AUTH_DB for every tenant (zero behaviour change). Phase 4: routes
+// shared MAIN_DB for every tenant (zero behaviour change). Phase 4: routes
 // to per-tenant bindings published by the CICD sync script.
 app.use("/v1/*", tenantDbMiddleware);
 // Build the platform-agnostic service container once per request and stash it
@@ -139,7 +139,7 @@ app.use("/v1/*", servicesMiddleware);
 // `@open-managed-agents/http-routes`. Per-request `RouteServices` is
 // resolved off `c.var.services` so the per-tenant D1 binding flows
 // through; CF-only callbacks (model card validation, field-size limits,
-// shard assignment, KV-backed api-key storage, AUTH_DB membership reads)
+// shard assignment, KV-backed api-key storage, MAIN_DB membership reads)
 // get plumbed in here. Each mount is a Hono sub-app whose handler builds
 // a one-shot package app per request — cheap (~µs of route registration)
 // and keeps the per-tenant + per-request callbacks correctly scoped
@@ -149,7 +149,7 @@ app.use("/v1/*", servicesMiddleware);
 // `@open-managed-agents/http-routes`. Per-request `RouteServices` is
 // resolved off `c.var.services` so the per-tenant D1 binding flows
 // through; CF-only callbacks (model card validation, field-size limits,
-// shard assignment, KV-backed api-key storage, AUTH_DB membership reads,
+// shard assignment, KV-backed api-key storage, MAIN_DB membership reads,
 // USAGE_METER + refresh + GitHub fast-path lifecycle hooks) get plumbed
 // in via closures over `c` so they always see the per-request services
 // container without leaking globals.
@@ -226,23 +226,23 @@ const meRoutes = new Hono<{
     services: () => cfRouteServicesFromCtx(ctx),
     authDisabled: false,
     loadUser: async (userId) => {
-      if (!env.AUTH_DB) return null;
-      const r = await env.AUTH_DB
+      if (!env.MAIN_DB) return null;
+      const r = await env.MAIN_DB
         .prepare(`SELECT id, email, name FROM "user" WHERE id = ?`)
         .bind(userId)
         .first<{ id: string; email: string; name: string | null }>();
       return r ?? null;
     },
     loadTenant: async (tenantId) => {
-      if (!env.AUTH_DB) return null;
-      const r = await env.AUTH_DB
+      if (!env.MAIN_DB) return null;
+      const r = await env.MAIN_DB
         .prepare(`SELECT id, name FROM tenant WHERE id = ?`)
         .bind(tenantId)
         .first<{ id: string; name: string }>();
       return r ?? null;
     },
-    listMemberships: (userId) => listMemberships(env.AUTH_DB, userId),
-    hasMembership: (userId, tenantId) => hasMembership(env.AUTH_DB, userId, tenantId),
+    listMemberships: (userId) => listMemberships(env.MAIN_DB, userId),
+    hasMembership: (userId, tenantId) => hasMembership(env.MAIN_DB, userId, tenantId),
     mintApiKey: (input) =>
       mintApiKeyOnStorage(cfApiKeyStorage(services.kv), input),
   });
@@ -259,11 +259,11 @@ const tenantsRoutes = new Hono<{
     services: () => cfRouteServicesFromCtx(ctx),
     createTenantAndMembership: async ({ tenantId, name, userId }) => {
       const now = Math.floor(Date.now() / 1000);
-      await env.AUTH_DB.batch([
-        env.AUTH_DB
+      await env.MAIN_DB.batch([
+        env.MAIN_DB
           .prepare("INSERT INTO tenant (id, name, createdAt, updatedAt) VALUES (?, ?, ?, ?)")
           .bind(tenantId, name, now, now),
-        env.AUTH_DB
+        env.MAIN_DB
           .prepare(
             "INSERT INTO membership (user_id, tenant_id, role, created_at) VALUES (?, ?, 'owner', ?)",
           )
@@ -271,7 +271,7 @@ const tenantsRoutes = new Hono<{
       ]);
     },
     assignShard: async (tenantId) => {
-      const controlPlaneDb = env.ROUTER_DB ?? env.AUTH_DB;
+      const controlPlaneDb = env.ROUTER_DB ?? env.MAIN_DB;
       const shardPool = createCfShardPoolService({ controlPlaneDb });
       const tenantShardDirectory = createCfTenantShardDirectoryService({ controlPlaneDb });
       const pick = await shardPool.pickShardForNewTenant();
@@ -775,84 +775,6 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     );
   }
 
-  /**
-   * Transparent HTTP proxy for cloud agent MCP traffic. Agent's tools.ts
-   * gives AI SDK's MCP HTTP transport a custom fetch that calls
-   * `env.MAIN_MCP.fetch(req)` after stamping three metadata headers:
-   *   - `x-oma-tenant`
-   *   - `x-oma-session`
-   *   - `x-oma-mcp-server`
-   * We resolve the vault credential by `serverName` (mirrors the legacy
-   * `mcpForward` path so inline `authorization_token` still works),
-   * strip the metadata, replace the `authorization` header with the
-   * upstream bearer, and forward to the URL the agent's transport
-   * already knew (request URL is the upstream URL). Body / response
-   * status / response headers (including rotated `Mcp-Session-Id`)
-   * stream through unchanged.
-   *
-   * Vault credentials remain main-only — agent worker only sees the
-   * Response. The SDK's HTTP transport handles Streamable-HTTP session
-   * id rotation, SSE response framing, retries — none of that lives
-   * in this Worker anymore. The hand-rolled BindingMCPTransport that
-   * preceded this dropped session ids and broke session-ful servers
-   * (Notion's tools/list never returned, hanging the whole turn).
-   *
-   * 401-refresh-and-retry: handled by `forwardWithRefresh` (shared with
-   * the legacy mcpForward + HTTP /v1/mcp-proxy paths). When the first
-   * upstream response is 401 AND the resolved credential carries
-   * `mcp_oauth` refresh metadata (refresh_token + token_endpoint), we
-   * hit the token_endpoint, persist the rotated tokens back to D1, and
-   * retry the upstream call once with the fresh bearer. Request body
-   * is buffered up-front so the retry can replay it.
-   */
-  async fetch(request: Request): Promise<Response> {
-    const tenantId = request.headers.get("x-oma-tenant");
-    const sessionId = request.headers.get("x-oma-session");
-    const serverName = request.headers.get("x-oma-mcp-server");
-    if (!tenantId || !sessionId || !serverName) {
-      return new Response(
-        '{"error":"missing x-oma-tenant / x-oma-session / x-oma-mcp-server header"}',
-        { status: 400, headers: { "content-type": "application/json" } },
-      );
-    }
-    const services = await getCfServicesForTenant(this.env, tenantId);
-    const target = await resolveProxyTargetByTenant(
-      this.env,
-      services,
-      tenantId,
-      sessionId,
-      serverName,
-    );
-    if (!target) {
-      return new Response('{"error":"forbidden"}', {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    // Strip routing metadata before forwarding upstream. Everything else
-    // (Mcp-Session-Id, content-type, accept, …) flows through.
-    // forwardWithRefresh injects/replaces Authorization itself.
-    const inboundHeaders = new Headers(request.headers);
-    inboundHeaders.delete("x-oma-tenant");
-    inboundHeaders.delete("x-oma-session");
-    inboundHeaders.delete("x-oma-mcp-server");
-    // Buffer body so forwardWithRefresh can replay on a 401-then-refresh
-    // retry. MCP request bodies are JSON-RPC envelopes — sub-KB in
-    // practice — so the buffering cost is negligible. Response body is
-    // unaffected and still streams back.
-    const body = ["GET", "HEAD"].includes(request.method)
-      ? null
-      : await request.arrayBuffer();
-    return forwardWithRefresh(
-      services,
-      tenantId,
-      target,
-      request.method,
-      inboundHeaders,
-      body,
-      { sessionId, serverName, callerKind: "rpc-mcp" },
-    );
-  }
 
   /**
    * Outbound counterpart to `mcpForward` for sandbox-side HTTPS calls

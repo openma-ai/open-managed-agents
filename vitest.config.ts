@@ -173,7 +173,7 @@ export default defineConfig({
   },
   test: {
     testTimeout: 30000,
-    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**", "**/.pnpm-store/**", "test/e2e/**", "packages/cap/test/**", "packages/session-runtime/test/**"],
+    exclude: ["**/node_modules/**", "**/.git/**", "**/.claude/worktrees/**", "**/.pnpm-store/**", "test/e2e/**", "packages/cap/test/**", "packages/session-runtime/test/**", "apps/console/**"],
     pool: cloudflarePool(cfWorkerOptions),
   },
 });

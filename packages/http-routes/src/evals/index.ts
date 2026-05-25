@@ -108,12 +108,40 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     if (isNaN(limit) || limit < 1) limit = 100;
     if (limit > 1000) limit = 1000;
 
+    // status: enum filter. Whitelist strictly — any unknown value is a 400,
+    // NOT a silent fallback to "all". Allowing arbitrary strings here would
+    // mask client bugs (typo'd "completed " returning every row looks like a
+    // feature). Mirrors the agents route pattern.
+    const statusRaw = c.req.query("status");
+    let status: EvalRunStatus | undefined;
+    if (statusRaw !== undefined) {
+      if (
+        statusRaw === "pending" ||
+        statusRaw === "running" ||
+        statusRaw === "completed" ||
+        statusRaw === "failed"
+      ) {
+        status = statusRaw;
+      } else {
+        return c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_status",
+              message: `Invalid status '${statusRaw}'; expected one of pending|running|completed|failed.`,
+            },
+          },
+          400,
+        );
+      }
+    }
+
     const runs = await deps.evals.list({
       tenantId: t,
       limit,
       agentId: c.req.query("agent_id") || undefined,
       environmentId: c.req.query("environment_id") || undefined,
-      status: c.req.query("status") as EvalRunStatus | undefined,
+      status,
     });
 
     return c.json({ data: runs.map(rowToApi) });

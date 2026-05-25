@@ -1,6 +1,15 @@
+import { and, asc, desc, eq, gte, isNull, like, lt, ne, or, sql } from "drizzle-orm";
 import {
-  cursorBinds,
-  cursorWhereSql,
+  asBuilder,
+  atomicWrite,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { model_cards } from "@open-managed-agents/db-schema/cf-auth";
+import {
   escapeLikePattern,
   fetchN,
   trimPage,
@@ -17,55 +26,52 @@ import type {
   NewModelCardInput,
 } from "../ports";
 import type { ModelCardRow } from "../types";
-import type { SqlClient, SqlStatement } from "@open-managed-agents/sql-client";
+
 
 /**
- * SqlClient-backed implementation of {@link ModelCardRepo}. Owns the SQL against
+ * Drizzle implementation of {@link ModelCardRepo}. Owns the queries against
  * the `model_cards` table defined in apps/main/migrations/0013_model_cards_table.sql.
  *
  * Atomicity:
- *   - insert(isDefault=true) uses D1.batch to clear-then-insert so the partial
+ *   - insert(isDefault=true) clears-then-inserts atomically so the partial
  *     UNIQUE(tenant_id) WHERE is_default = 1 invariant holds without a
- *     read-then-write race.
- *   - update with isDefault=true uses D1.batch the same way.
- *   - setDefault uses D1.batch (clear all + flip target).
+ *     read-then-write race. D1 uses batch; PG uses transaction.
+ *   - update with isDefault=true uses the same atomic clear-then-update.
+ *   - setDefault uses the same atomic clear-then-flip.
  *
  * The api_key_cipher is treated as an opaque blob — the service handles
  * encryption via the Crypto port before passing it in.
  */
 export class SqlModelCardRepo implements ModelCardRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewModelCardInput): Promise<ModelCardRow> {
-    const insertStmt = this.db
-      .prepare(
-        `INSERT INTO model_cards
-           (id, tenant_id, model_id, provider, model, base_url,
-            custom_headers, api_key_cipher, api_key_preview, is_default,
-            created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        input.id,
-        input.tenantId,
-        input.modelId,
-        input.provider,
-        input.model,
-        input.baseUrl,
+    const insertQ = this.db.insert(model_cards).values({
+      id: input.id,
+      tenant_id: input.tenantId,
+      model_id: input.modelId,
+      provider: input.provider,
+      model: input.model,
+      base_url: input.baseUrl,
+      custom_headers:
         input.customHeaders !== null ? JSON.stringify(input.customHeaders) : null,
-        input.apiKeyCipher,
-        input.apiKeyPreview,
-        input.isDefault ? 1 : 0,
-        input.createdAt,
-      );
+      api_key_cipher: input.apiKeyCipher,
+      api_key_preview: input.apiKeyPreview,
+      is_default: input.isDefault ? 1 : 0,
+      created_at: input.createdAt,
+    });
 
     try {
       if (input.isDefault) {
         // Atomic clear-then-insert. Order matters — clear the previous default
         // first so the partial UNIQUE doesn't reject the insert.
-        await this.db.batch([this.clearDefaultsStmt(input.tenantId, input.createdAt), insertStmt]);
+        const clearQ = this.clearDefaultsQuery(input.tenantId, input.createdAt);
+        await atomicWrite(this.db, [clearQ, insertQ]);
       } else {
-        await insertStmt.run();
+        await runOnce(insertQ);
       }
     } catch (err) {
       throw mapInsertError(err, input.modelId);
@@ -76,32 +82,26 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async get(tenantId: string, cardId: string): Promise<ModelCardRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, model_id, provider, model, base_url,
-                custom_headers, api_key_preview, is_default,
-                created_at, updated_at, archived_at
-         FROM model_cards
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(cardId, tenantId)
-      .first<DbModelCard>();
+    const row = await getOne<typeof model_cards.$inferSelect>(
+      this.db
+        .select()
+        .from(model_cards)
+        .where(
+          and(eq(model_cards.id, cardId), eq(model_cards.tenant_id, tenantId)),
+        ),
+    );
     return row ? toRow(row) : null;
   }
 
   async list(tenantId: string): Promise<ModelCardRow[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT id, tenant_id, model_id, provider, model, base_url,
-                custom_headers, api_key_preview, is_default,
-                created_at, updated_at, archived_at
-         FROM model_cards
-         WHERE tenant_id = ?
-         ORDER BY created_at ASC`,
-      )
-      .bind(tenantId)
-      .all<DbModelCard>();
-    return (result.results ?? []).map(toRow);
+    const rows = await getAll<typeof model_cards.$inferSelect>(
+      this.db
+        .select()
+        .from(model_cards)
+        .where(eq(model_cards.tenant_id, tenantId))
+        .orderBy(asc(model_cards.created_at)),
+    );
+    return rows.map(toRow);
   }
 
   async listPage(
@@ -110,60 +110,87 @@ export class SqlModelCardRepo implements ModelCardRepo {
       limit: number;
       after?: PageCursor;
       q?: string;
+      provider?: string;
+      createdAfter?: number;
+      createdBefore?: number;
     },
   ): Promise<{ items: ModelCardRow[]; hasMore: boolean }> {
-    // Match either the user-facing handle (model_id) OR the wire-level
-    // model string — users sometimes search for the underlying provider
-    // name (e.g. "claude-sonnet") rather than their own handle.
-    const qClause = opts.q
-      ? `AND (model_id LIKE ? ESCAPE '\\' OR model LIKE ? ESCAPE '\\')`
-      : "";
-    const sql =
-      `SELECT id, tenant_id, model_id, provider, model, base_url, ` +
-      `custom_headers, api_key_preview, is_default, ` +
-      `created_at, updated_at, archived_at FROM model_cards ` +
-      `WHERE tenant_id = ? ${qClause} ${cursorWhereSql(opts.after)} ` +
-      `ORDER BY created_at DESC, id DESC LIMIT ?`;
-    const binds: unknown[] = [tenantId];
+    const conds = [eq(model_cards.tenant_id, tenantId)];
     if (opts.q) {
+      // Match either the user-facing handle (model_id) OR the wire-level
+      // model string — users sometimes search for the underlying provider
+      // name (e.g. "claude-sonnet") rather than their own handle.
       const pattern = `%${escapeLikePattern(opts.q)}%`;
-      binds.push(pattern, pattern);
+      conds.push(
+        or(
+          like(model_cards.model_id, pattern),
+          like(model_cards.model, pattern),
+        )!,
+      );
     }
-    binds.push(...cursorBinds(opts.after), fetchN(opts.limit));
-    const result = await this.db.prepare(sql).bind(...binds).all<DbModelCard>();
-    return trimPage((result.results ?? []).map(toRow), opts.limit);
+    if (opts.provider !== undefined) {
+      conds.push(eq(model_cards.provider, opts.provider));
+    }
+    if (opts.createdAfter !== undefined)
+      conds.push(gte(model_cards.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conds.push(lt(model_cards.created_at, opts.createdBefore));
+    if (opts.after) {
+      conds.push(
+        or(
+          lt(model_cards.created_at, opts.after.createdAt),
+          and(
+            eq(model_cards.created_at, opts.after.createdAt),
+            lt(model_cards.id, opts.after.id),
+          ),
+        )!,
+      );
+    }
+    const rows = await getAll<typeof model_cards.$inferSelect>(
+      this.db
+        .select()
+        .from(model_cards)
+        .where(and(...conds))
+        .orderBy(desc(model_cards.created_at), desc(model_cards.id))
+        .limit(fetchN(opts.limit)),
+    );
+    return trimPage(rows.map(toRow), opts.limit);
   }
 
   async findByModelId(
     tenantId: string,
     modelId: string,
   ): Promise<ModelCardRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, model_id, provider, model, base_url,
-                custom_headers, api_key_preview, is_default,
-                created_at, updated_at, archived_at
-         FROM model_cards
-         WHERE tenant_id = ? AND model_id = ? AND archived_at IS NULL
-         LIMIT 1`,
-      )
-      .bind(tenantId, modelId)
-      .first<DbModelCard>();
+    const row = await getOne<typeof model_cards.$inferSelect>(
+      this.db
+        .select()
+        .from(model_cards)
+        .where(
+          and(
+            eq(model_cards.tenant_id, tenantId),
+            eq(model_cards.model_id, modelId),
+            isNull(model_cards.archived_at),
+          ),
+        )
+        .limit(1),
+    );
     return row ? toRow(row) : null;
   }
 
   async getDefault(tenantId: string): Promise<ModelCardRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, model_id, provider, model, base_url,
-                custom_headers, api_key_preview, is_default,
-                created_at, updated_at, archived_at
-         FROM model_cards
-         WHERE tenant_id = ? AND is_default = 1 AND archived_at IS NULL
-         LIMIT 1`,
-      )
-      .bind(tenantId)
-      .first<DbModelCard>();
+    const row = await getOne<typeof model_cards.$inferSelect>(
+      this.db
+        .select()
+        .from(model_cards)
+        .where(
+          and(
+            eq(model_cards.tenant_id, tenantId),
+            eq(model_cards.is_default, 1),
+            isNull(model_cards.archived_at),
+          ),
+        )
+        .limit(1),
+    );
     return row ? toRow(row) : null;
   }
 
@@ -172,63 +199,40 @@ export class SqlModelCardRepo implements ModelCardRepo {
     cardId: string,
     update: ModelCardUpdateFields,
   ): Promise<ModelCardRow> {
-    const sets: string[] = [];
-    const binds: unknown[] = [];
-    if (update.provider !== undefined) {
-      sets.push("provider = ?");
-      binds.push(update.provider);
-    }
-    if (update.modelId !== undefined) {
-      sets.push("model_id = ?");
-      binds.push(update.modelId);
-    }
-    if (update.model !== undefined) {
-      sets.push("model = ?");
-      binds.push(update.model);
-    }
-    if (update.baseUrl !== undefined) {
-      sets.push("base_url = ?");
-      binds.push(update.baseUrl);
-    }
-    if (update.customHeaders !== undefined) {
-      sets.push("custom_headers = ?");
-      binds.push(update.customHeaders !== null ? JSON.stringify(update.customHeaders) : null);
-    }
-    if (update.apiKeyCipher !== undefined) {
-      sets.push("api_key_cipher = ?");
-      binds.push(update.apiKeyCipher);
-    }
-    if (update.apiKeyPreview !== undefined) {
-      sets.push("api_key_preview = ?");
-      binds.push(update.apiKeyPreview);
-    }
-    if (update.isDefault !== undefined) {
-      sets.push("is_default = ?");
-      binds.push(update.isDefault ? 1 : 0);
-    }
-    sets.push("updated_at = ?");
-    binds.push(update.updatedAt);
-    binds.push(cardId, tenantId);
+    // Pre-check existence — Drizzle's run() result shape is dialect-specific,
+    // so we read first to throw a domain error if the row is missing.
+    const existing = await this.get(tenantId, cardId);
+    if (!existing) throw new ModelCardNotFoundError();
 
-    const updateStmt = this.db
-      .prepare(
-        `UPDATE model_cards SET ${sets.join(", ")}
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(...binds);
+    const set: Record<string, unknown> = { updated_at: update.updatedAt };
+    if (update.provider !== undefined) set.provider = update.provider;
+    if (update.modelId !== undefined) set.model_id = update.modelId;
+    if (update.model !== undefined) set.model = update.model;
+    if (update.baseUrl !== undefined) set.base_url = update.baseUrl;
+    if (update.customHeaders !== undefined) {
+      set.custom_headers =
+        update.customHeaders !== null ? JSON.stringify(update.customHeaders) : null;
+    }
+    if (update.apiKeyCipher !== undefined) set.api_key_cipher = update.apiKeyCipher;
+    if (update.apiKeyPreview !== undefined) set.api_key_preview = update.apiKeyPreview;
+    if (update.isDefault !== undefined) set.is_default = update.isDefault ? 1 : 0;
+
+    const updateQ = this.db
+      .update(model_cards)
+      .set(set)
+      .where(
+        and(eq(model_cards.id, cardId), eq(model_cards.tenant_id, tenantId)),
+      );
 
     try {
       if (update.isDefault === true) {
         // Atomic: clear other defaults THEN apply the patch (which sets
         // is_default = 1 for this row). The partial UNIQUE never sees two
         // defaults at once.
-        await this.db.batch([
-          this.clearDefaultsExceptStmt(tenantId, cardId, update.updatedAt),
-          updateStmt,
-        ]);
+        const clearQ = this.clearDefaultsExceptQuery(tenantId, cardId, update.updatedAt);
+        await atomicWrite(this.db, [clearQ, updateQ]);
       } else {
-        const result = await updateStmt.run();
-        if (!result.meta?.changes) throw new ModelCardNotFoundError();
+        await runOnce(updateQ);
       }
     } catch (err) {
       throw mapInsertError(err, update.modelId ?? "");
@@ -239,10 +243,13 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async delete(tenantId: string, cardId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM model_cards WHERE id = ? AND tenant_id = ?`)
-      .bind(cardId, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(model_cards)
+        .where(
+          and(eq(model_cards.id, cardId), eq(model_cards.tenant_id, tenantId)),
+        ),
+    );
   }
 
   async setDefault(
@@ -255,15 +262,15 @@ export class SqlModelCardRepo implements ModelCardRepo {
     const existing = await this.get(tenantId, cardId);
     if (!existing) throw new ModelCardNotFoundError();
 
-    await this.db.batch([
-      this.clearDefaultsExceptStmt(tenantId, cardId, updatedAt),
-      this.db
-        .prepare(
-          `UPDATE model_cards SET is_default = 1, updated_at = ?
-           WHERE id = ? AND tenant_id = ?`,
-        )
-        .bind(updatedAt, cardId, tenantId),
-    ]);
+    const clearQ = this.clearDefaultsExceptQuery(tenantId, cardId, updatedAt);
+    const flipQ = this.db
+      .update(model_cards)
+      .set({ is_default: 1, updated_at: updatedAt })
+      .where(
+        and(eq(model_cards.id, cardId), eq(model_cards.tenant_id, tenantId)),
+      );
+
+    await atomicWrite(this.db, [clearQ, flipQ]);
     const row = await this.get(tenantId, cardId);
     if (!row) throw new ModelCardNotFoundError();
     return row;
@@ -273,61 +280,52 @@ export class SqlModelCardRepo implements ModelCardRepo {
     tenantId: string,
     cardId: string,
   ): Promise<string | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT api_key_cipher FROM model_cards WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(cardId, tenantId)
-      .first<{ api_key_cipher: string }>();
+    const row = await getOne<{ api_key_cipher: string }>(
+      this.db
+        .select({ api_key_cipher: model_cards.api_key_cipher })
+        .from(model_cards)
+        .where(
+          and(eq(model_cards.id, cardId), eq(model_cards.tenant_id, tenantId)),
+        ),
+    );
     return row?.api_key_cipher ?? null;
   }
 
-  // ── batch helper statements ──
+  // ── batch helper queries ──
 
   /** UPDATE that flips every is_default row in the tenant to 0. */
-  private clearDefaultsStmt(
-    tenantId: string,
-    updatedAt: number,
-  ): SqlStatement {
+  private clearDefaultsQuery(tenantId: string, updatedAt: number) {
     return this.db
-      .prepare(
-        `UPDATE model_cards SET is_default = 0, updated_at = ?
-         WHERE tenant_id = ? AND is_default = 1`,
-      )
-      .bind(updatedAt, tenantId);
+      .update(model_cards)
+      .set({ is_default: 0, updated_at: updatedAt })
+      .where(
+        and(
+          eq(model_cards.tenant_id, tenantId),
+          eq(model_cards.is_default, 1),
+        ),
+      );
   }
 
-  /** Same as clearDefaultsStmt but skips the row that's about to be flipped on. */
-  private clearDefaultsExceptStmt(
+  /** Same as clearDefaultsQuery but skips the row that's about to be flipped on. */
+  private clearDefaultsExceptQuery(
     tenantId: string,
     exceptCardId: string,
     updatedAt: number,
-  ): SqlStatement {
+  ) {
     return this.db
-      .prepare(
-        `UPDATE model_cards SET is_default = 0, updated_at = ?
-         WHERE tenant_id = ? AND is_default = 1 AND id != ?`,
-      )
-      .bind(updatedAt, tenantId, exceptCardId);
+      .update(model_cards)
+      .set({ is_default: 0, updated_at: updatedAt })
+      .where(
+        and(
+          eq(model_cards.tenant_id, tenantId),
+          eq(model_cards.is_default, 1),
+          ne(model_cards.id, exceptCardId),
+        ),
+      );
   }
 }
 
-interface DbModelCard {
-  id: string;
-  tenant_id: string;
-  model_id: string;
-  provider: string;
-  model: string;
-  base_url: string | null;
-  custom_headers: string | null; // JSON
-  api_key_preview: string;
-  is_default: number; // SQLite stores BOOLEAN as INTEGER
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-}
-
-function toRow(r: DbModelCard): ModelCardRow {
+function toRow(r: typeof model_cards.$inferSelect): ModelCardRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,

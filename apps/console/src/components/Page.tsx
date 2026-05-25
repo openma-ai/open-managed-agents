@@ -1,23 +1,34 @@
 import type { ReactNode } from "react";
 
 /**
- * Standard scrollable page wrapper. Replaces the repeated
- * `flex-1 overflow-y-auto px-4 py-4 md:p-8 lg:p-10` (and the desktop-only
- * `p-8 lg:p-10` variant some pages drifted to). Mobile gets sane padding,
- * desktop gets the fuller breathing room — single place to tune.
+ * Standard page wrapper. Optional `header` slot renders before the
+ * padded content so a sticky `PageHeader` can pin to the top of the
+ * scroll context (`<SidebarInset>` → body scroll) without being offset
+ * by Page's own padding.
  *
- * Use for content/detail/list pages. Pages with custom chrome (chat-style
- * shells like SessionDetail) keep their own layout.
+ * Padding is fixed (no responsive scaling) so the left edge stays
+ * aligned with the SidebarTrigger icon glyph axis (12 px / `pl-3`) at
+ * every viewport. PageHeader owns its own top padding (`pt-3`), so the
+ * content area below adds only `pb-4` — no `pt-*` here or the
+ * header→content gap would double up.
+ *
+ * Use for content/detail/list pages. Pages with custom chrome (chat-
+ * style shells like SessionDetail) keep their own layout.
  */
 interface PageProps {
   children: ReactNode;
+  /** Sticky page header — usually a `<PageHeader />`. Rendered before
+   *  the padded content area so it can sit flush against the top of the
+   *  scroll context. */
+  header?: ReactNode;
   className?: string;
 }
 
-export function Page({ children, className = "" }: PageProps) {
+export function Page({ header, children, className = "" }: PageProps) {
   return (
-    <div className={`flex-1 overflow-y-auto px-4 py-4 md:p-8 lg:p-10 ${className}`.trim()}>
-      {children}
-    </div>
+    <>
+      {header}
+      <div className={`pl-3 pr-4 pb-4 ${className}`.trim()}>{children}</div>
+    </>
   );
 }

@@ -53,8 +53,6 @@ You need your own Linear OAuth app first. See [Self-host → OAuth Apps → Line
 
 </Steps>
 
-The agent can now be triggered by PR comments or issue assignments.
-
 <Aside type="caution" title="Repo scope">
   By default, agents only act on repos you explicitly grant. Adding more repos later requires re-authorizing the GitHub App.
 </Aside>
@@ -67,28 +65,110 @@ You need your own GitHub App first. See [Self-host → OAuth Apps → GitHub](/s
   </TabItem>
 </Tabs>
 
+### How users engage the GitHub bot
+
+Two trigger paths, in priority order:
+
+**Label-based engagement (primary).** On install, OMA auto-creates a label
+named after your bot's persona (lowercased + slugified — e.g. persona "Coder"
+→ label `coder`) in every selected repo. To engage the bot on any issue or PR,
+**add this label**. Once labeled, the bot wakes for every whitelisted activity
+on that issue/PR — no need to re-mention for follow-ups:
+
+| Source                          | Wakes the bot? |
+| ------------------------------- | -------------- |
+| `issues.opened`                 | yes (if labeled at create) |
+| `issues.labeled` (trigger label)| yes (subscribe) |
+| `issues.unlabeled` (trigger label) | unsubscribe — bot stops responding |
+| `issues.edited` / `reopened`    | yes |
+| Other issue actions (assignee, milestone, lock, ...) | no |
+| `issue_comment.created`         | yes |
+| `pull_request.opened` / `labeled` (trigger) | yes |
+| `pull_request.synchronize` (new commits)    | yes |
+| `pull_request.ready_for_review` | yes |
+| `pull_request.edited` / `reopened` | yes |
+| Other PR actions                | no |
+| `pull_request_review.submitted` | yes |
+| `pull_request_review_comment.created` (incl. inline replies) | yes |
+
+If you delete the label from a repo, OMA will not recreate it; the bot will
+stop responding in that repo until the label is re-added.
+
+**`@`-mention fallback.** Type `@<bot-slug>[bot]` (or `@<bot-slug>`) anywhere
+in an issue body, PR body, comment, or inline review comment. GitHub doesn't
+autocomplete bot accounts in its `@` picker, so type the full handle as
+plain text — the parser still detects it. Each `@`-mention starts an
+ad-hoc engagement equivalent to having added the label.
+
+<Aside type="note" title="Why two paths?">
+  GitHub's `@`-mention autocomplete excludes Bot-type accounts. If users
+  rely only on the autocomplete dropdown they won't discover the bot. The
+  trigger label is first-class GitHub UI (autocomplete in the label picker,
+  visible at-a-glance, filterable in dashboards). The `@`-mention fallback
+  exists for muscle memory and ad-hoc one-off engagement.
+</Aside>
+
+
 ## Connect Slack
+
+Slack installs are **per-agent dedicated Slack Apps** — each publication owns its own Slack App entry on `api.slack.com`, with its own OAuth credentials and bot user. This keeps tenants isolated (your bot lives in its own App, not a shared marketplace one) and lets each publication scope independently.
 
 <Tabs>
   <TabItem label="Hosted (openma.dev)">
 
 <Steps>
 
-1. **Integrations → Slack → Install**.
-2. Pick the Slack workspace and the channels you want the agent to appear in.
-3. Pick which agent serves this workspace.
+1. **Integrations → Slack → Publish agent**. Pick the agent + environment + persona name. Click **Continue**. The Console creates a publication shell on the server and surfaces the callback URLs you'll need.
+2. Click **Create Slack app from manifest** — opens `api.slack.com/apps` with a pre-filled manifest. The OAuth redirect URL and Events Request URL are baked in (both keyed on your publication id, so refresh / retry doesn't break them).
+3. From the new Slack App's **Basic Information** page, copy **Client ID**, **Client Secret**, and **Signing Secret** into the Console's step 2 form. Click **Save credentials**.
+4. Click **Install to workspace**. Slack prompts the workspace admin to authorize; on success you're redirected back to the Console with the publication marked **Live**.
+5. Add the bot to a channel (`/invite @your-bot`) — it'll introduce itself, then respond to `@mentions`, DMs, and reactions per the table below.
 
 </Steps>
 
-`@mention` the agent or DM it; both create sessions. Threaded replies stay in the same session.
+<Aside type="tip">
+**If anything fails mid-install** — D1 timeout, network glitch, you closed the tab — the publication shell stays on the server in `pending_setup` / `credentials_filled` state. Re-open **Integrations → Slack**: the in-progress install shows up at the top of the list with a **Resume install** button. No ghost rows on retry.
+</Aside>
 
   </TabItem>
   <TabItem label="Self-host">
 
-You need your own Slack OAuth app. See [Self-host → OAuth Apps → Slack](/self-host/oauth-apps/#slack).
+The publication-first install flow is the same — you point the wizard at your self-host gateway. The wizard's Step 2 manifest links to `api.slack.com/apps` regardless of where openma is running (Slack's app config is always on Slack's side). See [Self-host → OAuth Apps → Slack](/self-host/oauth-apps/#slack) for the manifest-flow caveats.
 
   </TabItem>
 </Tabs>
+
+### What events the bot receives
+
+The bot subscribes to a fixed event set at install time (baked into the manifest). The platform classifies each incoming event into a **dispatch intent**, then either creates / resumes a session, updates metadata, or drops the event. Per-channel sessions are the default: one running session per `(publication, channel)`, with all events in that channel routing to the same session id.
+
+| Slack event | Sessions table effect | Agent sees |
+|---|---|---|
+| `app_mention` (`@bot ...`) | resume or lazy-create channel session | `<oma_signal kind="direct_invocation">` with channel + thread_ts + the user's text |
+| `message` in DM (`channel_type == "im"`) | same as above | same as above (DMs are direct invocations by definition) |
+| `message` in channel where bot is a member, **top-level** | arm a debounce window; resume session with `channel_scan_armed` signal | `<oma_signal kind="channel_scan_armed">` — the agent schedules a wakeup to scan recent history after the debounce window |
+| `message` in channel where bot is a member, **threaded reply** in a thread the bot is in | resume channel session | `<oma_signal kind="direct_invocation">` |
+| `assistant_thread_started` (user opened the AI pane on the bot) | resume or lazy-create channel session | `<oma_signal kind="direct_invocation">` — the pane is the conversational surface, treat as direct |
+| `member_joined_channel` for the **bot itself** (you ran `/invite @bot`) | lazy-create channel session | `<oma_signal kind="joined_channel">` — agent does `conversations.info` + `conversations.history` then decides whether to post a brief intro |
+| `member_joined_channel` for someone else | dropped | nothing (other people joining isn't the bot's business) |
+| `member_left_channel` for the **bot itself** (someone `/kick`'d the bot) | mark channel session closed | `<oma_signal kind="session_closed">` (final wakeup; agent cancels its scheduled wakeups then ends turn) |
+| `channel_archive` (channel archived while bot is in it) | mark channel session closed | `<oma_signal kind="session_closed">` |
+| `channel_unarchive` (channel restored) | reopen the prior session | `<oma_signal kind="joined_channel">` with `reopened=true` |
+| `channel_rename` | update the cached channel name on the scope row | nothing — agent is not woken |
+| `reaction_added` / `reaction_removed` **on one of the bot's own messages** | resume channel session | `<oma_signal kind="reaction_on_bot_message">` with reaction emoji + item ts |
+| `reaction_added` / `reaction_removed` on anyone else's message | dropped | nothing |
+| `tokens_revoked`, `app_uninstalled` | mark all channel sessions closed | each session gets a final `session_closed` signal |
+
+The signal envelope (`<oma_signal>`) carries the variable bits per event (channel id, thread ts, user text, etc.). The stable protocol vocabulary — what each signal kind means, when to post and when to stay silent, which tool name to call to reply — lives in the agent's system prompt, injected once at session creation. This keeps prompt-cache locality and means the agent never sees the same boilerplate twice in a single session.
+
+### How the agent replies
+
+Every outbound message goes through the typed MCP tool **`mcp__slack__chat_postMessage`** (via Slack's hosted MCP server at `mcp.slack.com`). The agent never shells out to `curl https://slack.com/api/...` when the typed tool is available — that's a fallback used only when Slack's MCP toggle is off for the App.
+
+For `direct_invocation`: the agent must reply, even with a one-line ack. Silence is interpreted as "bot is broken." Long-running work gets an ack reply plus a `scheduleWakeup` to follow up later.
+
+For `channel_scan_armed`: the agent does NOT post directly. It schedules a wakeup (delay = debounce window from the signal envelope, prompt = `scan_channel <channel_id>`), ends the turn silently. When the wakeup fires, the agent calls `mcp__slack__conversations_history(oldest=<last scan timestamp>)` and decides whether to post, react, or stay silent.
+
 
 ## Publication scopes
 

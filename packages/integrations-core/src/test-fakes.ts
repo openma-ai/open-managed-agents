@@ -22,6 +22,7 @@ import type {
   DispatchRuleRepo,
   LinearActionableEvent,
   LinearEventStore,
+  LinearPublicationRepo,
   GitHubAppCredentials,
   GitHubAppRepo,
   HmacVerifier,
@@ -32,20 +33,19 @@ import type {
   Installation,
   InstallationRepo,
   InstallKind,
-  IssueSession,
-  IssueSessionRepo,
-  IssueSessionStatus,
   JwtSigner,
   NewAppCredentials,
   NewDispatchRule,
   NewGitHubAppCredentials,
   NewInstallation,
   NewPublication,
+  NewPublicationShell,
   NewSetupLink,
   Persona,
   ProviderId,
   Publication,
-  PublicationRepo,
+  PublicationCredentials,
+  PublicationCredentialsInput,
   PublicationStatus,
   SessionCreator,
   SessionEventInput,
@@ -319,8 +319,9 @@ export class InMemoryInstallationRepo implements InstallationRepo {
   }
 }
 
-export class InMemoryPublicationRepo implements PublicationRepo {
+export class InMemoryPublicationRepo implements LinearPublicationRepo {
   private rows = new Map<string, Publication>();
+  private credentials = new Map<string, PublicationCredentials>();
   private counter = 0;
 
   constructor(private clock: Clock = new FakeClock()) {}
@@ -342,6 +343,18 @@ export class InMemoryPublicationRepo implements PublicationRepo {
     );
   }
 
+  async listPendingByUser(userId: string): Promise<readonly Publication[]> {
+    return [...this.rows.values()]
+      .filter(
+        (r) =>
+          r.userId === userId &&
+          (r.status === "pending_setup" ||
+            r.status === "credentials_filled" ||
+            r.status === "awaiting_install"),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   async insert(row: NewPublication): Promise<Publication> {
     this.counter += 1;
     const id = `pub_${this.counter}`;
@@ -353,6 +366,71 @@ export class InMemoryPublicationRepo implements PublicationRepo {
     };
     this.rows.set(id, pub);
     return pub;
+  }
+
+  async insertShell(row: NewPublicationShell): Promise<Publication> {
+    this.counter += 1;
+    const id = `pub_${this.counter}`;
+    const pub: Publication = {
+      id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      agentId: row.agentId,
+      installationId: "", // sentinel — filled by bindInstallation
+      environmentId: row.environmentId,
+      mode: row.mode,
+      status: "pending_setup",
+      persona: row.persona,
+      capabilities: row.capabilities,
+      sessionGranularity: row.sessionGranularity,
+      createdAt: this.clock.nowMs(),
+      unpublishedAt: null,
+    };
+    this.rows.set(id, pub);
+    return pub;
+  }
+
+  async setCredentials(
+    id: string,
+    input: PublicationCredentialsInput,
+  ): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.credentials.set(id, {
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      webhookSecret: input.webhookSecret,
+      signingSecret: input.signingSecret ?? null,
+    });
+    this.rows.set(id, { ...row, status: "awaiting_install" });
+  }
+
+  async getCredentials(id: string): Promise<PublicationCredentials | null> {
+    return this.credentials.get(id) ?? null;
+  }
+
+  async getWebhookSecret(id: string): Promise<string | null> {
+    return this.credentials.get(id)?.webhookSecret ?? null;
+  }
+
+  async getClientSecret(id: string): Promise<string | null> {
+    return this.credentials.get(id)?.clientSecret ?? null;
+  }
+
+  async bindInstallation(
+    id: string,
+    args: { installationId: string; vaultId: string | null },
+  ): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.rows.set(id, {
+      ...row,
+      installationId: args.installationId,
+      status: "live",
+    });
+    // vaultId is intentionally not surfaced on the Publication domain shape
+    // (it lives on the linear_publications row + via Installation). The
+    // in-memory fake doesn't need to track it separately.
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {
@@ -672,6 +750,9 @@ function toActionableFake(row: {
   };
 }
 
+/** Mirrors the cf / node adapter constant — keep in sync. */
+const PENDING_STALE_AFTER_MS = 60_000;
+
 export class InMemorySessionScopeRepo implements SessionScopeRepo {
   private rows = new Map<string, SessionScope>();
 
@@ -700,63 +781,69 @@ export class InMemorySessionScopeRepo implements SessionScopeRepo {
     if (row) this.rows.set(k, { ...row, status });
   }
 
+  async reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    now: number,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row) return false;
+    if (row.status === "active") return false;
+    // Pending claims are alive unless they've gone stale.
+    if (row.status === "pending" && now - row.createdAt < PENDING_STALE_AFTER_MS) {
+      return false;
+    }
+    this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
+    return true;
+  }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean> {
+    const k = this.key(args.publicationId, args.scopeKey);
+    if (this.rows.has(k)) return false;
+    this.rows.set(k, {
+      tenantId: args.tenantId,
+      publicationId: args.publicationId,
+      scopeKey: args.scopeKey,
+      sessionId: args.placeholderSessionId,
+      status: "pending",
+      createdAt: args.now,
+      pendingScanUntil: null,
+      lastScanAt: null,
+      channelName: null,
+    });
+    return true;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row || row.status !== "pending") return false;
+    this.rows.set(k, { ...row, sessionId, status: "active" });
+    return true;
+  }
+
+  async releasePending(publicationId: string, scopeKey: string): Promise<void> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (row && row.status === "pending") this.rows.delete(k);
+  }
+
   async listActive(publicationId: string): Promise<readonly SessionScope[]> {
     return [...this.rows.values()].filter(
       (r) => r.publicationId === publicationId && r.status === "active",
     );
-  }
-}
-
-export class InMemoryIssueSessionRepo implements IssueSessionRepo {
-  private rows = new Map<string, IssueSession>();
-
-  private key(publicationId: string, issueId: string): string {
-    return `${publicationId}:${issueId}`;
-  }
-
-  async getByIssue(publicationId: string, issueId: string): Promise<IssueSession | null> {
-    return this.rows.get(this.key(publicationId, issueId)) ?? null;
-  }
-
-  async insert(row: IssueSession): Promise<void> {
-    this.rows.set(this.key(row.publicationId, row.issueId), row);
-  }
-
-  async updateStatus(
-    publicationId: string,
-    issueId: string,
-    status: IssueSessionStatus,
-  ): Promise<void> {
-    const k = this.key(publicationId, issueId);
-    const row = this.rows.get(k);
-    if (row) this.rows.set(k, { ...row, status });
-  }
-
-  async listActive(publicationId: string): Promise<readonly IssueSession[]> {
-    return [...this.rows.values()].filter(
-      (r) => r.publicationId === publicationId && r.status === "active",
-    );
-  }
-
-  async claim(input: {
-    tenantId: string;
-    publicationId: string;
-    issueId: string;
-    sessionId: SessionId;
-    nowMs: number;
-  }): Promise<boolean> {
-    const k = this.key(input.publicationId, input.issueId);
-    const existing = this.rows.get(k);
-    if (existing && existing.status === "active") return false;
-    this.rows.set(k, {
-      tenantId: input.tenantId,
-      publicationId: input.publicationId,
-      issueId: input.issueId,
-      sessionId: input.sessionId,
-      status: "active",
-      createdAt: input.nowMs,
-    });
-    return true;
   }
 }
 
@@ -839,7 +926,6 @@ export interface FakeContainer {
   apps: InMemoryAppRepo;
   githubApps: InMemoryGitHubAppRepo;
   webhookEvents: InMemoryWebhookEventStore;
-  issueSessions: InMemoryIssueSessionRepo;
   sessionScopes: InMemorySessionScopeRepo;
   setupLinks: InMemorySetupLinkRepo;
   dispatchRules: InMemoryDispatchRuleRepo;
@@ -862,7 +948,6 @@ export function buildFakeContainer(): FakeContainer {
     apps: new InMemoryAppRepo(clock),
     githubApps: new InMemoryGitHubAppRepo(clock),
     webhookEvents: new InMemoryWebhookEventStore(),
-    issueSessions: new InMemoryIssueSessionRepo(),
     sessionScopes: new InMemorySessionScopeRepo(),
     setupLinks: new InMemorySetupLinkRepo(),
     dispatchRules: new InMemoryDispatchRuleRepo(clock),

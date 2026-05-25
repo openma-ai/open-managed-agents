@@ -91,6 +91,9 @@ export class InMemoryModelCardRepo implements ModelCardRepo {
       limit: number;
       after?: import("@open-managed-agents/shared").PageCursor;
       q?: string;
+      provider?: string;
+      createdAfter?: number;
+      createdBefore?: number;
     },
   ): Promise<{ items: ModelCardRow[]; hasMore: boolean }> {
     const qLower = opts.q?.toLowerCase();
@@ -101,6 +104,13 @@ export class InMemoryModelCardRepo implements ModelCardRepo {
           ? (c.model_id ?? "").toLowerCase().includes(qLower) ||
             (c.model ?? "").toLowerCase().includes(qLower)
           : true,
+      )
+      .filter((c) => (opts.provider === undefined ? true : c.provider === opts.provider))
+      .filter((c) =>
+        opts.createdAfter === undefined ? true : c.created_at >= opts.createdAfter,
+      )
+      .filter((c) =>
+        opts.createdBefore === undefined ? true : c.created_at < opts.createdBefore,
       )
       .sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
     if (opts.after) {

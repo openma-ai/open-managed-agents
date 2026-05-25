@@ -1,3 +1,13 @@
+import { eq, lt } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { slack_setup_links } from "@open-managed-agents/db-schema/cf-integrations";
 import type {
   IdGenerator,
   NewSetupLink,
@@ -5,40 +15,38 @@ import type {
   SetupLinkRepo,
 } from "@open-managed-agents/integrations-core";
 
-interface Row {
-  token: string;
-  tenant_id: string;
-  publication_id: string;
-  created_by: string;
-  expires_at: number;
-  used_at: number | null;
-  used_by_email: string | null;
-}
-
-export class D1SlackSetupLinkRepo implements SetupLinkRepo {
+export class SqlSlackSetupLinkRepo implements SetupLinkRepo {
+  private readonly db: OmaDbBuilder;
   constructor(
-    private readonly db: D1Database,
+    db: OmaDb,
     private readonly ids: IdGenerator,
-  ) {}
+  ) {
+    this.db = asBuilder(db);
+  }
 
   async get(token: string): Promise<SetupLink | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM slack_setup_links WHERE token = ?`)
-      .bind(token)
-      .first<Row>();
+    const row = await getOne<typeof slack_setup_links.$inferSelect>(
+      this.db
+        .select()
+        .from(slack_setup_links)
+        .where(eq(slack_setup_links.token, token)),
+    );
     return row ? this.toDomain(row) : null;
   }
 
   async insert(row: NewSetupLink): Promise<SetupLink> {
     const token = this.ids.generate();
-    await this.db
-      .prepare(
-        `INSERT INTO slack_setup_links
-           (token, tenant_id, publication_id, created_by, expires_at, used_at, used_by_email)
-         VALUES (?, ?, ?, ?, ?, NULL, NULL)`,
-      )
-      .bind(token, row.tenantId, row.publicationId, row.createdBy, row.expiresAt)
-      .run();
+    await runOnce(
+      this.db.insert(slack_setup_links).values({
+        token,
+        tenant_id: row.tenantId,
+        publication_id: row.publicationId,
+        created_by: row.createdBy,
+        expires_at: row.expiresAt,
+        used_at: null,
+        used_by_email: null,
+      }),
+    );
     return {
       token,
       tenantId: row.tenantId,
@@ -51,23 +59,26 @@ export class D1SlackSetupLinkRepo implements SetupLinkRepo {
   }
 
   async markUsed(token: string, usedByEmail: string, usedAt: number): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE slack_setup_links SET used_at = ?, used_by_email = ? WHERE token = ?`,
-      )
-      .bind(usedAt, usedByEmail, token)
-      .run();
+    await runOnce(
+      this.db
+        .update(slack_setup_links)
+        .set({ used_at: usedAt, used_by_email: usedByEmail })
+        .where(eq(slack_setup_links.token, token)),
+    );
   }
 
   async deleteExpired(now: number): Promise<number> {
-    const result = await this.db
-      .prepare(`DELETE FROM slack_setup_links WHERE expires_at < ?`)
-      .bind(now)
-      .run();
-    return result.meta?.changes ?? 0;
+    // RETURNING tells us how many rows were actually deleted, dialect-agnostic.
+    const deleted = await getAll<{ token: string }>(
+      this.db
+        .delete(slack_setup_links)
+        .where(lt(slack_setup_links.expires_at, now))
+        .returning({ token: slack_setup_links.token }),
+    );
+    return deleted.length;
   }
 
-  private toDomain(row: Row): SetupLink {
+  private toDomain(row: typeof slack_setup_links.$inferSelect): SetupLink {
     return {
       token: row.token,
       tenantId: row.tenant_id,

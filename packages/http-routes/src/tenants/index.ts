@@ -66,7 +66,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
       const now = Date.now();
       await services.sql
         .prepare(
-          `INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+          `INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`,
         )
         .bind(tenantId, name, now, now)
         .run();
@@ -101,7 +101,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
 export interface MeRoutesDeps {
   services: RouteServicesArg;
   authDisabled: boolean;
-  /** Look up the user row by id. CF queries env.AUTH_DB.user; Node
+  /** Look up the user row by id. CF queries env.MAIN_DB.user; Node
    *  returns a stub since the user lives in the better-auth db (separate
    *  connection). */
   loadUser?: (userId: string) => Promise<{
@@ -181,7 +181,15 @@ export function buildMeRoutes(deps: MeRoutesDeps) {
     const requested = body.tenant_id ?? sessionTenant;
     if (deps.hasMembership) {
       const ok = await deps.hasMembership(userId, requested);
-      if (!ok) return c.json({ error: "Not a member of the requested tenant" }, 403);
+      if (!ok) {
+        return c.json(
+          {
+            type: "error",
+            error: { type: "not_a_member", message: "Not a member of the requested tenant" },
+          },
+          403,
+        );
+      }
     }
     if (!deps.mintApiKey) {
       return c.json({ error: "CLI tokens not implemented on this server" }, 501);

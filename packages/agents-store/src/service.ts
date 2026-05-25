@@ -272,6 +272,16 @@ export class AgentService {
    */
   async listPage(opts: {
     tenantId: string;
+    /** Row archive state. Pass `'active'` to exclude archived, `'archived'`
+     *  for only-archived, `'any'` (default) for both. Replaces the legacy
+     *  `includeArchived` boolean for any 3-way intent. */
+    status?: "active" | "archived" | "any";
+    /** Lower bound on created_at (epoch ms, inclusive). */
+    createdAfter?: number;
+    /** Upper bound on created_at (epoch ms, exclusive). */
+    createdBefore?: number;
+    /** Legacy 2-way archive toggle. Maps to status when status is unset:
+     *  false→active, true→any. Prefer `status` for new callers. */
     includeArchived?: boolean;
     /** Hard-clamped to [1, 200]. */
     limit?: number;
@@ -280,15 +290,19 @@ export class AgentService {
     /** Substring filter passed through to the repo. */
     q?: string;
   }): Promise<{ items: AgentRow[]; nextCursor?: string }> {
+    const status: "active" | "archived" | "any" =
+      opts.status ?? (opts.includeArchived === false ? "active" : "any");
     return paginateVia({
       cursor: opts.cursor,
       limit: opts.limit,
       fetch: (after, limit) =>
         this.repo.listPage(opts.tenantId, {
-          includeArchived: opts.includeArchived ?? true,
+          status,
           limit,
           after,
           q: opts.q,
+          createdAfter: opts.createdAfter,
+          createdBefore: opts.createdBefore,
         }),
       extractCursor: (r) => ({ createdAt: isoToMs(r.created_at), id: r.id }),
     });

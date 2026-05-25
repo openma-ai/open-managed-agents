@@ -24,6 +24,7 @@
     "@open-managed-agents/blob-store": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
+    "@open-managed-agents/db-schema": "workspace:*",
     "@open-managed-agents/email": "workspace:*",
     "@open-managed-agents/environments-store": "workspace:*",
     "@open-managed-agents/evals-runner": "workspace:*",

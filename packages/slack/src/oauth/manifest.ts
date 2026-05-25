@@ -43,36 +43,84 @@ export interface SlackManifestInput {
  * everything else.
  */
 export function buildManifest(input: SlackManifestInput): Record<string, unknown> {
+  // Aligned with Slack's official MCP-server sample:
+  //   https://github.com/slack-samples/bolt-js-slack-mcp-server/blob/main/manifest.json
+  // Required for Slack's "Agents & AI Apps" surface to work end-to-end:
+  //   - features.app_home.messages_tab_enabled: true (+ read_only: false) so
+  //     the bot has a message tab the assistant_view can dock under
+  //   - features.assistant_view.suggested_prompts: [] so the field exists
+  //     and Slack doesn't reject the manifest
+  //   - bot scope `assistant:write` so the bot can use the Assistant API
+  //     surface (set status, suggested replies, etc.)
+  //   - bot events `assistant_thread_started` + `assistant_thread_context_changed`
+  //     so the bot wakes up when the user opens the side pane
+  //   - settings.interactivity.is_enabled: true (with request_url) — Slack
+  //     gates several Assistant features behind this even if our app doesn't
+  //     ship interactive components today
+  //   - settings.is_mcp_enabled: true so the "Agents & AI Apps → Model
+  //     Context Protocol" toggle is on at app creation. Earlier comment
+  //     here said this wasn't a manifest field — that's now wrong; current
+  //     manifest reference lists is_mcp_enabled as a boolean. Without this,
+  //     mcp.slack.com rejects token init with "App is not enabled for Slack
+  //     MCP server access".
   return {
     display_information: {
       name: input.personaName,
       description: input.description ?? `${input.personaName} — an OpenMA agent`,
     },
     features: {
+      app_home: {
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      },
       bot_user: {
         display_name: input.personaName,
         always_online: true,
       },
-      // Show the bot in Slack's "AI assistant" pane (fires assistant_thread_started).
       assistant_view: {
         assistant_description: `Chat with ${input.personaName} in a side pane.`,
+        suggested_prompts: [],
       },
     },
     oauth_config: {
       redirect_urls: [input.redirectUrl],
       scopes: {
-        bot: [...input.botScopes],
+        // assistant:write is required for Slack's Assistant API surface (set
+        // status, suggested replies). Inject if caller didn't already include
+        // it — most callers pass our DEFAULT_SLACK_BOT_SCOPES which we'll
+        // also extend in config.ts.
+        bot: input.botScopes.includes("assistant:write")
+          ? [...input.botScopes]
+          : [...input.botScopes, "assistant:write"],
         user: [...input.userScopes],
       },
     },
     settings: {
       event_subscriptions: {
         request_url: input.webhookUrl,
-        bot_events: [...input.subscribedEvents],
+        // Same idempotent-merge for the two assistant events.
+        bot_events: Array.from(
+          new Set([
+            ...input.subscribedEvents,
+            "assistant_thread_started",
+            "assistant_thread_context_changed",
+          ]),
+        ),
       },
       interactivity: {
-        is_enabled: false,
+        is_enabled: true,
+        request_url: input.webhookUrl,
       },
+      // Pre-flips the "Agents & AI Apps → Model Context Protocol" toggle on
+      // app creation. Without this, mcp.slack.com returns 400 "App is not
+      // enabled for Slack MCP server access" on token init and the agent
+      // falls back to bash+curl for every Slack action — slow, missing
+      // typed mcp__slack__* tools. Earlier docs claimed this wasn't a
+      // manifest field; current reference (docs.slack.dev/reference/app-
+      // manifest) lists `settings.is_mcp_enabled` as boolean, verified
+      // against staging install 2026-05-19.
+      is_mcp_enabled: true,
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,

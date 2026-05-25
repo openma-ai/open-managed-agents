@@ -20,8 +20,7 @@ app.get("/:token", async (c) => {
   let form: {
     persona: { name: string; avatarUrl: string | null };
     userId: string;
-    agentId: string;
-    appId?: string;
+    publicationId?: string;
   };
   try {
     form = await container.jwt.verify<typeof form>(token);
@@ -30,8 +29,8 @@ app.get("/:token", async (c) => {
   }
 
   const { slack } = buildProviders(c.env);
-  const manifestLaunchUrl = form.appId
-    ? slack.buildManifestLaunchUrlFor(form.appId, form.persona.name)
+  const manifestLaunchUrl = form.publicationId
+    ? slack.buildManifestLaunchUrlForPublication(form.publicationId, form.persona.name)
     : null;
 
   return c.html(

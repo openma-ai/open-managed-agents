@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
-import { Button } from "../components/Button";
+import { Button } from "@/components/ui/button";
 import { Logo } from "../components/Logo";
 
 /** Browser-side handler for `oma bridge setup`. The CLI binds a random

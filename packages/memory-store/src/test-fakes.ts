@@ -62,11 +62,30 @@ export class InMemoryStoreRepo implements MemoryStoreRepo {
 
   async list(
     tenantId: string,
-    opts: { includeArchived: boolean },
+    opts: {
+      includeArchived: boolean;
+      status?: "active" | "archived" | "any";
+      createdAfter?: number;
+      createdBefore?: number;
+    },
   ): Promise<MemoryStoreRow[]> {
+    const status =
+      opts.status ?? (opts.includeArchived ? "any" : "active");
     return Array.from(this.stores.values())
       .filter((r) => r.tenant_id === tenantId)
-      .filter((r) => opts.includeArchived || !r.archived_at)
+      .filter((r) => {
+        if (status === "active") return !r.archived_at;
+        if (status === "archived") return !!r.archived_at;
+        return true;
+      })
+      .filter((r) => {
+        if (opts.createdAfter === undefined) return true;
+        return new Date(r.created_at).getTime() >= opts.createdAfter;
+      })
+      .filter((r) => {
+        if (opts.createdBefore === undefined) return true;
+        return new Date(r.created_at).getTime() < opts.createdBefore;
+      })
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
 

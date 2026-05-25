@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { BrandLoader } from "@/components/BrandLoader"
 
 const buttonVariants = cva(
   "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -41,26 +42,56 @@ const buttonVariants = cva(
   }
 )
 
+type ButtonOwnProps = {
+  asChild?: boolean
+  /** Disables the button and renders a BrandLoader; pair with useAsyncAction
+   *  so a fast double-click can't fire the handler twice (the bug that made
+   *  Create-Key produce duplicate records). Ignored when `asChild` is set. */
+  loading?: boolean
+  /** Replaces children while loading. Defaults to children unchanged. */
+  loadingLabel?: React.ReactNode
+}
+
 function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  loading = false,
+  loadingLabel,
+  disabled,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
-  VariantProps<typeof buttonVariants> & {
-    asChild?: boolean
-  }) {
+  VariantProps<typeof buttonVariants> &
+  ButtonOwnProps) {
   const Comp = asChild ? Slot.Root : "button"
+
+  // asChild forwards props onto its single child element, which won't be a
+  // <button> (it's whatever the caller renders). The disabled / aria-busy
+  // / loader overlay only make sense on real buttons, so loading is a
+  // no-op when asChild is true rather than silently breaking the slot.
+  const showLoader = loading && !asChild
 
   return (
     <Comp
       data-slot="button"
       data-variant={variant}
       data-size={size}
+      disabled={asChild ? undefined : disabled || showLoader}
+      aria-busy={showLoader || undefined}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    />
+    >
+      {showLoader ? (
+        <>
+          <BrandLoader size="sm" label="Loading" className="!text-current" />
+          {loadingLabel ?? children}
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   )
 }
 

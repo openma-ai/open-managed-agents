@@ -69,9 +69,70 @@ app.post("/", async (c) => {
 
 // GET /v1/environments — list environments (cursor-paginated)
 app.get("/", async (c) => {
+  // status: enum filter on archive state. Whitelist strictly — any
+  // unknown value is a 400, NOT a silent fallback to "any". Allowing
+  // arbitrary strings here would mask client bugs (typo'd "active "
+  // returning every row looks like a feature).
+  const statusRaw = c.req.query("status");
+  let status: "active" | "archived" | "any" | undefined;
+  if (statusRaw !== undefined) {
+    if (statusRaw === "active" || statusRaw === "archived" || statusRaw === "any") {
+      status = statusRaw;
+    } else {
+      return c.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_status",
+            message: `Invalid status '${statusRaw}'; expected one of active|archived|any.`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // created_after / created_before: ISO timestamps → epoch ms. Reject
+  // unparseable values explicitly so the client knows it's a malformed
+  // request, not just "no results".
+  const parseMs = (
+    raw: string | undefined,
+    field: string,
+  ): { value: number | undefined; err?: Response } => {
+    if (raw === undefined) return { value: undefined };
+    const ms = Date.parse(raw);
+    if (Number.isNaN(ms)) {
+      return {
+        value: undefined,
+        err: c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_timestamp",
+              message: `Invalid ${field} '${raw}'; expected ISO-8601 timestamp.`,
+            },
+          },
+          400,
+        ),
+      };
+    }
+    return { value: ms };
+  };
+  const createdAfterRes = parseMs(c.req.query("created_after"), "created_after");
+  if (createdAfterRes.err) return createdAfterRes.err;
+  const createdBeforeRes = parseMs(c.req.query("created_before"), "created_before");
+  if (createdBeforeRes.err) return createdBeforeRes.err;
+
   const page = await c.var.services.environments.listPage({
     tenantId: c.get("tenant_id"),
     ...parsePageQuery(c),
+    ...(status !== undefined ? { status } : {}),
+    ...(createdAfterRes.value !== undefined
+      ? { createdAfter: createdAfterRes.value }
+      : {}),
+    ...(createdBeforeRes.value !== undefined
+      ? { createdBefore: createdBeforeRes.value }
+      : {}),
   });
   return jsonPage(c, page, toEnvironmentConfig);
 });
@@ -135,6 +196,25 @@ app.post("/:id/archive", async (c) => {
       environmentId: id,
     });
     return c.json(toEnvironmentConfig(row));
+  } catch (err) {
+    if (err instanceof EnvironmentNotFoundError) {
+      return c.json({ error: "Environment not found" }, 404);
+    }
+    throw err;
+  }
+});
+
+// DELETE /v1/environments/:id — hard delete. Pairs with POST archive
+// for the two-tier delete UX the console exposes via RowActionsMenu.
+app.delete("/:id", async (c) => {
+  const t = c.get("tenant_id");
+  const id = c.req.param("id");
+  try {
+    await c.var.services.environments.delete({
+      tenantId: t,
+      environmentId: id,
+    });
+    return c.json({ deleted: true });
   } catch (err) {
     if (err instanceof EnvironmentNotFoundError) {
       return c.json({ error: "Environment not found" }, 404);

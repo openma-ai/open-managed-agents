@@ -1,21 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
 import type { A1FormStep, A1InstallLink } from "../api/types";
 import { SecretInput, TextInput } from "../../components/Input";
 import { Combobox } from "../../components/Combobox";
 import { Field } from "../../components/Field";
+import { formatRelative } from "../../lib/format";
 
 const api = new IntegrationsApi();
 
 interface AgentOption {
   id: string;
   name: string;
+  created_at?: string;
 }
 
 interface EnvironmentOption {
   id: string;
   name: string;
+  created_at?: string;
 }
 
 interface PublishWizardProps {
@@ -35,8 +38,9 @@ export function IntegrationsSlackPublishWizard({
   loadAgents,
   loadEnvironments,
 }: PublishWizardProps) {
-  const [search] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
   const preselectedAgent = search.get("agent_id") ?? "";
+  const resumePubId = search.get("pub");
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [envs, setEnvs] = useState<EnvironmentOption[]>([]);
@@ -48,14 +52,15 @@ export function IntegrationsSlackPublishWizard({
   const [step, setStep] = useState<Step>("pick");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True while we hydrate from `?pub=` so we don't render the (empty) "pick"
+  // step while we're still resolving the existing publication's state.
+  const [hydrating, setHydrating] = useState<boolean>(Boolean(resumePubId));
 
   const [a1Form, setA1Form] = useState<A1FormStep | null>(null);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [signingSecret, setSigningSecret] = useState("");
   const [a1InstallLink, setA1InstallLink] = useState<A1InstallLink | null>(null);
-  const [handoffUrl, setHandoffUrl] = useState<string | null>(null);
-  const [handoffCopied, setHandoffCopied] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -69,14 +74,86 @@ export function IntegrationsSlackPublishWizard({
     })();
   }, [loadAgents, loadEnvironments]);
 
+  // Refresh-resume hydration. When the user lands with `?pub=<id>` (set by
+  // a previous wizard run via replaceState) we re-issue a fresh formToken
+  // server-side and re-derive the wizard step from the publication's
+  // current status. Server is the source of truth — no sessionStorage.
   useEffect(() => {
-    if (!personaName && agentId) {
+    if (!resumePubId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pub = await api.slack.getPublication(resumePubId);
+        if (cancelled) return;
+        // Already-live pubs belong on the list page, not the wizard.
+        if (pub.status === "live") {
+          window.location.href = "/integrations/slack";
+          return;
+        }
+        if (pub.status === "unpublished" || pub.status === "needs_reauth") {
+          // Drop the bad ?pub= so the wizard re-renders fresh.
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setHydrating(false);
+          return;
+        }
+        // Re-issue a fresh formToken for the existing shell. Server validates
+        // ownership; we only re-render the wizard here.
+        const form = await api.slack.reissueFormToken(resumePubId, returnUrl);
+        if (cancelled) return;
+        setA1Form(form);
+        setAgentId(pub.agent_id);
+        setEnvId(pub.environment_id);
+        setPersonaName(pub.persona.name);
+        if (pub.persona.avatarUrl) setPersonaAvatar(pub.persona.avatarUrl);
+        // pending_setup / credentials_filled → step 2; awaiting_install → 3.
+        // Slack's adapter elides credentials_filled (jumps to awaiting_install
+        // on first setCredentials), so 'awaiting_install' is the install-step
+        // signal. We always start on credentials so the user can re-paste —
+        // the install link will be re-issued after submitCredentials.
+        setStep("a1-credentials");
+      } catch (err) {
+        if (!cancelled) {
+          // Resume failed (e.g. 404 / 409). Drop the bad ?pub= so the wizard
+          // falls back to the fresh-pick path.
+          search.delete("pub");
+          setSearch(search, { replace: true });
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // resumePubId pinned at first render — we don't want the URL replace
+    // below to re-trigger this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Default persona name to the chosen agent's name. Skip once the user has
+  // edited the field — otherwise clearing the input would refill it from the
+  // effect's personaName dep, making the field feel un-clearable.
+  const personaEditedRef = useRef(false);
+  useEffect(() => {
+    if (personaEditedRef.current) return;
+    if (agentId) {
       const agent = agents.find((a) => a.id === agentId);
       if (agent) setPersonaName(agent.name);
     }
-  }, [agentId, agents, personaName]);
+  }, [agentId, agents]);
 
   const returnUrl = `${window.location.origin}/integrations/slack`;
+
+  // Stamp the active publication id into the URL so a refresh resumes from
+  // the same row instead of starting fresh. Pure URL state — no storage.
+  function pinPublicationToUrl(publicationId: string) {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("pub") === publicationId) return;
+    url.searchParams.set("pub", publicationId);
+    window.history.replaceState({}, "", url.toString());
+  }
 
   async function startPublish() {
     if (!agentId || !envId || !personaName) {
@@ -95,6 +172,7 @@ export function IntegrationsSlackPublishWizard({
       });
       setA1Form(f);
       setStep("a1-credentials");
+      if (f.publicationId) pinPublicationToUrl(f.publicationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,29 +193,7 @@ export function IntegrationsSlackPublishWizard({
       });
       setA1InstallLink(link);
       setStep("a1-install");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  async function generateHandoffLink() {
-    if (!a1Form) return;
-    setError(null);
-    setWorking(true);
-    try {
-      const r = await api.slack.createHandoffLink(a1Form.formToken);
-      setHandoffUrl(r.url);
-      // Auto-copy so the user doesn't have to chase the row. Clipboard can
-      // throw if the page isn't focused or the browser blocks it; treat the
-      // failure as "user can still copy manually" and surface a quiet hint.
-      try {
-        await navigator.clipboard.writeText(r.url);
-        setHandoffCopied(true);
-      } catch {
-        setHandoffCopied(false);
-      }
+      if (link.publicationId) pinPublicationToUrl(link.publicationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -166,13 +222,55 @@ export function IntegrationsSlackPublishWizard({
 
         <StepIndicator current={step} />
 
+        {/* Post-install banner — set by the gateway redirect when Slack OAuth
+            completes. install=ok always shows green check; capability probe
+            kind=slack_mcp + probe_ok=0 adds a yellow warning with a deeplink
+            to flip the MCP toggle the user almost certainly missed. */}
+        {search.get("install") === "ok" && (
+          <div className="mb-4 space-y-2">
+            <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[13px] text-success font-medium">
+              ✓ Installed in Slack. Publication: <code>{search.get("publication_id")}</code>
+            </div>
+            {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "0" && (
+              <div className="rounded-md border border-warning/30 bg-warning-subtle px-3.5 py-3 text-[13px]">
+                <div className="font-medium text-fg mb-1">⚠ Slack MCP server access is OFF</div>
+                <p className="text-fg-muted text-[12px] leading-relaxed mb-2">
+                  {search.get("probe_message") ??
+                    "The agent is installed but Slack's MCP server is rejecting our token. Flip the toggle to enable typed mcp__slack__* tools."}
+                </p>
+                {search.get("probe_fix_url") && (
+                  <a
+                    href={search.get("probe_fix_url")!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-warning/40 text-fg hover:bg-warning-subtle/70 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                  >
+                    Open Agents &amp; AI Apps page ↗
+                  </a>
+                )}
+              </div>
+            )}
+            {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "1" && (
+              <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success">
+                ✓ Slack MCP server access verified — agent can use typed slack tools.
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
             {error}
           </div>
         )}
 
-        {step === "pick" && (
+        {hydrating && (
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+            Resuming in-progress install…
+          </div>
+        )}
+
+        {!hydrating && step === "pick" && (
           <PickStep
             agents={agents}
             envs={envs}
@@ -181,7 +279,7 @@ export function IntegrationsSlackPublishWizard({
             envId={envId}
             setEnvId={setEnvId}
             personaName={personaName}
-            setPersonaName={setPersonaName}
+            setPersonaName={(v) => { personaEditedRef.current = true; setPersonaName(v); }}
             personaAvatar={personaAvatar}
             setPersonaAvatar={setPersonaAvatar}
             working={working}
@@ -189,9 +287,12 @@ export function IntegrationsSlackPublishWizard({
           />
         )}
 
-        {step === "a1-credentials" && a1Form && (
+        {!hydrating && step === "a1-credentials" && a1Form && (
           <A1CredentialsStep
             form={a1Form}
+            agentName={agents.find((a) => a.id === agentId)?.name ?? agentId}
+            envName={envs.find((e) => e.id === envId)?.name ?? envId}
+            personaName={personaName}
             clientId={clientId}
             setClientId={setClientId}
             clientSecret={clientSecret}
@@ -200,14 +301,11 @@ export function IntegrationsSlackPublishWizard({
             setSigningSecret={setSigningSecret}
             working={working}
             onSubmit={submitA1Credentials}
-            onHandoff={generateHandoffLink}
-            handoffUrl={handoffUrl}
-            handoffCopied={handoffCopied}
             onBack={() => setStep("pick")}
           />
         )}
 
-        {step === "a1-install" && a1InstallLink && (
+        {!hydrating && step === "a1-install" && a1InstallLink && (
           <A1InstallStep link={a1InstallLink} onBack={() => setStep("a1-credentials")} />
         )}
       </div>
@@ -284,24 +382,42 @@ function PickStep(props: {
     <div className="space-y-5">
       <div className="grid md:grid-cols-2 gap-4">
         <Field label="Agent">
-          <Combobox<{ id: string; name: string }>
+          <Combobox<{ id: string; name: string; created_at?: string }>
             value={props.agentId}
             onValueChange={(v) => props.setAgentId(v)}
             endpoint="/v1/agents"
             getValue={(a) => a.id}
-            getLabel={(a) => a.name}
+            getLabel={(a) => (
+              <span className="flex items-center justify-between gap-2 w-full min-w-0">
+                <span className="truncate">{a.name}</span>
+                {a.created_at && (
+                  <span className="text-xs text-fg-subtle shrink-0">
+                    {formatRelative(Date.now() - new Date(a.created_at).getTime())}
+                  </span>
+                )}
+              </span>
+            )}
             getTextLabel={(a) => a.name}
             placeholder="Pick an agent…"
           />
         </Field>
 
         <Field label="Environment">
-          <Combobox<{ id: string; name: string }>
+          <Combobox<{ id: string; name: string; created_at?: string }>
             value={props.envId}
             onValueChange={(v) => props.setEnvId(v)}
             endpoint="/v1/environments"
             getValue={(e) => e.id}
-            getLabel={(e) => e.name}
+            getLabel={(e) => (
+              <span className="flex items-center justify-between gap-2 w-full min-w-0">
+                <span className="truncate">{e.name}</span>
+                {e.created_at && (
+                  <span className="text-xs text-fg-subtle shrink-0">
+                    {formatRelative(Date.now() - new Date(e.created_at).getTime())}
+                  </span>
+                )}
+              </span>
+            )}
             getTextLabel={(e) => e.name}
             placeholder="Pick an environment…"
           />
@@ -330,7 +446,7 @@ function PickStep(props: {
 
       <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
         Your agent becomes a real Slack teammate — @-mentionable, replies in threads,
-        joins DMs. Setup ~3 min, requires Slack admin (or send a setup link).
+        joins DMs. Setup ~3 min, requires Slack admin.
       </div>
 
       <div className="pt-1">
@@ -349,6 +465,9 @@ function PickStep(props: {
 
 function A1CredentialsStep(props: {
   form: A1FormStep;
+  agentName: string;
+  envName: string;
+  personaName: string;
   clientId: string;
   setClientId: (v: string) => void;
   clientSecret: string;
@@ -357,14 +476,28 @@ function A1CredentialsStep(props: {
   setSigningSecret: (v: string) => void;
   working: boolean;
   onSubmit: () => void;
-  onHandoff: () => void;
-  handoffUrl: string | null;
-  handoffCopied: boolean;
   onBack: () => void;
 }) {
   const manifestUrl = props.form.manifestLaunchUrl;
   return (
     <div className="space-y-7">
+      {/* Breadcrumb — current agent / env / persona, with Change link back to pick step. */}
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-[12px]">
+        <div className="text-fg-muted truncate">
+          Publishing{" "}
+          <span className="text-fg font-medium">{props.personaName || props.agentName}</span>
+          {" "}({props.agentName}) →{" "}
+          <span className="text-fg font-medium">{props.envName}</span>
+        </div>
+        <button
+          type="button"
+          onClick={props.onBack}
+          disabled={props.working}
+          className="text-brand hover:underline disabled:opacity-50 shrink-0"
+        >
+          Change ←
+        </button>
+      </div>
       {manifestUrl && (
         <section className="rounded-md border border-brand/30 bg-brand-subtle/30 p-4">
           <h2 className="text-[15px] font-medium text-fg mb-1">
@@ -417,13 +550,23 @@ function A1CredentialsStep(props: {
             <CopyRow label="Events Request URL" value={props.form.webhookUrl} />
           </div>
           <p className="text-[12px] text-fg-subtle mt-2">
-            Paste the Redirect URL under <strong>OAuth &amp; Permissions</strong>; paste the
-            Events Request URL under <strong>Event Subscriptions</strong> and wait for
-            the green "Verified" check (Slack hits the URL with a signed handshake).
+            Paste the Redirect URL under <strong>OAuth &amp; Permissions</strong>; the
+            Events Request URL above ends in <code>/__pending__</code> as a placeholder —
+            after install completes, the success screen surfaces the real URL keyed on
+            your Slack app id; paste that into <strong>Event Subscriptions</strong>{" "}
+            and wait for the green "Verified" check.
             Subscribe to bot events: <code>app_mention</code>,{" "}
             <code>message.channels</code>, <code>message.im</code>,{" "}
             <code>message.groups</code>, <code>message.mpim</code>,{" "}
             <code>tokens_revoked</code>, <code>app_uninstalled</code>.
+          </p>
+          <p className="text-[12px] text-fg-subtle mt-2">
+            <strong>Required for MCP tools:</strong> open the App's{" "}
+            <strong>Agents &amp; AI Apps</strong> (or <em>app-assistant</em>) page and
+            enable <strong>Slack MCP server access</strong>. Without this, the
+            agent falls back to bash + curl on every Slack action because{" "}
+            <code>mcp.slack.com</code> rejects the token with{" "}
+            <code>"App is not enabled for Slack MCP server access"</code>.
           </p>
         </div>
       </details>
@@ -436,6 +579,23 @@ function A1CredentialsStep(props: {
           From your Slack App's <strong>Basic Information</strong> page. The Signing
           Secret signs all incoming webhooks; we verify every event with it.
         </p>
+        <div className="mb-3">
+          <a
+            href="https://api.slack.com/apps"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-border text-fg-muted hover:text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          >
+            Open Slack App settings ↗
+          </a>
+          <p className="text-[12px] text-fg-subtle mt-1.5">
+            Click <strong>Show</strong> next to <strong>Client Secret</strong> /
+            <strong> Signing Secret</strong> on Slack's page to reveal them.
+            Both are 32-char hex strings (look like <code>c83b3cf17e1dee5cdc5f55fdcb6a2f23</code>) —
+            <strong> not</strong> the Client ID (<code>5720…</code>) or the
+            Verification Token. Copy each value precisely.
+          </p>
+        </div>
         <div className="grid md:grid-cols-2 gap-4">
           <Field label="Client ID">
             <TextInput
@@ -476,40 +636,7 @@ function A1CredentialsStep(props: {
             {props.working ? "Validating…" : "Continue"}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
           </button>
-          <span className="text-[12px] text-fg-subtle">or</span>
-          <button
-            onClick={props.onHandoff}
-            disabled={props.working}
-            className="text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
-          >
-            Send setup link to your admin →
-          </button>
         </div>
-
-        {props.handoffUrl && (
-          <div className="mt-4 rounded-md border border-warning/30 bg-warning-subtle p-3.5">
-            <div className="flex items-start gap-2 mb-2">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-warning shrink-0 mt-0.5">
-                <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-              </svg>
-              <div className="text-[13px] font-medium text-fg">
-                Send this link to your Slack admin
-                {props.handoffCopied && (
-                  <span className="ml-2 text-[12px] font-normal text-success">
-                    ✓ Copied to clipboard
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="rounded-md border border-warning/30 bg-bg">
-              <CopyRow label="Setup link" value={props.handoffUrl} />
-            </div>
-            <p className="text-[12px] text-fg-muted mt-2">
-              Anyone with this link can complete the install. Treat it as sensitive.
-              Expires in 7 days.
-            </p>
-          </div>
-        )}
       </section>
     </div>
   );
@@ -527,6 +654,13 @@ function A1InstallStep({ link, onBack }: { link: A1InstallLink; onBack: () => vo
           Slack — you'll be redirected back here automatically.
         </p>
       </div>
+
+      {/* The pre-install MCP-toggle warning lived here for ~weeks because
+          Slack docs claimed `is_mcp_enabled` wasn't a manifest field. Per
+          the current manifest reference it IS — manifest.ts:96 sets it
+          true at app creation, so MCP is on out of the box. The post-
+          install probe banner (lines 156-179) is the safety net for users
+          who flip it back off manually. */}
 
       <div className="flex items-center gap-3 flex-wrap">
         <button

@@ -1,13 +1,19 @@
-import { useId, useState, type ReactNode } from "react";
-import * as Collapsible from "@radix-ui/react-collapsible";
+import { useState, type ReactNode } from "react";
+
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { ChevronRightIcon } from "lucide-react";
 
 /**
  * Collapsible section with chevron indicator and aria-expanded wiring.
  *
- * Wraps `@radix-ui/react-collapsible` so we get free Escape support,
- * proper aria-controls / aria-expanded linkage, and animated height
- * transitions via CSS keyframes keyed off `data-state` (see
- * `.collapsible-content` rules in src/index.css).
+ * Built on shadcn `Collapsible` (which wraps Radix), so Escape support,
+ * aria-controls / aria-expanded linkage, and the unmount-after-close
+ * animation come for free. Spring-out chevron rotation is added here
+ * because shadcn's primitive ships unstyled.
  *
  * Two trigger variants:
  *   - default ("border")  → bordered row with title left + chevron right
@@ -43,37 +49,32 @@ export function Disclosure({
     onOpenChange?.(next);
   };
 
-  // Stable id pair for aria — Radix wires aria-controls / id automatically
-  // on Trigger/Content, but we still want a deterministic key for tests
-  // and external aria refs to attach to.
-  const _id = useId();
-
   const wrapperCls = variant === "border" ? "border border-border rounded-md" : "";
 
   return (
-    <Collapsible.Root
+    <Collapsible
       open={open}
       onOpenChange={setOpen}
       className={`${wrapperCls} ${className}`.trim()}
     >
-      <Collapsible.Trigger asChild>
+      <CollapsibleTrigger asChild>
         <button
           type="button"
           className="w-full flex items-center gap-2 px-3 py-2.5 min-h-11 sm:min-h-0 text-left"
         >
-          <span
+          <ChevronRightIcon
             aria-hidden="true"
-            className={`text-fg-muted transition-transform duration-[var(--dur-base)] ease-[var(--ease-soft)] ${open ? "rotate-90" : ""}`}
-          >
-            ›
-          </span>
+            className={`size-4 text-fg-muted transition-transform duration-[var(--dur-base)] ease-[var(--ease-soft)] ${
+              open ? "rotate-90" : ""
+            }`}
+          />
           <span className="text-sm font-medium text-fg flex-1 min-w-0">{title}</span>
           {meta && <span className="text-xs text-fg-muted shrink-0">{meta}</span>}
         </button>
-      </Collapsible.Trigger>
-      <Collapsible.Content className="collapsible-content overflow-hidden">
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content overflow-hidden">
         <div className="px-3 pb-3">{children}</div>
-      </Collapsible.Content>
-    </Collapsible.Root>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

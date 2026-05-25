@@ -1,23 +1,51 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import { type JSX, type ReactNode } from "react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
+
+// Tailwind JIT safelist hint — these literal `!max-w-*` strings exist
+// here so the bundler picks them up; the Modal component picks one of
+// them at runtime via `${"!"}${maxWidth}`. shadcn's <DialogContent>
+// bakes `sm:max-w-sm` (24rem) into its base className which would
+// otherwise cap every modal at 384 px on desktop; the `!` prefix lifts
+// our chosen width over it. Add new entries here if a caller starts
+// passing a wider value.
+//
+// !max-w-sm !max-w-md !max-w-lg !max-w-xl !max-w-2xl !max-w-3xl !max-w-4xl
+
 /**
- * Modal wrapper around Radix Dialog. Public API is unchanged from the
- * previous hand-rolled version (open / onClose / title / subtitle /
- * maxWidth / children / footer); internals delegate focus trap, scroll
- * lock, escape handling, and tab cycling to Radix's primitives.
+ * Project-level modal convention built on shadcn `Dialog` primitives.
+ * Keeps a small controlled API (open/onClose/title/subtitle/maxWidth/
+ * children/footer) because the same modal pattern recurs across 18+
+ * call sites and each direct `<Dialog>…<DialogContent><DialogHeader>…`
+ * expansion would add the same boilerplate. Internals delegate to
+ * shadcn so theming, close button (lucide X via DialogContent's
+ * showCloseButton default), focus trap, and animations stay aligned
+ * with the rest of the design system.
  *
- * Animations are CSS keyframes keyed off `data-state` (set by Radix on
- * Overlay/Content). The .modal-overlay and .modal-content rules in
- * index.css drive fade + zoom on open/close — Radix waits for the
- * close animation to finish before unmounting via its internal
- * Presence wrapper.
+ * Footer is rendered into `DialogFooter` only when provided so unused
+ * modals don't get an empty bordered band at the bottom.
+ *
+ * The children block is wrapped in a scroll container so long forms
+ * stay reachable when content exceeds the modal's max height. shadcn's
+ * `DialogContent` doesn't auto-scroll; pulling it out of the dialog
+ * shell keeps the header sticky and the footer pinned.
  */
 interface ModalProps {
   open: boolean;
   onClose: () => void;
   title: string;
   subtitle?: string;
+  /** Tailwind max-width class WITHOUT the `!` prefix (e.g. `max-w-lg`,
+   *  `max-w-2xl`). Modal applies `!important` internally to beat
+   *  shadcn's baked-in `sm:max-w-sm` cap. Default: `max-w-lg`. */
   maxWidth?: string;
   children: ReactNode;
   footer?: ReactNode;
@@ -32,69 +60,42 @@ export function Modal({
   children,
   footer,
 }: ModalProps): JSX.Element {
+  // Strip a stray `!` prefix from caller for back-compat, then apply
+  // our own — guarantees exactly one `!` is present in the final class.
+  const widthClass = `!${maxWidth.replace(/^!/, "")}`;
+
   return (
-    <Dialog.Root
+    <Dialog
       open={open}
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
     >
-      <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay fixed inset-0 bg-bg-overlay z-50" />
-        <Dialog.Content
-          // When there's no subtitle we don't render Dialog.Description, so
-          // tell Radix not to expect one (suppresses the dev a11y warning
-          // without overriding the auto-wired aria-describedby when a
-          // Description IS rendered).
-          {...(subtitle === undefined ? { "aria-describedby": undefined } : {})}
-          className={`modal-content bg-bg rounded-lg shadow-xl w-full ${maxWidth} max-h-[85vh] flex flex-col fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 outline-none`}
-        >
-          {/* Header */}
-          <div className="px-6 py-4 border-b border-border flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <Dialog.Title className="text-lg font-semibold font-display truncate">
-                {title}
-              </Dialog.Title>
-              {subtitle && (
-                <Dialog.Description className="text-sm text-fg-muted mt-0.5">
-                  {subtitle}
-                </Dialog.Description>
-              )}
-            </div>
-            <Dialog.Close asChild>
-              <button
-                className="shrink-0 inline-flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 text-fg-subtle hover:text-fg rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                aria-label="Close"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </Dialog.Close>
-          </div>
-
-          {/* Body */}
-          <div className="flex-1 overflow-y-auto px-6 py-4">{children}</div>
-
-          {/* Footer */}
-          {footer && (
-            <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
-              {footer}
-            </div>
+      <DialogContent
+        className={cn(
+          "max-h-[85vh] flex flex-col gap-0 p-0",
+          widthClass,
+        )}
+      >
+        <DialogHeader className="px-6 py-4 border-b border-border gap-1">
+          <DialogTitle className="text-lg font-semibold font-display truncate">
+            {title}
+          </DialogTitle>
+          {subtitle && (
+            <DialogDescription className="text-sm text-fg-muted">
+              {subtitle}
+            </DialogDescription>
           )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">{children}</div>
+
+        {footer && (
+          <DialogFooter className="m-0 px-6 py-4 border-t border-border bg-transparent rounded-none sm:justify-end gap-3">
+            {footer}
+          </DialogFooter>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

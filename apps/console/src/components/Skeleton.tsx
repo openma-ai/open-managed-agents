@@ -1,5 +1,7 @@
 import type { CSSProperties, JSX } from "react";
 
+import { Skeleton as ShadcnSkeleton } from "@/components/ui/skeleton";
+
 interface SkeletonProps {
   className?: string;
   rounded?: "sm" | "md" | "lg" | "full";
@@ -14,9 +16,12 @@ const radiusCls: Record<NonNullable<SkeletonProps["rounded"]>, string> = {
 };
 
 /**
- * Static placeholder block for in-flight content. Pulses opacity instead
- * of a gradient sweep — quieter at scale (a long list of skeleton rows
- * shouldn't read as "moving"). prefers-reduced-motion freezes it.
+ * Static placeholder block for in-flight content. Wraps shadcn `Skeleton`
+ * but swaps the default `animate-pulse` for `skeleton-pulse` (defined in
+ * index.css) so a long list of placeholder rows doesn't read as
+ * "flashing" — the in-house pulse goes 0.4↔0.65 with the soft ease
+ * curve, where Tailwind's animate-pulse is 0.5↔1 (uniform).
+ * prefers-reduced-motion freezes both.
  *
  * Caller controls width/height via className. Example:
  *   <Skeleton className="h-4 w-32" />
@@ -24,10 +29,10 @@ const radiusCls: Record<NonNullable<SkeletonProps["rounded"]>, string> = {
  */
 export function Skeleton({ className = "", rounded = "md", style }: SkeletonProps): JSX.Element {
   return (
-    <div
+    <ShadcnSkeleton
       aria-hidden="true"
       style={style}
-      className={`bg-bg-surface skeleton-pulse ${radiusCls[rounded]} ${className}`}
+      className={`!animate-none skeleton-pulse ${radiusCls[rounded]} ${className}`}
     />
   );
 }

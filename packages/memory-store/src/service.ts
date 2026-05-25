@@ -117,9 +117,25 @@ export class MemoryStoreService {
 
   async listStores(opts: {
     tenantId: string;
+    /** Legacy 2-way archive toggle. Maps to status when status is unset:
+     *  false→active, true→any. Prefer `status` for new callers. */
     includeArchived?: boolean;
+    /** Row archive state. Pass `'active'` to exclude archived,
+     *  `'archived'` for only-archived, `'any'` (default) for both. */
+    status?: "active" | "archived" | "any";
+    /** Lower bound on created_at (epoch ms, inclusive). */
+    createdAfter?: number;
+    /** Upper bound on created_at (epoch ms, exclusive). */
+    createdBefore?: number;
   }): Promise<MemoryStoreRow[]> {
-    return this.storeRepo.list(opts.tenantId, { includeArchived: !!opts.includeArchived });
+    const status: "active" | "archived" | "any" =
+      opts.status ?? (opts.includeArchived === false ? "active" : "any");
+    return this.storeRepo.list(opts.tenantId, {
+      includeArchived: !!opts.includeArchived,
+      status,
+      createdAfter: opts.createdAfter,
+      createdBefore: opts.createdBefore,
+    });
   }
 
   /**

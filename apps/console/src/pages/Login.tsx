@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { authClient } from "../lib/auth-client";
 import { useAuth } from "../lib/auth";
-import { useToast } from "../components/Toast";
+import { toast } from "sonner";
 import { Turnstile } from "../components/Turnstile";
 import { Logo } from "../components/Logo";
 import { setActiveTenantId } from "../lib/api";
@@ -29,7 +29,6 @@ type Mode =
 
 export function Login() {
   const { isAuthenticated, isLoading } = useAuth();
-  const { toast } = useToast();
   const nav = useNavigate();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
@@ -270,7 +269,7 @@ export function Login() {
         if (!res.ok) throw new Error(data?.message || "Failed to reset password");
         setError("");
         setMode("login");
-        toast("Password reset successfully. Please sign in.", "success");
+        toast.success("Password reset successfully. Please sign in.");
       }
     } catch (err: any) {
       // Surface real cause when present. Anthropic-style envelope nests as

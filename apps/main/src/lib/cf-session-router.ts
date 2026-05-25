@@ -75,7 +75,7 @@ export class CfSessionRouter implements SessionRouter {
       sessionId,
     });
     if (!sess) return;
-    const binding = await this.bindingFor(sess.environment_id);
+    const binding = (sess.environment_id ? await this.bindingFor(sess.environment_id) : null);
     if (!binding) return;
     await binding
       .fetch(`https://sandbox/sessions/${sessionId}/destroy`, { method: "DELETE" })
@@ -384,7 +384,7 @@ export class CfSessionRouter implements SessionRouter {
       tenantId: this.deps.tenantId,
       sessionId,
     });
-    if (!sess) return null;
+    if (!sess || !sess.environment_id) return null;
     return this.bindingFor(sess.environment_id);
   }
 }

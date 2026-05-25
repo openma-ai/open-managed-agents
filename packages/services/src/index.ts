@@ -21,7 +21,7 @@
 //     constructed inside reads/writes against that one DB.
 //   - The DB is resolved per-request by the new `tenantDbMiddleware`, which
 //     calls `TenantDbProvider.resolve(tenantId)` after authMiddleware sets
-//     `c.var.tenant_id`. Phase 1 default returns the shared `env.AUTH_DB`
+//     `c.var.tenant_id`. Phase 1 default returns the shared `env.MAIN_DB`
 //     for every tenant — zero behaviour change. Phase 4 swaps in the
 //     static-binding resolver.
 //
@@ -305,16 +305,16 @@ export function buildServices(env: Env, db: D1Database): Services {
     outboundSnapshots: createCfOutboundSnapshotService(env),
     sessionSecrets: createCfSessionSecretService(env),
     // Control-plane services: always query env.ROUTER_DB (not the per-tenant
-    // db). Falls back to env.AUTH_DB during the rollout grace period when
+    // db). Falls back to env.MAIN_DB during the rollout grace period when
     // ROUTER_DB binding may not yet be present in older deployments.
     tenantShardDirectory: createCfTenantShardDirectoryService({
-      controlPlaneDb: env.ROUTER_DB ?? env.AUTH_DB,
+      controlPlaneDb: env.ROUTER_DB ?? env.MAIN_DB,
     }),
     shardPool: createCfShardPoolService({
-      controlPlaneDb: env.ROUTER_DB ?? env.AUTH_DB,
+      controlPlaneDb: env.ROUTER_DB ?? env.MAIN_DB,
     }),
     memoryStoreTenantIndex: createCfMemoryStoreTenantIndexService({
-      controlPlaneDb: env.ROUTER_DB ?? env.AUTH_DB,
+      controlPlaneDb: env.ROUTER_DB ?? env.MAIN_DB,
     }),
     // File blob storage. CF: R2 binding; self-host: S3 / local-FS adapter.
     filesBlob: blobStoreFromR2(env.FILES_BUCKET),
@@ -337,36 +337,46 @@ export const buildCfServices = buildServices;
 /**
  * Build the TenantDbProvider used by the middleware.
  *
- * Default (PER_TENANT_DB_ENABLED unset or "true"): the meta-table router
- * that reads `tenant_shard` from the control-plane DB, with a permanent
- * per-isolate cache and AUTH_DB fallback for tenants without a shard
- * assignment. In N=1 deployments (no entries in tenant_shard) every tenant
- * resolves to AUTH_DB → behaviour identical to the pre-sharding shared-DB
- * world.
+ * Three modes, chosen in order:
  *
- * Killswitch (PER_TENANT_DB_ENABLED="false"): bypasses the meta lookup
- * entirely and returns AUTH_DB for every tenant. Use this to instantly roll
- * back if the meta table itself develops a problem.
+ * 1. **Single-D1 mode** (auto-detected, OR `SINGLE_D1_MODE="1"`, OR
+ *    `PER_TENANT_DB_ENABLED="false"`). Self-host deployments with only the
+ *    MAIN_DB binding land here — there's no shard to route to, so we skip
+ *    the meta-table read and serve every tenant from MAIN_DB directly.
+ *    Auto-detection: if the env doesn't have an `AUTH_DB_01` binding, we
+ *    assume single-D1. Self-hosters omit the shard bindings from
+ *    wrangler.jsonc and the mode kicks in without any flag.
+ *
+ * 2. **Multi-shard mode** (default for openma.dev's `--env production`).
+ *    Reads `tenant_shard` from `ROUTER_DB` (or MAIN_DB legacy fallback) and
+ *    resolves to the named binding. MAIN_DB fallback for unmapped tenants.
+ *    Per-isolate cache; no TTL (sharding is sticky).
+ *
+ * 3. **Legacy killswitch** (`PER_TENANT_DB_ENABLED="false"`). Same shape as
+ *    single-D1 mode — exists for instant rollback if the meta table itself
+ *    breaks in production.
  *
  * Tests should construct their own StaticTenantDbProvider via
  * @open-managed-agents/tenant-db/test-fakes and bypass this factory.
  */
 export function buildCfTenantDbProvider(env: Env): TenantDbProvider {
-  const flag = (env as unknown as { PER_TENANT_DB_ENABLED?: string }).PER_TENANT_DB_ENABLED;
-  const disabled = flag === "false" || flag === "0";
-  if (disabled) {
-    return new CfSharedAuthDbProvider(env.AUTH_DB);
+  const envBag = env as unknown as Record<string, unknown>;
+  const perTenantFlag = envBag.PER_TENANT_DB_ENABLED;
+  const explicitDisabled = perTenantFlag === "false" || perTenantFlag === "0";
+  const explicitSingleD1 = envBag.SINGLE_D1_MODE === "1";
+  // Auto-detect: shard bindings are present iff this is a multi-shard
+  // deployment. AUTH_DB_01 is the canary because AUTH_DB_00 may be aliased
+  // to MAIN_DB on legacy single-shard deployments (see env.production
+  // overlay), but AUTH_DB_01 only ever exists when the operator opted into
+  // multi-shard.
+  const implicitSingleD1 = !envBag.AUTH_DB_01;
+  if (explicitDisabled || explicitSingleD1 || implicitSingleD1) {
+    return new CfSharedAuthDbProvider(env.MAIN_DB);
   }
-  // controlPlaneDb = env.ROUTER_DB → routing tables live on the dedicated
-  //                                    router DB (no SPOF on shard 0).
-  // defaultBinding = env.AUTH_DB    → unmapped tenants fall back to shard 0.
-  // ROUTER_DB binding is optional in older deployments — fall back to
-  // env.AUTH_DB for the routing reads too in that case (legacy 0003
-  // migration left the routing tables in AUTH_DB).
   return new MetaTableTenantDbProvider(
-    env as unknown as Record<string, unknown>,
-    env.ROUTER_DB ?? env.AUTH_DB,
-    env.AUTH_DB,
+    envBag,
+    env.ROUTER_DB ?? env.MAIN_DB,
+    env.MAIN_DB,
   );
 }
 
@@ -406,7 +416,7 @@ export async function forEachShardServices<T>(
   env: Env,
   fn: (services: Services, shardName: string) => Promise<T>,
 ): Promise<T[]> {
-  const controlPlaneDb = env.ROUTER_DB ?? env.AUTH_DB;
+  const controlPlaneDb = env.ROUTER_DB ?? env.MAIN_DB;
   const pool = createCfShardPoolService({ controlPlaneDb });
   const shards = await pool.listAll();
   const envBindings = env as unknown as Record<string, D1Database | undefined>;
@@ -458,7 +468,7 @@ export const tenantDbMiddleware: MiddlewareHandler<{
 }> = async (c, next) => {
   const provider = buildCfTenantDbProvider(c.env);
   // Routes upstream of authMiddleware (e.g. /health, /auth/*) won't have
-  // tenant_id set; resolve("" ) returns the shared AUTH_DB under the Phase 1
+  // tenant_id set; resolve("" ) returns the shared MAIN_DB under the Phase 1
   // default, which is the right answer for those paths.
   const tenantId = c.get("tenant_id") ?? "";
   const tenantDb = await provider.resolve(tenantId);

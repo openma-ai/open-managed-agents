@@ -176,6 +176,21 @@
      value that matches our existing chat bubble feel (rounded-lg). */
   --radius: 0.5rem;
   --radius-md: 0.5rem;
+
+  /* shadcn `Sidebar` primitive lookups. The sidebar component reaches
+     for its own --sidebar* family so its theming can drift from the
+     main canvas (typical use: subtly different bg, darker borders).
+     OMA wants the sidebar to share the existing palette, so we alias
+     straight through — bg-sidebar / fg / brand are all already
+     theme-aware via :root / .dark. */
+  --color-sidebar: var(--bg-sidebar);
+  --color-sidebar-foreground: var(--fg);
+  --color-sidebar-primary: var(--brand);
+  --color-sidebar-primary-foreground: var(--brand-fg);
+  --color-sidebar-accent: var(--bg-surface);
+  --color-sidebar-accent-foreground: var(--fg);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--brand);
 }
 
 /* ---------- Base typography ---------- */
@@ -187,10 +202,31 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Focus ring — brand-colored */
-*:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* Lock the viewport — the AppShell sidebar + breadcrumb header are
+   global frame elements that must NEVER scroll out of view. Without
+   this, `html`/`body`/`#root` are auto-height by default; a tall portal,
+   absolutely-positioned overlay, or stray content can push body taller
+   than the viewport and let the whole document scroll, taking the
+   "fixed" frame with it. Pinning all three at exactly the viewport
+   height forces every scroll to happen inside `<main>` (the only
+   `overflow-y: auto` container in the shell). */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Focus ring — brand-colored. Wrapped in @layer base so Tailwind utility
+   variants (focus-visible:outline-none, etc.) can override per-element.
+   Unlayered rules win over layered rules regardless of specificity, which
+   would otherwise make this impossible to suppress on a per-element basis. */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
 /* Scrollbar subtle styling */

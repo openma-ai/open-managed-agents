@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
-import { TabsRoot, TabList, Tab, TabPanel } from "../components/Tabs";
+import { PageHeader } from "../components/PageHeader";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface MemoryStore {
   id: string;
@@ -40,11 +42,13 @@ interface MemoryVersion {
   redacted?: boolean;
 }
 
-type Tab = "memories" | "versions" | "settings";
+type TabKey = "memories" | "versions" | "settings";
 
 export function MemoryStoreDetail() {
   const { id: storeId } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<Tab>("memories");
+  const nav = useNavigate();
+  const { api } = useApi();
+  const [tab, setTab] = useState<TabKey>("memories");
   const [error, setError] = useState<string | null>(null);
 
   // Top-level store fetch via TQ. The two child panels do their own
@@ -56,46 +60,104 @@ export function MemoryStoreDetail() {
     if (storeError) setError(errMsg(storeError));
   }, [storeError]);
 
+  // Archive/Delete moved up from the list page when MemoryStoresList
+  // adopted the AgentsList chrome — the list rows no longer carry inline
+  // actions, so this is where users perform store-level lifecycle ops.
+  // Matches AgentDetail's header-actions pattern.
+  const archive = async () => {
+    if (!storeId) return;
+    if (
+      !confirm(
+        "Archive this store? It will become read-only and no new sessions can attach it. Archive is one-way.",
+      )
+    )
+      return;
+    try {
+      await api(`/v1/memory_stores/${storeId}/archive`, { method: "POST" });
+      nav("/memory");
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
+  const del = async () => {
+    if (!storeId) return;
+    if (
+      !confirm(
+        "Delete this store and ALL its memories + version history? This cannot be undone.",
+      )
+    )
+      return;
+    try {
+      await api(`/v1/memory_stores/${storeId}`, { method: "DELETE" });
+      nav("/memory");
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  };
+
   if (!storeId) return <div className="p-8">Missing store id.</div>;
   if (error) return (
     <div className="flex-1 p-8">
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
-      <Link to="/memory" className="text-sm text-fg-muted hover:text-fg">← Back to memory stores</Link>
     </div>
   );
   if (!store) return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
 
   return (
-    <Page>
-      <Link to="/memory" className="text-sm text-fg-muted hover:text-fg mb-4 inline-block">← Memory stores</Link>
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">{store.name}</h1>
-          {store.description && <p className="text-fg-muted mt-1">{store.description}</p>}
-          <p className="text-fg-subtle text-xs font-mono mt-1">
-            {store.id} · /mnt/memory/{store.name}/
-            {store.archived_at && <span className="ml-2 text-fg-muted">· archived {new Date(store.archived_at).toLocaleDateString()}</span>}
-          </p>
-        </div>
+    <Page
+      header={
+        <PageHeader
+          title={store.name}
+          subtitle={
+            <>
+              {store.description && (
+                <span className="text-fg-muted">{store.description}</span>
+              )}
+              <span className="block text-fg-subtle text-xs font-mono mt-1">
+                {store.id} · /mnt/memory/{store.name}/
+                {store.archived_at && (
+                  <span className="ml-2 text-fg-muted">
+                    · archived {new Date(store.archived_at).toLocaleDateString()}
+                  </span>
+                )}
+              </span>
+            </>
+          }
+          actions={
+            <>
+              {!store.archived_at && (
+                <Button variant="outline" size="sm" onClick={archive}>
+                  Archive
+                </Button>
+              )}
+              <Button variant="destructive" size="sm" onClick={del}>
+                Delete
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      <div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} aria-label="Memory store sections" className="mt-2">
+          <TabsList className="mb-6">
+            <TabsTrigger value="memories">Memories</TabsTrigger>
+            <TabsTrigger value="versions">Version history</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="memories">
+            <MemoriesPanel storeId={storeId} archived={!!store.archived_at} />
+          </TabsContent>
+          <TabsContent value="versions">
+            <VersionsPanel storeId={storeId} />
+          </TabsContent>
+          <TabsContent value="settings">
+            <SettingsPanel store={store} archived={!!store.archived_at} />
+          </TabsContent>
+        </Tabs>
       </div>
-
-      <TabsRoot value={tab} onValueChange={(v) => setTab(v as Tab)} aria-label="Memory store sections" className="mt-6">
-        <TabList className="mb-6">
-          <Tab value="memories">Memories</Tab>
-          <Tab value="versions">Version history</Tab>
-          <Tab value="settings">Settings</Tab>
-        </TabList>
-
-        <TabPanel value="memories">
-          <MemoriesPanel storeId={storeId} archived={!!store.archived_at} />
-        </TabPanel>
-        <TabPanel value="versions">
-          <VersionsPanel storeId={storeId} />
-        </TabPanel>
-        <TabPanel value="settings">
-          <SettingsPanel store={store} archived={!!store.archived_at} />
-        </TabPanel>
-      </TabsRoot>
     </Page>
   );
 }
@@ -549,7 +611,7 @@ function SettingsPanel({ store, archived }: { store: MemoryStore; archived: bool
         </div>
       )}
       <p className="text-fg-subtle text-xs pt-4 border-t border-border">
-        To archive or delete this store, use the actions on the store list.
+        To archive or delete this store, use the actions in the page header.
       </p>
     </div>
   );

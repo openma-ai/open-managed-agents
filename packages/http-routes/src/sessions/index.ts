@@ -510,11 +510,43 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     const agentIdFilter = c.req.query("agent_id") || undefined;
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50;
     const cursor = c.req.query("cursor") ?? c.req.query("page");
+    const q = c.req.query("q") ?? undefined;
+
+    // status: session lifecycle filter (idle | running | rescheduling |
+    // terminated). Whitelist strictly — unknown value is a 400, NOT a
+    // silent fallback. Mirrors the agents-route pattern; allowing arbitrary
+    // strings here would mask client bugs.
+    const statusRaw = c.req.query("status");
+    let status: "idle" | "running" | "rescheduling" | "terminated" | undefined;
+    if (statusRaw !== undefined) {
+      if (
+        statusRaw === "idle" ||
+        statusRaw === "running" ||
+        statusRaw === "rescheduling" ||
+        statusRaw === "terminated"
+      ) {
+        status = statusRaw;
+      } else {
+        return c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_status",
+              message: `Invalid status '${statusRaw}'; expected one of idle|running|rescheduling|terminated.`,
+            },
+          },
+          400,
+        );
+      }
+    }
+
     const page = await services.sessions.listPage({
       tenantId: c.var.tenant_id,
       agentId: agentIdFilter,
       limit,
       cursor: cursor ?? undefined,
+      ...(status ? { status } : {}),
+      ...(q ? { q } : {}),
     });
     return c.json({
       data: page.items.map((row) => toApiSession(row as never)),

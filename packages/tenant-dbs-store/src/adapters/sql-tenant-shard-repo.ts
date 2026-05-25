@@ -1,24 +1,35 @@
+import { eq } from "drizzle-orm";
+import { tenant_shard } from "@open-managed-agents/db-schema/cf-router";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
 import type {
   NewTenantShard,
   TenantShardDirectoryRepo,
   TenantShardRow,
 } from "../ports";
-import type { SqlClient } from "@open-managed-agents/sql-client";
 
-interface Row {
-  tenant_id: string;
-  binding_name: string;
-  created_at: number;
-}
+type Row = typeof tenant_shard.$inferSelect;
 
 export class SqlTenantShardDirectoryRepo implements TenantShardDirectoryRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  // The TSchema generic on `OmaDb` is invariant in Drizzle, so a caller
+  // that built `drizzle(d1, { schema: cfRouterSchema })` would not satisfy
+  // the default `OmaDb` (TSchema = Record<string, never>). Accept any
+  // schema specialisation; the adapter doesn't use the schema dictionary.
+  constructor(db: OmaDb<Record<string, unknown>>) {
+    this.db = asBuilder(db);
+  }
 
   async get(tenantId: string): Promise<TenantShardRow | null> {
-    const row = await this.db
-      .prepare(`SELECT * FROM tenant_shard WHERE tenant_id = ?`)
-      .bind(tenantId)
-      .first<Row>();
+    const row = await getOne<Row>(
+      this.db.select().from(tenant_shard).where(eq(tenant_shard.tenant_id, tenantId)),
+    );
     return row ? toDomain(row) : null;
   }
 
@@ -27,31 +38,35 @@ export class SqlTenantShardDirectoryRepo implements TenantShardDirectoryRepo {
     // INSERT OR IGNORE: re-running sign-up for an existing tenant must NOT
     // accidentally re-route to a different shard. The first assignment wins
     // and stays for the lifetime of the tenant.
-    await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO tenant_shard
-           (tenant_id, binding_name, created_at)
-         VALUES (?, ?, ?)`,
-      )
-      .bind(input.tenantId, input.bindingName, now)
-      .run();
+    await runOnce(
+      this.db
+        .insert(tenant_shard)
+        .values({
+          tenant_id: input.tenantId,
+          binding_name: input.bindingName,
+          created_at: now,
+        })
+        .onConflictDoNothing(),
+    );
     const row = await this.get(input.tenantId);
     if (!row) throw new Error(`tenant_shard row vanished after insert: ${input.tenantId}`);
     return row;
   }
 
   async reassign(tenantId: string, bindingName: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE tenant_shard SET binding_name = ? WHERE tenant_id = ?`)
-      .bind(bindingName, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .update(tenant_shard)
+        .set({ binding_name: bindingName })
+        .where(eq(tenant_shard.tenant_id, tenantId)),
+    );
   }
 
   async listAll(): Promise<readonly TenantShardRow[]> {
-    const { results } = await this.db
-      .prepare(`SELECT * FROM tenant_shard ORDER BY created_at`)
-      .all<Row>();
-    return (results ?? []).map(toDomain);
+    const rows = await getAll<Row>(
+      this.db.select().from(tenant_shard).orderBy(tenant_shard.created_at),
+    );
+    return rows.map(toDomain);
   }
 }
 

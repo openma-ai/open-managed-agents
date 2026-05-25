@@ -85,7 +85,15 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
     const requested = c.req.header("x-active-tenant") || "";
     if (requested) {
       const ok = await deps.hasMembership(session.userId, requested);
-      if (!ok) return c.json({ error: "Not a member of the requested tenant" }, 403);
+      if (!ok) {
+        return c.json(
+          {
+            type: "error",
+            error: { type: "not_a_member", message: "Not a member of the requested tenant" },
+          },
+          403,
+        );
+      }
       tenantId = requested;
     }
     if (!tenantId) tenantId = await deps.defaultTenantForUser(session.userId);

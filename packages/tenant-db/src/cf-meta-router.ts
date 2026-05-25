@@ -8,7 +8,7 @@ import type { TenantDbProvider } from "./ports";
  *   1. Cache hit → return cached D1Database (no control-plane round-trip)
  *   2. Cache miss → SELECT binding_name FROM tenant_shard WHERE tenant_id=?
  *   3. Row found → env[binding_name] (cache it)
- *   4. No row    → env.AUTH_DB (cache the fallback too)
+ *   4. No row    → env.MAIN_DB (cache the fallback too)
  *
  * Cache strategy: per-isolate Map, never expires. Justification:
  *   - tenant→binding mapping is monotonic in normal operation (we only ever
@@ -17,8 +17,8 @@ import type { TenantDbProvider } from "./ports";
  *     (or `/admin/cache/flush` in a future enhancement) to take effect
  *   - never-expiring cache keeps hot path zero-cost after first hit
  *
- * The fallback to env.AUTH_DB is what makes N=1 deployments seamless: when
- * tenant_shard is empty, every tenant resolves to AUTH_DB, behaviour is
+ * The fallback to env.MAIN_DB is what makes N=1 deployments seamless: when
+ * tenant_shard is empty, every tenant resolves to MAIN_DB, behaviour is
  * identical to the pre-sharding shared-DB world.
  */
 export class MetaTableTenantDbProvider implements TenantDbProvider {

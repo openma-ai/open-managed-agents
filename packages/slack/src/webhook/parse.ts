@@ -128,13 +128,6 @@ export interface NormalizedSlackEvent {
   threadTs: string | null;
   /** Event timestamp (the message's own `ts`). */
   eventTs: string | null;
-  /**
-   * Conversation scope key for per-thread session granularity:
-   *   `${channel_id}:${thread_ts ?? event_ts}`
-   * Null when there's no channel/ts (uninstall events). For per_channel
-   * granularity the provider composes its own key (`channel:${channel_id}`).
-   */
-  scopeKey: string | null;
   userId: string | null;
   text: string | null;
   /** True when the event originated from a bot (skip to avoid loops). */
@@ -179,7 +172,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs: pickThreadTs(inner),
       eventTs: pickString(inner, "ts") ?? pickString(inner, "event_ts"),
-      scopeKey: null,
       userId: pickString(inner, "user"),
       text: pickString(inner, "text"),
       isBotMessage: detectBotMessage(inner),
@@ -202,7 +194,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: null,
       threadTs: null,
       eventTs: null,
-      scopeKey: null,
       userId: null,
       text: null,
       isBotMessage: false,
@@ -228,7 +219,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs,
       eventTs: pickString(inner, "event_ts"),
-      scopeKey: channelId && threadTs ? `${channelId}:${threadTs}` : null,
       userId: typeof at.user_id === "string" ? at.user_id : null,
       text: null,
       isBotMessage: false,
@@ -254,7 +244,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs: null,
       eventTs: pickString(inner, "event_ts"),
-      scopeKey: null,
       userId: pickString(inner, "user"),
       text: null,
       isBotMessage: false,
@@ -280,7 +269,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs: null,
       eventTs: pickString(inner, "event_ts"),
-      scopeKey: null,
       userId: pickString(inner, "user"),
       text: null,
       isBotMessage: false,
@@ -306,7 +294,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs: null,
       eventTs: pickString(inner, "event_ts"),
-      scopeKey: null,
       userId: pickString(inner, "user"),
       text: null,
       isBotMessage: false,
@@ -333,7 +320,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
       channelType: pickChannelType(inner, channelId),
       threadTs: null,
       eventTs: pickString(inner, "event_ts"),
-      scopeKey: null,
       userId: pickString(inner, "user"),
       text: null,
       isBotMessage: false,
@@ -354,7 +340,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
   // For top-level mentions/messages, use the message's own ts as thread_ts —
   // when the bot replies it'll be `thread_ts: ts` and start a thread.
   const effectiveThread = threadTs ?? ts;
-  const scopeKey = channelId && effectiveThread ? `${channelId}:${effectiveThread}` : null;
   // True top-level: thread_ts is absent (or equals ts), and not an edit/delete
   // subtype. Edits and deletes carry ts/thread_ts but shouldn't re-arm scans.
   const subtype = pickString(inner, "subtype");
@@ -373,7 +358,6 @@ export function parseWebhook(raw: RawSlackEnvelope): NormalizedSlackEvent | null
     channelType,
     threadTs: effectiveThread,
     eventTs: ts ?? pickString(inner, "event_ts"),
-    scopeKey,
     userId: pickString(inner, "user"),
     text: pickString(inner, "text"),
     isBotMessage: detectBotMessage(inner),

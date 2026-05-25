@@ -1,15 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { ChevronsUpDownIcon, PlusIcon, CheckIcon } from "lucide-react";
+
 import { useApi, getActiveTenantId, setActiveTenantId } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "./Modal";
-import { Button } from "./Button";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Avatar } from "./Avatar";
 
-// Slot beneath the logo in the sidebar. Hidden when the user has only one
-// tenant — single-tenant accounts shouldn't even see the workspace concept.
-// When clicked, opens a dropdown with all memberships + a "Create workspace"
-// button. Switching writes localStorage and reloads the page so every
-// already-mounted query refetches under the new tenant.
+// Slot beneath the logo in the sidebar. Opens a dropdown with all
+// memberships + "Create workspace" button. Switching writes
+// localStorage and reloads the page so every already-mounted query
+// refetches under the new tenant.
+//
+// Built on shadcn DropdownMenu (Radix → Floating UI under the hood):
+// the popover auto-flips between top/bottom and shifts on the cross
+// axis when it would otherwise collide with the viewport, so nothing
+// gets clipped no matter where the trigger sits in the sidebar (top,
+// middle, or bottom). The earlier hand-rolled `bottom-full mb-1`
+// version assumed "always upward, always fits" and broke whenever
+// the sidebar shrank or the dropdown grew past the available space.
 
 interface Tenant {
   id: string;
@@ -25,9 +41,7 @@ function displayName(t: Tenant): string {
 
 export function TenantSwitcher() {
   const [active, setActive] = useState<string>("");
-  const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // TQ replaces the previous mount-once useEffect that hand-rolled a fetch
   // + setState. Dedup means a re-mount (sidebar collapse/expand) reuses the
@@ -54,18 +68,6 @@ export function TenantSwitcher() {
     }
   }, [tenants]);
 
-  // Close dropdown on outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
   const switchTo = (id: string) => {
     setActiveTenantId(id);
     // Full reload — cheaper than threading active-tenant context through
@@ -73,79 +75,94 @@ export function TenantSwitcher() {
     window.location.reload();
   };
 
-  // Hide entirely when there's nothing to switch and no chance of needing
-  // to (single tenant, never had multi). Plus button still useful if user
-  // wants to spin up a second workspace.
-  if (tenants.length === 0) return null;
-
+  // Always render the row — even before `/v1/me/tenants` resolves —
+  // so the sidebar layout doesn't change height between empty and
+  // loaded states. Previously this returned null pre-fetch, which made
+  // the SidebarFooter shorter on first paint and then grew by 44 px
+  // when tenants landed, shifting the user-profile row below it
+  // downward in a visible "jump together with the avatar" twitch.
   const current = tenants.find((t) => t.id === active);
+
+  // `current` resolves on the second pass (after the useEffect picks
+  // the active tenant from the loaded list). Until then the row holds
+  // its 44 px footprint with a brand-tinted skeleton avatar so the
+  // only visual change when data lands is the initial letter + name
+  // appearing on top of the existing block.
+  const ready = current != null;
 
   return (
     <>
-      <div className="px-3 pt-1 pb-2 relative" ref={dropdownRef}>
-        <button
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label="Switch workspace"
-          onClick={() => setOpen((o) => !o)}
-          className="w-full flex items-center gap-2 px-2.5 py-2 min-h-11 sm:min-h-0 rounded-md hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] text-left group"
-        >
-          <Avatar name={current?.name ?? "?"} size="sm" squared />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium truncate text-fg">
-              {current ? displayName(current) : "Workspace"}
-            </div>
-            {current && tenants.length > 1 && (
-              <div className="text-[10px] text-fg-subtle uppercase tracking-wider">
-                {current.role}
-              </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Switch workspace"
+            disabled={!ready}
+            className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left disabled:cursor-default disabled:hover:bg-transparent outline-none focus-visible:bg-sidebar-accent"
+          >
+            {ready ? (
+              <Avatar name={current.name} size="sm" squared />
+            ) : (
+              <div className="size-6 rounded-md bg-brand-subtle shrink-0" aria-hidden="true" />
             )}
-          </div>
-          <svg className="w-3.5 h-3.5 text-fg-subtle shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
+            <div className="min-w-0 flex-1 leading-tight group-data-[collapsible=icon]:hidden">
+              <div className="text-sm font-medium truncate text-fg">
+                {ready ? displayName(current) : " "}
+              </div>
+              {ready && tenants.length > 1 && (
+                <div className="text-[10px] text-fg-subtle uppercase tracking-wider">
+                  {current.role}
+                </div>
+              )}
+            </div>
+            {ready && (
+              <ChevronsUpDownIcon
+                className="w-3.5 h-3.5 text-fg-subtle shrink-0 group-data-[collapsible=icon]:hidden"
+                aria-hidden="true"
+              />
+            )}
+          </button>
+        </DropdownMenuTrigger>
 
-        {open && (
-          <div role="menu" aria-label="Workspaces" className="absolute left-3 right-3 top-full mt-1 z-30 bg-bg border border-border rounded-lg shadow-lg overflow-hidden">
-            <div className="max-h-72 overflow-y-auto py-1">
-              {tenants.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={t.id === active}
-                  onClick={() => switchTo(t.id)}
-                  className={`w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm hover:bg-bg-surface flex items-center gap-2 ${t.id === active ? "bg-bg-surface/60" : ""}`}
-                >
-                  <Avatar name={displayName(t)} size="xs" squared />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate">{displayName(t)}</div>
-                    <div className="text-[10px] text-fg-subtle font-mono">{t.id}</div>
-                  </div>
-                  {t.id === active && (
-                    <svg className="w-3.5 h-3.5 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  )}
-                </button>
-              ))}
-            </div>
-            <div className="border-t border-border">
-              <button
-                onClick={() => { setOpen(false); setCreateOpen(true); }}
-                className="w-full text-left px-3 py-2 min-h-11 sm:min-h-0 text-sm text-fg-muted hover:bg-bg-surface flex items-center gap-2"
-              >
-                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                Create workspace…
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+        {/* `side="bottom"` is the preferred placement; Radix auto-flips
+            to top if the dropdown would overflow the viewport. `align`
+            anchors the popover's left edge to the trigger; the menu
+            width matches the trigger width (--radix-dropdown-menu-
+            trigger-width). collisionPadding keeps a small breathing
+            margin from viewport edges. */}
+        <DropdownMenuContent
+          side="bottom"
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          className="w-(--radix-dropdown-menu-trigger-width) min-w-56 max-h-72 overflow-y-auto"
+        >
+          {tenants.map((t) => (
+            <DropdownMenuItem
+              key={t.id}
+              onSelect={() => switchTo(t.id)}
+              className="flex items-center gap-2"
+            >
+              <Avatar name={displayName(t)} size="xs" squared />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm">{displayName(t)}</div>
+                <div className="text-[10px] text-fg-subtle font-mono">{t.id}</div>
+              </div>
+              {t.id === active && (
+                <CheckIcon className="size-3.5 text-success shrink-0" />
+              )}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => setCreateOpen(true)}
+            className="text-fg-muted"
+          >
+            <PlusIcon className="size-4 shrink-0" />
+            Create workspace…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <CreateTenantModal
         open={createOpen}

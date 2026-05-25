@@ -196,7 +196,7 @@ What each Worker needs in its `wrangler.jsonc`:
 
 | Binding | Type | Name |
 |---|---|---|
-| `AUTH_DB` | D1 | `openma-auth` |
+| `MAIN_DB` | D1 | `openma-auth` |
 | `CONFIG_KV` | KV | (your namespace) |
 | `FILES_BUCKET` | R2 | `managed-agents-files` |
 | `AI` | Workers AI | (built-in) |
@@ -213,7 +213,7 @@ What each Worker needs in its `wrangler.jsonc`:
 | `SESSION_DO` | Durable Object | `SessionDO` |
 | `SANDBOX` | Durable Object | `Sandbox` (Container class) |
 | `CONFIG_KV` | KV | (shared with main) |
-| `AUTH_DB` | D1 | (shared with main) |
+| `MAIN_DB` | D1 | (shared with main) |
 | `WORKSPACE_BUCKET` | R2 | `managed-agents-workspace` |
 | `FILES_BUCKET` | R2 | (shared with main) |
 | `AI`, `VECTORIZE`, `BROWSER`, `ANALYTICS` | (same as main) | |
@@ -222,7 +222,7 @@ What each Worker needs in its `wrangler.jsonc`:
 
 | Binding | Type | Name |
 |---|---|---|
-| `AUTH_DB` | D1 | (shared with main) |
+| `MAIN_DB` | D1 | (shared with main) |
 | `MAIN` | Service | → main worker |
 
 ## Where to go next

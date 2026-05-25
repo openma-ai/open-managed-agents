@@ -48,7 +48,16 @@ export interface SlackPublication {
   installation_id: string;
   environment_id: string;
   mode: "full";
-  status: "pending_setup" | "awaiting_install" | "live" | "needs_reauth" | "unpublished";
+  /** credentials_filled is reserved — current Slack adapter elides it
+   *  (jumps pending_setup → awaiting_install on first setCredentials), but
+   *  the schema accepts it and pending-pub clients should handle it. */
+  status:
+    | "pending_setup"
+    | "credentials_filled"
+    | "awaiting_install"
+    | "live"
+    | "needs_reauth"
+    | "unpublished";
   persona: { name: string; avatarUrl: string | null };
   capabilities: string[];
   /** Slack defaults to per_thread; per_event also supported. */
@@ -73,12 +82,24 @@ export interface A1FormStep {
    * Linear's analogous flow is built into linear.app and needs no URL.
    */
   manifestLaunchUrl?: string | null;
+  /**
+   * Slack publication-first only: the OMA publication id minted by the
+   * shell-create. The wizard surfaces it for ops/debug; the API client uses
+   * it implicitly via the formToken JWT (no client-side state needed).
+   */
+  publicationId?: string;
 }
 
 export interface A1InstallLink {
   /** OAuth URL the user clicks to authorize the install. */
   url: string;
-  appId: string;
+  /**
+   * Slack publication-first: the OMA publication id (legacy Linear A1: app
+   * id). Both flows surface an opaque identifier here; the wizard just shows
+   * it for the user.
+   */
+  appId?: string;
+  publicationId?: string;
   callbackUrl: string;
   webhookUrl: string;
 }
@@ -113,6 +134,42 @@ export interface LinearSubmitCredentialsInput {
   clientSecret: string;
   /** Linear's webhook signing secret (lin_wh_…). */
   webhookSecret: string;
+}
+
+/** Step 1 result of the Linear publication-first install: a server-side
+ *  publication shell row created with status='pending_setup'. The user
+ *  pastes the callback + webhook URLs into Linear's OAuth-app form, then
+ *  submits credentials via PATCH .../credentials. */
+export interface LinearPublicationShell {
+  publication_id: string;
+  callback_url: string;
+  webhook_url: string;
+  suggested_app_name: string;
+  suggested_avatar_url: string | null;
+  return_url: string;
+}
+
+/** Step 2 result: the OAuth authorize URL the user clicks to bind the
+ *  installation to the publication. Echoes back the callback/webhook URLs
+ *  for client-side verification (they must match what was pasted into
+ *  Linear). */
+export interface LinearPublicationInstallLink {
+  install_url: string;
+  publication_id: string;
+  callback_url: string;
+  webhook_url: string;
+}
+
+/** Step 2 input. */
+export interface LinearPublicationCredentialsInput {
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  /** Reserved — Linear today reuses webhookSecret as the HMAC key. */
+  signingSecret?: string | null;
+  /** Carried through to the OAuth state JWT so the callback can build
+   *  the final 302 target. */
+  returnUrl: string;
 }
 
 /** Symphony-equivalent install — Personal API Key in one shot, no OAuth dance. */
@@ -177,7 +234,7 @@ export interface GitHubPublication {
   installation_id: string;
   environment_id: string;
   mode: "full";
-  status: "pending_setup" | "awaiting_install" | "live" | "needs_reauth" | "unpublished";
+  status: "pending_setup" | "credentials_filled" | "awaiting_install" | "live" | "needs_reauth" | "unpublished";
   persona: { name: string; avatarUrl: string | null };
   capabilities: string[];
   session_granularity: "per_issue" | "per_event";
@@ -187,6 +244,10 @@ export interface GitHubPublication {
 
 export interface GitHubA1FormStep {
   formToken: string;
+  /** Publication-first: id of the github_publications shell row we just
+   *  created. Wizard tracks this for polling and `?publication_id=` query
+   *  string round-trips. */
+  publicationId: string;
   appOmaId: string;
   suggestedAppName: string;
   suggestedAvatarUrl: string | null;
@@ -202,6 +263,8 @@ export interface GitHubA1FormStep {
 
 export interface GitHubA1InstallLink {
   url: string;
+  /** Publication-first: same id as on GitHubA1FormStep. */
+  publicationId: string;
   appOmaId: string;
   appSlug: string;
   botLogin: string;

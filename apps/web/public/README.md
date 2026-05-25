@@ -7,6 +7,7 @@ Static files served at the site root.
 | File | Purpose |
 |---|---|
 | `logo.svg` | Brand wordmark — header logo + SVG favicon |
+| `logo.png` | Brand wordmark, rasterized at 950×610. Used as JSON-LD `Organization.logo` since Google rejects SVG there. |
 | `og-default.svg` | Source for `og-default.png` (1200×630 OG card) |
 | `og-default.png` | Open Graph default image (1200×630) — referenced by `Base.astro` `og:image` |
 | `apple-touch-icon.png` | 180×180 iOS home-screen icon |
@@ -22,11 +23,16 @@ step at deploy time), but they can be reproduced from the source SVGs:
 ```bash
 cd apps/web/public
 
+# Brand logo (Google JSON-LD Organization.logo — must be PNG, not SVG)
+rsvg-convert -w 950 -h 610 logo.svg -o logo.png
+
 # OG card
 rsvg-convert -w 1200 -h 630 og-default.svg -o og-default.png
 
-# Favicons (uses inline SVG generator script — see commit history for the
-# square `om` mark used here)
+# Favicons. `_favicon-square.svg` is a thin wrapper that centers
+# `logo.svg` (the canonical brand mark) inside a 512×512 frame with
+# padding — used only as the rasterization source so the PNG set
+# matches the SVG favicon at `/logo.svg`.
 rsvg-convert -w 180 -h 180 _favicon-square.svg -o apple-touch-icon.png
 rsvg-convert -w 192 -h 192 _favicon-square.svg -o favicon-192.png
 rsvg-convert -w 512 -h 512 _favicon-square.svg -o favicon-512.png

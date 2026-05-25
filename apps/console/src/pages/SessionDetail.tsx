@@ -1,13 +1,19 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router";
 import { useApi } from "../lib/api";
-import { useToast } from "../components/Toast";
+import { toast } from "sonner";
 import { Markdown } from "../components/Markdown";
 import { formatDuration, formatRelative, shortenId } from "../lib/format";
 import { Badge, StatusPill } from "../components/Badge";
 import { Modal } from "../components/Modal";
-import { Button } from "../components/Button";
+import { Button } from "@/components/ui/button";
 import { AgentIcon, ClockIcon, DurationIcon, EnvIcon, VaultIcon } from "../components/icons";
+import { FilesPanel, ResourcePanel } from "./session-detail/Panels";
+import {
+  TrajectoryOutcomeChip,
+  TrajectoryRewardChip,
+  TrajectoryViewerModal,
+} from "./session-detail/Trajectory";
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
@@ -62,7 +68,6 @@ interface PendingEntry {
 export function SessionDetail() {
   const { id } = useParams();
   const { api, streamEvents } = useApi();
-  const { toast } = useToast();
   const [events, setEvents] = useState<Event[]>([]);
   /** In-flight assistant streams keyed by message_id. Each entry holds
    *  the deltas accumulated so far. Wiped on the matching agent.message
@@ -89,7 +94,6 @@ export function SessionDetail() {
   // (we never let two POSTs be in flight at once — Send is disabled
   // while `sending`). Set to null when SSE confirms or POST settles.
   const [localPending, setLocalPending] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
   const [agentId, setAgentId] = useState("");
   const [sessionMeta, setSessionMeta] = useState<{
     environmentId?: string;
@@ -116,6 +120,7 @@ export function SessionDetail() {
     threadTs?: string;
     workspaceId?: string;
     eventKind?: string;
+    publicationId?: string;
   } | null>(null);
   const [status, setStatus] = useState("idle");
   /** Lazy-fetched Trajectory v1 envelope. Drives the outcome + reward
@@ -453,7 +458,6 @@ export function SessionDetail() {
     setStreams(new Map());
     setThinkingStreams(new Map());
     setToolInputStreams(new Map());
-    setTitle("");
     setAgentId("");
     setSessionMeta({});
     setStatus("idle");
@@ -465,7 +469,6 @@ export function SessionDetail() {
 
     // Load session info
     api<{
-      title?: string | null;
       environment_id?: string;
       vault_ids?: string[];
       created_at?: string;
@@ -473,7 +476,6 @@ export function SessionDetail() {
       metadata?: Record<string, unknown>;
     }>(`/v1/sessions/${id}`)
       .then((s) => {
-        setTitle(s.title || id);
         setAgentId(s.agent?.id || "");
         setSessionMeta({
           environmentId: s.environment_id,
@@ -508,7 +510,7 @@ export function SessionDetail() {
           setLinear(linearMeta);
         }
         const slackMeta = s.metadata?.slack as
-          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string }
+          | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string; publicationId?: string }
           | undefined;
         if (slackMeta && (slackMeta.channelId || slackMeta.threadTs)) {
           setSlack(slackMeta);
@@ -748,40 +750,13 @@ export function SessionDetail() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-4 sm:px-8 py-3 border-b border-border flex flex-col gap-2 shrink-0">
-        <div className="flex items-center gap-3">
-          <Link to="/sessions" className="text-fg-subtle hover:text-fg-muted text-sm">&larr; Sessions</Link>
-          <span className="text-fg-subtle">/</span>
-          <h1 className="font-mono text-sm text-fg-muted truncate flex-1" title={id}>{title}</h1>
-          {/* Stop / Interrupt — only while the session is actively running.
-              Posts user.interrupt scoped to the active thread; server fires
-              thread AbortController + flushes pending events + emits
-              status_idle. Recovery path for stuck-Running sessions where a
-              DO eviction killed the stream and no clean status_idle ever
-              landed. */}
-          {status === "running" && (
-            <button
-              onClick={() => void interrupt()}
-              disabled={interrupting}
-              className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border border-border bg-bg-surface text-fg-muted hover:text-fg hover:border-border-strong disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-              title="Interrupt the active turn on this thread"
-            >
-              {interrupting ? "Stopping…" : "Stop"}
-            </button>
-          )}
-          <button
-            onClick={() => setShowFiles((v) => !v)}
-            className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium border transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
-              showFiles
-                ? "bg-bg-surface text-fg border-border-strong"
-                : "bg-bg-surface text-fg-muted border-border hover:text-fg hover:border-border-strong"
-            }`}
-            title="Files the agent wrote to /mnt/session/outputs/"
-          >
-            Files
-          </button>
-        </div>
+      {/* Header — badges row + page-specific action buttons.
+          The redundant `← Sessions / sess-xxx` back-link + id heading
+          was removed; AppBreadcrumb above the page now carries the
+          trail and the entity id. Stop + Files actions live at the
+          right (`ml-auto`) of the badges row so the page-level chrome
+          stays one band tall. */}
+      <div className="pl-3 pr-4 py-3 flex flex-col gap-2 shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
           {/* Trajectory outcome chip — only when the trajectory has actually
@@ -825,6 +800,35 @@ export function SessionDetail() {
           ))}
           <SessionDurationBadge events={events} />
           {sessionMeta.createdAt && <RelativeTimeBadge iso={sessionMeta.createdAt} />}
+          <div className="ml-auto flex items-center gap-2">
+            {/* Stop / Interrupt — only while the session is actively running.
+                Posts user.interrupt scoped to the active thread; server fires
+                thread AbortController + flushes pending events + emits
+                status_idle. Recovery path for stuck-Running sessions where a
+                DO eviction killed the stream and no clean status_idle ever
+                landed. */}
+            {status === "running" && (
+              <button
+                onClick={() => void interrupt()}
+                disabled={interrupting}
+                className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium bg-bg-surface/60 text-fg-muted hover:bg-bg-surface hover:text-fg disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                title="Interrupt the active turn on this thread"
+              >
+                {interrupting ? "Stopping…" : "Stop"}
+              </button>
+            )}
+            <button
+              onClick={() => setShowFiles((v) => !v)}
+              className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+                showFiles
+                  ? "bg-bg-surface text-fg"
+                  : "bg-bg-surface/60 text-fg-muted hover:bg-bg-surface hover:text-fg"
+              }`}
+              title="Files the agent wrote to /mnt/session/outputs/"
+            >
+              Files
+            </button>
+          </div>
         </div>
       </div>
 
@@ -844,7 +848,7 @@ export function SessionDetail() {
       )}
 
       {/* View tabs */}
-      <div role="tablist" aria-label="Session view" className="px-4 sm:px-8 border-b border-border flex items-center gap-1 shrink-0">
+      <div role="tablist" aria-label="Session view" className="pl-3 pr-4 flex items-center gap-1 shrink-0">
         <ViewTab label="Conversation" active={view === "chat"} onClick={() => setView("chat")} />
         <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
         {view === "timeline" && (
@@ -857,7 +861,7 @@ export function SessionDetail() {
         <button
           onClick={() => setShowTrajectory(true)}
           disabled={trajectory === undefined || trajectory === "loading"}
-          className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed border border-border hover:border-border-strong rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
+          className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed bg-bg-surface/60 hover:bg-bg-surface rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
           title={
             trajectory === "loading"
               ? "Loading trajectory…"
@@ -872,7 +876,7 @@ export function SessionDetail() {
 
       {/* Linear context (when triggered by a Linear webhook) */}
       {linear && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-info-subtle text-xs flex items-center gap-2 text-info">
+        <div className="pl-3 pr-4 py-2 bg-info-subtle text-xs flex items-center gap-2 text-info">
           <span>🔗</span>
           <span className="font-medium">Linear</span>
           <span className="opacity-60">·</span>
@@ -895,15 +899,25 @@ export function SessionDetail() {
 
       {/* Slack context (when triggered by a Slack event) */}
       {slack && (
-        <div className="px-4 sm:px-8 py-2 border-b border-border bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet">
+        <div className="pl-3 pr-4 py-2 bg-accent-violet-subtle text-xs flex items-center gap-2 text-accent-violet flex-wrap">
           <span>💬</span>
           <span className="font-medium">Slack</span>
           <span className="opacity-60">·</span>
           <span>
             {slack.channelId ? (
-              <>
-                channel <span className="font-mono">{slack.channelId}</span>
-              </>
+              slack.workspaceId ? (
+                <a
+                  href={`slack://channel?team=${slack.workspaceId}&id=${slack.channelId}`}
+                  className="font-mono underline hover:no-underline"
+                  title="Open in Slack desktop"
+                >
+                  channel {slack.channelId} ↗
+                </a>
+              ) : (
+                <>
+                  channel <span className="font-mono">{slack.channelId}</span>
+                </>
+              )
             ) : (
               "—"
             )}
@@ -918,6 +932,18 @@ export function SessionDetail() {
             <span className="opacity-60 font-mono uppercase tracking-wider text-[10px]">
               {slack.eventKind}
             </span>
+          )}
+          {slack.publicationId && (
+            <>
+              <span className="opacity-60">·</span>
+              <Link
+                to={`/integrations/slack/publish?pub=${slack.publicationId}`}
+                className="underline hover:no-underline"
+                title="Open the Slack publication this session is bound to"
+              >
+                publication →
+              </Link>
+            </>
           )}
         </div>
       )}
@@ -946,7 +972,7 @@ export function SessionDetail() {
                 7) typing dots when only the agent is "thinking" with
                    nothing else streaming yet */}
           <Conversation className="flex-1 min-h-0">
-            <ConversationContent className="px-4 sm:px-8 py-6 gap-4">
+            <ConversationContent className="pl-3 pr-4 py-6 gap-4">
               {(() => {
                 // Server-returned events are now in canonical drain order
                 // (events.seq = INSERT order = what the model saw). The
@@ -1164,14 +1190,19 @@ export function SessionDetail() {
               /events) stays the source of truth. The + button only
               accepts images — they go inline to the model as vision
               inputs. Non-image attachments belong on the mount-based
-              session resources path, not this button. */}
-          <div className="px-4 sm:px-8 py-4 border-t border-border shrink-0">
+              session resources path, not this button.
+
+              Wireless treatment: composer sits flush against the
+              conversation above on a `bg-bg` (white) surface — no
+              line, no top padding, just `pb-4` for breathing room
+              below. */}
+          <div className="pl-3 pr-4 pb-4 bg-bg shrink-0">
             <PromptInput
               accept="image/*"
               multiple
               maxFiles={10}
               maxFileSize={25 * 1024 * 1024}
-              onError={(err) => toast(err.message, "error")}
+              onError={(err) => toast.error(err.message)}
               globalDrop
               onSubmit={async ({ text, files }) => {
                 // PromptInput captured the textarea's value into `text`
@@ -1235,127 +1266,25 @@ export function SessionDetail() {
  *  the trajectory is loading / errored / still running so we never
  *  paint an inaccurate state. The "running" outcome is intentionally
  *  squelched here — StatusPill already renders the live status. */
-function TrajectoryOutcomeChip({
-  trajectory,
-}: {
-  trajectory: Trajectory | "loading" | "error" | undefined;
-}) {
-  if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
-  if (trajectory.outcome === "running") return null;
-  const tone = outcomeToStatusTone(trajectory.outcome);
-  return (
-    <StatusPill
-      status={tone}
-      label={`Outcome: ${trajectory.outcome}`}
-    />
-  );
-}
-
-/** Reward chip rendered in the session header strip. Pure read-out of
- *  the verifier output; tooltip shows verifier_id for debugging. */
-function TrajectoryRewardChip({
-  trajectory,
-}: {
-  trajectory: Trajectory | "loading" | "error" | undefined;
-}) {
-  if (!trajectory || trajectory === "loading" || trajectory === "error") return null;
-  const r = trajectory.reward;
-  if (!r) return null;
-  const headline = rewardHeadline(r);
-  const isPass = r.final_reward >= 0.99;
-  const isFail = r.final_reward <= 0;
-  // Reuse StatusPill tone tokens so the visual language stays consistent
-  // with the outcome chip next to it (success = same green, failure = red).
-  const tone = isPass ? "completed" : isFail ? "errored" : "neutral";
-  const titleParts = [
-    `Reward: ${r.final_reward.toFixed(4)}`,
-    r.verifier_id ? `verifier: ${r.verifier_id}` : null,
-    r.computed_at ? `computed: ${new Date(r.computed_at).toLocaleString()}` : null,
-  ].filter(Boolean) as string[];
-  return (
-    <span title={titleParts.join(" · ")}>
-      <StatusPill status={tone} label={`Reward: ${headline}`} />
-    </span>
-  );
-}
-
-/** Trajectory viewer modal — Phase 3 minimum-viable: pretty-printed
- *  JSON with a Download button. Anthropic Messages / Inspect AI / OTel
- *  projections are Phase 4. The download uses an in-memory blob URL
- *  so we don't have to round-trip to a server endpoint. */
-function TrajectoryViewerModal({
-  open,
-  onClose,
-  sessionId,
-  trajectory,
-}: {
-  open: boolean;
-  onClose: () => void;
-  sessionId: string;
-  trajectory: Trajectory | "loading" | "error" | undefined;
-}) {
-  const ready = trajectory && trajectory !== "loading" && trajectory !== "error";
-  const json = ready ? JSON.stringify(trajectory, null, 2) : "";
-
-  function download() {
-    if (!ready) return;
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `trajectory-${sessionId}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Trajectory"
-      subtitle={ready ? `${trajectory.trajectory_id} · session ${sessionId}` : `session ${sessionId}`}
-      maxWidth="max-w-4xl"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button onClick={download} disabled={!ready}>Download JSON</Button>
-        </>
-      }
-    >
-      {trajectory === "loading" && (
-        <div className="text-sm text-fg-subtle">Loading trajectory…</div>
-      )}
-      {trajectory === "error" && (
-        <div className="text-sm text-danger">
-          Trajectory unavailable. The session may not have any events yet, or the
-          sandbox worker is unreachable. Retry by reloading the page.
-        </div>
-      )}
-      {trajectory === undefined && (
-        <div className="text-sm text-fg-subtle">No trajectory loaded yet.</div>
-      )}
-      {ready && (
-        <pre className="font-mono text-[11px] bg-bg-surface border border-border rounded px-3 py-2 overflow-auto max-h-[60vh] text-fg whitespace-pre">
-          {json}
-        </pre>
-      )}
-    </Modal>
-  );
-}
 
 function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  // Wireless tab marker: picked the ghost-pill option (bg-bg-surface)
+  // over an underline or accent dot because the entire session-detail
+  // surface drops outer dividers in this refactor — leaving a per-tab
+  // underline behind would have re-introduced exactly the stacked-lines
+  // look the page is trying to escape. Bold + brand text + a subtle
+  // surface fill keeps the active state clearly distinguishable without
+  // any line at all.
   return (
     <button
       onClick={onClick}
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      className={`inline-flex items-center justify-center px-3 py-2.5 min-h-11 sm:min-h-0 text-sm border-b-2 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+      className={`inline-flex items-center justify-center px-3 py-2 min-h-11 sm:min-h-0 text-sm rounded-md my-1.5 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
         active
-          ? "border-brand text-fg font-medium"
-          : "border-transparent text-fg-subtle hover:text-fg-muted"
+          ? "bg-bg-surface text-brand font-semibold"
+          : "text-fg-subtle hover:text-fg-muted hover:bg-bg-surface/60"
       }`}
     >
       {label}
@@ -1383,10 +1312,10 @@ function ThreadTab({
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      className={`py-1.5 min-h-11 sm:min-h-0 text-xs whitespace-nowrap border-b-2 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] flex items-center gap-1 ${
+      className={`py-1 min-h-11 sm:min-h-0 text-xs whitespace-nowrap rounded-md my-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] flex items-center gap-1 ${
         active
-          ? "border-info text-fg font-medium"
-          : "border-transparent text-fg-subtle hover:text-fg-muted"
+          ? "bg-bg-surface text-info font-semibold"
+          : "text-fg-subtle hover:text-fg-muted hover:bg-bg-surface/60"
       }`}
       style={{ paddingLeft: `${0.75 + depth * 0.75}rem`, paddingRight: "0.75rem" }}
     >
@@ -1448,8 +1377,8 @@ function ThreadTree({
   // is actually readable.
   const isFlat = maxDepth <= 1;
   const containerClass = isFlat
-    ? "px-4 sm:px-8 border-b border-border flex items-center gap-1 shrink-0 overflow-x-auto"
-    : "px-4 sm:px-8 py-1 border-b border-border flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
+    ? "pl-3 pr-4 flex items-center gap-1 shrink-0 overflow-x-auto"
+    : "pl-3 pr-4 py-1 flex flex-col items-stretch gap-0 shrink-0 overflow-y-auto max-h-40";
   return (
     <div role="tablist" aria-label="Threads" className={containerClass}>
       {flat.map((n) => (
@@ -1499,182 +1428,6 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
   );
 }
 
-function ResourcePanel({
-  panel,
-  onClose,
-}: {
-  panel: { kind: "agent" | "environment" | "vault"; id: string };
-  onClose: () => void;
-}) {
-  // useApi returns { api, streamEvents } — destructure the call function
-  // explicitly. A previous version assigned the whole object to `api` and
-  // then called `api(url)`, which threw "api is not a function" and white-
-  // screened the page on first badge click.
-  const { api } = useApi();
-  const [data, setData] = useState<Record<string, unknown> | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    setData(null);
-    setErr(null);
-    const url =
-      panel.kind === "agent"
-        ? `/v1/agents/${panel.id}`
-        : panel.kind === "environment"
-        ? `/v1/environments/${panel.id}`
-        : `/v1/vaults/${panel.id}`;
-    api<Record<string, unknown>>(url)
-      .then((d) => setData(d))
-      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-    // `api` from useApi() is a fresh closure every render — including it in
-    // deps caused setData → re-render → new api → effect refire → infinite
-    // loop. The stable inputs are kind + id; api itself is callable as-is.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panel.kind, panel.id]);
-
-  const linkPath =
-    panel.kind === "agent"
-      ? `/agents/${panel.id}`
-      : panel.kind === "environment"
-      ? `/environments/${panel.id}`
-      : `/vaults/${panel.id}`;
-  const titleKind = panel.kind[0].toUpperCase() + panel.kind.slice(1);
-
-  // For agent / env, prefer name + description in the visible header.
-  const displayName = (data?.name as string | undefined) ?? panel.id;
-  const description = (data?.description as string | undefined) ?? null;
-
-  return (
-    <aside className="w-[420px] shrink-0 border-l border-border bg-bg flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-border flex items-start gap-3 shrink-0">
-        <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-wide text-fg-subtle font-mono">
-            {titleKind}
-          </div>
-          <div className="text-base font-semibold text-fg truncate">{displayName}</div>
-          {description && (
-            <div className="text-xs text-fg-muted mt-0.5 line-clamp-2">{description}</div>
-          )}
-          <div className="text-[10px] font-mono text-fg-subtle mt-1 truncate">{panel.id}</div>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-fg-subtle hover:text-fg-muted text-lg leading-none inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-8 sm:min-h-8 rounded hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-          title="Close"
-          aria-label="Close panel"
-        >
-          ×
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
-        {err && <div className="text-danger">Failed to load: {err}</div>}
-        {!data && !err && <div className="text-fg-subtle">Loading…</div>}
-        {data && (
-          <pre className="font-mono text-fg-muted bg-bg-surface/40 border border-border/40 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        )}
-      </div>
-      <div className="px-4 py-3 border-t border-border shrink-0">
-        <Link
-          to={linkPath}
-          className="inline-flex items-center gap-1.5 text-sm text-info hover:text-info/80 font-medium"
-        >
-          Go to {panel.kind} →
-        </Link>
-      </div>
-    </aside>
-  );
-}
-
-interface SessionOutputFile {
-  filename: string;
-  size_bytes: number;
-  uploaded_at: string;
-  media_type: string;
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function FilesPanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
-  const { api } = useApi();
-  const [files, setFiles] = useState<SessionOutputFile[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    setFiles(null);
-    setErr(null);
-    api<{ data: SessionOutputFile[]; has_more: boolean }>(
-      `/v1/sessions/${sessionId}/outputs`,
-    )
-      .then((d) => setFiles(d.data ?? []))
-      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-    // api closure changes every render; sessionId is the only stable input
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
-
-  return (
-    <aside className="w-[420px] shrink-0 border-l border-border bg-bg flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-border flex items-start gap-3 shrink-0">
-        <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-wide text-fg-subtle font-mono">
-            Files
-          </div>
-          <div className="text-base font-semibold text-fg">Session outputs</div>
-          <div className="text-xs text-fg-muted mt-0.5">
-            Files the agent wrote to <code className="font-mono">/mnt/session/outputs/</code>
-          </div>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-fg-subtle hover:text-fg-muted text-lg leading-none inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-8 sm:min-h-8 rounded hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-          title="Close"
-          aria-label="Close panel"
-        >
-          ×
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-4 text-xs">
-        {err && <div className="text-danger">Failed to load: {err}</div>}
-        {!files && !err && <div className="text-fg-subtle">Loading…</div>}
-        {files && files.length === 0 && (
-          <div className="text-fg-subtle">
-            No files yet. The agent must write under <code className="font-mono">/mnt/session/outputs/</code> for files to appear here.
-          </div>
-        )}
-        {files && files.length > 0 && (
-          <ul className="space-y-1">
-            {files.map((f) => (
-              <li
-                key={f.filename}
-                className="flex items-center gap-3 py-2 border-b border-border/40 last:border-b-0"
-              >
-                <div className="min-w-0 flex-1">
-                  <a
-                    href={`/v1/sessions/${sessionId}/outputs/${encodeURIComponent(f.filename)}`}
-                    download={f.filename}
-                    className="font-mono text-fg hover:text-info truncate block"
-                    title={f.filename}
-                  >
-                    {f.filename}
-                  </a>
-                  <div className="text-[10px] text-fg-subtle mt-0.5">
-                    {formatBytes(f.size_bytes)} · {f.media_type} · {new Date(f.uploaded_at).toLocaleString()}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </aside>
-  );
-}
 
 /**
  * Renders a single canonical event using ai-elements primitives. Replaces
@@ -1803,7 +1556,7 @@ function EventRender({
                 Scheduled wakeup
               </span>
             </div>
-            <MessageContent className="border border-info/30 rounded-2xl rounded-bl-sm px-4 py-3 bg-bg-surface">
+            <MessageContent className="rounded-2xl rounded-bl-sm px-4 py-3 bg-info-subtle text-info">
               {text}
             </MessageContent>
           </Message>
@@ -1815,8 +1568,13 @@ function EventRender({
       // border + hourglass label since drainEventQueue hasn't picked it
       // up yet. Live: default ai-elements user bubble (right-aligned,
       // bg-secondary which we've aliased to OMA's bg-surface).
-      const cancelledOverride = "border border-border-strong line-through opacity-70";
-      const pendingOverride = "border border-border-strong";
+      // Wireless: dropped the border-border-strong outline on both
+      // override states — line-through + opacity (cancelled) and the
+      // ⏳/Pending label above the bubble (pending) carry the signal
+      // without a per-bubble outline competing with the surrounding
+      // air.
+      const cancelledOverride = "line-through opacity-70";
+      const pendingOverride = "opacity-80";
       return (
         <Message from="user">
           {(isPending || isCancelled) && (
@@ -1887,17 +1645,33 @@ function EventRender({
         : typeof rawContent === "string"
           ? rawContent
           : JSON.stringify(rawContent, null, 2);
-      // State maps to the Tool badge: input-available (Running) while
-      // we have args but no result; output-available (Completed) once
-      // the paired result lands. We don't surface output-error because
-      // the OMA tool_result spec doesn't carry a failure flag.
-      const state = pairedResult ? "output-available" : "input-available";
+      // is_error is set by the agent runtime when a tool call failed
+      // (bash non-zero exit + stderr surfaced, mcp tool returned an
+      // error envelope, _finalizeStaleTurns injected an abort placeholder
+      // for DO-eviction recovery, etc.). When present we route the same
+      // payload through ToolOutput.errorText so the Tool block renders
+      // in destructive styling, and badge to 'output-error' so the
+      // header pill shows Failed instead of Completed. Without this,
+      // bash returning "Sandbox container failed to start after 10
+      // attempts..." looked identical to a successful run.
+      const isError = pairedResult
+        ? Boolean((pairedResult as { is_error?: boolean }).is_error)
+        : false;
+      const errorText = isError
+        ? (typeof output === "string" ? output : JSON.stringify(output ?? null))
+        : undefined;
+      const state = pairedResult
+        ? (isError ? "output-error" : "output-available")
+        : "input-available";
       return (
         <Tool>
           <ToolHeader type="dynamic-tool" toolName={title} state={state} />
           <ToolContent>
             <ToolInput input={event.input ?? {}} />
-            <ToolOutput output={output} errorText={undefined} />
+            <ToolOutput
+              output={isError ? undefined : output}
+              errorText={errorText}
+            />
           </ToolContent>
         </Tool>
       );
@@ -1932,10 +1706,10 @@ function EventRender({
 
     case "session.error":
       return (
-        <div className="max-w-2xl bg-danger-subtle border border-danger/30 rounded-lg px-4 py-2.5 text-sm text-danger">
+        <div className="max-w-2xl bg-danger-subtle rounded-lg px-4 py-2.5 text-sm text-danger">
           <div>Error: {event.error}</div>
           {modelErrorCause && (
-            <div className="mt-1.5 pt-1.5 border-t border-danger/20 text-[12px] opacity-90">
+            <div className="mt-1.5 pt-1.5 text-[12px] opacity-90">
               <span className="font-medium">Cause</span>
               {modelErrorCause.model && (
                 <span className="ml-1 font-mono opacity-75">({modelErrorCause.model})</span>
@@ -1948,7 +1722,7 @@ function EventRender({
 
     case "session.warning":
       return (
-        <div className="max-w-2xl bg-warning-subtle border border-warning/30 rounded-lg px-4 py-2.5 text-sm text-warning">
+        <div className="max-w-2xl bg-warning-subtle rounded-lg px-4 py-2.5 text-sm text-warning">
           <div className="font-medium mb-0.5">Warning ({String(event.source ?? "")})</div>
           <div>{String(event.message ?? "")}</div>
         </div>

@@ -114,6 +114,8 @@ export class InMemorySessionRepo implements SessionRepo {
       includeArchived: boolean;
       limit: number;
       after?: import("@open-managed-agents/shared").PageCursor;
+      status?: SessionStatus;
+      q?: string;
     },
   ): Promise<{ items: SessionRow[]; hasMore: boolean }> {
     let rows = Array.from(this.sessions.values()).filter(
@@ -121,6 +123,11 @@ export class InMemorySessionRepo implements SessionRepo {
     );
     if (opts.agentId) rows = rows.filter((s) => s.agent_id === opts.agentId);
     if (!opts.includeArchived) rows = rows.filter((s) => s.archived_at === null);
+    if (opts.status) rows = rows.filter((s) => s.status === opts.status);
+    if (opts.q) {
+      const qLower = opts.q.toLowerCase();
+      rows = rows.filter((s) => s.title.toLowerCase().includes(qLower));
+    }
     rows.sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
     if (opts.after) {
       const { createdAt: t, id } = opts.after;
