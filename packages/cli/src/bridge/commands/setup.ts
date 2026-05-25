@@ -326,7 +326,10 @@ async function installAndReport(opts: SetupOpts): Promise<void> {
       return;
   }
   process.stderr.write("\n");
-  process.stderr.write(`${c.bold("Done.")} the runtime should appear online at ${c.cyan(opts.browserOrigin)}\n\n`);
+  process.stderr.write(`${c.bold("Done.")} the runtime should appear online at ${c.cyan(opts.browserOrigin)}\n`);
+  process.stderr.write(
+    `${c.dim("  After joining new workspaces, run `oma bridge refresh` to authorize them on this daemon.")}\n\n`,
+  );
 }
 
 /** Replace this process with `oma bridge daemon` (foreground). Uses

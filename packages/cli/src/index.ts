@@ -2317,6 +2317,16 @@ async function main() {
         await runRefresh();
         return;
       }
+      case "profiles": {
+        const sub2 = args[2] ?? "list";
+        if (sub2 !== "list" && sub2 !== "ls") {
+          console.error(`Unknown subcommand: oma bridge profiles ${sub2}\n  Try: oma bridge profiles list`);
+          process.exit(1);
+        }
+        const { runProfilesList } = await import("./bridge/commands/profiles.js");
+        await runProfilesList();
+        return;
+      }
       default:
         console.error(
           "oma bridge — pair a local ACP agent with OMA\n\n" +
@@ -2324,6 +2334,7 @@ async function main() {
           "                                       Pair + install service + start daemon\n" +
           "  oma bridge status                    Creds + service kind + probe server\n" +
           "  oma bridge refresh                   Reconcile authorized tenants + reload daemon\n" +
+          "  oma bridge profiles list             List all installed daemon profiles on this machine\n" +
           "  oma bridge agents refresh [--yes]    Re-scan + offer-install wrappers + reload\n" +
           "  oma bridge uninstall                 Stop service + remove creds\n" +
           "  oma bridge daemon                    (internal — launched by service mgr / for debug)\n" +
