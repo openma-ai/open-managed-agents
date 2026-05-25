@@ -29,8 +29,10 @@ rsvg-convert -w 950 -h 610 logo.svg -o logo.png
 # OG card
 rsvg-convert -w 1200 -h 630 og-default.svg -o og-default.png
 
-# Favicons (uses inline SVG generator script — see commit history for the
-# square `om` mark used here)
+# Favicons. `_favicon-square.svg` is a thin wrapper that centers
+# `logo.svg` (the canonical brand mark) inside a 512×512 frame with
+# padding — used only as the rasterization source so the PNG set
+# matches the SVG favicon at `/logo.svg`.
 rsvg-convert -w 180 -h 180 _favicon-square.svg -o apple-touch-icon.png
 rsvg-convert -w 192 -h 192 _favicon-square.svg -o favicon-192.png
 rsvg-convert -w 512 -h 512 _favicon-square.svg -o favicon-512.png

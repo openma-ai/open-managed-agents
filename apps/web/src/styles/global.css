@@ -51,6 +51,62 @@ html {
   color: var(--color-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* Smooth-scroll for in-page anchors (header is sticky, so we need
+     the scroll-margin so anchors clear it). */
+  scroll-behavior: smooth;
+}
+
+/* Anchor targets clear the sticky header (h-13 at desktop). Anything
+   you can scroll to via #anchor should set this — applied broadly
+   here so we don't need per-element scroll-margin. */
+:where(h1, h2, h3, h4, [id]) {
+  scroll-margin-top: 5rem;
+}
+
+/* Sticky-header polish: small shadow once the page leaves the top. JS
+   toggles [data-scrolled] in Base.astro. The base header has a
+   backdrop-blur so content scrolls behind it gracefully. */
+[data-site-header] {
+  transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
+}
+[data-site-header][data-scrolled] {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+  border-bottom-color: var(--color-border-strong);
+}
+.dark [data-site-header][data-scrolled] {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Section reveal: starts faded + nudged down, fades in once it enters
+   the viewport. IntersectionObserver in Base.astro adds .is-visible.
+   Pages opt in by adding `data-reveal` to a section. Gated behind
+   html.js so a JS-disabled or pre-hydration render shows the content
+   normally instead of stuck-invisible. Also off for reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html.js [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 600ms ease-out, transform 600ms ease-out;
+    will-change: opacity, transform;
+  }
+  html.js [data-reveal].is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Card hover-lift — applies to anything tagged data-lift (FeatureCard,
+   PricingCard, BlogPostCard). Cheap GPU transform, no layout cost. */
+[data-lift] {
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out, border-color 180ms ease-out;
+  will-change: transform;
+}
+[data-lift]:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.12);
+}
+.dark [data-lift]:hover {
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.6);
 }
 
 /* Hide body until brand fonts are ready. Eliminates the FOUT swap from

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Square wrapper for the brand logo, used only as the rasterization
+     source for the PNG favicon set. Do not link this file directly —
+     the SVG favicon points at /logo.svg (the canonical brand asset).
+     The wrapper just centers logo.svg in a 512×512 frame with margin
+     so the rasterized PNGs aren't bleed-to-edge at small sizes. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="512" height="512" viewBox="0 0 512 512">
+  <!-- logo.svg natural ratio = 190:122 ≈ 1.557. Fit width to 440 (36px
+       margin l/r), height auto-derives to ~282.5, y-centered. -->
+  <image xlink:href="logo.svg" x="36" y="115" width="440" height="283"/>
+</svg>

@@ -70,8 +70,12 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
 
-    <!-- Theme: system preference with manual override. -->
+    <!-- Theme: system preference with manual override. Also flips an
+         `html.js` flag so JS-gated CSS rules (e.g. the scroll-reveal
+         hidden state) only apply when JS is actually running — keeps
+         JS-disabled visitors from staring at invisible sections. -->
     <script is:inline>
+      document.documentElement.classList.add("js");
       const t = localStorage.getItem("theme");
       if (t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches)) {
         document.documentElement.classList.add("dark");
@@ -160,7 +164,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       Skip to content
     </a>
 
-    <header class="border-b border-[var(--color-border)]">
+    <header
+      class="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
+      data-site-header
+    >
       <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
         <a
           href="/"
@@ -306,7 +313,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <!-- Theme toggle: writes localStorage and flips .dark on <html>.
          Pairs with the FOUC-free bootstrap script in <head>. Also closes
          the mobile menu when a link inside it is clicked or when clicking
-         outside, since <details> doesn't auto-close on navigation. -->
+         outside, since <details> doesn't auto-close on navigation.
+         Also: toggles a data-scrolled flag on the sticky header so it
+         picks up a shadow once the page leaves the top — cheap depth
+         cue that costs nothing when reduced-motion is on. -->
     <script is:inline>
       // Sync theme-toggle aria-pressed with current theme on load + after each click.
       const syncThemePressed = () => {
@@ -341,6 +351,38 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         for (const a of menu.querySelectorAll('a')) {
           a.addEventListener('click', () => { menu.open = false; });
         }
+      }
+      // Sticky-header scroll state. Toggle once we're past 8px so the
+      // shadow only appears when there's actually content behind it.
+      const siteHeader = document.querySelector('[data-site-header]');
+      if (siteHeader) {
+        const syncScrolled = () => {
+          if (window.scrollY > 8) siteHeader.setAttribute('data-scrolled', '');
+          else siteHeader.removeAttribute('data-scrolled');
+        };
+        syncScrolled();
+        window.addEventListener('scroll', syncScrolled, { passive: true });
+      }
+
+      // Scroll-reveal: sections with [data-reveal] fade in once they
+      // enter the viewport. One-shot via `once: true`-style unobserve
+      // so we don't pay observer cost forever. Reduced-motion users
+      // skip this entirely (CSS guards the hidden state).
+      const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const revealTargets = document.querySelectorAll('[data-reveal]');
+      if (!reduceMotion && 'IntersectionObserver' in window && revealTargets.length) {
+        const io = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              io.unobserve(entry.target);
+            }
+          }
+        }, { rootMargin: '0px 0px -10% 0px', threshold: 0.05 });
+        for (const el of revealTargets) io.observe(el);
+      } else {
+        // No-motion / no-IO fallback: show everything immediately.
+        for (const el of revealTargets) el.classList.add('is-visible');
       }
     </script>
   </body>

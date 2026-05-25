@@ -1,4 +1,7 @@
 // Tiny shim that fronts the static Astro build:
+//   - http://*  → 301 → https://*  (HTTPS is canonical, kills the
+//     "Alternate page with proper canonical tag" GSC noise we'd
+//     otherwise rack up on every URL)
 //   - www.openma.dev/* → 301 → openma.dev/*  (apex is canonical)
 //   - openma.dev/{login,sessions,agents,...} → 301 → app.openma.dev/...
 //     (old bookmarks from when apex was the Console SPA)
@@ -70,6 +73,19 @@ function apexToApp(url: URL): URL {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // HTTP → HTTPS. Cloudflare terminates TLS at the edge, so the
+    // worker sees `protocol === "http:"` only for visitors who actually
+    // typed http:// (or for crawlers that probe both schemes). Without
+    // this redirect Google indexes the http variant as an alternate and
+    // GSC counts every page twice under "Alternate page with proper
+    // canonical tag." Cheap to do here; survives even if the zone's
+    // "Always Use HTTPS" setting gets flipped off.
+    if (url.protocol === "http:") {
+      const httpsUrl = new URL(url.toString());
+      httpsUrl.protocol = "https:";
+      return Response.redirect(httpsUrl.toString(), 301);
+    }
 
     if (url.hostname.startsWith("www.")) {
       return Response.redirect(wwwToApex(url).toString(), 301);
