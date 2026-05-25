@@ -263,7 +263,7 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
   // key to each spawned ACP child. /exchange always re-mints (it's the
   // first-touch path; legacy backfill rows get replaced; an unusual
   // re-registration with an existing real id also gets rotated).
-  const memberships = await c.env.AUTH_DB
+  const memberships = await c.env.MAIN_DB
     .prepare(`SELECT tenant_id, role FROM "membership" WHERE user_id = ?`)
     .bind(row.user_id)
     .all<{ tenant_id: string; role: string }>();
@@ -289,7 +289,7 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
     // created_at on conflict while always rotating to the freshly-minted
     // api_key id (replacing __legacy__ or any stale real id). Clearing
     // revoked_at re-activates rows that an earlier /refresh soft-deleted.
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(
         `INSERT INTO "runtime_tenants" (runtime_id, tenant_id, agent_api_key_id, created_at, revoked_at)
          VALUES (?, ?, ?, ?, NULL)
@@ -306,7 +306,7 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
   const tenantNames = new Map<string, string>();
   if (tenantIds.length > 0) {
     const placeholders = tenantIds.map(() => "?").join(",");
-    const { results: tenantRows } = await c.env.AUTH_DB
+    const { results: tenantRows } = await c.env.MAIN_DB
       .prepare(`SELECT id, name FROM "tenant" WHERE id IN (${placeholders})`)
       .bind(...tenantIds)
       .all<{ id: string; name: string }>();
@@ -355,7 +355,7 @@ runtimeDaemonRoutes.get("/me", async (c) => {
   const ok = await authenticateRuntimeToken(c.env, c.req.header("authorization") ?? "");
   if (!ok) return c.json({ error: "unauthorized" }, 401);
 
-  const runtime = await c.env.AUTH_DB
+  const runtime = await c.env.MAIN_DB
     .prepare(
       `SELECT id, machine_id, hostname, os, version, status, last_heartbeat, created_at
        FROM "runtimes" WHERE id = ?`,
@@ -376,7 +376,7 @@ runtimeDaemonRoutes.get("/me", async (c) => {
   // tenants[] — left join membership for role (so a runtime authorized
   // for a tenant the user has since left still shows the row, with role
   // null. The daemon ignores those entries; the next /refresh will revoke).
-  const { results: tenantRows } = await c.env.AUTH_DB
+  const { results: tenantRows } = await c.env.MAIN_DB
     .prepare(
       `SELECT rt.tenant_id AS id, t.name AS name, m.role AS role
        FROM "runtime_tenants" rt
@@ -421,13 +421,13 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
     return c.json({ error: "not found" }, 404);
   }
 
-  const runtime = await c.env.AUTH_DB
+  const runtime = await c.env.MAIN_DB
     .prepare(`SELECT hostname FROM "runtimes" WHERE id = ?`)
     .bind(ok.runtime_id)
     .first<{ hostname: string }>();
   if (!runtime) return c.json({ error: "runtime not found" }, 404);
 
-  const memberships = await c.env.AUTH_DB
+  const memberships = await c.env.MAIN_DB
     .prepare(`SELECT tenant_id, role FROM "membership" WHERE user_id = ?`)
     .bind(ok.user_id)
     .all<{ tenant_id: string; role: string }>();
@@ -435,7 +435,7 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
   const membershipById = new Map<string, { tenant_id: string; role: string }>();
   for (const m of membershipRows) membershipById.set(m.tenant_id, m);
 
-  const liveTenantRows = await c.env.AUTH_DB
+  const liveTenantRows = await c.env.MAIN_DB
     .prepare(
       `SELECT tenant_id, agent_api_key_id FROM "runtime_tenants"
        WHERE runtime_id = ? AND revoked_at IS NULL`,
@@ -462,7 +462,7 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
   // doesn't see its newly-minted key wiped.
   for (const r of toRevoke) {
     await revokeAgentApiKey(kv, r.agent_api_key_id);
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(
         `UPDATE "runtime_tenants" SET revoked_at = ? WHERE runtime_id = ? AND tenant_id = ?`,
       )
@@ -478,7 +478,7 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
     await revokeAgentApiKey(kv, oldAkid);
     const { plain, id: newAkid } = await issueAgentApiKey(kv, ok.user_id, m.tenant_id, runtime.hostname);
     mintedKeys.set(m.tenant_id, plain);
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(
         `UPDATE "runtime_tenants" SET agent_api_key_id = ? WHERE runtime_id = ? AND tenant_id = ?`,
       )
@@ -490,7 +490,7 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
   for (const m of toAdd) {
     const { plain, id: newAkid } = await issueAgentApiKey(kv, ok.user_id, m.tenant_id, runtime.hostname);
     mintedKeys.set(m.tenant_id, plain);
-    await c.env.AUTH_DB
+    await c.env.MAIN_DB
       .prepare(
         `INSERT INTO "runtime_tenants" (runtime_id, tenant_id, agent_api_key_id, created_at, revoked_at)
          VALUES (?, ?, ?, ?, NULL)
@@ -506,7 +506,7 @@ runtimeDaemonRoutes.post("/:id/refresh", async (c) => {
   const tenantNames = new Map<string, string>();
   if (tenantIds.length > 0) {
     const placeholders = tenantIds.map(() => "?").join(",");
-    const { results: nameRows } = await c.env.AUTH_DB
+    const { results: nameRows } = await c.env.MAIN_DB
       .prepare(`SELECT id, name FROM "tenant" WHERE id IN (${placeholders})`)
       .bind(...tenantIds)
       .all<{ id: string; name: string }>();
@@ -886,7 +886,7 @@ export async function authenticateRuntimeToken(
     .bind(hash)
     .first<{ runtime_id: string; user_id: string; tenant_id: string }>();
   if (!row) return null;
-  const tenantRows = await env.AUTH_DB
+  const tenantRows = await env.MAIN_DB
     .prepare(`SELECT tenant_id FROM "runtime_tenants" WHERE runtime_id = ? AND revoked_at IS NULL`)
     .bind(row.runtime_id)
     .all<{ tenant_id: string }>();

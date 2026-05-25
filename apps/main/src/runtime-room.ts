@@ -444,7 +444,7 @@ export class RuntimeRoom extends DurableObject<Env> {
     if (this.#authorizedTenants !== null) return;
     await this.ensureIdentity();
     if (!this.runtimeId) return;
-    const { results } = await this.env.AUTH_DB
+    const { results } = await this.env.MAIN_DB
       .prepare(`SELECT tenant_id FROM "runtime_tenants" WHERE runtime_id = ? AND revoked_at IS NULL`)
       .bind(this.runtimeId)
       .all<{ tenant_id: string }>();
