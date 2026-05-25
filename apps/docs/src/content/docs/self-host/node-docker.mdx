@@ -35,10 +35,18 @@ on both backends regardless.
 ## Quickstart (Docker, SQLite)
 
 ```bash
-git clone https://github.com/anthropics/open-managed-agents.git
+git clone https://github.com/open-ma/open-managed-agents.git
 cd open-managed-agents
 cp .env.example .env
-$EDITOR .env   # set ANTHROPIC_API_KEY + BETTER_AUTH_SECRET (openssl rand -hex 32)
+
+# Two secrets are required before first boot — both generated locally:
+#   BETTER_AUTH_SECRET   — signs Console sessions
+#   PLATFORM_ROOT_SECRET — encrypts credentials, model-card API keys, integration tokens
+#                          (lose it and every encrypted row is unreadable — back it up)
+$EDITOR .env
+# BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+# PLATFORM_ROOT_SECRET=$(openssl rand -base64 32)
+# ANTHROPIC_API_KEY is optional — in production, prefer a per-tenant Model Card.
 
 # First time builds the image; subsequent runs skip --build
 docker compose up -d --build
@@ -56,11 +64,11 @@ Drive the harness end-to-end:
 
 ```bash
 AID=$(curl -s -X POST localhost:8787/v1/agents -H 'content-type: application/json' \
-  -d '{"name":"hello","model":"claude-sonnet-4-6","tools":[{"type":"bash"}]}' \
+  -d '{"name":"hello","model":"claude-sonnet-4-6","tools":[{"type":"agent_toolset_20260401"}]}' \
   | jq -r .id)
 
 SID=$(curl -s -X POST localhost:8787/v1/sessions -H 'content-type: application/json' \
-  -d "{\"agent_id\":\"$AID\"}" | jq -r .id)
+  -d "{\"agent\":\"$AID\"}" | jq -r .id)
 
 curl -N localhost:8787/v1/sessions/$SID/events/stream &
 

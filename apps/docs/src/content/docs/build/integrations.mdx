@@ -42,17 +42,20 @@ export interface IntegrationProvider {
 
 ## Anatomy of an existing provider
 
-Look at `apps/integrations/src/routes/linear/` for a complete reference:
+Look at `packages/linear/` (provider logic) + `apps/integrations/src/routes/linear/publications.ts` (thin CF wrapper) for a complete reference. The split is the same for GitHub and Slack:
 
 ```text
-apps/integrations/src/routes/linear/
-├── install.ts        // OAuth start + callback
-├── webhook.ts        // Verify signature, parse event, dispatch
-├── tools.ts          // mcp_linear_* tool definitions + executors
-└── publication.ts    // Scopes (comment.create, issue.update, etc.)
+packages/<provider>/src/
+├── provider.ts        // implements IntegrationProvider — OAuth/PAT install, publish flow, MCP wiring
+├── webhook/parse.ts   // verify signature, parse event → typed dispatch
+├── config.ts          // capabilities (ALL_*_CAPABILITIES + DEFAULT_*_CAPABILITIES) + MCP URL
+└── oauth/             // OAuth client (where applicable)
+
+apps/integrations/src/routes/<provider>/
+└── publications.ts    // thin CF route that delegates into the provider
 ```
 
-Each is small: install/callback is ~50 lines; webhook handling is ~80; tools are one block per capability. The interesting design work is in **what scopes you expose** and **how you map webhooks to dispatches**, not in plumbing.
+Webhook entry mounting lives in `packages/http-routes/src/integrations/gateway.ts` (shared by both CF and Node hosts). The interesting design work is in **which capabilities you expose** and **how you map webhooks to dispatches**, not in plumbing.
 
 ## Build a new provider
 
@@ -84,11 +87,11 @@ The base provider verifies webhook signatures using `PLATFORM_ROOT_SECRET` for o
 
 ## MCP tool design
 
-Each tool is one capability — favor many small tools over few mega-tools. Names are namespaced as `mcp_<provider>_<tool>`. Input schemas are JSON Schema.
+Each tool is one capability — favor many small tools over few mega-tools. Names are namespaced as `mcp__<provider>__<tool>` (double underscore). Input schemas are JSON Schema.
 
 ```ts
 {
-  name: 'mcp_jira_update_issue_status',
+  name: 'mcp__jira__update_issue_status',
   description: 'Move a Jira issue to a new status.',
   inputSchema: {
     type: 'object',

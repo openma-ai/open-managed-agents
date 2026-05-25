@@ -1,138 +1,65 @@
 ---
 title: OAuth Apps
-description: Register your own GitHub App, Linear OAuth app, and Slack app for a self-hosted openma deployment.
+description: How Linear / GitHub / Slack integrations bootstrap on a self-host deployment — per-publication Apps, not deploy-wide secrets.
 ---
 
 import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
 
-Each integration needs its own OAuth app in your account, registered against the third-party. This is unavoidable — the hosted openma.dev uses Anthropic's app credentials, you need yours.
+**Big picture: there is no deploy-wide OAuth App to register.** Linear / GitHub / Slack integrations are **per-publication** — every agent publication registers its own Linear OAuth App / GitHub App / Slack App at install time, via the Console wizard. Credentials are stored encrypted on the publication row under `PLATFORM_ROOT_SECRET`. The operator's job is just to make the integrations gateway publicly reachable.
 
-Skip the integrations you don't plan to use. The platform works fine with zero integrations.
+What you (the operator) need to do once for the whole deployment:
+
+1. Set `GATEWAY_ORIGIN` (or `PUBLIC_BASE_URL` — gateway falls back to it) to the **public HTTPS URL** of `apps/integrations`. Slack and GitHub both verify webhook + OAuth URLs before letting an install complete, so a localhost or self-signed setup will fail.
+2. Set `PLATFORM_ROOT_SECRET` (required for any install — see [Configuration](/reference/configuration/)).
+3. Set `INTEGRATIONS_INTERNAL_SECRET` so `apps/main` and `apps/integrations` can talk.
+4. (Optional) Set `INTEGRATIONS_INTERNAL_TOKEN` if you want the GitHub refresh-by-vault path.
+
+That's it. Per-publication credentials are pasted in by the agent owner during the Console wizard — `LINEAR_OAUTH_CLIENT_ID/SECRET`, `GITHUB_APP_ID/PRIVATE_KEY/WEBHOOK_SECRET`, `SLACK_CLIENT_ID/SECRET/SIGNING_SECRET` env vars are **not** read by the publication-first flow.
+
+<Aside type="caution" title="Migrating from a pre-publication-first deploy?">
+  Old shared-App env vars (`LINEAR_CLIENT_ID`, `GITHUB_APP_ID`, `SLACK_CLIENT_ID`, etc.) are ignored by the current code. The `/start-a1` install endpoint returns `410 linear_legacy_install_removed`. Re-register each publication via the Console.
+</Aside>
 
 ## Linear
 
-<Steps>
+Two install paths, both per-publication:
 
-1. **Create the OAuth app.**
+| Path | When to pick | Operator setup |
+|---|---|---|
+| **Personal API Key (PAT)** | Single workspace, no OAuth dance, fastest path | none — agent owner runs `oma linear install-pat` with their PAT |
+| **Dedicated OAuth App** | Multi-workspace, proper bot identity, OAuth refresh | none — agent owner registers their own OAuth App at `linear.app/settings/api`, pastes credentials into the Console wizard |
 
-   Go to [linear.app/settings/api](https://linear.app/settings/api) → **OAuth Applications → New**.
+For the OAuth path, the agent owner gets a pre-filled callback URL + webhook URL from the Console wizard (both keyed on the publication id, e.g. `https://integrations.example.com/linear/oauth/pub/<pubId>/callback`), pastes them into Linear's OAuth App form, then pastes the resulting client id / secret back into the Console. **The agent owner does this, not the operator.**
 
-2. **Fill in:**
-   - **Name** — anything (e.g. "openma self-hosted")
-   - **Redirect URLs** — `https://integrations.yourdomain.com/linear/oauth/callback`
-   - **Developer URL** — anything
-   - **Webhook URL** — `https://integrations.yourdomain.com/linear/webhook`
-   - **Scopes** — `read`, `write`, `issues:create`, `comments:create`
-
-3. **Capture credentials:**
-   - Client ID
-   - Client secret
-   - Webhook signing secret
-
-4. **Set as Worker secrets:**
-
-   ```bash
-   npx wrangler secret put LINEAR_CLIENT_ID -c apps/integrations/wrangler.jsonc
-   npx wrangler secret put LINEAR_CLIENT_SECRET -c apps/integrations/wrangler.jsonc
-   npx wrangler secret put LINEAR_WEBHOOK_SECRET -c apps/integrations/wrangler.jsonc
-   ```
-
-5. **Test by installing.**
-
-   In your Console at `https://app.yourdomain.com`, **Integrations → Linear → Install**. The OAuth round-trip should land you back on the Console with the integration green.
-
-</Steps>
+See the agent-side playbook at [`skills/openma/integrations-linear.md`](https://github.com/open-ma/open-managed-agents/blob/main/skills/openma/integrations-linear.md) for the full step-by-step.
 
 ## GitHub
 
-<Steps>
+Per-publication **GitHub App** registered via the [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) — one-click registration with redirect URL + webhook URL + recommended permissions baked in. The agent owner runs `oma github bind <agent-id> --env <env-id>` (or the Console wizard), gets a `manifestStartUrl`, clicks through GitHub's confirm screen, picks which repos to install on, and the publication flips to `live`.
 
-1. **Create the GitHub App.**
+What the operator does NOT need to do (despite what older docs might say):
 
-   Go to [github.com/settings/apps/new](https://github.com/settings/apps/new) (or for an org, the equivalent `https://github.com/organizations/<org>/settings/apps/new`).
+- Register a GitHub App on github.com — agents register their own.
+- Set `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` as Worker secrets — these env vars are not read by the publication-first flow. Credentials are per-publication, stored encrypted on the `github_publications` row.
 
-2. **Fill in:**
-   - **Name** — globally unique (e.g. `openma-yourcompany`)
-   - **Homepage URL** — `https://app.yourdomain.com`
-   - **Callback URL** — `https://integrations.yourdomain.com/github/oauth/callback`
-   - **Webhook URL** — `https://integrations.yourdomain.com/github/webhook`
-   - **Webhook secret** — generate with `openssl rand -hex 32`
-   - **Permissions:**
-     - Contents: Read & Write
-     - Issues: Read & Write
-     - Pull requests: Read & Write
-     - Metadata: Read
-   - **Subscribe to events** — `pull_request`, `pull_request_review_comment`, `issue_comment`, `issues`
-
-3. **After creation:**
-   - Note the **App ID**.
-   - **Generate a private key** — downloads a `.pem` file.
-   - Optionally, install the app on your repos.
-
-4. **Set as Worker secrets:**
-
-   ```bash
-   npx wrangler secret put GITHUB_APP_ID -c apps/integrations/wrangler.jsonc
-   npx wrangler secret put GITHUB_WEBHOOK_SECRET -c apps/integrations/wrangler.jsonc
-   # Paste the .pem contents (multi-line) when prompted:
-   npx wrangler secret put GITHUB_PRIVATE_KEY -c apps/integrations/wrangler.jsonc
-   ```
-
-5. **Test by installing on a test repo and triggering a webhook** (e.g. open a PR and tag the bot).
-
-</Steps>
-
-<Aside type="tip" title="GitHub App vs OAuth App">
-  Use a GitHub *App* (not OAuth App). Apps install per-repo, scope tokens narrowly, and produce installation tokens you can rotate.
-</Aside>
+Optional operator knob: `GITHUB_MCP_URL` if you want to point at a self-hosted GitHub MCP server instead of `https://api.githubcopilot.com/mcp/`.
 
 ## Slack
 
-<Steps>
+Per-publication **Slack App** registered via Slack's "Create from manifest" URL flow. The agent owner runs `oma slack publish <agent-id>` (or the Console wizard) and gets a `manifestLaunchUrl` that opens `api.slack.com/apps` with a pre-filled manifest — redirect URL `/slack/oauth/pub/<pubId>/callback` and Events Request URL `/slack/webhook/pub/<pubId>` are both baked in, so refresh / retry doesn't break them.
 
-1. **Create the Slack app.**
+From the new Slack App's **Basic Information** page, the agent owner copies **Client ID**, **Client Secret**, and **Signing Secret** into the Console wizard. Submit → install-to-workspace → publication is `live`.
 
-   Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From scratch**.
+What the operator does NOT need to do:
 
-2. **Fill in:**
-   - **App name** — anything
-   - **Workspace** — your dev workspace
+- Register a single shared Slack App with `app_mention` / `message.*` events — every agent has its own.
+- Set `SLACK_CLIENT_ID/SECRET/SIGNING_SECRET` as Worker secrets — per-publication, stored encrypted on `slack_publications`.
 
-3. **Configure OAuth & Permissions:**
-   - **Redirect URLs** — `https://integrations.yourdomain.com/slack/oauth/callback`
-   - **Bot Token Scopes:**
-     - `app_mentions:read`
-     - `chat:write`
-     - `channels:history`
-     - `groups:history`
-     - `im:history`
-     - `mpim:history`
-     - `files:read`
-     - `files:write`
+The one hard operator requirement is that `GATEWAY_ORIGIN` resolves to publicly-reachable HTTPS. Slack will not accept a manifest whose URLs it can't pre-verify, so localhost / `*.local` / self-signed certs are non-starters. Use a tunnel (`cloudflared tunnel`, `ngrok http`) for dev.
 
-4. **Enable Event Subscriptions:**
-   - **Request URL** — `https://integrations.yourdomain.com/slack/events`
-   - **Subscribe to bot events:** `app_mention`, `message.channels`, `message.im`
+## Custom OAuth (Google sign-in for the Console)
 
-5. **Capture credentials:**
-   - Client ID, Client Secret (from Basic Information)
-   - Signing Secret (from Basic Information)
-
-6. **Set as Worker secrets:**
-
-   ```bash
-   npx wrangler secret put SLACK_CLIENT_ID -c apps/integrations/wrangler.jsonc
-   npx wrangler secret put SLACK_CLIENT_SECRET -c apps/integrations/wrangler.jsonc
-   npx wrangler secret put SLACK_SIGNING_SECRET -c apps/integrations/wrangler.jsonc
-   ```
-
-7. **Install to your workspace** through the Console: **Integrations → Slack → Install**.
-
-</Steps>
-
-## Custom OAuth (Google sign-in)
-
-If you want Google sign-in for the Console (in addition to email + OTP):
+This one IS deploy-wide — Google sign-in adds an SSO path to the Console alongside email + password / email-OTP.
 
 <Steps>
 
