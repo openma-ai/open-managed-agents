@@ -365,13 +365,15 @@ export class CfSessionRouter implements SessionRouter {
 
   // ── helpers ─────────────────────────────────────────────────────────
 
-  /** Resolve the sandbox lane for an environment. Local-runtime sessions
-   *  go through the SESSION_DO direct fetcher; cloud sessions go through
-   *  the SANDBOX_sandbox_default service binding. Mirrors the legacy
-   *  getSandboxBinding in apps/main/src/routes/sessions.ts. */
-  private async bindingFor(environmentId: string): Promise<Fetcher | null> {
+  /** Resolve the sandbox lane for an environment. Both local-runtime
+   *  and cloud sessions reach SessionDO via the SANDBOX_sandbox_default
+   *  service binding (which forwards to the agent worker that hosts
+   *  SessionDO). The doFallbackFetcher path is only used by the
+   *  combined-worker test mode where SESSION_DO is bound locally.
+   *  Mirrors the legacy getSandboxBinding in apps/main/src/routes/
+   *  sessions.ts. */
+  private async bindingFor(_environmentId: string): Promise<Fetcher | null> {
     const { env } = this.deps;
-    if (environmentId === LOCAL_RUNTIME_ENV_ID) return doFallbackFetcher(env);
     const svc = (env as unknown as Record<string, unknown>)["SANDBOX_sandbox_default"] as Fetcher | undefined;
     if (svc) return svc;
     return doFallbackFetcher(env);

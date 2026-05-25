@@ -234,6 +234,13 @@ export class SessionManager {
       });
       return;
     }
+    // Diagnostic line — helps operators trace per-session tenant routing
+    // in multi-tenant setups. Tenant id is logged for debuggability; the
+    // key plaintext is NEVER logged (only its presence is implicit from
+    // not erroring out above).
+    process.stderr.write(
+      `  → tenant-key selected sid=${p.session_id.slice(0, 8)} tenant=${tenantId.slice(0, 14)}\n`,
+    );
     // Idempotent: if we already have this session, just re-ack ready.
     const existing = this.#sessions.get(p.session_id);
     if (existing) {
