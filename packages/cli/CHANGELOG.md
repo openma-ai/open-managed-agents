@@ -1,5 +1,48 @@
 # @openma/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- [#103](https://github.com/open-ma/open-managed-agents/pull/103) [`85c2e1c`](https://github.com/open-ma/open-managed-agents/commit/85c2e1c359f774a3dbafcc45a6e7875ebba55ff2) Thanks [@hrhrng](https://github.com/hrhrng)! - `oma bridge` daemon now serves multiple tenants from a single process.
+  One daemon is authorized for every workspace the user is a member of;
+  each spawned ACP child gets the per-tenant `oma_*` key matching the
+  session's workspace.
+  - `oma bridge setup` requests the multi-tenant `/exchange` shape and
+    writes a `CredentialsV2` file (`{v:2, tenants:[…], …}`). Old v1
+    creds files (`agentApiKey` at the top level) auto-migrate on next
+    daemon start — calls `GET /agents/runtime/me` to pull the tenant
+    list, falls back to a placeholder workspace if the server is
+    unreachable so the daemon still runs offline.
+  - `oma bridge refresh` (new) re-syncs the daemon's credentials with
+    the user's current memberships. Adds keys for new workspaces, soft-
+    revokes keys for removed ones, then `SIGHUP`s the running daemon
+    so the change takes effect without a restart.
+  - `SessionManager` looks up the right `oma_*` key per session by the
+    inbound `session.start`'s `tenant_id`. Every outbound message the
+    daemon sends carries `tenant_id` so the server can validate it
+    against the runtime's authorized set.
+
+  Backward-compatible: v1 daemons keep working against the new server
+  shape (server returns the legacy `{runtime_id, token, agent_api_key}`
+  when the request doesn't set `multi_tenant: true`). The workaround
+  for multi-tenant — running multiple `OMA_PROFILE=…` daemons side by
+  side — still works for separate server environments.
+
+### Patch Changes
+
+- [`31f7fbf`](https://github.com/open-ma/open-managed-agents/commit/31f7fbf67305f44831a379d9149bcf0c6a8d9c00) Thanks [@hrhrng](https://github.com/hrhrng)! - `oma bridge setup` now exits cleanly after "Done." instead of hanging
+  for ~5 minutes on idle keep-alive HTTP sockets from the registry CDN
+  fetch and the runtime-token probe. Daemon was already started by
+  launchd / systemd / Task Scheduler — only the foreground setup process
+  itself was waiting on the undici dispatcher to time out its sockets.
+  Force-exits at end of runSetup, matching how npm / pnpm / gh handle
+  the same constraint in their CLI commands.
+
+  Adds an opt-in `OMA_DEBUG_HANDLES=1` env var that prints active
+  handles + requests every 2s — useful for diagnosing future "process
+  won't exit" regressions without redeploying.
+
 ## 0.4.1
 
 ### Patch Changes
