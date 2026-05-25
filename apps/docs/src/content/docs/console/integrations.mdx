@@ -174,15 +174,15 @@ For `channel_scan_armed`: the agent does NOT post directly. It schedules a wakeu
 
 Each integration lets you scope what the agent can do. These are enforced at the API gateway, not just in the model's prompt — even if the model decides to misbehave, scopes the publication didn't grant simply aren't exposed as tools.
 
-| Integration | Common scopes |
+| Integration | Common capabilities |
 |---|---|
-| Linear | `comment.create`, `issue.update`, `issue.create`, `issue.read` |
-| GitHub | `pr.read`, `pr.comment`, `pr.create`, `branch.push`, `issue.read` |
-| Slack | `chat.write`, `channels.history`, `files.upload` |
+| Linear | `comment.write`, `issue.update`, `issue.create`, `issue.read`, `label.assign`, `triage.read` |
+| GitHub | `pr.read`, `pr.review.write`, `pr.create`, `branch.push`, `issue.read`, `issue.comment.write` |
+| Slack | `message.read`, `message.write`, `thread.reply`, `reaction.add`, `user.read`, `canvas.write` |
 
 ## Generic MCP
 
-Beyond the three shipped integrations, any MCP-compatible server works. Add it on the **Agent → MCP servers** field; openma generates `mcp_<server>_<tool>` for each capability.
+Beyond the three shipped integrations, any MCP-compatible server works. Add it on the **Agent → MCP servers** field; openma generates `mcp__<server>__<tool>` (double underscore) for each capability the server exposes.
 
 ## Where to go next
 

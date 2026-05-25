@@ -27,7 +27,7 @@ The left sidebar groups everything into three areas:
 - **Skills** — upload a `SKILL.md` plus any supporting files. The platform mounts them into sandboxes that opt in.
 - **Vaults** — secret stores. Add bearer tokens, OAuth tokens, env vars; bind them to specific hosts so the outbound proxy can inject auth without leaking the secret to the model.
 - **Memory** — semantic memory stores per agent.
-- **Model Cards** — bring your own model: Anthropic, OpenAI, MiniMax, or any compatible provider.
+- **Model Cards** — bring your own model: Anthropic, OpenAI, or any Anthropic/OpenAI-compatible provider (Bedrock proxy, vLLM, OpenRouter, etc.).
 - **API Keys** — manage personal access tokens for the REST API and CLI.
 
 ### Integrations
@@ -42,7 +42,7 @@ The left sidebar groups everything into three areas:
 
 2. Fill in:
    - **Name** — anything. Visible to integrations later.
-   - **Model** — pick from your Model Cards (Anthropic Claude is the default if you have an `ANTHROPIC_API_KEY` in your tenant settings).
+   - **Model** — pick from your Model Cards. If the platform was bootstrapped with `ANTHROPIC_API_KEY`, an Anthropic Claude entry is available out of the box; otherwise add a Model Card first under **Settings → Model Cards**.
    - **System prompt** — what the agent is for.
    - **Tools** — leave default (built-in toolset) for now.
 

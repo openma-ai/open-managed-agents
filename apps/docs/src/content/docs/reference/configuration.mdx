@@ -48,14 +48,21 @@ type ToolDefinition =
 
 ```ts
 interface McpServerConfig {
-  name: string;                 // becomes the prefix: mcp_<name>_<tool>
-  url: string;
-  auth?:
-    | { type: 'none' }
-    | { type: 'bearer'; token: string }
-    | { type: 'vault'; vault_id: string };
+  name: string;                 // becomes the prefix: mcp__<name>__<tool>
+  type: 'url' | 'stdio';
+  url?: string;                 // required for HTTP/SSE; derived for stdio
+  authorization_token?: string; // inline bearer (otherwise: matched vault credential)
+  stdio?: {
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    port: number;               // 127.0.0.1:port the spawned process binds to
+    ready_timeout_ms?: number;  // default 60_000
+  };
 }
 ```
+
+For `type: 'stdio'`, OMA spawns the process **inside the sandbox container**, waits for the port to bind, and proxies the existing HTTP-based MCP tool wiring at it. Tool discovery is bounded at 15 s per server; up to 20 servers per agent.
 
 ## Environment
 
@@ -82,35 +89,67 @@ interface EnvironmentConfig {
 
 ## Vault
 
+A vault is a tenant-scoped credential bundle; credentials inside it are bound to MCP servers or sandbox CLIs.
+
 ```ts
-interface VaultConfig {
+interface Vault {
   id: string;
+  tenant_id: string;
   name: string;
-  type: 'bearer' | 'oauth' | 'env';
-  hosts: string[];               // hostnames this vault is bound to
-  // Token material is write-only — never returned via the API
+  created_at: string;
+  updated_at: string;
+  archived_at?: string;
 }
+
+// Credentials live in a separate table; each is one of three types
+type CredentialAuth =
+  | { type: 'static_bearer'; token: string; mcp_server_url: string }
+  | { type: 'mcp_oauth'; access_token: string; refresh_token?: string;
+      token_endpoint?: string; expires_at?: string; mcp_server_url: string }
+  | { type: 'cap_cli'; cli_id: string; token: string };  // e.g. cli_id: "gh", "glab", "aws"
 ```
+
+Binding to a host happens via the credential, not the vault: a `static_bearer` / `mcp_oauth` credential matches by parsing the request hostname against `mcp_server_url`; a `cap_cli` credential matches by `cli_id` lookup in the cap spec registry. Up to 20 credentials per vault. Tokens are AES-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` and never returned via the API once written.
 
 ## Skill
 
 ```ts
 interface SkillMetadata {
+  type: 'skill';
   id: string;
   display_title: string;
+  name: string;                  // SKILL.md frontmatter `name` — also the mount-folder name
   description: string;
-  files: string[];               // R2 keys under t:{tenant}:skill:{id}/
-  built_in?: boolean;            // true for shipped skills
+  source: 'anthropic' | 'custom';
+  latest_version: string;        // numeric epoch string
+  created_at: string;
+  updated_at: string;
+}
+
+// Per-version detail returned by GET /v1/skills/:id/versions/:version
+interface SkillVersion {
+  version: string;
+  files: Array<{ filename: string }>;  // R2 objects under t/{tenant}/skills/{id}/{version}/<filename>
 }
 ```
 
-The platform mounts the files at `/home/user/.skills/{id}/` and injects:
+The platform mounts skill files at `/home/user/.skills/{name}/` (using the SKILL.md `name`, not `id`) and **inlines the SKILL.md body directly into the system prompt** at session start — no lazy read. The injected wrapping is:
 
 ```text
-You have a skill called "{display_title}". Read /home/user/.skills/{id}/SKILL.md for instructions.
+<source name="skill:{id}">
+<skill name="{name}">
+{full SKILL.md body}
+</skill>
+</source>
 ```
 
-into the system prompt.
+Attach to an agent with the object form (not a bare string array):
+
+```json
+{ "skills": [{ "skill_id": "skill_abc123", "type": "custom" }] }
+```
+
+Built-in skills (`source: "anthropic"`): `xlsx`, `pdf`, `docx`, `pptx` — four total, no upload needed.
 
 ## Memory store
 
@@ -154,16 +193,16 @@ Required for self-host. Set as Worker secrets via `npx wrangler secret put NAME`
 
 | Variable | Worker | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | main, agent | LLM provider (or use `OPENAI_API_KEY` / `MINIMAX_API_KEY`) |
+| `PLATFORM_ROOT_SECRET` | main, integrations | Root secret for at-rest encryption (credentials, model card keys, integration tokens) and outbound MCP token signing. Workers refuse to start without it. **Back it up** — losing it makes every encrypted row unreadable. |
 | `BETTER_AUTH_SECRET` | main | better-auth session signing key |
 | `API_KEY` | main | Initial dev API key for the REST API |
 | `INTEGRATIONS_INTERNAL_SECRET` | main, integrations | Shared secret between main and integrations workers |
-| `PLATFORM_ROOT_SECRET` | main, integrations | Root secret for at-rest encryption (credentials, model card keys, integration tokens) and outbound MCP token signing |
 
 ### Optional integrations
 
 | Variable | Worker | Purpose |
 |---|---|---|
+| `ANTHROPIC_API_KEY` | main, agent | Fallback LLM credential when a tenant has not added a Model Card. In production, prefer per-tenant Model Cards from the Console — they're encrypted under `PLATFORM_ROOT_SECRET` and rotatable without redeploy. (Alternates: `OPENAI_API_KEY`, `MINIMAX_API_KEY`.) |
 | `LINEAR_CLIENT_ID` | integrations | Linear OAuth |
 | `LINEAR_CLIENT_SECRET` | integrations | Linear OAuth |
 | `LINEAR_WEBHOOK_SECRET` | integrations | Verify inbound Linear webhooks |

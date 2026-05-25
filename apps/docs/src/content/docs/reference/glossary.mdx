@@ -55,7 +55,7 @@ The interface every integration implements. Defined in `packages/integrations-co
 
 ## MCP
 
-Model Context Protocol — open standard for connecting language models to tools. openma auto-generates `mcp_<server>_<tool>` for any registered MCP server. See [Skills & Tools → MCP servers](/build/skills-and-tools/#mcp-servers).
+Model Context Protocol — open standard for connecting language models to tools. openma auto-generates `mcp__<server>__<tool>` (double underscore) for any registered MCP server. See [Skills & Tools → MCP servers](/build/skills-and-tools/#mcp-servers).
 
 ## Memory store
 
@@ -63,7 +63,7 @@ Per-agent semantic memory backed by Vectorize + Workers AI embeddings. See [Conc
 
 ## Model card
 
-Bring-your-own-model config: provider, base URL, API key (Vault-backed), allowed models. See [Reference → Model Cards](/reference/api/#model-cards).
+Per-tenant LLM credential row: provider tag (`ant`, `ant-compatible`, `oai`, `oai-compatible`), base URL, custom headers, API key. The api_key is AES-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` directly on the row (not via a Vault). See [Reference → Model Cards](/reference/api/#model-cards).
 
 ## Outbound proxy
 
