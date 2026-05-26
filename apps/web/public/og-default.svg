@@ -53,7 +53,7 @@
     font-family="'DM Sans',-apple-system,'Segoe UI','Helvetica Neue',sans-serif"
     font-weight="400"
     font-size="36"
-    fill="#4a4f5a">Open-source alternative to Anthropic's Managed Agents.</text>
+    fill="#4a4f5a">Open-source alternative to Claude Managed Agents.</text>
 
   <!-- Body line -->
   <text x="80" y="465"

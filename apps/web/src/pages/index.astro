@@ -21,10 +21,10 @@ const schemas = [softwareApplicationSchema()];
 ---
 
 <Base
-  title="Open Managed Agents — Open-source alternative to Anthropic's Managed Agents"
-  description="Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0. Drop-in compatible API."
+  title="Open-source Claude Managed Agents alternative — self-host on Cloudflare or Docker | Open Managed Agents"
+  description="Open-source alternative to Claude Managed Agents. Run Claude agents yourself on Cloudflare Workers or Docker. MCP + Claude Code skills built in. Apache 2.0."
   canonical="/"
-  keywords="open managed agents, anthropic managed agents alternative, open source agent platform, managed agents cloudflare, self-hosted managed agents, open source anthropic alternative, agent platform, agent infrastructure"
+  keywords="claude managed agents, claude managed agents alternative, open source claude managed agents, claude agent platform, self host claude code, claude code skills, claude agent sdk, mcp server host, ai agent cloudflare workers, self-hosted ai agent, langchain alternative, crewai alternative"
   schemas={schemas}
 >
   <!-- Hero -->
@@ -34,17 +34,18 @@ const schemas = [softwareApplicationSchema()];
         Apache 2.0 · Cloudflare-native · Self-hostable
       </p>
       <h1 class="font-display text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight">
-        Open Managed Agents
+        The open-source Claude Managed Agents alternative
+        <span class="block mt-4 text-xl md:text-2xl text-[var(--color-fg-muted)] font-medium">
+          Run Claude agents yourself — on Cloudflare or with <code class="font-mono text-base md:text-xl">docker compose up</code>
+        </span>
       </h1>
-      <p class="mt-4 text-xl md:text-2xl text-[var(--color-fg-muted)]">
-        Open-source alternative to <span class="whitespace-nowrap">Anthropic's Managed Agents</span>.
-      </p>
       <p class="mt-6 text-base md:text-lg text-[var(--color-fg-muted)] max-w-2xl mx-auto leading-relaxed">
-        A drop-in compatible agent platform you can run yourself. Sessions,
-        sandboxes, tools, memory, vaults, and crash recovery — all served from
-        Cloudflare Workers + Durable Objects, or a Docker container on your
-        own box. Same API surface as the proprietary version, with the source
-        code and the runtime under your control.
+        A wire-compatible, self-hostable agent platform: durable sessions,
+        sandboxed code execution, vault-backed credentials, MCP server hosting,
+        and Claude Code skills — served from Cloudflare Workers + Durable
+        Objects, or a Docker container on your own box. Same API surface as
+        the proprietary version, with the source code and the runtime under
+        your control.
       </p>
       <div class="mt-8 flex items-center justify-center gap-3 flex-wrap">
         <a
@@ -76,7 +77,7 @@ const schemas = [softwareApplicationSchema()];
     </p>
     <div class="grid md:grid-cols-3 gap-8">
       <FeatureCard title="Drop-in compatible">
-        The HTTP API mirrors Anthropic's Managed Agents — same
+        The HTTP API mirrors the Claude Managed Agents API — same
         <code class="font-mono text-xs">/v1/agents</code>,
         <code class="font-mono text-xs">/v1/sessions</code>, same event-stream
         shape. Migrate by swapping the base URL.
@@ -134,9 +135,9 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
 
   <!-- API compatibility -->
   <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Drop-in compatible with Anthropic's Managed Agents API</h2>
+    <h2 class="font-display text-3xl font-bold mb-4">Drop-in compatible with the Claude Managed Agents API</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
-      We track the public surface of Anthropic's Managed Agents API one-to-one.
+      We track the public surface of the Claude Managed Agents API one-to-one.
       Resources, request shapes, response shapes, the SSE event stream — all
       the same. If your client code already speaks Managed Agents, point it at
       <code class="font-mono text-sm">https://openma.dev</code> (hosted) or
@@ -151,10 +152,10 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
     </p>
     <p class="text-[var(--color-fg-muted)] leading-relaxed">
       Where the open implementation goes further: the harness layer is
-      explicit and replaceable. Anthropic's hosted version owns the agent
-      loop; here you can write your own. We ship a sensible default harness,
-      and you swap in custom context engineering, caching, compaction, or
-      tool-delivery logic without touching the platform. Read more in
+      explicit and replaceable. The hosted Claude Managed Agents version owns
+      the agent loop; here you can write your own. We ship a sensible default
+      harness, and you swap in custom context engineering, caching, compaction,
+      or tool-delivery logic without touching the platform. Read more in
       <a href="/blog/anthropic-managed-agents-vs-open-managed-agents/">the technical comparison</a>.
     </p>
   </section>
@@ -198,7 +199,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
 
   <!-- Comparison -->
   <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Anthropic Managed Agents</h2>
+    <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Claude Managed Agents</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
       Both run a managed agent loop on your behalf. The difference is who owns
       the runtime, the data, and the bill.
@@ -209,7 +210,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
           <tr class="bg-[var(--color-bg-surface)] text-left">
             <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Feature</th>
             <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Open Managed Agents</th>
-            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Anthropic Managed Agents</th>
+            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Claude Managed Agents</th>
           </tr>
         </thead>
         <tbody>

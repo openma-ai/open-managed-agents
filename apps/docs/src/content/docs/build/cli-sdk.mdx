@@ -8,7 +8,7 @@ import { Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
 openma is callable via two routes:
 
 - **`@openma/cli`** — a Node CLI for scripting against the API.
-- **Anthropic's official SDKs** — TypeScript ([`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk)), Python ([`anthropic`](https://pypi.org/project/anthropic/)), and Go ([`anthropic-sdk-go`](https://pkg.go.dev/github.com/anthropics/anthropic-sdk-go)) — pointed at openma's `baseURL`. The openma API is wire-compatible with Anthropic's Managed Agents API, so the same SDKs work against both.
+- **Anthropic's official SDKs** — TypeScript ([`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk)), Python ([`anthropic`](https://pypi.org/project/anthropic/)), and Go ([`anthropic-sdk-go`](https://pkg.go.dev/github.com/anthropics/anthropic-sdk-go)) — pointed at openma's `baseURL`. The openma API is wire-compatible with the Claude Managed Agents API, so the same SDKs work against both.
 
 The CLI lives in this repo (`packages/cli`).
 
@@ -81,7 +81,7 @@ Run `oma --help` or `oma <command> --help` for the full surface.
 
 ## SDK
 
-The openma API is **wire-compatible with [Anthropic's Managed Agents API](https://docs.anthropic.com/)**, so the recommended client is one of Anthropic's official SDKs pointed at our `baseURL`. One SDK, two providers — moving between them is a config line.
+The openma API is **wire-compatible with the [Claude Managed Agents API](https://docs.anthropic.com/)**, so the recommended client is one of Anthropic's official SDKs pointed at our `baseURL`. One SDK, two providers — moving between them is a config line.
 
 <Aside type="caution" title="@openma/sdk is deprecated">
   The standalone `@openma/sdk` package is no longer maintained. Existing installs keep working, but new projects should use the official Anthropic SDKs as shown below.
@@ -229,7 +229,7 @@ Or use plain `fetch` — every OMA endpoint is JSON, no extra runtime needed.
 
 ### OMA-only extensions
 
-A small set of OMA-specific agent fields (auxiliary model, harness selector, sandbox runtime binding) are passed through under an `_oma:` body field on agent create / update calls. The server reads them; the upstream Anthropic backend would ignore them. They are optional — agents that omit `_oma` behave exactly like a vanilla Anthropic Managed Agents call.
+A small set of OMA-specific agent fields (auxiliary model, harness selector, sandbox runtime binding) are passed through under an `_oma:` body field on agent create / update calls. The server reads them; the upstream Claude Managed Agents backend would ignore them. They are optional — agents that omit `_oma` behave exactly like a vanilla Claude Managed Agents call.
 
 | Field | Purpose |
 |---|---|

@@ -12,11 +12,11 @@
 
 # Open Managed Agents
 
-**Anthropic Managed Agents 的开源替代品** —— 一个你可以自部署的 AI 智能体元框架（meta-harness）。
+**Claude Managed Agents 的开源替代品** —— 一个你可以自部署的 AI 智能体元框架（meta-harness）。
 
 🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[github.com/open-ma/open-managed-agents](https://github.com/open-ma/open-managed-agents)**
 
-写一个 harness，部署它。平台负责运行 —— 内置会话、沙箱、工具、记忆、保险库和崩溃恢复。API 与 Anthropic 的 Managed Agents 兼容；可以跑在 Cloudflare Workers + Durable Objects 上，或者直接 `docker compose up` 在你自己的机器上。
+写一个 harness，部署它。平台负责运行 —— 内置会话、沙箱、工具、记忆、保险库和崩溃恢复。API 与 Claude Managed Agents 兼容；可以跑在 Cloudflare Workers + Durable Objects 上，或者直接 `docker compose up` 在你自己的机器上。
 
 ---
 
@@ -244,7 +244,7 @@ Harness 在构建时被打包进 agent worker。你的代码和 SessionDO 跑在
 
 ## API
 
-与 [Anthropic Managed Agents API](https://docs.anthropic.com/en/docs/agents/managed-agents) 兼容。相同端点、相同事件类型，可与现有 SDK 一起使用。
+与 [Claude Managed Agents API](https://docs.anthropic.com/en/docs/agents/managed-agents) 兼容。相同端点、相同事件类型，可与现有 SDK 一起使用。
 
 <details>
 <summary><strong>智能体</strong> —— 创建和管理智能体配置</summary>
@@ -309,7 +309,7 @@ GET    /v1/vaults/:id/credentials          # 列出（已脱敏密钥）
 </details>
 
 <details>
-<summary><strong>记忆存储</strong> —— 持久化存储；与 Anthropic Managed Agents Memory 合约一致</summary>
+<summary><strong>记忆存储</strong> —— 持久化存储；与 Claude Managed Agents Memory 合约一致</summary>
 
 附加到会话时，每个存储都会挂载到沙箱的 `/mnt/memory/<store_name>/` 路径下。智能体使用**标准文件工具**（bash/read/write/edit/glob/grep）读写，没有专门的 `memory_*` 工具。
 

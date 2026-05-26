@@ -39,7 +39,7 @@ const SITE = "https://openma.dev";
 const fullTitle = /open managed agents/i.test(title)
   ? title
   : `${title} — Open Managed Agents`;
-const desc = description ?? "Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0. Drop-in compatible API.";
+const desc = description ?? "Open-source alternative to Claude Managed Agents. Run Claude agents yourself on Cloudflare Workers or Docker. MCP + Claude Code skills built in. Apache 2.0.";
 const url = canonical ? `${SITE}${canonical}` : Astro.url.toString();
 const finalOgImage = ogImage ?? `${SITE}/og-default.png`;
 
@@ -152,6 +152,18 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     {allSchemas.map((schema) => (
       <script type="application/ld+json" set:html={JSON.stringify(schema)} />
     ))}
+
+    <!-- Cloudflare Web Analytics. Beacon token comes from PUBLIC_CF_WA_TOKEN
+         build env (set in deploy CI / wrangler overlay). When the env is
+         unset (e.g. local dev) the tag is omitted so we don't spam the
+         beacon with localhost noise. -->
+    {import.meta.env.PUBLIC_CF_WA_TOKEN && (
+      <script
+        defer
+        src="https://static.cloudflareinsights.com/beacon.min.js"
+        data-cf-beacon={`{"token": "${import.meta.env.PUBLIC_CF_WA_TOKEN}"}`}
+      />
+    )}
   </head>
   <body class="bg-bg text-fg">
     <!-- Skip-to-content for keyboard users. sr-only by default, becomes

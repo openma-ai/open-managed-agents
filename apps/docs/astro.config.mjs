@@ -11,12 +11,17 @@ import mdx from '@astrojs/mdx';
 const FONT_HREF =
   'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
 
+// Cloudflare Web Analytics beacon. Token comes from PUBLIC_CF_WA_TOKEN
+// build env (deploy CI / wrangler overlay). Unset in local dev → no tag,
+// no localhost beacon noise.
+const CF_WA_TOKEN = process.env.PUBLIC_CF_WA_TOKEN;
+
 export default defineConfig({
   site: 'https://docs.openma.dev',
   integrations: [
     starlight({
       title: 'openma',
-      description: 'An open-source meta-platform for AI agents on Cloudflare.',
+      description: 'Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.',
       logo: {
         src: './src/assets/logo.svg',
         replacesTitle: true,
@@ -49,6 +54,18 @@ export default defineConfig({
           tag: 'noscript',
           content: `<link rel="stylesheet" href="${FONT_HREF}">`,
         },
+        ...(CF_WA_TOKEN
+          ? [
+              {
+                tag: 'script',
+                attrs: {
+                  defer: true,
+                  src: 'https://static.cloudflareinsights.com/beacon.min.js',
+                  'data-cf-beacon': `{"token": "${CF_WA_TOKEN}"}`,
+                },
+              },
+            ]
+          : []),
       ],
       social: [
         {

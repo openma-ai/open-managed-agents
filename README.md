@@ -12,11 +12,11 @@
 
 # Open Managed Agents
 
-**Open-source alternative to Anthropic's Managed Agents** — a meta-harness for AI agents you can run yourself.
+**Open-source alternative to Claude Managed Agents** — a meta-harness for AI agents you can run yourself.
 
 🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[github.com/open-ma/open-managed-agents](https://github.com/open-ma/open-managed-agents)**
 
-Write a harness. Deploy. The platform runs it — with sessions, sandboxes, tools, memory, vaults, and crash recovery out of the box. Drop-in compatible with Anthropic's Managed Agents API; runs on Cloudflare Workers + Durable Objects, or `docker compose up` on your own box.
+Write a harness. Deploy. The platform runs it — with sessions, sandboxes, tools, memory, vaults, and crash recovery out of the box. Drop-in compatible with the Claude Managed Agents API; runs on Cloudflare Workers + Durable Objects, or `docker compose up` on your own box.
 
 ---
 
@@ -247,7 +247,7 @@ The harness is bundled into the agent worker at build time. Your code runs in th
 
 ## API
 
-Compatible with the [Anthropic Managed Agents API](https://docs.anthropic.com/en/docs/agents/managed-agents). Same endpoints, same event types, works with existing SDKs.
+Compatible with the [Claude Managed Agents API](https://docs.anthropic.com/en/docs/agents/managed-agents). Same endpoints, same event types, works with existing SDKs.
 
 <details>
 <summary><strong>Agents</strong> — Create and manage agent configurations</summary>
@@ -312,7 +312,7 @@ GET    /v1/vaults/:id/credentials          # List (secrets stripped)
 </details>
 
 <details>
-<summary><strong>Memory Stores</strong> — persistent storage; Anthropic Managed Agents Memory contract</summary>
+<summary><strong>Memory Stores</strong> — persistent storage; Claude Managed Agents Memory contract</summary>
 
 When attached to a session, each store is mounted into the sandbox at
 `/mnt/memory/<store_name>/`. The agent reads and writes it with the
