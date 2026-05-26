@@ -1,9 +1,15 @@
 ---
-title: Welcome to openma
-description: An open-source meta-platform for running AI agents on Cloudflare. Sessions, sandboxes, tools, memory, credentials — managed.
+title: openma — open-source meta-platform for AI agents on Cloudflare
+description: openma is an open-source, self-hostable alternative to Anthropic's Managed Agents. Run agent sessions, sandboxes, tools, memory, and credentials on Cloudflare Workers + Durable Objects.
 template: splash
+head:
+  # Starlight's auto-generated <title> would tack on " | openma" (the
+  # site title) and produce a redundant brand-after-brand suffix.
+  # Override so the keyword-rich page title stands alone for SERP.
+  - tag: title
+    content: openma — open-source meta-platform for AI agents on Cloudflare
 hero:
-  tagline: An open-source meta-platform for AI agents on Cloudflare. Sessions, sandboxes, tools, memory, credentials — managed.
+  tagline: Bring your harness. We bring durable sessions, sandboxes, tool calls, semantic memory, vault-backed credentials, and crash recovery — managed.
   image:
     file: ../../assets/logo.svg
     alt: 'openma logo: a horse-head sketch framed by JetBrains Mono brackets'
