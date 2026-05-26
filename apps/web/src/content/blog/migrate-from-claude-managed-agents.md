@@ -1,12 +1,13 @@
 ---
-title: "Migrating from Anthropic Managed Agents to Open Managed Agents"
+title: "Migrating from Claude Managed Agents to Open Managed Agents"
 description: "Practical migration guide. What stays the same, what changes, and the exact steps to switch your client code, sessions, vaults, and integrations to the open-source platform."
 publishedAt: 2026-05-12
+updatedAt: 2026-05-26
 author: openma
-tags: ["migration", "anthropic", "managed-agents", "guide"]
+tags: ["migration", "claude", "managed-agents", "guide"]
 ---
 
-If you're already running on Anthropic's Managed Agents and considering
+If you're already running on Claude Managed Agents and considering
 the move to the open-source equivalent, this is the migration guide.
 The good news first: the API surface is identical, so your client code
 is the cheapest part of the migration. The work is mostly in
@@ -285,9 +286,9 @@ rewriting clients.
   `docker compose up`, not a rewrite.
 
 See [the side-by-side technical
-comparison](/blog/anthropic-managed-agents-vs-open-managed-agents/) for
+comparison](/blog/claude-managed-agents-vs-open-managed-agents/) for
 the architectural differences, and the [open-source alternatives
-landscape](/blog/open-source-alternatives-to-anthropic-managed-agents-2026/)
+landscape](/blog/open-source-alternatives-to-claude-managed-agents-2026/)
 for context on where this sits in the broader space.
 
 ## Get started

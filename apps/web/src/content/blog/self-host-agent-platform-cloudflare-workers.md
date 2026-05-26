@@ -255,7 +255,7 @@ matters.
 If you can't be on Cloudflare — data residency, compliance, existing
 AWS commitment — there's a Postgres + Node deployment that uses the
 same harness, same API, same Console. See
-[the migration guide](/blog/migrate-from-anthropic-managed-agents/)
+[the migration guide](/blog/migrate-from-claude-managed-agents/)
 for how that fits together.
 
 ## Try the hosted version first

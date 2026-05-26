@@ -1,12 +1,13 @@
 ---
-title: "Open Source Alternatives to Anthropic Managed Agents in 2026"
-description: "What's actually shipping in 2026 if you want an open-source alternative to Anthropic's Managed Agents. Honest comparison: Open Managed Agents, LangGraph, AutoGen, CrewAI, plus what's still missing."
+title: "Open Source Alternatives to Claude Managed Agents in 2026"
+description: "What's actually shipping in 2026 if you want an open-source alternative to Claude Managed Agents. Honest comparison: Open Managed Agents, LangGraph, AutoGen, CrewAI, plus what's still missing."
 publishedAt: 2026-05-10
+updatedAt: 2026-05-26
 author: openma
-tags: ["alternatives", "open-source", "comparison", "anthropic"]
+tags: ["alternatives", "open-source", "comparison", "claude"]
 ---
 
-Anthropic's Managed Agents is the cleanest hosted-agent product on the
+Claude Managed Agents is the cleanest hosted-agent product on the
 market right now. The trade-off is the obvious one: closed source,
 hosted-only, no BYOK, no self-host story, no way to inspect what the
 agent loop is actually doing on a hard turn.
@@ -63,7 +64,7 @@ custom context engineering without leaving the platform.
 What's still in flight: detection coverage for some less-common LLM
 providers, the Postgres adapter is newer than the Cloudflare adapter
 and has fewer hours in production. See [the technical
-comparison](/blog/anthropic-managed-agents-vs-open-managed-agents/) for
+comparison](/blog/claude-managed-agents-vs-open-managed-agents/) for
 the side-by-side.
 
 ## LangGraph (LangChain)
@@ -178,12 +179,12 @@ Ask three questions:
 
 1. **Do you need a managed platform, or do you want to build one?**
    Frameworks (LangGraph, AutoGen, CrewAI) require you to assemble
-   the platform. Platforms (Open Managed Agents, hosted Anthropic)
-   give you one.
+   the platform. Platforms (Open Managed Agents, hosted Claude Managed
+   Agents) give you one.
 
 2. **Is BYOK + cost separation important?** All open-source options
    support BYOK by definition (you're the one calling the model). The
-   hosted Anthropic offering doesn't.
+   hosted Claude Managed Agents offering doesn't.
 
 3. **Do you need self-host, or is a hosted runtime acceptable?** Open
    Managed Agents and the framework projects support self-host. Some
@@ -191,17 +192,17 @@ Ask three questions:
    — read the license carefully.
 
 If your answer is "I want a self-hostable, drop-in compatible
-alternative to Anthropic's Managed Agents," there's currently one
+alternative to Claude Managed Agents," there's currently one
 project that fits all three constraints. If your answer is "I want a
 framework I'll wrap myself," LangGraph and AutoGen are mature picks.
 
 ## Quick comparison
 
-| | Open Managed Agents | LangGraph | AutoGen | CrewAI | Anthropic Managed Agents |
+| | Open Managed Agents | LangGraph | AutoGen | CrewAI | Claude Managed Agents |
 |---|---|---|---|---|---|
 | Open source | ✓ Apache 2.0 | ✓ MIT | ✓ CC-BY | ✓ MIT | ✗ |
 | Managed-platform shape | ✓ | △ runtime is paid | ✗ framework | ✗ framework | ✓ |
-| Drop-in compat with Anthropic API | ✓ | ✗ | ✗ | ✗ | ✓ (it _is_ the API) |
+| Drop-in compat with Claude Managed Agents API | ✓ | ✗ | ✗ | ✗ | ✓ (it _is_ the API) |
 | Self-host (no license fee) | ✓ | △ paid tier | ✓ DIY | ✓ DIY | ✗ |
 | BYOK | ✓ | ✓ | ✓ | ✓ | ✗ |
 | First-party workspace integrations | ✓ | ✗ | ✗ | ✗ | ✗ |

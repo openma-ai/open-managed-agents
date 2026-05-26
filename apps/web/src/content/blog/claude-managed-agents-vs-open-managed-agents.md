@@ -1,9 +1,10 @@
 ---
-title: "Anthropic Managed Agents vs Open Managed Agents: A Technical Comparison"
-description: "Side-by-side technical comparison of Anthropic's Managed Agents and the open-source Open Managed Agents project. API surface, runtime model, sandbox, billing, and where each one actually fits."
+title: "Claude Managed Agents vs Open Managed Agents: A Technical Comparison"
+description: "Side-by-side technical comparison of Claude Managed Agents and the open-source Open Managed Agents project. API surface, runtime model, sandbox, billing, and where each one actually fits."
 publishedAt: 2026-05-09
+updatedAt: 2026-05-26
 author: openma
-tags: ["comparison", "anthropic", "managed-agents", "architecture"]
+tags: ["comparison", "claude", "managed-agents", "architecture"]
 ---
 
 If you're shopping for an agent platform that handles the boring parts —
@@ -56,7 +57,7 @@ implementation aims to ship it in the same release window.
 
 This is the biggest structural difference.
 
-**Anthropic's Managed Agents** owns the agent loop end-to-end. You define
+**Claude Managed Agents** owns the agent loop end-to-end. You define
 an agent, hit `/sessions`, send a message, and watch events stream back.
 The decisions inside the loop — how to engineer the context window, when
 to trigger prompt caching, when to compact, how to retry a failed tool
@@ -96,7 +97,7 @@ matters.
 Both platforms run model-generated code in an isolated sandbox. The
 implementations differ, and so do the trade-offs.
 
-**Anthropic's Managed Agents** runs sandboxes on Anthropic-managed
+**Claude Managed Agents** runs sandboxes on Anthropic-managed
 infrastructure. Implementation details aren't documented; effectively
 it's a black box with quotas.
 
@@ -134,7 +135,7 @@ can rebuild from an event log can pick up where another left off.
 
 ## Storage and data residency
 
-**Anthropic's Managed Agents** stores session data in Anthropic's
+**Claude Managed Agents** stores session data in Anthropic's
 chosen regions. Region selection is limited; data residency for
 regulated industries is a coordination problem.
 
@@ -153,7 +154,7 @@ the self-host story is the answer.
 
 ## LLM key handling — BYOK
 
-**Anthropic's Managed Agents** is locked to Anthropic models. Your bill
+**Claude Managed Agents** is locked to Anthropic models. Your bill
 is one combined line item: tokens + platform fees.
 
 **Open Managed Agents** is BYOK by default — you supply the LLM key and
@@ -175,7 +176,7 @@ This means two things:
 
 ## Pricing
 
-| | Open Managed Agents (self-host) | Open Managed Agents (hosted) | Anthropic Managed Agents |
+| | Open Managed Agents (self-host) | Open Managed Agents (hosted) | Claude Managed Agents |
 |---|---|---|---|
 | Platform fee | $0 | Subscription, $0–$100/mo | Bundled in token markup |
 | LLM tokens | You pay provider directly | You pay provider directly (BYOK) | Anthropic-rated, no BYOK |
@@ -204,7 +205,7 @@ private workspaces.
 
 ## When each one fits
 
-**Pick Anthropic's Managed Agents when:**
+**Pick Claude Managed Agents when:**
 
 - You want zero infrastructure decisions.
 - Anthropic's pricing model fits your usage shape.
