@@ -21,7 +21,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'openma',
-      description: 'An open-source meta-platform for AI agents on Cloudflare.',
+      description: 'Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.',
       logo: {
         src: './src/assets/logo.svg',
         replacesTitle: true,

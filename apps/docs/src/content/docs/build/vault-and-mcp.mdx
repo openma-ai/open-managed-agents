@@ -5,7 +5,7 @@ description: How OMA isolates upstream credentials from the agent and the sandbo
 
 OMA's vault is the single source of truth for upstream credentials (MCP-server tokens, OAuth tokens, API keys). The agent itself — whether the cloud DO running `generateText`, the local daemon spawning `claude-agent-acp`, or the sandbox container running `curl` — **never holds plaintext credentials in memory**. All three callers know only `(tenantId, sessionId, server-name | hostname)` and ask the **main worker** to make the actual upstream call on their behalf. Main looks up the credential **live on every call**, injects the bearer, and forwards.
 
-Mirrors the [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) "credential proxy outside the harness" pattern: a prompt-injected agent has no credential to leak because there is none in its address space.
+Mirrors the [Claude Managed Agents](https://www.anthropic.com/engineering/managed-agents) "credential proxy outside the harness" pattern: a prompt-injected agent has no credential to leak because there is none in its address space.
 
 ## Three callers, one resolver
 

@@ -48,7 +48,7 @@ export function organizationSchema() {
     // we register it (or any other social account), append the URL here.
     sameAs: [REPO_URL],
     description:
-      "Open Managed Agents — open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0.",
+      "Open Managed Agents — open-source alternative to Claude Managed Agents. Self-host Claude agents on Cloudflare Workers or Docker. Apache 2.0.",
   };
 }
 
@@ -59,7 +59,7 @@ export function websiteSchema() {
     name: ORG_NAME,
     url: SITE_URL,
     description:
-      "Open-source, self-hostable alternative to Anthropic's Managed Agents.",
+      "Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.",
     potentialAction: {
       "@type": "SearchAction",
       // Stub for future sitelinks search box. Google indexes this even
@@ -95,7 +95,7 @@ export function softwareApplicationSchema() {
     downloadUrl: REPO_URL,
     license: "https://www.apache.org/licenses/LICENSE-2.0",
     description:
-      "Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Drop-in compatible API.",
+      "Open-source alternative to Claude Managed Agents. Self-host Claude agents on Cloudflare Workers or Docker. Wire-compatible API, MCP + Claude Code skills built in.",
     sameAs: [REPO_URL],
   };
 }
