@@ -12,6 +12,7 @@ Static files served at the site root.
 | `og-default.png` | Open Graph default image (1200×630) — referenced by `Base.astro` `og:image` |
 | `apple-touch-icon.png` | 180×180 iOS home-screen icon |
 | `favicon-512.png` / `favicon-192.png` / `favicon-32.png` / `favicon-16.png` | PWA + browser favicons |
+| `favicon.ico` | Multi-res ICO (16/32/48) — the path Google's favicon crawler checks first. Without one, Google falls back to a generic placeholder on the SERP. |
 | `site.webmanifest` | PWA manifest |
 | `robots.txt` | Crawler directives + sitemap pointer |
 
@@ -38,14 +39,17 @@ rsvg-convert -w 192 -h 192 _favicon-square.svg -o favicon-192.png
 rsvg-convert -w 512 -h 512 _favicon-square.svg -o favicon-512.png
 rsvg-convert -w 32 -h 32 _favicon-square.svg -o favicon-32.png
 rsvg-convert -w 16 -h 16 _favicon-square.svg -o favicon-16.png
+
+# Multi-resolution favicon.ico (16/32/48) — Google's favicon crawler
+# checks /favicon.ico first; without it the SERP falls back to a
+# generic placeholder.
+python3 -c "from PIL import Image; img = Image.open('favicon-192.png').convert('RGBA'); img.save('favicon.ico', sizes=[(16,16),(32,32),(48,48)])"
 ```
 
-Requires `rsvg-convert` (`brew install librsvg`).
+Requires `rsvg-convert` (`brew install librsvg`) and Python 3 with Pillow (`pip install Pillow`).
 
 ## What's not generated automatically
 
-- `favicon.ico` — modern browsers don't need it; if a legacy crawler
-  asks, the SVG icon and 32×32 PNG cover the case.
 - Per-post OG images — `BlogPostSchemaInput.image` already supports
   per-post overrides. Wire `astro-og-canvas` later if blog volume
   justifies bespoke cards.
