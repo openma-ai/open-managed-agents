@@ -152,18 +152,6 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     {allSchemas.map((schema) => (
       <script type="application/ld+json" set:html={JSON.stringify(schema)} />
     ))}
-
-    <!-- Cloudflare Web Analytics. Beacon token comes from PUBLIC_CF_WA_TOKEN
-         build env (set in deploy CI / wrangler overlay). When the env is
-         unset (e.g. local dev) the tag is omitted so we don't spam the
-         beacon with localhost noise. -->
-    {import.meta.env.PUBLIC_CF_WA_TOKEN && (
-      <script
-        defer
-        src="https://static.cloudflareinsights.com/beacon.min.js"
-        data-cf-beacon={`{"token": "${import.meta.env.PUBLIC_CF_WA_TOKEN}"}`}
-      />
-    )}
   </head>
   <body class="bg-bg text-fg">
     <!-- Skip-to-content for keyboard users. sr-only by default, becomes
