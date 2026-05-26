@@ -86,24 +86,6 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       }
     </script>
 
-    <!-- Font-readiness gate. Brand fonts arrive ~200-500ms after first
-         paint; without this the page renders in system-ui, then visibly
-         swaps to DM Sans / Source Serif 4 ("FOUT"). Hide body via CSS
-         until document.fonts.ready resolves, then fade in. 1500ms hard
-         timeout covers font-load failure (offline, blocked CDN). -->
-    <script is:inline>
-      const FONT_TIMEOUT_MS = 1500;
-      const reveal = () => document.documentElement.classList.add("fonts-loaded");
-      if ("fonts" in document) {
-        Promise.race([
-          document.fonts.ready,
-          new Promise((r) => setTimeout(r, FONT_TIMEOUT_MS)),
-        ]).then(reveal);
-      } else {
-        reveal();
-      }
-    </script>
-
     <!-- Fonts: same set Console uses, so cross-domain feels consistent.
          Trimmed to weights actually used (no italics, no opsz axis): Source
          Serif 4 needs 400/600/700, DM Sans needs 400/500/600, JetBrains Mono
