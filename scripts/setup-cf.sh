@@ -36,11 +36,13 @@ cd "$ROOT_DIR"
 DO_DEPLOY=1
 SKIP_SECRETS=0
 RESET_SECRETS=0
+FREE_TIER=0
 for arg in "$@"; do
   case "$arg" in
     --no-deploy)     DO_DEPLOY=0 ;;
     --skip-secrets)  SKIP_SECRETS=1 ;;
     --reset-secrets) RESET_SECRETS=1 ;;
+    --free-tier)     FREE_TIER=1 ;;
     --help|-h)
       sed -n '2,30p' "$0"
       exit 0
@@ -305,6 +307,35 @@ if [ "$DO_DEPLOY" = "0" ]; then
   warn "    --queue managed-agents-memory-events"
 fi
 
+# ── 5b. Free Tier note ──────────────────────────────────────────────────
+if [ "$FREE_TIER" = "1" ]; then
+  warn "╔══════════════════════════════════════════════════════════════╗"
+  warn "║  FREE TIER DEPLOYMENT                                       ║"
+  warn "╠══════════════════════════════════════════════════════════════╣"
+  warn "║  The following paid features are DISABLED:                  ║"
+  warn "║  • Rate Limiting (ratelimits in wrangler.jsonc)             ║"
+  warn "║  • Memory Queue (queues in wrangler.jsonc)                  ║"
+  warn "║  • Workers Containers (containers in agent wrangler.jsonc)  ║"
+  warn "║  • Browser Rendering (browser in agent wrangler.jsonc)      ║"
+  warn "╠══════════════════════════════════════════════════════════════╣"
+  warn "║  Without Containers, tool execution (bash, read, write,     ║"
+  warn "║  edit, etc.) will NOT be available. The API and Console     ║"
+  warn "║  UI will still work for agent/session management.           ║"
+  warn "╠══════════════════════════════════════════════════════════════╣"
+  warn "║  To upgrade later:                                           ║"
+  warn "║  1. Upgrade to Workers Paid plan                             ║"
+  warn "║  2. Uncomment the paid feature blocks in wrangler.jsonc      ║"
+  warn "║  3. Re-run setup with: ./scripts/setup-cf.sh                 ║"
+  warn "╚══════════════════════════════════════════════════════════════╝"
+
+  # Skip the R2 notification step for Free Tier (no queues)
+  warn "Free Tier: skipping R2 queue notification setup (queues not available)"
+  # Skip the deploy's queue notification step below
+  SKIP_QUEUE_NOTIFICATION=1
+else
+  SKIP_QUEUE_NOTIFICATION=0
+fi
+
 # ── 6. deploy ───────────────────────────────────────────────────────────
 if [ "$DO_DEPLOY" = "1" ]; then
   say "6. Deploy workers (main, agent, integrations)"
@@ -319,16 +350,36 @@ if [ "$DO_DEPLOY" = "1" ]; then
   npx wrangler deploy --config apps/main/wrangler.jsonc 2>&1 | tail -3
 
   # Now that the queue consumer exists, wire the R2 → queue subscription
-  say "5b. Wire R2 → queue (post-deploy)"
-  npx wrangler r2 bucket notification create managed-agents-memory \
-    --event-type object-create object-delete \
-    --queue managed-agents-memory-events 2>&1 | tail -3 || warn "R2 notification setup failed — wire manually"
+  if [ "$SKIP_QUEUE_NOTIFICATION" = "0" ]; then
+    say "5b. Wire R2 → queue (post-deploy)"
+    npx wrangler r2 bucket notification create managed-agents-memory \
+      --event-type object-create object-delete \
+      --queue managed-agents-memory-events 2>&1 | tail -3 || warn "R2 notification setup failed — wire manually"
+  fi
 fi
 
 # ── done ────────────────────────────────────────────────────────────────
 say "Done."
 
-cat <<EOF
+if [ "$FREE_TIER" = "1" ]; then
+  cat <<EOF
+
+🔓  Free Tier deployment complete!
+
+  Limitations:
+    • Bash tool execution is NOT available (requires Workers Containers — Paid plan)
+    • Browser Rendering is NOT available (requires Paid plan)
+    • Rate Limiting is NOT enabled (soft-passes; consider Cloudflare dashboard-level rules)
+    • Memory audit via Queues is NOT available (REST writes still audit inline)
+
+  To upgrade to full functionality:
+    1. Upgrade your Cloudflare account to Workers Paid
+    2. Edit wrangler.jsonc files to uncomment the paid feature blocks
+    3. Re-run: ./scripts/setup-cf.sh
+
+EOF
+else
+  cat <<EOF
 
 Next steps:
   - Open the main worker URL (printed above) in your browser
@@ -343,3 +394,4 @@ Next steps:
   - To scale to multi-shard in the future: see operations.mdx (env.production).
 
 EOF
+fi
