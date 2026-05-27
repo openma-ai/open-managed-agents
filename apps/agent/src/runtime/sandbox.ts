@@ -1,6 +1,7 @@
 import type { SandboxExecutor, ProcessHandle } from "../harness/interface";
 import type { Env } from "@open-managed-agents/shared";
 import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
+import { BoxRunSandbox } from "@open-managed-agents/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 // `bash-parser` is CJS; the bundler handles interop for worker builds.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -723,12 +724,41 @@ export class TestSandbox implements SandboxExecutor {
 }
 
 export function createSandbox(env: Env, sessionId: string): SandboxExecutor {
-  if (!env.SANDBOX) {
-    console.warn(
-      "[sandbox] SANDBOX binding not configured — returning NoopSandbox. " +
-      "Tool execution will fail until Cloudflare Workers Containers are enabled."
-    );
-    return new NoopSandbox();
+  // 1. BoxRun (REST microVMs) — highest priority, works on any tier
+  const boxrunUrl = env.BOXRUN_URL || (globalThis as any).process?.env?.BOXRUN_URL;
+  const provider = env.SANDBOX_PROVIDER || (globalThis as any).process?.env?.SANDBOX_PROVIDER;
+
+  if (provider === "boxrun" && boxrunUrl) {
+    return new BoxRunSandbox({
+      baseUrl: boxrunUrl,
+      bearerToken: env.BOXRUN_TOKEN || (globalThis as any).process?.env?.BOXRUN_TOKEN,
+      sessionId,
+      image: env.SANDBOX_IMAGE || (globalThis as any).process?.env?.SANDBOX_IMAGE,
+    });
   }
-  return new CloudflareSandbox(env, sessionId);
+
+  // 2. Cloudflare Containers (Paid tier)
+  if (env.SANDBOX) {
+    return new CloudflareSandbox(env, sessionId);
+  }
+
+  // 3. Fallback
+  console.warn(
+    "[sandbox] SANDBOX binding not configured — returning NoopSandbox. " +
+    "Tool execution will fail until Cloudflare Workers Containers are enabled or " +
+    "SANDBOX_PROVIDER=boxrun is configured."
+  );
+  return new NoopSandbox();
 }
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'

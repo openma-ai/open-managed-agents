@@ -3523,7 +3523,7 @@ export class SessionDO extends DurableObject<Env> {
     if (!agent.aux_model) return null;
     const handle = typeof agent.aux_model === "string" ? agent.aux_model : agent.aux_model.id;
     const creds = await this.resolveModelCardCredentials(handle);
-    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders);
+    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders, this.env.AI);
     return { model, modelInfo: { model_id: handle } };
   }
 
@@ -4003,7 +4003,7 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
     const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
-    const subModel = resolveModel(subModelId || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6", this.env.ANTHROPIC_API_KEY, this.env.ANTHROPIC_BASE_URL);
+    const subModel = resolveModel(subModelId || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6", this.env.ANTHROPIC_API_KEY, this.env.ANTHROPIC_BASE_URL, undefined, undefined, this.env.AI);
 
     // Per-thread abort controller. Registered in _threadAbortControllers
     // so a `user.interrupt` with this thread's session_thread_id (handled
@@ -4273,7 +4273,7 @@ export class SessionDO extends DurableObject<Env> {
     const handle = typeof agent.model === "string" ? agent.model : agent.model?.id;
     const effectiveHandle = handle || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
     const creds = await this.resolveModelCardCredentials(effectiveHandle);
-    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders);
+    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders, this.env.AI);
 
     // Build system prompt: agent.system + platform guidance + skill /
     // memory_store / appendable_prompt content (the latter passed in as
@@ -4596,6 +4596,9 @@ export class SessionDO extends DurableObject<Env> {
             "claude-sonnet-4-6",
           ctx.env.ANTHROPIC_API_KEY,
           ctx.env.ANTHROPIC_BASE_URL,
+          undefined,
+          undefined,
+          this.env.AI,
         );
         try {
           await runOutcomeSupervisor({
