@@ -977,7 +977,7 @@ function BasicTab({
               {runtimes.map((r) => (
                 <SelectOption key={r.id} value={r.id} disabled={r.status !== "online"}>
                   {r.hostname} ({r.status}
-                  {r.status === "online" && r.agents.length
+                  {r.status === "online" && r.agents?.length
                     ? ` · ${r.agents.length} agents`
                     : ""}
                   )

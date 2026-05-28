@@ -171,11 +171,11 @@ export function RuntimesList() {
       },
       {
         id: "agents",
-        accessorFn: (r) => r.agents.map((a) => a.id).join(", "),
+        accessorFn: (r) => (r.agents ?? []).map((a) => a.id).join(", "),
         header: "Agents detected",
         cell: ({ row }) => (
           <span className="font-mono text-xs text-fg-muted">
-            {row.original.agents.length === 0 ? "—" : row.original.agents.map((a) => a.id).join(", ")}
+            {(row.original.agents ?? []).length === 0 ? "—" : (row.original.agents ?? []).map((a) => a.id).join(", ")}
           </span>
         ),
       },
