@@ -14,6 +14,7 @@ import { createCfScheduler, type CfScheduler } from "@open-managed-agents/schedu
 import { memoryRetentionTick } from "@open-managed-agents/scheduler/jobs/memory-retention";
 import { webhookEventsRetentionTick } from "@open-managed-agents/scheduler/jobs/webhook-events-retention";
 import { tickEvalRuns } from "../eval-runner";
+import { dreamRecoveryTick } from "../cron/dream-recovery";
 
 // Cron expressions are env-overridable so ops can shift sweeps without a
 // code deploy. Defaults match the pre-extract behaviour exactly.
@@ -27,6 +28,7 @@ export function buildCfScheduler(env: Env): CfScheduler {
   const tickCron = envCron(env, "EVAL_TICK_CRON", "* * * * *");
   const memoryCron = envCron(env, "MEMORY_RETENTION_CRON", "* * * * *");
   const webhookCron = envCron(env, "WEBHOOK_EVENTS_RETENTION_CRON", "* * * * *");
+  const dreamsCron = envCron(env, "DREAM_RECOVERY_CRON", "* * * * *");
 
   scheduler.register({
     name: "eval-tick",
@@ -63,6 +65,12 @@ export function buildCfScheduler(env: Env): CfScheduler {
       resolveIntegrationsDb: () =>
         env.INTEGRATIONS_DB ? new CfD1SqlClient(env.INTEGRATIONS_DB) : null,
     }),
+  });
+
+  scheduler.register({
+    name: "dream-recovery",
+    cron: dreamsCron,
+    handler: () => dreamRecoveryTick(env),
   });
 
   return scheduler;

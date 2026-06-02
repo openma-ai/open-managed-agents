@@ -26,6 +26,24 @@ function actorFor(c: { get: (k: string) => unknown }): Actor {
   return userId ? { type: "user", id: userId } : { type: "api_key", id: "api" };
 }
 
+async function rejectActiveDreamOutputStore(
+  services: Services,
+  tenantId: string,
+  storeId: string,
+): Promise<{ error: { type: "invalid_request_error"; message: string } } | null> {
+  const blocking = await services.dreams.findActiveDreamsByOutputStore({
+    tenantId,
+    storeId,
+  });
+  if (blocking.length === 0) return null;
+  return {
+    error: {
+      type: "invalid_request_error",
+      message: `memory store is the output of an active dream (${blocking[0].id}); cancel the dream first`,
+    },
+  };
+}
+
 /** Map service errors → HTTP status. */
 function handle(err: unknown): Response {
   if (err instanceof MemoryStoreNotFoundError) {
@@ -194,8 +212,11 @@ app.on(["PUT", "POST"], "/:id", async (c) => {
 
 app.post("/:id/archive", async (c) => {
   const t = c.get("tenant_id");
+  const storeId = c.req.param("id");
+  const blocked = await rejectActiveDreamOutputStore(c.var.services, t, storeId);
+  if (blocked) return c.json(blocked, 400);
   try {
-    const store = await c.var.services.memory.archiveStore({ tenantId: t, storeId: c.req.param("id") });
+    const store = await c.var.services.memory.archiveStore({ tenantId: t, storeId });
     return c.json(toApiStore(store));
   } catch (err) {
     return handle(err);
@@ -204,9 +225,12 @@ app.post("/:id/archive", async (c) => {
 
 app.delete("/:id", async (c) => {
   const t = c.get("tenant_id");
+  const storeId = c.req.param("id");
+  const blocked = await rejectActiveDreamOutputStore(c.var.services, t, storeId);
+  if (blocked) return c.json(blocked, 400);
   try {
-    await c.var.services.memory.deleteStore({ tenantId: t, storeId: c.req.param("id") });
-    return c.json({ type: "memory_store_deleted", id: c.req.param("id") });
+    await c.var.services.memory.deleteStore({ tenantId: t, storeId });
+    return c.json({ type: "memory_store_deleted", id: storeId });
   } catch (err) {
     return handle(err);
   }

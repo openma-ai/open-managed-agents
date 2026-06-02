@@ -7,6 +7,7 @@ const cfWorkerOptions = {
     bindings: {
       API_KEY: "test-key",
       ANTHROPIC_API_KEY: "sk-ant-test-key",
+      DREAM_CURATOR_MODE: "dedup",
       BETTER_AUTH_SECRET: "test-auth-secret-for-vitest",
       // Required by buildServices for at-rest encryption of credentials.auth
       // and model_cards.api_key_cipher. Tests don't care about the value as
@@ -44,6 +45,9 @@ export default defineConfig({
       { find: "@open-managed-agents/memory-store/adapters/local-fs-blob", replacement: "./packages/memory-store/src/adapters/local-fs-blob.ts" },
       { find: "@open-managed-agents/memory-store/adapters/s3-blob", replacement: "./packages/memory-store/src/adapters/s3-blob.ts" },
       { find: "@open-managed-agents/memory-store", replacement: "./packages/memory-store/src/index.ts" },
+      { find: "@open-managed-agents/dreams-store/test-fakes", replacement: "./packages/dreams-store/src/test-fakes.ts" },
+      { find: "@open-managed-agents/dreams-store", replacement: "./packages/dreams-store/src/index.ts" },
+      { find: "@open-managed-agents/dreams-pipeline", replacement: "./packages/dreams-pipeline/src/index.ts" },
       { find: "@open-managed-agents/credentials-store/test-fakes", replacement: "./packages/credentials-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/credentials-store", replacement: "./packages/credentials-store/src/index.ts" },
       { find: "@open-managed-agents/vaults-store/test-fakes", replacement: "./packages/vaults-store/src/test-fakes.ts" },

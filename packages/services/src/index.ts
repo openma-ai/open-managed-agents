@@ -71,6 +71,10 @@ import {
   createCfEnvironmentService,
 } from "@open-managed-agents/environments-store";
 import {
+  DreamService,
+  createCfDreamService,
+} from "@open-managed-agents/dreams-store";
+import {
   OutboundSnapshotService,
   createCfOutboundSnapshotService,
 } from "@open-managed-agents/outbound-snapshots-store";
@@ -125,6 +129,7 @@ export interface Services {
   modelCards: ModelCardService;
   agents: AgentService;
   environments: EnvironmentService;
+  dreams: DreamService;
   outboundSnapshots: OutboundSnapshotService;
   sessionSecrets: SessionSecretService;
   /** Control-plane: tenant_id → binding_name assignment. Hot-path read on
@@ -301,6 +306,23 @@ export function buildServices(env: Env, db: D1Database): Services {
     environments: pickBackend(overrides, "environments", {
       cf: () => createCfEnvironmentService({ db }),
       // pg: () => createPgEnvironmentService({ pg: getPgPool(env) }),
+    }),
+    dreams: createCfDreamService({
+      db,
+      verifyMemoryStoreExists: async (tenantId, storeId) => {
+        const row = await db
+          .prepare("SELECT 1 FROM memory_stores WHERE id = ? AND tenant_id = ?")
+          .bind(storeId, tenantId)
+          .first();
+        return !!row;
+      },
+      verifySessionExists: async (tenantId, sessionId) => {
+        const row = await db
+          .prepare("SELECT 1 FROM sessions WHERE id = ? AND tenant_id = ?")
+          .bind(sessionId, tenantId)
+          .first();
+        return !!row;
+      },
     }),
     outboundSnapshots: createCfOutboundSnapshotService(env),
     sessionSecrets: createCfSessionSecretService(env),

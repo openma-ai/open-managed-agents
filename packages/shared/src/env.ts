@@ -106,6 +106,9 @@ export interface Env {
   ANTHROPIC_API_KEY: string;
   ANTHROPIC_BASE_URL?: string;
   ANTHROPIC_MODEL?: string;
+  /** Dream pipeline curator mode override. `"dedup"` uses a deterministic
+   *  no-network curator for tests and offline development. */
+  DREAM_CURATOR_MODE?: string;
   /** Killswitch for the LLM full-body logging middleware (Part B of the
    *  dual-table refactor). When set to "1", apps/agent skips the
    *  per-step R2 PUT entirely AND drops `body_r2_key` from

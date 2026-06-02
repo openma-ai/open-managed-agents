@@ -31,6 +31,8 @@ export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 // @ts-expect-error vitest resolves SQL via ?raw
 import authSchema from "../apps/main/migrations/0000_consolidated.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
+import schema0017 from "../apps/main/migrations/0017_dreams.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
 import schema0018 from "../apps/main/migrations/0018_runtime_multi_tenant.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import integrationsSchema from "../apps/main/migrations-integrations/0001_consolidated.sql?raw";
@@ -39,6 +41,7 @@ import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?r
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
+  schema0017 as string,
   schema0018 as string,
 ];
 
@@ -48,18 +51,18 @@ const ROUTER_MIGRATIONS_RAW: string[] = [routerSchema as string];
 
 let migrationsApplied = false;
 async function ensureMigrations(env: {
+  MAIN_DB?: D1Database;
   AUTH_DB?: D1Database;
   INTEGRATIONS_DB?: D1Database;
   ROUTER_DB?: D1Database;
 }): Promise<void> {
+  env.MAIN_DB ??= env.AUTH_DB;
   if (migrationsApplied || !env.AUTH_DB) return;
   await applyMigrations(env.AUTH_DB, MIGRATIONS_RAW, "auth");
   if (env.INTEGRATIONS_DB) {
     await applyMigrations(env.INTEGRATIONS_DB, INTEGRATIONS_MIGRATIONS_RAW, "integrations");
   }
-  if (env.ROUTER_DB) {
-    await applyMigrations(env.ROUTER_DB, ROUTER_MIGRATIONS_RAW, "router");
-  }
+  await applyMigrations(env.ROUTER_DB ?? env.AUTH_DB, ROUTER_MIGRATIONS_RAW, "router");
   migrationsApplied = true;
 }
 

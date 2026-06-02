@@ -443,6 +443,12 @@ importers:
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../../packages/credentials-store
+      '@open-managed-agents/dreams-pipeline':
+        specifier: workspace:*
+        version: link:../../packages/dreams-pipeline
+      '@open-managed-agents/dreams-store':
+        specifier: workspace:*
+        version: link:../../packages/dreams-store
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -912,6 +918,33 @@ importers:
         specifier: '*'
         version: 3.4.9
 
+  packages/dreams-pipeline:
+    dependencies:
+      '@open-managed-agents/dreams-store':
+        specifier: workspace:*
+        version: link:../dreams-store
+      '@open-managed-agents/memory-store':
+        specifier: workspace:*
+        version: link:../memory-store
+      '@open-managed-agents/sessions-store':
+        specifier: workspace:*
+        version: link:../sessions-store
+
+  packages/dreams-store:
+    dependencies:
+      '@open-managed-agents/memory-store':
+        specifier: workspace:*
+        version: link:../memory-store
+      '@open-managed-agents/sessions-store':
+        specifier: workspace:*
+        version: link:../sessions-store
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+
   packages/email:
     dependencies:
       '@open-managed-agents/shared':
@@ -1358,6 +1391,9 @@ importers:
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../credentials-store
+      '@open-managed-agents/dreams-store':
+        specifier: workspace:*
+        version: link:../dreams-store
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../environments-store
