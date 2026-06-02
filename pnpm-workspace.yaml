@@ -16,6 +16,11 @@ peerDependencyRules:
   allowAny:
     - zod
 
+# Keep dependency installs reproducible even when a developer has a
+# user-level mirror configured; some mirrors intermittently fail tarball
+# downloads for transitive console dependencies.
+registry: https://registry.npmjs.org/
+
 # v11 renamed `onlyBuiltDependencies` (array) → `allowBuilds` (map).
 # Without these entries pnpm v11 hard-fails install (strictDepBuilds=true
 # by default) with ERR_PNPM_IGNORED_BUILDS.
