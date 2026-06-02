@@ -658,26 +658,21 @@ describe("Harness crash recovery", () => {
       events: [{ type: "user.message", content: [{ type: "text", text: "crash" }] }],
     });
 
-    // Wait for crash
-    for (let i = 0; i < 20; i++) {
+    let events: any[] = [];
+    for (let i = 0; i < 50; i++) {
       await new Promise((r) => setTimeout(r, 100));
       const doId = env.SESSION_DO!.idFromName(session.id);
       const stub = env.SESSION_DO!.get(doId);
-      const statusRes = await stub.fetch(new Request("http://internal/status"));
-      const st = (await statusRes.json()) as any;
-      if (st.status === "idle") break;
+      const wsRes = await stub.fetch(new Request("http://internal/ws", { headers: { Upgrade: "websocket", "x-oma-replay": "1", "x-oma-include": "chunks" } }));
+      const ws = wsRes.webSocket!;
+      ws.accept();
+      events = [];
+      await new Promise<void>((resolve) => {
+        ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+        setTimeout(() => { ws.close(); resolve(); }, 50);
+      });
+      if (events.some((e) => e.type === "session.error")) break;
     }
-
-    const doId = env.SESSION_DO!.idFromName(session.id);
-    const stub = env.SESSION_DO!.get(doId);
-    const wsRes = await stub.fetch(new Request("http://internal/ws", { headers: { Upgrade: "websocket", "x-oma-replay": "1", "x-oma-include": "chunks" } }));
-    const ws = wsRes.webSocket!;
-    ws.accept();
-    const events: any[] = [];
-    await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
-      setTimeout(() => { ws.close(); resolve(); }, 100);
-    });
 
     const error = events.find((e) => e.type === "session.error");
     expect(error).toBeTruthy();

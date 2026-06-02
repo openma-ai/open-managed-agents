@@ -80,6 +80,7 @@ function formatAgent(agent: AgentConfig) {
     skills: agent.skills || [],
     mcp_servers: agent.mcp_servers || [],
     multiagent,
+    callable_agents: callable,
     metadata: agent.metadata || {},
     archived_at: agent.archived_at || null,
     ...(Object.keys(oma).length > 0 ? { _oma: oma } : {}),
@@ -165,8 +166,10 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       description?: string;
       mcp_servers?: AgentConfig["mcp_servers"];
       skills?: AgentConfig["skills"];
+      callable_agents?: AgentConfig["callable_agents"];
       multiagent?: { type: "coordinator"; agents: unknown[] } | null;
       metadata?: Record<string, unknown>;
+      harness?: string;
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" };
         harness?: string;
@@ -180,9 +183,9 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
 
     const body = {
       ...raw,
-      callable_agents: ma.list,
+      callable_agents: ma.list ?? raw.callable_agents,
       aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness,
+      harness: raw._oma?.harness ?? raw.harness,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };
@@ -241,6 +244,10 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
     const includeArchivedRaw = c.req.query("include_archived");
     const includeArchived = includeArchivedRaw === "true";
     const q = c.req.query("q") ?? undefined;
+    const orderRaw = c.req.query("order");
+    if (orderRaw !== undefined && orderRaw !== "asc" && orderRaw !== "desc") {
+      return c.json({ error: "order must be asc or desc" }, 400);
+    }
 
     // status: enum filter on archive state. Whitelist strictly — any
     // unknown value is a 400, NOT a silent fallback to "any". Allowing
@@ -314,8 +321,15 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
         ? { createdBefore: createdBeforeRes.value }
         : {}),
     });
+    const items = [...page.items];
+    if (orderRaw === "asc") {
+      items.sort((a, b) => {
+        const created = a.created_at.localeCompare(b.created_at);
+        return created !== 0 ? created : a.id.localeCompare(b.id);
+      });
+    }
     return c.json({
-      data: page.items.map(toApiAgent),
+      data: items.map(toApiAgent),
       ...(page.nextCursor ? { next_cursor: page.nextCursor } : {}),
       has_more: !!page.nextCursor,
     });
@@ -350,9 +364,11 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       description?: string | null;
       mcp_servers?: AgentConfig["mcp_servers"] | null;
       skills?: AgentConfig["skills"] | null;
+      callable_agents?: AgentConfig["callable_agents"] | null;
       multiagent?: { type: "coordinator"; agents: unknown[] } | null;
       metadata?: Record<string, unknown>;
       version?: number;
+      harness?: string;
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" } | null;
         harness?: string;
@@ -368,13 +384,15 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       const ma = multiagentToCallableAgents(raw.multiagent);
       if (ma.error) return c.json({ error: ma.error }, 422);
       callableAgents = ma.list;
+    } else if (raw.callable_agents !== undefined) {
+      callableAgents = raw.callable_agents;
     }
 
     const body = {
       ...raw,
       callable_agents: callableAgents,
       aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness,
+      harness: raw._oma?.harness ?? raw.harness,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };

@@ -717,4 +717,25 @@ CREATE TABLE `tenant_shard` (
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `idx_tenant_shard_binding` ON `tenant_shard` (`binding_name`);
+CREATE INDEX `idx_tenant_shard_binding` ON `tenant_shard` (`binding_name`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `dreams` (
+	`id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`status` text NOT NULL,
+	`input_memory_store_id` text NOT NULL,
+	`input_session_ids` text NOT NULL,
+	`output_memory_store_id` text,
+	`model` text NOT NULL,
+	`instructions` text,
+	`session_id` text,
+	`usage` text NOT NULL,
+	`error` text,
+	`created_at` integer NOT NULL,
+	`started_at` integer,
+	`ended_at` integer,
+	`archived_at` integer
+);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_dreams_tenant_created` ON `dreams` (`tenant_id`,`created_at` DESC);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_dreams_input_store` ON `dreams` (`input_memory_store_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_dreams_output_store` ON `dreams` (`output_memory_store_id`,`status`) WHERE `output_memory_store_id` IS NOT NULL;

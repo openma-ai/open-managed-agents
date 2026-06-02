@@ -795,7 +795,7 @@ describe("Memory enhancements", () => {
       });
       expect(res.status).toBe(409);
       const body = (await res.json()) as any;
-      expect(body.error).toBe("memory_precondition_failed");
+      expect(body.error?.message ?? body.error).toBe("memory_precondition_failed");
     });
 
     it("content_sha256 precondition passes when hash matches", async () => {
@@ -839,7 +839,7 @@ describe("Memory enhancements", () => {
       );
       expect(updateRes.status).toBe(409);
       const body = (await updateRes.json()) as any;
-      expect(body.error).toBe("memory_precondition_failed");
+      expect(body.error?.message ?? body.error).toBe("memory_precondition_failed");
     });
 
     it("update without precondition still works", async () => {
@@ -1001,12 +1001,15 @@ describe("Memory enhancements", () => {
         content: "sensitive data",
       });
       const mem = (await createRes.json()) as any;
+      await post(`/v1/memory_stores/${storeId}/memories/${mem.id}`, {
+        content: "replacement data",
+      });
 
       const versionsRes = await get(
         `/v1/memory_stores/${storeId}/memory_versions?memory_id=${mem.id}`
       );
       const list = (await versionsRes.json()) as any;
-      const verId = list.data[0].id;
+      const verId = list.data.find((v: any) => v.operation === "created").id;
 
       const redactRes = await post(
         `/v1/memory_stores/${storeId}/memory_versions/${verId}/redact`,
@@ -1032,12 +1035,15 @@ describe("Memory enhancements", () => {
         content: "more sensitive data",
       });
       const mem = (await createRes.json()) as any;
+      await post(`/v1/memory_stores/${storeId}/memories/${mem.id}`, {
+        content: "replacement data",
+      });
 
       const versionsRes = await get(
         `/v1/memory_stores/${storeId}/memory_versions?memory_id=${mem.id}`
       );
       const list = (await versionsRes.json()) as any;
-      const verId = list.data[0].id;
+      const verId = list.data.find((v: any) => v.operation === "created").id;
 
       await post(
         `/v1/memory_stores/${storeId}/memory_versions/${verId}/redact`,

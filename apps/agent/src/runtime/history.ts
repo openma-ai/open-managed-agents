@@ -788,6 +788,16 @@ function stampEvent(event: SessionEvent): SessionEvent {
   return event;
 }
 
+function stampEventImmediate(event: SessionEvent): SessionEvent {
+  if (!event.id) {
+    event.id = generateEventId();
+  }
+  if (!event.processed_at) {
+    event.processed_at = new Date().toISOString();
+  }
+  return event;
+}
+
 /**
  * SqliteHistory now composes the self-host `CfDoEventLog` adapter from
  * @open-managed-agents/event-log/cf-do — kept the class name for back-
@@ -835,7 +845,7 @@ export class SqliteHistory implements HistoryStore {
  * of the sub-agent run and is discarded afterwards.
  */
 export class InMemoryHistory implements HistoryStore {
-  private repo = new InMemoryEventLog(stampEvent);
+  private repo = new InMemoryEventLog(stampEventImmediate);
 
   append(event: SessionEvent): void {
     this.repo.append(event);

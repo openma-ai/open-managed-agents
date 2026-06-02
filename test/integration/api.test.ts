@@ -678,8 +678,9 @@ describe("SSE endpoints", () => {
 describe("SSE endpoint matrix", () => {
   // Read raw SSE frames off a Response body, parsing each `data:` JSON
   // payload until either `closeOnType` matches OR `timeoutMs` elapses.
-  // Returns the array of parsed events. Cancels the reader on exit so
-  // the underlying connection doesn't leak between tests.
+    // Returns the array of parsed events. Do not cancel the reader on
+    // timeout: workerd reports that normal client-side SSE cancellation
+    // as an unhandled "Stream was cancelled" rejection in Vitest.
   async function readSse(
     res: Response,
     opts: { closeOnType?: string; timeoutMs?: number } = {},
@@ -687,23 +688,24 @@ describe("SSE endpoint matrix", () => {
     const events: any[] = [];
     if (!res.body) return events;
     const reader = res.body.getReader();
+    const readerClosed = reader.closed.catch(() => undefined);
     const dec = new TextDecoder();
     let buf = "";
     let done = false;
-    // Fire a timer that cancels the reader; the in-flight read() then
-    // resolves with done=true (because we cancelled) and the loop exits.
-    const timer = setTimeout(() => {
-      reader.cancel().catch(() => undefined);
-    }, opts.timeoutMs ?? 500);
+    const deadline = Date.now() + (opts.timeoutMs ?? 500);
     try {
       while (!done) {
-        let r: ReadableStreamReadResult<Uint8Array>;
-        try {
-          r = await reader.read();
-        } catch {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        const read = reader
+          .read()
+          .catch((): ReadableStreamReadResult<Uint8Array> => ({ done: true, value: undefined }));
+        const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), remaining));
+        const r = await Promise.race([read, timeout]);
+        if (!r) break;
+        if (r.done) {
           break;
         }
-        if (r.done) break;
         buf += dec.decode(r.value, { stream: true });
         let i: number;
         while ((i = buf.indexOf("\n\n")) !== -1) {
@@ -722,8 +724,7 @@ describe("SSE endpoint matrix", () => {
         }
       }
     } finally {
-      clearTimeout(timer);
-      try { await reader.cancel(); } catch { /* already closed */ }
+      void readerClosed;
     }
     return events;
   }

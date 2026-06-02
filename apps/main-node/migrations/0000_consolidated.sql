@@ -720,4 +720,25 @@ CREATE INDEX "idx_slack_setup_links_tenant" ON "slack_setup_links" USING btree (
 CREATE INDEX "idx_slack_thread_sessions_active" ON "slack_thread_sessions" USING btree ("publication_id","status");--> statement-breakpoint
 CREATE INDEX "idx_slack_thread_sessions_tenant" ON "slack_thread_sessions" USING btree ("tenant_id");--> statement-breakpoint
 CREATE INDEX "idx_slack_webhook_events_received" ON "slack_webhook_events" USING btree ("received_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX "idx_slack_webhook_events_tenant" ON "slack_webhook_events" USING btree ("tenant_id","received_at" DESC NULLS LAST);
+CREATE INDEX "idx_slack_webhook_events_tenant" ON "slack_webhook_events" USING btree ("tenant_id","received_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "dreams" (
+	"id" text PRIMARY KEY NOT NULL,
+	"tenant_id" text NOT NULL,
+	"status" text NOT NULL,
+	"input_memory_store_id" text NOT NULL,
+	"input_session_ids" text NOT NULL,
+	"output_memory_store_id" text,
+	"model" text NOT NULL,
+	"instructions" text,
+	"session_id" text,
+	"usage" text NOT NULL,
+	"error" text,
+	"created_at" bigint NOT NULL,
+	"started_at" bigint,
+	"ended_at" bigint,
+	"archived_at" bigint
+);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_dreams_tenant_created" ON "dreams" USING btree ("tenant_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_dreams_input_store" ON "dreams" USING btree ("input_memory_store_id","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_dreams_output_store" ON "dreams" USING btree ("output_memory_store_id","status") WHERE "output_memory_store_id" IS NOT NULL;

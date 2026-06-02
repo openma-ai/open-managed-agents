@@ -121,7 +121,7 @@ export class MemoryStoreService {
      *  false→active, true→any. Prefer `status` for new callers. */
     includeArchived?: boolean;
     /** Row archive state. Pass `'active'` to exclude archived,
-     *  `'archived'` for only-archived, `'any'` (default) for both. */
+     *  `'archived'` for only-archived, `'any'` for both. */
     status?: "active" | "archived" | "any";
     /** Lower bound on created_at (epoch ms, inclusive). */
     createdAfter?: number;
@@ -129,7 +129,7 @@ export class MemoryStoreService {
     createdBefore?: number;
   }): Promise<MemoryStoreRow[]> {
     const status: "active" | "archived" | "any" =
-      opts.status ?? (opts.includeArchived === false ? "active" : "any");
+      opts.status ?? (opts.includeArchived ? "any" : "active");
     return this.storeRepo.list(opts.tenantId, {
       includeArchived: !!opts.includeArchived,
       status,

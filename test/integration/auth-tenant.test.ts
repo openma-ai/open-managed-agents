@@ -278,7 +278,7 @@ describe("models list endpoint", () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toContain("api_key");
+    expect(body.error?.message ?? body.error).toContain("api_key");
   });
 
   it("returns 502 for invalid Anthropic key", async () => {

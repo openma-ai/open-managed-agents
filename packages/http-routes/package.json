@@ -12,6 +12,8 @@
     "@open-managed-agents/blob-store": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
+    "@open-managed-agents/dreams-pipeline": "workspace:*",
+    "@open-managed-agents/dreams-store": "workspace:*",
     "@open-managed-agents/environments-store": "workspace:*",
     "@open-managed-agents/evals-store": "workspace:*",
     "@open-managed-agents/event-log": "workspace:*",

@@ -1889,7 +1889,34 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       if (body.type === "user.define_outcome") {
-        const e = body as UserDefineOutcomeEvent;
+        const raw = body as UserDefineOutcomeEvent & {
+          outcome?: {
+            description?: string;
+            criteria?: string[];
+            rubric?: UserDefineOutcomeEvent["rubric"];
+            verifier?: UserDefineOutcomeEvent["verifier"];
+            max_iterations?: number;
+          };
+        };
+        const legacyCriteria = raw.outcome?.criteria;
+        const e: UserDefineOutcomeEvent = {
+          ...raw,
+          description: raw.description ?? raw.outcome?.description ?? "",
+          rubric:
+            raw.rubric ??
+            raw.outcome?.rubric ??
+            (Array.isArray(legacyCriteria) && legacyCriteria.length > 0
+              ? legacyCriteria.join("\n")
+              : undefined),
+          verifier: raw.verifier ?? raw.outcome?.verifier,
+          max_iterations: raw.max_iterations ?? raw.outcome?.max_iterations,
+        };
+        const legacyOutcome =
+          raw.outcome ??
+          {
+            description: e.description,
+            ...(Array.isArray(legacyCriteria) ? { criteria: legacyCriteria } : {}),
+          };
         // AMA-spec: validate at-least-one-of(rubric|verifier). Reject the
         // event before persisting so callers get a clean 400 instead of a
         // silently degraded supervisor loop.
@@ -1900,10 +1927,10 @@ export class SessionDO extends DurableObject<Env> {
                 (e.rubric.type === "text" && !!e.rubric.content) ||
                 (e.rubric.type === "file" && !!e.rubric.file_id)
               );
-        if (!hasRubric && !e.verifier) {
+        if (!e.description && !hasRubric && !e.verifier) {
           return new Response(
-            "user.define_outcome requires at least one of `rubric` or `verifier`",
-            { status: 400 },
+            JSON.stringify({ error: "user.define_outcome requires description, rubric, or verifier" }),
+            { status: 400, headers: { "content-type": "application/json" } },
           );
         }
         // Mint outcome_id server-side (AMA-style `outc_…` prefix). Honour
@@ -1913,7 +1940,11 @@ export class SessionDO extends DurableObject<Env> {
           e.outcome_id && e.outcome_id.startsWith("outc_")
             ? e.outcome_id
             : generateOutcomeId();
-        const echoed: UserDefineOutcomeEvent = { ...e, outcome_id };
+        const echoed: UserDefineOutcomeEvent = {
+          ...e,
+          outcome_id,
+          outcome: legacyOutcome,
+        } as UserDefineOutcomeEvent;
         // Sequential outcomes: any prior `state.outcome` is dropped (it
         // either already terminated and was nulled by the supervisor, or
         // we're explicitly replacing it). Existing `outcome_evaluations`

@@ -143,8 +143,13 @@ export interface RawReview {
  */
 export type EventKind =
   | "issue_engaged"
+  | "issue_assigned"
+  | "issue_mentioned"
   | "issue_unsubscribed"
   | "pr_engaged"
+  | "pr_mentioned"
+  | "pr_review_requested"
+  | "pr_review_submitted"
   | "pr_unsubscribed"
   | "installation_created"
   | "installation_deleted"
@@ -314,6 +319,13 @@ export function parseWebhook({
     } else if (action === "unlabeled" && isTriggerLabelChange) {
       // User removed our trigger label — explicit unsubscribe signal.
       kind = "issue_unsubscribed";
+    } else if (
+      action === "assigned" &&
+      botLogin != null &&
+      Array.isArray(issue.assignees) &&
+      issue.assignees.some((a: { login?: string }) => a.login === botLogin)
+    ) {
+      kind = "issue_assigned";
     } else if (action === "labeled" && isTriggerLabelChange) {
       // User just added our trigger label — primary subscribe path.
       kind = "issue_engaged";
@@ -361,6 +373,13 @@ export function parseWebhook({
       kind = null;
     } else if (action === "unlabeled" && isTriggerLabelChange) {
       kind = "pr_unsubscribed";
+    } else if (
+      action === "review_requested" &&
+      botLogin != null &&
+      Array.isArray(pr.requested_reviewers) &&
+      pr.requested_reviewers.some((r: { login?: string }) => r.login === botLogin)
+    ) {
+      kind = "pr_review_requested";
     } else if (action === "labeled" && isTriggerLabelChange) {
       kind = "pr_engaged";
     } else if (hasTriggerLabel && PR_ENGAGE_ACTIONS.has(action ?? "")) {
@@ -406,7 +425,9 @@ export function parseWebhook({
       kind = null;
     } else if (action !== "created") {
       kind = null;
-    } else if (hasTriggerLabel || mentionsBot) {
+    } else if (mentionsBot) {
+      kind = isPr ? "pr_mentioned" : "issue_mentioned";
+    } else if (hasTriggerLabel) {
       kind = isPr ? "pr_engaged" : "issue_engaged";
     } else {
       kind = null;
@@ -435,8 +456,13 @@ export function parseWebhook({
     const hasTriggerLabel =
       triggerLabelLower != null && labels.includes(triggerLabelLower);
 
+    const requestedBotReview =
+      botLogin != null &&
+      Array.isArray(pr.requested_reviewers) &&
+      pr.requested_reviewers.some((r: { login?: string }) => r.login === botLogin);
     const kind: EventKind | null =
       senderIsBot ? null :
+      action === "submitted" && requestedBotReview ? "pr_review_submitted" :
       action === "submitted" && hasTriggerLabel ? "pr_engaged" :
       null;
     return {

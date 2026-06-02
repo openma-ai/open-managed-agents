@@ -210,11 +210,25 @@ app.delete("/:id", async (c) => {
   const t = c.get("tenant_id");
   const id = c.req.param("id");
   try {
+    const hasActiveSessions = await c.var.services.sessions.hasActiveByEnvironment({
+      tenantId: t,
+      environmentId: id,
+    });
+    if (hasActiveSessions) {
+      return c.json(
+        {
+          error:
+            "Cannot delete environment with active sessions. Archive or delete sessions first.",
+        },
+        409,
+      );
+    }
+
     await c.var.services.environments.delete({
       tenantId: t,
       environmentId: id,
     });
-    return c.json({ deleted: true });
+    return c.json({ type: "environment_deleted", id });
   } catch (err) {
     if (err instanceof EnvironmentNotFoundError) {
       return c.json({ error: "Environment not found" }, 404);

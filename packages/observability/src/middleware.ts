@@ -53,6 +53,8 @@ export function requestMetrics(opts: RequestMetricsOptions): MiddlewareHandler {
       if (!threw) {
         const route = (routeNameFromCtx ?? defaultRoute)(c);
         const tags = { method: c.req.method, route, status };
+        const contextError = (c as unknown as { error?: unknown }).error;
+        const f = contextError ? errFields(contextError) : null;
         recorder.counter("http_requests_total", 1, tags);
         recorder.histogram(
           "http_request_duration_seconds",
@@ -61,8 +63,8 @@ export function requestMetrics(opts: RequestMetricsOptions): MiddlewareHandler {
         );
         recorder.recordEvent({
           op: `http.${c.req.method}.${route}`,
-          error_name:
-            status >= 500 ? `${status}` : status >= 400 ? `${status}` : "",
+          error_name: f?.error_name ?? (status >= 500 ? `${status}` : status >= 400 ? `${status}` : ""),
+          ...(f?.error_message ? { error_message: f.error_message } : {}),
           duration_ms: Date.now() - start,
         });
       }

@@ -37,6 +37,7 @@ import {
   createSqliteMemoryStoreService,
   SqlMemoryRepo,
 } from "@open-managed-agents/memory-store";
+import { createSqliteDreamService } from "@open-managed-agents/dreams-store";
 import { LocalFsBlobStore as MemoryLocalFsBlobStore } from "@open-managed-agents/memory-store/adapters/local-fs-blob";
 import {
   S3BlobStore as FilesS3BlobStore,
@@ -66,6 +67,7 @@ import {
   buildVaultRoutes,
   buildSessionRoutes,
   buildMemoryRoutes,
+  buildDreamRoutes,
   buildTenantRoutes,
   buildMeRoutes,
   buildApiKeyRoutes,
@@ -319,6 +321,23 @@ const memoryService = createSqliteMemoryStoreService({
   db: drizzleDb,
   blobs: memoryBlobs,
 });
+const dreamsService = createSqliteDreamService({
+  client: sql,
+  verifyMemoryStoreExists: async (tenantId, storeId) => {
+    const row = await sql
+      .prepare("SELECT 1 FROM memory_stores WHERE id = ? AND tenant_id = ?")
+      .bind(storeId, tenantId)
+      .first();
+    return !!row;
+  },
+  verifySessionExists: async (tenantId, sessionId) => {
+    const row = await sql
+      .prepare("SELECT 1 FROM sessions WHERE id = ? AND tenant_id = ?")
+      .bind(sessionId, tenantId)
+      .first();
+    return !!row;
+  },
+});
 const memoryRepo = new SqlMemoryRepo(drizzleDb);
 // Memory blob watcher — wires chokidar fs events through
 // packages/queue's processMemoryEvent so CF + Node share one upsert
@@ -530,6 +549,7 @@ const services: RouteServices = {
   credentials: credentialService,
   memory: memoryService,
   sessions: sessionsService,
+  dreams: dreamsService,
   kv,
   newEventLog,
   hub: {
@@ -786,6 +806,14 @@ v1.route("/sessions", buildSessionRoutes({
 }));
 v1.route("/vaults", buildVaultRoutes({ services }));
 v1.route("/memory_stores", buildMemoryRoutes({ services }));
+v1.route("/dreams", buildDreamRoutes({
+  services,
+  curatorEnv: {
+    DREAM_CURATOR_MODE: process.env.DREAM_CURATOR_MODE,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+  },
+}));
 v1.route("/me", buildMeRoutes({
   services,
   authDisabled,

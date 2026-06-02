@@ -56,6 +56,9 @@ export function nodeSessionLifecycle(deps: NodeSessionLifecycleDeps): SessionLif
       void sandboxPath;
       return toFileRecord(row);
     },
+    fileExists: async ({ tenantId, fileId }) => {
+      return (await deps.files.get({ tenantId, fileId })) !== null;
+    },
     cascadeDeleteFiles: async ({ tenantId, sessionId }) => {
       try {
         const orphans = await deps.files.deleteBySession({ sessionId });

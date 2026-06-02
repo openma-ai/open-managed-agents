@@ -173,3 +173,22 @@ export async function rateLimitSessionCreate(
   }
   return null;
 }
+
+export const windows = new Map<string, number[]>();
+
+export function isRateLimited(
+  key: string,
+  limit: number,
+  windowMs: number,
+  now = Date.now(),
+): boolean {
+  const cutoff = now - windowMs;
+  const hits = (windows.get(key) ?? []).filter((ts) => ts > cutoff);
+  if (hits.length >= limit) {
+    windows.set(key, hits);
+    return true;
+  }
+  hits.push(now);
+  windows.set(key, hits);
+  return false;
+}

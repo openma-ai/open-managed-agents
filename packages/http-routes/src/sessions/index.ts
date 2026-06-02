@@ -127,6 +127,10 @@ export interface SessionLifecycleHooks {
     mediaType: string;
     sizeBytes: number;
   } | null>;
+  fileExists?: (input: {
+    tenantId: string;
+    fileId: string;
+  }) => Promise<boolean>;
   /** Delete a session's blob storage (R2 prefix or local files) on
    *  session DELETE. */
   cascadeDeleteFiles?: (input: {
@@ -263,7 +267,8 @@ function toApiSession(row: {
   return {
     ...rest,
     type: "session" as const,
-    title: title === "" ? null : title,
+    title: title ?? null,
+    agent_id,
     agent: snapshotToSessionAgent(agent_id, agent_snapshot ?? null),
     vault_ids: vault_ids ?? [],
     metadata: metadata ?? {},
@@ -439,7 +444,7 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
         tenantId: t,
         agentId,
         environmentId: envId,
-        title: body.title || "",
+        title: body.title ?? "",
         vaultIds,
         agentSnapshot: agentSnapshot as AgentConfig,
         environmentSnapshot: envSnap ?? undefined,
@@ -456,7 +461,7 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     const initParams: SessionInitParams = {
       agentId,
       environmentId: envId,
-      title: body.title || "",
+      title: body.title ?? "",
       tenantId: t,
       vaultIds,
       agentSnapshot: agentSnapshot as AgentConfig,
@@ -511,6 +516,7 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50;
     const cursor = c.req.query("cursor") ?? c.req.query("page");
     const q = c.req.query("q") ?? undefined;
+    const includeArchived = c.req.query("include_archived") === "true";
 
     // status: session lifecycle filter (idle | running | rescheduling |
     // terminated). Whitelist strictly — unknown value is a 400, NOT a
@@ -545,6 +551,7 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       agentId: agentIdFilter,
       limit,
       cursor: cursor ?? undefined,
+      includeArchived,
       ...(status ? { status } : {}),
       ...(q ? { q } : {}),
     });
@@ -1020,12 +1027,20 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       return c.json({ error: "memory_store_id is required for memory_store resources" }, 400);
     }
     try {
+      let fileId = body.file_id;
+      if (body.type === "file" && body.file_id && deps.lifecycle?.fileExists) {
+        const exists = await deps.lifecycle.fileExists({
+          tenantId: t,
+          fileId: body.file_id,
+        });
+        if (!exists) return c.json({ error: "File not found" }, 404);
+      }
       const added = await services.sessions.addResource({
         tenantId: t,
         sessionId,
         resource: {
           type: body.type,
-          file_id: body.file_id,
+          file_id: fileId,
           memory_store_id: body.memory_store_id,
           mount_path: body.mount_path,
           access:
@@ -1250,10 +1265,26 @@ async function openSse(
     include,
   });
   const enc = new TextEncoder();
+  let closed = false;
+  const closeHandle = () => {
+    if (closed) return;
+    closed = true;
+    handle.close();
+  };
+  const safeEnqueue = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: string) => {
+    if (closed) return false;
+    try {
+      controller.enqueue(enc.encode(chunk));
+      return true;
+    } catch {
+      closeHandle();
+      return false;
+    }
+  };
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        controller.enqueue(enc.encode("retry: 1000\n\n"));
+        if (!safeEnqueue(controller, "retry: 1000\n\n")) return;
         for await (const frame of handle) {
           let seq: number | undefined;
           let evType: string | undefined;
@@ -1272,9 +1303,10 @@ async function openSse(
           // even though the wire is delivering events.
           const eventLine = evType ? `event: ${evType}\n` : "";
           const idLine = seq !== undefined ? `id: ${seq}\n` : "";
-          controller.enqueue(enc.encode(`${eventLine}${idLine}data: ${frame.data}\n\n`));
+          if (!safeEnqueue(controller, `${eventLine}${idLine}data: ${frame.data}\n\n`)) return;
         }
       } finally {
+        closeHandle();
         try {
           controller.close();
         } catch {
@@ -1282,9 +1314,9 @@ async function openSse(
         }
       }
     },
-    cancel: () => handle.close(),
+    cancel: () => closeHandle(),
   });
-  c.req.raw.signal?.addEventListener("abort", () => handle.close());
+  c.req.raw.signal?.addEventListener("abort", () => closeHandle());
   return new Response(stream, {
     headers: {
       "content-type": "text/event-stream",

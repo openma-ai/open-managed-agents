@@ -160,6 +160,9 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
         sizeBytes: src.size_bytes,
       };
     },
+    fileExists: async ({ tenantId, fileId }) => {
+      return (await services.files.get({ tenantId, fileId })) !== null;
+    },
     cascadeDeleteFiles: async ({ tenantId, sessionId }) => {
       // 1. Per-session secret KV cleanup
       await services.sessionSecrets.deleteAllForSession({ tenantId, sessionId });
