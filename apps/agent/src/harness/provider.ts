@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createWorkersAI } from "@ai-sdk/cloudflare";
 import type { LanguageModel } from "ai";
 
 /**
@@ -8,8 +9,9 @@ import type { LanguageModel } from "ai";
  * - "ant-compatible" — Third-party Anthropic-compatible API
  * - "oai"            — OpenAI official API
  * - "oai-compatible" — Third-party OpenAI-compatible API (DeepSeek, Groq, etc.)
+ * - "cf-workers-ai"  — Cloudflare Workers AI
  */
-export type ApiCompat = "ant" | "ant-compatible" | "oai" | "oai-compatible";
+export type ApiCompat = "ant" | "ant-compatible" | "oai" | "oai-compatible" | "cf-workers-ai";
 
 const KNOWN_CLAUDE_PREFIX = "claude-";
 
@@ -117,6 +119,7 @@ export function resolveModel(
   baseURL?: string,
   compat?: ApiCompat,
   customHeaders?: Record<string, string>,
+  aiBinding?: any,
 ): LanguageModel {
   const modelString = typeof model === "string" ? model : model.id;
 
@@ -127,6 +130,14 @@ export function resolveModel(
 
   const effectiveCompat = compat || "ant";
 
+  if (effectiveCompat === "cf-workers-ai") {
+    if (!aiBinding) {
+      throw new Error("cf-workers-ai requires aiBinding");
+    }
+    const cf = createWorkersAI({ binding: aiBinding });
+    return cf(modelId);
+  }
+
   if (useOpenAI(effectiveCompat)) {
     const openai = createOpenAI({
       apiKey,
@@ -135,13 +146,6 @@ export function resolveModel(
       fetch: observingFetch,
     });
     // Use chat/completions endpoint, not Responses API.
-    // Reasons:
-    //   - Third-party OpenAI-compat gateways (CF AI Gateway, Groq, DeepSeek,
-    //     xAI Grok, etc.) only support /v1/chat/completions
-    //   - Responses API requires server-side persistence of function call IDs;
-    //     orgs with Zero Data Retention enabled get "Item with id 'fc_...' not
-    //     found" errors mid-loop
-    //   - chat/completions is the de-facto standard contract for OpenAI-compat
     return openai.chat(modelId);
   }
 
@@ -152,10 +156,6 @@ export function resolveModel(
   if (baseURL) headers["X-Sub-Module"] = "managed-agents";
   if (customHeaders) Object.assign(headers, customHeaders);
 
-  // @ai-sdk/anthropic appends `/messages` directly to baseURL — no `/v1`
-  // segment is added. Real api.anthropic.com endpoints include `/v1` in the
-  // SDK default, so deployments pointing at proxies must too. Auto-append
-  // `/v1` if the user supplied a bare host so common env values work.
   const normalizedBaseURL = baseURL
     ? /\/v\d+(\/)?$/.test(baseURL)
       ? baseURL.replace(/\/$/, "")
@@ -166,9 +166,6 @@ export function resolveModel(
     apiKey,
     baseURL: normalizedBaseURL,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
-    // setMaxTokensFetch composes observingFetch internally for non-Claude;
-    // Claude path uses observingFetch directly so 429/rate-limit logging
-    // applies regardless of which provider/model we're talking to.
     fetch: isKnownClaude ? observingFetch : setMaxTokensFetch,
   });
 

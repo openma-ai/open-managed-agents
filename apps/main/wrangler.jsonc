@@ -127,20 +127,32 @@
     { "binding": "ANALYTICS", "dataset": "oma_events" }
   ],
 
+  // ─────────────────────────────────────────────────────────────────────
+  // PAID FEATURES (Workers Paid plan required)
+  // ─────────────────────────────────────────────────────────────────────
+  // The ratelimits and queues blocks below require a Workers Paid plan.
+  //
+  // ☑️ Free Tier users: Comment out or remove both sections below.
+  //    Rate limiting will soft-pass (no-op) when bindings are absent.
+  //    Memory store audit via queues will not function — REST writes
+  //    still audit inline (D1), but agent FUSE writes won't be audited.
+  //    See README.md for Free Tier setup instructions.
+  // ─────────────────────────────────────────────────────────────────────
+
   // Cross-isolate rate limiting via CF Workers Rate Limiting binding.
   // Replaces a per-isolate Map limiter that under-counted N×isolate.
   // CF only supports period 10 or 60 (seconds); pick limits accordingly.
   // namespace_ids are arbitrary tenant-scoped numeric tokens — they only
   // need to be unique within this worker.
-  "ratelimits": [
-    { "name": "RL_AUTH_IP",         "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
-    { "name": "RL_AUTH_SEND_IP",    "namespace_id": "1002", "simple": { "limit": 5,  "period": 60 } },
-    { "name": "RL_AUTH_SEND_EMAIL", "namespace_id": "1003", "simple": { "limit": 1,  "period": 60 } },
-    { "name": "RL_API_USER_WRITE",  "namespace_id": "1004", "simple": { "limit": 60, "period": 60 } },
-    { "name": "RL_API_USER_READ",   "namespace_id": "1005", "simple": { "limit": 600,"period": 60 } },
-    { "name": "RL_SESSIONS_TENANT", "namespace_id": "1006", "simple": { "limit": 5,  "period": 60 } },
-    { "name": "RL_UPLOAD_TENANT",   "namespace_id": "1007", "simple": { "limit": 30, "period": 60 } }
-  ],
+  // "ratelimits": [
+  //   { "name": "RL_AUTH_IP",         "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+  //   { "name": "RL_AUTH_SEND_IP",    "namespace_id": "1002", "simple": { "limit": 5,  "period": 60 } },
+  //   { "name": "RL_AUTH_SEND_EMAIL", "namespace_id": "1003", "simple": { "limit": 1,  "period": 60 } },
+  //   { "name": "RL_API_USER_WRITE",  "namespace_id": "1004", "simple": { "limit": 60, "period": 60 } },
+  //   { "name": "RL_API_USER_READ",   "namespace_id": "1005", "simple": { "limit": 600,"period": 60 } },
+  //   { "name": "RL_SESSIONS_TENANT", "namespace_id": "1006", "simple": { "limit": 5,  "period": 60 } },
+  //   { "name": "RL_UPLOAD_TENANT",   "namespace_id": "1007", "simple": { "limit": 30, "period": 60 } }
+  // ],
 
   // Cloudflare Queue consumer for R2 Event Notifications on MEMORY_BUCKET.
   // R2 fires { action, bucket, object: { key, size, eTag } } per write/delete;
@@ -155,28 +167,28 @@
   // Local dev: R2 events do NOT fire (CF control-plane feature). REST writes
   // still audit (inline write to D1 in the route handler), but agent FUSE
   // writes are not audited in dev. Documented in README.
-  "queues": {
-    "consumers": [
-      {
-        "queue": "managed-agents-memory-events",
-        "max_batch_size": 25,
-        "max_batch_timeout": 5,
-        "max_retries": 5,
-        "dead_letter_queue": "managed-agents-memory-events-dlq"
-      },
-      {
-        // DLQ subscriber for the main queue above. Captures messages that
-        // exhausted retries (D1 outage, malformed key, code regression),
-        // logs + records to AE so they don't disappear silently. Handler
-        // ALWAYS acks — there's no DLQ-of-DLQ in CF Queues, and a thrown
-        // handler here would loop until expiry.
-        "queue": "managed-agents-memory-events-dlq",
-        "max_batch_size": 10,
-        "max_batch_timeout": 30,
-        "max_retries": 1
-      }
-    ]
-  },
+  // "queues": {
+  //   "consumers": [
+  //     {
+  //       "queue": "managed-agents-memory-events",
+  //       "max_batch_size": 25,
+  //       "max_batch_timeout": 5,
+  //       "max_retries": 5,
+  //       "dead_letter_queue": "managed-agents-memory-events-dlq"
+  //     },
+  //     {
+  //       // DLQ subscriber for the main queue above. Captures messages that
+  //       // exhausted retries (D1 outage, malformed key, code regression),
+  //       // logs + records to AE so they don't disappear silently. Handler
+  //       // ALWAYS acks — there's no DLQ-of-DLQ in CF Queues, and a thrown
+  //       // handler here would loop until expiry.
+  //       "queue": "managed-agents-memory-events-dlq",
+  //       "max_batch_size": 10,
+  //       "max_batch_timeout": 30,
+  //       "max_retries": 1
+  //     }
+  //   ]
+  // },
 
   "triggers": {
     "crons": ["* * * * *"]

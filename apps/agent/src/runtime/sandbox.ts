@@ -1,6 +1,7 @@
 import type { SandboxExecutor, ProcessHandle } from "../harness/interface";
 import type { Env } from "@open-managed-agents/shared";
 import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
+import { BoxRunSandbox } from "@open-managed-agents/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 // `bash-parser` is CJS; the bundler handles interop for worker builds.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -12,6 +13,71 @@ const parseShellCommand = parseShell as (command: string) => {
   commands?: Array<Record<string, any>>;
 };
 
+export class NoopSandbox implements SandboxExecutor {
+  async exec(_command: string, _timeout?: number): Promise<string> {
+    throw new Error(
+      "Cloudflare Workers Containers (sandbox) is not enabled on this deployment. " +
+      "Add containers bindings to apps/agent/wrangler.jsonc or deploy on the Workers Paid plan. " +
+      "See README.md for Free Tier setup instructions."
+    );
+  }
+  async readFile(_path: string): Promise<string> {
+    throw new Error("Sandbox not available");
+  }
+  async writeFile(_path: string, _content: string): Promise<string> {
+    throw new Error("Sandbox not available");
+  }
+  async writeFileBytes(_path: string, _bytes: Uint8Array): Promise<string> {
+    throw new Error("Sandbox not available");
+  }
+  async startProcess(_command: string): Promise<ProcessHandle | null> {
+    return null;
+  }
+  mountWorkspace(): Promise<void> {
+    return Promise.resolve();
+  }
+  createWorkspaceBackup(_opts: { name?: string; ttlSec: number }): Promise<{ id: string; dir: string; localBucket?: boolean } | null> {
+    return Promise.resolve(null);
+  }
+  restoreWorkspaceBackup(_handle: { id: string; dir: string; localBucket?: boolean }): Promise<{ ok: boolean; error?: string }> {
+    return Promise.resolve({ ok: true });
+  }
+  mountMemoryStore(_opts: { storeName: string; storeId: string; readOnly: boolean }): Promise<void> {
+    return Promise.resolve();
+  }
+  mountSessionOutputs(_opts: { tenantId: string; sessionId: string }): Promise<void> {
+    return Promise.resolve();
+  }
+  setEnvVars(_envVars: Record<string, string>): Promise<void> {
+    return Promise.resolve();
+  }
+  registerCommandSecrets(_commandPrefix: string, _secrets: Record<string, string>): void {}
+  setOutboundContext(_opts: { tenantId: string; sessionId: string }): Promise<void> {
+    return Promise.resolve();
+  }
+  setBackupContext(_opts: { tenantId: string; environmentId: string; sessionId: string }): Promise<void> {
+    return Promise.resolve();
+  }
+  snapshotWorkspaceNow(): Promise<void> {
+    return Promise.resolve();
+  }
+  destroy(): Promise<void> {
+    return Promise.resolve();
+  }
+  setBillingContext(_opts: { tenantId: string; sessionId: string; agentId: string | null }): Promise<void> {
+    return Promise.resolve();
+  }
+  emitSandboxActiveNow(): Promise<void> {
+    return Promise.resolve();
+  }
+  renewActivityTimeout(): Promise<void> {
+    return Promise.resolve();
+  }
+  gitCheckout(_repoUrl: string, _options: { branch?: string; targetDir?: string }): Promise<unknown> {
+    return Promise.resolve({});
+  }
+}
+
 export class CloudflareSandbox implements SandboxExecutor {
   private sandboxPromise: Promise<any>;
   private env: Env;
@@ -22,8 +88,17 @@ export class CloudflareSandbox implements SandboxExecutor {
   constructor(env: Env, sessionId: string) {
     this.env = env;
     this.sessionId = sessionId;
+    if (!env.SANDBOX) {
+      this.sandboxPromise = Promise.reject(
+        new Error(
+          "SANDBOX binding is not configured. Cloudflare Workers Containers must be enabled. " +
+          "Add containers bindings to apps/agent/wrangler.jsonc or deploy on the Workers Paid plan."
+        )
+      );
+      return;
+    }
     try {
-      this.sandboxPromise = Promise.resolve(cfGetSandbox(env.SANDBOX! as any, sessionId));
+      this.sandboxPromise = Promise.resolve(cfGetSandbox(env.SANDBOX as any, sessionId));
     } catch (err: any) {
       this.sandboxPromise = Promise.reject(
         new Error(`getSandbox failed (SANDBOX: ${typeof env.SANDBOX}, id: ${sessionId}): ${err?.message || err}`)
@@ -498,7 +573,9 @@ export class CloudflareSandbox implements SandboxExecutor {
     // RPC handle (observed staging 2026-05-19: "An RPC stub was not
     // disposed properly" warning preceded the 53-min container wedge by
     // ~12s, suggesting stale-stub reuse plays a role in the hang loop).
-    this.sandboxPromise = Promise.resolve(cfGetSandbox(this.env.SANDBOX! as any, this.sessionId));
+    if (this.env.SANDBOX) {
+      this.sandboxPromise = Promise.resolve(cfGetSandbox(this.env.SANDBOX as any, this.sessionId));
+    }
     this.mounted = false;
   }
 
@@ -647,5 +724,41 @@ export class TestSandbox implements SandboxExecutor {
 }
 
 export function createSandbox(env: Env, sessionId: string): SandboxExecutor {
-  return new CloudflareSandbox(env, sessionId);
+  // 1. BoxRun (REST microVMs) — highest priority, works on any tier
+  const boxrunUrl = env.BOXRUN_URL || (globalThis as any).process?.env?.BOXRUN_URL;
+  const provider = env.SANDBOX_PROVIDER || (globalThis as any).process?.env?.SANDBOX_PROVIDER;
+
+  if (provider === "boxrun" && boxrunUrl) {
+    return new BoxRunSandbox({
+      baseUrl: boxrunUrl,
+      bearerToken: env.BOXRUN_TOKEN || (globalThis as any).process?.env?.BOXRUN_TOKEN,
+      sessionId,
+      image: env.SANDBOX_IMAGE || (globalThis as any).process?.env?.SANDBOX_IMAGE,
+    });
+  }
+
+  // 2. Cloudflare Containers (Paid tier)
+  if (env.SANDBOX) {
+    return new CloudflareSandbox(env, sessionId);
+  }
+
+  // 3. Fallback
+  console.warn(
+    "[sandbox] SANDBOX binding not configured — returning NoopSandbox. " +
+    "Tool execution will fail until Cloudflare Workers Containers are enabled or " +
+    "SANDBOX_PROVIDER=boxrun is configured."
+  );
+  return new NoopSandbox();
 }
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'

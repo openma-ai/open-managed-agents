@@ -88,7 +88,12 @@ Console UI, operator gotchas): **[docs.openma.dev/self-host/overview](https://do
 
 ## Quick start: Cloudflare deploy
 
-Requires [Workers Paid plan](https://developers.cloudflare.com/workers/platform/pricing/) (for Durable Objects + Containers).
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/open-ma/open-managed-agents)
+
+> **Note:** The Deploy button above deploys the default (Paid plan) configuration.  
+> For Free Tier setup, see [Cloudflare Free Tier](#cloudflare-free-tier) below.
+
+Requires [Workers Paid plan](https://developers.cloudflare.com/workers/platform/pricing/) (for Durable Objects + Containers) for full functionality.
 
 ```bash
 git clone https://github.com/open-ma/open-managed-agents.git
@@ -116,6 +121,13 @@ npx wrangler secret put API_KEY               # initial bootstrap key for the RE
 
 npm run deploy
 # → https://openma.dev (or https://managed-agents.<your-subdomain>.workers.dev for a personal deploy)
+```
+
+Or use the interactive setup wizard (recommended for new deployments):
+
+```bash
+./scripts/setup-cf.sh                    # Standard deployment (Paid plan)
+./scripts/setup-cf.sh --free-tier        # Free Tier deployment
 ```
 
 What gets deployed:
@@ -155,6 +167,85 @@ curl -N -X POST $BASE/v1/sessions/$SESSION/messages \
 ```
 
 For long-lived sessions use `GET /v1/sessions/$SESSION/events/stream` — replays history on connect, never closes.
+
+---
+
+## Cloudflare Free Tier
+
+OMA can be deployed on the [Cloudflare Free Tier](https://developers.cloudflare.com/workers/platform/pricing/), though some features are unavailable.
+
+### Limitations
+
+| Feature | Free Tier Status | Details |
+|---|---|---|
+| **Workers Containers** (sandbox) | ❌ Unavailable | Tool execution (`bash`, `read`, `write`, `edit`, etc.) requires Cloudflare Workers Containers (Paid plan). The API, Console UI, and agent/session management still function. |
+| **Browser Rendering** | ❌ Unavailable | The `browser` tool is opt-in and gracefully degrades when the binding is absent. |
+| **Rate Limiting** | ❌ Unavailable | Rate limit bindings soft-pass when absent. Consider Cloudflare's [WAF dashboard rules](https://developers.cloudflare.com/waf/) as an alternative. |
+| **Memory Queue** (R2 events) | ❌ Unavailable | Memory store audit via queues won't function. REST writes still audit inline (D1), but agent FUSE writes won't be audited. |
+| **Durable Objects** | ✅ Available | Durable Objects are included in the Free Tier (limited operations). |
+| **D1 Databases** | ✅ Available | Included in the Free Tier (limited storage). |
+| **R2 Storage** | ✅ Available | Included in the Free Tier (limited storage). |
+| **KV Storage** | ✅ Available | Included in the Free Tier (limited operations). |
+| **Workers AI** | ✅ Available | Included in the Free Tier (limited requests). |
+| **API & Console** | ✅ Available | Full API and Console UI functionality. |
+| **Integrations** | ✅ Available | Linear, GitHub, and Slack integrations work. |
+
+### Free Tier Quick Start
+
+```bash
+git clone https://github.com/open-ma/open-managed-agents.git
+cd open-managed-agents
+pnpm install
+
+# Use the interactive setup script with the --free-tier flag
+./scripts/setup-cf.sh --free-tier
+```
+
+The `--free-tier` flag will:
+1. Create all required resources (D1, KV, R2)
+2. Patch the wrangler.jsonc configuration files
+3. Set required secrets
+4. Apply database migrations
+5. **Skip** provisioning paid-only resources (queues, containers, browser, rate limits)
+6. Deploy the workers
+
+### Manual Free Tier Setup
+
+If you prefer to configure manually:
+
+1. **Edit `apps/main/wrangler.jsonc`**: Comment out the `ratelimits` and `queues` sections at the top level (already commented by default for Free Tier).
+
+2. **Edit `apps/agent/wrangler.jsonc`**: Comment out the `containers` section and the `browser` binding.
+
+3. **Edit `apps/integrations/wrangler.jsonc`**: Comment out the `ratelimits` section at the top level.
+
+4. Deploy normally:
+   ```bash
+   npx wrangler deploy --config apps/main/wrangler.jsonc
+   npx wrangler deploy --config apps/agent/wrangler.jsonc
+   npx wrangler deploy --config apps/integrations/wrangler.jsonc
+   ```
+
+### Upgrading from Free Tier to Paid Plan
+
+When you're ready to upgrade:
+
+1. Upgrade your Cloudflare account to Workers Paid
+2. Uncomment the paid feature blocks in the `wrangler.jsonc` files:
+   - `apps/main/wrangler.jsonc`: uncomment `ratelimits` and `queues`
+   - `apps/agent/wrangler.jsonc`: uncomment `containers` and `browser`
+   - `apps/integrations/wrangler.jsonc`: uncomment `ratelimits`
+3. Provision a Cloudflare Queue for memory events:
+   ```bash
+   npx wrangler r2 bucket notification create managed-agents-memory \
+     --event-type object-create object-delete \
+     --queue managed-agents-memory-events
+   ```
+4. Redeploy:
+   ```bash
+   npx wrangler deploy --config apps/main/wrangler.jsonc
+   npx wrangler deploy --config apps/agent/wrangler.jsonc
+   ```
 
 ---
 

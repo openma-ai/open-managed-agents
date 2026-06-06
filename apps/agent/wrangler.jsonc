@@ -12,14 +12,27 @@
   // for openma.dev lives in env.production overlay below.
   // ─────────────────────────────────────────────────────────────────────
 
-  "containers": [
-    {
-      "class_name": "Sandbox",
-      "image": "./Dockerfile.sandbox",
-      "instance_type": "standard-1",
-      "max_instances": 50
-    }
-  ],
+  // ─────────────────────────────────────────────────────────────────────
+  // PAID FEATURES (Workers Paid plan required)
+  // ─────────────────────────────────────────────────────────────────────
+  // containers (Cloudflare Workers Containers) and browser (Browser
+  // Rendering) require a Workers Paid plan.
+  //
+  // ☑️ Free Tier users: Comment out or remove both sections below.
+  //    Without containers, tool execution (bash/read/write/edit/etc.)
+  //    will fail with a descriptive error. The browser tool is an opt-in
+  //    feature and gracefully degrades when the binding is absent.
+  //    See README.md for Free Tier setup instructions.
+  // ─────────────────────────────────────────────────────────────────────
+
+  // "containers": [
+  //   {
+  //     "class_name": "Sandbox",
+  //     "image": "./Dockerfile.sandbox",
+  //     "instance_type": "standard-1",
+  //     "max_instances": 50
+  //   }
+  // ],
 
   "durable_objects": {
     "bindings": [
@@ -98,7 +111,9 @@
     { "binding": "MEMORY_BUCKET", "bucket_name": "managed-agents-memory" }
   ],
 
-  "browser": { "binding": "BROWSER" },
+  // Browser Rendering binding — requires Workers Paid plan.
+  // Uncomment for Free Tier: remove this browser binding.
+  // "browser": { "binding": "BROWSER" },
 
   "migrations": [
     {

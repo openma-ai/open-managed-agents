@@ -308,7 +308,7 @@ export class BoxRunSandbox implements SandboxExecutor {
     // Apply the deferred CA upload from setOutboundContext so outbound TLS
     // through oma-vault works on the very first exec. Best-effort —
     // missing CA only breaks vault-mediated outbound, not the box itself.
-    if (this.pendingCaUpload) {
+    if (this.pendingCaUpload && (globalThis as any).process?.versions?.node) {
       try {
         const { promises: nodeFs } = await import("node:fs");
         const buf = await nodeFs.readFile(this.pendingCaUpload.hostPath);
@@ -465,3 +465,9 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
     sessionId: ctx.sessionId,
   });
 };
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
+/home/engine/.bashrc: line 1: syntax error near unexpected token `('
+/home/engine/.bashrc: line 1: `. /etc/profile.d/workload-containment.shn# ~/.bashrc: executed by bash(1) for non-login shells.'
