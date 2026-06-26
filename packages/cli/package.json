@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^0.20.0",
-    "@inquirer/checkbox": "^5.1.4",
+    "@inquirer/checkbox": "^5.1.5",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@types/node": "^22.0.0",
