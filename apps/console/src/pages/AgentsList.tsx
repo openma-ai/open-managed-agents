@@ -98,21 +98,21 @@ export function AgentsList() {
     setAuxLoading(true);
     try {
       const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
-      setAllAgents(all.data);
+      setAllAgents(all.data ?? []);
       await Promise.allSettled([
         (async () => {
           const sk = await api<{
             data: Array<{ id: string; name: string; description: string }>;
           }>("/v1/skills");
-          setCustomSkills(sk.data);
+          setCustomSkills(sk.data ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/skills aux fetch failed", e)),
         (async () => {
           const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
-          setModelCards(mc.data);
+          setModelCards(mc.data ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/model_cards aux fetch failed", e)),
         (async () => {
           const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
-          setRuntimes(rt.runtimes);
+          setRuntimes(rt.runtimes ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/runtimes aux fetch failed", e)),
       ]);
     } finally {
