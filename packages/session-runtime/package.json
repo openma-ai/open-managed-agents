@@ -19,7 +19,7 @@
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
-    "ai": "^6.0.158",
+    "ai": "^7.0.8",
     "nanoid": "^5.1.0"
   },
   "devDependencies": {
