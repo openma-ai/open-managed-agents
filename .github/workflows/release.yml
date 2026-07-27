@@ -64,10 +64,18 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
 
       - name: Create / update Version Packages PR
         # No `publish` input → action only opens the Version PR. Publishing
@@ -107,7 +115,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           # npm OIDC publish needs npm 11.5.1+, which ships with node 24.
-          node-version: '24'
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
