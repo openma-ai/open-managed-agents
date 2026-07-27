@@ -122,9 +122,10 @@ export interface PublicationRepo {
  * filled in by separate calls (`setCredentials`, `bindInstallation`) once
  * the user has registered the OAuth app on Linear's side.
  *
- * `installationId` is intentionally absent — the caller writes the empty
- * string sentinel into `linear_publications.installation_id` until the
- * OAuth callback wires up the real installation row.
+ * `installationId` is intentionally absent — the adapter writes an
+ * application-level empty-string sentinel until the OAuth callback wires up
+ * the real installation id. Publication tables deliberately do not enforce
+ * an installation FK because the publication is created first.
  */
 export interface NewPublicationShell {
   tenantId: string;

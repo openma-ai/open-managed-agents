@@ -82,9 +82,7 @@ export const slack_publications = sqliteTable(
     tenant_id: text("tenant_id").notNull(),
     user_id: text("user_id").notNull(),
     agent_id: text("agent_id").notNull(),
-    installation_id: text("installation_id")
-      .notNull()
-      .references(() => slack_installations.id),
+    installation_id: text("installation_id").notNull(),
     environment_id: text("environment_id").notNull(),
     mode: text("mode").notNull(),
     status: text("status").notNull(),

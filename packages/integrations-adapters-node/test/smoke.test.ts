@@ -30,7 +30,7 @@ describe("integrations-adapters-node smoke", () => {
     const dbPath = join(tmpDir, "smoke.db");
     drz = (() => {
       const raw = new BetterSqlite3(dbPath);
-      raw.exec("PRAGMA foreign_keys = OFF");
+      raw.exec("PRAGMA foreign_keys = ON");
       return drizzle(raw);
     })();
     const migrationsFolder = fileURLToPath(
@@ -96,6 +96,31 @@ describe("integrations-adapters-node smoke", () => {
     expect(fetched?.userId).toBe("usr_test");
     const list = await repos.linearPublications.listByUserAndAgent("usr_test", "agent_alpha");
     expect(list.length).toBe(1);
+  });
+
+  it("stages a linear publication before an installation exists", async () => {
+    const repos = buildNodeRepos({
+      sql,
+      db: drz as unknown as OmaDb,
+      PLATFORM_ROOT_SECRET: "test-secret-32bytes-min-1234567890",
+    });
+    const pub = await repos.linearPublications.insertShell({
+      tenantId: "tn_test",
+      userId: "usr_test",
+      agentId: "agent_pending",
+      environmentId: "env_local",
+      mode: "full",
+      persona: { name: "Pending Bot", avatarUrl: null },
+      capabilities: new Set(["mention_response"]),
+      sessionGranularity: "per_issue",
+    });
+
+    expect(pub.installationId).toBe("");
+    expect(await repos.linearPublications.get(pub.id)).toMatchObject({
+      id: pub.id,
+      installationId: "",
+      status: "pending_setup",
+    });
   });
 
   it("HMAC verify recordIfNew dedupe (linear_events)", async () => {

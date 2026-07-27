@@ -163,8 +163,9 @@ export class SqlLinearPublicationRepo implements LinearPublicationRepo {
         tenant_id: row.tenantId,
         user_id: row.userId,
         agent_id: row.agentId,
-        // installation_id stays NOT NULL in the schema; pending pubs get
-        // the empty-string sentinel until bindInstallation runs.
+        // Pending publications use an application-level sentinel until
+        // bindInstallation runs. There is intentionally no database FK:
+        // publication-first flows create this row before the installation.
         installation_id: PENDING_INSTALLATION_ID,
         environment_id: row.environmentId,
         mode: row.mode,

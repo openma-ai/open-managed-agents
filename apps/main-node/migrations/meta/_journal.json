@@ -8,6 +8,13 @@
       "when": 1779348643561,
       "tag": "0000_consolidated",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785159586064,
+      "tag": "0001_drop_integration_publication_fks",
+      "breakpoints": true
     }
   ]
 }
