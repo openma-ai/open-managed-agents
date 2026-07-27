@@ -6,6 +6,8 @@
  * doesn't get filled with garbage like `[1m` everywhere).
  */
 
+import { OPENMA_BRAND_RGB } from "@openma/common/brand";
+
 const isTty = !!process.stderr.isTTY && !process.env.NO_COLOR;
 
 function wrap(open: string, close: string) {
@@ -22,28 +24,24 @@ export const c = {
   magenta: wrap("35", "39"),
   cyan:    wrap("36", "39"),
   gray:    wrap("90", "39"),
-  // OMA brand orange (#FF6B50) — sourced from apps/console/public/logo.svg.
+  // Shared OpenMA vermilion — sourced from @openma/common/brand.
   // 24-bit ANSI; terminals without truecolor will silently drop the color
   // (the wrap() noop already covers no-TTY / NO_COLOR).
-  brand:   wrap("38;2;255;107;80", "39"),
+  brand:   wrap(`38;2;${OPENMA_BRAND_RGB.join(";")}`, "39"),
 };
 
 /**
- * OMA horse-head mark, mirroring the Console SVG
- * (apps/console/public/logo.svg). Rendered with 8-dot Braille so width
- * stays consistent across monospace fonts and terminals without
- * graphics protocols. Color is the brand orange (#FF6B50, 24-bit ANSI);
- * non-truecolor terminals show it monochrome.
+ * Terminal rendition of the canonical OpenMA bracket / signal mark.
+ * The vector source lives in @openma/common; this compact
+ * block treatment keeps the silhouette recognizable in monospace.
  */
 export function logo(): string {
   const lines = [
-    "           ⠦         ",
-    "   ⣶⡶⠆          ⠰⢶⣶  ",
-    "   ⣿⡇      ⣀     ⢸⣿  ",
-    "   ⣿⡇      ⠉     ⢸⣿  ",
-    "   ⣿⡇            ⢸⣿  ",
-    "   ⣿⣇⡀          ⢀⣸⣿  ",
-    "   ⠉⠉⠁          ⠈⠉⠉  ",
+    "   ┏━           ━┓   ",
+    "   ┃       ◢      ┃   ",
+    "   ┃      ●       ┃   ",
+    "   ┃              ┃   ",
+    "   ┗━           ━┛   ",
   ];
   return lines.map((l) => c.brand(c.bold(l))).join("\n");
 }

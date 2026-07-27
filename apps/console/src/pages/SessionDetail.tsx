@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link } from "react-router";
 import { useApi } from "../lib/api";
 import { toast } from "sonner";
@@ -16,6 +16,11 @@ import {
 } from "./session-detail/Trajectory";
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
+import {
+  projectCanonicalChatTurns,
+  type WireSessionEvent,
+} from "@openma/common/session-events/managed";
+import { CanonicalSessionTurn } from "../components/session/CanonicalSessionTurn";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
 // ai-elements primitives — used to render the chat surface (messages,
@@ -729,6 +734,10 @@ export function SessionDetail() {
   // mode where a DO eviction killed an in-flight stream and no clean
   // status_idle was ever broadcast.
   const [interrupting, setInterrupting] = useState(false);
+  const canonicalTurns = useMemo(
+    () => projectCanonicalChatTurns(events as WireSessionEvent[], { threadId: activeThreadId }),
+    [activeThreadId, events],
+  );
   const interrupt = async () => {
     if (!id) return;
     setInterrupting(true);
@@ -973,121 +982,9 @@ export function SessionDetail() {
                    nothing else streaming yet */}
           <Conversation className="flex-1 min-h-0">
             <ConversationContent className="pl-3 pr-4 py-6 gap-4">
-              {(() => {
-                // Server-returned events are now in canonical drain order
-                // (events.seq = INSERT order = what the model saw). The
-                // pre-3a3e7ec client-side sort by processed_at_ms is
-                // retired; pending events live in a separate outbox below
-                // and never mix into this seq-ordered timeline.
-                const filtered = events.filter((e) => {
-                  const tid = (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-                  return tid === activeThreadId;
-                });
-                // Pre-pair tool_use ↔ result events. Three flavors per the
-                // wire spec emitted in default-loop.ts:emitToolCallEvent /
-                // emitToolResultEvent:
-                //   • builtin tools  → agent.tool_use         + agent.tool_result        (key: tool_use_id)
-                //   • custom tools   → agent.custom_tool_use  + agent.tool_result        (key: tool_use_id) ← same result type
-                //   • MCP tools      → agent.mcp_tool_use     + agent.mcp_tool_result    (key: mcp_tool_use_id)
-                // The previous pairing only covered builtin → custom tools
-                // (e.g. general_subagent) showed their result as an "unpaired"
-                // orphan block because the use side was custom_tool_use.
-                const resultByToolUseId = new Map<string, typeof filtered[number]>();
-                // session.error → upstream model_request_end error_message
-                // map. session.error's payload from SSE only carries the
-                // generic "No output generated. Check the stream for errors."
-                // — the actionable cause (e.g. "usage limit exceeded (2056)",
-                // "context length", "401 from upstream") is on the preceding
-                // span.model_request_end with is_error=true. Walk forward
-                // remembering the last failed model end and attach it to the
-                // next session.error we hit. Cleared by any model_request_end
-                // with finish_reason!=error (succeeded → previous failure is
-                // no longer the immediate cause). Keyed by stable event id
-                // so EventRender can look it up at render time.
-                const sessionErrorCause = new Map<string, { error: string; model?: string }>();
-                let pendingModelErr: { error: string; model?: string } | null = null;
-                for (const ev of filtered) {
-                  if (ev.type === "agent.tool_result") {
-                    const id = (ev as { tool_use_id?: string }).tool_use_id;
-                    if (id) resultByToolUseId.set(id, ev);
-                  } else if (ev.type === "agent.mcp_tool_result") {
-                    const id = (ev as { mcp_tool_use_id?: string }).mcp_tool_use_id;
-                    if (id) resultByToolUseId.set(id, ev);
-                  } else if (ev.type === "span.model_request_end") {
-                    const d = (ev as { data?: { finish_reason?: string; error_message?: string; model?: string }; finish_reason?: string; error_message?: string; model?: string });
-                    const finish = d.data?.finish_reason ?? d.finish_reason;
-                    const errMsg = d.data?.error_message ?? d.error_message;
-                    const model = d.data?.model ?? d.model;
-                    if (finish === "error" && errMsg) {
-                      pendingModelErr = { error: errMsg, model };
-                    } else if (finish && finish !== "error") {
-                      pendingModelErr = null;
-                    }
-                  } else if (ev.type === "session.error") {
-                    const id = (ev as { id?: string }).id;
-                    if (id && pendingModelErr) {
-                      sessionErrorCause.set(id, pendingModelErr);
-                      pendingModelErr = null;
-                    }
-                  }
-                }
-                const pairedResultIds = new Set<string>();
-                return filtered.map((e, i) => {
-                  // Stable React key — `e.id` (sevt_*) lives on every event
-                  // server-side via the stamp callback in session-do.ts, so
-                  // SSE-arrived rows already have it. Fall back to seq for
-                  // legacy events that pre-date the stamp, and to a synthetic
-                  // marker (type + index) as last resort. Index alone broke
-                  // because new events appended mid-list re-keyed every later
-                  // bubble → React unmount/remount → the entire conversation
-                  // appeared to flicker on every chunk delivery.
-                  const stableKey =
-                    (e as { id?: string }).id
-                    ?? (e as { seq?: number }).seq
-                    ?? `idx-${e.type}-${i}`;
-                  // Tool-result that's been folded into its use card —
-                  // skip standalone render. Both wire shapes: agent.tool_result
-                  // (covers builtin + custom) keys on tool_use_id;
-                  // agent.mcp_tool_result keys on mcp_tool_use_id.
-                  if (e.type === "agent.tool_result") {
-                    const tuid = (e as { tool_use_id?: string }).tool_use_id;
-                    if (tuid && pairedResultIds.has(tuid)) return null;
-                  }
-                  if (e.type === "agent.mcp_tool_result") {
-                    const tuid = (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
-                    if (tuid && pairedResultIds.has(tuid)) return null;
-                  }
-                  // Tool-use of any flavor: pair with its result if present,
-                  // render as one card. All three use-types carry the
-                  // call id on EventBase.id (overrides the inherited field
-                  // per emitToolCallEvent), so the lookup is uniform.
-                  let pairedResult: typeof filtered[number] | undefined;
-                  if (
-                    e.type === "agent.tool_use"
-                    || e.type === "agent.custom_tool_use"
-                    || e.type === "agent.mcp_tool_use"
-                  ) {
-                    const tuid = (e as { id?: string }).id;
-                    if (tuid && resultByToolUseId.has(tuid)) {
-                      pairedResult = resultByToolUseId.get(tuid);
-                      pairedResultIds.add(tuid);
-                    }
-                  }
-                  return (
-                    <EventRender
-                      key={stableKey}
-                      event={e}
-                      livePending={false}
-                      pairedResult={pairedResult}
-                      modelErrorCause={
-                        e.type === "session.error"
-                          ? sessionErrorCause.get((e as { id?: string }).id ?? "")
-                          : undefined
-                      }
-                    />
-                  );
-                });
-              })()}
+              {canonicalTurns.map((turn) => (
+                <CanonicalSessionTurn key={turn.id} turn={turn} />
+              ))}
               {/* Optimistic outbox slot — what the user just typed before
                   the server's system.user_message_pending broadcast lands.
                   Rendered above the server-mirrored outbox so the typed
@@ -1732,5 +1629,3 @@ function EventRender({
       return null;
   }
 }
-
-

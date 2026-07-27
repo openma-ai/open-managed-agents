@@ -23,6 +23,10 @@ import { detectLocalSkills } from "../lib/local-skills.js";
 import { printBanner, log, c } from "../lib/style.js";
 import { PKG_VERSION } from "../lib/version.js";
 import WebSocket from "ws";
+import {
+  decodeSessionCommand,
+  type SessionWireMessage,
+} from "@openma/common/session-kernel";
 
 // CF Workers WS connections to *.workers.dev (lane URLs) idle out fast —
 // observed ~5-30s before TCP RST without keep-alive traffic. Even prod custom
@@ -255,28 +259,41 @@ export async function runDaemon(): Promise<void> {
       });
 
       ws.on("message", (data: Buffer) => {
-        let msg: { type?: string; [k: string]: unknown };
+        let msg: SessionWireMessage;
         try { msg = JSON.parse(data.toString()); } catch { return; }
         process.stderr.write(`← server: ${msg.type ?? "?"}\n`);
-        switch (msg.type) {
-          case "welcome":
-          case "pong":
-            return;
+        if (msg.type === "welcome" || msg.type === "pong") return;
+        const command = decodeSessionCommand(msg);
+        if (!command) {
+          process.stderr.write(`! unhandled server message: ${msg.type ?? "?"}\n`);
+          return;
+        }
+        switch (command.type) {
           case "session.start":
-            process.stderr.write(`  session.start sid=${(msg.session_id as string)?.slice(0, 8)} agent=${msg.agent_id}\n`);
-            void sessions.start(msg as never);
+            process.stderr.write(`  session.start sid=${command.sessionId.slice(0, 8)} agent=${command.agentId}\n`);
+            void sessions.start({
+              session_id: command.sessionId,
+              agent_id: command.agentId,
+              ...(typeof msg.tenant_id === "string" ? { tenant_id: msg.tenant_id } : {}),
+              ...(command.acpSessionId
+                ? { resume: { acp_session_id: command.acpSessionId } }
+                : {}),
+            });
             return;
           case "session.prompt":
-            void sessions.prompt(msg as never);
+            void sessions.prompt({
+              session_id: command.sessionId,
+              turn_id: command.turnId,
+              text: command.text,
+              ...(typeof msg.tenant_id === "string" ? { tenant_id: msg.tenant_id } : {}),
+            });
             return;
           case "session.cancel":
-            sessions.cancel(msg.session_id as string, msg.turn_id as string);
+            sessions.cancel(command.sessionId, command.turnId);
             return;
           case "session.dispose":
-            void sessions.dispose(msg.session_id as string);
+            void sessions.dispose(command.sessionId);
             return;
-          default:
-            process.stderr.write(`! unhandled server message: ${msg.type ?? "?"}\n`);
         }
       });
 

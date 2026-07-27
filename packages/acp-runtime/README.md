@@ -2,7 +2,10 @@
 
 Spawn and drive [ACP](https://agentclientprotocol.com/)-compatible agents (Claude Code, Codex CLI, Gemini CLI, Hermes, …) from any host that can produce a `ChildHandle`.
 
-The protocol layer is delegated to [`@agentclientprotocol/sdk`](https://github.com/agentclientprotocol/typescript-sdk). This package owns process lifecycle, restart policy, and the host-portability boundary (Node child_process vs. CF sandbox vs. Tauri vs. …).
+The product-neutral protocol/session/process core lives in
+`@openma/common/acp-runtime`. This workspace package is intentionally a thin
+compatibility wrapper: it re-exports that exact implementation and keeps the
+OpenManaged-only agent registry beside it.
 
 ## Why
 
@@ -49,7 +52,9 @@ Both want: `spec → live process → typed conversation → clean shutdown`. Th
       desktop, dev)                  multi-tenant cloud)
 ```
 
-The `Spawner` boundary is the only host-specific contract. Everything above it (lifecycle, ACP protocol, session API) is host-agnostic and shipped from this package.
+The `Spawner` boundary is the only host-specific contract. Everything above it
+(lifecycle, ACP protocol, session API) is host-agnostic and shipped from
+`openma-common`, so Backchat and OpenManaged cannot drift independently.
 
 ## Layout
 
@@ -57,11 +62,11 @@ The `Spawner` boundary is the only host-specific contract. Everything above it (
 src/
   index.ts            Public exports
   types.ts            Spawner / ChildHandle / AcpSession / SessionOptions / RestartPolicy
-  runtime.ts          AcpRuntime impl — turns Spawner into session factory
-  session.ts          AcpSession impl — wraps ClientSideConnection + lifecycle
+  runtime.ts          Thin re-export from @openma/common/acp-runtime
+  session.ts          Thin re-export from @openma/common/acp-runtime
   registry.ts         KNOWN_ACP_AGENTS catalog + detect()
   spawners/
-    node.ts           NodeSpawner — child_process.spawn
+    node.ts           Thin re-export of the shared NodeSpawner
     cf-sandbox.ts     CfSandboxSpawner — adapts openma's sandbox.exec
     types.ts          (re-export of Spawner from ../types)
 ```
@@ -70,18 +75,19 @@ The spawners are subpath exports so a host can pull only the implementation it n
 
 ## Status
 
-Skeleton — interfaces and structure agreed. Implementation lands as separate PRs once the API surface settles.
+Active. Backchat and OpenManaged now instantiate the same `AcpRuntimeImpl`,
+`AcpSessionImpl`, and `NodeSpawner` classes.
 
 ## Usage sketch
 
 ### clash-bridge (local)
 
 ```ts
-import { AcpRuntime } from "@open-managed-agents/acp-runtime";
+import { AcpRuntimeImpl } from "@open-managed-agents/acp-runtime";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { detect } from "@open-managed-agents/acp-runtime/registry";
 
-const runtime: AcpRuntime = new AcpRuntime(new NodeSpawner());
+const runtime = new AcpRuntimeImpl(new NodeSpawner());
 
 // User picked "Claude Code" from clash chat dropdown
 const agent = await detect("claude-agent-acp");

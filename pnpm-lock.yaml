@@ -186,6 +186,9 @@ importers:
       '@open-managed-agents/integrations-core':
         specifier: workspace:*
         version: link:../../packages/integrations-core
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.4.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)
       '@radix-ui/react-collapsible':
         specifier: ^1.1.12
         version: 1.1.12(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -367,6 +370,12 @@ importers:
       '@astrojs/starlight':
         specifier: ^0.38.4
         version: 0.38.4(astro@6.1.9(@types/node@25.6.0)(aws4fetch@1.0.20)(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.60.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.4))
+      '@fontsource-variable/geist':
+        specifier: ^5.2.8
+        version: 5.2.8
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.4.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)
       astro:
         specifier: ^6.1.9
         version: 6.1.9(@types/node@25.6.0)(aws4fetch@1.0.20)(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.60.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.4)
@@ -754,6 +763,12 @@ importers:
       '@astrojs/sitemap':
         specifier: ^3.4.1
         version: 3.7.2
+      '@fontsource-variable/geist':
+        specifier: ^5.2.8
+        version: 5.2.8
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.4.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)
       '@tailwindcss/vite':
         specifier: ^4.1.0
         version: 4.2.2(vite@8.0.8(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4))
@@ -773,9 +788,9 @@ importers:
 
   packages/acp-runtime:
     dependencies:
-      '@agentclientprotocol/sdk':
-        specifier: ^0.20.0
-        version: 0.20.0(zod@3.25.76)
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.4.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@3.25.76)
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -786,6 +801,9 @@ importers:
       typescript:
         specifier: ^5.8.0
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@22.19.17)(typescript@5.9.3))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4))
 
   packages/agents-store:
     dependencies:
@@ -860,9 +878,6 @@ importers:
 
   packages/cli:
     devDependencies:
-      '@agentclientprotocol/sdk':
-        specifier: ^0.20.0
-        version: 0.20.0(zod@4.4.3)
       '@inquirer/checkbox':
         specifier: ^5.1.4
         version: 5.1.4(@types/node@22.19.17)
@@ -872,6 +887,9 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.4.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
@@ -1581,8 +1599,8 @@ packages:
   '@adobe/css-tools@4.4.4':
     resolution: {integrity: sha512-Elp+iwUx5rN5+Y8xLt5/GRoG20WGoDCQ/1Fb+1LiGtvwbDavuSk0jhD/eZdckHAuzcDzccnkv+rEjyWfRx18gg==}
 
-  '@agentclientprotocol/sdk@0.20.0':
-    resolution: {integrity: sha512-BxEHyE4MvwyOsdyVPub1vEtyrq8E0JSdjC+ckXWimY1VabFCTXdPyXv2y2Omz1j+iod7Z8oBJDXFCJptM0GBqQ==}
+  '@agentclientprotocol/sdk@0.25.1':
+    resolution: {integrity: sha512-jx2rF3bdpGwZ75Q/meyEDLLbYmbtxk82Uh9hDCdxDvcEedBnNSF5hZAnL/kJR5VNz56JqwOmqnAqasC84MwwkQ==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -2384,6 +2402,7 @@ packages:
 
   '@daytonaio/sdk@0.171.0':
     resolution: {integrity: sha512-k+HauFkfOTnpupHNJty8pkKS8ChfxEpWLF+zc7VvePiotjJf6Is1KVpgUkPG1NOdWbExdtTRVXIKchI6+16PVg==}
+    deprecated: 'Moved to @daytona/sdk, same API, no breaking changes. Please update: npm uninstall @daytonaio/sdk && npm i @daytona/sdk'
 
   '@dotenvx/dotenvx@1.66.0':
     resolution: {integrity: sha512-qlQFhHUjhRDybrinqLAD0MClVZDOrsq80O8eD5iSjz3Qa/4f3Jg7SQrOaSobrRyP1QaWIYLGtGpj2c7H0D8NUw==}
@@ -2430,11 +2449,11 @@ packages:
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild-kit/esm-loader@2.6.5':
     resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
-    deprecated: 'Merged into tsx: https://tsx.is'
+    deprecated: 'Merged into tsx: https://tsx.hirok.io'
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -3312,6 +3331,19 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29':
+    resolution: {gitHosted: true, integrity: sha512-Dzi2cH8ADZJUNIwUFLQPFLQ0tK6o02xwAC/aA6WyNSyHS79FU0VyCOfjxq+tTPlRQUE4PjNsaxVk6B+qTDD0jw==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29}
+    version: 0.4.0
+    engines: {node: '>=20'}
+    peerDependencies:
+      react: '>=18'
+      react-dom: '>=18'
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
   '@opentelemetry/api-logs@0.207.0':
     resolution: {integrity: sha512-lAb0jQRVyleQQGiuuvCOTDVspc14nx6XJjP4FspJ1sNARo3Regq4ZZbrc3rN4b1TYSuUCvgH+UXUPug4SLOqEQ==}
     engines: {node: '>=8.0.0'}
@@ -3853,6 +3885,7 @@ packages:
   '@opentelemetry/propagation-utils@0.30.16':
     resolution: {integrity: sha512-ZVQ3Z/PQ+2GQlrBfbMMMT0U7MzvYZLCPP800+ooyaBqm4hMvuQHfP028gB9/db0mwkmyEAMad9houukUVxhwcw==}
     engines: {node: '>=14'}
+    deprecated: The use of process spans has been removed from Messaging Semantic Conventions. It is now recommended to connect pub/sub spans via Span Links. See https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/ for details.
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
 
@@ -9807,6 +9840,7 @@ packages:
   tsconfck@3.1.6:
     resolution: {integrity: sha512-ks6Vjr/jEw0P1gmOVwutM3B7fWxoWBL2KRDb1JfqGVawBmO5UsvmWOQFGHBPl5yxYz4eERr19E6L7NMv+Fej4w==}
     engines: {node: ^18 || >=20}
+    deprecated: unmaintained
     hasBin: true
     peerDependencies:
       typescript: ^5.0.0
@@ -10563,11 +10597,11 @@ snapshots:
 
   '@adobe/css-tools@4.4.4': {}
 
-  '@agentclientprotocol/sdk@0.20.0(zod@3.25.76)':
+  '@agentclientprotocol/sdk@0.25.1(zod@3.25.76)':
     dependencies:
       zod: 3.25.76
 
-  '@agentclientprotocol/sdk@0.20.0(zod@4.4.3)':
+  '@agentclientprotocol/sdk@0.25.1(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
@@ -12457,12 +12491,33 @@ snapshots:
     optionalDependencies:
       '@types/node': 22.19.17
 
+  '@inquirer/confirm@6.0.13(@types/node@22.19.17)':
+    dependencies:
+      '@inquirer/core': 11.1.10(@types/node@22.19.17)
+      '@inquirer/type': 4.0.5(@types/node@22.19.17)
+    optionalDependencies:
+      '@types/node': 22.19.17
+    optional: true
+
   '@inquirer/confirm@6.0.13(@types/node@25.6.0)':
     dependencies:
       '@inquirer/core': 11.1.10(@types/node@25.6.0)
       '@inquirer/type': 4.0.5(@types/node@25.6.0)
     optionalDependencies:
       '@types/node': 25.6.0
+
+  '@inquirer/core@11.1.10(@types/node@22.19.17)':
+    dependencies:
+      '@inquirer/ansi': 2.0.5
+      '@inquirer/figures': 2.0.5
+      '@inquirer/type': 4.0.5(@types/node@22.19.17)
+      cli-width: 4.1.0
+      fast-wrap-ansi: 0.2.0
+      mute-stream: 3.0.0
+      signal-exit: 4.1.0
+    optionalDependencies:
+      '@types/node': 22.19.17
+    optional: true
 
   '@inquirer/core@11.1.10(@types/node@25.6.0)':
     dependencies:
@@ -12661,6 +12716,24 @@ snapshots:
       outvariant: 1.4.3
 
   '@open-draft/until@2.1.0': {}
+
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@3.25.76)':
+    dependencies:
+      '@agentclientprotocol/sdk': 0.25.1(zod@3.25.76)
+    optionalDependencies:
+      react: 19.2.5
+      react-dom: 19.2.5(react@19.2.5)
+    transitivePeerDependencies:
+      - zod
+
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)':
+    dependencies:
+      '@agentclientprotocol/sdk': 0.25.1(zod@4.4.3)
+    optionalDependencies:
+      react: 19.2.5
+      react-dom: 19.2.5(react@19.2.5)
+    transitivePeerDependencies:
+      - zod
 
   '@opentelemetry/api-logs@0.207.0':
     dependencies:
@@ -15703,6 +15776,15 @@ snapshots:
       '@vitest/utils': 4.1.4
       chai: 6.2.2
       tinyrainbow: 3.1.0
+
+  '@vitest/mocker@4.1.4(msw@2.14.6(@types/node@22.19.17)(typescript@5.9.3))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4))':
+    dependencies:
+      '@vitest/spy': 4.1.4
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      msw: 2.14.6(@types/node@22.19.17)(typescript@5.9.3)
+      vite: 8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4)
 
   '@vitest/mocker@4.1.4(msw@2.14.6(@types/node@25.6.0)(typescript@5.9.3))(vite@6.4.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))':
     dependencies:
@@ -18924,6 +19006,32 @@ snapshots:
 
   ms@2.1.3: {}
 
+  msw@2.14.6(@types/node@22.19.17)(typescript@5.9.3):
+    dependencies:
+      '@inquirer/confirm': 6.0.13(@types/node@22.19.17)
+      '@mswjs/interceptors': 0.41.9
+      '@open-draft/deferred-promise': 3.0.0
+      '@types/statuses': 2.0.6
+      cookie: 1.1.1
+      graphql: 16.14.0
+      headers-polyfill: 5.0.1
+      is-node-process: 1.2.0
+      outvariant: 1.4.3
+      path-to-regexp: 6.3.0
+      picocolors: 1.1.1
+      rettime: 0.11.11
+      statuses: 2.0.2
+      strict-event-emitter: 0.5.1
+      tough-cookie: 6.0.1
+      type-fest: 5.6.0
+      until-async: 3.0.2
+      yargs: 17.7.2
+    optionalDependencies:
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - '@types/node'
+    optional: true
+
   msw@2.14.6(@types/node@25.6.0)(typescript@5.9.3):
     dependencies:
       '@inquirer/confirm': 6.0.13(@types/node@25.6.0)
@@ -20790,6 +20898,21 @@ snapshots:
       tsx: 4.21.0
       yaml: 2.8.4
 
+  vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4):
+    dependencies:
+      lightningcss: 1.32.0
+      picomatch: 4.0.4
+      postcss: 8.5.10
+      rolldown: 1.0.0-rc.15
+      tinyglobby: 0.2.16
+    optionalDependencies:
+      '@types/node': 22.19.17
+      esbuild: 0.27.3
+      fsevents: 2.3.3
+      jiti: 2.6.1
+      tsx: 4.21.0
+      yaml: 2.8.4
+
   vite@8.0.8(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4):
     dependencies:
       lightningcss: 1.32.0
@@ -20812,6 +20935,35 @@ snapshots:
   vitefu@1.1.3(vite@7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)):
     optionalDependencies:
       vite: 7.3.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
+
+  vitest@4.1.4(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@22.19.17)(typescript@5.9.3))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4)):
+    dependencies:
+      '@vitest/expect': 4.1.4
+      '@vitest/mocker': 4.1.4(msw@2.14.6(@types/node@22.19.17)(typescript@5.9.3))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4))
+      '@vitest/pretty-format': 4.1.4
+      '@vitest/runner': 4.1.4
+      '@vitest/snapshot': 4.1.4
+      '@vitest/spy': 4.1.4
+      '@vitest/utils': 4.1.4
+      es-module-lexer: 2.0.0
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      obug: 2.1.1
+      pathe: 2.0.3
+      picomatch: 4.0.4
+      std-env: 4.0.0
+      tinybench: 2.9.0
+      tinyexec: 1.1.1
+      tinyglobby: 0.2.16
+      tinyrainbow: 3.1.0
+      vite: 8.0.8(@types/node@22.19.17)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.0
+      '@types/node': 22.19.17
+      jsdom: 29.1.1(@noble/hashes@2.2.0)
+    transitivePeerDependencies:
+      - msw
 
   vitest@4.1.4(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@25.6.0)(typescript@5.9.3))(vite@6.4.2(@types/node@25.6.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)):
     dependencies:

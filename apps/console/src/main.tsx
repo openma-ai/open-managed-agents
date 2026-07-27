@@ -14,6 +14,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 // JetBrains Mono when the network fetch resolves, producing a visible
 // width shift in the sidebar header.
 import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/geist";
 import "./index.css";
 import { AuthProvider } from "./lib/auth";
 import { Toaster } from "./components/ui/sonner";

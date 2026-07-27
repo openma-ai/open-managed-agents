@@ -1,36 +1,9 @@
-<!--
-  Apple touch icon (and Android home-screen icon fallback).
-  Apple expects an opaque rounded square — they'll mask + round it themselves
-  on iOS, but a transparent SVG flashes the wallpaper through the corners
-  during the install animation, so we paint an opaque coral square underneath.
-
-  180×180 square viewBox to match the standard apple-touch-icon size. The
-  inner glyph is the brand `[horse]` mark in --brand-fg (dark warm tone),
-  same one-off ink the rest of the app uses on coral.
--->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="openma">
-  <!-- Opaque coral background. rx≈22% matches the iOS app-icon mask
-       radius so the SVG isn't visibly clipped further at install time. -->
-  <rect width="180" height="180" rx="40" ry="40" fill="#FF6B50"/>
-
-  <!-- Brand glyph: [ horse ] centered. Source paths are from logo.svg but
-       recolored to --brand-fg (#3d2520) for AA contrast on coral. -->
-  <g transform="translate(90, 90)">
-    <g transform="translate(-65, -45)" fill="none" stroke="#3d2520" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
-      <text font-family="'JetBrains Mono', 'SF Mono', monospace" font-size="90" font-weight="800" fill="#3d2520" stroke="none" x="0" y="78">[</text>
-      <g transform="translate(48, -12)">
-        <defs>
-          <mask id="ati-m" maskUnits="userSpaceOnUse">
-            <rect x="-200" y="-200" width="900" height="900" fill="white"/>
-            <rect x="-4" y="16.4" width="62.2" height="108.8" fill="black" rx="2"/>
-            <rect x="96" y="16.4" width="62.2" height="108.8" fill="black" rx="2"/>
-          </mask>
-        </defs>
-        <path d="M30,50 Q28,30 22,8 Q35,20 40,45" mask="url(#ati-m)"/>
-        <path d="M30,50 Q28,58 30,65" stroke-width="3" mask="url(#ati-m)"/>
-        <circle cx="34" cy="52" r="3.5" fill="#3d2520" stroke="none"/>
-      </g>
-      <text font-family="'JetBrains Mono', 'SF Mono', monospace" font-size="90" font-weight="800" fill="#3d2520" stroke="none" x="92" y="78">]</text>
-    </g>
+  <rect width="180" height="180" rx="40" fill="#f84f32"/>
+  <g transform="translate(22 34) scale(.248) translate(-240 -244)" fill="#ffffff">
+    <path d="M279 363H346C356 363 363 371 363 381V397C363 407 356 414 346 414H320C312 414 308 419 308 427V620C308 628 313 633 321 633H349C357 633 363 640 363 648V665C363 675 355 683 345 683H279C265 683 254 672 254 658V388C254 374 265 363 279 363Z"/>
+    <path d="M748 363H681C671 363 666 371 666 381V397C666 407 673 414 683 414H708C716 414 720 419 720 427V620C720 628 715 633 707 633H680C671 633 666 640 666 648V665C666 675 674 683 684 683H748C762 683 773 672 773 658V388C773 374 762 363 748 363Z"/>
+    <path d="M500 258C496 258 491 260 488 264C486 267 485 271 485 275V343C485 351 491 357 499 357H575C583 357 587 348 581 342L507 264C505 261 503 258 500 258Z"/>
+    <circle cx="535" cy="520" r="42"/>
   </g>
 </svg>

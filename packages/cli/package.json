@@ -40,10 +40,10 @@
     "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
   "devDependencies": {
-    "@agentclientprotocol/sdk": "^0.20.0",
     "@inquirer/checkbox": "^5.1.4",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
+    "@openma/common": "github:openma-ai/openma-common#v0.4.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
     "esbuild": "^0.25.0",

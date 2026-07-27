@@ -6,6 +6,7 @@ export type {
   AcpRuntime,
   RestartPolicy,
   SessionOptions,
+  ClientCallbacks,
 } from "./types.js";
 
 // Renamed `AcpRuntimeImpl` → `AcpRuntime` would collide with the same-named
