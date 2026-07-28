@@ -401,7 +401,7 @@ export class SessionDO extends DurableObject<Env> {
       return this.state.agent_snapshot;
     }
     // Cross-tenant lookup — DO has no tenant scope here. Trusts the caller.
-    // Phase 1: still queries against the shared AUTH_DB. Phase 4: per-tenant
+    // Phase 1: still queries against the shared MAIN_DB. Phase 4: per-tenant
     // DB will scope this naturally — `WHERE id = ?` in the tenant's DB only
     // returns the tenant's row. Either way, this.state.tenant_id is the
     // right routing key.
@@ -1377,19 +1377,19 @@ export class SessionDO extends DurableObject<Env> {
     }
     const tenantId = this._state.tenant_id;
     // Lazy-resolve the per-tenant D1 binding. buildCfTenantDbProvider
-    // returns the AUTH_DB shard the routing table maps this tenant to.
+    // returns the MAIN_DB shard the routing table maps this tenant to.
     // We construct the SqlClient eagerly and cache the adapter — the
     // tenant doesn't change for the lifetime of a SessionDO instance.
     const provider = buildCfTenantDbProvider(this.env);
     // provider.resolve is async; we synchronously construct using a
     // wrapper SqlClient that resolves on first call. Simpler: just hold
     // a Promise-backed SqlClient. Even simpler: assume the synchronous
-    // path (env.AUTH_DB) since most deploys are single-shard. Fall back
+    // path (env.MAIN_DB) since most deploys are single-shard. Fall back
     // to async resolve via a thin wrapper when sharded.
-    const db = (this.env as unknown as { AUTH_DB?: D1Database }).AUTH_DB;
+    const db = (this.env as unknown as { MAIN_DB?: D1Database }).MAIN_DB;
     if (!db) {
       throw new Error(
-        "runtimeAdapter: env.AUTH_DB binding missing — required for unified sessions table writes",
+        "runtimeAdapter: env.MAIN_DB binding missing — required for unified sessions table writes",
       );
     }
     const sql = new CfD1SqlClient(db);
@@ -1431,7 +1431,7 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
     // Provider call only used if sharding is in play; today the lazy
-    // env.AUTH_DB path covers the single-shard default. Keep the
+    // env.MAIN_DB path covers the single-shard default. Keep the
     // import live so future per-tenant shards plug in here.
     void provider;
     return this._runtimeAdapter;
@@ -1889,7 +1889,34 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       if (body.type === "user.define_outcome") {
-        const e = body as UserDefineOutcomeEvent;
+        const raw = body as UserDefineOutcomeEvent & {
+          outcome?: {
+            description?: string;
+            criteria?: string[];
+            rubric?: UserDefineOutcomeEvent["rubric"];
+            verifier?: UserDefineOutcomeEvent["verifier"];
+            max_iterations?: number;
+          };
+        };
+        const legacyCriteria = raw.outcome?.criteria;
+        const e: UserDefineOutcomeEvent = {
+          ...raw,
+          description: raw.description ?? raw.outcome?.description ?? "",
+          rubric:
+            raw.rubric ??
+            raw.outcome?.rubric ??
+            (Array.isArray(legacyCriteria) && legacyCriteria.length > 0
+              ? legacyCriteria.join("\n")
+              : undefined),
+          verifier: raw.verifier ?? raw.outcome?.verifier,
+          max_iterations: raw.max_iterations ?? raw.outcome?.max_iterations,
+        };
+        const legacyOutcome =
+          raw.outcome ??
+          {
+            description: e.description,
+            ...(Array.isArray(legacyCriteria) ? { criteria: legacyCriteria } : {}),
+          };
         // AMA-spec: validate at-least-one-of(rubric|verifier). Reject the
         // event before persisting so callers get a clean 400 instead of a
         // silently degraded supervisor loop.
@@ -1900,10 +1927,10 @@ export class SessionDO extends DurableObject<Env> {
                 (e.rubric.type === "text" && !!e.rubric.content) ||
                 (e.rubric.type === "file" && !!e.rubric.file_id)
               );
-        if (!hasRubric && !e.verifier) {
+        if (!e.description && !hasRubric && !e.verifier) {
           return new Response(
-            "user.define_outcome requires at least one of `rubric` or `verifier`",
-            { status: 400 },
+            JSON.stringify({ error: "user.define_outcome requires description, rubric, or verifier" }),
+            { status: 400, headers: { "content-type": "application/json" } },
           );
         }
         // Mint outcome_id server-side (AMA-style `outc_…` prefix). Honour
@@ -1913,7 +1940,11 @@ export class SessionDO extends DurableObject<Env> {
           e.outcome_id && e.outcome_id.startsWith("outc_")
             ? e.outcome_id
             : generateOutcomeId();
-        const echoed: UserDefineOutcomeEvent = { ...e, outcome_id };
+        const echoed: UserDefineOutcomeEvent = {
+          ...e,
+          outcome_id,
+          outcome: legacyOutcome,
+        } as UserDefineOutcomeEvent;
         // Sequential outcomes: any prior `state.outcome` is dropped (it
         // either already terminated and was nulled by the supervisor, or
         // we're explicitly replacing it). Existing `outcome_evaluations`
@@ -2803,17 +2834,52 @@ export class SessionDO extends DurableObject<Env> {
       // Trigger container startup with retries — local dev containers can take
       // 30-60s to start. SDK returns 503 while container port isn't listening.
       // See: https://github.com/cloudflare/containers/issues/155
+      //
+      // Health-check semantics: `exec("true")` is the smallest possible probe
+      // (no-op posix binary, no fs/network IO). Cold-start: container needs
+      // ~30s for port 3000 to bind, so first attempt allows 30s. Steady-
+      // state: a healthy container responds in <100ms — anything over a few
+      // seconds means the shim is wedged (in-flight exec never resolved,
+      // file descriptors exhausted, kernel D-state on a dead socket).
+      // Using the default 120000ms timeout made wedged-container detection
+      // pathologically slow: staging 2026-05-19 saw 26× 120s timeouts =
+      // 53 min of retry-loop on a single bad container before recovery
+      // finally kicked in.
+      //
+      // After NUKE_AFTER_ATTEMPT failed probes we call sandbox.destroy() to
+      // force-tear-down the wedged container. CF's @cloudflare/sandbox SDK
+      // re-creates a fresh container on the next exec since the underlying
+      // Sandbox DO is keyed on sessionId (same DO, new container instance).
+      const HEALTH_TIMEOUT_FIRST_MS = 30_000;  // cold start allowance
+      const HEALTH_TIMEOUT_RETRY_MS = 5_000;   // wedged shim should answer <1s
+      const NUKE_AFTER_ATTEMPT = 3;
       let ready = false;
       let lastError = "";
+      let destroyed = false;
       for (let attempt = 0; attempt < 10; attempt++) {
+        const timeout = attempt === 0 ? HEALTH_TIMEOUT_FIRST_MS : HEALTH_TIMEOUT_RETRY_MS;
         try {
-          await sandbox.exec("true");
+          await sandbox.exec("true", timeout);
           ready = true;
           break;
         } catch (err: any) {
           lastError = err?.message || String(err);
-          const delay = 3000 * Math.pow(1.5, attempt);
-          await new Promise(r => setTimeout(r, Math.min(delay, 15000)));
+          if (attempt === NUKE_AFTER_ATTEMPT && !destroyed) {
+            console.warn(
+              `[warmup] container unhealthy after ${attempt + 1} probes ` +
+                `(last: ${lastError.slice(0, 120)}); destroying + recreating`,
+            );
+            try {
+              if (typeof (sandbox as { destroy?: () => Promise<void> }).destroy === "function") {
+                await (sandbox as { destroy: () => Promise<void> }).destroy();
+              }
+            } catch (destroyErr: any) {
+              console.warn(`[warmup] destroy failed: ${destroyErr?.message ?? destroyErr}`);
+            }
+            destroyed = true;
+          }
+          const delay = 1000 * Math.pow(1.5, attempt);
+          await new Promise(r => setTimeout(r, Math.min(delay, 5000)));
         }
       }
       if (!ready) {
@@ -2834,7 +2900,7 @@ export class SessionDO extends DurableObject<Env> {
         sandbox instanceof CloudflareSandbox &&
         this.state.tenant_id &&
         this.state.environment_id &&
-        this.env.AUTH_DB
+        this.env.MAIN_DB
       ) {
         try {
           // If /tmp/.oma-warm is present, the container survived since a
@@ -3444,7 +3510,7 @@ export class SessionDO extends DurableObject<Env> {
     let customHeaders: Record<string, string> | undefined;
     let wireModel = handle;
 
-    if (this.env.AUTH_DB) {
+    if (this.env.MAIN_DB) {
       try {
         const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
         const tenantId = this.state.tenant_id;
@@ -3987,6 +4053,10 @@ export class SessionDO extends DurableObject<Env> {
       tools: subTools,
       model: subModel,
       systemPrompt: subAgent.system || "",
+      // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
+      // ACP child key resolution. AcpProxyHarness reads this to forward
+      // x-harness-tenant when opening a RuntimeRoom WS for the sub-agent.
+      tenant_id: this.state.tenant_id,
       // Same resolver the primary HarnessContext uses — the sub-agent shares
       // the parent's tenant + R2 bucket so an `image`/`document` block with
       // a file_id source in a future sub-agent user message would resolve
@@ -4225,7 +4295,7 @@ export class SessionDO extends DurableObject<Env> {
     // the resource-mounter call. We only need MemoryStoreService here to
     // resolve store metadata for the system-prompt reminder block.
     let memoryStoreService: MemoryStoreService | null = null;
-    if (memoryAttachments.length && this.env.AUTH_DB) {
+    if (memoryAttachments.length && this.env.MAIN_DB) {
       memoryStoreService = (await getCfServicesForTenant(this.env, this.state.tenant_id)).memory;
     }
 
@@ -4418,6 +4488,7 @@ export class SessionDO extends DurableObject<Env> {
       agent,
       userMessage,
       session_id: this.state.session_id,
+      tenant_id: this.state.tenant_id,
       tools: allTools,
       model,
       systemPrompt,
@@ -5745,6 +5816,26 @@ export class SessionDO extends DurableObject<Env> {
     }
     if (flushed > 0 || ended > 0) {
       console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended} stale turns`);
+    }
+
+    // After flipping any stale rows to idle, kick the queue. Without this
+    // pending_events that arrived while the previous incarnation was
+    // wedged sit dormant: drainEventQueue only fires on new external
+    // /event POSTs, alarms only keep-alive while status='running', and
+    // _finalizeStaleTurns just updates the row — nobody triggers a drain.
+    // Net effect: bot goes silent in the channel until the user @-mentions
+    // again to nudge the dispatcher.
+    //
+    // Bounded: recoverEventQueue is the same call wired to the 5s
+    // schedule hook (line 1763) — it threadsWithPending() first and exits
+    // immediately when nothing's queued. Safe to call even when we ended
+    // zero stale turns (cold-start of a healthy session is a no-op).
+    if (this.pending) {
+      try {
+        await this.recoverEventQueue();
+      } catch (err) {
+        console.warn(`[finalize-stale] post-recovery drain failed:`, err);
+      }
     }
   }
 

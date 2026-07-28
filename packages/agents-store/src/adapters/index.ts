@@ -1,34 +1,38 @@
 // Adapter wiring for the agents-store. Both CF (D1) and self-host (any
-// SqlClient — typically better-sqlite3 via createBetterSqlite3SqlClient)
-// factories live here behind a single SqlAgentRepo class.
+// OmaDb — typically Drizzle-wrapped better-sqlite3 or postgres-js) factories
+// live here behind a single SqlAgentRepo class.
 
 export { SqlAgentRepo } from "./sql-agent-repo";
 
 import { SqlAgentRepo } from "./sql-agent-repo";
-import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import { drizzle } from "drizzle-orm/d1";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { Logger } from "../ports";
 import { AgentService } from "../service";
 
 /**
- * CF deployment factory. Wraps the D1Database binding in a SqlClient so the
- * repo stays runtime-agnostic. apps/main + apps/agent + tests call this
- * unchanged — the SqlClient adapter is an internal detail.
+ * CF deployment factory. Wraps the D1Database binding in a Drizzle client so
+ * the repo stays runtime-agnostic. apps/main + apps/agent + tests call this
+ * unchanged — the Drizzle wrapping is an internal detail.
+ *
+ * The Drizzle client is constructed with no schema dictionary — adapters
+ * import table refs directly from `@open-managed-agents/db-schema/cf-auth`
+ * and don't use the relational-query API, so the schema generic stays empty.
  */
 export function createCfAgentService(
   deps: { db: D1Database },
   opts?: { logger?: Logger },
 ): AgentService {
+  const drz = drizzle(deps.db);
   return new AgentService({
-    repo: new SqlAgentRepo(new CfD1SqlClient(deps.db)),
+    repo: new SqlAgentRepo(drz),
     logger: opts?.logger,
   });
 }
 
 /**
- * Node deployment factory. Caller passes any SqlClient — typically
- * BetterSqlite3SqlClient (`createBetterSqlite3SqlClient(path)`) for embedded
- * SQLite, but a future PG adapter would slot in identically.
+ * Node deployment factory. Caller passes any {@link OmaDb} — typically a
+ * postgres-js or better-sqlite3 Drizzle client built at the composition root.
  *
  * Coexisting in the same file as createCfAgentService means Node consumers
  * (apps/main-node) must include `@cloudflare/workers-types` in their tsconfig
@@ -38,11 +42,11 @@ export function createCfAgentService(
  * was tried and rejected for that reason.
  */
 export function createSqliteAgentService(
-  deps: { client: SqlClient },
+  deps: { db: OmaDb },
   opts?: { logger?: Logger },
 ): AgentService {
   return new AgentService({
-    repo: new SqlAgentRepo(deps.client),
+    repo: new SqlAgentRepo(deps.db),
     logger: opts?.logger,
   });
 }

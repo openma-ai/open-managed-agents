@@ -39,14 +39,14 @@ describe("Slack webhook parse", () => {
     });
   });
 
-  describe("scopeKey for per_thread session granularity", () => {
+  describe("thread/event/channel identifiers (scope-key inputs)", () => {
     it("top-level app_mention uses message.ts as the thread root", () => {
       const event = parseWebhook(
         appMentionEvent({ channel: "C0CHAN", ts: "1700000000.000100" }),
       );
       expect(event?.kind).toBe("app_mention");
+      expect(event?.channelId).toBe("C0CHAN");
       expect(event?.threadTs).toBe("1700000000.000100");
-      expect(event?.scopeKey).toBe("C0CHAN:1700000000.000100");
     });
 
     it("threaded reply uses the explicit thread_ts", () => {
@@ -57,8 +57,8 @@ describe("Slack webhook parse", () => {
           thread_ts: "1700000000.000100",
         }),
       );
+      expect(event?.channelId).toBe("C0CHAN");
       expect(event?.threadTs).toBe("1700000000.000100");
-      expect(event?.scopeKey).toBe("C0CHAN:1700000000.000100");
     });
 
     it("DM falls back to event.ts when no thread_ts", () => {
@@ -76,7 +76,8 @@ describe("Slack webhook parse", () => {
           text: "hi bot",
         },
       });
-      expect(event?.scopeKey).toBe("D0DM:1700000000.000200");
+      expect(event?.channelId).toBe("D0DM");
+      expect(event?.threadTs).toBe("1700000000.000200");
     });
   });
 
@@ -98,13 +99,14 @@ describe("Slack webhook parse", () => {
         },
       });
       expect(event?.kind).toBe("assistant_thread_started");
-      expect(event?.scopeKey).toBe("D0AI:1700000010.000300");
+      expect(event?.channelId).toBe("D0AI");
+      expect(event?.threadTs).toBe("1700000010.000300");
       expect(event?.userId).toBe("U0USER");
     });
   });
 
   describe("revocation events", () => {
-    it("tokens_revoked has no scopeKey", () => {
+    it("tokens_revoked has no channelId", () => {
       const event = parseWebhook({
         type: "event_callback",
         event_id: "Ev03",
@@ -117,11 +119,10 @@ describe("Slack webhook parse", () => {
         },
       });
       expect(event?.kind).toBe("tokens_revoked");
-      expect(event?.scopeKey).toBeNull();
       expect(event?.channelId).toBeNull();
     });
 
-    it("app_uninstalled has no scopeKey", () => {
+    it("app_uninstalled has no channelId", () => {
       const event = parseWebhook({
         type: "event_callback",
         event_id: "Ev04",
@@ -131,7 +132,7 @@ describe("Slack webhook parse", () => {
         event: { type: "app_uninstalled" },
       });
       expect(event?.kind).toBe("app_uninstalled");
-      expect(event?.scopeKey).toBeNull();
+      expect(event?.channelId).toBeNull();
     });
   });
 
@@ -288,7 +289,7 @@ describe("Slack webhook parse", () => {
       expect(event?.kind).toBe("member_joined_channel");
       expect(event?.channelId).toBe("C0CHAN");
       expect(event?.userId).toBe("U07BOT");
-      expect(event?.scopeKey).toBeNull();
+      expect(event?.threadTs).toBeNull();
       expect(event?.isTopLevel).toBe(false);
     });
 

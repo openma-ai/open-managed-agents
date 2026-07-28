@@ -69,21 +69,31 @@ You can also execute tools entirely inside the sandbox by setting `execution: { 
 
 ## Custom skills
 
-A skill is a `SKILL.md` describing the capability, plus any reference files (templates, schemas, examples) the model needs. The platform mounts everything at `/home/user/.skills/{id}/` and adds a system prompt addition pointing the model at it.
+A skill is a `SKILL.md` describing the capability, plus any reference files (templates, schemas, examples) the model needs. The platform mounts everything at `/home/user/.skills/{name}/` (using the SKILL.md `name`, not the skill id) and **inlines the SKILL.md body directly into the system prompt** at session start — no lazy read, no follow-up `read` tool call to discover what's there. Format is compatible with Anthropic's [Claude Code skills](https://github.com/anthropics/skills).
 
 ### Create a skill
 
-In the Console: **Skills → New skill**. Or via API:
+In the Console: **Skills → New skill**. Two API shapes:
 
 ```bash
+# (a) JSON — files inlined
 curl -X POST "$OMA_BASE_URL/v1/skills" \
   -H "x-api-key: $OMA_API_KEY" \
-  -F "id=invoice-parser" \
-  -F "display_title=Invoice parser" \
-  -F "description=Extract structured data from supplier invoices." \
-  -F "files=@./SKILL.md" \
-  -F "files=@./schema.json" \
-  -F "files=@./example_invoice.pdf"
+  -H "content-type: application/json" \
+  -d '{
+    "files": [
+      {
+        "filename": "SKILL.md",
+        "content": "---\nname: invoice-parser\ndescription: Extract structured data from supplier invoices.\n---\n\n# Steps\n1. ..."
+      },
+      { "filename": "schema.json", "content": "{...}" }
+    ]
+  }'
+
+# (b) Multipart — zip upload (use for large skills with binary files)
+curl -X POST "$OMA_BASE_URL/v1/skills/upload" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -F "file=@./invoice-parser.zip"
 ```
 
 ### What goes in `SKILL.md`
@@ -107,15 +117,27 @@ See `/home/user/.skills/invoice-parser/example_invoice.pdf` for a reference layo
 
 ### Attach to an agent
 
+Skills attach as **objects, not bare strings** (a bare string array silently doesn't bind):
+
 ```json
-{
-  "skills": ["invoice-parser"]
-}
+{ "skills": [{ "skill_id": "skill_abc123", "type": "custom" }] }
 ```
+
+On session start the system prompt receives:
+
+```text
+<source name="skill:skill_abc123">
+<skill name="invoice-parser">
+{full SKILL.md body}
+</skill>
+</source>
+```
+
+and the files mount at `/home/user/.skills/invoice-parser/SKILL.md` etc.
 
 ### Built-in skills
 
-These ship out of the box and don't need uploading: `xlsx`, `pdf`, `docx`, `pptx`, `json`, `csv`, `sql`, `image`. Reference them by id from your agent.
+Four ship out of the box (`type: "anthropic"`): `xlsx`, `pdf`, `docx`, `pptx`. Reference them by id from your agent — no upload needed.
 
 <Aside type="tip" title="Skill vs tool">
   Skills are *prompted instructions* + *files* the model reads. Tools are *callable functions* the model invokes with structured input. Use a skill when the value is in *guidance + reference data*; use a tool when the value is in *taking an action with side effects*.
@@ -123,21 +145,31 @@ These ship out of the box and don't need uploading: `xlsx`, `pdf`, `docx`, `pptx
 
 ## MCP servers
 
-Connect any [Model Context Protocol](https://modelcontextprotocol.io) server and openma auto-generates an `mcp_<server>_<tool>` for every capability the server exposes.
+Connect any [Model Context Protocol](https://modelcontextprotocol.io) server and openma auto-generates an `mcp__<server>__<tool>` (double underscore) for every capability the server exposes.
 
 ```json
 {
   "mcp_servers": [
     {
       "name": "github",
-      "url": "https://mcp.example.com/github",
-      "auth": { "type": "vault", "vault_id": "vault_abc" }
+      "type": "url",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "authorization_token": "..."
     }
   ]
 }
 ```
 
-The platform handshakes with the MCP server on agent load, caches the tool definitions, and exposes them on the next session. If the server is reachable behind auth, bind credentials in a Vault and reference it in `auth`.
+Auth modes — credentials never enter the sandbox:
+
+| Mode | How |
+|---|---|
+| none | omit `authorization_token`, no matching vault credential |
+| inline bearer | `authorization_token: "..."` on the server entry |
+| vault static bearer | matching `auth.type: "static_bearer"` credential in a session vault (matched by `mcp_server_url` host) |
+| vault OAuth | matching `auth.type: "mcp_oauth"` credential — refreshes on 401 **and 403** (Airtable/Asana/Sentry use 403 for expired tokens), CAS-writes new token to D1, retries once |
+
+stdio MCP servers run **inside the sandbox container**: set `type: "stdio"` with `command`, `args`, `port`. OMA spawns the process, waits for the port to bind, proxies the existing tool wiring at it. Tool discovery is bounded at 15 s per server; up to 20 servers per agent.
 
 ## Where to go next
 

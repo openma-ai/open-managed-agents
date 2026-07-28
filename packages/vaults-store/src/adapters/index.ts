@@ -2,9 +2,11 @@
 
 export { SqlVaultRepo } from "./sql-vault-repo";
 
-import { SqlVaultRepo } from "./sql-vault-repo";
-import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
+import { drizzle } from "drizzle-orm/d1";
+import * as cfAuthSchema from "@open-managed-agents/db-schema/cf-auth";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { SqlClient } from "@open-managed-agents/sql-client";
+import { SqlVaultRepo } from "./sql-vault-repo";
 import type { Logger } from "../ports";
 import { VaultService } from "../service";
 
@@ -13,19 +15,32 @@ export function createCfVaultService(
   deps: { db: D1Database },
   opts?: { logger?: Logger },
 ): VaultService {
+  const db = drizzle(deps.db, { schema: cfAuthSchema });
   return new VaultService({
-    repo: new SqlVaultRepo(new CfD1SqlClient(deps.db)),
+    repo: new SqlVaultRepo(db),
     logger: opts?.logger,
   });
 }
 
-/** Node deployment factory — accepts any SqlClient. */
+/**
+ * Node deployment factory.
+ *
+ * The Phase 6 plan flips the signature from raw SqlClient to Drizzle
+ * OmaDb. Composition root in apps constructs Drizzle from better-sqlite3
+ * / postgres.js and passes it here. The legacy `{ client: SqlClient }`
+ * shape is intentionally rejected with an explanatory throw.
+ */
 export function createSqliteVaultService(
-  deps: { client: SqlClient },
+  deps: { client: SqlClient } | { db: OmaDb },
   opts?: { logger?: Logger },
 ): VaultService {
-  return new VaultService({
-    repo: new SqlVaultRepo(deps.client),
-    logger: opts?.logger,
-  });
+  if ("db" in deps) {
+    return new VaultService({
+      repo: new SqlVaultRepo(deps.db),
+      logger: opts?.logger,
+    });
+  }
+  throw new Error(
+    "createSqliteVaultService now requires { db: OmaDb }; see Phase 6 plan.",
+  );
 }

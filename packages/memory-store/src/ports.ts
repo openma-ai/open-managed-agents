@@ -30,7 +30,27 @@ export interface NewMemoryStoreInput {
 export interface MemoryStoreRepo {
   insert(input: NewMemoryStoreInput): Promise<MemoryStoreRow>;
   get(tenantId: string, storeId: string): Promise<MemoryStoreRow | null>;
-  list(tenantId: string, opts: { includeArchived: boolean }): Promise<MemoryStoreRow[]>;
+  /**
+   * Filter knobs map straight to extra WHERE conditions:
+   *   - `status`         → `'active'` excludes archived rows, `'archived'`
+   *                        only archived, `'any'` no filter. Use this
+   *                        instead of includeArchived for any 3-way intent;
+   *                        `includeArchived` is the legacy 2-way toggle
+   *                        retained for back-compat.
+   *   - `createdAfter`   → lower bound on memory_stores.created_at
+   *                        (epoch ms, inclusive).
+   *   - `createdBefore`  → upper bound on memory_stores.created_at
+   *                        (epoch ms, exclusive).
+   */
+  list(
+    tenantId: string,
+    opts: {
+      includeArchived: boolean;
+      status?: "active" | "archived" | "any";
+      createdAfter?: number;
+      createdBefore?: number;
+    },
+  ): Promise<MemoryStoreRow[]>;
   /** Mutable subset — only `name` and `description` are user-editable.
    *  `updated_at` is bumped automatically; pass `null` to clear description. */
   update(

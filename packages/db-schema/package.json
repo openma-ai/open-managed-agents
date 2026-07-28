@@ -1,0 +1,29 @@
+{
+  "name": "@open-managed-agents/db-schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cf-auth": "./src/cf-auth/index.ts",
+    "./cf-integrations": "./src/cf-integrations/index.ts",
+    "./cf-router": "./src/cf-router/index.ts",
+    "./node-pg": "./src/node-pg/index.ts",
+    "./node-sqlite": "./src/node-sqlite/index.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "*",
+    "better-sqlite3": "*",
+    "pg": "*",
+    "postgres": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": { "optional": true },
+    "better-sqlite3": { "optional": true },
+    "pg": { "optional": true },
+    "postgres": { "optional": true }
+  }
+}

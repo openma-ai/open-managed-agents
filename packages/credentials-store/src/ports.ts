@@ -89,6 +89,42 @@ export interface CredentialRepo {
     update: CredentialUpdateFields,
   ): Promise<CredentialRow>;
 
+  /**
+   * Compare-and-swap variant of `update` for the OAuth refresh path. Returns
+   * `null` (not throws) when the row's stored auth ciphertext no longer
+   * matches `expectedAuthCipher` — meaning some other in-flight refresh on
+   * the same credential won the race and persisted first. Caller must then
+   * re-read the row and use the winner's access_token instead of
+   * persisting (and possibly clobbering) the result of its own
+   * token_endpoint call.
+   *
+   * Why CAS on raw ciphertext: AES-GCM uses a random IV, so two encrypts
+   * of the same plaintext produce different ciphertexts. We can't compute
+   * "expected ciphertext" from the access_token alone. The caller reads
+   * the row first (via `getRaw`), passes the exact bytes back, and SQL
+   * does a binary equality check.
+   *
+   * Returns the updated row on success, `null` on CAS mismatch.
+   */
+  updateIfAuthMatches(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+    expectedAuthCipher: string,
+    update: CredentialUpdateFields,
+  ): Promise<CredentialRow | null>;
+
+  /**
+   * Like `get`, but returns the raw stored ciphertext alongside the
+   * decrypted auth. Required by callers that intend to follow up with a
+   * `updateIfAuthMatches` CAS — they need the exact bytes to predicate on.
+   */
+  getRaw(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+  ): Promise<{ row: CredentialRow; authCipher: string } | null>;
+
   archive(
     tenantId: string,
     vaultId: string,

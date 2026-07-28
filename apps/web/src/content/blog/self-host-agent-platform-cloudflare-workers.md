@@ -10,7 +10,7 @@ If you want to run a full agent platform — not a chatbot, but the
 managed kind: sessions, sandboxes, tool dispatch, crash recovery,
 event log, billing — Cloudflare's primitives are surprisingly close to
 what you need out of the box. This guide walks through deploying
-[Open Managed Agents](https://github.com/open-ma/open-managed-agents)
+[Open Managed Agents](https://github.com/openma-ai/open-managed-agents)
 on Cloudflare end-to-end: what each Worker does, what each binding is
 for, what breaks, and how to debug when something doesn't come up.
 
@@ -51,7 +51,7 @@ optional — you can point at the public docs.openma.dev instead.
 ## Step 1 — Clone and install
 
 ```bash
-git clone https://github.com/open-ma/open-managed-agents
+git clone https://github.com/openma-ai/open-managed-agents
 cd open-managed-agents
 pnpm install
 ```
@@ -230,7 +230,7 @@ What this guide doesn't cover:
   provider configured (Better Auth + your IdP).
 - **Backups.** D1 has automatic backups; R2 has versioning. The
   important thing to script is `PLATFORM_ROOT_SECRET` rotation —
-  see [the encryption design notes in the repo](https://github.com/open-ma/open-managed-agents/tree/main/docs).
+  see [the encryption design notes in the repo](https://github.com/openma-ai/open-managed-agents/tree/main/docs).
 - **Observability.** Workers Analytics Engine + Logpush is the
   default; the `packages/cf-billing/src/cf-analytics.ts` module
   emits usage events you can query for billing.
@@ -255,7 +255,7 @@ matters.
 If you can't be on Cloudflare — data residency, compliance, existing
 AWS commitment — there's a Postgres + Node deployment that uses the
 same harness, same API, same Console. See
-[the migration guide](/blog/migrate-from-anthropic-managed-agents/)
+[the migration guide](/blog/migrate-from-claude-managed-agents/)
 for how that fits together.
 
 ## Try the hosted version first

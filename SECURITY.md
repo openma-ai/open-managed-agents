@@ -7,7 +7,7 @@ report it privately. **Do not file a public GitHub issue for security
 issues.**
 
 Report via GitHub's private vulnerability reporting:
-https://github.com/open-ma/open-managed-agents/security/advisories/new
+https://github.com/openma-ai/open-managed-agents/security/advisories/new
 
 Please include:
 - A description of the issue and its potential impact

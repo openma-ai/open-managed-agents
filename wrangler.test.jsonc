@@ -10,6 +10,7 @@
   ],
 
   "d1_databases": [
+    { "binding": "MAIN_DB", "database_name": "test-auth-db", "database_id": "test-auth-db-id", "migrations_dir": "apps/main/migrations" },
     { "binding": "AUTH_DB", "database_name": "test-auth-db", "database_id": "test-auth-db-id", "migrations_dir": "apps/main/migrations" },
     { "binding": "INTEGRATIONS_DB", "database_name": "test-integrations-db", "database_id": "test-integrations-db-id", "migrations_dir": "apps/main/migrations-integrations" }
   ],
@@ -22,14 +23,15 @@
   "durable_objects": {
     "bindings": [
       { "name": "SESSION_DO", "class_name": "SessionDO" },
-      { "name": "SANDBOX", "class_name": "Sandbox" }
+      { "name": "SANDBOX", "class_name": "Sandbox" },
+      { "name": "RUNTIME_ROOM", "class_name": "RuntimeRoom" }
     ]
   },
 
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["SessionDO", "Sandbox"]
+      "new_sqlite_classes": ["SessionDO", "Sandbox", "RuntimeRoom"]
     }
   ]
 }

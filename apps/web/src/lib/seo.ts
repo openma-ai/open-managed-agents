@@ -17,10 +17,17 @@
 // recommends and it doesn't pollute the rendered HTML.
 
 const SITE_URL = "https://openma.dev";
-const REPO_URL = "https://github.com/open-ma/open-managed-agents";
+const REPO_URL = "https://github.com/openma-ai/open-managed-agents";
 const ORG_NAME = "Open Managed Agents";
-const ORG_LOGO = `${SITE_URL}/logo.svg`;
-const TWITTER_HANDLE = "openma_dev"; // placeholder; update if/when registered
+// Google's Organization.logo policy rejects SVG — Schema.org logo must
+// be a raster format (PNG/JPG/GIF). The /logo.png file is rsvg-rendered
+// from /logo.svg (the bracket-and-creature brand mark) at 950×610, well
+// above Google's 112×112 minimum and high enough for downscaled display.
+// IMPORTANT: do NOT point at /favicon-512.png — that's the auto-generated
+// "om" square, identical to the placeholder Google falls back to when
+// it can't find a proper Organization.logo.
+//   https://developers.google.com/search/docs/appearance/structured-data/logo
+const ORG_LOGO = `${SITE_URL}/logo.png`;
 
 /** Word count → reading minutes. ~225 wpm matches Medium's heuristic. */
 export function readingTimeMinutes(markdown: string): number {
@@ -35,12 +42,13 @@ export function organizationSchema() {
     name: ORG_NAME,
     url: SITE_URL,
     logo: ORG_LOGO,
-    sameAs: [
-      REPO_URL,
-      `https://twitter.com/${TWITTER_HANDLE}`,
-    ],
+    // sameAs only includes verified handles. Adding a Twitter URL that
+    // 404s ("not yet registered" placeholder) drops Google's confidence
+    // in the entity — the @openma_dev handle was never registered. When
+    // we register it (or any other social account), append the URL here.
+    sameAs: [REPO_URL],
     description:
-      "Open Managed Agents — open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0.",
+      "Open Managed Agents — open-source alternative to Claude Managed Agents. Self-host Claude agents on Cloudflare Workers or Docker. Apache 2.0.",
   };
 }
 
@@ -51,7 +59,7 @@ export function websiteSchema() {
     name: ORG_NAME,
     url: SITE_URL,
     description:
-      "Open-source, self-hostable alternative to Anthropic's Managed Agents.",
+      "Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.",
     potentialAction: {
       "@type": "SearchAction",
       // Stub for future sitelinks search box. Google indexes this even
@@ -86,8 +94,17 @@ export function softwareApplicationSchema() {
     url: SITE_URL,
     downloadUrl: REPO_URL,
     license: "https://www.apache.org/licenses/LICENSE-2.0",
+    keywords:
+      "Claude Managed Agents alternative, Claude Tag alternative, open-source Claude Tag, self-hosted Claude Tag, MCP, BYOK",
+    featureList: [
+      "Claude Managed Agents API compatibility",
+      "Claude Tag-style Slack publication",
+      "MCP server hosting",
+      "Vault-backed credentials",
+      "Cloudflare Workers and Docker self-hosting",
+    ],
     description:
-      "Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Drop-in compatible API.",
+      "Open-source alternative to Claude Managed Agents and a foundation for self-hosted Claude Tag-style agents. Self-host Claude agents on Cloudflare Workers or Docker. Wire-compatible API, MCP + Claude Code skills built in.",
     sameAs: [REPO_URL],
   };
 }
@@ -139,6 +156,21 @@ export function breadcrumbSchema(crumbs: Array<{ name: string; path: string }>) 
       position: i + 1,
       name: c.name,
       item: `${SITE_URL}${c.path}`,
+    })),
+  };
+}
+
+export function faqPageSchema(items: Array<{ question: string; answer: string }>) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: items.map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: item.answer,
+      },
     })),
   };
 }

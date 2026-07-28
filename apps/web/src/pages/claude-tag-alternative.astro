@@ -1,0 +1,227 @@
+---
+import Base from "../layouts/Base.astro";
+import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const faqItems = [
+  {
+    question: "Is there an open-source Claude Tag?",
+    answer:
+      "Anthropic's Claude Tag is not open source. Open Managed Agents is an open-source foundation for building a Claude Tag-style product with self-hosting, BYOK model cards, MCP tools, vaults, memory stores, and durable sessions.",
+  },
+  {
+    question: "Is Open Managed Agents a Claude Tag clone?",
+    answer:
+      "No. It is the runtime layer under a Claude Tag-style product. The missing layer is a polished Tag admin console for channel enablement, memory controls, access bundles, spend limits, and audit dashboards.",
+  },
+  {
+    question: "Can Open Managed Agents cover the Claude Tag feature shape?",
+    answer:
+      "It covers much of the runtime shape: Slack publication, per-channel sessions, MCP/private tools, vault credentials, memory primitives, sandboxed work, and recovery. Tag-level governance and UX are roadmap work.",
+  },
+  {
+    question: "Why use Open Managed Agents instead of Claude Tag?",
+    answer:
+      "Use it when you need open source, self-hosting, model-key ownership, private tools, custom harness behavior, and control over event logs, credentials, memory, and sandbox output.",
+  },
+];
+
+const comparisonRows = [
+  {
+    feature: "Source",
+    claudeTag: "Closed hosted product",
+    openma: "Apache 2.0 open-source runtime",
+  },
+  {
+    feature: "Hosting",
+    claudeTag: "Anthropic-hosted for eligible Claude teams",
+    openma: "Self-host on Cloudflare Workers, Docker, Node.js, or use hosted openma",
+  },
+  {
+    feature: "Primary product shape",
+    claudeTag: "Claude tagged in Slack with admin-approved tools",
+    openma: "Claude Tag-style runtime you can productize on your own deployment",
+  },
+  {
+    feature: "Model and keys",
+    claudeTag: "Claude inside Anthropic's managed service",
+    openma: "BYOK model cards for Anthropic, OpenAI, OpenRouter, or your own gateway",
+  },
+  {
+    feature: "Tools",
+    claudeTag: "Admin-approved tools, credentials, and repositories",
+    openma: "MCP, Slack, GitHub, Linear, shell/browser tools, and custom providers",
+  },
+  {
+    feature: "Memory",
+    claudeTag: "Productized workspace and channel memory",
+    openma: "Memory stores under your deployment; Tag-level memory UI is product work",
+  },
+  {
+    feature: "Governance",
+    claudeTag: "Spend limits, audit, and access bundles in Claude admin",
+    openma: "Vaults, event logs, quotas, and usage stores exist; admin UX is roadmap",
+  },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "Claude Tag Alternative", path: "/claude-tag-alternative/" },
+  ]),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Claude Tag Alternative",
+    url: "https://openma.dev/claude-tag-alternative/",
+    description:
+      "An open-source, self-hosted Claude Tag alternative foundation built on Open Managed Agents.",
+    about: [
+      { "@type": "Thing", name: "Claude Tag alternative" },
+      { "@type": "Thing", name: "Open-source Claude Tag" },
+      { "@type": "Thing", name: "Self-hosted Claude Tag" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="Claude Tag Alternative: Open-Source and Self-Hosted | Open Managed Agents"
+  description="Looking for an open-source or self-hosted Claude Tag alternative? Open Managed Agents provides the runtime foundation: BYOK, MCP, vaults, memory stores, durable sessions, Slack publication, and sandboxed work."
+  canonical="/claude-tag-alternative/"
+  keywords="claude tag alternative, claude tag open source, open source claude tag, self-hosted claude tag, claude tag self hosted, claude tag clone, openma claude tag, byok claude tag, mcp claude tag"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="max-w-5xl mx-auto px-4 py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Claude Tag alternative
+      </p>
+      <div class="grid lg:grid-cols-[1.15fr_0.85fr] gap-10 items-start">
+        <div>
+          <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
+            Open-source, self-hosted foundation for Claude Tag-style agents
+          </h1>
+          <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
+            Claude Tag is compelling because it turns Claude into a shared
+            workplace agent with approved tools, scoped context, and async
+            execution. Open Managed Agents gives teams the open-source base to
+            build that pattern themselves, with BYOK model cards, MCP tools,
+            encrypted vaults, memory stores, durable sessions, and sandboxed
+            work under their own deployment boundary.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a
+              href="https://github.com/openma-ai/open-managed-agents"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
+            >
+              Star on GitHub
+            </a>
+            <a
+              href="/self-hosted-claude-tag/"
+              class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+            >
+              Self-hosted Claude Tag
+            </a>
+          </div>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg bg-[var(--color-bg-surface)] p-5">
+          <h2 class="font-display text-xl font-semibold mb-4">Search intent match</h2>
+          <ul class="space-y-3 text-sm text-[var(--color-fg-muted)]">
+            <li><strong class="text-[var(--color-fg)]">Open source:</strong> the runtime, integrations, vaults, memory, sandbox, and harness are inspectable and forkable.</li>
+            <li><strong class="text-[var(--color-fg)]">Self-hosted:</strong> run in your Cloudflare account, Docker, or Node backend instead of a closed vendor surface.</li>
+            <li><strong class="text-[var(--color-fg)]">Tag-style:</strong> Slack remains the current user surface, but the category is Claude Tag alternative, not generic bot software.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Claude Tag vs Open Managed Agents</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      Open Managed Agents should not be positioned as a generic workplace bot.
+      The sharper claim is this: it is an open-source, self-hostable runtime
+      for teams that want the Claude Tag product pattern without giving up
+      deployment, model, tool, memory, and audit control.
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-[var(--color-border)] rounded-lg">
+        <thead>
+          <tr class="bg-[var(--color-bg-surface)] text-left">
+            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Area</th>
+            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Claude Tag</th>
+            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Open Managed Agents</th>
+          </tr>
+        </thead>
+        <tbody>
+          {comparisonRows.map((row, index) => (
+            <tr>
+              <th scope="row" class={`px-4 py-3 font-medium ${index < comparisonRows.length - 1 ? "border-b border-[var(--color-border)]" : ""}`}>{row.feature}</th>
+              <td class={`px-4 py-3 text-[var(--color-fg-muted)] ${index < comparisonRows.length - 1 ? "border-b border-[var(--color-border)]" : ""}`}>{row.claudeTag}</td>
+              <td class={`px-4 py-3 text-[var(--color-fg-muted)] ${index < comparisonRows.length - 1 ? "border-b border-[var(--color-border)]" : ""}`}>{row.openma}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="max-w-5xl mx-auto px-4 py-16">
+      <h2 class="font-display text-3xl font-bold mb-4">What is covered today</h2>
+      <div class="grid md:grid-cols-3 gap-6 text-sm">
+        <div>
+          <h3 class="font-semibold text-lg mb-2">Tag-style channel runtime</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Slack publication, mentions, thread replies, and per-channel durable
+            sessions provide the collaboration surface behind Claude Tag.
+          </p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg mb-2">Open tool and model layer</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Use BYOK model cards, MCP servers, GitHub, Linear, browser/shell
+            tools, and private APIs instead of one closed tool surface.
+          </p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg mb-2">Owned infrastructure</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">
+            Keep logs, vaults, memory stores, model keys, and sandbox outputs
+            in your own deployment boundary.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Roadmap to Tag-level polish</h2>
+    <ol class="space-y-4 text-[var(--color-fg-muted)] leading-relaxed list-decimal pl-5">
+      <li><strong class="text-[var(--color-fg)]">Claude Tag setup console:</strong> workspace pairing, channel enablement, publication binding, and health checks.</li>
+      <li><strong class="text-[var(--color-fg)]">Access bundles:</strong> inherited workspace/channel policies for tools, credentials, repos, and instructions.</li>
+      <li><strong class="text-[var(--color-fg)]">Memory controls:</strong> scoped channel memory, admin review/edit/delete flows, and retention policy.</li>
+      <li><strong class="text-[var(--color-fg)]">Spend controls:</strong> per-channel caps, alerts, blocked-state UX, and usage analytics.</li>
+      <li><strong class="text-[var(--color-fg)]">Audit:</strong> task history, tool calls, network calls, channel backlinks, and exportable evidence.</li>
+      <li><strong class="text-[var(--color-fg)]">Ambient mode:</strong> safe background triggers, digesting, stalled-thread detection, and anti-spam rules.</li>
+    </ol>
+  </section>
+
+  <section class="border-t border-[var(--color-border)]" data-reveal>
+    <div class="max-w-5xl mx-auto px-4 py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
+      <div class="grid md:grid-cols-2 gap-8">
+        {faqItems.map((item) => (
+          <article>
+            <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
+            <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+</Base>

@@ -91,6 +91,11 @@ export interface SessionRepo {
    * typical newest-first UI). Optional `agentId` filter narrows by indexed
    * column. The legacy `list` ASC option isn't carried forward — DESC is
    * the only paginated order; clients that want ASC can fetch + reverse.
+   *
+   * `status` (session lifecycle: idle | running | rescheduling | terminated)
+   * and `q` (case-insensitive substring on title) are extra WHERE conditions
+   * stacked on the cursor query — the (created_at, id) ordering is unchanged
+   * so cursors stay valid across filter combinations.
    */
   listPage(
     tenantId: string,
@@ -99,6 +104,11 @@ export interface SessionRepo {
       includeArchived: boolean;
       limit: number;
       after?: PageCursor;
+      /** Session lifecycle filter. Omit (or pass undefined) for no filter. */
+      status?: SessionStatus;
+      /** Case-insensitive substring filter against session title. Trimmed
+       *  blank → unfiltered. Used by the SessionsList search box. */
+      q?: string;
     },
   ): Promise<{ items: SessionRow[]; hasMore: boolean }>;
 

@@ -9,11 +9,14 @@
 import { SlackProvider, type SlackContainer } from "../../packages/slack/src/provider";
 import type {
   SlackInstallationRepo,
+  SlackPublicationRepo,
+  SlackPublicationCredentialState,
   SlackSessionScopeRepo,
 } from "../../packages/slack/src/ports";
 import {
   buildFakeContainer,
   InMemoryInstallationRepo,
+  InMemoryPublicationRepo,
   type FakeContainer,
 } from "../../packages/integrations-core/src/test-fakes";
 import {
@@ -21,7 +24,14 @@ import {
   DEFAULT_SLACK_BOT_SCOPES,
   DEFAULT_SLACK_USER_SCOPES,
 } from "../../packages/slack/src/config";
-import type { SessionGranularity } from "../../packages/integrations-core/src/domain";
+import type {
+  CapabilityKey,
+  Clock,
+  IdGenerator,
+  Persona,
+  Publication,
+  SessionGranularity,
+} from "../../packages/integrations-core/src/index";
 
 /**
  * Slack-flavored InMemoryInstallationRepo: extends the base with the two
@@ -49,6 +59,166 @@ export class FakeSlackInstallationRepo
 
   async getBotVaultId(id: string): Promise<string | null> {
     return this.botVaults.get(id) ?? null;
+  }
+}
+
+/**
+ * Slack-flavored InMemoryPublicationRepo: extends the base with the
+ * publication-first credential staging methods. Stores the encrypted
+ * client_secret/signing_secret + slack_app_id alongside the row so the
+ * tests can verify the wiring without spinning up a real Crypto. The fake
+ * Crypto in test-fakes.ts uses base64-style `enc(...)` ciphertext, so
+ * encrypt-then-decrypt round-trip works the same way prod will.
+ */
+export class FakeSlackPublicationRepo
+  extends InMemoryPublicationRepo
+  implements SlackPublicationRepo
+{
+  private creds = new Map<
+    string,
+    {
+      clientId: string;
+      clientSecretCipher: string;
+      signingSecretCipher: string;
+      slackAppId: string | null;
+    }
+  >();
+  // Stash the plaintext for tests that want to assert it (and to mirror the
+  // adapter behavior of returning decrypted secrets via crypto.decrypt).
+  private secrets = new Map<
+    string,
+    { clientSecret: string; signingSecret: string }
+  >();
+  constructor(clock: Clock, _ids?: IdGenerator) {
+    super(clock);
+  }
+
+  async insertShell(input: {
+    tenantId: string;
+    userId: string;
+    agentId: string;
+    environmentId: string;
+    persona: Persona;
+    capabilities: ReadonlySet<CapabilityKey>;
+    sessionGranularity: SessionGranularity;
+  }): Promise<Publication> {
+    return await this.insert({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      agentId: input.agentId,
+      installationId: "", // sentinel — flipped to a real id on bindInstallation
+      environmentId: input.environmentId,
+      mode: "full",
+      status: "pending_setup",
+      persona: input.persona,
+      capabilities: input.capabilities,
+      sessionGranularity: input.sessionGranularity,
+    });
+  }
+
+  async setCredentials(
+    publicationId: string,
+    input: { clientId: string; clientSecretCipher: string; signingSecretCipher: string },
+  ): Promise<void> {
+    const pub = await this.get(publicationId);
+    if (!pub) throw new Error(`FakeSlackPublicationRepo.setCredentials: unknown publication ${publicationId}`);
+    const existing = this.creds.get(publicationId);
+    this.creds.set(publicationId, {
+      clientId: input.clientId,
+      clientSecretCipher: input.clientSecretCipher,
+      signingSecretCipher: input.signingSecretCipher,
+      slackAppId: existing?.slackAppId ?? null,
+    });
+    // Mirror plaintext for getClientSecret/getSigningSecret. Decode the
+    // FakeCrypto's `enc(...)` envelope; if a caller passed plaintext (some
+    // tests bypass the encrypt step), accept it verbatim.
+    const decode = (s: string): string =>
+      s.startsWith("enc(") && s.endsWith(")") ? s.slice(4, -1) : s;
+    this.secrets.set(publicationId, {
+      clientSecret: decode(input.clientSecretCipher),
+      signingSecret: decode(input.signingSecretCipher),
+    });
+    if (pub.status === "pending_setup") {
+      await this.updateStatus(publicationId, "awaiting_install");
+    }
+  }
+
+  async getClientSecret(publicationId: string): Promise<string | null> {
+    return this.secrets.get(publicationId)?.clientSecret ?? null;
+  }
+
+  async getSigningSecret(publicationId: string): Promise<string | null> {
+    return this.secrets.get(publicationId)?.signingSecret ?? null;
+  }
+
+  async getCredentialState(
+    publicationId: string,
+  ): Promise<SlackPublicationCredentialState | null> {
+    const pub = await this.get(publicationId);
+    if (!pub) return null;
+    const c = this.creds.get(publicationId);
+    return {
+      clientId: c?.clientId ?? null,
+      hasClientSecret: !!c?.clientSecretCipher,
+      hasSigningSecret: !!c?.signingSecretCipher,
+      slackAppId: c?.slackAppId ?? null,
+    };
+  }
+
+  async bindInstallation(input: {
+    publicationId: string;
+    installationId: string;
+    slackAppId: string;
+  }): Promise<void> {
+    const pub = await this.get(input.publicationId);
+    if (!pub) throw new Error(`FakeSlackPublicationRepo.bindInstallation: unknown publication ${input.publicationId}`);
+    // Idempotency: re-running with the same args is a no-op.
+    if (pub.status === "live" && pub.installationId === input.installationId) {
+      const c = this.creds.get(input.publicationId);
+      if (c?.slackAppId === input.slackAppId) return;
+    }
+    // The base InMemoryPublicationRepo holds rows in a private Map, so we
+    // can't directly mutate installationId — instead we (a) flip status to
+    // 'live' via the existing API and (b) keep a side-map of bound install
+    // ids that we splice in on read (see `get` override below).
+    await this.updateStatus(input.publicationId, "live");
+    this.boundInstalls.set(input.publicationId, input.installationId);
+    const existing = this.creds.get(input.publicationId);
+    this.creds.set(input.publicationId, {
+      clientId: existing?.clientId ?? "",
+      clientSecretCipher: existing?.clientSecretCipher ?? "",
+      signingSecretCipher: existing?.signingSecretCipher ?? "",
+      slackAppId: input.slackAppId,
+    });
+  }
+
+  // Override get to inject the bound installationId we tracked in
+  // bindInstallation. The base class's installationId field stayed at "" so
+  // we patch it on read.
+  private boundInstalls = new Map<string, string>();
+  override async get(id: string): Promise<Publication | null> {
+    const row = await super.get(id);
+    if (!row) return null;
+    const bound = this.boundInstalls.get(id);
+    return bound ? { ...row, installationId: bound } : row;
+  }
+
+  override async listByInstallation(installationId: string): Promise<readonly Publication[]> {
+    // Have to honor bound rows too.
+    const allBound = [...this.boundInstalls.entries()]
+      .filter(([, instId]) => instId === installationId)
+      .map(([pid]) => pid);
+    const rows = await Promise.all(allBound.map((p) => this.get(p)));
+    return rows.filter((r): r is Publication => r !== null);
+  }
+
+  async findBySlackAppId(slackAppId: string): Promise<Publication | null> {
+    for (const [pubId, cred] of this.creds.entries()) {
+      if (cred.slackAppId === slackAppId) {
+        return await this.get(pubId);
+      }
+    }
+    return null;
   }
 }
 
@@ -93,6 +263,62 @@ export class FakeSlackSessionScopeRepo implements SlackSessionScopeRepo {
     const k = this.key(publicationId, scopeKey);
     const row = this.rows.get(k);
     if (row) this.rows.set(k, { ...row, status });
+  }
+
+  async reassignIfInactive(
+    publicationId: string,
+    scopeKey: string,
+    newSessionId: string,
+    now: number,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row) return false;
+    if (row.status === "active") return false;
+    if (row.status === "pending" && now - row.createdAt < 60_000) return false;
+    this.rows.set(k, { ...row, sessionId: newSessionId, status: "active" });
+    return true;
+  }
+
+  async claimPending(args: {
+    tenantId: string;
+    publicationId: string;
+    scopeKey: string;
+    placeholderSessionId: string;
+    now: number;
+  }): Promise<boolean> {
+    const k = this.key(args.publicationId, args.scopeKey);
+    if (this.rows.has(k)) return false;
+    this.rows.set(k, {
+      tenantId: args.tenantId,
+      publicationId: args.publicationId,
+      scopeKey: args.scopeKey,
+      sessionId: args.placeholderSessionId,
+      status: "pending",
+      createdAt: args.now,
+      pendingScanUntil: null,
+      lastScanAt: null,
+      channelName: null,
+    });
+    return true;
+  }
+
+  async fulfillPending(
+    publicationId: string,
+    scopeKey: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (!row || row.status !== "pending") return false;
+    this.rows.set(k, { ...row, sessionId, status: "active" });
+    return true;
+  }
+
+  async releasePending(publicationId: string, scopeKey: string): Promise<void> {
+    const k = this.key(publicationId, scopeKey);
+    const row = this.rows.get(k);
+    if (row && row.status === "pending") this.rows.delete(k);
   }
 
   async listActive(
@@ -145,8 +371,9 @@ export class FakeSlackSessionScopeRepo implements SlackSessionScopeRepo {
   }
 }
 
-export interface FakeSlackBundle extends Omit<FakeContainer, "installations" | "sessionScopes"> {
+export interface FakeSlackBundle extends Omit<FakeContainer, "installations" | "publications" | "sessionScopes"> {
   installations: FakeSlackInstallationRepo;
+  publications: FakeSlackPublicationRepo;
   sessionScopes: FakeSlackSessionScopeRepo;
 }
 
@@ -155,6 +382,7 @@ export function buildFakeSlackContainer(): FakeSlackBundle {
   return {
     ...base,
     installations: new FakeSlackInstallationRepo(base.clock),
+    publications: new FakeSlackPublicationRepo(base.clock),
     sessionScopes: new FakeSlackSessionScopeRepo(),
   };
 }
@@ -204,20 +432,24 @@ export function tokenResponseBody(opts?: {
  * Seeds a dedicated-mode Slack publication: app row, installation row with
  * vault ids, and a live publication. Returns the ids most tests need.
  *
- * `signingSecret` is stored as the app's webhook secret (Slack's signing
- * secret is per-app, not per-webhook).
+ * `signingSecret` is stored both on the slack_apps row (legacy lookup path
+ * the webhook handler still falls back to) and on the slack_publications row
+ * (publication-first lookup path the new flow uses). Tests assert against
+ * either; provider chooses publication-first when both are present.
  */
 export async function seedDedicatedSlackPublication(
   c: FakeSlackBundle,
   opts: { signingSecret: string; sessionGranularity?: SessionGranularity },
 ): Promise<{ instId: string; pubId: string; appId: string }> {
   const app = await c.apps.insert({
+    tenantId: "tn_for_usr_a",
     publicationId: null,
     clientId: "cid",
     clientSecret: "csec",
     webhookSecret: opts.signingSecret,
   });
   const inst = await c.installations.insert({
+    tenantId: "tn_for_usr_a",
     userId: "usr_a",
     providerId: "slack",
     workspaceId: "T07TEAM",
@@ -231,16 +463,24 @@ export async function seedDedicatedSlackPublication(
   });
   await c.installations.setVaultId(inst.id, "vlt_user_xoxp");
   await c.installations.setBotVaultId(inst.id, "vlt_bot_xoxb");
-  const pub = await c.publications.insert({
+  const pub = await c.publications.insertShell({
+    tenantId: "tn_for_usr_a",
     userId: "usr_a",
     agentId: "agt_default",
-    installationId: inst.id,
     environmentId: "env_dev",
-    mode: "full",
-    status: "live",
     persona: { name: "Triage", avatarUrl: null },
     capabilities: new Set(),
     sessionGranularity: opts.sessionGranularity ?? "per_thread",
+  });
+  await c.publications.setCredentials(pub.id, {
+    clientId: "cid",
+    clientSecretCipher: `enc(csec)`,
+    signingSecretCipher: `enc(${opts.signingSecret})`,
+  });
+  await c.publications.bindInstallation({
+    publicationId: pub.id,
+    installationId: inst.id,
+    slackAppId: app.id,
   });
   await c.apps.setPublicationId(app.id, pub.id);
   return { instId: inst.id, pubId: pub.id, appId: app.id };

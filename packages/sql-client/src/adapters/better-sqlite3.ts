@@ -147,5 +147,11 @@ export async function createBetterSqlite3SqlClient(
     },
   )) as BS3Module;
   const db = new mod.default(dbPath);
+  // Match D1's runtime default. D1 ships with foreign_keys OFF and several
+  // flows (most visibly the publication-first integrations install) rely
+  // on inserting children before parents land. Better-sqlite3 enables FK
+  // enforcement by default, which silently broke those flows on self-host
+  // — disable here so SQLite and D1 agree.
+  db.exec("PRAGMA foreign_keys = OFF");
   return new BetterSqlite3SqlClient(db);
 }

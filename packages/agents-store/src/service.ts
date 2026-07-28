@@ -84,6 +84,8 @@ const UPDATABLE_FIELDS = [
   "enable_general_subagent",
 ] as const;
 
+const MAX_CONCURRENT_UPDATE_RETRIES = 2;
+
 /**
  * AgentService — pure business logic over abstract ports.
  *
@@ -176,24 +178,59 @@ export class AgentService {
     /** When set, refuse if the current version doesn't match. Mirrors POST /v1/agents/:id ?version=. */
     expectedVersion?: number;
   }): Promise<AgentRow> {
-    const existing = await this.requireAgent(opts);
+    let existing = await this.requireAgent(opts);
 
-    if (
-      opts.expectedVersion !== undefined &&
-      opts.expectedVersion !== existing.version
-    ) {
-      throw new AgentVersionMismatchError(opts.expectedVersion, existing.version);
+    for (let attempt = 0; ; attempt++) {
+      if (
+        opts.expectedVersion !== undefined &&
+        opts.expectedVersion !== existing.version
+      ) {
+        throw new AgentVersionMismatchError(
+          opts.expectedVersion,
+          existing.version,
+        );
+      }
+
+      // Detect field-level changes BEFORE building the new config — if nothing
+      // moved, return the existing row unmodified to skip a version bump (mirrors
+      // agents.ts:237-248 — "no-op update").
+      const changed = this.detectChanges(existing, opts.input);
+      if (!changed) return existing;
+
+      try {
+        return await this.writeUpdatedAgent(opts, existing);
+      } catch (err) {
+        if (!isAgentVersionSnapshotConflict(err)) throw err;
+
+        const latest = await this.requireAgent(opts);
+        if (opts.expectedVersion !== undefined) {
+          if (latest.version !== opts.expectedVersion) {
+            throw new AgentVersionMismatchError(
+              opts.expectedVersion,
+              latest.version,
+            );
+          }
+          throw err;
+        }
+        if (attempt >= MAX_CONCURRENT_UPDATE_RETRIES) throw err;
+
+        existing = latest;
+      }
     }
+  }
 
-    // Detect field-level changes BEFORE building the new config — if nothing
-    // moved, return the existing row unmodified to skip a version bump (mirrors
-    // agents.ts:237-248 — "no-op update").
-    const changed = this.detectChanges(existing, opts.input);
-    if (!changed) return existing;
-
+  private async writeUpdatedAgent(
+    opts: {
+      tenantId: string;
+      agentId: string;
+      input: UpdateAgentInput;
+    },
+    existing: AgentRow,
+  ): Promise<AgentRow> {
     const nextConfig = this.applyUpdate(existing, opts.input);
     nextConfig.version = existing.version + 1;
-    nextConfig.updated_at = msToIso(this.clock.nowMs());
+    const nowMs = this.clock.nowMs();
+    nextConfig.updated_at = msToIso(nowMs);
 
     return await this.repo.updateWithVersionSnapshot(
       opts.tenantId,
@@ -201,14 +238,14 @@ export class AgentService {
       {
         config: nextConfig,
         version: nextConfig.version,
-        updatedAt: this.clock.nowMs(),
+        updatedAt: nowMs,
       } satisfies AgentUpdateFields,
       {
         agentId: opts.agentId,
         tenantId: opts.tenantId,
         version: existing.version,
         snapshot: stripTenantId(existing),
-        createdAt: this.clock.nowMs(),
+        createdAt: nowMs,
       },
     );
   }
@@ -272,6 +309,16 @@ export class AgentService {
    */
   async listPage(opts: {
     tenantId: string;
+    /** Row archive state. Pass `'active'` to exclude archived, `'archived'`
+     *  for only-archived, `'any'` (default) for both. Replaces the legacy
+     *  `includeArchived` boolean for any 3-way intent. */
+    status?: "active" | "archived" | "any";
+    /** Lower bound on created_at (epoch ms, inclusive). */
+    createdAfter?: number;
+    /** Upper bound on created_at (epoch ms, exclusive). */
+    createdBefore?: number;
+    /** Legacy 2-way archive toggle. Maps to status when status is unset:
+     *  false→active, true→any. Prefer `status` for new callers. */
     includeArchived?: boolean;
     /** Hard-clamped to [1, 200]. */
     limit?: number;
@@ -280,15 +327,19 @@ export class AgentService {
     /** Substring filter passed through to the repo. */
     q?: string;
   }): Promise<{ items: AgentRow[]; nextCursor?: string }> {
+    const status: "active" | "archived" | "any" =
+      opts.status ?? (opts.includeArchived === false ? "active" : "any");
     return paginateVia({
       cursor: opts.cursor,
       limit: opts.limit,
       fetch: (after, limit) =>
         this.repo.listPage(opts.tenantId, {
-          includeArchived: opts.includeArchived ?? true,
+          status,
           limit,
           after,
           q: opts.q,
+          createdAfter: opts.createdAfter,
+          createdBefore: opts.createdBefore,
         }),
       extractCursor: (r) => ({ createdAt: isoToMs(r.created_at), id: r.id }),
     });
@@ -423,6 +474,25 @@ function msToIso(ms: number): string {
 
 function isoToMs(iso: string): number {
   return new Date(iso).getTime();
+}
+
+function isAgentVersionSnapshotConflict(err: unknown): boolean {
+  const text = errorText(err);
+  return (
+    /agent_versions/i.test(text) &&
+    /version/i.test(text) &&
+    /(UNIQUE constraint failed|SQLITE_CONSTRAINT|duplicate key|unique constraint|constraint failed)/i.test(
+      text,
+    )
+  );
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    return `${err.name} ${err.message} ${cause ? errorText(cause) : ""}`;
+  }
+  return String(err);
 }
 
 // ============================================================

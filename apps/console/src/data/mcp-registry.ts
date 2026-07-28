@@ -28,13 +28,26 @@ function favicon(domain: string): string {
 export const MCP_REGISTRY: McpRegistryEntry[] = [
   { id: "airtable", name: "Airtable", url: "https://mcp.airtable.com/mcp", icon: favicon("airtable.com") },
   { id: "amplitude", name: "Amplitude", url: "https://mcp.amplitude.com/mcp", icon: favicon("amplitude.com") },
-  { id: "apollo", name: "Apollo.io", url: "https://mcp.apollo.io/mcp", icon: favicon("apollo.io") },
+  // { id: "apollo", name: "Apollo.io", url: "https://mcp.apollo.io/mcp", icon: favicon("apollo.io") },
+  //   ↑ disabled: OAuth flow itself works (302 + DCR fine) but the callback
+  //     hits an Invalid-OAuth-state on KV lookup, because CF Workers KV is
+  //     eventually consistent and Apollo's redirect is faster (<1s) than KV
+  //     put→get propagation on cross-POP reads. Re-enable once /v1/oauth/*
+  //     migrates state from KV to JWT-encoded (self-contained, no roundtrip)
+  //     or to a strongly-consistent store (D1 / Durable Object).
   { id: "asana", name: "Asana", url: "https://mcp.asana.com/v2/mcp", icon: favicon("asana.com") },
   // { id: "atlassian", name: "Atlassian Rovo", url: "https://mcp.atlassian.com/v1/mcp", icon: favicon("atlassian.com") },
   //   ↑ disabled: vendor publishes no PRM at standard well-known paths; OAuth discovery 404s.
   //     SSE endpoint /v1/sse 401s, suggesting a non-discoverable auth scheme.
   //     Re-enable once Atlassian ships RFC 9728 PRM or we add a hard-coded ASM fallback like GitHub's.
-  { id: "clickup", name: "ClickUp", url: "https://mcp.clickup.com/mcp", icon: favicon("clickup.com") },
+  // { id: "clickup", name: "ClickUp", url: "https://mcp.clickup.com/mcp", icon: favicon("clickup.com") },
+  //   ↑ disabled: mcp.clickup.com runs a SEPARATE OAuth client namespace from
+  //     ClickUp's standard app.clickup.com — client_ids minted via the public
+  //     dev console (app.clickup.com/settings/team/<id>/apps) are rejected at
+  //     mcp.clickup.com/oauth/authorize with 401 invalid_client. The MCP
+  //     namespace only accepts client_ids issued via their DCR endpoint, which
+  //     is allowlist-gated (same gate as Feishu/Lark). Re-enable after
+  //     getting openma allowlisted in ClickUp's MCP partner program.
   // { id: "feishu", name: "Feishu (飞书)", url: "https://mcp.feishu.cn/mcp", icon: favicon("feishu.cn") },
   //   ↑ disabled: requires Feishu Partner allowlist for a https redirect URI; DCR returns
   //     invalid_redirect_uri for app.openma.dev. Re-enable after registering openma.dev as

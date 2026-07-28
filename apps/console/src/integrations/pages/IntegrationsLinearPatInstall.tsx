@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { IntegrationsApi } from "../api/client";
 import { SecretInput, TextInput } from "../../components/Input";
@@ -55,13 +55,17 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
     })();
   }, [loadAgents, loadEnvironments]);
 
-  // Default persona to the agent's name if still empty.
+  // Default persona to the agent's name. Skip once the user has edited the
+  // field — otherwise clearing the input would refill it from the effect's
+  // personaName dep, making the field feel un-clearable.
+  const personaEditedRef = useRef(false);
   useEffect(() => {
-    if (!personaName && agentId) {
+    if (personaEditedRef.current) return;
+    if (agentId) {
       const agent = agents.find((a) => a.id === agentId);
       if (agent) setPersonaName(agent.name);
     }
-  }, [agentId, agents, personaName]);
+  }, [agentId, agents]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -157,7 +161,7 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
               className="w-full px-3 py-2 rounded-md border border-border bg-bg text-[14px]"
               placeholder="e.g. Coder"
               value={personaName}
-              onChange={(e) => setPersonaName(e.target.value)}
+              onChange={(e) => { personaEditedRef.current = true; setPersonaName(e.target.value); }}
             />
           </div>
 

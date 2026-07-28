@@ -433,3 +433,105 @@ describe("stripSecrets", () => {
     expect(cred.auth.access_token).toBe("secret_a");
   });
 });
+
+describe("CredentialService — CAS refresh (race-safe)", () => {
+  async function plant(): Promise<{
+    service: ReturnType<typeof createInMemoryCredentialService>["service"];
+    tenantId: string;
+    vaultId: string;
+    credentialId: string;
+  }> {
+    const { service } = createInMemoryCredentialService();
+    const tenantId = "tn_cas";
+    const vaultId = "vlt_cas";
+    const cred = await service.create({
+      tenantId,
+      vaultId,
+      displayName: "asana (OAuth)",
+      auth: {
+        type: "mcp_oauth",
+        access_token: "tok_v1",
+        refresh_token: "refresh_v1",
+        mcp_server_url: "https://mcp.asana.com/v2/mcp",
+        token_endpoint: "https://app.asana.com/-/oauth_token",
+        client_id: "cid",
+      },
+    });
+    return { service, tenantId, vaultId, credentialId: cred.id };
+  }
+
+  it("getRawForRefresh returns the row + the exact stored ciphertext", async () => {
+    const { service, tenantId, vaultId, credentialId } = await plant();
+    const raw = await service.getRawForRefresh({ tenantId, vaultId, credentialId });
+    expect(raw).not.toBeNull();
+    expect(raw!.authCipher.length).toBeGreaterThan(0);
+    expect(raw!.row.auth.type).toBe("mcp_oauth");
+    expect((raw!.row.auth as { access_token: string }).access_token).toBe("tok_v1");
+  });
+
+  it("refreshAuthCAS succeeds when expectedAuthCipher matches the row's current cipher", async () => {
+    const { service, tenantId, vaultId, credentialId } = await plant();
+    const raw = await service.getRawForRefresh({ tenantId, vaultId, credentialId });
+    expect(raw).not.toBeNull();
+    const updated = await service.refreshAuthCAS({
+      tenantId, vaultId, credentialId,
+      expectedAuthCipher: raw!.authCipher,
+      auth: { access_token: "tok_v2", refresh_token: "refresh_v2" } as never,
+    });
+    expect(updated).not.toBeNull();
+    expect((updated!.auth as { access_token: string }).access_token).toBe("tok_v2");
+    // Re-read confirms the rotation persisted.
+    const after = await service.get({ tenantId, vaultId, credentialId });
+    expect((after!.auth as { access_token: string }).access_token).toBe("tok_v2");
+  });
+
+  it("refreshAuthCAS returns null when another writer rotated first (cipher moved)", async () => {
+    const { service, tenantId, vaultId, credentialId } = await plant();
+    const raw = await service.getRawForRefresh({ tenantId, vaultId, credentialId });
+    // Simulate a parallel refresh that landed first: regular refreshAuth
+    // rewrites the auth cipher to a fresh value with a new IV.
+    await service.refreshAuth({
+      tenantId, vaultId, credentialId,
+      auth: { access_token: "tok_winner", refresh_token: "refresh_winner" } as never,
+    });
+    // Now our CAS attempt with the pre-rotation cipher must fail.
+    const loserUpdate = await service.refreshAuthCAS({
+      tenantId, vaultId, credentialId,
+      expectedAuthCipher: raw!.authCipher,
+      auth: { access_token: "tok_loser", refresh_token: "refresh_loser" } as never,
+    });
+    expect(loserUpdate).toBeNull();
+    // Winner's token is what's on the row.
+    const after = await service.get({ tenantId, vaultId, credentialId });
+    expect((after!.auth as { access_token: string }).access_token).toBe("tok_winner");
+  });
+
+  it("two simultaneous CAS attempts produce exactly one winner (no clobber)", async () => {
+    const { service, tenantId, vaultId, credentialId } = await plant();
+    const raw = await service.getRawForRefresh({ tenantId, vaultId, credentialId });
+    // Both racers read the same starting cipher.
+    const expectedCipher = raw!.authCipher;
+    const [a, b] = await Promise.all([
+      service.refreshAuthCAS({
+        tenantId, vaultId, credentialId,
+        expectedAuthCipher: expectedCipher,
+        auth: { access_token: "tok_a", refresh_token: "refresh_a" } as never,
+      }),
+      service.refreshAuthCAS({
+        tenantId, vaultId, credentialId,
+        expectedAuthCipher: expectedCipher,
+        auth: { access_token: "tok_b", refresh_token: "refresh_b" } as never,
+      }),
+    ]);
+    // Exactly one of (a, b) is non-null — that's the winner.
+    const winners = [a, b].filter((x): x is NonNullable<typeof x> => x !== null);
+    expect(winners).toHaveLength(1);
+    // Final stored token matches the winner's claim.
+    const after = await service.get({ tenantId, vaultId, credentialId });
+    const finalToken = (after!.auth as { access_token: string }).access_token;
+    expect(finalToken).toBe((winners[0]!.auth as { access_token: string }).access_token);
+    // Specifically, the final token is one of the two we attempted —
+    // never a phantom value, never the pre-rotation tok_v1.
+    expect(["tok_a", "tok_b"]).toContain(finalToken);
+  });
+});

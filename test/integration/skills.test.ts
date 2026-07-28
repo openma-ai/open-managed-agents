@@ -576,7 +576,7 @@ describe("Skills zip upload", () => {
     const res = await postZip("/v1/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/SKILL\.md/);
+    expect(body.error?.message ?? body.error).toMatch(/SKILL\.md/);
   });
 
   it("rejects upload without file field", async () => {
@@ -638,7 +638,7 @@ describe("Skills zip upload", () => {
     const res = await postZip("/v1/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/per-file limit/);
+    expect(body.error?.message ?? body.error).toMatch(/per-file limit/);
   });
 
   it("rejects zip when total uncompressed size exceeds the aggregate cap", async () => {
@@ -654,7 +654,7 @@ describe("Skills zip upload", () => {
     const res = await postZip("/v1/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/zip-bomb defense|aggregate|exceeds/i);
+    expect(body.error?.message ?? body.error).toMatch(/zip-bomb defense|aggregate|exceeds/i);
   });
 
   it("rejects zip with too many files", async () => {
@@ -667,6 +667,6 @@ describe("Skills zip upload", () => {
     const res = await postZip("/v1/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/too many files/i);
+    expect(body.error?.message ?? body.error).toMatch(/too many files/i);
   });
 });

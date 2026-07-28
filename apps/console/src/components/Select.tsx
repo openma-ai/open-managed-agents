@@ -1,11 +1,21 @@
-import * as RadixSelect from "@radix-ui/react-select";
 import { forwardRef, type ReactNode } from "react";
 
+import {
+  Select as ShadcnSelect,
+  SelectContent as ShadcnSelectContent,
+  SelectGroup as ShadcnSelectGroup,
+  SelectItem,
+  SelectLabel as ShadcnSelectLabel,
+  SelectSeparator as ShadcnSelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 /**
- * Styled wrapper around Radix Select. Mirrors the look of TextInput
- * (border-border, focus:border-brand) and the popover style of Modal
- * (bg-bg, shadow-xl, fade transition). Use this anywhere you'd otherwise
- * reach for native `<select>`.
+ * Project-level convenience wrapper over the shadcn `Select` primitives.
+ * Keeps a small controlled API (`value` / `onValueChange` / `placeholder` /
+ * children) so the 3 call sites don't each have to assemble
+ * Root + Trigger + Value + Content + Item + Portal + Scroll buttons.
  *
  * Native `<select>` is intentionally avoided because:
  *   1. It can't be styled to match the design tokens (bg/fg/border) on
@@ -13,18 +23,9 @@ import { forwardRef, type ReactNode } from "react";
  *   2. No type-to-search inside large option lists.
  *   3. No accessible labelling for groups.
  *
- * Radix Select gives us all of the above for ~30KB and matches the
- * Anthropic Console picker behavior (popover, keyboard ↑↓Enter, ARIA
- * combobox roles).
- *
- * Usage:
- *
- *   <Select value={form.agent} onValueChange={(v) => setForm({...form, agent: v})}
- *           placeholder="Select an agent...">
- *     {agents.map(a => (
- *       <SelectOption key={a.id} value={a.id}>{a.name}</SelectOption>
- *     ))}
- *   </Select>
+ * Internals delegate to shadcn (which sits on Radix Select), so popover
+ * styling / scroll buttons / chevron-down / focus ring stay aligned with
+ * every other shadcn surface.
  */
 
 interface SelectProps {
@@ -35,19 +36,11 @@ interface SelectProps {
   disabled?: boolean;
   /** Optional name; emitted as the underlying form input. */
   name?: string;
-  /** Override the trigger className. Default mirrors TextInput. */
+  /** Override the trigger className. Default uses shadcn's full-width
+   *  trigger so it fills its container. */
   className?: string;
-  /** Limit the popover height; longer lists scroll. Default 320px. */
-  maxHeight?: string;
   children: ReactNode;
 }
-
-const triggerClass =
-  "w-full inline-flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-[13px] bg-bg text-fg " +
-  "outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] " +
-  "disabled:opacity-50 disabled:cursor-not-allowed " +
-  "data-[placeholder]:text-fg-subtle " +
-  "[&>span]:truncate [&>span]:text-left [&>span]:flex-1";
 
 export function Select({
   value,
@@ -56,42 +49,25 @@ export function Select({
   disabled,
   name,
   className,
-  maxHeight = "320px",
   children,
 }: SelectProps) {
   return (
-    <RadixSelect.Root
+    <ShadcnSelect
       value={value || undefined}
       onValueChange={onValueChange}
       disabled={disabled}
       name={name}
     >
-      <RadixSelect.Trigger className={className ?? triggerClass} aria-label={placeholder}>
-        <RadixSelect.Value placeholder={placeholder} />
-        <RadixSelect.Icon className="text-fg-subtle">
-          <ChevronDownIcon />
-        </RadixSelect.Icon>
-      </RadixSelect.Trigger>
-
-      <RadixSelect.Portal>
-        <RadixSelect.Content
-          position="popper"
-          sideOffset={4}
-          className="z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-border bg-bg shadow-xl"
-          style={{ maxHeight }}
-        >
-          <RadixSelect.ScrollUpButton className="flex items-center justify-center h-6 bg-bg text-fg-subtle">
-            <ChevronUpIcon />
-          </RadixSelect.ScrollUpButton>
-          <RadixSelect.Viewport className="p-1">
-            {children}
-          </RadixSelect.Viewport>
-          <RadixSelect.ScrollDownButton className="flex items-center justify-center h-6 bg-bg text-fg-subtle">
-            <ChevronDownIcon />
-          </RadixSelect.ScrollDownButton>
-        </RadixSelect.Content>
-      </RadixSelect.Portal>
-    </RadixSelect.Root>
+      <SelectTrigger
+        aria-label={placeholder}
+        // Override shadcn's default w-fit so the trigger fills the form
+        // column it lives in (matches the previous TextInput look).
+        className={className ?? "w-full"}
+      >
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <ShadcnSelectContent>{children}</ShadcnSelectContent>
+    </ShadcnSelect>
   );
 }
 
@@ -103,27 +79,16 @@ interface SelectOptionProps {
 }
 
 /**
- * One row inside a `<Select>`. Highlight + selected styling matches the
- * focus-ring / brand tokens used by Button.
+ * One row inside a `<Select>`. Delegates to shadcn `SelectItem`; the
+ * wrapper exists so call sites don't have to import both `Select` from
+ * here and `SelectItem` from `@/components/ui/select` (mixed-source
+ * imports were a common source of stale-prop bugs in the prior wrapper).
  */
 export const SelectOption = forwardRef<HTMLDivElement, SelectOptionProps>(
   ({ value, disabled, children }, ref) => (
-    <RadixSelect.Item
-      ref={ref}
-      value={value}
-      disabled={disabled}
-      className={
-        "relative flex items-center gap-2 px-3 py-1.5 min-h-11 sm:min-h-0 text-[13px] text-fg rounded cursor-pointer outline-none " +
-        "data-[highlighted]:bg-bg-surface data-[highlighted]:text-fg " +
-        "data-[state=checked]:font-medium " +
-        "data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
-      }
-    >
-      <RadixSelect.ItemText>{children}</RadixSelect.ItemText>
-      <RadixSelect.ItemIndicator className="ml-auto text-brand">
-        <CheckIcon />
-      </RadixSelect.ItemIndicator>
-    </RadixSelect.Item>
+    <SelectItem ref={ref} value={value} disabled={disabled}>
+      {children}
+    </SelectItem>
   ),
 );
 
@@ -134,11 +99,7 @@ SelectOption.displayName = "SelectOption";
  * options (e.g. "Anthropic skills" / "Custom skills").
  */
 export function SelectGroupLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-fg-subtle">
-      {children}
-    </div>
-  );
+  return <ShadcnSelectLabel>{children}</ShadcnSelectLabel>;
 }
 
 /**
@@ -146,38 +107,12 @@ export function SelectGroupLabel({ children }: { children: ReactNode }) {
  * `SelectGroupLabel` for visual + accessibility labelling.
  */
 export function SelectGroup({ children }: { children: ReactNode }) {
-  return <RadixSelect.Group>{children}</RadixSelect.Group>;
+  return <ShadcnSelectGroup>{children}</ShadcnSelectGroup>;
 }
 
 /**
  * Visual divider between groups. Renders a thin border line in the popover.
  */
 export function SelectSeparator() {
-  return (
-    <RadixSelect.Separator className="h-px bg-border my-1" />
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="6 9 12 15 18 9" />
-    </svg>
-  );
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="18 15 12 9 6 15" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
+  return <ShadcnSelectSeparator />;
 }

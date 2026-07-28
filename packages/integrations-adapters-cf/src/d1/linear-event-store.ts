@@ -1,22 +1,17 @@
+import { and, asc, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import {
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import { linear_events } from "@open-managed-agents/db-schema/cf-integrations";
 import type { LinearEventStore, LinearActionableEvent } from "@open-managed-agents/integrations-core";
 
-interface LinearEventRow {
-  delivery_id: string;
-  tenant_id: string;
-  installation_id: string;
-  publication_id: string | null;
-  event_type: string;
-  received_at: number;
-  session_id: string | null;
-  error: string | null;
-  event_kind: string | null;
-  payload_json: string | null;
-  processed_at: number | null;
-  processed_session_id: string | null;
-}
-
 /**
- * D1 adapter for the merged `linear_events` table. Replaces the previous
+ * SQL adapter for the merged `linear_events` table. Replaces the previous
  * pair of D1WebhookEventStore + D1PendingEventRepo. One row plays three
  * roles in sequence:
  *
@@ -27,8 +22,11 @@ interface LinearEventRow {
  * Rows that the handler chose not to act on stay payload_json=NULL with
  * `error` set; they're invisible to the drain index.
  */
-export class D1LinearEventStore implements LinearEventStore {
-  constructor(private readonly db: D1Database) {}
+export class SqlLinearEventStore implements LinearEventStore {
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async recordIfNew(
     deliveryId: string,
@@ -37,36 +35,49 @@ export class D1LinearEventStore implements LinearEventStore {
     eventType: string,
     receivedAt: number,
   ): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `INSERT OR IGNORE INTO linear_events
-           (delivery_id, tenant_id, installation_id, event_type, received_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .bind(deliveryId, tenantId, installationId, eventType, receivedAt)
-      .run();
-    return (result.meta?.changes ?? 0) > 0;
+    // RETURNING tells us atomically whether the INSERT happened (row
+    // returned) or was ignored on conflict (no row).
+    const inserted = await getOne<{ delivery_id: string }>(
+      this.db
+        .insert(linear_events)
+        .values({
+          delivery_id: deliveryId,
+          tenant_id: tenantId,
+          installation_id: installationId,
+          event_type: eventType,
+          received_at: receivedAt,
+        })
+        .onConflictDoNothing()
+        .returning({ delivery_id: linear_events.delivery_id }),
+    );
+    return inserted !== null;
   }
 
   async attachSession(deliveryId: string, sessionId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_events SET session_id = ? WHERE delivery_id = ?`)
-      .bind(sessionId, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({ session_id: sessionId })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async attachPublication(deliveryId: string, publicationId: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_events SET publication_id = ? WHERE delivery_id = ?`)
-      .bind(publicationId, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({ publication_id: publicationId })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async attachError(deliveryId: string, error: string): Promise<void> {
-    await this.db
-      .prepare(`UPDATE linear_events SET error = ? WHERE delivery_id = ?`)
-      .bind(error.slice(0, 2000), deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({ error: error.slice(0, 2000) })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async markActionable(
@@ -75,27 +86,33 @@ export class D1LinearEventStore implements LinearEventStore {
     publicationId: string,
     payloadJson: string,
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_events
-           SET event_kind = ?, publication_id = ?, payload_json = ?
-         WHERE delivery_id = ?`,
-      )
-      .bind(eventKind, publicationId, payloadJson, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({
+          event_kind: eventKind,
+          publication_id: publicationId,
+          payload_json: payloadJson,
+        })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async listUnprocessed(limit: number): Promise<readonly LinearActionableEvent[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_events
-         WHERE payload_json IS NOT NULL AND processed_at IS NULL
-         ORDER BY received_at ASC
-         LIMIT ?`,
-      )
-      .bind(limit)
-      .all<LinearEventRow>();
-    return (results ?? []).map(toActionable);
+    const rows = await getAll<typeof linear_events.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_events)
+        .where(
+          and(
+            isNotNull(linear_events.payload_json),
+            isNull(linear_events.processed_at),
+          ),
+        )
+        .orderBy(asc(linear_events.received_at))
+        .limit(limit),
+    );
+    return rows.map(toActionable);
   }
 
   async markProcessed(
@@ -103,14 +120,15 @@ export class D1LinearEventStore implements LinearEventStore {
     sessionId: string,
     processedAtMs: number,
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_events
-           SET processed_at = ?, processed_session_id = ?
-         WHERE delivery_id = ?`,
-      )
-      .bind(processedAtMs, sessionId, deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({
+          processed_at: processedAtMs,
+          processed_session_id: sessionId,
+        })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async markFailed(
@@ -118,34 +136,39 @@ export class D1LinearEventStore implements LinearEventStore {
     errorMessage: string,
     processedAtMs: number,
   ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE linear_events
-           SET processed_at = ?, error = ?
-         WHERE delivery_id = ?`,
-      )
-      .bind(processedAtMs, errorMessage.slice(0, 2000), deliveryId)
-      .run();
+    await runOnce(
+      this.db
+        .update(linear_events)
+        .set({
+          processed_at: processedAtMs,
+          error: errorMessage.slice(0, 2000),
+        })
+        .where(eq(linear_events.delivery_id, deliveryId)),
+    );
   }
 
   async listByPublication(
     publicationId: string,
     limit: number,
   ): Promise<readonly LinearActionableEvent[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM linear_events
-         WHERE publication_id = ? AND payload_json IS NOT NULL
-         ORDER BY received_at DESC
-         LIMIT ?`,
-      )
-      .bind(publicationId, limit)
-      .all<LinearEventRow>();
-    return (results ?? []).map(toActionable);
+    const rows = await getAll<typeof linear_events.$inferSelect>(
+      this.db
+        .select()
+        .from(linear_events)
+        .where(
+          and(
+            eq(linear_events.publication_id, publicationId),
+            isNotNull(linear_events.payload_json),
+          ),
+        )
+        .orderBy(desc(linear_events.received_at))
+        .limit(limit),
+    );
+    return rows.map(toActionable);
   }
 }
 
-function toActionable(row: LinearEventRow): LinearActionableEvent {
+function toActionable(row: typeof linear_events.$inferSelect): LinearActionableEvent {
   return {
     deliveryId: row.delivery_id,
     tenantId: row.tenant_id,

@@ -41,6 +41,9 @@ services:
       # agent uses to deliver downloadable artefacts. Bind-mounted into
       # ./data so files survive `docker stop`.
       SESSION_OUTPUTS_DIR: /app/data/session-outputs
+      # Local FS blob store for uploaded files. When FILES_S3_ENDPOINT is
+      # set the S3 backend is used instead and this var is ignored.
+      FILES_BLOB_DIR: /app/data/files-blobs
       # Outbound credential injection via the oma-vault sidecar. When set,
       # LocalSubprocessSandbox.setOutboundContext wires the subprocess env
       # to route HTTPS traffic through oma-vault for header injection.

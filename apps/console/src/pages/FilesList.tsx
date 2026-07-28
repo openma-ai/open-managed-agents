@@ -1,20 +1,16 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
+import { DownloadIcon, TrashIcon } from "lucide-react";
 import { useApi, getActiveTenantId } from "../lib/api";
-import { useToast } from "../components/Toast";
-import { ListPage } from "../components/ListPage";
-import { usePagedList } from "../lib/usePagedList";
-
-interface FileRecord {
-  id: string;
-  type?: "file";
-  filename: string;
-  media_type: string;
-  size_bytes: number;
-  scope_id?: string;
-  downloadable?: boolean;
-  created_at: string;
-}
+import { toast } from "sonner";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
+import { useApiQuery, useInfiniteApiQuery } from "../lib/useApiQuery";
+import { PopoverContent } from "@/components/ui/popover";
+import type { FileRecord } from "@open-managed-agents/api-types";
+import type { SessionRecord as Session } from "../types/session";
 
 interface ListResponse {
   data: FileRecord[];
@@ -23,32 +19,34 @@ interface ListResponse {
   last_id?: string;
 }
 
+const ALL_SCOPE = "";
+
 export function FilesList() {
   const { api } = useApi();
-  const { toast } = useToast();
-  const [scopeFilter, setScopeFilter] = useState("");
+  // Server-driven scope filter — `""` is the "All sessions" sentinel
+  // (FacetedFilter requires a value, server treats undefined as no
+  // filter), any other value is a real session id passed through as
+  // `scope_id`.
+  const [scopeId, setScopeId] = useState<string>(ALL_SCOPE);
   const [search, setSearch] = useState("");
 
   // Files endpoint follows the Anthropic Files API shape — `before_id`
   // for the cursor param and `last_id` (only when `has_more` is true) for
   // the next-page cursor — instead of OMA's standard `cursor` /
-  // `next_cursor`. usePagedList accepts adapter overrides for both.
+  // `next_cursor`. useInfiniteApiQuery accepts adapter overrides for both.
   const filesParams = useMemo(
-    () => ({ scope_id: scopeFilter || undefined }),
-    [scopeFilter],
+    () => ({ scope_id: scopeId || undefined }),
+    [scopeId],
   );
   const {
     items,
     isLoading: loading,
-    pageIndex,
-    pageSize,
-    hasNext,
-    knownPages,
-    goToPage,
-    setPageSize,
+    hasMore,
+    isLoadingMore,
+    loadMore,
     refresh: refreshFiles,
-  } = usePagedList<FileRecord>("/v1/files", {
-    defaultPageSize: 20,
+  } = useInfiniteApiQuery<FileRecord>("/v1/files", {
+    limit: 20,
     params: filesParams,
     cursorParam: "before_id",
     getNextCursor: (res) => {
@@ -56,6 +54,41 @@ export function FilesList() {
       return r.has_more ? r.data[r.data.length - 1]?.id : undefined;
     },
   });
+
+  // Sessions for the Scope chip's option list. One-shot fetch of the
+  // top 200 sessions visible to the user — same approach AgentsList
+  // takes for its callable-agents dropdown. Sessions beyond the cap
+  // aren't listed; users with a long tail still have the search box
+  // inside the FacetedFilter (cmdk type-ahead) to find what they need
+  // by id substring.
+  const { data: sessionsRes } = useApiQuery<{ data: Session[] }>(
+    "/v1/sessions",
+    { limit: "200" },
+  );
+  const sessions = sessionsRes?.data ?? [];
+
+  // Scope option list — "All" maps to no filter, every other option
+  // carries the real session id and labels with the session title (or
+  // the id when the title is blank).
+  const scopeOptions = useMemo(
+    () => [
+      { value: ALL_SCOPE, label: "All sessions" },
+      ...sessions.map((s) => ({
+        value: s.id,
+        label: s.title?.trim() ? `${s.title} (${s.id})` : s.id,
+      })),
+    ],
+    [sessions],
+  );
+
+  // Pretty label for the active chip — falls back to the bare id when
+  // the session isn't in our cached list (e.g. user landed via deep
+  // link to a session beyond the 200-row cap).
+  const scopeDisplay = useMemo(() => {
+    if (!scopeId) return undefined;
+    const hit = sessions.find((s) => s.id === scopeId);
+    return hit?.title?.trim() ? hit.title : scopeId;
+  }, [scopeId, sessions]);
 
   // Direct fetch for binary download — api() always parses JSON, and we need
   // the raw blob. Mirror its tenant-pin header so downloads honor the active
@@ -70,7 +103,7 @@ export function FilesList() {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         const message = (body as { error?: string }).error || `HTTP ${res.status}`;
-        toast(`Download failed: ${message}`, "error");
+        toast.error(`Download failed: ${message}`);
         return;
       }
       const blob = await res.blob();
@@ -81,7 +114,7 @@ export function FilesList() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      toast(`Download failed: ${e instanceof Error ? e.message : "network error"}`, "error");
+      toast.error(`Download failed: ${e instanceof Error ? e.message : "network error"}`);
     }
   };
 
@@ -90,134 +123,178 @@ export function FilesList() {
     try {
       await api(`/v1/files/${f.id}`, { method: "DELETE" });
       // Invalidate every /v1/files query (any scope filter) so the page
-      // Refetch — usePagedList exposes refresh() which clears the cursor
-      // stack and bounces back to page 0. Cheaper than maintaining a
-      // local optimistic copy; the next refetch lands fresh server truth.
+      // refetches — useInfiniteApiQuery exposes refresh() which bounces
+      // back to page 0. Cheaper than maintaining a local optimistic
+      // copy; the next refetch lands fresh server truth.
       refreshFiles();
     } catch {
       // toasted
     }
   };
 
-  // Search is client-side over the loaded page — backend doesn't index by
-  // filename and the upload API has no name filter. Operators who need a
-  // file from the long tail filter by scope_id (server-side) first.
+  // Search is client-side over the loaded page — backend doesn't index
+  // by filename and the upload API has no name filter. Operators who
+  // need a file from the long tail filter by scope (server-side) first,
+  // then narrow further by name within the page.
   const filtered = search
     ? items.filter((f) => f.filename.toLowerCase().includes(search.toLowerCase()))
     : items;
 
+  const columns = useMemo<ColumnDef<FileRecord>[]>(
+    () => [
+      {
+        id: "filename",
+        accessorKey: "filename",
+        header: "Filename",
+        cell: ({ row }) => (
+          <span title={row.original.filename} className="font-medium text-fg truncate inline-block max-w-[280px] align-bottom">
+            {row.original.filename}
+          </span>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "id",
+        accessorKey: "id",
+        header: "ID",
+        cell: ({ row }) => (
+          <span title={row.original.id} className="font-mono text-xs text-fg-muted">
+            {row.original.id}
+          </span>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "media_type",
+        accessorKey: "media_type",
+        header: "Type",
+        cell: ({ row }) => (
+          <span className="text-fg-muted text-xs">{row.original.media_type}</span>
+        ),
+      },
+      {
+        id: "size",
+        accessorFn: (f) => f.size_bytes,
+        header: "Size",
+        cell: ({ row }) => (
+          <span className="text-fg-muted text-xs tabular-nums">
+            {formatBytes(row.original.size_bytes)}
+          </span>
+        ),
+      },
+      {
+        id: "scope",
+        accessorFn: (f) => f.scope_id ?? "",
+        header: "Scope",
+        cell: ({ row }) =>
+          row.original.scope_id ? (
+            <Link
+              to={`/sessions/${row.original.scope_id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-brand hover:underline text-xs font-mono"
+            >
+              {row.original.scope_id}
+            </Link>
+          ) : (
+            <span className="text-fg-subtle text-xs">—</span>
+          ),
+      },
+      {
+        id: "created",
+        accessorFn: (f) => f.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted text-xs whitespace-nowrap">
+            {new Date(row.original.created_at).toLocaleString()}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const f = row.original;
+          return (
+            <RowActionsMenu
+              label={`Actions for ${f.filename}`}
+              actions={[
+                ...(f.downloadable
+                  ? [
+                      {
+                        label: "Download",
+                        icon: <DownloadIcon className="size-4" />,
+                        onSelect: () => {
+                          void download(f);
+                        },
+                      },
+                    ]
+                  : []),
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  onSelect: () => {
+                    void remove(f);
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
+    ],
+    // `download` / `remove` close over `api` and `refreshFiles`, both
+    // stable identities (useCallback in api.ts + useApiQuery.ts) — so
+    // the first-render closures stay correct for the lifetime of the
+    // page, and an empty dep array is the right choice.
+    [],
+  );
+
+  const filters = (
+    <FilterChip
+      label="Scope"
+      active={scopeId !== ALL_SCOPE}
+      display={scopeDisplay}
+      onClear={() => setScopeId(ALL_SCOPE)}
+    >
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        collisionPadding={8}
+        className="w-80 p-0"
+      >
+        <FacetedFilter
+          options={scopeOptions}
+          value={scopeId}
+          onValueChange={(v) => setScopeId(v)}
+          searchPlaceholder="Session id or title..."
+        />
+      </PopoverContent>
+    </FilterChip>
+  );
+
   return (
-    <ListPage<FileRecord>
-      title="Files"
-      subtitle={
-        <>
-          Tenant-scoped file storage (<code className="text-xs">/v1/files</code>). Used by agents for inputs, attachments, and session outputs.
-        </>
-      }
+    <DataTable<FileRecord>
       searchPlaceholder="Filter loaded files by name…"
       searchValue={search}
       onSearchChange={setSearch}
-      filters={
-        <input
-          type="text"
-          value={scopeFilter}
-          onChange={(e) => setScopeFilter(e.target.value)}
-          placeholder="Filter by scope (session ID)…"
-          aria-label="Filter by session scope"
-          className="border border-border rounded-md px-3 py-1.5 min-h-11 sm:min-h-0 text-sm bg-bg text-fg placeholder:text-fg-subtle focus:border-brand focus:outline-none transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] w-full sm:w-72"
-        />
-      }
+      filters={filters}
       data={filtered}
       loading={loading}
-      hasNext={hasNext && !search}
-      pageIndex={pageIndex}
-      pageSize={pageSize}
-      knownPages={knownPages}
-      onPageChange={goToPage}
-      onPageSizeChange={setPageSize}
-      getRowKey={(f) => f.id}
-      emptyTitle={scopeFilter ? "No files in this scope" : "No files yet"}
+      getRowId={(f) => f.id}
+      hasMore={hasMore && !search}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
+      emptyTitle={scopeId ? "No files in this scope" : "No files yet"}
       emptyKind="file"
       emptySubtitle={
-        scopeFilter
+        scopeId
           ? "Try clearing the scope filter, or check the session id."
           : <>Upload via <code className="text-xs">POST /v1/files</code> or the AMA SDK <code className="text-xs">client.beta.files.create()</code>.</>
       }
-      columns={[
-        {
-          key: "filename",
-          label: "Filename",
-          className: "font-medium",
-          render: (f) => (
-            <span title={f.filename} className="truncate inline-block max-w-[280px] align-bottom">
-              {f.filename}
-            </span>
-          ),
-        },
-        {
-          key: "id",
-          label: "ID",
-          className: "font-mono text-xs text-fg-muted truncate max-w-[160px]",
-          render: (f) => <span title={f.id}>{f.id}</span>,
-        },
-        {
-          key: "media_type",
-          label: "Type",
-          className: "text-fg-muted text-xs",
-        },
-        {
-          key: "size_bytes",
-          label: "Size",
-          className: "text-fg-muted text-xs tabular-nums",
-          render: (f) => formatBytes(f.size_bytes),
-        },
-        {
-          key: "scope",
-          label: "Scope",
-          className: "text-fg-muted text-xs font-mono",
-          render: (f) =>
-            f.scope_id ? (
-              <Link
-                to={`/sessions/${f.scope_id}`}
-                onClick={(e) => e.stopPropagation()}
-                className="text-brand hover:underline"
-              >
-                {f.scope_id}
-              </Link>
-            ) : (
-              <span className="text-fg-subtle">—</span>
-            ),
-        },
-        {
-          key: "created",
-          label: "Created",
-          className: "text-fg-muted text-xs whitespace-nowrap",
-          render: (f) => new Date(f.created_at).toLocaleString(),
-        },
-        {
-          key: "actions",
-          label: "",
-          className: "text-right whitespace-nowrap",
-          render: (f) => (
-            <>
-              {f.downloadable && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); void download(f); }}
-                  className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-xs text-fg-muted hover:text-fg mr-1 sm:mr-3 px-2"
-                >
-                  Download
-                </button>
-              )}
-              <button
-                onClick={(e) => { e.stopPropagation(); void remove(f); }}
-                className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-xs text-danger hover:text-danger/80 px-2"
-              >
-                Delete
-              </button>
-            </>
-          ),
-        },
-      ]}
+      columns={columns}
     />
   );
 }

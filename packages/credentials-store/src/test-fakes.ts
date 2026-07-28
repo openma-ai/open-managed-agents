@@ -87,6 +87,44 @@ export class InMemoryCredentialRepo implements CredentialRepo {
     return await this.toRow(row);
   }
 
+  async getRaw(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+  ): Promise<{ row: CredentialRow; authCipher: string } | null> {
+    const row = this.byId.get(credentialId);
+    if (!row) return null;
+    if (row.tenant_id !== tenantId || row.vault_id !== vaultId) return null;
+    return { row: await this.toRow(row), authCipher: row.auth_cipher };
+  }
+
+  async updateIfAuthMatches(
+    tenantId: string,
+    vaultId: string,
+    credentialId: string,
+    expectedAuthCipher: string,
+    update: CredentialUpdateFields,
+  ): Promise<CredentialRow | null> {
+    if (update.auth === undefined) {
+      throw new Error("updateIfAuthMatches requires update.auth");
+    }
+    // Encrypt first (async, may yield) — done before the synchronous
+    // check-and-write block so two concurrent callers don't both observe
+    // the pre-write cipher between yields. D1's UPDATE ... WHERE auth=?
+    // is atomic; this mirrors that contract on the in-memory side.
+    const authCipher = await this.crypto.encrypt(JSON.stringify(update.auth));
+    const row = this.byId.get(credentialId);
+    if (!row) return null;
+    if (row.tenant_id !== tenantId || row.vault_id !== vaultId) return null;
+    if (row.auth_cipher !== expectedAuthCipher) return null; // CAS lost
+    row.auth_cipher = authCipher;
+    row.auth_type = update.auth.type;
+    row.mcp_server_url = update.auth.mcp_server_url ?? null;
+    row.provider = update.auth.provider ?? null;
+    row.updated_at = update.updatedAt;
+    return await this.toRow(row);
+  }
+
   async list(
     tenantId: string,
     vaultId: string,

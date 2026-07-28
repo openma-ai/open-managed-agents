@@ -711,7 +711,7 @@ describe("Full lifecycle", () => {
     });
     expect(res.status).toBe(409);
     const body = (await res.json()) as any;
-    expect(body.error).toContain("archived");
+    expect(body.error?.message ?? body.error).toContain("archived");
   });
 });
 

@@ -81,6 +81,21 @@ export interface InstallStep {
 export interface InstallComplete {
   kind: "complete";
   publicationId: string;
+  /**
+   * Optional vendor-side capability probe run as the last step of install.
+   * Surfaces "the install handshake succeeded BUT a per-app toggle the
+   * vendor controls is OFF" — e.g. Slack's "Model Context Protocol" toggle
+   * in Agents & AI Apps which can't be enabled via manifest. UI shows a
+   * warning + deeplink when `ok: false`. Absent for providers that don't
+   * have a toggle to probe (Linear, GitHub).
+   */
+  capabilityProbe?: {
+    kind: string; // e.g. "slack_mcp"
+    ok: boolean;
+    message?: string;
+    /** Provider-specific deeplink to fix the failed capability. */
+    fixUrl?: string;
+  };
 }
 
 // ─── Webhook types ─────────────────────────────────────────────────────

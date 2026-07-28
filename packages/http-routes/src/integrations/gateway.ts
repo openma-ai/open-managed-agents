@@ -65,21 +65,26 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
   const app = new Hono();
 
   // ─── Linear ──────────────────────────────────────────────────────────
-  // GET /linear/oauth/app/:appId/callback?code=&state=
-  app.get("/linear/oauth/app/:appId/callback", async (c) => {
-    const appId = c.req.param("appId");
+  // GET /linear/oauth/pub/:pubId/callback?code=&state=
+  //
+  // Publication-first OAuth callback. The pub_id in the URL was minted at
+  // publication-create time and baked into the user's Linear OAuth-app
+  // config; the InstallBridge resolves it to the publication row and
+  // completes the install (or rotates tokens for the reauth state-kind).
+  app.get("/linear/oauth/pub/:pubId/callback", async (c) => {
+    const pubId = c.req.param("pubId");
     const url = new URL(c.req.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     const error = url.searchParams.get("error");
     if (error) return c.json({ error: "linear_oauth_denied", details: error }, 400);
-    if (!appId || !code || !state) {
-      return c.json({ error: "missing appId, code, or state" }, 400);
+    if (!pubId || !code || !state) {
+      return c.json({ error: "missing pubId, code, or state" }, 400);
     }
     try {
       const result = await deps.installBridge.continueInstall({
         provider: "linear",
-        providerInstallationId: appId,
+        providerInstallationId: pubId,
         code,
         state,
       });
@@ -92,25 +97,75 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ op: "linear.oauth.callback.failed", appId, err: msg }, "linear callback failed");
+      log.warn({ op: "linear.oauth.callback.failed", pubId, err: msg }, "linear callback failed");
       return c.json({ error: "install_failed", details: msg }, 500);
     }
   });
 
-  // GET /linear-setup/:token
-  app.get("/linear-setup/:token", async (c) => {
-    const token = c.req.param("token");
-    let form: { persona: { name: string }; userId: string; agentId: string };
-    try {
-      form = await deps.jwt.verify<typeof form>(token);
-    } catch (err) {
-      return c.html(errorPage(err instanceof Error ? err.message : String(err)), 400);
-    }
-    return c.html(linearLandingPage({ token, personaName: form.persona.name }));
-  });
+  // Legacy `/linear-setup/<token>` handoff page is gone with the
+  // publication-first refactor — admins receive a `/linear/oauth/pub/...`
+  // callback URL directly via the new wizard flow rather than a
+  // form-token-backed splash page.
 
   // ─── GitHub ──────────────────────────────────────────────────────────
+  // GET /github/oauth/pub/:pubId/callback?installation_id=&setup_action=&state=
+  // Publication-first install callback. The setup URL on the GitHub App is
+  // keyed on the publication id (not the legacy app_oma_id), so retries
+  // route to the same publication row regardless of the user re-creating
+  // an App. Same `installation_id` + `state` query semantics as the legacy
+  // path; provider's continueInstall switches on payload.kind.
+  app.get("/github/oauth/pub/:pubId/callback", async (c) => {
+    const pubId = c.req.param("pubId");
+    const url = new URL(c.req.url);
+    const installationId = url.searchParams.get("installation_id");
+    const setupAction = url.searchParams.get("setup_action");
+    const state = url.searchParams.get("state");
+    const error = url.searchParams.get("error");
+    if (error) return c.json({ error: "github_install_denied", details: error }, 400);
+    if (!pubId || !installationId || !state) {
+      return c.json({ error: "missing pubId, installation_id, or state" }, 400);
+    }
+    if (setupAction === "request") {
+      // Org admin requested the install but it's pending approval — show
+      // a pending page rather than 500-ing on missing installation token.
+      return c.html(githubRequestPendingPage(setupAction), 200);
+    }
+    try {
+      const result = await deps.installBridge.continueInstall({
+        provider: "github",
+        providerInstallationId: pubId,
+        state,
+        extra: { installationId, setupAction, publicationFirst: true },
+      });
+      if (!result.returnUrl) {
+        return c.json({
+          ok: true,
+          publicationId: result.publicationId,
+          capabilityProbe: result.capabilityProbe ?? null,
+        });
+      }
+      const target = new URL(result.returnUrl);
+      target.searchParams.set("publication_id", result.publicationId);
+      target.searchParams.set("install", "ok");
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
+      return c.redirect(target.toString(), 302);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ op: "github.oauth.pub.callback.failed", pubId, err: msg }, "github callback failed");
+      return c.json({ error: "install_failed", details: msg }, 500);
+    }
+  });
+
   // GET /github/install/app/:appOmaId/callback?installation_id=&setup_action=&state=
+  // Legacy install callback — kept for installations created before
+  // migration 0002. Same semantics, just keyed on app_oma_id rather than
+  // pub_id. Once all live publications are publication-first this can go.
   app.get("/github/install/app/:appOmaId/callback", async (c) => {
     const appOmaId = c.req.param("appOmaId");
     const url = new URL(c.req.url);
@@ -133,11 +188,25 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
         extra: { installationId, setupAction },
       });
       if (!result.returnUrl) {
-        return c.json({ ok: true, publicationId: result.publicationId });
+        return c.json({
+          ok: true,
+          publicationId: result.publicationId,
+          capabilityProbe: result.capabilityProbe ?? null,
+        });
       }
       const target = new URL(result.returnUrl);
       target.searchParams.set("publication_id", result.publicationId);
       target.searchParams.set("install", "ok");
+      // Surface the vendor capability probe (e.g. Slack MCP toggle) as
+      // query params so the wizard's success page can show the right
+      // green-check or warning-with-deeplink banner.
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -220,7 +289,77 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
   });
 
   // ─── Slack ───────────────────────────────────────────────────────────
-  // GET /slack/oauth/app/:appId/callback?code=&state=
+  // GET /slack/oauth/pub/:pubId/callback?code=&state=
+  //
+  // Publication-first install: the OMA publication id (not Slack's app id) is
+  // the path parameter. Provider reads creds straight off the publication
+  // row (`slack_publications.client_*_cipher`), exchanges code, materializes
+  // installation/vaults/apps, binds them back onto the publication, flips
+  // status to 'live'. See SlackProvider.completeInstall.
+  app.get("/slack/oauth/pub/:pubId/callback", async (c) => {
+    const pubId = c.req.param("pubId");
+    const url = new URL(c.req.url);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const error = url.searchParams.get("error");
+    if (error) return c.json({ error: "slack_oauth_denied", details: error }, 400);
+    if (!pubId || !code || !state) {
+      return c.json({ error: "missing pubId, code, or state" }, 400);
+    }
+    try {
+      const result = await deps.installBridge.continueInstall({
+        provider: "slack",
+        providerInstallationId: pubId,
+        code,
+        state,
+      });
+      if (!result.returnUrl) {
+        // Defensive fallback: callers should always pass returnUrl in the
+        // form-token JWT. When they don't (early reissueFormToken bug
+        // 2026-05-20 left it empty), redirect to a known good
+        // same-origin path so the user lands on a real UI instead of a
+        // raw JSON envelope. Slack's integrations list page already
+        // honors the install=ok/probe_* query params for the success
+        // banner.
+        const fallback = new URL(c.req.url);
+        fallback.pathname = "/integrations/slack";
+        fallback.search = "";
+        fallback.searchParams.set("publication_id", result.publicationId);
+        fallback.searchParams.set("install", "ok");
+        const fbProbe = result.capabilityProbe;
+        if (fbProbe) {
+          fallback.searchParams.set("probe_kind", fbProbe.kind);
+          fallback.searchParams.set("probe_ok", fbProbe.ok ? "1" : "0");
+          if (fbProbe.message) fallback.searchParams.set("probe_message", fbProbe.message);
+          if (fbProbe.fixUrl) fallback.searchParams.set("probe_fix_url", fbProbe.fixUrl);
+        }
+        return c.redirect(fallback.pathname + fallback.search, 302);
+      }
+      const target = new URL(result.returnUrl);
+      target.searchParams.set("publication_id", result.publicationId);
+      target.searchParams.set("install", "ok");
+      // Surface the vendor capability probe (e.g. Slack MCP toggle) as
+      // query params so the wizard's success page can show the right
+      // green-check or warning-with-deeplink banner.
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
+      return c.redirect(target.toString(), 302);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ op: "slack.oauth.pub.callback.failed", pubId, err: msg }, "slack callback failed");
+      return c.json({ error: "install_failed", details: msg }, 500);
+    }
+  });
+
+  // Legacy callback path retained for any in-flight installs that started
+  // on the old per-app id flow. Delegates to the same install bridge with
+  // the legacy provider-installation-id (Slack app id). Will become a 404
+  // once those installs drain (~1h after deploy).
   app.get("/slack/oauth/app/:appId/callback", async (c) => {
     const appId = c.req.param("appId");
     const url = new URL(c.req.url);
@@ -239,11 +378,22 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
         state,
       });
       if (!result.returnUrl) {
-        return c.json({ ok: true, publicationId: result.publicationId });
+        return c.json({
+          ok: true,
+          publicationId: result.publicationId,
+          capabilityProbe: result.capabilityProbe ?? null,
+        });
       }
       const target = new URL(result.returnUrl);
       target.searchParams.set("publication_id", result.publicationId);
       target.searchParams.set("install", "ok");
+      const probe = result.capabilityProbe;
+      if (probe) {
+        target.searchParams.set("probe_kind", probe.kind);
+        target.searchParams.set("probe_ok", probe.ok ? "1" : "0");
+        if (probe.message) target.searchParams.set("probe_message", probe.message);
+        if (probe.fixUrl) target.searchParams.set("probe_fix_url", probe.fixUrl);
+      }
       return c.redirect(target.toString(), 302);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -287,15 +437,24 @@ function mountLinearWebhook(
   handler: WebhookHandler,
   rl: RateLimitHooks | undefined,
 ) {
-  app.post("/linear/webhook/app/:appId", async (c) => {
-    const appId = c.req.param("appId");
+  // Publication-first: webhook URL is keyed on pub_id (the user pasted
+  // `/linear/webhook/pub/<pubId>` into Linear's OAuth-app webhook config
+  // at publication create time). The handler walks pub_id → installation
+  // for credentials and dispatch — see LinearProvider.handleWebhook.
+  app.post("/linear/webhook/pub/:pubId", async (c) => {
+    const pubId = c.req.param("pubId");
     const rawBody = await c.req.raw.text();
     const headers: Record<string, string> = {};
     c.req.raw.headers.forEach((value, key) => (headers[key.toLowerCase()] = value));
     const deliveryId = headers["linear-delivery"] ?? safeJsonField(rawBody, "webhookId");
     const outcome = await handler({
       providerId: "linear",
-      installationId: appId ?? null,
+      // installationId is a misnomer left over from the legacy app-id
+      // keying — for the publication-first flow it carries the pub_id.
+      // Renaming the field would mean churning every WebhookRequest
+      // call site across the three providers, which is outside the scope
+      // of this refactor.
+      installationId: pubId ?? null,
       deliveryId,
       headers,
       rawBody,
@@ -337,6 +496,54 @@ function mountSlackWebhook(
   handler: WebhookHandler,
   rl: RateLimitHooks | undefined,
 ) {
+  // Publication-first webhook URL. Manifest baked at api.slack.com points
+  // here from minute 1 (pub_id is known at shell-create time, before the
+  // Slack app exists). Provider's handleWebhook reads x-internal-pub-id,
+  // resolves the publication's slack_app_id, and continues exactly the
+  // same dispatch path the legacy app-id route uses.
+  app.post("/slack/webhook/pub/:pubId", async (c) => {
+    const pubId = c.req.param("pubId");
+    const rawBody = await c.req.raw.text();
+    const headers: Record<string, string> = {};
+    c.req.raw.headers.forEach((value, key) => (headers[key.toLowerCase()] = value));
+    if (pubId) headers["x-internal-pub-id"] = pubId;
+    const outcome = await handler({
+      providerId: "slack",
+      installationId: pubId,
+      deliveryId: null,
+      headers,
+      rawBody,
+    });
+    if (outcome.challengeResponse !== undefined) {
+      return new Response(outcome.challengeResponse, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (outcome.tenantId && rl?.shouldDropForTenant) {
+      const dropped = await rl.shouldDropForTenant(outcome.tenantId);
+      if (dropped) return c.json({ ok: false, reason: "tenant_rate_limited" }, 200);
+    }
+    if (outcome.deferredWork) {
+      const work = outcome.deferredWork().catch((err) => {
+        log.warn(
+          { op: "slack.webhook.deferred.failed", err: err instanceof Error ? err.message : String(err) },
+          "slack deferred work failed",
+        );
+      });
+      try {
+        c.executionCtx?.waitUntil(work);
+      } catch {
+        // see legacy route below
+      }
+    }
+    return c.json({ ok: outcome.handled, reason: outcome.reason ?? null }, 200);
+  });
+
+  // Legacy app-keyed route. Pre-publication-first installs still have
+  // this URL persisted in their Slack app config; keep the route alive
+  // so existing live publications keep delivering until they're
+  // re-installed under the new pub-keyed URL.
   app.post("/slack/webhook/app/:appId", async (c) => {
     const appId = c.req.param("appId");
     const rawBody = await c.req.raw.text();
@@ -361,15 +568,26 @@ function mountSlackWebhook(
       if (dropped) return c.json({ ok: false, reason: "tenant_rate_limited" }, 200);
     }
     if (outcome.deferredWork) {
-      // Run in background — Slack's 3sec budget rules out inline. CF
-      // still passes c.executionCtx.waitUntil under the hood; on Node the
-      // promise just runs in the background.
-      void outcome.deferredWork().catch((err) => {
+      // Run in background — Slack's 3sec budget rules out inline. On
+      // Cloudflare Workers, the isolate is terminated as soon as we
+      // return the response, so a bare `void promise.catch()` would have
+      // its work yanked mid-flight (and dispatchEvent's sessions.create /
+      // attachSession would never complete — webhook_events row stuck at
+      // session_id=null + error=null). Hand it to executionCtx.waitUntil
+      // so CF keeps the isolate alive until it settles. On Node, where
+      // executionCtx may be absent, fall through to plain background.
+      const work = outcome.deferredWork().catch((err) => {
         log.warn(
           { op: "slack.webhook.deferred.failed", err: err instanceof Error ? err.message : String(err) },
           "slack deferred work failed",
         );
       });
+      try {
+        c.executionCtx?.waitUntil(work);
+      } catch {
+        // c.executionCtx accessor throws on Node when not provided; the
+        // promise still runs in the background.
+      }
     }
     return c.json({ ok: outcome.handled, reason: outcome.reason ?? null }, 200);
   });
@@ -573,99 +791,13 @@ function errorPage(message: string): string {
 </body></html>`;
 }
 
-function linearLandingPage(opts: { token: string; personaName: string }): string {
-  const escapedToken = escapeHtml(opts.token);
-  const escapedName = escapeHtml(opts.personaName);
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Linear app setup — ${escapedName}</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; color: #111; }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    p, li { color: #444; }
-    code { background: #f2f2f2; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
-    label { display: block; font-weight: 600; margin: 16px 0 4px; }
-    input { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; box-sizing: border-box; }
-    button { margin-top: 16px; padding: 10px 16px; background: #111; color: #fff; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: default; }
-    .ok { color: #060; margin-top: 12px; }
-    .err { color: #b00; margin-top: 12px; }
-  </style>
-</head>
-<body>
-  <h1>Set up "${escapedName}" in your Linear workspace</h1>
-  <p>Someone on your team is installing OpenMA's <strong>${escapedName}</strong> agent
-  into your Linear workspace. Linear app registration requires a workspace admin —
-  that's where you come in.</p>
-
-  <ol>
-    <li>Open <a href="https://linear.app/settings/api" target="_blank">Linear → Settings → API</a> and create a new OAuth app:
-      <ul>
-        <li>Name: <code>${escapedName}</code></li>
-        <li>Callback URL and Webhook URL: copy from the email/Slack message that brought you here</li>
-        <li>Scopes: read, write, app:assignable, app:mentionable</li>
-      </ul>
-    </li>
-    <li>Linear will give you <strong>Client ID</strong>, <strong>Client Secret</strong>,
-      and a <strong>Webhook signing secret</strong> (starts with <code>lin_wh_</code>).
-      Paste all three below — Linear auto-generates the webhook secret and OMA can't
-      predict it, so we need it from you.</li>
-    <li>Click "Continue" and approve the install in your Linear workspace.</li>
-  </ol>
-
-  <form id="f">
-    <label for="cid">Client ID</label>
-    <input id="cid" name="cid" required autocomplete="off">
-    <label for="csec">Client Secret</label>
-    <input id="csec" name="csec" type="password" required autocomplete="off">
-    <label for="whsec">Webhook signing secret (lin_wh_…)</label>
-    <input id="whsec" name="whsec" type="password" required autocomplete="off" placeholder="lin_wh_…">
-    <button id="submit" type="submit">Continue →</button>
-    <p id="msg"></p>
-  </form>
-
-  <script>
-    const TOKEN = ${JSON.stringify(escapedToken)};
-    document.getElementById("f").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById("submit");
-      const msg = document.getElementById("msg");
-      btn.disabled = true;
-      msg.textContent = "Validating…";
-      msg.className = "";
-      try {
-        const res = await fetch("/linear/publications/credentials", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            formToken: TOKEN,
-            clientId: document.getElementById("cid").value.trim(),
-            clientSecret: document.getElementById("csec").value.trim(),
-            webhookSecret: document.getElementById("whsec").value.trim(),
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          msg.textContent = "Error: " + (data.details || data.error || res.status);
-          msg.className = "err";
-          btn.disabled = false;
-          return;
-        }
-        msg.textContent = "Redirecting to Linear to authorize…";
-        msg.className = "ok";
-        window.location.href = data.url;
-      } catch (err) {
-        msg.textContent = "Network error: " + err.message;
-        msg.className = "err";
-        btn.disabled = false;
-      }
-    });
-  </script>
-</body>
-</html>`;
+function linearLandingPage(_opts: { token: string; personaName: string }): string {
+  // Removed with the publication-first refactor; the wizard now hands an
+  // OAuth callback URL directly. Function kept as a deprecated stub so any
+  // forgotten import surfaces a build error rather than runtime null.
+  throw new Error(
+    "linearLandingPage removed in publication-first refactor — use POST /v1/integrations/linear/publications instead",
+  );
 }
 
 function githubLandingPage(opts: { token: string; personaName: string }): string {

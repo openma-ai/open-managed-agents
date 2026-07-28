@@ -166,6 +166,53 @@ export class CredentialService {
     });
   }
 
+  /**
+   * Get the credential row alongside its stored auth ciphertext. The
+   * ciphertext is required to subsequently call {@link refreshAuthCAS} —
+   * the CAS predicate matches against the exact bytes we hand back here.
+   */
+  async getRawForRefresh(opts: {
+    tenantId: string;
+    vaultId: string;
+    credentialId: string;
+  }): Promise<{ row: CredentialRow; authCipher: string } | null> {
+    return this.repo.getRaw(opts.tenantId, opts.vaultId, opts.credentialId);
+  }
+
+  /**
+   * CAS variant of {@link refreshAuth}. Persists merged auth only if the
+   * row's current auth ciphertext still matches `expectedAuthCipher` —
+   * i.e. no other in-flight refresh wrote first. Returns `null` on CAS
+   * mismatch (caller re-reads + uses the winner's token) or `null` if the
+   * row vanished. Returns the updated row on success.
+   *
+   * AES-GCM nonce is random so ciphertext binary equality is meaningful:
+   * if D1's stored bytes still equal what we read, we hold the lock; if
+   * not, someone re-encrypted with a different IV (or a different
+   * plaintext entirely) → race lost.
+   */
+  async refreshAuthCAS(opts: {
+    tenantId: string;
+    vaultId: string;
+    credentialId: string;
+    expectedAuthCipher: string;
+    auth: Partial<CredentialAuth>;
+  }): Promise<CredentialRow | null> {
+    const existing = await this.repo.get(opts.tenantId, opts.vaultId, opts.credentialId);
+    if (!existing) return null;
+    const merged: CredentialAuth = { ...existing.auth, ...opts.auth };
+    return this.repo.updateIfAuthMatches(
+      opts.tenantId,
+      opts.vaultId,
+      opts.credentialId,
+      opts.expectedAuthCipher,
+      {
+        auth: merged,
+        updatedAt: this.clock.nowMs(),
+      },
+    );
+  }
+
   // ============================================================
   // Read paths
   // ============================================================

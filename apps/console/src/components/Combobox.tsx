@@ -1,4 +1,3 @@
-import { Command } from "cmdk";
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import {
   useCallback,
@@ -8,8 +7,24 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
+
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
+
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 /**
  * Generic Combobox for "pick one resource from a possibly large list."
@@ -18,31 +33,30 @@ import { useApiQuery } from "../lib/useApiQuery";
  * Behavior:
  *   - Closed state: trigger button styled like TextInput; left shows
  *     selected label or placeholder; right ▼.
- *   - Open: popover with cmdk Command + Input + List (scrolls past first
- *     20 via cursor pagination, so a tenant with 1000+ agents never sees
- *     silent truncation).
+ *   - Open: shadcn Popover hosts a shadcn Command (cmdk under the hood)
+ *     with an input + scrollable list. The popover handles click-outside,
+ *     Escape, focus restoration, and collision detection — previously
+ *     hand-rolled here with `mousedown` + `keydown` listeners + ref math.
  *   - Empty input: latest 20 from `endpoint`. Scroll to bottom auto-loads
- *     next 20.
+ *     next 20 via IntersectionObserver on a sentinel inside CommandList.
  *   - Typing: 250ms debounce → `?q=...&limit=20`. Same scroll pagination.
- *   - Keyboard: ↑↓ Enter / Esc / type-to-search. Click outside closes.
+ *   - Keyboard: cmdk handles ↑↓ Enter / type-to-search; Popover handles Esc.
  *   - Preset value not in current page → one-shot `GET endpoint/value` to
  *     resolve the label, cached by TanStack Query.
  *
  * Why this exists: native `<select>`s in the console fetched `?limit=200`
  * up front and silently truncated past 200. Combobox + server-side `?q=`
  * (added in apps/main/src/lib/list-page.ts) fixes that without a UI lib's
- * worth of new patterns to learn — the surface here is small and the
- * cmdk primitive handles ARIA / keyboard / focus for us.
+ * worth of new patterns to learn.
  *
  * Fetch backbone: TanStack Query's `useInfiniteQuery`, which gives us
  *   - dedup across multiple Combobox instances on the same endpoint
  *   - tab-focus revalidation
  *   - AbortSignal-based cancellation on unmount
  *   - request-race protection (stale resolves dropped automatically)
- * for free, replacing the hand-rolled `fetchGenRef` + module Map cache
- * the previous version carried. `placeholderData: keepPreviousData`
- * keeps the prior results visible during a refetch so the dropdown
- * doesn't flicker to "No results" mid-search.
+ * `placeholderData: keepPreviousData` keeps the prior results visible
+ * during a refetch so the dropdown doesn't flicker to "No results"
+ * mid-search.
  */
 
 interface PageResponse<T> {
@@ -74,10 +88,6 @@ export interface ComboboxProps<T> {
   pageLimit?: number;
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// Component
-// ────────────────────────────────────────────────────────────────────────
-
 export function Combobox<T>({
   value,
   onValueChange,
@@ -97,9 +107,7 @@ export function Combobox<T>({
   const [input, setInput] = useState("");
   const [debouncedInput, setDebouncedInput] = useState("");
 
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const listEndRef = useRef<HTMLDivElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
 
   // ── Debounce input → debouncedInput ──
   useEffect(() => {
@@ -108,10 +116,6 @@ export function Combobox<T>({
   }, [input]);
 
   // ── Infinite list fetch via TQ ──
-  // Cache identity is (endpoint, debounced q, pageLimit). Two Comboboxes
-  // pointing at the same endpoint with the same q share a single in-flight
-  // fetch + cache entry. queryFn pulls cursor pages via `pageParam`; getNext
-  // returns the server-supplied `next_cursor` (undefined = end of list).
   const infiniteQuery = useInfiniteQuery<PageResponse<T>>({
     queryKey: [endpoint, "combobox", debouncedInput, pageLimit],
     initialPageParam: undefined as string | undefined,
@@ -124,14 +128,9 @@ export function Combobox<T>({
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor,
     enabled: open,
-    // Keep prior pages visible while a new search is in flight — without
-    // this the dropdown blanks to "No results" between the user typing
-    // and the new payload landing.
     placeholderData: keepPreviousData,
   });
 
-  // Flatten pages into a single items array so the render loop doesn't
-  // have to know about TQ's page-of-pages shape.
   const items = useMemo<T[]>(() => {
     const pages = infiniteQuery.data?.pages ?? [];
     if (pages.length === 0) return [];
@@ -139,17 +138,10 @@ export function Combobox<T>({
     return pages.flatMap((p) => p.data);
   }, [infiniteQuery.data]);
 
-  // `isFetching` (true on background refetches too) drives the inline
-  // "Loading..." treatment; `items.length === 0 && isFetching` switches to
-  // the centered first-fetch spinner — same UX split the previous version
-  // achieved via the `loading` boolean.
   const isFetching = infiniteQuery.isFetching;
   const hasMore = !!infiniteQuery.hasNextPage;
 
   // ── Resolve preset value's label when it's not in the current items ──
-  // Skipped when the value is already in `items` (avoids a redundant fetch
-  // every time the user opens the dropdown with the selection still in
-  // view) or empty. TQ handles dedup + 30s cache for us.
   const presetInItems = !value || items.some((it) => getValue(it) === value);
   const { data: presetFetched } = useApiQuery<T>(
     !presetInItems && value ? `${endpoint}/${value}` : null,
@@ -175,29 +167,6 @@ export function Combobox<T>({
     return () => obs.disconnect();
   }, [open, hasMore, infiniteQuery]);
 
-  // ── Click outside / Esc to close ──
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const root = popoverRef.current;
-      const trig = triggerRef.current;
-      if (!root || !trig) return;
-      if (root.contains(e.target as Node) || trig.contains(e.target as Node)) {
-        return;
-      }
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   // ── Trigger label ──
   const labelText = (() => {
     if (!value) return placeholder;
@@ -212,9 +181,6 @@ export function Combobox<T>({
     ? items.filter((it) => !excludeIds.includes(getValue(it)))
     : items;
 
-  // First-fetch spinner state: nothing rendered yet AND a query is in
-  // flight. Subsequent background refetches keep showing the prior items
-  // thanks to `placeholderData: keepPreviousData`.
   const showInitialLoading = items.length === 0 && isFetching;
 
   const handleSelect = useCallback(
@@ -227,106 +193,83 @@ export function Combobox<T>({
   );
 
   return (
-    <div className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        role="combobox"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        className={
-          className ??
-          "w-full inline-flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
-        }
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          disabled={disabled}
+          className={
+            className ??
+            "w-full inline-flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
+          }
+        >
+          <span
+            className={cn(
+              "truncate text-left flex-1",
+              isPlaceholder && "text-fg-subtle",
+            )}
+          >
+            {labelText}
+          </span>
+          <ChevronDownIcon className="size-3.5 text-fg-subtle shrink-0" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        // Match trigger width so the dropdown lines up with the trigger.
+        className="p-0 w-[var(--radix-popover-trigger-width)] min-w-[200px]"
       >
-        <span
-          className={`truncate text-left flex-1 ${
-            isPlaceholder ? "text-fg-subtle" : ""
-          }`}
-        >
-          {labelText}
-        </span>
-        <ChevronDownIcon />
-      </button>
-
-      {open && (
-        <div
-          ref={popoverRef}
-          className="absolute z-50 mt-1 w-full min-w-[200px] overflow-hidden rounded-md border border-border bg-bg shadow-xl"
-          // Stop the cmdk root from clipping our footer / loader.
-        >
-          <Command shouldFilter={false} className="flex flex-col max-h-80">
-            {!noSearch && (
-              <div className="border-b border-border">
-                <Command.Input
-                  value={input}
-                  onValueChange={setInput}
-                  placeholder="Search..."
-                  className="w-full px-3 py-2 min-h-11 sm:min-h-0 text-[13px] bg-bg text-fg outline-none placeholder:text-fg-subtle"
-                  autoFocus
-                />
+        <Command shouldFilter={false} className="max-h-80">
+          {!noSearch && (
+            <CommandInput
+              value={input}
+              onValueChange={setInput}
+              placeholder="Search..."
+              autoFocus
+            />
+          )}
+          <CommandList>
+            {!isFetching && visible.length === 0 && (
+              <CommandEmpty>
+                {debouncedInput
+                  ? `No results for "${debouncedInput}"`
+                  : "No results"}
+              </CommandEmpty>
+            )}
+            {visible.map((it) => {
+              const v = getValue(it);
+              return (
+                <CommandItem
+                  key={v}
+                  value={v}
+                  onSelect={() => handleSelect(v, it)}
+                  className="cursor-pointer"
+                >
+                  <span className="truncate flex-1">{getLabel(it)}</span>
+                  {value === v && (
+                    <CheckIcon className="size-3.5 text-brand" />
+                  )}
+                </CommandItem>
+              );
+            })}
+            {/* Sentinel for IntersectionObserver — sits inside scroll
+                container so its own visibility tracks scroll position. */}
+            {hasMore && (
+              <div ref={listEndRef} className="py-2 text-center text-[12px] text-fg-subtle">
+                {infiniteQuery.isFetchingNextPage ? "Loading..." : ""}
               </div>
             )}
-            <Command.List className="overflow-y-auto p-1 flex-1">
-              {!isFetching && visible.length === 0 && (
-                <Command.Empty className="px-3 py-6 text-center text-[13px] text-fg-subtle">
-                  {debouncedInput
-                    ? `No results for "${debouncedInput}"`
-                    : "No results"}
-                </Command.Empty>
-              )}
-              {visible.map((it) => {
-                const v = getValue(it);
-                return (
-                  <Command.Item
-                    key={v}
-                    value={v}
-                    onSelect={() => handleSelect(v, it)}
-                    className="relative flex items-center gap-2 px-3 py-1.5 min-h-11 sm:min-h-0 text-[13px] text-fg rounded cursor-pointer outline-none data-[selected=true]:bg-bg-surface aria-selected:bg-bg-surface"
-                  >
-                    <span className="truncate flex-1">{getLabel(it)}</span>
-                    {value === v && (
-                      <span className="text-brand">
-                        <CheckIcon />
-                      </span>
-                    )}
-                  </Command.Item>
-                );
-              })}
-              {/* Sentinel for IntersectionObserver — sits inside scroll
-                  container so its own visibility tracks scroll position. */}
-              {hasMore && (
-                <div ref={listEndRef} className="py-2 text-center text-[12px] text-fg-subtle">
-                  {infiniteQuery.isFetchingNextPage ? "Loading..." : ""}
-                </div>
-              )}
-              {showInitialLoading && (
-                <div className="px-3 py-6 text-center text-[13px] text-fg-subtle">
-                  Loading...
-                </div>
-              )}
-            </Command.List>
-          </Command>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-subtle shrink-0">
-      <polyline points="6 9 12 15 18 9" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
+            {showInitialLoading && (
+              <div className="px-3 py-6 text-center text-[13px] text-fg-subtle">
+                Loading...
+              </div>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }

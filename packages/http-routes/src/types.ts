@@ -13,6 +13,7 @@ import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
 import type { MemoryStoreService } from "@open-managed-agents/memory-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
+import type { DreamService } from "@open-managed-agents/dreams-store";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import type {
@@ -61,6 +62,9 @@ export interface RouteServices {
   credentials: CredentialService;
   memory: MemoryStoreService;
   sessions: SessionService;
+  /** Dreams is optional because older route fixtures only exercise
+   * non-dream resources. buildDreamRoutes requires it at runtime. */
+  dreams?: DreamService;
   kv: KvStore;
   /** Per-session event log writer. Bound to a sessionId at the call site. */
   newEventLog: (sessionId: string) => {

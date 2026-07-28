@@ -113,18 +113,26 @@ export const errorEnvelopeMiddleware: MiddlewareHandler = async (c, next) => {
     return;
   }
 
-  // Legacy `{error: "<string>"}` shape — wrap it.
+  // Legacy `{error: "<string>", details?: "<string>"}` shape — wrap it.
+  // Preserve details: lots of handlers stash the actual diagnostic
+  // (linear API rejection text, db constraint, JWT verify reason) in
+  // `details` while keeping `error` as a stable code. Without merging
+  // them in here the user sees the bare code (e.g. "credentials_failed")
+  // and has no way to know what actually failed.
   if (typeof body.error === "string") {
     const errType = deriveErrorType(status);
+    const detailsStr = typeof body.details === "string" ? body.details : null;
+    const message = detailsStr ? `${body.error}: ${detailsStr}` : body.error;
     const wrapped = {
       type: "error" as const,
       error: {
         type: errType,
-        message: body.error,
+        message,
       },
       // Top-level mirror for better-auth-style clients (see comment above).
-      message: body.error,
+      message,
       code: errType,
+      ...(detailsStr ? { details: detailsStr } : {}),
       request_id: requestIdFor(c),
     };
     c.res = new Response(JSON.stringify(wrapped), {

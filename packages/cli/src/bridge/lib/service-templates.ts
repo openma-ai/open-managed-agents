@@ -106,7 +106,7 @@ export function buildUnit(opts: BuilderOpts): string {
   const profileLine = profile ? `\nEnvironment=OMA_PROFILE=${profile}` : "";
   return `[Unit]
 Description=OMA Bridge Daemon
-Documentation=https://github.com/open-ma/open-managed-agents
+Documentation=https://github.com/openma-ai/open-managed-agents
 After=network-online.target
 Wants=network-online.target
 

@@ -42,6 +42,16 @@ export interface ContinueInstallResult {
    *  302 target. The bridge re-verifies state internally; surfacing the
    *  decoded URL keeps each route from re-doing JWT crypto. */
   returnUrl: string | null;
+  /** Pass-through of the provider's post-install capability probe, if any.
+   *  Used by the redirect to surface "install worked but a vendor-side
+   *  toggle is off" warnings to the wizard UI. See InstallComplete.
+   *  capabilityProbe for the contract. */
+  capabilityProbe?: {
+    kind: string;
+    ok: boolean;
+    message?: string;
+    fixUrl?: string;
+  };
 }
 
 /** GitHub `refresh-by-vault` mints a fresh installation token via App-JWT,
@@ -86,14 +96,26 @@ export interface LinearMcpCredentialLookupResult {
 }
 
 /** Drive the publication-create flow (start-a1, credentials, handoff-link,
- *  personal-token) for one provider. CF impl forwards via the INTEGRATIONS
- *  service binding; Node impl runs the provider in-process. The wire-shape
- *  must be identical across runtimes — Console + CLI talk to either. */
+ *  personal-token, create-publication, submit-credentials-pub) for one
+ *  provider. CF impl forwards via the INTEGRATIONS service binding; Node
+ *  impl runs the provider in-process. The wire-shape must be identical
+ *  across runtimes — Console + CLI talk to either. */
 export interface StartInstallationArgs {
   provider: ProviderId;
-  /** Which sub-route is being invoked. Mirrors the four endpoints under
-   *  /v1/integrations/{provider}/. */
-  mode: "start-a1" | "credentials" | "handoff-link" | "personal-token";
+  /**
+   * Which sub-route is being invoked. Mirrors the endpoints under
+   * /v1/integrations/{provider}/. Linear's publication-first refactor
+   * adds the `create-publication` and `submit-credentials-pub` modes
+   * (which key on a publication id rather than a form-token JWT);
+   * Slack/GitHub still ship the legacy three.
+   */
+  mode:
+    | "start-a1"
+    | "credentials"
+    | "handoff-link"
+    | "personal-token"
+    | "create-publication"
+    | "submit-credentials-pub";
   /** Parsed JSON body from the originating route. Provider-specific shape;
    *  the bridge passes it through to provider.startInstall /
    *  provider.continueInstall / provider.installPersonalToken without

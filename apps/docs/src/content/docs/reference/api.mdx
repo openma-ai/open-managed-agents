@@ -33,14 +33,15 @@ Archive an agent (soft delete; sessions retain pinned version).
 ## Sessions
 
 ### `POST /v1/sessions`
-Create and start a session.
+Create a session. Returns `SessionMeta`.
 ```json
 {
-  "agent_id": "agent_...",
-  "input": [{ "role": "user", "content": "..." }]
+  "agent": "agent_...",
+  "environment_id": "env_...",
+  "title": "optional"
 }
 ```
-Returns `SessionMeta`.
+Post the first user turn afterwards via `POST /v1/sessions/:id/messages` (one-shot, streams reply) or `POST /v1/sessions/:id/events` (fire-and-forget; pair with a separate SSE consumer).
 
 ### `GET /v1/sessions`
 List sessions. Query: `agent_id`, `status`, `limit`, `cursor`.
@@ -148,26 +149,34 @@ Delete.
 
 ## Model Cards
 
+Per-tenant LLM credentials. Keys are AES-256-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` directly on the row (no Vault indirection). List responses surface only the last-4 preview.
+
 ### `GET /v1/model_cards`
-List configured model providers.
+List configured model cards.
 
 ### `POST /v1/model_cards`
-Add a provider. Body:
+Add a model card. Runs a 6-second capability probe so a bad key fails loudly. Body:
 ```json
 {
-  "id": "my-anthropic",
-  "provider": "anthropic",
+  "model_id": "my-anthropic",
+  "provider": "ant",
+  "model": "claude-sonnet-4-6",
   "base_url": "https://api.anthropic.com",
-  "api_key_vault_id": "vault_...",
-  "models": ["claude-sonnet-4-6", "claude-opus-4-7"]
+  "custom_headers": { "x-extra": "..." },
+  "api_key": "sk-ant-..."
 }
 ```
 
-### `PATCH /v1/model_cards/:id`
-Update.
+`provider` is one of `ant` | `ant-compatible` | `oai` | `oai-compatible`. `model_id` is the string an agent sets as `agent.model = "<model_id>"` to bind this card.
+
+### `POST /v1/model_cards/:id`
+Rotate the api_key, base_url, headers, or default model. Body shape matches `POST`. In-flight sessions keep the cached key until next credential resolve.
 
 ### `DELETE /v1/model_cards/:id`
 Delete.
+
+### `GET /v1/model_cards/:id/key` *(internal — agent worker only)*
+Returns cleartext credentials for the agent worker. Not exposed publicly.
 
 ## Integrations
 

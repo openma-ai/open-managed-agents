@@ -20,8 +20,16 @@ import {
   AgentNotFoundError,
   AgentVersionMismatchError,
 } from "../../packages/agents-store/src/index";
+import type {
+  AgentUpdateFields,
+  AgentVersionSnapshotInput,
+} from "../../packages/agents-store/src/ports";
+import { AgentService } from "../../packages/agents-store/src/service";
 import {
+  InMemoryAgentRepo,
   ManualClock,
+  SequentialIdGenerator,
+  SilentLogger,
   createInMemoryAgentService,
 } from "../../packages/agents-store/src/test-fakes";
 
@@ -245,7 +253,68 @@ describe("AgentService — update", () => {
     expect(history[0].snapshot.name).toBe("test agent");
     expect(history[1].snapshot.name).toBe("v2-name");
   });
+
+  it("retries a concurrent history snapshot conflict when no expectedVersion is set", async () => {
+    const clock = new ManualClock(1000);
+    const repo = new SimulatedConcurrentSnapshotConflictRepo();
+    const service = new AgentService({
+      repo,
+      clock,
+      ids: new SequentialIdGenerator(),
+      logger: new SilentLogger(),
+    });
+    const a = await service.create({ tenantId: TENANT, input: SAMPLE_INPUT });
+
+    const updated = await service.update({
+      tenantId: TENANT,
+      agentId: a.id,
+      input: { system: "service retry wins" },
+    });
+
+    expect(updated.system).toBe("service retry wins");
+    expect(updated.version).toBe(3);
+
+    const history = await service.listVersions({ tenantId: TENANT, agentId: a.id });
+    expect(history.map((h) => h.version)).toEqual([1, 2]);
+    expect(history[1].snapshot.system).toBe("external concurrent write");
+  });
 });
+
+class SimulatedConcurrentSnapshotConflictRepo extends InMemoryAgentRepo {
+  private injected = false;
+
+  async updateWithVersionSnapshot(
+    tenantId: string,
+    agentId: string,
+    update: AgentUpdateFields,
+    priorSnapshot: AgentVersionSnapshotInput,
+  ) {
+    if (!this.injected) {
+      this.injected = true;
+      const current = await this.get(tenantId, agentId);
+      if (!current) throw new AgentNotFoundError();
+      const { tenant_id: _tenantId, ...config } = current;
+      await super.updateWithVersionSnapshot(
+        tenantId,
+        agentId,
+        {
+          config: {
+            ...config,
+            system: "external concurrent write",
+            version: priorSnapshot.version + 1,
+          },
+          version: priorSnapshot.version + 1,
+          updatedAt: 1500,
+        },
+        priorSnapshot,
+      );
+      throw new Error(
+        "D1_ERROR: UNIQUE constraint failed: agent_versions.agent_id, agent_versions.version",
+      );
+    }
+    return super.updateWithVersionSnapshot(tenantId, agentId, update, priorSnapshot);
+  }
+}
 
 describe("AgentService — versions", () => {
   it("getVersion returns specific historical row; null for the current version", async () => {

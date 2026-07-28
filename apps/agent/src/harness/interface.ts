@@ -168,6 +168,14 @@ export interface HarnessContext {
    * RuntimeRoom DO. SessionDO populates this on every harness.run call.
    */
   session_id?: string;
+  /**
+   * The OMA tenant id this session belongs to. Optional during the
+   * transition — AcpProxyHarness uses it to forward `x-harness-tenant` to
+   * RuntimeRoom so the daemon receives the right `tenant_id` on every
+   * session-scoped frame (step 2 of multi-tenant CLI bridge daemon). Other
+   * harnesses ignore it. SessionDO populates this from its `state.tenant_id`.
+   */
+  tenant_id?: string;
 
   /** Platform-prepared tools: built from agent config, ready to pass to generateText. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

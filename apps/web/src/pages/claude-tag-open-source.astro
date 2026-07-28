@@ -1,0 +1,138 @@
+---
+import Base from "../layouts/Base.astro";
+import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const faqItems = [
+  {
+    question: "Is Claude Tag open source?",
+    answer:
+      "Anthropic's Claude Tag is not open source. Open Managed Agents is an Apache 2.0 project that provides an open-source runtime for building Claude Tag-style agents.",
+  },
+  {
+    question: "What parts of Claude Tag can Open Managed Agents cover?",
+    answer:
+      "The runtime can cover the agent publication, durable sessions, tool access, MCP integration, vault-backed credentials, memory primitives, sandboxed work, and recovery. Product polish such as the Tag admin console is still roadmap work.",
+  },
+  {
+    question: "Can I run an open-source Claude Tag-style product myself?",
+    answer:
+      "Yes. Open Managed Agents can run on Cloudflare Workers, Docker, or Node.js, with your model keys and your integration credentials.",
+  },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "Open-Source Claude Tag", path: "/claude-tag-open-source/" },
+  ]),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Open-Source Claude Tag",
+    url: "https://openma.dev/claude-tag-open-source/",
+    description:
+      "Open Managed Agents is an open-source foundation for building Claude Tag-style workplace agents.",
+    about: [
+      { "@type": "Thing", name: "Open-source Claude Tag" },
+      { "@type": "Thing", name: "Claude Tag open source" },
+      { "@type": "Thing", name: "Claude Tag alternative" },
+    ],
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="Open-Source Claude Tag: Build Tag-Style Agents with OpenMA"
+  description="Claude Tag is not open source. Open Managed Agents is an Apache 2.0 foundation for building Claude Tag-style agents with BYOK, MCP tools, vaults, memory stores, and self-hosted deployment."
+  canonical="/claude-tag-open-source/"
+  keywords="claude tag open source, open source claude tag, claude tag github, claude tag clone, claude tag alternative open source, apache 2 claude tag, openma claude tag"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="max-w-5xl mx-auto px-4 py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Open-source Claude Tag
+      </p>
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight max-w-4xl mb-6">
+        Claude Tag is hosted. The open-source foundation is Open Managed Agents.
+      </h1>
+      <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+        Open Managed Agents is not a finished clone of Anthropic's product. It
+        is the Apache 2.0 runtime layer you would use to build one: Slack
+        publication, durable sessions, MCP tools, vault-backed credentials,
+        memory stores, sandboxed execution, model cards, and recovery.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <a
+          href="https://github.com/openma-ai/open-managed-agents"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
+        >
+          View GitHub repo
+        </a>
+        <a
+          href="/self-hosted-claude-tag/"
+          class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+        >
+          Self-hosted Claude Tag
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">What is open source</h2>
+    <div class="grid md:grid-cols-3 gap-6 text-sm">
+      <article class="border border-[var(--color-border)] rounded-lg p-5">
+        <h3 class="font-semibold text-lg mb-2">Runtime</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Sessions, event logs, crash recovery, harness interfaces, sandbox
+          adapters, and API routes are in the repo.
+        </p>
+      </article>
+      <article class="border border-[var(--color-border)] rounded-lg p-5">
+        <h3 class="font-semibold text-lg mb-2">Integrations</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Slack, GitHub, Linear, MCP, vaults, model cards, memory stores, and
+          custom integration patterns are open and extensible.
+        </p>
+      </article>
+      <article class="border border-[var(--color-border)] rounded-lg p-5">
+        <h3 class="font-semibold text-lg mb-2">Deployment</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Run it in your Cloudflare account, with Docker, or on the Node.js
+          backend instead of depending on a closed hosted runtime.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="max-w-5xl mx-auto px-4 py-16">
+      <h2 class="font-display text-3xl font-bold mb-4">What is not open-source Tag yet</h2>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl mb-8">
+        The honest positioning matters for SEO and trust. Open Managed Agents
+        provides the foundation, but a full Claude Tag-level product still
+        needs a dedicated setup console, access-bundle UI, channel memory
+        controls, spend limits, audit dashboards, and ambient-mode governance.
+      </p>
+      <a href="/claude-tag-alternative/" class="inline-flex px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium">
+        See the feature comparison
+      </a>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
+    <div class="grid md:grid-cols-3 gap-8">
+      {faqItems.map((item) => (
+        <article>
+          <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+</Base>

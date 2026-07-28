@@ -27,8 +27,8 @@ import type {
 export interface SessionRow {
   id: string;
   tenant_id: string;
-  agent_id: string;
-  environment_id: string;
+  agent_id: string | null;
+  environment_id: string | null;
   title: string;
   status: SessionStatus;
   /** Vault IDs attached to the session — used by SessionDO for outbound credential lookup. */

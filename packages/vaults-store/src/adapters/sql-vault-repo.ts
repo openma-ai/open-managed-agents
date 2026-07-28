@@ -1,7 +1,14 @@
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { vaults } from "@open-managed-agents/db-schema/cf-auth";
 import {
-  cursorBinds,
-  cursorWhereSql,
+  asBuilder,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import {
   escapeLikePattern,
   fetchN,
   trimPage,
@@ -11,42 +18,57 @@ import { VaultNotFoundError } from "../errors";
 import type { NewVaultInput, VaultRepo, VaultUpdateFields } from "../ports";
 import type { VaultRow } from "../types";
 
+type Row = typeof vaults.$inferSelect;
+
 /**
- * SQL implementation of {@link VaultRepo}. Owns the SQL against
- * the `vaults` table defined in apps/main/migrations/0014_vaults_table.sql.
+ * Drizzle-backed implementation of {@link VaultRepo}. Owns the SQL against
+ * the `vaults` table defined in @open-managed-agents/db-schema/cf-auth.
  */
 export class SqlVaultRepo implements VaultRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  // Accept any schema specialisation; the TSchema generic on `OmaDb` is
+  // invariant in Drizzle, so a caller that built `drizzle(d1, { schema:
+  // cfAuthSchema })` would not satisfy the default `OmaDb` (TSchema =
+  // Record<string, never>). Adapter doesn't read from the schema dictionary.
+  constructor(db: OmaDb<Record<string, unknown>>) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewVaultInput): Promise<VaultRow> {
-    await this.db
-      .prepare(
-        `INSERT INTO vaults (id, tenant_id, name, created_at)
-         VALUES (?, ?, ?, ?)`,
-      )
-      .bind(input.id, input.tenantId, input.name, input.createdAt)
-      .run();
+    await runOnce(
+      this.db.insert(vaults).values({
+        id: input.id,
+        tenant_id: input.tenantId,
+        name: input.name,
+        created_at: input.createdAt,
+      }),
+    );
     const row = await this.get(input.tenantId, input.id);
     if (!row) throw new Error("vault vanished after insert");
     return row;
   }
 
   async get(tenantId: string, vaultId: string): Promise<VaultRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, name, created_at, updated_at, archived_at
-         FROM vaults WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(vaultId, tenantId)
-      .first<DbVault>();
+    const row = await getOne<Row>(
+      this.db
+        .select()
+        .from(vaults)
+        .where(
+          and(eq(vaults.id, vaultId), eq(vaults.tenant_id, tenantId)),
+        ),
+    );
     return row ? toRow(row) : null;
   }
 
   async exists(tenantId: string, vaultId: string): Promise<boolean> {
-    const row = await this.db
-      .prepare(`SELECT 1 AS x FROM vaults WHERE id = ? AND tenant_id = ?`)
-      .bind(vaultId, tenantId)
-      .first<{ x: number }>();
+    const row = await getOne<{ x: number }>(
+      this.db
+        .select({ x: sql<number>`1`.as("x") })
+        .from(vaults)
+        .where(
+          and(eq(vaults.id, vaultId), eq(vaults.tenant_id, tenantId)),
+        ),
+    );
     return !!row;
   }
 
@@ -54,45 +76,89 @@ export class SqlVaultRepo implements VaultRepo {
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<VaultRow[]> {
-    const sql = opts.includeArchived
-      ? `SELECT id, tenant_id, name, created_at, updated_at, archived_at
-         FROM vaults WHERE tenant_id = ? ORDER BY created_at ASC`
-      : `SELECT id, tenant_id, name, created_at, updated_at, archived_at
-         FROM vaults WHERE tenant_id = ? AND archived_at IS NULL ORDER BY created_at ASC`;
-    const result = await this.db.prepare(sql).bind(tenantId).all<DbVault>();
-    return (result.results ?? []).map(toRow);
+    const conditions = [eq(vaults.tenant_id, tenantId)];
+    if (!opts.includeArchived) conditions.push(isNull(vaults.archived_at));
+    const rows = await getAll<Row>(
+      this.db
+        .select()
+        .from(vaults)
+        .where(and(...conditions))
+        .orderBy(asc(vaults.created_at)),
+    );
+    return rows.map(toRow);
   }
 
   async listPage(
     tenantId: string,
     opts: {
+      status?: "active" | "archived" | "any";
       includeArchived: boolean;
+      createdAfter?: number;
+      createdBefore?: number;
       limit: number;
       after?: PageCursor;
       q?: string;
     },
   ): Promise<{ items: VaultRow[]; hasMore: boolean }> {
-    const archived = opts.includeArchived ? "" : "AND archived_at IS NULL";
-    const qClause = opts.q ? `AND name LIKE ? ESCAPE '\\'` : "";
-    const sql =
-      `SELECT id, tenant_id, name, created_at, updated_at, archived_at ` +
-      `FROM vaults WHERE tenant_id = ? ${archived} ${qClause} ${cursorWhereSql(opts.after)} ` +
-      `ORDER BY created_at DESC, id DESC LIMIT ?`;
-    const binds: unknown[] = [tenantId];
-    if (opts.q) binds.push(`%${escapeLikePattern(opts.q)}%`);
-    binds.push(...cursorBinds(opts.after), fetchN(opts.limit));
-    const result = await this.db.prepare(sql).bind(...binds).all<DbVault>();
-    return trimPage((result.results ?? []).map(toRow), opts.limit);
+    const conditions = [eq(vaults.tenant_id, tenantId)];
+    // Prefer the new 3-way `status` filter. When unset, fall back to the
+    // legacy includeArchived boolean so older callers keep working.
+    if (opts.status === "active") {
+      conditions.push(isNull(vaults.archived_at));
+    } else if (opts.status === "archived") {
+      conditions.push(isNotNull(vaults.archived_at));
+    } else if (opts.status === undefined && !opts.includeArchived) {
+      conditions.push(isNull(vaults.archived_at));
+    }
+    if (opts.createdAfter !== undefined)
+      conditions.push(gte(vaults.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conditions.push(lt(vaults.created_at, opts.createdBefore));
+    if (opts.q) {
+      // Substring filter for the Combobox typeahead. SQLite's LIKE is
+      // ASCII-case-insensitive by default and PG honours ESCAPE the same
+      // way, so this query stays dialect-agnostic at the cost of one
+      // raw-sql snippet.
+      const pattern = `%${escapeLikePattern(opts.q)}%`;
+      conditions.push(sql`${vaults.name} LIKE ${pattern} ESCAPE '\\'`);
+    }
+    if (opts.after) {
+      // Cursor-as-WHERE: (created_at, id) DESC ordering means rows whose
+      // created_at < cursor.createdAt OR (== cursor.createdAt AND id <
+      // cursor.id) come AFTER the cursor in the page sequence.
+      const after = opts.after;
+      const cursorCond = or(
+        lt(vaults.created_at, after.createdAt),
+        and(
+          eq(vaults.created_at, after.createdAt),
+          lt(vaults.id, after.id),
+        ),
+      );
+      if (cursorCond) conditions.push(cursorCond);
+    }
+    const rows = await getAll<Row>(
+      this.db
+        .select()
+        .from(vaults)
+        .where(and(...conditions))
+        .orderBy(desc(vaults.created_at), desc(vaults.id))
+        .limit(fetchN(opts.limit)),
+    );
+    return trimPage(rows.map(toRow), opts.limit);
   }
 
   async count(
     tenantId: string,
     opts: { includeArchived: boolean },
   ): Promise<number> {
-    const sql = opts.includeArchived
-      ? `SELECT COUNT(*) AS c FROM vaults WHERE tenant_id = ?`
-      : `SELECT COUNT(*) AS c FROM vaults WHERE tenant_id = ? AND archived_at IS NULL`;
-    const row = await this.db.prepare(sql).bind(tenantId).first<{ c: number }>();
+    const conditions = [eq(vaults.tenant_id, tenantId)];
+    if (!opts.includeArchived) conditions.push(isNull(vaults.archived_at));
+    const row = await getOne<{ c: number }>(
+      this.db
+        .select({ c: sql<number>`count(*)`.as("c") })
+        .from(vaults)
+        .where(and(...conditions)),
+    );
     return row?.c ?? 0;
   }
 
@@ -101,24 +167,20 @@ export class SqlVaultRepo implements VaultRepo {
     vaultId: string,
     update: VaultUpdateFields,
   ): Promise<VaultRow> {
-    const sets: string[] = [];
-    const binds: unknown[] = [];
-    if (update.name !== undefined) {
-      sets.push("name = ?");
-      binds.push(update.name);
-    }
-    sets.push("updated_at = ?");
-    binds.push(update.updatedAt);
-    binds.push(vaultId, tenantId);
-
-    const result = await this.db
-      .prepare(
-        `UPDATE vaults SET ${sets.join(", ")}
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(...binds)
-      .run();
-    if (!result.meta?.changes) throw new VaultNotFoundError();
+    const sets: Partial<typeof vaults.$inferInsert> = {
+      updated_at: update.updatedAt,
+    };
+    if (update.name !== undefined) sets.name = update.name;
+    // UPDATE-then-GET: cross-dialect, the cleanest way to detect "row didn't
+    // exist" is to read after the write. The original meta.changes check is
+    // SQLite-specific; the GET below works the same on D1 + PG and matches
+    // the existing service contract (404 → NotFound).
+    await runOnce(
+      this.db
+        .update(vaults)
+        .set(sets)
+        .where(and(eq(vaults.id, vaultId), eq(vaults.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, vaultId);
     if (!row) throw new VaultNotFoundError();
     return row;
@@ -129,37 +191,27 @@ export class SqlVaultRepo implements VaultRepo {
     vaultId: string,
     archivedAt: number,
   ): Promise<VaultRow> {
-    const result = await this.db
-      .prepare(
-        `UPDATE vaults SET archived_at = ?, updated_at = ?
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(archivedAt, archivedAt, vaultId, tenantId)
-      .run();
-    if (!result.meta?.changes) throw new VaultNotFoundError();
+    await runOnce(
+      this.db
+        .update(vaults)
+        .set({ archived_at: archivedAt, updated_at: archivedAt })
+        .where(and(eq(vaults.id, vaultId), eq(vaults.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, vaultId);
     if (!row) throw new VaultNotFoundError();
     return row;
   }
 
   async delete(tenantId: string, vaultId: string): Promise<void> {
-    await this.db
-      .prepare(`DELETE FROM vaults WHERE id = ? AND tenant_id = ?`)
-      .bind(vaultId, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .delete(vaults)
+        .where(and(eq(vaults.id, vaultId), eq(vaults.tenant_id, tenantId))),
+    );
   }
 }
 
-interface DbVault {
-  id: string;
-  tenant_id: string;
-  name: string;
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-}
-
-function toRow(r: DbVault): VaultRow {
+function toRow(r: Row): VaultRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,

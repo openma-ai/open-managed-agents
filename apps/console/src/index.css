@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@openma/common/brand/tokens.css";
 
 /* Code highlight theme — light by default */
 @import "highlight.js/styles/github.css";
@@ -6,109 +7,11 @@
 /* ---------- Dark mode: class-based ---------- */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ---------- Light theme (default) ---------- */
-:root {
-  --brand: oklch(0.68 0.19 25);        /* #FF6B50 in oklch */
-  --brand-hover: oklch(0.62 0.19 25);  /* darker coral */
-  --brand-subtle: oklch(0.96 0.03 25); /* barely-there coral tint */
-  /* Dark warm tone that pairs with brand for AA contrast (~5.4:1 on coral).
-     White on coral is only 2.96:1 — fails AA-normal at every UI text size,
-     so brand-fg is dark, not white. Visually keeps brand "warm" not "stark". */
-  --brand-fg: #3d2520;
-
-  --bg: #fefefe;
-  --bg-sidebar: #f8f8f7;
-  --bg-surface: #f3f3f1;
-  --bg-overlay: oklch(0 0 0 / 0.3);
-
-  --fg: #1a1a1a;
-  --fg-muted: #6b6b6b;
-  --fg-subtle: #a1a1a1;
-
-  --border: #e4e4e2;
-  --border-strong: #d0d0ce;
-
-  --success: oklch(0.6 0.18 145);
-  --success-subtle: oklch(0.96 0.04 145);
-  --warning: oklch(0.7 0.16 75);
-  --warning-subtle: oklch(0.96 0.04 75);
-  --danger: oklch(0.58 0.22 25);
-  --danger-subtle: oklch(0.96 0.04 25);
-  --info: oklch(0.58 0.16 260);
-  --info-subtle: oklch(0.96 0.03 260);
-  --accent-violet: oklch(0.55 0.2 300);
-  --accent-violet-subtle: oklch(0.96 0.03 300);
-
-  /* Surface elevation — single shadow token, theme-aware. Light mode
-     uses near-black at 10% opacity; dark mode bumps to 50% so drop
-     shadows actually read against the dark surface. */
-  --shadow-md: 0 4px 12px -4px rgb(0 0 0 / 0.12);
-  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 0.08);
-
-  /* Motion tokens. Default Tailwind transitions feel "computer-y" (linear
-     timing-function, 150ms blanket duration). These curves + scale give
-     interactions weight without being slow:
-     - soft: iOS-style spring out, perfect for modal/toast/menu reveal
-     - snap: tight ease-out for press states, hover state changes
-     - quart: gentle deceleration for layout-affecting changes
-     Pair with --dur-quick (button hover, focus), --dur-base (most state
-     changes), --dur-slow (overlays, page-level changes). */
-  --ease-soft: cubic-bezier(0.32, 0.72, 0, 1);
-  --ease-snap: cubic-bezier(0.5, 0, 0.1, 1);
-  --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
-  --dur-quick: 100ms;
-  --dur-base: 150ms;
-  --dur-slow: 220ms;
-
-  --ring: var(--brand);
-  color-scheme: light;
-}
-
-/* ---------- Dark theme ---------- */
-.dark {
-  --brand: oklch(0.7 0.18 25);         /* slightly brighter coral for dark bg */
-  --brand-hover: oklch(0.76 0.16 25);
-  --brand-subtle: oklch(0.25 0.06 25);
-  /* Same dark warm tone in dark mode — brand stays coral, fg stays dark.
-     #3d2520 on coral is ~5.4:1 (AA-pass); white would be ~2.96:1 (AA-fail). */
-  --brand-fg: #3d2520;
-
-  --bg: #151515;
-  --bg-sidebar: #1a1a1a;
-  --bg-surface: #222220;
-  --bg-overlay: oklch(0 0 0 / 0.6);
-
-  --fg: #ececec;
-  --fg-muted: #a0a0a0;
-  --fg-subtle: #888;
-
-  --border: #2e2e2c;
-  --border-strong: #404040;
-
-  --success: oklch(0.76 0.16 145);
-  --success-subtle: oklch(0.22 0.05 145);
-  --warning: oklch(0.8 0.14 75);
-  --warning-subtle: oklch(0.22 0.05 75);
-  --danger: oklch(0.72 0.18 25);
-  --danger-subtle: oklch(0.22 0.05 25);
-  --info: oklch(0.72 0.14 260);
-  --info-subtle: oklch(0.22 0.04 260);
-  --accent-violet: oklch(0.72 0.16 300);
-  --accent-violet-subtle: oklch(0.22 0.05 300);
-
-  /* Dark-mode shadow — needs more opacity to register against #151515. */
-  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.5);
-  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 0.4);
-
-  --ring: var(--brand);
-  color-scheme: dark;
-}
-
 /* ---------- Tailwind theme tokens ---------- */
 @theme {
   /* Fonts */
   --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
-  --font-sans: "DM Sans", -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Geist Variable", -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
 
   /* Color palette — resolves dynamically via :root / .dark vars */
@@ -120,6 +23,7 @@
   --color-bg: var(--bg);
   --color-bg-sidebar: var(--bg-sidebar);
   --color-bg-surface: var(--bg-surface);
+  --color-bg-bubble: var(--bg-bubble);
   --color-bg-overlay: var(--bg-overlay);
 
   --color-fg: var(--fg);
@@ -141,6 +45,12 @@
   --color-accent-violet-subtle: var(--accent-violet-subtle);
 
   --color-ring: var(--ring);
+
+  --shadow-card-soft: var(--shadow-card-soft);
+  --shadow-card-press: var(--shadow-card-press);
+  --shadow-input-rest: var(--shadow-input-rest);
+  --shadow-chip-press: var(--shadow-chip-press);
+  --shadow-pip: var(--shadow-pip);
 
   /* shadcn-style primitive aliases. The ai-elements + components/ui
      primitives are vanilla shadcn copy-paste and reach for tokens like
@@ -176,6 +86,21 @@
      value that matches our existing chat bubble feel (rounded-lg). */
   --radius: 0.5rem;
   --radius-md: 0.5rem;
+
+  /* shadcn `Sidebar` primitive lookups. The sidebar component reaches
+     for its own --sidebar* family so its theming can drift from the
+     main canvas (typical use: subtly different bg, darker borders).
+     OMA wants the sidebar to share the existing palette, so we alias
+     straight through — bg-sidebar / fg / brand are all already
+     theme-aware via :root / .dark. */
+  --color-sidebar: var(--bg-sidebar);
+  --color-sidebar-foreground: var(--fg);
+  --color-sidebar-primary: var(--brand);
+  --color-sidebar-primary-foreground: var(--brand-fg);
+  --color-sidebar-accent: var(--bg-surface);
+  --color-sidebar-accent-foreground: var(--fg);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--brand);
 }
 
 /* ---------- Base typography ---------- */
@@ -187,10 +112,31 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Focus ring — brand-colored */
-*:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* Lock the viewport — the AppShell sidebar + breadcrumb header are
+   global frame elements that must NEVER scroll out of view. Without
+   this, `html`/`body`/`#root` are auto-height by default; a tall portal,
+   absolutely-positioned overlay, or stray content can push body taller
+   than the viewport and let the whole document scroll, taking the
+   "fixed" frame with it. Pinning all three at exactly the viewport
+   height forces every scroll to happen inside `<main>` (the only
+   `overflow-y: auto` container in the shell). */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Focus ring — brand-colored. Wrapped in @layer base so Tailwind utility
+   variants (focus-visible:outline-none, etc.) can override per-element.
+   Unlayered rules win over layered rules regardless of specificity, which
+   would otherwise make this impossible to suppress on a per-element basis. */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
 /* Scrollbar subtle styling */

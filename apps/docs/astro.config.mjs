@@ -2,21 +2,21 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mdx from '@astrojs/mdx';
 
-// Brand fonts — DM Sans (body), Source Serif 4 (display headings),
-// JetBrains Mono (code). Loaded via Starlight's head[] config rather
+// Brand fonts — Geist is bundled by custom.css; Source Serif 4 (display
+// headings) and JetBrains Mono (code) are loaded via Starlight's head[] config rather
 // than @import inside customCss so the CSS waterfall (custom.css → @import
 // fonts.googleapis.com → fonts.gstatic.com) collapses into parallel
 // requests. print-onload makes the stylesheet non-blocking; the
 // <noscript> fallback keeps it working without JS. Same pattern web uses.
 const FONT_HREF =
-  'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
+  'https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
 
 export default defineConfig({
   site: 'https://docs.openma.dev',
   integrations: [
     starlight({
       title: 'openma',
-      description: 'An open-source meta-platform for AI agents on Cloudflare.',
+      description: 'Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.',
       logo: {
         src: './src/assets/logo.svg',
         replacesTitle: true,
@@ -54,12 +54,12 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/open-ma/open-managed-agents',
+          href: 'https://github.com/openma-ai/open-managed-agents',
         },
       ],
       editLink: {
         baseUrl:
-          'https://github.com/open-ma/open-managed-agents/edit/main/apps/docs/',
+          'https://github.com/openma-ai/open-managed-agents/edit/main/apps/docs/',
       },
       lastUpdated: true,
       pagination: true,

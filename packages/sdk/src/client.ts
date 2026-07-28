@@ -62,12 +62,20 @@ export class Client {
   async request<T = unknown>(
     method: string,
     path: string,
-    init?: { body?: unknown; query?: Record<string, string | number | boolean | undefined>; signal?: AbortSignal },
+    init?: {
+      body?: unknown;
+      query?: Record<string, string | number | boolean | undefined>;
+      signal?: AbortSignal;
+      headers?: Record<string, string>;
+    },
   ): Promise<T> {
     const res = await this.raw(method, path, {
       ...init,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-      headers: init?.body !== undefined ? { "content-type": "application/json" } : undefined,
+      headers: {
+        ...init?.headers,
+        ...(init?.body !== undefined ? { "content-type": "application/json" } : {}),
+      },
     });
     const text = await res.text();
     if (!text) return undefined as T;

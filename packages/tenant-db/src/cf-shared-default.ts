@@ -1,7 +1,7 @@
 import type { TenantDbProvider } from "./ports";
 
 /**
- * Phase 1 default: ignore tenantId, always return the shared AUTH_DB binding.
+ * Phase 1 default: ignore tenantId, always return the shared MAIN_DB binding.
  * This makes Phase 1 a pure refactor — every tenant's data continues to
  * land in the same physical D1 it does today.
  *

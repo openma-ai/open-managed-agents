@@ -1,20 +1,38 @@
 {
   "name": "open-managed-agents",
   "version": "0.1.0",
-  "description": "Open-source meta-harness for AI agents — Anthropic Managed Agents API parity, runs on Cloudflare Workers or self-hosted Node.",
+  "description": "Open-source Claude Managed Agents API implementation and self-hosted Claude Tag-style agent runtime.",
   "homepage": "https://openma.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/open-ma/open-managed-agents"
+    "url": "https://github.com/openma-ai/open-managed-agents"
   },
   "bugs": {
-    "url": "https://github.com/open-ma/open-managed-agents/issues"
+    "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
+  "keywords": [
+    "ai-agents",
+    "agent-platform",
+    "agent-infrastructure",
+    "claude-managed-agents",
+    "claude-tag",
+    "claude-tag-alternative",
+    "claude-api",
+    "claude-code",
+    "open-source-agents",
+    "self-hosted-agents",
+    "mcp",
+    "byok",
+    "self-hosted",
+    "cloudflare-workers",
+    "durable-objects",
+    "open-source"
+  ],
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   },
   "workspaces": [
     "packages/*",
@@ -32,20 +50,36 @@
     "deploy": "./scripts/deploy.sh",
     "typecheck": "tsc --noEmit && pnpm run typecheck:node",
     "typecheck:node": "pnpm --filter @open-managed-agents/sandbox typecheck && pnpm --filter @open-managed-agents/main-node typecheck && pnpm --filter @open-managed-agents/oma-vault typecheck && pnpm --filter @open-managed-agents/cap typecheck",
-    "test": "vitest run && pnpm run test:packages",
-    "test:packages": "pnpm --filter @open-managed-agents/session-runtime test && pnpm --filter @open-managed-agents/main-node test && pnpm --filter @open-managed-agents/cap test",
+    "test": "pnpm run test:discovery && vitest run && pnpm run test:packages && pnpm run test:console",
+    "test:discovery": "node --test scripts/check-vitest-discovery.mjs",
+    "test:packages": "pnpm --filter @open-managed-agents/acp-runtime test && pnpm --filter @open-managed-agents/session-runtime test && pnpm --filter @open-managed-agents/main-node test && pnpm --filter @open-managed-agents/cap test && pnpm --filter @open-managed-agents/integrations-adapters-node test",
+    "test:console": "pnpm --filter managed-agents-console test",
+    "test:e2e": "playwright test --config=playwright.config.ts",
+    "db:generate:cf-auth": "drizzle-kit generate --config=drizzle.cf-auth.config.ts",
+    "db:generate:cf-integrations": "drizzle-kit generate --config=drizzle.cf-integrations.config.ts",
+    "db:generate:cf-router": "drizzle-kit generate --config=drizzle.cf-router.config.ts",
+    "db:generate:node-pg": "drizzle-kit generate --config=drizzle.node-pg.config.ts",
+    "db:generate:node-sqlite": "drizzle-kit generate --config=drizzle.node-sqlite.config.ts",
+    "db:generate": "pnpm db:generate:cf-auth && pnpm db:generate:cf-integrations && pnpm db:generate:cf-router && pnpm db:generate:node-pg && pnpm db:generate:node-sqlite",
+    "db:check:cf-auth": "drizzle-kit check --config=drizzle.cf-auth.config.ts",
+    "db:check:cf-integrations": "drizzle-kit check --config=drizzle.cf-integrations.config.ts",
+    "db:check:cf-router": "drizzle-kit check --config=drizzle.cf-router.config.ts",
+    "db:check:node-pg": "drizzle-kit check --config=drizzle.node-pg.config.ts",
+    "db:check:node-sqlite": "drizzle-kit check --config=drizzle.node-sqlite.config.ts",
+    "db:check": "pnpm db:check:cf-auth && pnpm db:check:cf-integrations && pnpm db:check:cf-router && pnpm db:check:node-pg && pnpm db:check:node-sqlite",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm -r --filter='@openma/*' build && changeset publish"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.95.1",
-    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/changelog-git": "^0.2.1",
     "@changesets/cli": "^2.31.0",
     "@cloudflare/vitest-pool-workers": "^0.14.7",
     "@cloudflare/workers-types": "^4.20250410.0",
     "@playwright/test": "^1.59.1",
-    "@types/node": "^25.6.0",
+    "@types/node": "^24.0.0",
+    "drizzle-kit": "^0.31.5",
     "fflate": "^0.8.2",
     "jsonc-parser": "^3.3.1",
     "typescript": "^5.8.0",

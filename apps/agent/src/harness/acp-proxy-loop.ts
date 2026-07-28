@@ -85,7 +85,7 @@ export class AcpProxyHarness implements HarnessInterface {
       return;
     }
 
-    const ws = await this.#openHarnessWs(env.RUNTIME_ROOM, sid, binding.runtime_id);
+    const ws = await this.#openHarnessWs(env.RUNTIME_ROOM, sid, binding.runtime_id, ctx.tenant_id);
     if (!ws) {
       this.#emitError(runtime, "Failed to attach to RuntimeRoom — runtime_id may be invalid or daemon offline");
       return;
@@ -169,23 +169,29 @@ export class AcpProxyHarness implements HarnessInterface {
     runtimeRoom: DurableObjectNamespace,
     sid: string,
     runtimeId: string,
+    tenantId?: string,
   ): Promise<AttachedWs | null> {
     // Direct DO access. The DO class lives in the main worker but DOs are
     // namespace-scoped; the cross-script binding in wrangler.jsonc lets the
     // agent worker hold a stub without going through main as a service.
     // Headers (`x-attach-role`, `x-session-id`) match what the now-removed
     // /v1/internal/runtime-attach-harness endpoint used to inject — DO's
-    // fetch handler already keys off them.
+    // fetch handler already keys off them. `x-harness-tenant` is the
+    // step-2 multi-tenant addition — RuntimeRoom stashes it per-sid and
+    // uses it to inject `tenant_id` into outbound session-scoped frames so
+    // v2-aware daemons can pick the right per-tenant API key. Omitted when
+    // SessionDO didn't populate ctx.tenant_id (legacy callers / tests);
+    // RuntimeRoom tolerates absence in this step.
     try {
       const stub = runtimeRoom.get(runtimeRoom.idFromName(runtimeId));
+      const headers: Record<string, string> = {
+        Upgrade: "websocket",
+        "x-attach-role": "harness",
+        "x-session-id": sid,
+      };
+      if (tenantId) headers["x-harness-tenant"] = tenantId;
       const res = await stub.fetch(
-        new Request("http://runtime-room/_attach_harness", {
-          headers: {
-            Upgrade: "websocket",
-            "x-attach-role": "harness",
-            "x-session-id": sid,
-          },
-        }),
+        new Request("http://runtime-room/_attach_harness", { headers }),
       );
       if (res.status !== 101 || !res.webSocket) {
         logWarn(

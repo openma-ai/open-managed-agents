@@ -147,6 +147,76 @@ export class GitHubApiClient {
     return { id: p.id, avatar_url: p.avatar_url ?? null };
   }
 
+  /**
+   * Idempotently create an issue label on a repo. 422 (already exists) is
+   * treated as success — we never modify a user's existing same-named
+   * label's color/description, so re-running this call is safe. Other
+   * non-2xx statuses surface as GitHubApiError so the caller can log them
+   * but typically should not fail the webhook.
+   */
+  async createIssueLabel(
+    installationToken: string,
+    owner: string,
+    repo: string,
+    label: { name: string; color?: string; description?: string },
+  ): Promise<{ created: boolean }> {
+    const body: Record<string, string> = { name: label.name };
+    if (label.color) body.color = label.color;
+    if (label.description) body.description = label.description;
+    const res = await this.http.fetch({
+      method: "POST",
+      url: `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/labels`,
+      headers: {
+        ...this.installationHeaders(installationToken),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 201) return { created: true };
+    // 422 = already exists with this name; we treat that as success and
+    // explicitly do NOT modify the existing label (different color or
+    // description is the user's choice).
+    if (res.status === 422) return { created: false };
+    throw new GitHubApiError(
+      `POST /repos/${owner}/${repo}/labels: HTTP ${res.status} ${res.body.slice(0, 200)}`,
+      res.status,
+    );
+  }
+
+  /**
+   * List repos this installation has access to. Returns up to `per_page`
+   * (default 100) repos in a single call — for installs with >100 repos
+   * the caller iterates pages. Used by the install-hook to enumerate
+   * targets for label seeding.
+   */
+  async listInstallationRepos(
+    installationToken: string,
+    page = 1,
+    perPage = 100,
+  ): Promise<{ repos: Array<{ owner: string; name: string }>; hasMore: boolean }> {
+    const res = await this.http.fetch({
+      method: "GET",
+      url: `${GITHUB_API}/installation/repositories?per_page=${perPage}&page=${page}`,
+      headers: this.installationHeaders(installationToken),
+    });
+    if (res.status < 200 || res.status >= 300) {
+      throw new GitHubApiError(
+        `GET /installation/repositories: HTTP ${res.status} ${res.body.slice(0, 200)}`,
+        res.status,
+      );
+    }
+    const parsed = JSON.parse(res.body) as {
+      total_count?: number;
+      repositories?: Array<{ owner: { login: string }; name: string }>;
+    };
+    const repos = (parsed.repositories ?? []).map((r) => ({
+      owner: r.owner.login,
+      name: r.name,
+    }));
+    const total = parsed.total_count ?? repos.length;
+    return { repos, hasMore: page * perPage < total };
+  }
+
   private appHeaders(appJwt: string): Record<string, string> {
     return {
       authorization: `Bearer ${appJwt}`,

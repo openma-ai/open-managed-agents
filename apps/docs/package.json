@@ -13,6 +13,8 @@
   "dependencies": {
     "@astrojs/mdx": "^5.0.4",
     "@astrojs/starlight": "^0.38.4",
+    "@fontsource-variable/geist": "^5.2.8",
+    "@openma/common": "github:openma-ai/openma-common#v0.4.0",
     "astro": "^6.1.9",
     "sharp": "^0.34.5"
   },

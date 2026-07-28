@@ -78,6 +78,11 @@ export interface SlackConfig {
  */
 export const DEFAULT_SLACK_BOT_SCOPES: ReadonlyArray<string> = [
   "app_mentions:read",
+  // assistant:write is required for Slack's Assistant API surface
+  // (assistant_view, suggested_prompts, status updates). Slack's official
+  // MCP-server sample lists it; without it the bot can install but the
+  // Agents & AI Apps surface doesn't fully wire up.
+  "assistant:write",
   "chat:write",
   "chat:write.public",
   "channels:history",

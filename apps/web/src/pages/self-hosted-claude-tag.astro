@@ -1,0 +1,179 @@
+---
+import Base from "../layouts/Base.astro";
+import { breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const setupSteps = [
+  "Run Open Managed Agents on Docker, Node.js, or Cloudflare Workers.",
+  "Create a Claude Tag-style agent with a model card, system prompt, memory policy, and approved tools.",
+  "Publish that agent into Slack through an Open Managed Agents Slack publication.",
+  "Bind MCP servers, GitHub/Linear tools, vault credentials, and sandbox permissions.",
+  "Enable the channels where the self-hosted Claude Tag experience should work.",
+];
+
+const faqItems = [
+  {
+    question: "Can Claude Tag be self-hosted?",
+    answer:
+      "Anthropic's Claude Tag is a hosted product. Open Managed Agents gives teams an open-source foundation for building a self-hosted Claude Tag-style experience with their own runtime, model keys, vaults, tools, memory stores, and audit boundary.",
+  },
+  {
+    question: "Is this an open-source Claude Tag replacement?",
+    answer:
+      "It is an open-source runtime foundation, not a finished clone. The core primitives are present: Slack publication, durable sessions, MCP tools, vaults, memory stores, sandboxed work, and recovery. A polished Tag-level admin console is product work on top.",
+  },
+  {
+    question: "Does a self-hosted Claude Tag-style agent need to use Claude?",
+    answer:
+      "No. You can use Claude through Anthropic, but Open Managed Agents also supports model cards for other providers or a private model gateway.",
+  },
+  {
+    question: "What is the main reason to self-host a Claude Tag-style workflow?",
+    answer:
+      "Self-hosting is useful when channel context, tool calls, repository access, credentials, memory, and audit logs need to stay under your own deployment and compliance boundary.",
+  },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "Self-Hosted Claude Tag", path: "/self-hosted-claude-tag/" },
+  ]),
+  {
+    "@context": "https://schema.org",
+    "@type": "HowTo",
+    name: "How to self-host a Claude Tag-style workflow",
+    description:
+      "A high-level setup flow for building a self-hosted Claude Tag-style agent with Open Managed Agents.",
+    totalTime: "PT30M",
+    supply: [
+      { "@type": "HowToSupply", name: "Open Managed Agents deployment" },
+      { "@type": "HowToSupply", name: "Model provider key or gateway" },
+      { "@type": "HowToSupply", name: "Slack workspace for the Claude Tag-style surface" },
+    ],
+    step: setupSteps.map((text, index) => ({
+      "@type": "HowToStep",
+      position: index + 1,
+      text,
+    })),
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="Self-Hosted Claude Tag: Open-Source Runtime for Tag-Style Agents | Open Managed Agents"
+  description="Claude Tag is hosted. Open Managed Agents gives teams an open-source, self-hosted foundation for a Claude Tag-style workflow with BYOK, MCP, vaults, memory stores, and durable sessions."
+  canonical="/self-hosted-claude-tag/"
+  keywords="self-hosted claude tag, claude tag self hosted, self host claude tag, open source claude tag, claude tag open source, claude tag alternative, openma claude tag"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="max-w-5xl mx-auto px-4 py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        Self-hosted Claude Tag
+      </p>
+      <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight max-w-4xl mb-6">
+        Build a Claude Tag-style workflow on an open-source runtime
+      </h1>
+      <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+        Claude Tag is the right product shape: tag Claude where work already
+        happens, give it approved tools, and let it complete tasks with shared
+        context. Open Managed Agents gives you the self-hosted foundation for
+        that pattern: durable sessions, MCP tools, vault-backed credentials,
+        memory stores, sandboxed execution, and BYOK model cards.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <a
+          href="https://docs.openma.dev/console/integrations/"
+          class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
+        >
+          Read integration docs
+        </a>
+        <a
+          href="/claude-tag-open-source/"
+          class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+        >
+          Open-source Claude Tag
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">The self-hosted architecture</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      The public product surface can still be Slack, because that is where
+      Claude Tag works today. The SEO and product category, though, is
+      self-hosted Claude Tag: an owned runtime behind the same interaction
+      model.
+    </p>
+    <pre class="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto"><code>Claude Tag-style channel mention
+  -> Open Managed Agents Slack publication
+  -> durable session and event log
+  -> harness + model card + MCP/tools + sandbox
+  -> thread reply, memory update, audit trail</code></pre>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="max-w-5xl mx-auto px-4 py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">Setup path</h2>
+      <ol class="grid md:grid-cols-5 gap-4">
+        {setupSteps.map((step, index) => (
+          <li class="border border-[var(--color-border)] rounded-lg bg-[var(--color-bg)] p-4">
+            <div class="font-mono text-xs text-[var(--color-fg-subtle)] mb-3">Step {index + 1}</div>
+            <p class="text-sm text-[var(--color-fg-muted)] leading-relaxed">{step}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  </section>
+
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Why self-host the Tag pattern</h2>
+    <div class="grid md:grid-cols-2 gap-x-10 gap-y-8">
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Own the data boundary</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Keep event logs, memory, vaults, tool outputs, and sandbox files in
+          your own Cloudflare account, Docker deployment, or Node backend.
+        </p>
+      </article>
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Bring your own model keys</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Route model calls through Anthropic, OpenAI, OpenRouter, or an
+          internal gateway while keeping the same agent runtime.
+        </p>
+      </article>
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Use open tools</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Connect MCP servers, GitHub, Linear, browser, shell, files, and
+          private APIs behind explicit access policies.
+        </p>
+      </article>
+      <article>
+        <h3 class="font-semibold text-lg mb-2">Customize the harness</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          Change retrieval, compaction, prompt caching, retry policy, stop
+          conditions, and tool-delivery logic instead of accepting a fixed
+          vendor loop.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="border-t border-[var(--color-border)]" data-reveal>
+    <div class="max-w-5xl mx-auto px-4 py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
+      <div class="grid md:grid-cols-2 gap-8">
+        {faqItems.map((item) => (
+          <article>
+            <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
+            <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+</Base>

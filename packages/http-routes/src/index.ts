@@ -29,6 +29,9 @@ export type {
 export { buildMemoryRoutes } from "./memory";
 export type { MemoryRoutesDeps } from "./memory";
 
+export { buildDreamRoutes } from "./dreams";
+export type { DreamRoutesDeps } from "./dreams";
+
 export { buildTenantRoutes, buildMeRoutes } from "./tenants";
 export type { TenantRoutesDeps, MeRoutesDeps } from "./tenants";
 

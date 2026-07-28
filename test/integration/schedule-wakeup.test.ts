@@ -14,7 +14,7 @@
 
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
 import { buildTools } from "../../apps/agent/src/harness/tools";
@@ -36,6 +36,41 @@ const AGENT_CFG = {
   version: 1,
   created_at: new Date().toISOString(),
 };
+
+async function ensureMainDbSessionsForTest() {
+  await env.MAIN_DB.prepare(
+    `CREATE TABLE IF NOT EXISTS sessions (
+       id              TEXT PRIMARY KEY NOT NULL,
+       tenant_id       TEXT NOT NULL,
+       agent_id        TEXT,
+       environment_id  TEXT,
+       title           TEXT NOT NULL DEFAULT '',
+       status          TEXT NOT NULL,
+       vault_ids       TEXT,
+       agent_snapshot  TEXT,
+       environment_snapshot TEXT,
+       metadata        TEXT,
+       created_at      INTEGER NOT NULL,
+       updated_at      INTEGER,
+       archived_at     INTEGER,
+       turn_id         TEXT,
+       turn_started_at INTEGER,
+       terminated_at   INTEGER
+     )`,
+  ).run();
+  for (const stmt of [
+    `ALTER TABLE sessions ADD COLUMN turn_id TEXT`,
+    `ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER`,
+    `ALTER TABLE sessions ADD COLUMN terminated_at INTEGER`,
+  ]) {
+    try {
+      await env.MAIN_DB.prepare(stmt).run();
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (!/duplicate column name/i.test(msg)) throw err;
+    }
+  }
+}
 
 function newStub(label: string): { stub: DurableObjectStub; sessionId: string } {
   // Unique per test run + per name, so DOs don't share state across cases.
@@ -59,6 +94,8 @@ async function getEvents(stub: DurableObjectStub): Promise<any[]> {
 }
 
 describe("schedule tool — agent tool-call → alarm → wakeup event", () => {
+  beforeAll(ensureMainDbSessionsForTest);
+
   it("delay_seconds: tool execute writes a real schedule row + span event", async () => {
     const { stub, sessionId } = newStub("oneshot");
     await ensureAlive(stub, sessionId);

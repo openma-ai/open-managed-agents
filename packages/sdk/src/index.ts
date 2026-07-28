@@ -3,6 +3,7 @@ import { AgentsResource } from "./resources/agents.js";
 import { EnvironmentsResource } from "./resources/environments.js";
 import { SessionsResource } from "./resources/sessions.js";
 import { MemoryStoresResource } from "./resources/memory-stores.js";
+import { DreamsResource } from "./resources/dreams.js";
 
 export { OpenMAError } from "./errors.js";
 export { parseSSE } from "./sse.js";
@@ -37,6 +38,18 @@ export type {
   UpdateMemoryInput,
   ListMemoryVersionsOptions,
 } from "./resources/memory-stores.js";
+export type {
+  CreateDreamInput,
+  Dream,
+  DreamError,
+  DreamInput,
+  DreamModel,
+  DreamOutput,
+  DreamStatus,
+  DreamUsage,
+  ListDreamsOptions,
+  ListDreamsResponse,
+} from "./resources/dreams.js";
 
 /**
  * Official TypeScript SDK for openma — typed REST + SSE streaming.
@@ -64,6 +77,12 @@ export type {
  *   path: "/preferences/formatting.md",
  *   content: "Always use tabs.",
  * });
+ *
+ * // Dreams (memory curation)
+ * const dream = await oma.dreams.create({
+ *   inputs: [{ type: "memory_store", memory_store_id: store.id }],
+ *   model: "claude-sonnet-4-6",
+ * });
  * ```
  *
  * Runs anywhere `fetch` exists: Node ≥ 20, Bun, Deno, browsers,
@@ -77,6 +96,7 @@ export class OpenMA {
   readonly sessions: SessionsResource;
   readonly environments: EnvironmentsResource;
   readonly memoryStores: MemoryStoresResource;
+  readonly dreams: DreamsResource;
 
   constructor(opts: ClientOptions) {
     this.client = new Client(opts);
@@ -84,5 +104,6 @@ export class OpenMA {
     this.sessions = new SessionsResource(this.client);
     this.environments = new EnvironmentsResource(this.client);
     this.memoryStores = new MemoryStoresResource(this.client);
+    this.dreams = new DreamsResource(this.client);
   }
 }

@@ -5,14 +5,7 @@
 // works in-process now even before that proxy lands.
 
 import { describe, expect, it } from "vitest";
-import {
-  createBetterSqlite3SqlClient,
-  type SqlClient,
-} from "@open-managed-agents/sql-client";
-import {
-  applySchema,
-  applyTenantSchema,
-} from "@open-managed-agents/schema";
+import { bootstrapTestDb } from "./_helpers/bootstrap-test-db";
 import { createSqliteAgentService } from "@open-managed-agents/agents-store";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
@@ -23,18 +16,17 @@ const TENANT = "tn_cap";
 
 describe("OmaVaultResolver Node wire", () => {
   it("resolves a cap_cli credential bound to api.github.com", async () => {
-    const sql: SqlClient = await createBetterSqlite3SqlClient(":memory:");
-    await applySchema({ sql, dialect: "sqlite" });
-    await applyTenantSchema(sql);
+    const { sql, db, cleanup } = await bootstrapTestDb();
+    try {
     await sql
-      .prepare(`INSERT INTO "tenant" (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`)
+      .prepare(`INSERT INTO "tenant" (id, name, "createdAt", "updatedAt") VALUES (?, ?, ?, ?)`)
       .bind(TENANT, "Cap", Date.now(), Date.now())
       .run();
 
-    const agents = createSqliteAgentService({ client: sql });
-    const vaults = createSqliteVaultService({ client: sql });
-    const credentials = createSqliteCredentialService({ client: sql });
-    const sessions = createSqliteSessionService({ client: sql });
+    const agents = createSqliteAgentService({ db });
+    const vaults = createSqliteVaultService({ db });
+    const credentials = createSqliteCredentialService({ db });
+    const sessions = createSqliteSessionService({ db });
 
     const agentRow = await agents.create({
       tenantId: TENANT,
@@ -92,5 +84,8 @@ describe("OmaVaultResolver Node wire", () => {
       hostname: "ec2.amazonaws.com",
     });
     expect(miss).toBeNull();
+    } finally {
+      cleanup();
+    }
   });
 });

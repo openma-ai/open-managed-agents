@@ -1270,8 +1270,7 @@ describe("Environment list and update", () => {
     const envObj = (await eRes.json()) as any;
     await post(`/v1/environments/${envObj.id}/archive`, {});
 
-    // Environment list does NOT filter archived (unlike agents/sessions/vaults)
-    const listRes = await get("/v1/environments");
+    const listRes = await get("/v1/environments?status=archived&limit=100");
     const body = (await listRes.json()) as any;
     const found = body.data.find((e: any) => e.id === envObj.id);
     expect(found).toBeTruthy();

@@ -1,5 +1,6 @@
 ---
 import "../styles/global.css";
+import "@fontsource-variable/geist";
 import { organizationSchema, websiteSchema } from "../lib/seo";
 
 export interface Props {
@@ -39,7 +40,7 @@ const SITE = "https://openma.dev";
 const fullTitle = /open managed agents/i.test(title)
   ? title
   : `${title} — Open Managed Agents`;
-const desc = description ?? "Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0. Drop-in compatible API.";
+const desc = description ?? "Open-source alternative to Claude Managed Agents. Run Claude agents yourself on Cloudflare Workers or Docker. MCP + Claude Code skills built in. Apache 2.0.";
 const url = canonical ? `${SITE}${canonical}` : Astro.url.toString();
 const finalOgImage = ogImage ?? `${SITE}/og-default.png`;
 
@@ -58,55 +59,45 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
 
     <!-- Color scheme — let browsers pick chrome that matches our theme. -->
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#ff6b50" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#ff6b50" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f84f32" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#f47958" media="(prefers-color-scheme: dark)" />
 
     <!-- Favicons + manifest. SVG primary; PNG fallbacks for Safari /
          Android home screen. The PNG set is generated from
-         public/og-default.svg + the wordmark — see public/README.md. -->
+         public/og-default.svg + the wordmark — see public/README.md.
+         /favicon.ico is the path Google's favicon crawler checks
+         first, so we ship it explicitly to avoid SERP fallback to
+         the generic placeholder. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
 
-    <!-- Theme: system preference with manual override. -->
+    <!-- Theme: system preference with manual override. Also flips an
+         `html.js` flag so JS-gated CSS rules (e.g. the scroll-reveal
+         hidden state) only apply when JS is actually running — keeps
+         JS-disabled visitors from staring at invisible sections. -->
     <script is:inline>
+      document.documentElement.classList.add("js");
       const t = localStorage.getItem("theme");
       if (t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches)) {
         document.documentElement.classList.add("dark");
       }
     </script>
 
-    <!-- Font-readiness gate. Brand fonts arrive ~200-500ms after first
-         paint; without this the page renders in system-ui, then visibly
-         swaps to DM Sans / Source Serif 4 ("FOUT"). Hide body via CSS
-         until document.fonts.ready resolves, then fade in. 1500ms hard
-         timeout covers font-load failure (offline, blocked CDN). -->
-    <script is:inline>
-      const FONT_TIMEOUT_MS = 1500;
-      const reveal = () => document.documentElement.classList.add("fonts-loaded");
-      if ("fonts" in document) {
-        Promise.race([
-          document.fonts.ready,
-          new Promise((r) => setTimeout(r, FONT_TIMEOUT_MS)),
-        ]).then(reveal);
-      } else {
-        reveal();
-      }
-    </script>
-
     <!-- Fonts: same set Console uses, so cross-domain feels consistent.
          Trimmed to weights actually used (no italics, no opsz axis): Source
-         Serif 4 needs 400/600/700, DM Sans needs 400/500/600, JetBrains Mono
-         needs 400/500/700. Loaded via the print-onload pattern so the
+         Serif 4 needs 400/600/700 and JetBrains Mono needs 400/500/700.
+         Geist is bundled above. The remaining faces use the print-onload pattern so the
          stylesheet is non-blocking; the <noscript> fallback keeps it
          working without JS. display=swap on each face avoids CLS. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
       media="print"
       onload="this.media='all'"
     />
@@ -125,6 +116,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <meta property="og:site_name" content="Open Managed Agents" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:image" content={finalOgImage} />
+    <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content={fullTitle} />
@@ -135,10 +127,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       <meta property="article:modified_time" content={updatedAt.toISOString()} />
     )}
 
-    <!-- Twitter -->
+    <!-- Twitter/X cards. We intentionally omit twitter:site until a
+         verified project handle exists, but explicit card metadata avoids
+         small-card fallbacks in link unfurlers. -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@openma_dev" />
-    <meta name="twitter:creator" content="@openma_dev" />
     <meta name="twitter:title" content={fullTitle} />
     <meta name="twitter:description" content={desc} />
     <meta name="twitter:image" content={finalOgImage} />
@@ -149,7 +141,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <!-- JSON-LD structured data — Organization + WebSite on every page,
          plus per-page schemas (BlogPosting, BreadcrumbList) injected by callers. -->
     {allSchemas.map((schema) => (
-      <script type="application/ld+json" set:html={JSON.stringify(schema)} />
+      <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
     ))}
   </head>
   <body class="bg-bg text-fg">
@@ -163,7 +155,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       Skip to content
     </a>
 
-    <header class="border-b border-[var(--color-border)]">
+    <header
+      class="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
+      data-site-header
+    >
       <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
         <a
           href="/"
@@ -176,10 +171,11 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
 
         <!-- Desktop nav -->
         <nav class="hidden md:flex items-center gap-1 text-sm" aria-label="Primary">
+          <a href="/claude-tag-alternative/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Claude Tag</a>
           <a href="/blog/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Blog</a>
           <a href="https://docs.openma.dev" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Docs</a>
           <a
-            href="https://github.com/open-ma/open-managed-agents"
+            href="https://github.com/openma-ai/open-managed-agents"
             target="_blank"
             rel="noopener noreferrer"
             class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]"
@@ -264,10 +260,11 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
               class="absolute right-0 top-full mt-2 min-w-[180px] py-2 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md shadow-lg flex flex-col text-sm z-40"
               aria-label="Mobile primary"
             >
+              <a href="/claude-tag-alternative/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
               <a href="/blog/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Blog</a>
               <a href="https://docs.openma.dev" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Docs</a>
               <a
-                href="https://github.com/open-ma/open-managed-agents"
+                href="https://github.com/openma-ai/open-managed-agents"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]"
@@ -292,10 +289,13 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       <div class="max-w-5xl mx-auto px-4 py-8 text-sm text-[var(--color-fg-muted)] flex flex-wrap gap-x-8 gap-y-2 justify-between">
         <div>© {new Date().getFullYear()} Open Managed Agents. Apache 2.0 licensed.</div>
         <nav class="flex flex-wrap gap-x-3 gap-y-1" aria-label="Footer">
-          <a href="/blog/" class="py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">Blog</a>
+          <a href="/claude-tag-alternative/" class="py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
+          <a href="/claude-tag-open-source/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Open Source Tag</a>
+          <a href="/self-hosted-claude-tag/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Self-hosted Tag</a>
+          <a href="/blog/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Blog</a>
           <a href="https://docs.openma.dev" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Docs</a>
           <a
-            href="https://github.com/open-ma/open-managed-agents"
+            href="https://github.com/openma-ai/open-managed-agents"
             target="_blank"
             rel="noopener noreferrer"
             class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]"
@@ -309,7 +309,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     <!-- Theme toggle: writes localStorage and flips .dark on <html>.
          Pairs with the FOUC-free bootstrap script in <head>. Also closes
          the mobile menu when a link inside it is clicked or when clicking
-         outside, since <details> doesn't auto-close on navigation. -->
+         outside, since <details> doesn't auto-close on navigation.
+         Also: toggles a data-scrolled flag on the sticky header so it
+         picks up a shadow once the page leaves the top — cheap depth
+         cue that costs nothing when reduced-motion is on. -->
     <script is:inline>
       // Sync theme-toggle aria-pressed with current theme on load + after each click.
       const syncThemePressed = () => {
@@ -344,6 +347,38 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         for (const a of menu.querySelectorAll('a')) {
           a.addEventListener('click', () => { menu.open = false; });
         }
+      }
+      // Sticky-header scroll state. Toggle once we're past 8px so the
+      // shadow only appears when there's actually content behind it.
+      const siteHeader = document.querySelector('[data-site-header]');
+      if (siteHeader) {
+        const syncScrolled = () => {
+          if (window.scrollY > 8) siteHeader.setAttribute('data-scrolled', '');
+          else siteHeader.removeAttribute('data-scrolled');
+        };
+        syncScrolled();
+        window.addEventListener('scroll', syncScrolled, { passive: true });
+      }
+
+      // Scroll-reveal: sections with [data-reveal] fade in once they
+      // enter the viewport. One-shot via `once: true`-style unobserve
+      // so we don't pay observer cost forever. Reduced-motion users
+      // skip this entirely (CSS guards the hidden state).
+      const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const revealTargets = document.querySelectorAll('[data-reveal]');
+      if (!reduceMotion && 'IntersectionObserver' in window && revealTargets.length) {
+        const io = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              io.unobserve(entry.target);
+            }
+          }
+        }, { rootMargin: '0px 0px -10% 0px', threshold: 0.05 });
+        for (const el of revealTargets) io.observe(el);
+      } else {
+        // No-motion / no-IO fallback: show everything immediately.
+        for (const el of revealTargets) el.classList.add('is-visible');
       }
     </script>
   </body>

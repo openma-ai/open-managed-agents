@@ -547,26 +547,38 @@ describe("threads HTTP endpoints", () => {
       expect([200, 202]).toContain(r.status);
     }
 
-    // All 5 should be in the events table. processed_at may be NULL
-    // (still pending) or set (drain caught up) — both are valid;
-    // what matters is none silently dropped.
+    // All 5 should be observable either in the canonical events log
+    // (already promoted) or in pending_events (still queued). The
+    // insert-then-delete promotion path can briefly show the same id in
+    // both tables, so assert by distinct user-visible message text.
     const rows = await runInDurableObject(stub, async (_inst, state) => {
-      const out: Array<{ seq: number; type: string; data: string; processed: boolean }> = [];
+      const out: Array<{ source: string; seq: number; type: string; data: string }> = [];
       for (const row of state.storage.sql.exec(
         `SELECT seq, type, data, processed_at FROM events
            WHERE type = 'user.message' AND session_thread_id = 'sthr_primary'
            ORDER BY seq`,
       )) {
         out.push({
+          source: "events",
           seq: row.seq as number,
           type: row.type as string,
           data: row.data as string,
-          processed: row.processed_at != null,
+        });
+      }
+      for (const row of state.storage.sql.exec(
+        `SELECT pending_seq, type, data FROM pending_events
+           WHERE type = 'user.message' AND session_thread_id = 'sthr_primary'
+           ORDER BY pending_seq`,
+      )) {
+        out.push({
+          source: "pending_events",
+          seq: row.pending_seq as number,
+          type: row.type as string,
+          data: row.data as string,
         });
       }
       return out;
     });
-    expect(rows).toHaveLength(5);
     // Order-agnostic: Promise.all kicks off all 5 in parallel — DO
     // SQLite serializes inserts but the parallel POSTs don't preserve
     // caller order. The contract that matters is "all 5 landed", not
@@ -782,10 +794,12 @@ describe("threads HTTP endpoints", () => {
       );
       for (const tid of ["sthr_primary", "sthr_subA", "sthr_subC"]) {
         sql.exec(
-          `INSERT INTO events (type, data, processed_at, session_thread_id)
-           VALUES ('user.message', ?, NULL, ?)`,
-          JSON.stringify({ type: "user.message", content: [{ type: "text", text: `pending on ${tid}` }] }),
+          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
+           VALUES (?, ?, 'user.message', ?, ?)`,
+          Date.now(),
           tid,
+          `ev_${tid}`,
+          JSON.stringify({ type: "user.message", content: [{ type: "text", text: `pending on ${tid}` }] }),
         );
       }
 
@@ -844,15 +858,19 @@ describe("threads HTTP endpoints", () => {
       // 5 pending on primary + 3 pending on subA = 8 rows, 2 threads.
       for (let i = 0; i < 5; i++) {
         sql.exec(
-          `INSERT INTO events (type, data, processed_at, session_thread_id)
-           VALUES ('user.message', ?, NULL, 'sthr_primary')`,
+          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
+           VALUES (?, 'sthr_primary', 'user.message', ?, ?)`,
+          Date.now(),
+          `p${i}`,
           JSON.stringify({ type: "user.message", content: [{ type: "text", text: `p${i}` }] }),
         );
       }
       for (let i = 0; i < 3; i++) {
         sql.exec(
-          `INSERT INTO events (type, data, processed_at, session_thread_id)
-           VALUES ('user.message', ?, NULL, 'sthr_subA')`,
+          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
+           VALUES (?, 'sthr_subA', 'user.message', ?, ?)`,
+          Date.now(),
+          `a${i}`,
           JSON.stringify({ type: "user.message", content: [{ type: "text", text: `a${i}` }] }),
         );
       }

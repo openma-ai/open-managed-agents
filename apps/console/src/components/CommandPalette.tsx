@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import * as Dialog from "@radix-ui/react-dialog";
-import { Command } from "cmdk";
-import { ROUTE_CHORDS } from "./Layout";
+import type { ComponentType } from "react";
+
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut,
+} from "@/components/ui/command";
+
+import { ROUTE_CHORDS } from "../lib/route-chords";
 import {
   AgentIcon,
   ApiKeysIcon,
@@ -19,7 +29,6 @@ import {
   SlackIcon,
   VaultIcon,
 } from "./icons";
-import type { ComponentType } from "react";
 
 interface NavCommand {
   label: string;
@@ -56,6 +65,11 @@ const COMMANDS: NavCommand[] = [
  * Global Cmd+K (⌘K / Ctrl+K) command palette. Quick-jump anywhere in the
  * console without going through the sidebar. Mounts once at the layout
  * level; listens on `window` for the keybinding.
+ *
+ * Built on shadcn `CommandDialog` (Dialog + cmdk Command). Replaces the
+ * hand-rolled Radix Dialog + raw cmdk pairing — the shadcn primitive
+ * already wires title/description for a11y, top-1/3 placement, and
+ * appropriate sizing.
  */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -87,71 +101,41 @@ export function CommandPalette() {
   }, {});
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Portal>
-        <Dialog.Overlay
-          className="modal-overlay fixed inset-0 bg-bg-overlay z-50"
-        />
-        <Dialog.Content
-          aria-describedby={undefined}
-          className="modal-content fixed top-[20%] left-1/2 -translate-x-1/2 z-50 w-full max-w-lg bg-bg border border-border rounded-lg shadow-xl overflow-hidden"
-        >
-          <Dialog.Title className="sr-only">Command palette</Dialog.Title>
-          <Command shouldFilter className="flex flex-col">
-            <div className="flex items-center gap-2 px-3 border-b border-border">
-              <span aria-hidden className="text-fg-subtle text-xs font-mono">[</span>
-              <Command.Input
-                placeholder="Jump to…"
-                className="flex-1 h-12 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle"
-              />
-              <kbd className="text-[10px] text-fg-subtle font-mono px-1.5 py-0.5 rounded bg-bg-surface border border-border">
-                esc
-              </kbd>
-            </div>
-            <Command.List className="max-h-80 overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-6 text-center text-sm text-fg-muted">
-                No matches.
-              </Command.Empty>
-              {Object.entries(grouped).map(([group, items]) => (
-                <Command.Group
-                  key={group}
-                  heading={
-                    <span className="px-2 py-1 text-[10px] font-medium text-fg-subtle uppercase tracking-wider">
-                      {group}
-                    </span>
-                  }
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      title="Command palette"
+      description="Jump to any page in the console."
+    >
+      <CommandInput placeholder="Jump to…" />
+      <CommandList>
+        <CommandEmpty>No matches.</CommandEmpty>
+        {Object.entries(grouped).map(([group, items]) => (
+          <CommandGroup key={group} heading={group}>
+            {items.map((cmd) => {
+              const Icon = cmd.icon;
+              const chord = ROUTE_CHORDS[cmd.to];
+              return (
+                <CommandItem
+                  key={cmd.to}
+                  value={`${cmd.label} ${cmd.aliases ?? ""}`}
+                  onSelect={() => go(cmd.to)}
+                  className="cursor-pointer"
                 >
-                  {items.map((cmd) => {
-                    const Icon = cmd.icon;
-                    const chord = ROUTE_CHORDS[cmd.to];
-                    return (
-                      <Command.Item
-                        key={cmd.to}
-                        value={`${cmd.label} ${cmd.aliases ?? ""}`}
-                        onSelect={() => go(cmd.to)}
-                        className="flex items-center gap-2.5 px-2.5 py-2 min-h-11 sm:min-h-0 rounded-md text-sm text-fg cursor-pointer data-[selected=true]:bg-bg-surface data-[selected=true]:text-fg"
-                      >
-                        <Icon className="w-4 h-4 opacity-60 shrink-0" />
-                        <span className="flex-1 min-w-0 truncate">{cmd.label}</span>
-                        <span className="text-[11px] text-fg-subtle">{cmd.group}</span>
-                        {chord && (
-                          <span className="font-mono text-[10px] text-fg-subtle border border-border rounded px-1.5 py-0.5">
-                            g {chord}
-                          </span>
-                        )}
-                      </Command.Item>
-                    );
-                  })}
-                </Command.Group>
-              ))}
-            </Command.List>
-            <div className="px-3 py-2 border-t border-border text-[11px] text-fg-subtle flex items-center justify-between font-mono">
-              <span>↑↓ navigate · ↵ select</span>
-              <span>⌘K to toggle</span>
-            </div>
-          </Command>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+                  <Icon className="size-4 opacity-60 shrink-0" />
+                  <span className="flex-1 min-w-0 truncate">{cmd.label}</span>
+                  <span className="text-[11px] text-fg-subtle">{cmd.group}</span>
+                  {chord && (
+                    <CommandShortcut className="font-mono text-[10px] border border-border rounded px-1.5 py-0.5">
+                      g {chord}
+                    </CommandShortcut>
+                  )}
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        ))}
+      </CommandList>
+    </CommandDialog>
   );
 }

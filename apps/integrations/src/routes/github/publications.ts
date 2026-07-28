@@ -2,21 +2,27 @@ import { Hono } from "hono";
 import type { Env } from "../../env";
 import { buildProviders } from "../../providers";
 
-// GitHub publish flow — mirrors the linear/publications.ts shape exactly so
-// the Console can call /github/publications/* the same way it calls Linear.
+// GitHub publish flow — publication-first install (migration 0002).
 //
 // Endpoints:
 //   1. POST /github/publications/start-a1
-//      → { formToken, appOmaId, setupUrl, webhookUrl, suggestedAppName,
-//          recommendedPermissions, recommendedSubscriptions }
+//      → INSERT a github_publications shell row (status='pending_setup',
+//         app_oma_id pre-allocated). Returns { formToken, publicationId,
+//         appOmaId, setupUrl, webhookUrl, suggestedAppName,
+//         recommendedPermissions, recommendedSubscriptions,
+//         manifestStartUrl }.
 //   2. POST /github/publications/credentials
-//      → { url, appOmaId, appSlug, botLogin, setupUrl, webhookUrl }
-//   3. GET  /github/install/app/:appOmaId/callback
-//      → completes install, redirects to Console returnUrl
+//      → PATCH client_id / client_secret / app_id / app_slug / bot_login /
+//         webhook_secret / private_key onto the publication row (encrypted
+//         server-side). Returns { url, publicationId, appOmaId, appSlug,
+//         botLogin, setupUrl, webhookUrl }.
+//   3. GET /github/oauth/pub/:pubId/callback (gateway routes)
+//      → completes install: mints installation token, vault, binds back
+//         onto the publication, redirects to Console returnUrl.
 //
 // /start-a1 and /handoff-link require x-internal-secret. /credentials is
-// reachable directly from the user's browser (admin handoff) — auth there is
-// the formToken JWT itself.
+// reachable directly from the user's browser (admin handoff) — auth there
+// is the formToken JWT itself.
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -173,6 +179,53 @@ app.post("/handoff-link", async (c) => {
 
   if (result.kind !== "step" || result.step !== "install_link") {
     return c.json({ error: "unexpected handoff result", result }, 500);
+  }
+  return c.json(result.data);
+});
+
+interface FormTokenBody {
+  /** Forwarded from apps/main; identifies the publication owner. */
+  userId: string;
+  /** Optional — defaults to a Console-deep link if absent. */
+  returnUrl?: string;
+}
+
+/**
+ * POST /github/publications/:id/form-token
+ *
+ * Re-issues a fresh formToken for an existing publication shell. Used by the
+ * Console wizard's refresh-resume path. apps/main has already verified that
+ * the calling user owns the publication (the gateway only re-checks that
+ * the publication exists and is in a resumable state).
+ */
+app.post("/:id/form-token", async (c) => {
+  if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const publicationId = c.req.param("id");
+  const body = await c.req.json<FormTokenBody>();
+  if (!body.userId) return c.json({ error: "userId required" }, 400);
+
+  const { github } = buildProviders(c.env);
+
+  let result;
+  try {
+    result = await github.continueInstall({
+      publicationId: null,
+      payload: {
+        kind: "reissue_form_token",
+        publicationId,
+        userId: body.userId,
+        returnUrl: body.returnUrl ?? "",
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "reissue_failed", details: msg }, 400);
+  }
+
+  if (result.kind !== "step" || result.step !== "credentials_form") {
+    return c.json({ error: "unexpected reissue result", result }, 500);
   }
   return c.json(result.data);
 });

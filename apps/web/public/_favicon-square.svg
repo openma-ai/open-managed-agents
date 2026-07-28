@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Square wrapper for the brand logo, used only as the rasterization
+     source for the PNG favicon set. Do not link this file directly —
+     the SVG favicon points at /logo.svg (the canonical brand asset).
+     The wrapper just centers logo.svg in a 512×512 frame with margin
+     so the rasterized PNGs aren't bleed-to-edge at small sizes. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="512" height="512" viewBox="0 0 512 512">
+  <!-- Canonical mark is 548:454. Keep a comfortable app-icon margin. -->
+  <image xlink:href="logo.svg" x="60" y="94" width="392" height="325"/>
+</svg>

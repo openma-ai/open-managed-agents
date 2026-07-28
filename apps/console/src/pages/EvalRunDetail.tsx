@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
+import { shortenId } from "../lib/format";
 import type { Trajectory } from "../lib/trajectory";
 import { rewardHeadline } from "../lib/trajectory";
 
@@ -74,7 +75,6 @@ function durationStr(start?: string, end?: string): string {
 export function EvalRunDetail() {
   const { id } = useParams<{ id: string }>();
   const { api } = useApi();
-  const nav = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   /** Cache of trajectory fetches keyed by session_id. Populated lazily when
    *  the user expands a task row — we don't pull every trial's trajectory
@@ -171,86 +171,100 @@ export function EvalRunDetail() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <button
-          onClick={() => nav("/evals")}
-          className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-        >
-          ← All runs
-        </button>
-      </div>
+    <div className="pl-3 pr-4 pt-3 pb-4 space-y-6">
+      {/* Page header — AppBreadcrumb above renders `Eval Runs > <run.id>`,
+          so the previous `← All runs` back-link + duplicated `<h1>{run.id}</h1>`
+          have been removed.
 
-      <div>
-        <div className="flex items-center gap-3 mb-1">
-          <h1 className="font-display text-xl font-semibold tracking-tight text-fg font-mono">{run.id}</h1>
-          <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(run.status)}`}>
-            {run.status}
+          Wireless treatment (matches SessionDetail): a status pill row,
+          then ONE horizontal metadata strip — no card outlines, no
+          per-metric framed boxes, no dividers between sections. Submitted
+          timestamp + pass/tasks/duration/agent/env all collapse into the
+          single strip below the pill. */}
+      <div className="space-y-2">
+        <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(run.status)}`}>
+          {run.status}
+        </span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-fg-muted">
+          <span>
+            Submitted{" "}
+            <span className="text-fg">
+              {new Date(run.started_at).toLocaleString(undefined, {
+                year: "numeric",
+                month: "numeric",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </span>
           </span>
-        </div>
-        <p className="text-fg-muted text-sm">Submitted {new Date(run.started_at).toLocaleString()}</p>
-      </div>
-
-      <div className="grid grid-cols-4 gap-3">
-        <div className="border border-border rounded-lg p-4">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Pass rate</div>
-          <div className="text-2xl font-semibold text-fg">
-            {totalTrials > 0 ? `${totalPass}/${totalTrials}` : "—"}
-          </div>
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Tasks</div>
-          <div className="text-2xl font-semibold text-fg">
-            {run.completed_count}/{run.task_count}
-          </div>
-          {run.failed_count > 0 && (
-            <div className="text-danger text-xs mt-0.5">{run.failed_count} failed</div>
-          )}
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Duration</div>
-          <div className="text-2xl font-semibold text-fg">{durationStr(run.started_at, run.ended_at)}</div>
-        </div>
-        <div className="border border-border rounded-lg p-4">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Started</div>
-          <div className="text-sm font-mono text-fg-muted" title={run.started_at}>
-            {new Date(run.started_at).toLocaleTimeString()}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="border border-border rounded-lg p-3">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Agent</div>
-          <Link
-            to={`/agents/${run.agent_id}`}
-            className="font-mono text-sm text-brand hover:underline"
-          >
-            {run.agent_id}
-          </Link>
-        </div>
-        <div className="border border-border rounded-lg p-3">
-          <div className="text-xs text-fg-subtle uppercase tracking-wider mb-1">Environment</div>
-          <span className="font-mono text-sm text-fg-muted">{run.environment_id}</span>
+          <span className="text-fg-subtle">·</span>
+          <span>
+            Pass{" "}
+            <span className="text-fg font-medium">
+              {totalTrials > 0 ? `${totalPass}/${totalTrials}` : "—"}
+            </span>
+          </span>
+          <span className="text-fg-subtle">·</span>
+          <span>
+            Tasks{" "}
+            <span className="text-fg font-medium">
+              {run.completed_count}/{run.task_count}
+            </span>
+            {run.failed_count > 0 && (
+              <span className="text-danger"> ({run.failed_count} failed)</span>
+            )}
+          </span>
+          <span className="text-fg-subtle">·</span>
+          <span>
+            Duration{" "}
+            <span className="text-fg font-medium">{durationStr(run.started_at, run.ended_at)}</span>
+          </span>
+          <span className="text-fg-subtle">·</span>
+          <span className="inline-flex items-center gap-1">
+            <span>Agent</span>
+            <Link
+              to={`/agents/${run.agent_id}`}
+              className="font-mono text-xs text-fg hover:text-brand"
+              title={run.agent_id}
+            >
+              {shortenId(run.agent_id)}
+            </Link>
+          </span>
+          <span className="text-fg-subtle">·</span>
+          <span className="inline-flex items-center gap-1">
+            <span>Env</span>
+            <Link
+              to={`/environments/${run.environment_id}`}
+              className="font-mono text-xs text-fg hover:text-brand"
+              title={run.environment_id}
+            >
+              {shortenId(run.environment_id)}
+            </Link>
+          </span>
         </div>
       </div>
 
       {run.error && (
-        <div className="border border-danger-subtle bg-danger-subtle/40 rounded-lg p-3">
+        <div className="bg-danger-subtle/40 rounded-lg p-3">
           <div className="text-sm font-semibold text-danger mb-1">Run-level error</div>
           <pre className="text-xs whitespace-pre-wrap text-fg">{run.error}</pre>
         </div>
       )}
 
-      <div className="border border-border rounded-lg overflow-x-auto">
-        <table className="w-full text-sm">
+      {/* Task list — pill-row recipe lifted from DataTable: border-separate
+          + border-spacing-y-1.5, body rows tinted bg-bg-surface/60 with
+          rounded first/last cells, no row borders, no table outline.
+          Header row is plain <thead> with small muted text — no border-b. */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-separate border-spacing-y-1.5">
           <thead>
-            <tr className="bg-bg-surface text-fg-subtle text-xs font-medium uppercase tracking-wider">
-              <th className="w-8 px-2 py-2.5" />
-              <th className="text-left px-4 py-2.5">Task</th>
-              <th className="text-left px-4 py-2.5">Status</th>
-              <th className="text-left px-4 py-2.5">Pass</th>
-              <th className="text-left px-4 py-2.5">Trials</th>
+            <tr className="text-fg-muted text-xs font-medium">
+              <th className="w-8 px-3 text-left" />
+              <th className="text-left px-3">Task</th>
+              <th className="text-left px-3">Status</th>
+              <th className="text-left px-3">Pass</th>
+              <th className="text-left px-3">Trials</th>
             </tr>
           </thead>
           <tbody>
@@ -259,27 +273,31 @@ export function EvalRunDetail() {
               return [
                 <tr
                   key={t.id}
-                  className="border-t border-border hover:bg-bg-surface cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                  className="bg-bg-surface/60 hover:bg-bg-surface cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                   onClick={() => toggleExpand(t.id)}
                 >
-                  <td className="text-fg-subtle px-2 py-3 text-center">{isOpen ? "▾" : "▸"}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-fg">{t.id}</td>
-                  <td className="px-4 py-3">
+                  <td className="text-fg-subtle px-3 py-2 text-center rounded-l-lg">{isOpen ? "▾" : "▸"}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-fg">{t.id}</td>
+                  <td className="px-3 py-2">
                     <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(t.status)}`}>
                       {t.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-fg font-medium">
+                  <td className="px-3 py-2 text-fg font-medium">
                     {(t.trial_pass_count ?? 0)}/{t.trial_total ?? t.trials.length}
                   </td>
-                  <td className="px-4 py-3 text-xs text-fg-muted">
+                  <td className="px-3 py-2 text-xs text-fg-muted rounded-r-lg">
                     {t.trials.map(tr => tr.status).join(", ")}
                   </td>
                 </tr>,
                 isOpen && (
-                  <tr key={`${t.id}-trials`} className="border-t border-border bg-bg-surface">
-                    <td />
-                    <td colSpan={4} className="px-4 py-3 space-y-3">
+                  // Expansion sits as its own subtle pill directly below the
+                  // task pill — 6 px row gap (from border-spacing-y-1.5) is
+                  // enough proximity to read as "detail of the row above"
+                  // without needing a connecting border.
+                  <tr key={`${t.id}-trials`} className="bg-bg-surface/30">
+                    <td className="rounded-l-lg" />
+                    <td colSpan={4} className="px-3 py-3 space-y-3 rounded-r-lg">
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                         <thead>
@@ -372,7 +390,7 @@ export function EvalRunDetail() {
                             .map(tr => (
                               <pre
                                 key={tr.trial_index}
-                                className="mt-1 p-2 bg-bg border border-border rounded text-[11px] overflow-auto max-h-64 text-fg"
+                                className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-64 text-fg"
                               >
                                 trial {tr.trial_index}:{"\n"}
                                 {tr.output_tail}
@@ -386,7 +404,7 @@ export function EvalRunDetail() {
                           <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg">
                             setup_script
                           </summary>
-                          <pre className="mt-1 p-2 bg-bg border border-border rounded text-[11px] overflow-auto max-h-48 text-fg">
+                          <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-48 text-fg">
                             {t.spec.setup_script}
                           </pre>
                         </details>
@@ -396,7 +414,7 @@ export function EvalRunDetail() {
                         <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg">
                           first message
                         </summary>
-                        <pre className="mt-1 p-2 bg-bg border border-border rounded text-[11px] overflow-auto max-h-48 whitespace-pre-wrap text-fg">
+                        <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-48 whitespace-pre-wrap text-fg">
                           {t.spec.messages[0]}
                         </pre>
                       </details>
@@ -482,7 +500,7 @@ function RewardBreakdown({
 }) {
   const entries = Object.entries(reward.raw_rewards);
   return (
-    <div className="border border-border rounded p-2 bg-bg">
+    <div className="rounded p-2 bg-bg-surface/60">
       <div className="text-[11px] text-fg-subtle mb-1 flex items-baseline gap-2">
         <span>trial {trialIndex}</span>
         {reward.verifier_id && (
@@ -499,7 +517,7 @@ function RewardBreakdown({
           <table className="w-full text-[11px]">
             <tbody>
               {entries.map(([k, v]) => (
-                <tr key={k} className="border-t border-border/40">
+                <tr key={k}>
                   <td className="py-0.5 pr-2 font-mono text-fg-muted">{k}</td>
                   <td className="py-0.5 text-right text-fg">{Number.isFinite(v) ? v.toFixed(2) : String(v)}</td>
                 </tr>

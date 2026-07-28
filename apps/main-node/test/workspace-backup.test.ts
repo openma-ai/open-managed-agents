@@ -13,10 +13,12 @@ import { promises as fs, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import Database from "better-sqlite3";
+import BetterSqlite3 from "better-sqlite3";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import type { SqlClient } from "@open-managed-agents/sql-client";
-import { applySchema } from "@open-managed-agents/schema";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { fileURLToPath } from "node:url";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { NodeWorkspaceBackupService } from "../src/lib/node-workspace-backup.js";
@@ -83,8 +85,14 @@ describe("NodeWorkspaceBackupService", () => {
 
   beforeEach(async () => {
     dbPath = join(tmpdir(), `oma-wsb-${randomBytes(6).toString("hex")}.db`);
+    const raw = new BetterSqlite3(dbPath);
+    raw.exec("PRAGMA foreign_keys = OFF");
+    const drz = drizzle(raw);
+    const migrationsFolder = fileURLToPath(
+      new URL("../migrations-sqlite", import.meta.url),
+    );
+    migrate(drz, { migrationsFolder });
     sql = await createBetterSqlite3SqlClient(dbPath);
-    await applySchema({ sql, dialect: "sqlite" });
     blobs = new InMemoryBlobStore();
     svc = new NodeWorkspaceBackupService({ sql, blobs });
     sandbox = new FakeSandbox();
@@ -109,13 +117,16 @@ describe("NodeWorkspaceBackupService", () => {
     expect(handle!.id).toMatch(/^wsb_/);
     expect(handle!.dir).toContain("workspace-backups/tn_1/sess_1/");
 
-    // Row landed in workspace_backups.
+    // Row landed in workspace_backups (post-0011 shape: handle JSON +
+    // source_session_id, no blob_key).
     const r = await sql
-      .prepare(`SELECT id, blob_key, size_bytes FROM workspace_backups WHERE session_id = ?`)
+      .prepare(
+        `SELECT id, backup_handle, created_at FROM workspace_backups WHERE source_session_id = ?`,
+      )
       .bind("sess_1")
-      .first<{ id: string; blob_key: string; size_bytes: number }>();
+      .first<{ id: number; backup_handle: string; created_at: number }>();
     expect(r).not.toBeNull();
-    expect(r!.size_bytes).toBeGreaterThan(0);
+    expect(r!.backup_handle).toContain("workspace-backups/tn_1/sess_1/");
 
     // latest() returns it.
     const latest = await svc.latest({ sessionId: "sess_1", tenantId: "tn_1" });

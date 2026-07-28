@@ -7,6 +7,11 @@
 export type PublicationStatus =
   | "live"
   | "pending_setup"
+  /** GitHub-only intermediate: encrypted credentials staged on the row,
+   *  install URL not yet rendered. Slack adapter elides this step (jumps
+   *  pending_setup → awaiting_install on first setCredentials) but the
+   *  type accepts it for symmetry. */
+  | "credentials_filled"
   | "awaiting_install"
   | "needs_reauth"
   | "unpublished";
@@ -27,6 +32,11 @@ const MAP: Record<PublicationStatus, { label: string; cls: string; dot: string }
     label: "Pending setup",
     cls: "text-fg-muted bg-bg-surface",
     dot: "bg-fg-muted",
+  },
+  credentials_filled: {
+    label: "Credentials staged",
+    cls: "text-warning bg-warning-subtle",
+    dot: "bg-warning",
   },
   awaiting_install: {
     label: "Awaiting install",

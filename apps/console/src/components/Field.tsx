@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { Label } from "@/components/ui/label";
+
 interface FieldProps {
   /** Visible label text. Rendered as `<label htmlFor>`. */
   label?: ReactNode;
@@ -39,6 +41,10 @@ interface FieldProps {
  * The cloning approach lets callsites use any form-control element
  * without a pre-defined wrapper. The control's existing `id`, if any,
  * wins over the generated one, so callers can override.
+ *
+ * Visual layer leans on shadcn `Label`; everything else (cloneElement
+ * threading, hint/error tone) stays here because shadcn doesn't ship
+ * an auto-binding form wrapper at this granularity.
  */
 export function Field({ label, hint, error, className, children }: FieldProps) {
   const generatedId = useId();
@@ -64,12 +70,12 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
   return (
     <div className={className}>
       {label && (
-        <label
+        <Label
           htmlFor={inputId}
           className="block text-[13px] font-medium text-fg mb-1.5"
         >
           {label}
-        </label>
+        </Label>
       )}
       {childWithProps}
       {error ? (

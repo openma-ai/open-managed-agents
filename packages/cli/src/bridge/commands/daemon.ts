@@ -23,6 +23,10 @@ import { detectLocalSkills } from "../lib/local-skills.js";
 import { printBanner, log, c } from "../lib/style.js";
 import { PKG_VERSION } from "../lib/version.js";
 import WebSocket from "ws";
+import {
+  decodeSessionCommand,
+  type SessionWireMessage,
+} from "@openma/common/session-kernel";
 
 // CF Workers WS connections to *.workers.dev (lane URLs) idle out fast —
 // observed ~5-30s before TCP RST without keep-alive traffic. Even prod custom
@@ -128,15 +132,32 @@ export async function runDaemon(): Promise<void> {
     process.stderr.write(`! pid file write failed (non-fatal): ${(e as Error).message}\n`);
   }
 
-  // SIGHUP — `oma bridge agents refresh`. Side-channel re-detection: do
-  // NOT touch the WS, do NOT restart sessions, do NOT kill ACP children.
-  // Just re-fetch the official ACP registry, re-snapshot npm/uv installs,
-  // re-scan local skills, and re-send the hello manifest so the relay's
-  // runtime row reflects whatever the user just installed (or removed).
+  // SIGHUP — `oma bridge agents refresh` AND `oma bridge refresh`. Both
+  // are side-channel reloads: do NOT touch the WS, do NOT restart
+  // sessions, do NOT kill ACP children. Two things to refresh:
+  //   1. Agent detection — re-fetch official ACP registry, re-snapshot
+  //      npm/uv installs, re-scan local skills, re-send the hello
+  //      manifest so the relay reflects new wrappers the user installed.
+  //   2. Per-tenant credentials — re-read the creds file and push the
+  //      updated tenant key map into SessionManager so newly-authorized
+  //      tenants become sessionable without a daemon restart. The creds
+  //      file may also have been replaced with a new token via setup
+  //      --force, but we deliberately DON'T reattach the WS here — the
+  //      next reconnect cycle picks the new token up. (Tenant key
+  //      changes happen far more often than token rotation, and reloading
+  //      keys with stale `creds` in scope is harmless because the WS
+  //      uses the original auth bearer only.)
   process.on("SIGHUP", () => {
     void (async () => {
-      log.step("SIGHUP — refreshing agent detection");
+      log.step("SIGHUP — refreshing agent detection + credentials");
       try {
+        const freshCreds = await readCreds();
+        if (freshCreds) {
+          sessions.setTenantKeys(freshCreds.tenants);
+          log.ok(`re-loaded credentials  (${freshCreds.tenants.length} tenants)`);
+        } else {
+          log.warn("credentials file disappeared mid-SIGHUP; tenant keys unchanged");
+        }
         await loadRegistry({ cachePath, forceRefresh: true });
         const agents = (await detectAll()).map((a) => ({ id: a.id, binary: a.spec.command }));
         const localSkillsDetailed = await detectLocalSkills();
@@ -173,13 +194,17 @@ export async function runDaemon(): Promise<void> {
     /* placeholder — replaced on first attach via setSender */
   });
   // Wire daemon's identity into SessionManager so it can fetch session
-  // bundles from main and inject the agent API key into ACP children's MCP
-  // proxy auth (no spawn-env LLM key — user manages that themselves).
+  // bundles from main and stamp the right per-tenant API key onto ACP
+  // children's MCP proxy auth (no spawn-env LLM key — user manages that
+  // themselves). The per-tenant `oma_*` keys come from setTenantKeys
+  // below, NOT from setSpawnEnv — keys live in a tenant-keyed map so a
+  // multi-tenant daemon can hand the right one to each spawned ACP
+  // child based on the session's tenant_id pin.
   sessions.setSpawnEnv({
-    apiKey: creds.agentApiKey ?? "",
     apiUrl: creds.serverUrl,
     runtimeToken: creds.token,
   });
+  sessions.setTenantKeys(creds.tenants);
 
   while (!stopping) {
     try {
@@ -234,28 +259,41 @@ export async function runDaemon(): Promise<void> {
       });
 
       ws.on("message", (data: Buffer) => {
-        let msg: { type?: string; [k: string]: unknown };
+        let msg: SessionWireMessage;
         try { msg = JSON.parse(data.toString()); } catch { return; }
         process.stderr.write(`← server: ${msg.type ?? "?"}\n`);
-        switch (msg.type) {
-          case "welcome":
-          case "pong":
-            return;
+        if (msg.type === "welcome" || msg.type === "pong") return;
+        const command = decodeSessionCommand(msg);
+        if (!command) {
+          process.stderr.write(`! unhandled server message: ${msg.type ?? "?"}\n`);
+          return;
+        }
+        switch (command.type) {
           case "session.start":
-            process.stderr.write(`  session.start sid=${(msg.session_id as string)?.slice(0, 8)} agent=${msg.agent_id}\n`);
-            void sessions.start(msg as never);
+            process.stderr.write(`  session.start sid=${command.sessionId.slice(0, 8)} agent=${command.agentId}\n`);
+            void sessions.start({
+              session_id: command.sessionId,
+              agent_id: command.agentId,
+              ...(typeof msg.tenant_id === "string" ? { tenant_id: msg.tenant_id } : {}),
+              ...(command.acpSessionId
+                ? { resume: { acp_session_id: command.acpSessionId } }
+                : {}),
+            });
             return;
           case "session.prompt":
-            void sessions.prompt(msg as never);
+            void sessions.prompt({
+              session_id: command.sessionId,
+              turn_id: command.turnId,
+              text: command.text,
+              ...(typeof msg.tenant_id === "string" ? { tenant_id: msg.tenant_id } : {}),
+            });
             return;
           case "session.cancel":
-            sessions.cancel(msg.session_id as string, msg.turn_id as string);
+            sessions.cancel(command.sessionId, command.turnId);
             return;
           case "session.dispose":
-            void sessions.dispose(msg.session_id as string);
+            void sessions.dispose(command.sessionId);
             return;
-          default:
-            process.stderr.write(`! unhandled server message: ${msg.type ?? "?"}\n`);
         }
       });
 

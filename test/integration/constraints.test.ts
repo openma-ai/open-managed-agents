@@ -138,7 +138,7 @@ describe("Constraint validations", () => {
     });
     expect(createRes.status).toBe(400);
     const body = (await createRes.json()) as any;
-    expect(body.error).toContain("100KB");
+    expect(body.error?.message ?? body.error).toContain("100KB");
 
     // Content exactly at limit should succeed
     const okContent = "x".repeat(100 * 1024);
@@ -156,7 +156,7 @@ describe("Constraint validations", () => {
     );
     expect(updateRes.status).toBe(400);
     const updateBody = (await updateRes.json()) as any;
-    expect(updateBody.error).toContain("100KB");
+    expect(updateBody.error?.message ?? updateBody.error).toContain("100KB");
   });
 
   // ----------------------------------------------------------
@@ -190,7 +190,7 @@ describe("Constraint validations", () => {
     });
     expect(overRes.status).toBe(400);
     const overBody = (await overRes.json()) as any;
-    expect(overBody.error).toContain("20");
+    expect(overBody.error?.message ?? overBody.error).toContain("20");
   });
 
   // ----------------------------------------------------------
@@ -216,7 +216,7 @@ describe("Constraint validations", () => {
     });
     expect(dup.status).toBe(409);
     const dupBody = (await dup.json()) as any;
-    expect(dupBody.error).toContain("mcp_server_url");
+    expect(dupBody.error?.message ?? dupBody.error).toContain("mcp_server_url");
   });
 
   // ----------------------------------------------------------
@@ -234,7 +234,7 @@ describe("Constraint validations", () => {
     const deleteRes = await del(`/v1/environments/${env.id}`);
     expect(deleteRes.status).toBe(409);
     const deleteBody = (await deleteRes.json()) as any;
-    expect(deleteBody.error).toContain("sessions");
+    expect(deleteBody.error?.message ?? deleteBody.error).toContain("sessions");
 
     // After archiving the session, delete should succeed
     await post(`/v1/sessions/${session.id}/archive`, {});
@@ -280,7 +280,7 @@ describe("Constraint validations", () => {
     });
     expect(overRes.status).toBe(400);
     const overBody = (await overRes.json()) as any;
-    expect(overBody.error).toContain("100");
+    expect(overBody.error?.message ?? overBody.error).toContain("100");
   });
 
   // ----------------------------------------------------------

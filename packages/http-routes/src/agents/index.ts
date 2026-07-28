@@ -80,6 +80,7 @@ function formatAgent(agent: AgentConfig) {
     skills: agent.skills || [],
     mcp_servers: agent.mcp_servers || [],
     multiagent,
+    callable_agents: callable,
     metadata: agent.metadata || {},
     archived_at: agent.archived_at || null,
     ...(Object.keys(oma).length > 0 ? { _oma: oma } : {}),
@@ -165,8 +166,10 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       description?: string;
       mcp_servers?: AgentConfig["mcp_servers"];
       skills?: AgentConfig["skills"];
+      callable_agents?: AgentConfig["callable_agents"];
       multiagent?: { type: "coordinator"; agents: unknown[] } | null;
       metadata?: Record<string, unknown>;
+      harness?: string;
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" };
         harness?: string;
@@ -180,9 +183,9 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
 
     const body = {
       ...raw,
-      callable_agents: ma.list,
+      callable_agents: ma.list ?? raw.callable_agents,
       aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness,
+      harness: raw._oma?.harness ?? raw.harness,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };
@@ -238,18 +241,95 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
     const limitStr = c.req.query("limit");
     const limit = limitStr ? Math.min(Math.max(1, Number(limitStr)), 100) : 50;
     const cursor = c.req.query("cursor") ?? undefined;
-    const includeArchived = c.req.query("include_archived") === "true";
+    const includeArchivedRaw = c.req.query("include_archived");
+    const includeArchived = includeArchivedRaw === "true";
     const q = c.req.query("q") ?? undefined;
+    const orderRaw = c.req.query("order");
+    if (orderRaw !== undefined && orderRaw !== "asc" && orderRaw !== "desc") {
+      return c.json({ error: "order must be asc or desc" }, 400);
+    }
+
+    // status: enum filter on archive state. Whitelist strictly — any
+    // unknown value is a 400, NOT a silent fallback to "any". Allowing
+    // arbitrary strings here would mask client bugs (typo'd "active "
+    // returning every row looks like a feature).
+    const statusRaw = c.req.query("status");
+    let status: "active" | "archived" | "any" | undefined;
+    if (statusRaw !== undefined) {
+      if (statusRaw === "active" || statusRaw === "archived" || statusRaw === "any") {
+        status = statusRaw;
+      } else {
+        return c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_status",
+              message: `Invalid status '${statusRaw}'; expected one of active|archived|any.`,
+            },
+          },
+          400,
+        );
+      }
+    }
+
+    // created_after / created_before: ISO timestamps → epoch ms. Reject
+    // unparseable values explicitly so the client knows it's a malformed
+    // request, not just "no results".
+    const parseMs = (
+      raw: string | undefined,
+      field: string,
+    ): { value: number | undefined; err?: Response } => {
+      if (raw === undefined) return { value: undefined };
+      const ms = Date.parse(raw);
+      if (Number.isNaN(ms)) {
+        return {
+          value: undefined,
+          err: c.json(
+            {
+              error: {
+                type: "invalid_request_error",
+                code: "invalid_timestamp",
+                message: `Invalid ${field} '${raw}'; expected ISO-8601 timestamp.`,
+              },
+            },
+            400,
+          ),
+        };
+      }
+      return { value: ms };
+    };
+    const createdAfterRes = parseMs(c.req.query("created_after"), "created_after");
+    if (createdAfterRes.err) return createdAfterRes.err;
+    const createdBeforeRes = parseMs(c.req.query("created_before"), "created_before");
+    if (createdBeforeRes.err) return createdBeforeRes.err;
 
     const page = await services.agents.listPage({
       tenantId: c.var.tenant_id,
       limit,
       ...(cursor ? { cursor } : {}),
-      includeArchived,
+      // Prefer the new `status` filter. Keep includeArchived as a back-
+      // compat fallback (used by older console builds that only know the
+      // checkbox). The service layer maps includeArchived→status when
+      // status is unset, so passing both is fine.
+      ...(status !== undefined ? { status } : {}),
+      ...(includeArchivedRaw !== undefined ? { includeArchived } : {}),
       ...(q ? { q } : {}),
+      ...(createdAfterRes.value !== undefined
+        ? { createdAfter: createdAfterRes.value }
+        : {}),
+      ...(createdBeforeRes.value !== undefined
+        ? { createdBefore: createdBeforeRes.value }
+        : {}),
     });
+    const items = [...page.items];
+    if (orderRaw === "asc") {
+      items.sort((a, b) => {
+        const created = a.created_at.localeCompare(b.created_at);
+        return created !== 0 ? created : a.id.localeCompare(b.id);
+      });
+    }
     return c.json({
-      data: page.items.map(toApiAgent),
+      data: items.map(toApiAgent),
       ...(page.nextCursor ? { next_cursor: page.nextCursor } : {}),
       has_more: !!page.nextCursor,
     });
@@ -284,9 +364,11 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       description?: string | null;
       mcp_servers?: AgentConfig["mcp_servers"] | null;
       skills?: AgentConfig["skills"] | null;
+      callable_agents?: AgentConfig["callable_agents"] | null;
       multiagent?: { type: "coordinator"; agents: unknown[] } | null;
       metadata?: Record<string, unknown>;
       version?: number;
+      harness?: string;
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" } | null;
         harness?: string;
@@ -302,13 +384,15 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       const ma = multiagentToCallableAgents(raw.multiagent);
       if (ma.error) return c.json({ error: ma.error }, 422);
       callableAgents = ma.list;
+    } else if (raw.callable_agents !== undefined) {
+      callableAgents = raw.callable_agents;
     }
 
     const body = {
       ...raw,
       callable_agents: callableAgents,
       aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness,
+      harness: raw._oma?.harness ?? raw.harness,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };

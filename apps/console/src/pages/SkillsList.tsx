@@ -1,10 +1,14 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { TrashIcon } from "lucide-react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
-import { Button } from "../components/Button";
-import { EmptyState } from "../components/EmptyState";
-import { Page } from "../components/Page";
+import { Button } from "@/components/ui/button";
+import { PopoverContent } from "@/components/ui/popover";
+import { DataTable, type ColumnDef } from "../components/DataTable";
+import { FacetedFilter } from "../components/FacetedFilter";
+import { FilterChip } from "../components/FilterChip";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 
 /* ---------- types ---------- */
 
@@ -35,6 +39,14 @@ interface VersionDetail {
   files: SkillFile[];
 }
 
+type SourceValue = "any" | "anthropic" | "custom";
+
+const SOURCE_OPTIONS: { value: SourceValue; label: string }[] = [
+  { value: "any", label: "All" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "custom", label: "Custom" },
+];
+
 /* ---------- constants ---------- */
 
 // Mirrors the default UPLOAD_MAX_BYTES on the server (apps/main/src/quotas.ts).
@@ -63,6 +75,15 @@ function isZipFile(file: File): boolean {
 export function SkillsList() {
   const { api } = useApi();
 
+  /* Server-driven filter state. `source` flows into skillsParams below
+   * → useApiQuery reruns when params change → list reflects exactly
+   * what the server returned (no client-side split on s.source). */
+  const [source, setSource] = useState<SourceValue>("any");
+  const skillsParams = useMemo(
+    () => (source !== "any" ? { source } : {}),
+    [source],
+  );
+
   /* list state — TQ owns the fetch lifecycle. `load()` becomes
    * `refetch`, which kicks off a background refetch that leaves
    * the prior items on screen until the new payload lands. */
@@ -70,7 +91,7 @@ export function SkillsList() {
     data: skillsRes,
     isLoading: loading,
     refetch: refetchSkills,
-  } = useApiQuery<{ data: Skill[] }>("/v1/skills");
+  } = useApiQuery<{ data: Skill[] }>("/v1/skills", skillsParams);
   const skills = skillsRes?.data ?? [];
   const load = () => {
     void refetchSkills();
@@ -98,14 +119,6 @@ export function SkillsList() {
   const [nvDragOver, setNvDragOver] = useState(false);
   const [nvError, setNvError] = useState("");
   const nvInputRef = useRef<HTMLInputElement>(null);
-
-  /* clawhub install */
-  const [showClawHub, setShowClawHub] = useState(false);
-  const [chQuery, setChQuery] = useState("");
-  const [chResults, setChResults] = useState<Array<{ slug: string; name: string; description: string }>>([]);
-  const [chSearching, setChSearching] = useState(false);
-  const [chInstalling, setChInstalling] = useState("");
-  const [chError, setChError] = useState("");
 
   /* ---- loaders ---- */
 
@@ -254,42 +267,16 @@ export function SkillsList() {
     } catch {}
   };
 
-  /* ---- clawhub ---- */
-
-  const searchClawHub = async () => {
-    if (!chQuery.trim()) return;
-    setChSearching(true);
-    setChError("");
+  // Row-level delete invoked from the per-row actions menu. Separate from
+  // the modal's deleteSkill because the row's confirm copy uses the
+  // skill's own title and there's no detail dialog to close after.
+  const deleteSkillById = async (skill: Skill) => {
+    const name = skill.display_title || skill.name;
+    if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
     try {
-      const res = await api<{ data: Array<{ slug: string; name: string; description: string }> }>(
-        `/v1/clawhub/search?q=${encodeURIComponent(chQuery)}`
-      );
-      setChResults(res.data || []);
-    } catch (e: any) {
-      setChError(e.message || "Search failed");
-      setChResults([]);
-    } finally {
-      setChSearching(false);
-    }
-  };
-
-  const installFromClawHub = async (slug: string) => {
-    setChInstalling(slug);
-    setChError("");
-    try {
-      await api("/v1/clawhub/install", {
-        method: "POST",
-        body: JSON.stringify({ slug }),
-      });
-      setShowClawHub(false);
-      setChQuery("");
-      setChResults([]);
+      await api(`/v1/skills/${skill.id}`, { method: "DELETE" });
       load();
-    } catch (e: any) {
-      setChError(e.message || "Install failed");
-    } finally {
-      setChInstalling("");
-    }
+    } catch {}
   };
 
   /* ---- helpers ---- */
@@ -297,145 +284,156 @@ export function SkillsList() {
   const inputCls =
     "w-full border border-border rounded-lg px-3 py-2 min-h-11 sm:min-h-0 text-sm outline-none focus:border-border-strong transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] bg-bg text-fg";
 
-  const anthropicSkills = skills.filter((s) => s.source === "anthropic");
-  const customSkills = skills.filter((s) => s.source === "custom");
+  // TanStack column defs. Single table for both Anthropic built-in + custom
+  // skills; the Source column lets the user tell them apart at a glance.
+  // No click sort / no per-column filter — Source filter chip drives the
+  // server `source` param instead.
+  const columns = useMemo<ColumnDef<Skill>[]>(
+    () => [
+      {
+        id: "name",
+        accessorKey: "display_title",
+        header: "Name",
+        cell: ({ row }) => (
+          <div className="min-w-0">
+            <div className="font-medium text-fg truncate">
+              {row.original.display_title || row.original.name}
+            </div>
+            <div className="text-xs text-fg-subtle font-mono truncate">
+              {row.original.source === "anthropic" ? row.original.name : row.original.id}
+            </div>
+          </div>
+        ),
+        enableHiding: false,
+      },
+      {
+        id: "description",
+        accessorKey: "description",
+        header: "Description",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">{row.original.description}</span>
+        ),
+      },
+      {
+        id: "source",
+        accessorKey: "source",
+        header: "Source",
+        cell: ({ row }) =>
+          row.original.source === "anthropic" ? (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-subtle text-warning">
+              built-in
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-bg-surface text-fg-muted">
+              custom
+            </span>
+          ),
+      },
+      {
+        id: "version",
+        accessorFn: (s) => s.latest_version,
+        header: "Version",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">v{row.original.latest_version}</span>
+        ),
+      },
+      {
+        id: "created",
+        accessorFn: (s) => s.created_at,
+        header: "Created",
+        cell: ({ row }) => (
+          <span className="text-fg-muted">
+            {new Date(row.original.created_at).toLocaleDateString()}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const s = row.original;
+          // Anthropic built-in skills aren't user-editable; render the
+          // item as disabled so the menu layout stays uniform across
+          // rows but the user can't trigger a 4xx.
+          const isBuiltIn = s.source === "anthropic";
+          return (
+            <RowActionsMenu
+              label={`Actions for ${s.display_title || s.name}`}
+              actions={[
+                {
+                  label: "Delete",
+                  icon: <TrashIcon className="size-4" />,
+                  destructive: true,
+                  disabled: isBuiltIn,
+                  onSelect: () => {
+                    void deleteSkillById(s);
+                  },
+                },
+              ]}
+            />
+          );
+        },
+        enableHiding: false,
+        size: 56,
+      },
+    ],
+    [],
+  );
+
+  // Active-filter chip displays — kept undefined when matching the default
+  // so the chip reads "Source ▾" rather than "Source: All ▾". The clear-X
+  // only renders when the chip is in non-default state.
+  const sourceDisplay =
+    source === "any" ? undefined : SOURCE_OPTIONS.find((o) => o.value === source)?.label;
+
+  const filters = (
+    <FilterChip
+      label="Source"
+      active={source !== "any"}
+      display={sourceDisplay}
+      onClear={() => setSource("any")}
+    >
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        collisionPadding={8}
+        className="w-48 p-0"
+      >
+        <FacetedFilter
+          options={SOURCE_OPTIONS}
+          value={source}
+          onValueChange={(v) => setSource(v as SourceValue)}
+          searchPlaceholder="Source..."
+        />
+      </PopoverContent>
+    </FilterChip>
+  );
+
+  // Built-in (anthropic) skills aren't user-editable; click on those rows
+  // is a no-op so we don't open a half-empty detail dialog that would 404
+  // on its version fetches.
+  const handleRowClick = (s: Skill) => {
+    if (s.source === "custom") openDetail(s);
+  };
 
   /* ---- render ---- */
 
   return (
-    <Page>
-      {/* header */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="font-display text-xl font-semibold tracking-tight">
-            Skills
-          </h1>
-          <p className="text-fg-muted text-sm">
-            Manage pre-built and custom skills for your agents.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setShowClawHub(true)}>
-            ClawHub
-          </Button>
-          <Button onClick={() => setShowCreate(true)}>
-            + New skill
-          </Button>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="text-fg-subtle text-sm py-8 text-center">
-          Loading...
-        </div>
-      ) : skills.length === 0 ? (
-        <EmptyState
-          size="lg"
-          kind="skill"
-          title="No skills yet"
-          body="Create a skill to give your agents domain expertise."
-        />
-      ) : (
-        <>
-          {/* Anthropic built-in skills */}
-          {anthropicSkills.length > 0 && (
-            <>
-              <h3 className="text-sm font-medium text-fg mb-3">
-                Anthropic Pre-built Skills
-              </h3>
-              <div className="border border-border rounded-lg overflow-x-auto mb-6">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                      <th className="text-left px-4 py-2.5">Name</th>
-                      <th className="text-left px-4 py-2.5">Description</th>
-                      <th className="text-left px-4 py-2.5">Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {anthropicSkills.map((s) => (
-                      <tr
-                        key={s.id}
-                        className="border-t border-border"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-medium">
-                            {s.display_title || s.name}
-                          </div>
-                          <div className="text-xs text-fg-subtle font-mono">
-                            {s.name}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-fg-muted">
-                          {s.description}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-subtle text-warning">
-                            built-in
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-          {/* Custom skills */}
-          <h3 className="text-sm font-medium text-fg mb-3">
-            Custom Skills
-          </h3>
-          {customSkills.length === 0 ? (
-            <EmptyState
-              kind="skill"
-              title="No custom skills yet"
-              body="Upload a skill folder as a .zip with SKILL.md at the root."
-            />
-          ) : (
-            <div className="border border-border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-2.5">Name</th>
-                    <th className="text-left px-4 py-2.5">Description</th>
-                    <th className="text-left px-4 py-2.5">Version</th>
-                    <th className="text-left px-4 py-2.5">Created</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {customSkills.map((s) => (
-                    <tr
-                      key={s.id}
-                      onClick={() => openDetail(s)}
-                      className="border-t border-border hover:bg-bg-surface cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-medium">
-                          {s.display_title || s.name}
-                        </div>
-                        <div className="text-xs text-fg-subtle font-mono">
-                          {s.id}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted max-w-xs truncate">
-                        {s.description}
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted">
-                        v{s.latest_version}
-                      </td>
-                      <td className="px-4 py-3 text-fg-muted">
-                        {new Date(s.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-
+    <DataTable<Skill>
+      subtitle="Manage pre-built and custom skills for your agents."
+      createLabel="+ New skill"
+      onCreate={() => setShowCreate(true)}
+      filters={filters}
+      data={skills}
+      loading={loading}
+      getRowId={(s) => s.id}
+      onRowClick={handleRowClick}
+      columns={columns}
+      emptyTitle="No skills yet"
+      emptyKind="skill"
+      emptySubtitle="Create a skill to give your agents domain expertise."
+      emptyAction={<Button onClick={() => setShowCreate(true)}>+ New skill</Button>}
+    >
       {/* ===== Create Dialog ===== */}
       <Modal
         open={showCreate}
@@ -537,7 +535,7 @@ export function SkillsList() {
           <div className="space-y-5">
             {/* Actions */}
             <div className="flex justify-end">
-              <Button variant="danger" size="sm" onClick={deleteSkill}>
+              <Button variant="destructive" size="sm" onClick={deleteSkill}>
                 Delete
               </Button>
             </div>
@@ -727,66 +725,7 @@ export function SkillsList() {
           </div>
         ) : null}
       </Modal>
-
-      {/* ===== ClawHub Dialog ===== */}
-      <Modal
-        open={showClawHub}
-        onClose={() => { setShowClawHub(false); setChQuery(""); setChResults([]); setChError(""); }}
-        title="Install from ClawHub"
-        subtitle="Search and install community skills from clawhub.ai"
-        maxWidth="max-w-2xl"
-        footer={
-          <Button variant="ghost" onClick={() => { setShowClawHub(false); setChQuery(""); setChResults([]); setChError(""); }}>
-            Close
-          </Button>
-        }
-      >
-        <div className="space-y-4">
-          {chError && (
-            <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
-              {chError}
-            </div>
-          )}
-          <div className="flex gap-2">
-            <input
-              value={chQuery}
-              onChange={(e) => setChQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") searchClawHub(); }}
-              aria-label="Search ClawHub skills"
-              className={inputCls + " flex-1"}
-              placeholder="Search skills... e.g. git, docker, research"
-              autoFocus
-            />
-            <Button onClick={searchClawHub} disabled={chSearching || !chQuery.trim()}>
-              {chSearching ? "Searching..." : "Search"}
-            </Button>
-          </div>
-          {chResults.length > 0 && (
-            <div className="border border-border rounded-lg overflow-hidden max-h-80 overflow-y-auto">
-              {chResults.map((s) => (
-                <div key={s.slug} className="flex items-start justify-between gap-3 px-4 py-3 border-b border-border last:border-b-0 hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]">
-                  <div className="min-w-0">
-                    <div className="font-medium text-fg text-sm">{s.name || s.slug}</div>
-                    <div className="text-xs text-fg-subtle font-mono">{s.slug}</div>
-                    {s.description && <div className="text-xs text-fg-muted mt-0.5 line-clamp-2">{s.description}</div>}
-                  </div>
-                  <button
-                    onClick={() => installFromClawHub(s.slug)}
-                    disabled={chInstalling === s.slug}
-                    className="shrink-0 inline-flex items-center justify-center px-3 py-1 min-h-11 sm:min-h-0 text-xs font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                  >
-                    {chInstalling === s.slug ? "Installing..." : "Install"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {chResults.length === 0 && chQuery && !chSearching && (
-            <p className="text-sm text-fg-subtle text-center py-4">No results. Try a different search term.</p>
-          )}
-        </div>
-      </Modal>
-    </Page>
+    </DataTable>
   );
 }
 

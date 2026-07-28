@@ -1,11 +1,18 @@
 import {
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
+import { ChevronDownIcon, XIcon } from "lucide-react";
+
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /**
  * Local-options combobox: the input is the search box AND the value
@@ -16,9 +23,12 @@ import { createPortal } from "react-dom";
  * Differs from the cursor-paginated Combobox in this folder:
  *   - Options are passed in (no fetch).
  *   - Input is freely editable; not picking an option is fine.
- *   - Dropdown renders into document.body via createPortal so it
- *     escapes ancestor `overflow:hidden`/`overflow:auto` clipping
- *     (needed when the field lives inside a Modal body).
+ *   - Popover positioning is handed off to shadcn `Popover` (Radix-based)
+ *     so the dropdown escapes ancestor `overflow:hidden`/`overflow:auto`
+ *     clipping the same way the data-paginated Combobox does. Radix
+ *     Popover is wired to coexist with Radix Dialog scroll-lock, which
+ *     the previous hand-rolled portal-to-body approach had to fight via
+ *     a manual wheel handler.
  *
  * Pick semantics: `onPick(item)` fires when the user clicks an option.
  * Caller decides whether to also write the option's label/url back
@@ -65,32 +75,11 @@ export function LocalCombobox<T>({
   autoFocus,
 }: LocalComboboxProps<T>) {
   const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
-  // Track input position so the portal-rendered dropdown follows on
-  // resize/scroll. Uses `useLayoutEffect` to avoid a one-frame flicker
-  // when first opening (rect is set before the portal paints).
-  useLayoutEffect(() => {
-    if (!open) {
-      setRect(null);
-      return;
-    }
-    const update = () => {
-      const r = anchorRef.current?.getBoundingClientRect();
-      if (r) setRect({ top: r.bottom + 4, left: r.left, width: r.width });
-    };
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [open]);
-
-  // Esc closes.
+  // Esc closes — Popover normally handles this, but our trigger isn't the
+  // input itself (the input must stay focused while typing), so let Radix
+  // handle clicks-outside / focus-out and only opt in to Escape here.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -106,92 +95,89 @@ export function LocalCombobox<T>({
     : options;
 
   return (
-    <div className="relative" ref={anchorRef}>
-      <div
-        role="presentation"
-        className={className ?? DEFAULT_INPUT_CLS}
-        onClick={() => inputRef.current?.focus()}
-      >
-        {prefix}
-        <input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder}
-          disabled={disabled}
-          autoFocus={autoFocus}
-          role="combobox"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          aria-autocomplete="list"
-          className="flex-1 bg-transparent outline-none text-sm min-w-0"
-        />
-        {value && !disabled && (
-          <button
-            type="button"
-            // preventDefault on mousedown stops the input losing focus
-            // before our click handler runs (which would close the
-            // dropdown via blur, masking the clear).
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onChange("")}
-            className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-fg-muted hover:text-fg shrink-0 px-1"
-            aria-label="Clear"
-          >
-            ×
-          </button>
-        )}
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setOpen((v) => !v)}
-          disabled={disabled}
-          aria-expanded={open}
-          aria-label="Toggle options"
-          className={`inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 text-fg-muted hover:text-fg shrink-0 px-1 transition-transform ${open ? "rotate-180" : ""}`}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <div
+          role="presentation"
+          className={className ?? DEFAULT_INPUT_CLS}
+          onClick={() => inputRef.current?.focus()}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
-      </div>
-
-      {open && rect &&
-        createPortal(
-          <>
-            <div
-              className="fixed inset-0 z-[9998]"
-              onMouseDown={() => setOpen(false)}
-            />
-            <div
-              className="fixed bg-bg border border-border rounded-md shadow-xl z-[9999] overflow-y-auto"
-              style={{ top: rect.top, left: rect.left, width: rect.width, maxHeight }}
+          {prefix}
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onFocus={() => setOpen(true)}
+            placeholder={placeholder}
+            disabled={disabled}
+            autoFocus={autoFocus}
+            role="combobox"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-autocomplete="list"
+            className="flex-1 bg-transparent outline-none focus-visible:outline-none text-sm min-w-0"
+          />
+          {value && !disabled && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              // preventDefault on mousedown stops the input losing focus
+              // before our click handler runs.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onChange("")}
+              aria-label="Clear"
             >
-              {matches.length === 0 ? (
-                <div className="px-3 py-4 text-center text-fg-subtle text-xs">
-                  {emptyHint ?? "No matches"}
-                </div>
-              ) : (
-                matches.map((item) => (
-                  <button
-                    key={getKey(item)}
-                    type="button"
-                    // mousedown picks before the input loses focus.
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      onPick?.(item);
-                      setOpen(false);
-                    }}
-                    className="w-full text-left min-h-11 sm:min-h-0 hover:bg-bg-surface cursor-pointer"
-                  >
-                    {renderItem(item)}
-                  </button>
-                ))
-              )}
-            </div>
-          </>,
-          document.body,
+              <XIcon />
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setOpen((v) => !v)}
+            disabled={disabled}
+            aria-expanded={open}
+            aria-label="Toggle options"
+            className={cn(
+              "transition-transform",
+              open && "rotate-180",
+            )}
+          >
+            <ChevronDownIcon />
+          </Button>
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        className="p-0 w-[var(--radix-popover-trigger-width)] overflow-y-auto"
+        style={{ maxHeight }}
+      >
+        {matches.length === 0 ? (
+          <div className="px-3 py-4 text-center text-fg-subtle text-xs">
+            {emptyHint ?? "No matches"}
+          </div>
+        ) : (
+          matches.map((item) => (
+            <button
+              key={getKey(item)}
+              type="button"
+              // mousedown picks before the input loses focus.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onPick?.(item);
+                setOpen(false);
+              }}
+              className="w-full text-left min-h-11 sm:min-h-0 hover:bg-bg-surface cursor-pointer"
+            >
+              {renderItem(item)}
+            </button>
+          ))
         )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

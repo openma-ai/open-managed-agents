@@ -13,7 +13,7 @@ execution** happens, and how the two stay coordinated when a process
 dies mid-step.
 
 This post walks through the architecture decisions in
-[Open Managed Agents](https://github.com/open-ma/open-managed-agents).
+[Open Managed Agents](https://github.com/openma-ai/open-managed-agents).
 The mental model that ties it all together: a clean split between the
 **brain** (the harness — stateless code that calls the model) and the
 **body** (the sandbox — a real Linux process the agent can drive).
@@ -307,19 +307,19 @@ are deliberate:
   cheaper, supports object versioning, and doesn't count against DO
   storage quotas.
 
-If you'd like the side-by-side comparison with Anthropic's hosted
-Managed Agents, the [technical
-comparison](/blog/anthropic-managed-agents-vs-open-managed-agents/)
+If you'd like the side-by-side comparison with the hosted
+Claude Managed Agents, the [technical
+comparison](/blog/claude-managed-agents-vs-open-managed-agents/)
 post goes through the architectural differences in detail. If you want
 to migrate from the closed product, [the migration
-guide](/blog/migrate-from-anthropic-managed-agents/) walks through the
+guide](/blog/migrate-from-claude-managed-agents/) walks through the
 practical steps.
 
 ## Try it
 
 ```bash
 # Self-host on Cloudflare
-git clone https://github.com/open-ma/open-managed-agents
+git clone https://github.com/openma-ai/open-managed-agents
 cd open-managed-agents
 pnpm install
 npx wrangler login

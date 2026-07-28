@@ -1,49 +1,25 @@
 @import "tailwindcss";
+@import "@openma/common/brand/tokens.css";
 
 /* Mirror the Console design tokens so cross-link feel is consistent. */
 @theme {
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Source Serif 4", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --color-bg: #fdfdfc;
-  --color-bg-surface: #f5f5f5;
-  --color-fg: #171717;
-  --color-fg-muted: #737373;
-  /* Tertiary text — small kicker labels, dates, breadcrumbs. #707070 lands
-     at ~4.84:1 against --color-bg (#fdfdfc warm-tinted), comfortably above
-     AA-normal (4.5:1). Earlier #767676 was just under threshold (4.43:1)
-     because the bg isn't pure white. */
-  --color-fg-subtle: #707070;
-  --color-border: #e5e5e5;
-  --color-border-strong: #d4d4d4;
-  /* Coral brand — matches .impeccable.md (#FF6B50) and the console + logo. */
-  --color-brand: #ff6b50;
-  --color-brand-hover: #e85a40;
-  --color-brand-subtle: #fff0ec;
-  /* Dark warm tone — pairs with brand at ~5.4:1 (AA-pass; white would be 2.96:1, AA-fail).
-     Used by anything that puts text on a brand background. */
-  --color-brand-fg: #3d2520;
-}
-
-.dark {
-  --color-bg: #161616;
-  --color-bg-surface: #222222;
-  --color-fg: #ededed;
-  --color-fg-muted: #999999;
-  /* Tertiary text in dark mode — bumped from #6b6b6b to #9b9b9b for AA
-     contrast (≥4.5:1) against --color-bg. */
-  --color-fg-subtle: #9b9b9b;
-  --color-border: #333333;
-  --color-border-strong: #444444;
-  /* Brand stays #ff6b50 in dark too — spec calls for identical hue both modes;
-     it lands at ~6.5:1 on the dark bg so it passes AA without darkening. */
-  --color-brand: #ff6b50;
-  --color-brand-hover: #ff8068;
-  --color-brand-subtle: #3d2520;
-  /* Same dark fg in dark mode — brand stays coral, the dark-on-coral pair
-     keeps AA contrast (white-on-coral fails at any size below ~24px bold). */
-  --color-brand-fg: #3d2520;
+  --color-bg: var(--bg);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-bubble: var(--bg-bubble);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-fg: var(--brand-fg);
 }
 
 html {
@@ -51,20 +27,62 @@ html {
   color: var(--color-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* Smooth-scroll for in-page anchors (header is sticky, so we need
+     the scroll-margin so anchors clear it). */
+  scroll-behavior: smooth;
 }
 
-/* Hide body until brand fonts are ready. Eliminates the FOUT swap from
-   system-ui → DM Sans / Source Serif 4. Reveal class is added by the
-   inline script in Base.astro head (with a 1500ms safety timeout). */
-html:not(.fonts-loaded) body {
-  opacity: 0;
+/* Anchor targets clear the sticky header (h-13 at desktop). Anything
+   you can scroll to via #anchor should set this — applied broadly
+   here so we don't need per-element scroll-margin. */
+:where(h1, h2, h3, h4, [id]) {
+  scroll-margin-top: 5rem;
 }
-body {
-  opacity: 1;
-  transition: opacity 150ms ease-out;
+
+/* Sticky-header polish: small shadow once the page leaves the top. JS
+   toggles [data-scrolled] in Base.astro. The base header has a
+   backdrop-blur so content scrolls behind it gracefully. */
+[data-site-header] {
+  transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
 }
-@media (prefers-reduced-motion: reduce) {
-  body { transition: none; }
+[data-site-header][data-scrolled] {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+  border-bottom-color: var(--color-border-strong);
+}
+.dark [data-site-header][data-scrolled] {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Section reveal: starts faded + nudged down, fades in once it enters
+   the viewport. IntersectionObserver in Base.astro adds .is-visible.
+   Pages opt in by adding `data-reveal` to a section. Gated behind
+   html.js so a JS-disabled or pre-hydration render shows the content
+   normally instead of stuck-invisible. Also off for reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html.js [data-reveal] {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 600ms ease-out, transform 600ms ease-out;
+    will-change: opacity, transform;
+  }
+  html.js [data-reveal].is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Card hover-lift — applies to anything tagged data-lift (FeatureCard,
+   PricingCard, BlogPostCard). Cheap GPU transform, no layout cost. */
+[data-lift] {
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out, border-color 180ms ease-out;
+  will-change: transform;
+}
+[data-lift]:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.12);
+}
+.dark [data-lift]:hover {
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.6);
 }
 
 /* Anchor defaults — color is `inherit` by default so nav/breadcrumb/

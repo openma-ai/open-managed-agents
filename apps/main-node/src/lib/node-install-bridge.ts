@@ -37,6 +37,7 @@ import {
   DEFAULT_GITHUB_CAPABILITIES,
   DEFAULT_GITHUB_MCP_URL,
   GitHubProvider,
+  type GitHubContainer,
   mintAppJwt,
   buildInstallationTokenRequest,
   parseInstallationTokenResponse,
@@ -59,6 +60,7 @@ import {
   SqlSlackSetupLinkRepo,
 } from "@open-managed-agents/integrations-adapters-node";
 import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
@@ -83,6 +85,7 @@ export type AppendUserEventHook = (
 
 export interface NodeInstallBridgeOpts {
   sql: SqlClient;
+  db: OmaDb;
   platformRootSecret: string;
   gatewayOrigin: string;
   vaults: VaultService;
@@ -122,25 +125,22 @@ export class NodeInstallBridge implements InstallBridge {
       }
       if (stateKind === "linear.oauth.reauth") {
         const r = await provider.completeReauthorize({
-          appId: args.providerInstallationId ?? "",
+          publicationId: args.providerInstallationId ?? "",
           code: args.code ?? "",
           state: stateRaw,
           redirectBase: this.opts.gatewayOrigin,
         });
-        return { publicationId: r.installationId, returnUrl: null };
+        return { publicationId: r.publicationId, returnUrl: null };
       }
-      const result = await provider.continueInstall({
-        publicationId: null,
-        payload: {
-          kind: "oauth_callback_dedicated",
-          appId: args.providerInstallationId,
-          code: args.code,
-          state: stateRaw,
-        },
+      if (stateKind !== "linear.oauth.publication") {
+        throw new Error(`invalid state kind: ${stateKind ?? "(none)"}`);
+      }
+      const result = await provider.handleOAuthCallback({
+        publicationId: args.providerInstallationId ?? "",
+        code: args.code ?? "",
+        state: stateRaw,
       });
-      if (result.kind !== "complete") throw new Error("unexpected install result");
-      const statePayload = await jwt.verify<{ returnUrl: string }>(stateRaw);
-      return { publicationId: result.publicationId, returnUrl: statePayload.returnUrl };
+      return { publicationId: result.publicationId, returnUrl: result.returnUrl };
     }
 
     if (args.provider === "github") {
@@ -151,10 +151,18 @@ export class NodeInstallBridge implements InstallBridge {
       });
       const stateRaw = args.state ?? "";
       const isManifest = Boolean(args.extra?.manifest);
+      const isPublicationFirst = Boolean(args.extra?.publicationFirst);
       const result = await provider.continueInstall({
         publicationId: null,
         payload: isManifest
           ? { kind: "manifest_callback", code: args.code, state: stateRaw }
+          : isPublicationFirst
+          ? {
+              kind: "oauth_callback_pub",
+              publicationId: args.providerInstallationId,
+              installationId: args.extra?.installationId,
+              state: stateRaw,
+            }
           : {
               kind: "install_callback",
               appOmaId: args.providerInstallationId,
@@ -164,7 +172,9 @@ export class NodeInstallBridge implements InstallBridge {
       });
       if (result.kind === "step" && result.step === "install_link") {
         return {
-          publicationId: String(result.data.appOmaId ?? "pending"),
+          publicationId: String(
+            result.data.publicationId ?? result.data.appOmaId ?? "pending",
+          ),
           returnUrl: String(result.data.url),
         };
       }
@@ -184,8 +194,8 @@ export class NodeInstallBridge implements InstallBridge {
     const result = await provider.continueInstall({
       publicationId: null,
       payload: {
-        kind: "oauth_callback_dedicated",
-        appId: args.providerInstallationId,
+        kind: "oauth_callback_pub",
+        publicationId: args.providerInstallationId,
         code: args.code,
         state: stateRaw,
       },
@@ -300,6 +310,13 @@ export class NodeInstallBridge implements InstallBridge {
     const body = args.body;
 
     if (args.mode === "start-a1") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_legacy_install_removed",
+          remediation:
+            "Linear's install flow is now publication-first. POST /v1/integrations/linear/publications instead.",
+        });
+      }
       if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
         return jsonResp(400, {
           error: "userId, agentId, environmentId, personaName, returnUrl required",
@@ -323,6 +340,13 @@ export class NodeInstallBridge implements InstallBridge {
     }
 
     if (args.mode === "credentials") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_legacy_install_removed",
+          remediation:
+            "Linear's install flow is now publication-first. PATCH /v1/integrations/linear/publications/<id>/credentials instead.",
+        });
+      }
       const required = requiredCredentialsKeys(args.provider);
       for (const key of required) {
         if (!body[key]) return jsonResp(400, credentialsBadInputBody(args.provider, required));
@@ -342,6 +366,13 @@ export class NodeInstallBridge implements InstallBridge {
     }
 
     if (args.mode === "handoff-link") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_handoff_removed",
+          remediation:
+            "Linear's handoff page is gone with the publication-first refactor — share the callback URL from POST /v1/integrations/linear/publications directly.",
+        });
+      }
       if (!body.formToken) return jsonResp(400, { error: "formToken required" });
       try {
         const result = await provider.continueInstall({
@@ -354,6 +385,77 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(200, result.data);
       } catch (err) {
         return mapInstallErrorToResp(args.provider, "handoff", err);
+      }
+    }
+
+    if (args.mode === "create-publication") {
+      if (args.provider !== "linear") {
+        return jsonResp(400, { error: "create-publication is linear-only" });
+      }
+      if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
+        return jsonResp(400, {
+          error: "userId, agentId, environmentId, personaName, returnUrl required",
+        });
+      }
+      try {
+        const r = await providers.linear.startPublication({
+          userId: body.userId as string,
+          agentId: body.agentId as string,
+          environmentId: body.environmentId as string,
+          persona: {
+            name: body.personaName as string,
+            avatarUrl: (body.personaAvatarUrl as string | null) ?? null,
+          },
+          returnUrl: body.returnUrl as string,
+        });
+        return jsonResp(200, {
+          publication_id: r.publicationId,
+          callback_url: r.callbackUrl,
+          webhook_url: r.webhookUrl,
+          suggested_app_name: r.suggestedAppName,
+          suggested_avatar_url: r.suggestedAvatarUrl,
+          return_url: r.returnUrl,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResp(400, { error: "create_publication_failed", details: msg });
+      }
+    }
+
+    if (args.mode === "submit-credentials-pub") {
+      if (args.provider !== "linear") {
+        return jsonResp(400, { error: "submit-credentials-pub is linear-only" });
+      }
+      if (
+        !body.publicationId ||
+        !body.clientId ||
+        !body.clientSecret ||
+        !body.webhookSecret ||
+        !body.returnUrl
+      ) {
+        return jsonResp(400, {
+          error:
+            "publicationId, clientId, clientSecret, webhookSecret, returnUrl required",
+        });
+      }
+      try {
+        const r = await providers.linear.submitCredentials({
+          publicationId: body.publicationId as string,
+          clientId: body.clientId as string,
+          clientSecret: body.clientSecret as string,
+          webhookSecret: body.webhookSecret as string,
+          signingSecret: (body.signingSecret as string | null | undefined) ?? null,
+          returnUrl: body.returnUrl as string,
+        });
+        return jsonResp(200, {
+          install_url: r.installUrl,
+          publication_id: r.publicationId,
+          callback_url: r.callbackUrl,
+          webhook_url: r.webhookUrl,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return jsonResp(400, { error: "credentials_failed", details: msg });
       }
     }
 
@@ -394,11 +496,12 @@ export class NodeInstallBridge implements InstallBridge {
    *  no caching. */
   buildContainers(): {
     linear: LinearContainer;
-    github: Container;
+    github: GitHubContainer;
     slack: SlackContainer;
   } {
     const repos = buildNodeRepos({
       sql: this.opts.sql,
+      db: this.opts.db,
       PLATFORM_ROOT_SECRET: this.opts.platformRootSecret,
     });
     const sessions = new InProcessSessionCreator(this.opts);
@@ -412,7 +515,7 @@ export class NodeInstallBridge implements InstallBridge {
       sessions,
       vaults,
     };
-    const baseGithub: Container = {
+    const baseGithub: GitHubContainer = {
       ...repos,
       installations: repos.githubInstallations,
       publications: repos.githubPublications,
@@ -424,12 +527,12 @@ export class NodeInstallBridge implements InstallBridge {
     const slackIds = new CryptoIdGenerator();
     const baseSlack: SlackContainer = {
       ...repos,
-      installations: new SqlSlackInstallationRepo(this.opts.sql, slackCrypto, slackIds),
-      publications: new SqlSlackPublicationRepo(this.opts.sql, slackIds),
-      apps: new SqlSlackAppRepo(this.opts.sql, slackCrypto, slackIds),
-      webhookEvents: new SqlSlackWebhookEventStore(this.opts.sql),
+      installations: new SqlSlackInstallationRepo(this.opts.db, slackCrypto, slackIds),
+      publications: new SqlSlackPublicationRepo(this.opts.db, slackIds, slackCrypto),
+      apps: new SqlSlackAppRepo(this.opts.db, slackCrypto, slackIds),
+      webhookEvents: new SqlSlackWebhookEventStore(this.opts.db),
       sessionScopes: repos.sessionScopes,
-      setupLinks: new SqlSlackSetupLinkRepo(this.opts.sql, slackIds),
+      setupLinks: new SqlSlackSetupLinkRepo(this.opts.db, slackIds),
       sessions,
       vaults,
     };
@@ -455,6 +558,15 @@ class InProcessSessionCreator implements SessionCreator {
     // Strip tenant_id like internal.ts does so the snapshot shape matches.
     const agentBase = { ...agentRow, tenant_id: undefined } as unknown as Record<string, unknown>;
     delete agentBase.tenant_id;
+
+    // Provider-supplied prose appended to system. Mirror apps/main internal.ts
+    // so per_channel Slack sessions land here with the same frozen protocol
+    // text. Idempotent on empty input.
+    if (input.additionalSystemPrompt && input.additionalSystemPrompt.trim()) {
+      const existing = (agentBase.system as string | undefined) ?? "";
+      const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
+      agentBase.system = existing + sep + input.additionalSystemPrompt;
+    }
 
     // Self-host agents always run on local-runtime. We use a synthetic env
     // snapshot rather than reading from environments-store; main-node

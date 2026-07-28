@@ -1,4 +1,5 @@
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -92,6 +93,13 @@ export function useApiQuery<T>(
     enabled: (opts.enabled ?? true) && !!path,
     staleTime: opts.staleTime,
     refetchInterval: opts.refetchInterval,
+    // Stale-while-revalidate: when params change (filter chip, search,
+    // tenant switch), keep the previous result rendered while the new
+    // fetch runs in the background. Pages that read `isLoading` only see
+    // it true on a truly cold cache; subsequent param tweaks feel
+    // instant (no skeleton flash, no layout jump). `isFetching` is still
+    // available for callers that want a subtle "refreshing" indicator.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -106,20 +114,33 @@ interface PageResponse<T> {
   next_cursor?: string;
 }
 
-export interface InfiniteApiQueryOpts {
+export interface InfiniteApiQueryOpts<T = unknown> {
   /** Per-page limit. Mirrors `useCursorList`'s `limit`. */
   limit?: number;
   /** Stable identity recommended (pass `useMemo` if reactive). */
   params?: Record<string, string | undefined>;
   /** When false, skip the initial fetch. Defaults to true. */
   enabled?: boolean;
+  /** Cursor query param name. Defaults to `cursor` (most OMA endpoints).
+   *  Override for endpoints that follow a different convention — e.g.
+   *  Anthropic Files uses `before_id`. */
+  cursorParam?: string;
+  /** Custom extractor for the next-cursor in the response body. Defaults
+   *  to `res.next_cursor`. Override for endpoints that return it under
+   *  a different key — e.g. Anthropic Files returns `last_id` only when
+   *  `has_more` is true. */
+  getNextCursor?: (res: unknown) => string | undefined;
 }
 
 export function useInfiniteApiQuery<T>(
   endpoint: string,
-  opts: InfiniteApiQueryOpts = {},
+  opts: InfiniteApiQueryOpts<T> = {},
 ) {
   const { api } = useApi();
+  const cursorParam = opts.cursorParam ?? "cursor";
+  const getNextCursor =
+    opts.getNextCursor ??
+    ((res: unknown) => (res as PageResponse<T>).next_cursor);
 
   // JSON.stringify keeps the queryKey stable across inline-object renders.
   // Same trick `useCursorList` used internally for its effect deps; with
@@ -130,7 +151,7 @@ export function useInfiniteApiQuery<T>(
   );
 
   const query = useInfiniteQuery<PageResponse<T>>({
-    queryKey: [endpoint, "infinite", opts.limit ?? null, paramsKey],
+    queryKey: [endpoint, "infinite", opts.limit ?? null, paramsKey, cursorParam],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       api<PageResponse<T>>(
@@ -139,13 +160,21 @@ export function useInfiniteApiQuery<T>(
           opts.params,
           {
             limit: opts.limit ? String(opts.limit) : undefined,
-            cursor: typeof pageParam === "string" ? pageParam : undefined,
+            [cursorParam]: typeof pageParam === "string" ? pageParam : undefined,
           },
         ),
         { signal },
       ),
-    getNextPageParam: (lastPage) => lastPage.next_cursor,
+    getNextPageParam: (lastPage) => getNextCursor(lastPage),
     enabled: opts.enabled ?? true,
+    // Same stale-while-revalidate behavior as useApiQuery: when
+    // filter chips change `params` (and therefore the queryKey), TQ
+    // would normally toss the old pages and re-skeleton from empty.
+    // keepPreviousData makes it render the prior page list while the
+    // new fetch runs in the background — page swaps under filter
+    // changes feel instant, and `isPending` (→ `isLoading`) only
+    // fires on cold cache.
+    placeholderData: keepPreviousData,
   });
 
   // Flatten pages into a single items array so the consumer doesn't have

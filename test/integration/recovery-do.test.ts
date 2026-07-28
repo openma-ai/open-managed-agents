@@ -103,14 +103,26 @@ async function ensureTurnIdColumnsForTest() {
        agent_id        TEXT NOT NULL,
        environment_id  TEXT NOT NULL,
        title           TEXT NOT NULL DEFAULT '',
+       vault_ids       TEXT,
+       agent_snapshot  TEXT,
+       environment_snapshot TEXT,
+       metadata        TEXT,
        status          TEXT NOT NULL,
        created_at      INTEGER NOT NULL,
-       updated_at      INTEGER
+       updated_at      INTEGER,
+       archived_at     INTEGER,
+       terminated_at   INTEGER
      )`,
   ).run();
   for (const stmt of [
     `ALTER TABLE sessions ADD COLUMN turn_id TEXT`,
     `ALTER TABLE sessions ADD COLUMN turn_started_at INTEGER`,
+    `ALTER TABLE sessions ADD COLUMN vault_ids TEXT`,
+    `ALTER TABLE sessions ADD COLUMN agent_snapshot TEXT`,
+    `ALTER TABLE sessions ADD COLUMN environment_snapshot TEXT`,
+    `ALTER TABLE sessions ADD COLUMN metadata TEXT`,
+    `ALTER TABLE sessions ADD COLUMN archived_at INTEGER`,
+    `ALTER TABLE sessions ADD COLUMN terminated_at INTEGER`,
   ]) {
     try {
       await env.AUTH_DB.prepare(stmt).run();

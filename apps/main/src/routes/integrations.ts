@@ -10,14 +10,15 @@ import type { Env } from "@open-managed-agents/shared";
 import {
   buildCfRepos,
   CryptoIdGenerator,
-  D1GitHubAppRepo,
-  D1GitHubInstallationRepo,
-  D1GitHubPublicationRepo,
-  D1SlackAppRepo,
-  D1SlackInstallationRepo,
-  D1SlackPublicationRepo,
+  SqlGitHubAppRepo,
+  SqlGitHubInstallationRepo,
+  SqlGitHubPublicationRepo,
+  SqlSlackAppRepo,
+  SqlSlackInstallationRepo,
+  SqlSlackPublicationRepo,
   WebCryptoAesGcm,
 } from "@open-managed-agents/integrations-adapters-cf";
+import { drizzle } from "drizzle-orm/d1";
 import {
   buildIntegrationsRoutes,
   type IntegrationsBags,
@@ -36,14 +37,15 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
   }
   const linearRepos = buildCfRepos({
     integrationsDb: env.INTEGRATIONS_DB,
-    controlPlaneDb: env.AUTH_DB,
+    controlPlaneDb: env.MAIN_DB,
     PLATFORM_ROOT_SECRET: k,
   });
   // Slack/GitHub need their parallel installations/publications/apps repos —
   // buildCfRepos exposes the github_* ones, but slack lives in slack_*
-  // tables and uses Slack-specific D1 repos.
+  // tables and uses Slack-specific SQL repos.
   const crypto = new WebCryptoAesGcm(k, "integrations.tokens");
   const ids = new CryptoIdGenerator();
+  const idb = drizzle(env.INTEGRATIONS_DB);
   return {
     linear: {
       installations: linearRepos.linearInstallations,
@@ -52,14 +54,14 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
       dispatchRules: linearRepos.dispatchRules,
     },
     github: {
-      installations: new D1GitHubInstallationRepo(env.INTEGRATIONS_DB, crypto, ids),
-      publications: new D1GitHubPublicationRepo(env.INTEGRATIONS_DB, ids),
-      githubApps: new D1GitHubAppRepo(env.INTEGRATIONS_DB, crypto, ids),
+      installations: new SqlGitHubInstallationRepo(idb, crypto, ids),
+      publications: new SqlGitHubPublicationRepo(idb, ids, crypto),
+      githubApps: new SqlGitHubAppRepo(idb, crypto, ids),
     },
     slack: {
-      installations: new D1SlackInstallationRepo(env.INTEGRATIONS_DB, crypto, ids),
-      publications: new D1SlackPublicationRepo(env.INTEGRATIONS_DB, ids),
-      apps: new D1SlackAppRepo(env.INTEGRATIONS_DB, crypto, ids),
+      installations: new SqlSlackInstallationRepo(idb, crypto, ids),
+      publications: new SqlSlackPublicationRepo(idb, ids, crypto),
+      apps: new SqlSlackAppRepo(idb, crypto, ids),
     },
   };
 }
@@ -69,7 +71,7 @@ function installProxyFor(c: import("hono").Context<{ Bindings: Env } & Vars>): I
   if (!env.INTEGRATIONS) return null;
   const internalSecret = env.INTEGRATIONS_INTERNAL_SECRET;
   return {
-    async forward({ subpath, body, needsInternalSecret }) {
+    async forward({ subpath, body, needsInternalSecret, method }) {
       if (needsInternalSecret && !internalSecret) {
         return new Response(
           JSON.stringify({ error: "INTEGRATIONS_INTERNAL_SECRET not configured" }),
@@ -79,7 +81,7 @@ function installProxyFor(c: import("hono").Context<{ Bindings: Env } & Vars>): I
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (needsInternalSecret && internalSecret) headers["x-internal-secret"] = internalSecret;
       const res = await env.INTEGRATIONS!.fetch(`http://gateway/${subpath}`, {
-        method: "POST",
+        method: method ?? "POST",
         headers,
         body: JSON.stringify(body),
       });

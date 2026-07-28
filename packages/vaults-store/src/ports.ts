@@ -36,11 +36,28 @@ export interface VaultRepo {
     opts: { includeArchived: boolean },
   ): Promise<VaultRow[]>;
 
-  /** Cursor-paginated list. Order: created_at DESC, id DESC. */
+  /**
+   * Cursor-paginated list. Order: created_at DESC, id DESC.
+   *
+   * `status` and the createdAt range filters stack as extra WHERE
+   * conditions on top of the cursor query — the (created_at, id)
+   * ordering they're keyed against is unchanged, so cursors stay
+   * valid across all filter combinations.
+   */
   listPage(
     tenantId: string,
     opts: {
+      /** Row archive state. `'active'` → archived_at IS NULL,
+       *  `'archived'` → archived_at IS NOT NULL, `'any'` → no filter.
+       *  When unset, falls back to `includeArchived` (back-compat). */
+      status?: "active" | "archived" | "any";
+      /** Legacy 2-way archive toggle. Used only when `status` is unset. */
       includeArchived: boolean;
+      /** Lower bound on vaults.created_at (epoch ms, inclusive). Driven
+       *  by the Created filter chip in the UI. */
+      createdAfter?: number;
+      /** Upper bound on vaults.created_at (epoch ms, exclusive). */
+      createdBefore?: number;
       limit: number;
       after?: PageCursor;
       /** Case-insensitive substring filter against vault name.

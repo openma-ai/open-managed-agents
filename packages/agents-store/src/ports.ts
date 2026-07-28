@@ -58,11 +58,27 @@ export interface AgentRepo {
    * plus `hasMore` so the service layer can decide whether to emit a
    * `nextCursor`. Caller doesn't need to interpret the cursor — `after`
    * is the typed pair `{createdAt, id}` decoded by the service.
+   *
+   * `status` and the createdAt range filters are just extra WHERE
+   * conditions stacked on the cursor query — the (created_at, id)
+   * ordering they're keyed against is unchanged, so cursors stay valid
+   * across all filter combinations.
    */
   listPage(
     tenantId: string,
     opts: {
-      includeArchived: boolean;
+      /** Row archive state. `'active'` → archived_at IS NULL,
+       *  `'archived'` → archived_at IS NOT NULL, `'any'` → no filter.
+       *  Use this instead of includeArchived for any 3-way intent.
+       *  Defaults to `'any'` to match the legacy includeArchived=true
+       *  behavior when neither is set. */
+      status?: "active" | "archived" | "any";
+      /** Lower bound on agents.created_at (epoch ms, inclusive). Driven
+       *  by the Created filter chip in the UI; preset buckets and
+       *  custom-range pickers both lower into this single field. */
+      createdAfter?: number;
+      /** Upper bound on agents.created_at (epoch ms, exclusive). */
+      createdBefore?: number;
       limit: number;
       /** Decoded cursor: skip rows up to and including (created_at, id). */
       after?: PageCursor;

@@ -5,7 +5,7 @@
 // concerns (HTTP, storage, crypto, JWT) are injected via integrations-core
 // ports plus the Slack-specific SlackInstallationRepo extension.
 
-export { SlackProvider } from "./provider";
+export { SlackProvider, scopeKeyFor, SLACK_SIGNAL_PROTOCOL_PROMPT } from "./provider";
 export type { SlackContainer } from "./provider";
 export {
   type SlackConfig,
@@ -47,4 +47,9 @@ export {
   type RawEventInner,
 } from "./webhook/parse";
 export { SlackApiClient, SlackApiError, type AuthTestResult } from "./api/client";
-export type { SlackInstallationRepo, SlackSessionScopeRepo } from "./ports";
+export type {
+  SlackInstallationRepo,
+  SlackPublicationRepo,
+  SlackPublicationCredentialState,
+  SlackSessionScopeRepo,
+} from "./ports";

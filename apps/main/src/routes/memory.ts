@@ -26,6 +26,24 @@ function actorFor(c: { get: (k: string) => unknown }): Actor {
   return userId ? { type: "user", id: userId } : { type: "api_key", id: "api" };
 }
 
+async function rejectActiveDreamOutputStore(
+  services: Services,
+  tenantId: string,
+  storeId: string,
+): Promise<{ error: { type: "invalid_request_error"; message: string } } | null> {
+  const blocking = await services.dreams.findActiveDreamsByOutputStore({
+    tenantId,
+    storeId,
+  });
+  if (blocking.length === 0) return null;
+  return {
+    error: {
+      type: "invalid_request_error",
+      message: `memory store is the output of an active dream (${blocking[0].id}); cancel the dream first`,
+    },
+  };
+}
+
 /** Map service errors → HTTP status. */
 function handle(err: unknown): Response {
   if (err instanceof MemoryStoreNotFoundError) {
@@ -93,8 +111,76 @@ app.post("/", async (c) => {
 
 app.get("/", async (c) => {
   const t = c.get("tenant_id");
-  const includeArchived = c.req.query("include_archived") === "true";
-  const stores = await c.var.services.memory.listStores({ tenantId: t, includeArchived });
+
+  // status: enum filter on archive state. Whitelist strictly — any
+  // unknown value is a 400, NOT a silent fallback to "any". Matches the
+  // pattern in packages/http-routes (used by main-node) so both runtimes
+  // serve identical semantics on /v1/memory_stores.
+  const statusRaw = c.req.query("status");
+  let status: "active" | "archived" | "any" | undefined;
+  if (statusRaw !== undefined) {
+    if (statusRaw === "active" || statusRaw === "archived" || statusRaw === "any") {
+      status = statusRaw;
+    } else {
+      return c.json(
+        {
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_status",
+            message: `Invalid status '${statusRaw}'; expected one of active|archived|any.`,
+          },
+        },
+        400,
+      );
+    }
+  }
+
+  // created_after / created_before: ISO timestamps → epoch ms. Reject
+  // unparseable values explicitly.
+  const parseMs = (
+    raw: string | undefined,
+    field: string,
+  ): { value: number | undefined; err?: Response } => {
+    if (raw === undefined) return { value: undefined };
+    const ms = Date.parse(raw);
+    if (Number.isNaN(ms)) {
+      return {
+        value: undefined,
+        err: c.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: "invalid_timestamp",
+              message: `Invalid ${field} '${raw}'; expected ISO-8601 timestamp.`,
+            },
+          },
+          400,
+        ),
+      };
+    }
+    return { value: ms };
+  };
+  const createdAfterRes = parseMs(c.req.query("created_after"), "created_after");
+  if (createdAfterRes.err) return createdAfterRes.err;
+  const createdBeforeRes = parseMs(c.req.query("created_before"), "created_before");
+  if (createdBeforeRes.err) return createdBeforeRes.err;
+
+  // include_archived: legacy back-compat checkbox. Maps to status=any
+  // when the new `status` param isn't set.
+  const includeArchivedRaw = c.req.query("include_archived");
+  const includeArchived = includeArchivedRaw === "true";
+
+  const stores = await c.var.services.memory.listStores({
+    tenantId: t,
+    ...(status !== undefined ? { status } : {}),
+    ...(includeArchivedRaw !== undefined ? { includeArchived } : {}),
+    ...(createdAfterRes.value !== undefined
+      ? { createdAfter: createdAfterRes.value }
+      : {}),
+    ...(createdBeforeRes.value !== undefined
+      ? { createdBefore: createdBeforeRes.value }
+      : {}),
+  });
   return c.json({ data: stores.map(toApiStore) });
 });
 
@@ -126,8 +212,11 @@ app.on(["PUT", "POST"], "/:id", async (c) => {
 
 app.post("/:id/archive", async (c) => {
   const t = c.get("tenant_id");
+  const storeId = c.req.param("id");
+  const blocked = await rejectActiveDreamOutputStore(c.var.services, t, storeId);
+  if (blocked) return c.json(blocked, 400);
   try {
-    const store = await c.var.services.memory.archiveStore({ tenantId: t, storeId: c.req.param("id") });
+    const store = await c.var.services.memory.archiveStore({ tenantId: t, storeId });
     return c.json(toApiStore(store));
   } catch (err) {
     return handle(err);
@@ -136,9 +225,12 @@ app.post("/:id/archive", async (c) => {
 
 app.delete("/:id", async (c) => {
   const t = c.get("tenant_id");
+  const storeId = c.req.param("id");
+  const blocked = await rejectActiveDreamOutputStore(c.var.services, t, storeId);
+  if (blocked) return c.json(blocked, 400);
   try {
-    await c.var.services.memory.deleteStore({ tenantId: t, storeId: c.req.param("id") });
-    return c.json({ type: "memory_store_deleted", id: c.req.param("id") });
+    await c.var.services.memory.deleteStore({ tenantId: t, storeId });
+    return c.json({ type: "memory_store_deleted", id: storeId });
   } catch (err) {
     return handle(err);
   }

@@ -72,7 +72,14 @@ export interface ModelCardRepo {
   /** List all cards for a tenant. Default order: created_at ASC (legacy KV order). */
   list(tenantId: string): Promise<ModelCardRow[]>;
 
-  /** Cursor-paginated list. Order: created_at DESC, id DESC. */
+  /**
+   * Cursor-paginated list. Order: created_at DESC, id DESC.
+   *
+   * `provider` and the createdAt range filters stack as extra WHERE
+   * conditions on top of the cursor query — the (created_at, id)
+   * ordering they're keyed against is unchanged, so cursors stay
+   * valid across all filter combinations.
+   */
   listPage(
     tenantId: string,
     opts: {
@@ -80,6 +87,14 @@ export interface ModelCardRepo {
       after?: PageCursor;
       /** Case-insensitive substring; matched against `model_id` OR `model`. */
       q?: string;
+      /** Exact-match filter on `provider`. Caller is responsible for
+       *  whitelisting against the enum at the route boundary. */
+      provider?: string;
+      /** Lower bound on model_cards.created_at (epoch ms, inclusive).
+       *  Driven by the Created filter chip in the UI. */
+      createdAfter?: number;
+      /** Upper bound on model_cards.created_at (epoch ms, exclusive). */
+      createdBefore?: number;
     },
   ): Promise<{ items: ModelCardRow[]; hasMore: boolean }>;
 

@@ -10,9 +10,203 @@ import mainApp from "../apps/main/src/index";
 import { registerHarness } from "../apps/agent/src/harness/registry";
 import { DefaultHarness } from "../apps/agent/src/harness/default-loop";
 registerHarness("default", () => new DefaultHarness());
+registerHarness("multi-msg", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg1" }] });
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg2" }] });
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg3" }] });
+  },
+}));
+registerHarness("thinking-harness", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({ type: "agent.thinking" });
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "after thinking" }] });
+  },
+}));
+registerHarness("tool-harness", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({ type: "agent.tool_use", id: "tc_1", name: "bash", input: { command: "ls" } });
+    ctx.runtime.broadcast({ type: "agent.tool_result", tool_use_id: "tc_1", content: "exit=0\nfile1.txt" });
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "found files" }] });
+  },
+}));
+registerHarness("delayed-harness", () => ({
+  async run(ctx) {
+    await new Promise((r) => setTimeout(r, 200));
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "delayed response" }] });
+  },
+}));
+registerHarness("partial-crash", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "before crash" }] });
+    throw new Error("partial crash");
+  },
+}));
+registerHarness("history-reader", () => ({
+  async run(ctx) {
+    const count = ctx.runtime.history.getMessages().length;
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `msgs=${count}` }],
+    });
+  },
+}));
+registerHarness("config-reader", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `system=${ctx.agent.system || "none"}` }],
+    });
+  },
+}));
+registerHarness("system-prompt-reader", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: ctx.systemPrompt }],
+    });
+  },
+}));
+registerHarness("usage-reporter", () => ({
+  async run(ctx) {
+    if (ctx.runtime.reportUsage) {
+      await ctx.runtime.reportUsage(100, 50);
+    }
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "usage reported" }],
+    });
+  },
+}));
+registerHarness("sh-noop", () => ({ async run() {} }));
+registerHarness("crash-sh", () => ({
+  async run() {
+    throw new Error("sh crash");
+  },
+}));
+registerHarness("echo-user-input", () => ({
+  async run(ctx) {
+    const text = ctx.userMessage.content[0].text;
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `echo: ${text}` }],
+    });
+  },
+}));
+registerHarness("exact-echo-sh", () => ({
+  async run(ctx) {
+    const text = ctx.userMessage.content[0]?.text || "";
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `echo: ${text}` }],
+    });
+  },
+}));
+registerHarness("content-reader-sh", () => ({
+  async run(ctx) {
+    const blocks = ctx.userMessage.content.length;
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `blocks=${blocks}` }],
+    });
+  },
+}));
+registerHarness("noop", () => ({ async run() {} }));
+registerHarness("noop-test", () => ({ async run() {} }));
+registerHarness("files-test", () => ({ async run() {} }));
+registerHarness("cross-noop", () => ({ async run() {} }));
+registerHarness("edge-noop", () => ({ async run() {} }));
+registerHarness("parity-noop", () => ({ async run() {} }));
+registerHarness("eval-test", () => ({
+  async run(ctx) {
+    const text = ctx.userMessage?.content?.[0]?.text || "";
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `eval-ack: ${text}` }],
+    });
+  },
+}));
+registerHarness("test", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "test response" }],
+    });
+  },
+}));
+registerHarness("echo-test", () => ({
+  async run(ctx) {
+    const text = ctx.userMessage?.content?.[0]?.text || "";
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: `echo: ${text}` }],
+    });
+  },
+}));
+registerHarness("parity-echo", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "parity echo" }],
+    });
+  },
+}));
+registerHarness("cross-echo", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "cross-echo reply" }],
+    });
+  },
+}));
+registerHarness("outcome-test", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "Here is the fibonacci script:\n\nfunction fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }" }],
+    });
+  },
+}));
+registerHarness("outcome-multi", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "Step 1: Setting up REST API" }],
+    });
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "Step 2: Added GET /health endpoint returning JSON" }],
+    });
+  },
+}));
+registerHarness("trajectory-test", () => ({
+  async run(ctx) {
+    ctx.runtime.broadcast({
+      type: "agent.tool_use",
+      id: "tu-test-1",
+      name: "bash",
+      input: { command: "echo hi" },
+    });
+    ctx.runtime.broadcast({
+      type: "agent.tool_result",
+      tool_use_id: "tu-test-1",
+      content: "hi\nexit=0",
+    });
+    ctx.runtime.broadcast({
+      type: "agent.message",
+      content: [{ type: "text", text: "hello from trajectory test" }],
+    });
+  },
+}));
+registerHarness("crash-v2", () => ({
+  async run() {
+    throw new Error("boom v2");
+  },
+}));
 
 export { SessionDO } from "../apps/agent/src/runtime/session-do";
 export { Sandbox } from "@cloudflare/sandbox";
+export { RuntimeRoom } from "../apps/main/src/runtime-room";
 export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 
 // --- Migration bootstrap ---
@@ -20,93 +214,58 @@ export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 // D1 starts empty and our routes (e.g. /v1/memory_stores) hit memory tables.
 // Idempotent: every CREATE uses IF NOT EXISTS, drop is a no-op rerun.
 //
-// MUST mirror the on-disk migration list at apps/main/migrations/. Add new
-// rows here whenever a migration is added; missing rows surface as
-// "no such column" / "no such table" errors at runtime. Order is
-// lexicographic-by-filename — what wrangler does in prod.
+// Mirrors what `wrangler d1 migrations apply` does in prod — applies the
+// consolidated baseline SQL file. The original 20 historical files live in
+// _archive/ for git-blame reference; this test path uses the same single
+// 0000_consolidated.sql self-host deploys ship with, plus any post-
+// consolidation files added on top (0018_runtime_multi_tenant.sql is the
+// first such — see multi-tenant CLI bridge daemon PR).
 
 // @ts-expect-error vitest resolves SQL via ?raw
-import schema0001 from "../apps/main/migrations/0001_schema.sql?raw";
+import authSchema from "../apps/main/migrations/0000_consolidated.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
-import schema0002 from "../apps/main/migrations/0002_integrations_tenant_id.sql?raw";
+import schema0017 from "../apps/main/migrations/0017_dreams.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
-import schema0003 from "../apps/main/migrations/0003_tenant_shard.sql?raw";
+import schema0018 from "../apps/main/migrations/0018_runtime_multi_tenant.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
-import schema0004 from "../apps/main/migrations/0004_slack_tables.sql?raw";
+import integrationsSchema from "../apps/main/migrations-integrations/0001_consolidated.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
-import schema0005 from "../apps/main/migrations/0005_membership.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0006 from "../apps/main/migrations/0006_env_image_strategy.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0007 from "../apps/main/migrations/0007_linear_dispatch_rules.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0008 from "../apps/main/migrations/0008_linear_pending_events.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0009 from "../apps/main/migrations/0009_split_github_tables.sql?raw";
-// Two 0010_* and two 0011_* migrations exist (merged from sibling PRs the
-// same day). Wrangler applies in lexicographic order by filename, so the
-// chronological merge order doesn't matter for correctness — just mirror
-// whatever wrangler would do.
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0010a from "../apps/main/migrations/0010_memory_anthropic_alignment.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0010b from "../apps/main/migrations/0010_runtimes.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0011a from "../apps/main/migrations/0011_runtime_local_skills.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0011b from "../apps/main/migrations/0011_workspace_backups.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0012 from "../apps/main/migrations/0012_slack_per_channel.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0013 from "../apps/main/migrations/0013_cursor_pagination_indexes.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0014 from "../apps/main/migrations/0014_session_turn_id.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0015 from "../apps/main/migrations/0015_model_card_handle_rename.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0016 from "../apps/main/migrations/0016_session_terminated_at.sql?raw";
-// @ts-expect-error vitest resolves SQL via ?raw
-import schema0017 from "../apps/main/migrations/0017_usage_events.sql?raw";
-// INTEGRATIONS_DB schema — separate D1 holding linear_*/github_*/slack_*.
-// @ts-expect-error vitest resolves SQL via ?raw
-import integrationsSchema from "../apps/main/migrations-integrations/0001_schema.sql?raw";
+import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
-  schema0001 as string,
-  schema0002 as string,
-  schema0003 as string,
-  schema0004 as string,
-  schema0005 as string,
-  schema0006 as string,
-  schema0007 as string,
-  schema0008 as string,
-  schema0009 as string,
-  schema0010a as string,
-  schema0010b as string,
-  schema0011a as string,
-  schema0011b as string,
-  schema0012 as string,
-  schema0013 as string,
-  schema0014 as string,
-  schema0015 as string,
-  schema0016 as string,
+  authSchema as string,
   schema0017 as string,
+  schema0018 as string,
 ];
 
-const INTEGRATIONS_MIGRATIONS_RAW: string[] = [
-  integrationsSchema as string,
-];
+const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];
+
+const ROUTER_MIGRATIONS_RAW: string[] = [routerSchema as string];
 
 let migrationsApplied = false;
 async function ensureMigrations(env: {
+  MAIN_DB?: D1Database;
   AUTH_DB?: D1Database;
   INTEGRATIONS_DB?: D1Database;
+  ROUTER_DB?: D1Database;
 }): Promise<void> {
+  env.MAIN_DB ??= env.AUTH_DB;
   if (migrationsApplied || !env.AUTH_DB) return;
   await applyMigrations(env.AUTH_DB, MIGRATIONS_RAW, "auth");
+  if (env.MAIN_DB) {
+    await applyMigrations(env.MAIN_DB, MIGRATIONS_RAW, "main");
+  }
   if (env.INTEGRATIONS_DB) {
     await applyMigrations(env.INTEGRATIONS_DB, INTEGRATIONS_MIGRATIONS_RAW, "integrations");
   }
+  const routerDb = env.ROUTER_DB ?? env.MAIN_DB ?? env.AUTH_DB;
+  await applyMigrations(routerDb, ROUTER_MIGRATIONS_RAW, "router");
+  await routerDb
+    .prepare(
+      `INSERT OR IGNORE INTO shard_pool (binding_name, status, notes)
+       VALUES ('MAIN_DB', 'open', 'vitest default shard')`,
+    )
+    .run();
   migrationsApplied = true;
 }
 

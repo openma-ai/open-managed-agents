@@ -2,20 +2,30 @@ import { Hono } from "hono";
 import type { Env } from "../../env";
 import { buildProviders } from "../../providers";
 
-// Linear A1 (full identity) install flow.
+// Linear install entry points (publication-first).
 //
-// Three steps, three endpoints:
-//   1. POST /linear/publications/start-a1
-//      → returns { formToken, callbackUrl, webhookUrl, suggestedAppName, ... }
-//   2. POST /linear/publications/credentials
-//      → returns { url, appId, callbackUrl, webhookUrl }  (final URLs with appId)
-//   3. GET  /linear/oauth/app/:appId/callback
-//      → completes install, redirects to Console returnUrl
+// Three endpoints, each touching exactly one anchor row:
 //
-// /start-a1 and /handoff-link are internal-only (called by apps/main via
-// service binding) and require the shared header secret. /credentials is
-// reachable directly from the user's browser (admin handoff page submits
-// straight here without a session) — auth there is the formToken JWT itself.
+//   1. POST /linear/publications
+//        body: { userId, agentId, environmentId, personaName, ... }
+//        → insertShell (status='pending_setup'); returns publication_id +
+//          callback/webhook URLs the user pastes into Linear.
+//
+//   2. PATCH /linear/publications/:id/credentials
+//        body: { clientId, clientSecret, webhookSecret, signingSecret? }
+//        → setCredentials (status='awaiting_install'); returns OAuth URL
+//          the user clicks.
+//
+//   3. POST /linear/publications/personal-token
+//        body: { agentId, environmentId, ..., patToken }
+//        → atomic PAT install (no OAuth dance). Status='live' on return.
+//
+// /publications and /personal-token are internal-only (called by apps/main
+// via service binding) and require the shared header secret. /credentials
+// is reachable directly from the user's browser (admin handoff page can
+// submit straight here without a session) — auth there is the publication
+// id itself; the underlying flow re-grants OAuth consent on Linear's side
+// before any token issues are minted.
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -26,7 +36,7 @@ function requireInternalSecret(env: Env, headerValue: string | undefined): boole
   );
 }
 
-interface StartA1Body {
+interface CreatePublicationBody {
   userId: string;
   agentId: string;
   environmentId: string;
@@ -35,12 +45,18 @@ interface StartA1Body {
   returnUrl: string;
 }
 
-app.post("/start-a1", async (c) => {
+app.post("/", async (c) => {
   if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
     return c.json({ error: "unauthorized" }, 401);
   }
-  const body = await c.req.json<StartA1Body>();
-  if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
+  const body = await c.req.json<CreatePublicationBody>();
+  if (
+    !body.userId ||
+    !body.agentId ||
+    !body.environmentId ||
+    !body.personaName ||
+    !body.returnUrl
+  ) {
     return c.json(
       { error: "userId, agentId, environmentId, personaName, returnUrl required" },
       400,
@@ -48,32 +64,45 @@ app.post("/start-a1", async (c) => {
   }
 
   const { linear } = buildProviders(c.env);
-  const result = await linear.startInstall({
-    userId: body.userId,
-    agentId: body.agentId,
-    environmentId: body.environmentId,
-    mode: "full",
-    persona: { name: body.personaName, avatarUrl: body.personaAvatarUrl },
-    returnUrl: body.returnUrl,
-  });
-
-  if (result.kind !== "step" || result.step !== "credentials_form") {
-    return c.json({ error: "unexpected install result", result }, 500);
+  try {
+    const result = await linear.startPublication({
+      userId: body.userId,
+      agentId: body.agentId,
+      environmentId: body.environmentId,
+      persona: { name: body.personaName, avatarUrl: body.personaAvatarUrl },
+      returnUrl: body.returnUrl,
+    });
+    return c.json({
+      publication_id: result.publicationId,
+      callback_url: result.callbackUrl,
+      webhook_url: result.webhookUrl,
+      suggested_app_name: result.suggestedAppName,
+      suggested_avatar_url: result.suggestedAvatarUrl,
+      return_url: result.returnUrl,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "create_publication_failed", details: msg }, 400);
   }
-  return c.json(result.data);
 });
 
 interface SubmitCredentialsBody {
-  formToken: string;
   clientId: string;
   clientSecret: string;
   webhookSecret: string;
-}app.post("/credentials", async (c) => {
+  signingSecret?: string | null;
+  /** Where to redirect after OAuth completes. Carried through the state
+   *  JWT so the callback can build a final 302 target without a cookie. */
+  returnUrl: string;
+}
+
+app.patch("/:id/credentials", async (c) => {
+  const publicationId = c.req.param("id");
   const body = await c.req.json<SubmitCredentialsBody>();
-  if (!body.formToken || !body.clientId || !body.clientSecret || !body.webhookSecret) {
+  if (!body.clientId || !body.clientSecret || !body.webhookSecret) {
     return c.json(
       {
-        error: "formToken, clientId, clientSecret, webhookSecret required",
+        error: "clientId, clientSecret, webhookSecret required",
         hint:
           "webhookSecret comes from the Linear App's webhook page (the 'lin_wh_…' value). " +
           "Linear auto-generates it; OMA can't predict it.",
@@ -81,88 +110,30 @@ interface SubmitCredentialsBody {
       400,
     );
   }
+  if (!body.returnUrl) {
+    return c.json({ error: "returnUrl required" }, 400);
+  }
 
   const { linear } = buildProviders(c.env);
-
-  let result;
   try {
-    result = await linear.continueInstall({
-      publicationId: null,
-      payload: {
-        kind: "submit_credentials",
-        formToken: body.formToken,
-        clientId: body.clientId,
-        clientSecret: body.clientSecret,
-        webhookSecret: body.webhookSecret,
-      },
+    const result = await linear.submitCredentials({
+      publicationId,
+      clientId: body.clientId,
+      clientSecret: body.clientSecret,
+      webhookSecret: body.webhookSecret,
+      signingSecret: body.signingSecret ?? null,
+      returnUrl: body.returnUrl,
+    });
+    return c.json({
+      install_url: result.installUrl,
+      publication_id: result.publicationId,
+      callback_url: result.callbackUrl,
+      webhook_url: result.webhookUrl,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Surface JWT failures as a stable error code with remediation. The
-    // raw "JwtSigner.verify: <reason>" detail is implementation-leaky; map
-    // it to something a CLI / agent can reason about.
-    if (/JwtSigner\.verify/i.test(msg)) {
-      return c.json(
-        {
-          error: "form_token_invalid",
-          details: msg.replace(/.*JwtSigner\.verify:\s*/, ""),
-          remediation: "Re-run linear publish to mint a fresh form token (TTL ~30 min).",
-        },
-        400,
-      );
-    }
     return c.json({ error: "credentials_failed", details: msg }, 400);
   }
-
-  if (result.kind !== "step" || result.step !== "install_link") {
-    return c.json({ error: "unexpected continue result", result }, 500);
-  }
-  return c.json(result.data);
-});
-
-interface HandoffLinkBody {
-  formToken: string;
-}
-
-/**
- * POST /linear/publications/handoff-link
- * Body: { formToken } from a prior /start-a1 call.
- * Returns: { url, expiresInDays } — share this URL with a workspace admin.
- */
-app.post("/handoff-link", async (c) => {
-  if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
-  const body = await c.req.json<HandoffLinkBody>();
-  if (!body.formToken) return c.json({ error: "formToken required" }, 400);
-
-  const { linear } = buildProviders(c.env);
-
-  let result;
-  try {
-    result = await linear.continueInstall({
-      publicationId: null,
-      payload: { kind: "handoff_link", formToken: body.formToken },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/JwtSigner\.verify/i.test(msg)) {
-      return c.json(
-        {
-          error: "form_token_invalid",
-          details: msg.replace(/.*JwtSigner\.verify:\s*/, ""),
-          remediation: "Re-run linear publish to mint a fresh form token (TTL ~30 min).",
-        },
-        400,
-      );
-    }
-    return c.json({ error: "handoff_failed", details: msg }, 400);
-  }
-
-  if (result.kind !== "step" || result.step !== "install_link") {
-    return c.json({ error: "unexpected handoff result", result }, 500);
-  }
-  return c.json(result.data);
 });
 
 interface PersonalTokenBody {
@@ -218,6 +189,51 @@ app.post("/personal-token", async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: "pat_install_failed", details: msg }, 400);
+  }
+});
+
+interface FormTokenBody {
+  /** Forwarded from apps/main; identifies the publication owner. */
+  userId: string;
+  /** Optional — defaults to "" when the wizard doesn't track returnUrl. */
+  returnUrl?: string;
+}
+
+/**
+ * POST /linear/publications/:id/form-token
+ *
+ * Re-derive the publication-shell payload for an existing pub row. Linear
+ * doesn't use a formToken (its wizard keys directly off the publicationId),
+ * so the response shape mirrors `startPublication` — the wizard's existing
+ * step-1 render path handles it transparently.
+ */
+app.post("/:id/form-token", async (c) => {
+  if (!requireInternalSecret(c.env, c.req.header("x-internal-secret"))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const publicationId = c.req.param("id");
+  const body = await c.req.json<FormTokenBody>();
+  if (!body.userId) return c.json({ error: "userId required" }, 400);
+
+  const { linear } = buildProviders(c.env);
+
+  try {
+    const result = await linear.resumePublication({
+      publicationId,
+      userId: body.userId,
+      returnUrl: body.returnUrl ?? "",
+    });
+    return c.json({
+      publication_id: result.publicationId,
+      callback_url: result.callbackUrl,
+      webhook_url: result.webhookUrl,
+      suggested_app_name: result.suggestedAppName,
+      suggested_avatar_url: result.suggestedAvatarUrl,
+      return_url: result.returnUrl,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "reissue_failed", details: msg }, 400);
   }
 });
 

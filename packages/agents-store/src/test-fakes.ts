@@ -78,7 +78,9 @@ export class InMemoryAgentRepo implements AgentRepo {
   async listPage(
     tenantId: string,
     opts: {
-      includeArchived: boolean;
+      status?: "active" | "archived" | "any";
+      createdAfter?: number;
+      createdBefore?: number;
       limit: number;
       after?: import("@open-managed-agents/shared").PageCursor;
       q?: string;
@@ -87,7 +89,17 @@ export class InMemoryAgentRepo implements AgentRepo {
     const qLower = opts.q?.toLowerCase();
     let rows = Array.from(this.byId.values())
       .filter((r) => r.tenant_id === tenantId)
-      .filter((r) => opts.includeArchived || r.archived_at === null)
+      .filter((r) => {
+        if (opts.status === "active") return r.archived_at === null;
+        if (opts.status === "archived") return r.archived_at !== null;
+        return true;
+      })
+      .filter((r) =>
+        opts.createdAfter === undefined ? true : r.created_at >= opts.createdAfter,
+      )
+      .filter((r) =>
+        opts.createdBefore === undefined ? true : r.created_at < opts.createdBefore,
+      )
       .filter((r) =>
         qLower ? (r.config.name ?? "").toLowerCase().includes(qLower) : true,
       )

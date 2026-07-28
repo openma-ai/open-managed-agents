@@ -13,6 +13,8 @@
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/cf-billing": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
+    "@open-managed-agents/dreams-pipeline": "workspace:*",
+    "@open-managed-agents/dreams-store": "workspace:*",
     "@open-managed-agents/environments-store": "workspace:*",
     "@open-managed-agents/evals-runner": "workspace:*",
     "@open-managed-agents/evals-store": "workspace:*",

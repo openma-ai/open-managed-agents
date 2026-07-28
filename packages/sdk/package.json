@@ -28,11 +28,11 @@
   "homepage": "https://openma.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/open-ma/open-managed-agents",
+    "url": "https://github.com/openma-ai/open-managed-agents",
     "directory": "packages/sdk"
   },
   "bugs": {
-    "url": "https://github.com/open-ma/open-managed-agents/issues"
+    "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

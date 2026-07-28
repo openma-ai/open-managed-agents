@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { IntegrationsApi } from "../api/client";
 import { Avatar } from "../../components/Avatar";
 import { EmptyState } from "../../components/EmptyState";
+import { formatRelative } from "../../lib/format";
 import type { LinearInstallation, LinearPublication } from "../api/types";
 
 const api = new IntegrationsApi();
@@ -14,6 +15,7 @@ interface InstallationWithPublications {
 
 export function IntegrationsLinearList() {
   const [items, setItems] = useState<InstallationWithPublications[]>([]);
+  const [pending, setPending] = useState<LinearPublication[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,7 +23,10 @@ export function IntegrationsLinearList() {
     setLoading(true);
     setError(null);
     try {
-      const installs = await api.listInstallations();
+      const [installs, pendingPubs] = await Promise.all([
+        api.listInstallations(),
+        api.linear.listPendingPublications(),
+      ]);
       const withPubs = await Promise.all(
         installs.map(async (installation) => ({
           installation,
@@ -29,6 +34,7 @@ export function IntegrationsLinearList() {
         })),
       );
       setItems(withPubs);
+      setPending(pendingPubs);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -39,6 +45,15 @@ export function IntegrationsLinearList() {
   useEffect(() => {
     void load();
   }, []);
+
+  async function discardPending(pubId: string) {
+    try {
+      await api.linear.unpublish(pubId);
+      setPending((p) => p.filter((x) => x.id !== pubId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -78,7 +93,20 @@ export function IntegrationsLinearList() {
           </div>
         )}
 
-        {!loading && items.length === 0 && (
+        {pending.length > 0 && (
+          <section className="mb-6">
+            <h2 className="text-[12px] font-medium text-fg-muted uppercase tracking-wider mb-2">
+              In-progress installs
+            </h2>
+            <ul className="space-y-2">
+              {pending.map((p) => (
+                <PendingRow key={p.id} pub={p} onDiscard={() => discardPending(p.id)} />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {!loading && items.length === 0 && pending.length === 0 && (
           <EmptyState
             title="No Linear workspaces connected yet."
             action={
@@ -103,6 +131,52 @@ export function IntegrationsLinearList() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** One row per in-progress publication. Resume → wizard with `?pub=`;
+ *  Discard → DELETE (markUnpublished). */
+function PendingRow({
+  pub,
+  onDiscard,
+}: {
+  pub: LinearPublication;
+  onDiscard: () => void;
+}) {
+  const stepNum = pub.status === "pending_setup" ? 1 : pub.status === "awaiting_install" ? 2 : 3;
+  const statusLabel =
+    pub.status === "pending_setup" ? "Pending setup" : "Awaiting install";
+  return (
+    <li className="flex items-center gap-3 px-4 py-3 rounded-md border border-warning/30 bg-warning-subtle/40">
+      <Avatar src={pub.persona.avatarUrl} name={pub.persona.name} size="sm" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="font-medium text-fg text-[14px] truncate">
+            {pub.persona.name}
+          </span>
+          <span className="text-[11px] text-warning">
+            ● Step {stepNum} of 3 ({statusLabel})
+          </span>
+        </div>
+        <p className="text-[12px] text-fg-muted">
+          Started {formatRelative(Date.now() - pub.created_at)} ago
+        </p>
+      </div>
+      <Link
+        to={`/integrations/linear/publish?pub=${encodeURIComponent(pub.id)}`}
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+      >
+        Resume install ↗
+      </Link>
+      <button
+        type="button"
+        onClick={onDiscard}
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium text-fg-muted hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        title="Discard this in-progress install"
+      >
+        Discard ✕
+      </button>
+    </li>
   );
 }
 

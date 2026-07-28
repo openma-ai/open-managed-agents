@@ -8,6 +8,7 @@
 
 import type {
   InstallationRepo,
+  PublicationRepo,
   SessionScopeRepo,
 } from "@open-managed-agents/integrations-core";
 
@@ -28,6 +29,105 @@ export interface SlackInstallationRepo extends InstallationRepo {
 
   /** Returns the bot xoxb- vault id for outbound injection on slack.com/api. */
   getBotVaultId(id: string): Promise<string | null>;
+}
+
+/**
+ * Publication-first install state stored on each `slack_publications` row.
+ * Returned alongside the base Publication shape so the provider can discover
+ * what stage of the wizard the user has reached.
+ *
+ * Lifecycle:
+ *   pending_setup       — shell-created. callback URL minted, no creds.
+ *   credentials_filled  — clientId / *_cipher columns set; ready for OAuth.
+ *   awaiting_install    — OAuth URL handed to user; waiting for redirect.
+ *   live                — OAuth callback completed: installation, vaults,
+ *                         slack_app_id all bound.
+ *
+ *   needs_reauth / unpublished — terminal-ish, same as base PublicationStatus.
+ */
+export interface SlackPublicationCredentialState {
+  clientId: string | null;
+  hasClientSecret: boolean;
+  hasSigningSecret: boolean;
+  /** Slack-side app id (e.g. A07ABC…). Populated on OAuth complete. */
+  slackAppId: string | null;
+}
+
+export interface SlackPublicationRepo extends PublicationRepo {
+  /**
+   * Insert a "shell" Slack publication — minimum row needed to mint a
+   * callback URL. installation_id is "" (sentinel — D1 column is NOT NULL),
+   * status='pending_setup', no credentials, no Slack-side app.
+   *
+   * The provider's startPublication is the only caller; route handlers use
+   * the base PublicationRepo.insert for legacy paths.
+   */
+  insertShell(input: {
+    tenantId: string;
+    userId: string;
+    agentId: string;
+    environmentId: string;
+    persona: { name: string; avatarUrl: string | null };
+    capabilities: ReadonlySet<import("@open-managed-agents/integrations-core").CapabilityKey>;
+    sessionGranularity: import("@open-managed-agents/integrations-core").SessionGranularity;
+  }): Promise<import("@open-managed-agents/integrations-core").Publication>;
+
+  /**
+   * PATCH the encrypted credentials onto a shell publication. Idempotent:
+   * re-pasting overwrites cipher columns, no row duplication. Flips status
+   * 'pending_setup' → 'credentials_filled' (or stays 'credentials_filled' on
+   * re-paste; never downgrades from a more advanced status).
+   *
+   * Throws if the publication doesn't exist.
+   */
+  setCredentials(
+    publicationId: string,
+    input: { clientId: string; clientSecretCipher: string; signingSecretCipher: string },
+  ): Promise<void>;
+
+  /**
+   * Retrieve the decrypted client_secret for OAuth code-exchange. Caller
+   * passes the publication-id from the callback URL. Returns null when the
+   * publication is missing or has no credentials yet (caller surfaces 400).
+   */
+  getClientSecret(publicationId: string): Promise<string | null>;
+
+  /**
+   * Retrieve the decrypted signing_secret for HMAC verification on incoming
+   * Slack events. Used by the webhook handler when binding by app_id maps
+   * to a publication.
+   */
+  getSigningSecret(publicationId: string): Promise<string | null>;
+
+  /**
+   * Read just the credential staging columns. Provider uses this to discover
+   * what stage of the wizard a publication is at (e.g. on retry — re-paste
+   * vs. fresh shell vs. re-do OAuth).
+   */
+  getCredentialState(
+    publicationId: string,
+  ): Promise<SlackPublicationCredentialState | null>;
+
+  /**
+   * After OAuth completes: bind the Slack-side app_id, the just-created
+   * installation_id, and flip status='live'. Called once per publication.
+   * Idempotent — re-running with the same arguments is a no-op.
+   */
+  bindInstallation(input: {
+    publicationId: string;
+    installationId: string;
+    slackAppId: string;
+  }): Promise<void>;
+
+  /**
+   * Look up a publication by Slack's app_id (A07…). Used by the webhook
+   * receiver: Slack's payload identifies the App but not OMA's publication;
+   * we fan-in via this lookup. Returns null when no publication has bound
+   * this Slack app yet.
+   */
+  findBySlackAppId(slackAppId: string): Promise<
+    import("@open-managed-agents/integrations-core").Publication | null
+  >;
 }
 
 /**

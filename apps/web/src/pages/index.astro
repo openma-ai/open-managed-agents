@@ -21,10 +21,10 @@ const schemas = [softwareApplicationSchema()];
 ---
 
 <Base
-  title="Open Managed Agents — Open-source alternative to Anthropic's Managed Agents"
-  description="Open-source, self-hostable alternative to Anthropic's Managed Agents. Cloudflare Workers + Durable Objects. Apache 2.0. Drop-in compatible API."
+  title="Open-source Claude Managed Agents alternative — self-host on Cloudflare or Docker | Open Managed Agents"
+  description="Open-source alternative to Claude Managed Agents and a foundation for open-source, self-hosted Claude Tag-style agents. Run Claude agents yourself on Cloudflare Workers or Docker."
   canonical="/"
-  keywords="open managed agents, anthropic managed agents alternative, open source agent platform, managed agents cloudflare, self-hosted managed agents, open source anthropic alternative, agent platform, agent infrastructure"
+  keywords="claude managed agents, claude managed agents alternative, claude tag alternative, claude tag open source, open source claude tag, self-hosted claude tag, claude tag self hosted, open source claude managed agents, claude agent platform, self host claude code, claude code skills, claude agent sdk, mcp server host, ai agent cloudflare workers, byok ai agent"
   schemas={schemas}
 >
   <!-- Hero -->
@@ -34,21 +34,22 @@ const schemas = [softwareApplicationSchema()];
         Apache 2.0 · Cloudflare-native · Self-hostable
       </p>
       <h1 class="font-display text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight">
-        Open Managed Agents
+        The open-source Claude Managed Agents alternative
+        <span class="block mt-4 text-xl md:text-2xl text-[var(--color-fg-muted)] font-medium">
+          Run Claude agents yourself — on Cloudflare or with <code class="font-mono text-base md:text-xl">docker compose up</code>
+        </span>
       </h1>
-      <p class="mt-4 text-xl md:text-2xl text-[var(--color-fg-muted)]">
-        Open-source alternative to <span class="whitespace-nowrap">Anthropic's Managed Agents</span>.
-      </p>
       <p class="mt-6 text-base md:text-lg text-[var(--color-fg-muted)] max-w-2xl mx-auto leading-relaxed">
-        A drop-in compatible agent platform you can run yourself. Sessions,
-        sandboxes, tools, memory, vaults, and crash recovery — all served from
-        Cloudflare Workers + Durable Objects, or a Docker container on your
-        own box. Same API surface as the proprietary version, with the source
-        code and the runtime under your control.
+        A wire-compatible, self-hostable agent platform: durable sessions,
+        sandboxed code execution, vault-backed credentials, MCP server hosting,
+        and Claude Code skills — served from Cloudflare Workers + Durable
+        Objects, or a Docker container on your own box. Same API surface as
+        the proprietary version, with the source code and the runtime under
+        your control.
       </p>
       <div class="mt-8 flex items-center justify-center gap-3 flex-wrap">
         <a
-          href="https://github.com/open-ma/open-managed-agents"
+          href="https://github.com/openma-ai/open-managed-agents"
           target="_blank" rel="noopener noreferrer"
           class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
           >★ Star on GitHub</a
@@ -67,7 +68,7 @@ const schemas = [softwareApplicationSchema()];
   </section>
 
   <!-- Why Open Managed Agents -->
-  <section class="max-w-5xl mx-auto px-4 py-16">
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-3 text-center">Why Open Managed Agents</h2>
     <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-12">
       The same shape of platform you'd get from a closed vendor — sessions,
@@ -76,7 +77,7 @@ const schemas = [softwareApplicationSchema()];
     </p>
     <div class="grid md:grid-cols-3 gap-8">
       <FeatureCard title="Drop-in compatible">
-        The HTTP API mirrors Anthropic's Managed Agents — same
+        The HTTP API mirrors the Claude Managed Agents API — same
         <code class="font-mono text-xs">/v1/agents</code>,
         <code class="font-mono text-xs">/v1/sessions</code>, same event-stream
         shape. Migrate by swapping the base URL.
@@ -95,7 +96,7 @@ const schemas = [softwareApplicationSchema()];
   </section>
 
   <!-- How it works -->
-  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]">
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="max-w-5xl mx-auto px-4 py-16">
       <h2 class="font-display text-3xl font-bold mb-3 text-center">How it works</h2>
       <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-10">
@@ -121,7 +122,7 @@ const schemas = [softwareApplicationSchema()];
             Five-line quickstart. No SDK, no Cloudflare account needed for
             local dev — Docker spins up a fully working stack.
           </p>
-          <pre class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto"><code>git clone https://github.com/open-ma/open-managed-agents
+          <pre class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto"><code>git clone https://github.com/openma-ai/open-managed-agents
 cd open-managed-agents &amp;&amp; cp .env.example .env
 # Set ANTHROPIC_API_KEY in .env, then:
 docker compose up -d
@@ -133,10 +134,10 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
   </section>
 
   <!-- API compatibility -->
-  <section class="max-w-5xl mx-auto px-4 py-16">
-    <h2 class="font-display text-3xl font-bold mb-4">Drop-in compatible with Anthropic's Managed Agents API</h2>
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Drop-in compatible with the Claude Managed Agents API</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
-      We track the public surface of Anthropic's Managed Agents API one-to-one.
+      We track the public surface of the Claude Managed Agents API one-to-one.
       Resources, request shapes, response shapes, the SSE event stream — all
       the same. If your client code already speaks Managed Agents, point it at
       <code class="font-mono text-sm">https://openma.dev</code> (hosted) or
@@ -151,16 +152,16 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
     </p>
     <p class="text-[var(--color-fg-muted)] leading-relaxed">
       Where the open implementation goes further: the harness layer is
-      explicit and replaceable. Anthropic's hosted version owns the agent
-      loop; here you can write your own. We ship a sensible default harness,
-      and you swap in custom context engineering, caching, compaction, or
-      tool-delivery logic without touching the platform. Read more in
-      <a href="/blog/anthropic-managed-agents-vs-open-managed-agents/">the technical comparison</a>.
+      explicit and replaceable. The hosted Claude Managed Agents version owns
+      the agent loop; here you can write your own. We ship a sensible default
+      harness, and you swap in custom context engineering, caching, compaction,
+      or tool-delivery logic without touching the platform. Read more in
+      <a href="/blog/claude-managed-agents-vs-open-managed-agents/">the technical comparison</a>.
     </p>
   </section>
 
   <!-- Cloudflare -->
-  <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]">
+  <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="max-w-5xl mx-auto px-4 py-16">
       <h2 class="font-display text-3xl font-bold mb-4">Built on Cloudflare Workers + Durable Objects</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
@@ -196,9 +197,56 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
     </div>
   </section>
 
+  <!-- Claude Tag alternatives -->
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <div class="grid md:grid-cols-[0.95fr_1.05fr] gap-10 items-start">
+      <div>
+        <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-3">
+          Claude Tag open-source and self-hosted
+        </p>
+        <h2 class="font-display text-3xl font-bold mb-4">Build the open-source foundation for Claude Tag-style agents</h2>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
+          Open Managed Agents already has the runtime primitives behind a
+          Claude Tag-style experience: channel publication, durable sessions,
+          MCP and private tools, vault-backed credentials, memory stores,
+          sandboxed work, and BYOK model cards.
+        </p>
+        <div class="flex flex-wrap gap-3">
+          <a href="/claude-tag-alternative/" class="px-4 py-2 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium">
+            Compare with Claude Tag
+          </a>
+          <a href="/claude-tag-open-source/" class="px-4 py-2 rounded-md border border-[var(--color-border)] font-medium">
+            Open-source Claude Tag
+          </a>
+          <a href="/self-hosted-claude-tag/" class="px-4 py-2 rounded-md border border-[var(--color-border)] font-medium">
+            Self-hosted Claude Tag
+          </a>
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-4 text-sm">
+        <div class="border border-[var(--color-border)] rounded-lg p-4">
+          <h3 class="font-semibold mb-2">Open-source runtime</h3>
+          <p class="text-[var(--color-fg-muted)]">Inspect, fork, and extend the agent runtime behind a Claude Tag-style product.</p>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg p-4">
+          <h3 class="font-semibold mb-2">Self-hosted deployment</h3>
+          <p class="text-[var(--color-fg-muted)]">Run on Cloudflare Workers, Docker, or Node with your own data boundary.</p>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg p-4">
+          <h3 class="font-semibold mb-2">MCP and private tools</h3>
+          <p class="text-[var(--color-fg-muted)]">Expose GitHub, Linear, browser, shell, and internal APIs to the agent.</p>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg p-4">
+          <h3 class="font-semibold mb-2">BYOK model cards</h3>
+          <p class="text-[var(--color-fg-muted)]">Use Anthropic, OpenAI, OpenRouter, or a private model gateway.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Comparison -->
-  <section class="max-w-5xl mx-auto px-4 py-16">
-    <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Anthropic Managed Agents</h2>
+  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Claude Managed Agents</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
       Both run a managed agent loop on your behalf. The difference is who owns
       the runtime, the data, and the bill.
@@ -209,7 +257,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
           <tr class="bg-[var(--color-bg-surface)] text-left">
             <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Feature</th>
             <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Open Managed Agents</th>
-            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Anthropic Managed Agents</th>
+            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Claude Managed Agents</th>
           </tr>
         </thead>
         <tbody>
@@ -259,15 +307,15 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
     <p class="text-xs text-[var(--color-fg-subtle)] mt-4">
       Comparison is structural — feature parity is an explicit roadmap item;
       see the
-      <a href="https://github.com/open-ma/open-managed-agents">repo</a> for the
+      <a href="https://github.com/openma-ai/open-managed-agents">repo</a> for the
       current matrix, or
-      <a href="/blog/migrate-from-anthropic-managed-agents/">the migration
+      <a href="/blog/migrate-from-claude-managed-agents/">the migration
       guide</a> for the practical steps.
     </p>
   </section>
 
   <!-- Pricing teaser (kept — relevant to hosted CTA) -->
-  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]">
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="max-w-5xl mx-auto px-4 py-16">
       <h2 class="font-display text-3xl font-bold text-center mb-2">Hosted pricing (optional)</h2>
       <p class="text-center text-[var(--color-fg-muted)] mb-12 max-w-2xl mx-auto">
@@ -314,7 +362,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
 
   <!-- Recent blog -->
   {posts.length > 0 && (
-    <section class="max-w-5xl mx-auto px-4 py-16">
+    <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
       <div class="flex items-end justify-between mb-8">
         <h2 class="font-display text-2xl font-bold">From the blog</h2>
         <a href="/blog/" class="text-sm py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">All posts →</a>
@@ -333,7 +381,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
   )}
 
   <!-- Get started -->
-  <section class="border-t border-[var(--color-border)]">
+  <section class="border-t border-[var(--color-border)]" data-reveal>
     <div class="max-w-3xl mx-auto px-4 py-16 text-center">
       <h2 class="font-display text-3xl font-bold mb-3">Get started</h2>
       <p class="text-[var(--color-fg-muted)] mb-6">
@@ -342,7 +390,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
       </p>
       <div class="flex items-center justify-center gap-3 flex-wrap">
         <a
-          href="https://github.com/open-ma/open-managed-agents"
+          href="https://github.com/openma-ai/open-managed-agents"
           target="_blank" rel="noopener noreferrer"
           class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
           >Clone the repo</a

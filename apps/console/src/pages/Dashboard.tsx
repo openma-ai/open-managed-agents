@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../lib/auth";
 import { useApiQuery } from "../lib/useApiQuery";
-import { useToast } from "../components/Toast";
+import { toast } from "sonner";
 import { StatusPill } from "../components/Badge";
-import { BrandLoader } from "../components/BrandLoader";
 import { EmptyState } from "../components/EmptyState";
+import { Skeleton } from "../components/Skeleton";
 
 interface Stats {
   agents: number;
@@ -28,7 +28,6 @@ interface RecentSession {
 export function Dashboard() {
   const nav = useNavigate();
   const { user: _user } = useAuth();
-  const { toast } = useToast();
   const [copied, setCopied] = useState<string | null>(null);
 
   // Headline cards + recent panel each ride their own TQ query so the
@@ -43,15 +42,11 @@ export function Dashboard() {
   );
   const stats = statsQuery.data ?? null;
   const recentSessions = sessionsQuery.data?.data.slice(0, 5) ?? [];
-  // Block initial render until BOTH first fetches settle (succeed or fail)
-  // so the page doesn't shift layout twice. `isLoading` is true only on
-  // the very first fetch; refetches stay invisible.
-  const loading = statsQuery.isLoading || sessionsQuery.isLoading;
 
   const copy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
     setCopied(key);
-    toast("Copied", "success");
+    toast.success("Copied");
     setTimeout(() => setCopied(null), 1600);
   };
 
@@ -79,14 +74,6 @@ export function Dashboard() {
     { label: "Model Cards", value: stats?.model_cards, to: "/model-cards" },
   ];
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <BrandLoader size="lg" label="Loading dashboard" />
-      </div>
-    );
-  }
-
   const cmd = "npx -y -p @openma/cli oma";
   const cmdGlobal = "npm i -g @openma/cli";
   const examplePrompt =
@@ -94,7 +81,7 @@ export function Dashboard() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-4 sm:px-8 lg:px-10 py-10 lg:py-12 space-y-10">
+      <div className="pl-3 pr-4 py-6 space-y-10">
         {/* Header */}
         <header>
           <h1 className="font-display text-[32px] leading-tight font-semibold tracking-tight text-fg">
@@ -215,7 +202,18 @@ export function Dashboard() {
             </button>
           </div>
 
-          {recentSessions.length === 0 ? (
+          {sessionsQuery.isLoading ? (
+            <div className="border border-border rounded-lg divide-y divide-border">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4 px-4 py-3">
+                  <Skeleton className="h-3.5 w-[40%]" rounded="sm" />
+                  <Skeleton className="h-3.5 w-16" rounded="sm" />
+                  <Skeleton className="h-3.5 w-32" rounded="sm" />
+                  <Skeleton className="h-3.5 w-20 ml-auto" rounded="sm" />
+                </div>
+              ))}
+            </div>
+          ) : recentSessions.length === 0 ? (
             <EmptyState
               title="No sessions yet — the stable's empty."
               body={

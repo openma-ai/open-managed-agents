@@ -173,4 +173,4 @@ new OpenMA({ bearer: cookieToken, activeTenantId: "tn_..." });
 
 ## License
 
-MIT — see [LICENSE](https://github.com/open-ma/open-managed-agents/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/openma-ai/open-managed-agents/blob/main/LICENSE).

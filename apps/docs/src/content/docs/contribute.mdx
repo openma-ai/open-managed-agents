@@ -54,7 +54,7 @@ The `docs/` folder at the repo root is **internal RFC and design notes** — not
 
 3. **Set up local secrets.**
 
-   Copy `.dev.vars.example` to `.dev.vars` and fill in at least `ANTHROPIC_API_KEY`, `BETTER_AUTH_SECRET`, `API_KEY`. The other secrets are optional locally.
+   Copy `.dev.vars.example` to `.dev.vars` and fill in at least `PLATFORM_ROOT_SECRET` (`openssl rand -base64 32`), `BETTER_AUTH_SECRET` (`openssl rand -hex 32`), and `API_KEY`. `ANTHROPIC_API_KEY` is optional — set it to skip Model Card setup for local dev, or add a Model Card from the Console instead. The other secrets are optional locally.
 
 4. **Run.** Pick what you need:
 

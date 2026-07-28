@@ -43,6 +43,12 @@ import { setupClaudeConfigDir } from "./claude-config-dir.js";
 export interface SessionStartParams {
   session_id: string;
   agent_id: string;
+  /** Tenant pinning this session at the server. Required since step 3 of
+   *  the multi-tenant rollout — the server injects it from
+   *  x-harness-tenant on every session.start. Optional in the type to
+   *  tolerate degraded v1 servers (would never happen against current
+   *  main) — when missing we fall back to the first tenant in the map. */
+  tenant_id?: string;
   cwd?: string;
   resume?: { acp_session_id: string };
 }
@@ -50,28 +56,33 @@ export interface SessionStartParams {
 export interface SessionPromptParams {
   session_id: string;
   turn_id: string;
+  /** Server-injected (see SessionStartParams.tenant_id). Not load-bearing
+   *  here — we just resolve the active session by session_id. Carried in
+   *  the type so the daemon receives it without TS noise. */
+  tenant_id?: string;
   text: string;
 }
 
 export type ManagerOut =
-  | { type: "session.ready"; session_id: string; acp_session_id: string }
-  | { type: "session.event"; session_id: string; turn_id: string; event: unknown }
-  | { type: "session.complete"; session_id: string; turn_id: string }
-  | { type: "session.error"; session_id: string; turn_id?: string; message: string }
-  | { type: "session.disposed"; session_id: string };
+  | { type: "session.ready"; session_id: string; tenant_id: string; acp_session_id: string }
+  | { type: "session.event"; session_id: string; tenant_id: string; turn_id: string; event: unknown }
+  | { type: "session.complete"; session_id: string; tenant_id: string; turn_id: string }
+  | { type: "session.error"; session_id: string; tenant_id?: string; turn_id?: string; message: string }
+  | { type: "session.disposed"; session_id: string; tenant_id: string };
 
 export type Sender = (msg: ManagerOut) => void;
 
 interface ActiveSession {
   acp: AcpSession;
   acpSessionId: string;
+  /** Tenant this session was pinned to at session.start. Used to look up
+   *  the right `oma_*` key for the spawned ACP child's MCP headers and
+   *  to stamp `tenant_id` on every outbound session-scoped message. */
+  tenantId: string;
   turns: Map<string, AbortController>;
 }
 
 export interface SessionManagerEnv {
-  /** OMA `oma_*` PAT — server-side auth for /v1/* calls and as the bearer
-   *  the spawned ACP child sends to OMA's mcp-proxy. */
-  apiKey: string;
   /** OMA server URL, e.g. https://app.openma.dev. Used to fetch session
    *  bundle and as the base for mcp-proxy URLs we send into mcpServers. */
   apiUrl: string;
@@ -112,7 +123,14 @@ export class SessionManager {
   #spawner = new NodeSpawner();
   #runtime = new AcpRuntimeImpl(this.#spawner);
   #sessions = new Map<string, ActiveSession>();
-  #env: SessionManagerEnv = { apiKey: "", apiUrl: "", runtimeToken: "" };
+  #env: SessionManagerEnv = { apiUrl: "", runtimeToken: "" };
+  /**
+   * Per-tenant `oma_*` keys, keyed by tenant_id. Populated by the daemon
+   * at startup from CredentialsV2.tenants and refreshed on SIGHUP after
+   * `oma bridge refresh` rotates them server-side. Empty until the
+   * daemon calls `setTenantKeys()`.
+   */
+  #tenantKeys = new Map<string, string>();
   /** Set by `drain()` to refuse new session.start while in-flight turns
    *  finish. Existing sessions keep accepting prompts so a user mid-turn
    *  doesn't hit "session not ready" mid-stream just because the daemon
@@ -125,6 +143,22 @@ export class SessionManager {
 
   setSpawnEnv(env: SessionManagerEnv): void {
     this.#env = env;
+  }
+
+  /**
+   * Replace the in-memory map of tenant_id → `oma_*` PAT. Called once at
+   * daemon startup from CredentialsV2.tenants, and again on SIGHUP after
+   * the user runs `oma bridge refresh` (so newly-added tenants become
+   * sessionable without a daemon restart, and revoked tenants stop being
+   * accepted).
+   *
+   * Existing sessions are NOT torn down — a session pinned to a tenant
+   * that was just removed keeps running until the harness disposes it.
+   * The lookup is consulted per session.start, not per turn.
+   */
+  setTenantKeys(tenants: Array<{ id: string; agentApiKey: string }>): void {
+    this.#tenantKeys.clear();
+    for (const t of tenants) this.#tenantKeys.set(t.id, t.agentApiKey);
   }
 
   setSender(send: Sender): void {
@@ -152,7 +186,7 @@ export class SessionManager {
   /** Re-announce alive sessions to the server (used after WS reconnect). */
   announceAll(): void {
     for (const [session_id, sess] of this.#sessions) {
-      this.#send({ type: "session.ready", session_id, acp_session_id: sess.acpSessionId });
+      this.#send({ type: "session.ready", session_id, tenant_id: sess.tenantId, acp_session_id: sess.acpSessionId });
     }
   }
 
@@ -171,12 +205,49 @@ export class SessionManager {
       });
       return;
     }
+    // Resolve the per-tenant API key BEFORE the idempotent-replay check
+    // so a stale daemon (no key for a freshly-authorized tenant) emits a
+    // clean "run oma bridge refresh" error rather than silently re-acking
+    // a session that would later spawn with the wrong (or no) credential.
+    // Missing tenant_id is a degraded-server signal — fall back to the
+    // first tenant in the map and log a warning so it's debuggable.
+    let tenantId = p.tenant_id ?? "";
+    let tenantKey = tenantId ? this.#tenantKeys.get(tenantId) : undefined;
+    if (!tenantId) {
+      const fallback = this.#tenantKeys.keys().next();
+      if (!fallback.done) {
+        tenantId = fallback.value;
+        tenantKey = this.#tenantKeys.get(tenantId);
+        process.stderr.write(
+          `  ! session.start missing tenant_id; falling back to first tenant ${tenantId.slice(0, 8)}…\n`,
+        );
+      }
+    }
+    if (!tenantKey) {
+      this.#send({
+        type: "session.error",
+        session_id: p.session_id,
+        tenant_id: p.tenant_id,
+        message:
+          `Tenant ${p.tenant_id ?? "(unspecified)"} not authorized for this runtime — ` +
+          `run 'oma bridge refresh'`,
+      });
+      return;
+    }
+    // Diagnostic line — helps operators trace per-session tenant routing
+    // in multi-tenant setups. Tenant id is logged for debuggability; the
+    // key plaintext is NEVER logged (only its presence is implicit from
+    // not erroring out above).
+    process.stderr.write(
+      `  → tenant-key selected sid=${p.session_id.slice(0, 8)} tenant=${tenantId.slice(0, 14)}\n`,
+    );
     // Idempotent: if we already have this session, just re-ack ready.
     const existing = this.#sessions.get(p.session_id);
     if (existing) {
       this.#send({
         type: "session.ready",
         session_id: p.session_id,
+        tenant_id: existing.tenantId,
         acp_session_id: existing.acpSessionId,
       });
       return;
@@ -277,14 +348,16 @@ export class SessionManager {
     // ACP McpServer schema requires a name + url + headers array. We add
     // the Authorization header here, on the daemon side, so the agent
     // PAT never travels back through the bundle response from main.
+    // The PAT is the *per-tenant* `oma_*` key resolved above so the
+    // spawned ACP child's mcp-proxy calls land on the right tenant.
     // stdio servers are intentionally not supported in this path — they'd
     // need a daemon-side spawner that doesn't exist yet.
     const mcpServersForAcp = bundleMcpServers.map((s) => ({
       type: s.type,
       name: s.name,
       url: s.url,
-      headers: this.#env.apiKey
-        ? [{ name: "Authorization", value: `Bearer ${this.#env.apiKey}` }]
+      headers: tenantKey
+        ? [{ name: "Authorization", value: `Bearer ${tenantKey}` }]
         : [],
     }));
 
@@ -313,17 +386,20 @@ export class SessionManager {
       this.#sessions.set(p.session_id, {
         acp: session,
         acpSessionId: session.acpSessionId,
+        tenantId,
         turns: new Map(),
       });
       this.#send({
         type: "session.ready",
         session_id: p.session_id,
+        tenant_id: tenantId,
         acp_session_id: session.acpSessionId,
       });
     } catch (e) {
       this.#send({
         type: "session.error",
         session_id: p.session_id,
+        tenant_id: tenantId,
         message: e instanceof Error ? e.message : String(e),
       });
     }
@@ -335,6 +411,7 @@ export class SessionManager {
       this.#send({
         type: "session.error",
         session_id: p.session_id,
+        tenant_id: p.tenant_id,
         turn_id: p.turn_id,
         message: "no such session",
       });
@@ -361,6 +438,7 @@ export class SessionManager {
         this.#send({
           type: "session.event",
           session_id: p.session_id,
+          tenant_id: sess.tenantId,
           turn_id: p.turn_id,
           event: ev,
         });
@@ -369,16 +447,18 @@ export class SessionManager {
         this.#send({
           type: "session.error",
           session_id: p.session_id,
+          tenant_id: sess.tenantId,
           turn_id: p.turn_id,
           message: promptErr,
         });
       } else {
-        this.#send({ type: "session.complete", session_id: p.session_id, turn_id: p.turn_id });
+        this.#send({ type: "session.complete", session_id: p.session_id, tenant_id: sess.tenantId, turn_id: p.turn_id });
       }
     } catch (e) {
       this.#send({
         type: "session.error",
         session_id: p.session_id,
+        tenant_id: sess.tenantId,
         turn_id: p.turn_id,
         message: e instanceof Error ? e.message : String(e),
       });
@@ -394,11 +474,16 @@ export class SessionManager {
   }
 
   async dispose(session_id: string): Promise<void> {
+    const sess = this.#sessions.get(session_id);
+    // Capture tenantId before #killChild deletes the session entry — the
+    // outbound session.disposed must still carry the pin so the server-side
+    // tenant validation round-trip passes.
+    const tenantId = sess?.tenantId ?? "";
     await this.#killChild(session_id);
     // Drop the spawn cwd — session is dead at the platform; transcripts /
     // AGENTS.md / .claude/skills/ are no longer load-bearing.
     await removeSessionCwd(session_id);
-    this.#send({ type: "session.disposed", session_id });
+    this.#send({ type: "session.disposed", session_id, tenant_id: tenantId });
   }
 
   /** Best-effort cleanup on daemon shutdown. KEEPS spawn cwds — sessions are

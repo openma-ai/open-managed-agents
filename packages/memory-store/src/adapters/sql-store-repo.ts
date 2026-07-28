@@ -1,27 +1,48 @@
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import { and, desc, eq, gte, isNotNull, isNull, lt } from "drizzle-orm";
+import {
+  asBuilder,
+  atomicWrite,
+  getAll,
+  getOne,
+  type OmaDb,
+  type OmaDbBuilder,
+  runOnce,
+} from "@open-managed-agents/db-schema";
+import {
+  memories,
+  memory_stores,
+  memory_versions,
+} from "@open-managed-agents/db-schema/cf-auth";
 import type { MemoryStoreRepo, NewMemoryStoreInput } from "../ports";
 import type { MemoryStoreRow } from "../types";
 
+
 /**
- * SQL implementation of {@link MemoryStoreRepo}. Owns the SQL against the
- * memory_stores table defined in apps/main/migrations/0001_schema.sql.
+ * Drizzle implementation of {@link MemoryStoreRepo}. Owns the SQL against the
+ * memory_stores table.
  *
- * Backend-agnostic: takes a {@link SqlClient}, which works with Cloudflare D1
- * and better-sqlite3 / Postgres (self-host). The schema is plain SQLite-flavoured
- * DDL — D1 IS SQLite, and better-sqlite3 reads the same statements without
- * modification.
+ * Backend-agnostic: takes an {@link OmaDb} (Drizzle wrapper around D1 /
+ * better-sqlite3 / postgres-js). Helpers in `@open-managed-agents/db-schema`
+ * paper over the SQLite vs PG terminator differences.
  */
 export class SqlMemoryStoreRepo implements MemoryStoreRepo {
-  constructor(private readonly db: SqlClient) {}
+  private readonly db: OmaDbBuilder;
+  constructor(db: OmaDb) {
+    this.db = asBuilder(db);
+  }
 
   async insert(input: NewMemoryStoreInput): Promise<MemoryStoreRow> {
-    await this.db
-      .prepare(
-        `INSERT INTO memory_stores (id, tenant_id, name, description, created_at, updated_at, archived_at)
-         VALUES (?, ?, ?, ?, ?, NULL, NULL)`,
-      )
-      .bind(input.id, input.tenantId, input.name, input.description, input.createdAt)
-      .run();
+    await runOnce(
+      this.db.insert(memory_stores).values({
+        id: input.id,
+        tenant_id: input.tenantId,
+        name: input.name,
+        description: input.description,
+        created_at: input.createdAt,
+        updated_at: null,
+        archived_at: null,
+      }),
+    );
     return {
       id: input.id,
       tenant_id: input.tenantId,
@@ -34,37 +55,52 @@ export class SqlMemoryStoreRepo implements MemoryStoreRepo {
   }
 
   async get(tenantId: string, storeId: string): Promise<MemoryStoreRow | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT id, tenant_id, name, description, created_at, updated_at, archived_at
-         FROM memory_stores WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(storeId, tenantId)
-      .first<DbStore>();
+    const row = await getOne<typeof memory_stores.$inferSelect>(
+      this.db
+        .select()
+        .from(memory_stores)
+        .where(and(eq(memory_stores.id, storeId), eq(memory_stores.tenant_id, tenantId))),
+    );
     return row ? toRow(row) : null;
   }
 
   async list(
     tenantId: string,
-    opts: { includeArchived: boolean },
+    opts: {
+      includeArchived: boolean;
+      status?: "active" | "archived" | "any";
+      createdAfter?: number;
+      createdBefore?: number;
+    },
   ): Promise<MemoryStoreRow[]> {
-    const sql = opts.includeArchived
-      ? `SELECT id, tenant_id, name, description, created_at, updated_at, archived_at
-         FROM memory_stores WHERE tenant_id = ? ORDER BY created_at DESC`
-      : `SELECT id, tenant_id, name, description, created_at, updated_at, archived_at
-         FROM memory_stores WHERE tenant_id = ? AND archived_at IS NULL ORDER BY created_at DESC`;
-    const result = await this.db.prepare(sql).bind(tenantId).all<DbStore>();
-    return (result.results ?? []).map(toRow);
+    const conds = [eq(memory_stores.tenant_id, tenantId)];
+    // `status` is the canonical 3-way filter; fall back to includeArchived
+    // when callers haven't been migrated yet. `'any'` is a no-op WHERE.
+    const status =
+      opts.status ?? (opts.includeArchived ? "any" : "active");
+    if (status === "active") conds.push(isNull(memory_stores.archived_at));
+    else if (status === "archived") conds.push(isNotNull(memory_stores.archived_at));
+    if (opts.createdAfter !== undefined)
+      conds.push(gte(memory_stores.created_at, opts.createdAfter));
+    if (opts.createdBefore !== undefined)
+      conds.push(lt(memory_stores.created_at, opts.createdBefore));
+    const rows = await getAll<typeof memory_stores.$inferSelect>(
+      this.db
+        .select()
+        .from(memory_stores)
+        .where(and(...conds))
+        .orderBy(desc(memory_stores.created_at)),
+    );
+    return rows.map(toRow);
   }
 
   async archive(tenantId: string, storeId: string, archivedAt: number): Promise<MemoryStoreRow> {
-    await this.db
-      .prepare(
-        `UPDATE memory_stores SET archived_at = ?, updated_at = ?
-         WHERE id = ? AND tenant_id = ?`,
-      )
-      .bind(archivedAt, archivedAt, storeId, tenantId)
-      .run();
+    await runOnce(
+      this.db
+        .update(memory_stores)
+        .set({ archived_at: archivedAt, updated_at: archivedAt })
+        .where(and(eq(memory_stores.id, storeId), eq(memory_stores.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, storeId);
     if (!row) throw new Error(`memory_stores ${storeId} vanished after archive`);
     return row;
@@ -75,21 +111,15 @@ export class SqlMemoryStoreRepo implements MemoryStoreRepo {
     storeId: string,
     fields: { name?: string; description?: string | null; updatedAt: number },
   ): Promise<MemoryStoreRow> {
-    const sets: string[] = ["updated_at = ?"];
-    const binds: unknown[] = [fields.updatedAt];
-    if (fields.name !== undefined) {
-      sets.push("name = ?");
-      binds.push(fields.name);
-    }
-    if (fields.description !== undefined) {
-      sets.push("description = ?");
-      binds.push(fields.description);
-    }
-    binds.push(storeId, tenantId);
-    await this.db
-      .prepare(`UPDATE memory_stores SET ${sets.join(", ")} WHERE id = ? AND tenant_id = ?`)
-      .bind(...binds)
-      .run();
+    const set: Record<string, unknown> = { updated_at: fields.updatedAt };
+    if (fields.name !== undefined) set.name = fields.name;
+    if (fields.description !== undefined) set.description = fields.description;
+    await runOnce(
+      this.db
+        .update(memory_stores)
+        .set(set)
+        .where(and(eq(memory_stores.id, storeId), eq(memory_stores.tenant_id, tenantId))),
+    );
     const row = await this.get(tenantId, storeId);
     if (!row) throw new Error(`memory_stores ${storeId} vanished after update`);
     return row;
@@ -97,30 +127,19 @@ export class SqlMemoryStoreRepo implements MemoryStoreRepo {
 
   async delete(tenantId: string, storeId: string): Promise<void> {
     // App-layer cascade: explicitly drop memory_versions + memories before the
-    // store row. Done in one D1.batch so the three DELETEs run atomically —
-    // matches the previous FK ON DELETE CASCADE behavior without depending on
-    // the FK constraint (the schema is no-FK by project convention).
-    await this.db.batch([
-      this.db.prepare(`DELETE FROM memory_versions WHERE store_id = ?`).bind(storeId),
-      this.db.prepare(`DELETE FROM memories WHERE store_id = ?`).bind(storeId),
+    // store row. Atomic across all three statements via the shared atomicWrite
+    // helper (D1 batch / PG transaction — adapter stays dialect-blind).
+    await atomicWrite(this.db, [
+      this.db.delete(memory_versions).where(eq(memory_versions.store_id, storeId)),
+      this.db.delete(memories).where(eq(memories.store_id, storeId)),
       this.db
-        .prepare(`DELETE FROM memory_stores WHERE id = ? AND tenant_id = ?`)
-        .bind(storeId, tenantId),
+        .delete(memory_stores)
+        .where(and(eq(memory_stores.id, storeId), eq(memory_stores.tenant_id, tenantId))),
     ]);
   }
 }
 
-interface DbStore {
-  id: string;
-  tenant_id: string;
-  name: string;
-  description: string | null;
-  created_at: number;
-  updated_at: number | null;
-  archived_at: number | null;
-}
-
-function toRow(r: DbStore): MemoryStoreRow {
+function toRow(r: typeof memory_stores.$inferSelect): MemoryStoreRow {
   return {
     id: r.id,
     tenant_id: r.tenant_id,
