@@ -1,5 +1,11 @@
 # @openma/cli
 
+## 0.5.1
+
+### Patch Changes
+
+- aecc66e: Send bridge setup requests directly to the app origin so the runtime exchange POST is not rewritten by an apex redirect.
+
 ## 0.5.0
 
 ### Minor Changes
