@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -10,6 +10,34 @@ const HEADERS = {
 function api(path: string, init?: RequestInit) {
   return exports.default.fetch(new Request(`http://localhost${path}`, init));
 }
+
+const realFetch = globalThis.fetch;
+
+function mockInvalidProviderKey(origin: string) {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    if (url.startsWith(origin)) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: { message: "invalid API key" } }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+
+    return realFetch(input, init);
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // ============================================================
 // Auth middleware
@@ -282,6 +310,8 @@ describe("models list endpoint", () => {
   });
 
   it("returns 502 for invalid Anthropic key", async () => {
+    mockInvalidProviderKey("https://api.anthropic.com/");
+
     const res = await api("/v1/models/list", {
       method: "POST",
       headers: HEADERS,
@@ -291,6 +321,8 @@ describe("models list endpoint", () => {
   });
 
   it("returns 502 for invalid OpenAI key", async () => {
+    mockInvalidProviderKey("https://api.openai.com/");
+
     const res = await api("/v1/models/list", {
       method: "POST",
       headers: HEADERS,
