@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { StatusPill } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
+import { useI18n } from "../i18n";
 
 interface Stats {
   agents: number;
@@ -29,6 +30,7 @@ export function Dashboard() {
   const nav = useNavigate();
   const { user: _user } = useAuth();
   const [copied, setCopied] = useState<string | null>(null);
+  const { t } = useI18n();
 
   // Headline cards + recent panel each ride their own TQ query so the
   // dashboard renders the parts it has — a flaky /v1/stats no longer
@@ -46,7 +48,7 @@ export function Dashboard() {
   const copy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
     setCopied(key);
-    toast.success("Copied");
+    toast.success(t.common.copied);
     setTimeout(() => setCopied(null), 1600);
   };
 
@@ -66,12 +68,12 @@ export function Dashboard() {
   );
 
   const stats_ = [
-    { label: "Agents", value: stats?.agents, to: "/agents" },
-    { label: "Sessions", value: stats?.sessions, to: "/sessions" },
-    { label: "Environments", value: stats?.environments, to: "/environments" },
-    { label: "Vaults", value: stats?.vaults, to: "/vaults" },
-    { label: "Skills", value: stats?.skills, to: "/skills" },
-    { label: "Model Cards", value: stats?.model_cards, to: "/model-cards" },
+    { label: t.nav.agents, value: stats?.agents, to: "/agents" },
+    { label: t.nav.sessions, value: stats?.sessions, to: "/sessions" },
+    { label: t.nav.environments, value: stats?.environments, to: "/environments" },
+    { label: t.nav.credentialVaults, value: stats?.vaults, to: "/vaults" },
+    { label: t.nav.skills, value: stats?.skills, to: "/skills" },
+    { label: t.nav.modelCards, value: stats?.model_cards, to: "/model-cards" },
   ];
 
   const cmd = "npx -y -p @openma/cli oma";
@@ -88,7 +90,7 @@ export function Dashboard() {
             Get started with openma
           </h1>
           <p className="mt-1.5 text-[15px] text-fg-muted">
-            Hand the platform to your agent — install the CLI, mint a key, point them at it.
+            {t.dashboard.handPlatformToAgent}
           </p>
         </header>
 
@@ -98,12 +100,11 @@ export function Dashboard() {
           <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6 border-b border-border">
             <div>
               <div className="font-mono text-[11px] tracking-wider text-brand">STEP 01</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">Install the CLI</div>
+              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.installCli}</div>
             </div>
             <div className="space-y-2.5 min-w-0">
               <p className="text-sm text-fg-muted">
-                The <code className="font-mono text-[13px] text-fg">oma</code> CLI lets your
-                agent (or you) drive the platform from the terminal.
+                {t.dashboard.installCliDesc}
               </p>
               <button
                 onClick={() => copy(cmd, "cmd")}
@@ -135,17 +136,17 @@ export function Dashboard() {
           <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6 border-b border-border">
             <div>
               <div className="font-mono text-[11px] tracking-wider text-brand">STEP 02</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">Mint an API key</div>
+              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.mintApiKey}</div>
             </div>
             <div className="space-y-2.5">
               <p className="text-sm text-fg-muted">
-                Your agent needs this to authenticate. Keep it somewhere it can read.
+                {t.dashboard.mintApiKeyDesc}
               </p>
               <button
                 onClick={() => nav("/api-keys")}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
               >
-                Generate API key
+                {t.dashboard.generateApiKey}
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
               </button>
             </div>
@@ -155,13 +156,11 @@ export function Dashboard() {
           <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6">
             <div>
               <div className="font-mono text-[11px] tracking-wider text-brand">STEP 03</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">Hand it the reins</div>
+              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.handItReins}</div>
             </div>
             <div className="space-y-2.5">
               <p className="text-sm text-fg-muted">
-                Point your agent at the <code className="font-mono text-[13px] text-fg">openma-cli</code>{" "}
-                or <code className="font-mono text-[13px] text-fg">openma-api</code> skill, then
-                ask for what you want:
+                {t.dashboard.handItReinsDesc}
               </p>
               <button
                 onClick={() => copy(examplePrompt, "prompt")}
@@ -193,12 +192,12 @@ export function Dashboard() {
         {/* Recent sessions */}
         <section>
           <div className="flex items-baseline justify-between mb-3">
-            <h2 className="font-display text-lg font-semibold text-fg">Recent sessions</h2>
+            <h2 className="font-display text-lg font-semibold text-fg">{t.dashboard.recentSessions}</h2>
             <button
               onClick={() => nav("/sessions")}
               className="inline-flex items-center min-h-11 sm:min-h-0 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
             >
-              View all →
+              {t.common.viewAll}
             </button>
           </div>
 
@@ -215,7 +214,7 @@ export function Dashboard() {
             </div>
           ) : recentSessions.length === 0 ? (
             <EmptyState
-              title="No sessions yet — the stable's empty."
+              title={t.dashboard.noSessionsYet}
               body={
                 <>
                   Tell your agent to start one, or visit the{" "}
@@ -223,7 +222,7 @@ export function Dashboard() {
                     onClick={() => nav("/sessions")}
                     className="inline-flex items-center min-h-11 sm:min-h-0 text-brand hover:underline"
                   >
-                    Sessions page
+                    {t.dashboard.visitSessionsPage}
                   </button>
                   .
                 </>
@@ -234,10 +233,10 @@ export function Dashboard() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-bg-surface/40 text-fg-subtle text-[11px] uppercase tracking-[0.08em]">
-                    <th className="text-left px-4 py-2.5 font-medium">Title</th>
-                    <th className="text-left px-4 py-2.5 font-medium">Status</th>
-                    <th className="text-left px-4 py-2.5 font-medium">Agent</th>
-                    <th className="text-left px-4 py-2.5 font-medium">Created</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t.dashboard.title}</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t.common.status}</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t.dashboard.agent}</th>
+                    <th className="text-left px-4 py-2.5 font-medium">{t.common.created}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -247,7 +246,7 @@ export function Dashboard() {
                       onClick={() => nav(`/sessions/${s.id}`)}
                       className="border-t border-border hover:bg-bg-surface/40 cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                     >
-                      <td className="px-4 py-2.5 text-fg">{s.title || "Untitled"}</td>
+                      <td className="px-4 py-2.5 text-fg">{s.title || t.dashboard.untitled}</td>
                       <td className="px-4 py-2.5">
                         <StatusPill status={s.status || "idle"} />
                       </td>

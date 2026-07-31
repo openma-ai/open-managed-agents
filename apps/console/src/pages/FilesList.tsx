@@ -11,6 +11,7 @@ import { useApiQuery, useInfiniteApiQuery } from "../lib/useApiQuery";
 import { PopoverContent } from "@/components/ui/popover";
 import type { FileRecord } from "@open-managed-agents/api-types";
 import type { SessionRecord as Session } from "../types/session";
+import { useI18n } from "../i18n";
 
 interface ListResponse {
   data: FileRecord[];
@@ -23,12 +24,9 @@ const ALL_SCOPE = "";
 
 export function FilesList() {
   const { api } = useApi();
-  // Server-driven scope filter — `""` is the "All sessions" sentinel
-  // (FacetedFilter requires a value, server treats undefined as no
-  // filter), any other value is a real session id passed through as
-  // `scope_id`.
   const [scopeId, setScopeId] = useState<string>(ALL_SCOPE);
   const [search, setSearch] = useState("");
+  const { t } = useI18n();
 
   // Files endpoint follows the Anthropic Files API shape — `before_id`
   // for the cursor param and `last_id` (only when `has_more` is true) for

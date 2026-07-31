@@ -17,6 +17,7 @@ import "@fontsource-variable/jetbrains-mono";
 import "@fontsource-variable/geist";
 import "./index.css";
 import { AuthProvider } from "./lib/auth";
+import { I18nProvider } from "./i18n";
 import { Toaster } from "./components/ui/sonner";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -250,14 +251,16 @@ const router = createBrowserRouter([
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
           <Suspense fallback={null}>
-            <RouterProvider router={router} />
-          </Suspense>
-        </AuthProvider>
-        <Toaster />
-      </QueryClientProvider>
+              <RouterProvider router={router} />
+            </Suspense>
+          </AuthProvider>
+          <Toaster />
+        </QueryClientProvider>
+      </I18nProvider>
     </ErrorBoundary>
   </StrictMode>,
 );

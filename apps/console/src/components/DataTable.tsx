@@ -4,6 +4,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useI18n } from "../i18n";
 import {
   EyeIcon,
   EyeOffIcon,
@@ -348,6 +349,7 @@ export function DataTable<T>({
  *  (id, name) typically set `enableHiding: false` on their def. */
 function ColumnVisibilityMenu<T>({ table }: { table: TanstackTable<T> }) {
   const hideableColumns = table.getAllColumns().filter((c) => c.getCanHide());
+  const { t } = useI18n();
   if (hideableColumns.length === 0) return null;
 
   return (
@@ -355,12 +357,12 @@ function ColumnVisibilityMenu<T>({ table }: { table: TanstackTable<T> }) {
       <DropdownMenuTrigger asChild>
         <Button variant="outline" className="ml-auto shrink-0">
           <SettingsIcon className="size-3.5" />
-          Columns
+          {t.common.columns}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium">
-          Visible columns
+          {t.common.visibleColumns}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         {hideableColumns.map((column) => (
@@ -464,7 +466,7 @@ function LoadMoreRow({
   return (
     <tr ref={ref}>
       <td colSpan={colSpan} className="text-center py-4 text-xs text-fg-subtle">
-        {loading ? "Loading more…" : " "}
+        {loading ? t.common.loadingMore : " "}
       </td>
     </tr>
   );

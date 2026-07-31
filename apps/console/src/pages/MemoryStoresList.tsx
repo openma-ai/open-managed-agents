@@ -221,12 +221,12 @@ export function MemoryStoresList() {
 
   return (
     <DataTable<MemoryStore>
-      createLabel="+ New store"
+      createLabel={t.memory.newMemoryStore}
       onCreate={() => {
         setShowCreate(true);
         setFormError(null);
       }}
-      searchPlaceholder="Search memory stores..."
+      searchPlaceholder={t.memory.searchMemoryStores}
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
@@ -234,7 +234,7 @@ export function MemoryStoresList() {
       loading={loading}
       getRowId={(s) => s.id}
       onRowClick={(s) => nav(`/memory/${s.id}`)}
-      emptyTitle="No memory stores"
+      emptyTitle={t.memory.noMemoryStoresYet}
       emptyKind="memory"
       emptyAction={
         <Button
@@ -243,7 +243,7 @@ export function MemoryStoresList() {
             setFormError(null);
           }}
         >
-          + New store
+          {t.memory.newMemoryStore}
         </Button>
       }
       emptySubtitle="Create a memory store to give your agents long-term context across sessions."

@@ -33,6 +33,7 @@ import {
   VaultIcon,
 } from "./icons";
 import { consolePlugins } from "../plugins/registry";
+import { useI18n } from "../i18n";
 
 interface NavItem {
   to: string;
@@ -46,47 +47,51 @@ interface NavGroup {
   items: NavItem[];
 }
 
-/* ── Navigation groups — single source of truth for sidebar items ── */
-const navGroups: NavGroup[] = [
-  {
-    label: "Overview",
-    items: [{ to: "/", label: "Dashboard", icon: DashboardIcon, end: true }],
-  },
-  {
-    label: "Managed Agents",
-    items: [
-      { to: "/agents", label: "Agents", icon: AgentIcon },
-      { to: "/sessions", label: "Sessions", icon: SessionsIcon },
-      { to: "/files", label: "Files", icon: FilesIcon },
-      { to: "/evals", label: "Eval Runs", icon: SessionsIcon },
-    ],
-  },
-  {
-    label: "Infrastructure",
-    items: [
-      { to: "/environments", label: "Environments", icon: EnvIcon },
-      { to: "/vaults", label: "Credential Vaults", icon: VaultIcon },
-    ],
-  },
-  {
-    label: "Configuration",
-    items: [
-      { to: "/skills", label: "Skills", icon: SkillsIcon },
-      { to: "/memory", label: "Memory Stores", icon: MemoryIcon },
-      { to: "/model-cards", label: "Model Cards", icon: ModelCardsIcon },
-      { to: "/api-keys", label: "API Keys", icon: ApiKeysIcon },
-      { to: "/runtimes", label: "Local Runtimes", icon: RuntimesIcon },
-    ],
-  },
-  {
-    label: "Integrations",
-    items: [
-      { to: "/integrations/linear", label: "Linear", icon: LinearIcon },
-      { to: "/integrations/github", label: "GitHub", icon: GitHubIcon },
-      { to: "/integrations/slack", label: "Slack", icon: SlackIcon },
-    ],
-  },
-];
+/** Build nav groups with translated labels. Called inside the
+ *  component so translations react to locale changes. */
+function useNavGroups(): NavGroup[] {
+  const { t } = useI18n();
+  return [
+    {
+      label: t.nav.overview,
+      items: [{ to: "/", label: t.nav.dashboard, icon: DashboardIcon, end: true }],
+    },
+    {
+      label: t.nav.managedAgents,
+      items: [
+        { to: "/agents", label: t.nav.agents, icon: AgentIcon },
+        { to: "/sessions", label: t.nav.sessions, icon: SessionsIcon },
+        { to: "/files", label: t.nav.files, icon: FilesIcon },
+        { to: "/evals", label: t.nav.evalRuns, icon: SessionsIcon },
+      ],
+    },
+    {
+      label: t.nav.infrastructure,
+      items: [
+        { to: "/environments", label: t.nav.environments, icon: EnvIcon },
+        { to: "/vaults", label: t.nav.credentialVaults, icon: VaultIcon },
+      ],
+    },
+    {
+      label: t.nav.configuration,
+      items: [
+        { to: "/skills", label: t.nav.skills, icon: SkillsIcon },
+        { to: "/memory", label: t.nav.memoryStores, icon: MemoryIcon },
+        { to: "/model-cards", label: t.nav.modelCards, icon: ModelCardsIcon },
+        { to: "/api-keys", label: t.nav.apiKeys, icon: ApiKeysIcon },
+        { to: "/runtimes", label: t.nav.localRuntimes, icon: RuntimesIcon },
+      ],
+    },
+    {
+      label: t.nav.integrations,
+      items: [
+        { to: "/integrations/linear", label: "Linear", icon: LinearIcon },
+        { to: "/integrations/github", label: "GitHub", icon: GitHubIcon },
+        { to: "/integrations/slack", label: "Slack", icon: SlackIcon },
+      ],
+    },
+  ];
+}
 
 /** Which group labels should actually render as a SidebarGroupLabel
  *  above their items. Everything else stays flat (label data is just
@@ -94,7 +99,11 @@ const navGroups: NavGroup[] = [
  *  rule, this is a hardcoded allowlist of length 1 — when a second
  *  labeled group materializes, lift to a per-group `showLabel: true`
  *  flag on NavGroup. */
-const LABELED_GROUPS = new Set(["Integrations"]);
+/** LABELED_GROUPS is checked against the translated label, so we
+ *  resolve it at render time inside the component. */
+function getLabeledGroups(t: ReturnType<typeof useI18n>["t"]): Set<string> {
+  return new Set([t.nav.integrations]);
+}
 
 /**
  * Console sidebar — cloned from minimaxhub_benchmark/AppShell so the
@@ -123,6 +132,8 @@ const LABELED_GROUPS = new Set(["Integrations"]);
  */
 export function AppSidebar() {
   const { pathname } = useLocation();
+  const { t } = useI18n();
+  const navGroups = useNavGroups();
 
   const groups = [
     ...navGroups,
@@ -169,8 +180,9 @@ export function AppSidebar() {
   // no group containers/labels) and the labeled tail (each rendered as
   // its own SidebarGroup with a SidebarGroupLabel). Today there's only
   // one labeled group ("Integrations"); the structure still handles N.
-  const flatGroups = groups.filter((g) => !LABELED_GROUPS.has(g.label));
-  const labeledGroups = groups.filter((g) => LABELED_GROUPS.has(g.label));
+  const labeledGroupNames = getLabeledGroups(t);
+  const flatGroups = groups.filter((g) => !labeledGroupNames.has(g.label));
+  const labeledGroups = groups.filter((g) => labeledGroupNames.has(g.label));
 
   return (
     <Sidebar
@@ -205,7 +217,7 @@ export function AppSidebar() {
             every original group header. */}
         {flatGroups.length > 0 && (
           <SidebarGroup>
-            <SidebarGroupLabel>Managed Agents</SidebarGroupLabel>
+            <SidebarGroupLabel>{t.nav.managedAgents}</SidebarGroupLabel>
             <SidebarMenu>
               {flatGroups.flatMap((g) => g.items).map(renderItem)}
             </SidebarMenu>

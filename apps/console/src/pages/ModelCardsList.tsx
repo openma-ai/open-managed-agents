@@ -10,6 +10,7 @@ import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { TextInput, SecretInput } from "../components/Input";
 import { toast } from "sonner";
 import type { ModelCard } from "@open-managed-agents/api-types";
+import { useI18n } from "../i18n";
 
 // Provider enum — mirrors the whitelist on the server
 // (apps/main/src/routes/model-cards.ts GET handler). Anything outside
@@ -43,6 +44,7 @@ const INITIAL_FORM = {
 
 export function ModelCardsList() {
   const { api } = useApi();
+  const { t } = useI18n();
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...INITIAL_FORM });

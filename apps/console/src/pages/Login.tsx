@@ -474,7 +474,7 @@ export function Login() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className={inputCls}
-                placeholder="Min 8 characters"
+                placeholder={t.login.minChars}
                 required
                 minLength={8}
                 name="password"

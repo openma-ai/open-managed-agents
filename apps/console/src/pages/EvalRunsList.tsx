@@ -9,6 +9,7 @@ import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
 import { RowActionsMenu } from "../components/RowActionsMenu";
 import { PopoverContent } from "@/components/ui/popover";
+import { useI18n } from "../i18n";
 
 interface EvalRunSummary {
   id: string;
@@ -81,6 +82,7 @@ function passRateStr(r: EvalRunSummary): string {
 export function EvalRunsList() {
   const nav = useNavigate();
   const { api } = useApi();
+  const { t } = useI18n();
 
   // Server-driven status filter. "any" → omit the param entirely so the
   // server returns all runs; anything else is whitelisted by the route's

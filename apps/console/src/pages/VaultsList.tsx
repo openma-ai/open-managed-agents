@@ -10,6 +10,7 @@ import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { RowActionsMenu } from "../components/RowActionsMenu";
+import { useI18n } from "../i18n";
 
 interface Vault { id: string; name: string; created_at: string; archived_at?: string; }
 
@@ -24,6 +25,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function VaultsList() {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
   const [showCreateVault, setShowCreateVault] = useState(false);
   const [vaultName, setVaultName] = useState("");
 
@@ -194,7 +196,7 @@ export function VaultsList() {
 
   return (
     <DataTable<Vault>
-      createLabel="+ New vault"
+      createLabel={t.vaults.newVault}
       onCreate={() => setShowCreateVault(true)}
       filters={filters}
       data={vaults}
@@ -204,10 +206,10 @@ export function VaultsList() {
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
-      emptyTitle="No vaults yet"
+      emptyTitle={t.vaults.noVaultsYet}
       emptyKind="vault"
       emptyAction={
-        <Button onClick={() => setShowCreateVault(true)}>+ New vault</Button>
+        <Button onClick={() => setShowCreateVault(true)}>{t.vaults.newVault}</Button>
       }
       columns={columns}
     >
