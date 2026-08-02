@@ -84,8 +84,27 @@ export class NodeSessionRouter implements SessionRouter {
             row.agent_id,
             event as import("@open-managed-agents/shared").UserMessageEvent,
           )
-          .catch((err) => {
-            moduleLog.error({ err, op: "node_session_router.harness_turn_failed", session_id: sessionId }, "harness turn failed");
+          .catch(async (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            moduleLog.error(
+              { err, op: "node_session_router.harness_turn_failed", session_id: sessionId },
+              "harness turn failed",
+            );
+            try {
+              const errorEv = {
+                type: "session.error",
+                error: "harness_turn_failed",
+                message,
+              } as SessionEvent;
+              await log.appendAsync(errorEv);
+              const stored = await log.getEventsAsync();
+              this.deps.hub.publish(sessionId, stored[stored.length - 1]);
+            } catch (appendErr) {
+              moduleLog.error(
+                { err: appendErr, op: "node_session_router.error_append_failed", session_id: sessionId },
+                "failed to append session.error",
+              );
+            }
           });
       }
     }

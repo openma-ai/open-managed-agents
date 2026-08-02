@@ -542,12 +542,14 @@ Endpoints main-node implements for the console:
 - `/v1/agents` CRUD, `/v1/sessions` CRUD + events + SSE stream
 - `/v1/memory_stores` + `/memories` + per-session bindings
 - `/v1/vaults` + `/credentials`
-- `/v1/models/list`
+- `/v1/model_cards` CRUD (+ `/key` for cleartext; capability probe on create)
+- `/v1/environments` CRUD (+ archive; packages apply at session warmup)
+- `/v1/models/list` (GET catalog stub + POST provider key probe)
 - `/v1/integrations/{linear,github,slack}/{installations,publications,...}` — read + persona/capability PATCH + dispatch-rule CRUD. Active when `PLATFORM_ROOT_SECRET` env var is set. Publication-create endpoints (`start-a1`, `credentials`, `handoff-link`, `personal-token`) now run in-process via `NodeInstallBridge.startInstallation` — wire shape matches the CF gateway verbatim. The OAuth callback / setup-page / webhook / Linear MCP / GitHub refresh-by-vault routes are all in-process via `buildIntegrationsGatewayRoutes`.
 
 Endpoints stubbed (return empty `data: []` so the UI degrades gracefully):
-- `/v1/environments`, `/v1/api_keys`, `/v1/me/cli-tokens`,
-  `/v1/runtimes`, `/v1/skills`, `/v1/model_cards`
+- `/v1/api_keys`, `/v1/me/cli-tokens`,
+  `/v1/runtimes`, `/v1/skills`
 
 These pages render an "empty" state in the console; their CF counterparts
 will land in main-node as follow-up work.

@@ -50,6 +50,7 @@ import { createSqliteSessionService } from "@open-managed-agents/sessions-store"
 import { createSqliteFileService } from "@open-managed-agents/files-store";
 import { createSqliteEvalRunService } from "@open-managed-agents/evals-store";
 import { createSqliteEnvironmentService } from "@open-managed-agents/environments-store";
+import { createSqliteModelCardService } from "@open-managed-agents/model-cards-store";
 import { toFileRecord } from "@open-managed-agents/files-store";
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
@@ -65,6 +66,8 @@ import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event
 import {
   buildAgentRoutes,
   buildVaultRoutes,
+  buildModelCardRoutes,
+  buildEnvironmentRoutes,
   buildSessionRoutes,
   buildMemoryRoutes,
   buildDreamRoutes,
@@ -275,6 +278,14 @@ const sessionsService = createSqliteSessionService({ db: drizzleDb });
 const filesService = createSqliteFileService({ db: drizzleDb });
 const evalsService = createSqliteEvalRunService({ db: drizzleDb });
 const environmentsService = createSqliteEnvironmentService({ db: drizzleDb });
+const modelCardsService = createSqliteModelCardService(
+  { db: drizzleDb },
+  {
+    crypto: platformRootSecret
+      ? new WebCryptoAesGcm(platformRootSecret, "model.cards.keys")
+      : undefined,
+  },
+);
 
 let memoryBlobs: import("@open-managed-agents/memory-store").BlobStore;
 let memoryBlobDescription: string;
@@ -474,6 +485,58 @@ async function buildSandbox(
 
 // ─── Session registry ───────────────────────────────────────────────────
 
+/** Resolve agent.model (a model_id handle) → wire model + credentials.
+ *  Prefer a matching model card; fall back to ANTHROPIC_* env vars. */
+async function resolveNodeModelCreds(
+  tenantId: string,
+  agentModel: string | { id: string; speed?: string },
+): Promise<{
+  wireModel: string;
+  apiKey: string;
+  baseURL?: string;
+  apiCompat?: "ant" | "ant-compatible" | "oai" | "oai-compatible";
+  customHeaders?: Record<string, string>;
+}> {
+  const handle = typeof agentModel === "string" ? agentModel : agentModel.id;
+  try {
+    const card = await modelCardsService.findByModelId({ tenantId, modelId: handle });
+    if (card && !card.archived_at) {
+      const key = await modelCardsService.getApiKey({ tenantId, cardId: card.id });
+      if (key) {
+        const OAI = new Set(["oai", "oai-compatible"]);
+        const ANT = new Set(["ant", "ant-compatible"]);
+        const apiCompat =
+          OAI.has(card.provider) || ANT.has(card.provider)
+            ? (card.provider as "ant" | "ant-compatible" | "oai" | "oai-compatible")
+            : undefined;
+        return {
+          wireModel: card.model,
+          apiKey: key,
+          baseURL: card.base_url ?? undefined,
+          apiCompat,
+          customHeaders: card.custom_headers ?? undefined,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[model-card] lookup failed, falling back to env: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "No model card matched and ANTHROPIC_API_KEY is unset — configure a model card or set the env var",
+    );
+  }
+  return {
+    wireModel: handle,
+    apiKey,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
+    customHeaders: parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS),
+  };
+}
+
 const sessionRegistry = new SessionRegistry({
   sql,
   hub,
@@ -484,23 +547,21 @@ const sessionRegistry = new SessionRegistry({
   buildSandbox,
   sandboxWorkdirRoot: process.env.SANDBOX_WORKDIR ?? "./data/sandboxes",
   sqlDialect: dialect,
-  buildModel: (agent) => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var required for harness turns");
+  buildModel: async (agent, tenantId) => {
+    const creds = await resolveNodeModelCreds(tenantId, agent.model);
     return resolveModel(
-      agent.model,
-      apiKey,
-      process.env.ANTHROPIC_BASE_URL,
-      undefined,
-      parseCustomHeaders(process.env.ANTHROPIC_CUSTOM_HEADERS),
+      creds.wireModel,
+      creds.apiKey,
+      creds.baseURL,
+      creds.apiCompat,
+      creds.customHeaders,
     );
   },
-  buildTools: async (agent, sandbox) => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var required for harness turns");
+  buildTools: async (agent, sandbox, tenantId) => {
+    const creds = await resolveNodeModelCreds(tenantId, agent.model);
     return buildTools(agent, sandbox, {
-      ANTHROPIC_API_KEY: apiKey,
-      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+      ANTHROPIC_API_KEY: creds.apiKey,
+      ANTHROPIC_BASE_URL: creds.baseURL,
       toMarkdown: toMarkdownProvider,
     });
   },
@@ -509,8 +570,7 @@ const sessionRegistry = new SessionRegistry({
     return { run: (ctx: unknown) => h.run(ctx as HarnessContext) };
   },
   buildHarnessContext: async (input) => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var required for harness turns");
+    const creds = await resolveNodeModelCreds(input.tenantId, input.agent.model);
     const runtime = new NodeHarnessRuntime({
       sessionId: input.sessionId,
       log: input.eventLog,
@@ -528,8 +588,8 @@ const sessionRegistry = new SessionRegistry({
       systemPrompt: composeSystemPrompt(rawSystemPrompt),
       rawSystemPrompt,
       env: {
-        ANTHROPIC_API_KEY: apiKey,
-        ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+        ANTHROPIC_API_KEY: creds.apiKey,
+        ANTHROPIC_BASE_URL: creds.baseURL,
       },
       runtime,
     } satisfies HarnessContext;
@@ -851,15 +911,17 @@ v1.route("/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
 v1.route("/evals", buildEvalRoutes({
   evals: evalsService,
   agents: agentsService,
-  // Node has no per-tenant cloud environments yet — leave the optional
-  // dep undefined so the route accepts any environment_id without 404ing.
+  environments: environmentsService,
 }));
 
 // Stubs for routes the console hits but main-node doesn't yet implement.
-v1.get("/environments", (c) => c.json({ data: [] }));
 v1.get("/runtimes", (c) => c.json({ data: [] }));
 v1.get("/skills", (c) => c.json({ data: [] }));
-v1.get("/model_cards", (c) => c.json({ data: [] }));
+v1.route("/environments", buildEnvironmentRoutes({
+  environments: environmentsService,
+  sessions: sessionsService,
+}));
+v1.route("/model_cards", buildModelCardRoutes({ modelCards: modelCardsService }));
 v1.get("/models/list", (c) =>
   c.json({
     data: [
@@ -869,6 +931,48 @@ v1.get("/models/list", (c) =>
     ],
   }),
 );
+// Console ModelCardsList fetches suggestions via POST /v1/models/list with
+// the user's key — proxy through to Anthropic/OpenAI when possible.
+v1.post("/models/list", async (c) => {
+  const body = await c.req.json<{ provider?: string; api_key?: string }>();
+  const provider = body.provider || "ant";
+  const apiKey = body.api_key || "";
+  if (!apiKey) return c.json({ error: "api_key is required" }, 400);
+  try {
+    if (provider === "ant") {
+      const res = await fetch("https://api.anthropic.com/v1/models?limit=100", {
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      });
+      if (!res.ok) throw new Error(`Anthropic API ${res.status}`);
+      const data = (await res.json()) as {
+        data: Array<{ id: string; display_name: string }>;
+      };
+      return c.json({
+        data: data.data.map((m) => ({ id: m.id, name: m.display_name || m.id })),
+      });
+    }
+    if (provider === "oai") {
+      const res = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) throw new Error(`OpenAI API ${res.status}`);
+      const data = (await res.json()) as { data: Array<{ id: string }> };
+      const chatPrefixes = ["gpt-", "o1", "o3", "o4", "chatgpt-"];
+      return c.json({
+        data: data.data
+          .filter((m) => chatPrefixes.some((p) => m.id.startsWith(p)))
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .map((m) => ({ id: m.id, name: m.id })),
+      });
+    }
+    return c.json({ data: [] });
+  } catch (err) {
+    return c.json(
+      { error: `Failed to fetch models: ${(err as Error).message}` },
+      502,
+    );
+  }
+});
 v1.get("/integrations/github/credentials", (c) => c.json({ data: [] }));
 v1.get("/integrations/linear/credentials", (c) => c.json({ data: [] }));
 v1.get("/integrations/slack/credentials", (c) => c.json({ data: [] }));

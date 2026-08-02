@@ -19,6 +19,12 @@ export type { AgentRoutesDeps } from "./agents";
 export { buildVaultRoutes } from "./vaults";
 export type { VaultRoutesDeps } from "./vaults";
 
+export { buildModelCardRoutes } from "./model-cards";
+export type { ModelCardRoutesDeps } from "./model-cards";
+
+export { buildEnvironmentRoutes } from "./environments";
+export type { EnvironmentRoutesDeps } from "./environments";
+
 export { buildSessionRoutes } from "./sessions";
 export type {
   SessionRoutesDeps,

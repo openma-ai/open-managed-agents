@@ -64,14 +64,19 @@ export interface SessionRegistryDeps {
    *  LocalSubprocess / E2B / Daytona / etc., the machine doesn't. */
   buildSandbox(sessionId: string, workdir: string): Promise<SandboxExecutor>;
 
-  /** Build the LanguageModel for the agent. Reads env, applies custom
-   *  headers, picks the right provider. */
-  buildModel(agent: AgentConfig): LanguageModel;
+  /** Build the LanguageModel for the agent. Reads env / model cards,
+   *  applies custom headers, picks the right provider. Async when the
+   *  shell looks up a model card by handle. */
+  buildModel(
+    agent: AgentConfig,
+    tenantId: string,
+  ): LanguageModel | Promise<LanguageModel>;
 
   /** Build harness tools. Returns the tools dict the harness expects. */
   buildTools(
     agent: AgentConfig,
     sandbox: SandboxExecutor,
+    tenantId: string,
   ): Promise<unknown>;
 
   /** Build harness instance + context. Each is platform-neutral so the
@@ -84,6 +89,7 @@ export interface SessionRegistryDeps {
     tools: unknown;
     model: LanguageModel;
     sessionId: string;
+    tenantId: string;
     eventLog: SqlEventLog;
   }): Promise<unknown>;
 
@@ -257,13 +263,14 @@ export class SessionRegistry {
       // Node passes no-ops since the work has already been done.
       mountMemoryStores: async () => {},
       mountSessionOutputs: async () => {},
-      buildModel: (agent) => this.deps.buildModel(agent),
-      buildTools: (agent, sb) => this.deps.buildTools(agent, sb),
+      buildModel: (agent) => this.deps.buildModel(agent, tenantId),
+      buildTools: (agent, sb) => this.deps.buildTools(agent, sb, tenantId),
       buildHarness: () => this.deps.buildHarness(),
       buildHarnessContext: (input) =>
         this.deps.buildHarnessContext({
           ...input,
           sessionId,
+          tenantId,
           eventLog,
         }),
       publish: (event: SessionEvent) => this.deps.hub.publish(sessionId, event),
