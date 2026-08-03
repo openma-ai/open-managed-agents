@@ -839,8 +839,25 @@ const v1 = new Hono<{
 }>();
 v1.use("*", authMw);
 
-// Mount route bundles. Same paths CF uses; behavior preserved.
-v1.route("/agents", buildAgentRoutes({ services }));
+// Mount route bundles. Same paths CF uses; behavior preserved. Once a tenant
+// has configured model cards, agent model handles must resolve to an active
+// card; an empty card set keeps the legacy ANTHROPIC_API_KEY fallback usable.
+v1.route("/agents", buildAgentRoutes({
+  services,
+  validateModel: async (tenantId, model) => {
+    const cards = await modelCardsService.list({ tenantId });
+    const active = cards.filter((card) => card.archived_at === null);
+    if (active.length === 0) return { valid: true };
+    const modelId = typeof model === "string" ? model : model.id;
+    if (!active.some((card) => card.model_id === modelId)) {
+      return {
+        valid: false,
+        error: `No model card with model_id "${modelId}". Create a card with that handle, or set agent.model to an existing card's model_id.`,
+      };
+    }
+    return { valid: true };
+  },
+}));
 const sessionRouter = new NodeSessionRouter({
   sql,
   hub,

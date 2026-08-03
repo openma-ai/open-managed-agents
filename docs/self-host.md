@@ -543,7 +543,9 @@ Endpoints main-node implements for the console:
 - `/v1/memory_stores` + `/memories` + per-session bindings
 - `/v1/vaults` + `/credentials`
 - `/v1/model_cards` CRUD (+ `/key` for cleartext; capability probe on create)
-- `/v1/environments` CRUD (+ archive; packages apply at session warmup)
+- `/v1/environments` CRUD (+ archive). Node persists the environment config,
+  but currently runs sessions in the local sandbox snapshot; environment
+  package lists are not installed automatically at warmup yet.
 - `/v1/models/list` (GET catalog stub + POST provider key probe)
 - `/v1/integrations/{linear,github,slack}/{installations,publications,...}` — read + persona/capability PATCH + dispatch-rule CRUD. Active when `PLATFORM_ROOT_SECRET` env var is set. Publication-create endpoints (`start-a1`, `credentials`, `handoff-link`, `personal-token`) now run in-process via `NodeInstallBridge.startInstallation` — wire shape matches the CF gateway verbatim. The OAuth callback / setup-page / webhook / Linear MCP / GitHub refresh-by-vault routes are all in-process via `buildIntegrationsGatewayRoutes`.
 

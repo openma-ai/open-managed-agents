@@ -15,6 +15,13 @@
       "when": 1785159586064,
       "tag": "0001_drop_integration_publication_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785750000000,
+      "tag": "0002_model_card_handle_rename",
+      "breakpoints": true
     }
   ]
 }

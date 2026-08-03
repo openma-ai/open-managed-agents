@@ -1,9 +1,9 @@
 // Model cards (Node-PG variant of cf-auth/model-cards).
 //
-// Diverges from CF: Node-PG path predates the 0015 handle rename — it
-// keeps `display_name` and DOES NOT have a `model` column. Phase 3
-// reconciliation will land both columns. Until then, ports here
-// match what packages/schema/src/index.ts ships.
+// Keep this schema aligned with the post-0015 handle rename used by the
+// service/repository: model_id is the tenant-unique handle and model is the
+// provider wire-model. Existing Node-PG databases are upgraded by the
+// follow-up migration in apps/main-node/migrations/0002_model_card_handle_rename.sql.
 
 import { sql } from "drizzle-orm";
 import { bigint, index, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
@@ -15,8 +15,6 @@ export const model_cards = pgTable(
     tenant_id: text("tenant_id").notNull(),
     model_id: text("model_id").notNull(),
     provider: text("provider").notNull(),
-    // PG-side keeps display_name (CF dropped it in 0015). Drift tracked.
-    display_name: text("display_name").notNull(),
     base_url: text("base_url"),
     custom_headers: text("custom_headers"),
     api_key_cipher: text("api_key_cipher").notNull(),
@@ -26,6 +24,7 @@ export const model_cards = pgTable(
     created_at: bigint("created_at", { mode: "number" }).notNull(),
     updated_at: bigint("updated_at", { mode: "number" }),
     archived_at: bigint("archived_at", { mode: "number" }),
+    model: text("model").notNull().default(""),
   },
   (t) => [
     uniqueIndex("idx_model_cards_model_id").on(t.tenant_id, t.model_id),
