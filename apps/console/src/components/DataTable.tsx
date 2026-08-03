@@ -446,6 +446,7 @@ function LoadMoreRow({
   loading: boolean;
   onLoadMore: () => void;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLTableRowElement>(null);
 
   useEffect(() => {

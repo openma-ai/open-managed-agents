@@ -22,7 +22,6 @@ import { useTheme } from "../lib/theme";
 import { authClient } from "../lib/auth-client";
 import { Avatar } from "./Avatar";
 import { useI18n, AVAILABLE_LOCALES } from "../i18n";
-import { CheckIcon } from "lucide-react";
 
 /**
  * Bottom-of-sidebar user profile menu. Single click target opens a

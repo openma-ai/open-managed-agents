@@ -11,6 +11,7 @@ import { RowActionsMenu } from "../components/RowActionsMenu";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
+import { useI18n } from "../i18n";
 
 interface MemoryStore {
   id: string;
@@ -31,6 +32,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function MemoryStoresList() {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
 
   // Server-driven filter state. Each piece flows into storesParams below
   // → useApiQuery refetches on params change → the list reflects exactly
