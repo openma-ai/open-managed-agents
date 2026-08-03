@@ -78,18 +78,57 @@ export class NodeSessionRouter implements SessionRouter {
         .bind(sessionId)
         .first<{ tenant_id: string; agent_id: string | null }>();
       if (row?.agent_id) {
-        const entry = await this.deps.registry.getOrCreate(sessionId, row.tenant_id);
+        let entry: Awaited<ReturnType<SessionRegistry["getOrCreate"]>>;
+        try {
+          entry = await this.deps.registry.getOrCreate(sessionId, row.tenant_id);
+        } catch (err) {
+          await this.appendSessionError(
+            log,
+            sessionId,
+            "session_initialization_failed",
+            err,
+          );
+          return { status: 202, body: JSON.stringify({ accepted: true }) };
+        }
         void entry.machine
           .runHarnessTurn(
             row.agent_id,
             event as import("@open-managed-agents/shared").UserMessageEvent,
           )
-          .catch((err) => {
-            moduleLog.error({ err, op: "node_session_router.harness_turn_failed", session_id: sessionId }, "harness turn failed");
+          .catch(async (err) => {
+            await this.appendSessionError(log, sessionId, "harness_turn_failed", err);
           });
       }
     }
     return { status: 202, body: JSON.stringify({ accepted: true }) };
+  }
+
+  private async appendSessionError(
+    log: SqlEventLog,
+    sessionId: string,
+    code: string,
+    err: unknown,
+  ): Promise<void> {
+    const message = err instanceof Error ? err.message : String(err);
+    moduleLog.error(
+      { err, op: `node_session_router.${code}`, session_id: sessionId },
+      `${code} failed`,
+    );
+    try {
+      const errorEv = {
+        type: "session.error",
+        error: code,
+        message,
+      } as SessionEvent;
+      await log.appendAsync(errorEv);
+      const stored = await log.getEventsAsync();
+      this.deps.hub.publish(sessionId, stored[stored.length - 1]);
+    } catch (appendErr) {
+      moduleLog.error(
+        { err: appendErr, op: "node_session_router.error_append_failed", session_id: sessionId },
+        "failed to append session.error",
+      );
+    }
   }
 
   async getEvents(

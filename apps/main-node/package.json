@@ -40,6 +40,7 @@
     "@open-managed-agents/linear": "workspace:*",
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
+    "@open-managed-agents/model-cards-store": "workspace:*",
     "@open-managed-agents/observability": "workspace:*",
     "@open-managed-agents/oma-cap-adapter": "workspace:*",
     "@open-managed-agents/queue": "workspace:*",
