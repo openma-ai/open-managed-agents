@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ai": "^7.0.42",
+    "ai": "^7.0.47",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
