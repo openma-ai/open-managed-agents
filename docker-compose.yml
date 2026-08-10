@@ -26,10 +26,10 @@ services:
     environment:
       # Required for harness turns. Put it in .env or pass via shell env.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Optional: when pointing at an Anthropic-compat proxy that needs
-      # /v1 in the base URL or custom headers.
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      ANTHROPIC_CUSTOM_HEADERS: ${ANTHROPIC_CUSTOM_HEADERS:-}
+      # Optional Anthropic-compat proxy settings belong in .env
+      # (ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS). Do NOT default
+      # them to "" here — @ai-sdk/anthropic validates baseURL on
+      # module init and rejects empty string.
       # Storage paths inside the container — mapped to ./data on host.
       # All absolute so they don't surprise-resolve relative to pnpm's
       # cwd (which becomes /app/apps/main-node under `pnpm --filter ... start`).
