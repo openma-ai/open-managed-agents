@@ -69,7 +69,7 @@
     "@testing-library/user-event": "^14.6.1",
     "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.1.0",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.21",
     "jsdom": "^29.1.1",
