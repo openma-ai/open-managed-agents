@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { formatDuration, pickTickStep } from "../../lib/format";
 import type { Event } from "../../lib/events";
@@ -8,6 +8,8 @@ import {
   FAMILY_BAR,
   FAMILY_DOT,
   LABEL_COL_W,
+  MAX_CHART_PX,
+  MAX_TICKS,
   SIDE_PANEL_W,
   STATUS_TEXT,
   TRIGGER_DOT,
@@ -22,11 +24,19 @@ import {
  * Top-level timeline orchestrator. Buckets events into turns, renders one
  * TurnCard per turn with idle dividers between, and hosts the shared
  * right-side detail panel that any span click in any card populates.
+ *
+ * Performance notes for long sessions:
+ * - Only the latest turn mounts expanded; older turns stay collapsed until
+ *   clicked so we don't deriveSpans / paint waterfalls for every turn on tab
+ *   switch.
+ * - Chart width + tick count are hard-capped (see MAX_CHART_PX / MAX_TICKS).
+ * - Turn cards use `content-visibility: auto` so off-screen paint is skipped.
  */
 export function TimelineView({ events }: { events: Event[] }) {
   const turns = useMemo(() => bucketIntoTurns(events), [events]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
+  const selectedSpanKey = selection?.spanKey ?? null;
 
   // Auto-scroll to the latest turn when new ones land. Skip if user has
   // scrolled up — they're inspecting an older turn and shouldn't get yanked.
@@ -61,7 +71,8 @@ export function TimelineView({ events }: { events: Event[] }) {
               {idleMs > 0 && <IdleDivider ms={idleMs} nextKind={turn.triggerKind} />}
               <TurnCard
                 turn={turn}
-                selection={selection}
+                defaultExpanded={i === turns.length - 1}
+                selectedSpanKey={selectedSpanKey}
                 onSelectSpan={(span) =>
                   setSelection((cur) =>
                     cur?.spanKey === span.key
@@ -77,6 +88,29 @@ export function TimelineView({ events }: { events: Event[] }) {
       {selection && <DetailPanel selection={selection} onClose={() => setSelection(null)} />}
     </div>
   );
+}
+
+/** Cap pretty-printed event JSON so a single huge tool_result doesn't
+ *  freeze the main thread when opening the side panel. */
+function stringifyEventCapped(ev: Event, maxChars = 50_000): string {
+  try {
+    const s = JSON.stringify(ev, null, 2);
+    if (s.length <= maxChars) return s;
+    return `${s.slice(0, maxChars)}\n… truncated (${s.length - maxChars} more chars)`;
+  } catch {
+    return "[unserializable event]";
+  }
+}
+
+function eventTsMs(e: Event): number {
+  const pa = (e as { processed_at?: string }).processed_at
+    ?? (e.data as { processed_at?: string } | undefined)?.processed_at;
+  if (typeof pa === "string") {
+    const t = Date.parse(pa);
+    if (Number.isFinite(t)) return t;
+  }
+  if (typeof e.ts === "number") return e.ts * 1000;
+  return 0;
 }
 
 function IdleDivider({ ms, nextKind }: { ms: number; nextKind: TurnTriggerKind }) {
@@ -133,7 +167,7 @@ function DetailPanel({
               )}
             </div>
             <pre className="text-[11px] font-mono text-fg-muted px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
-              {JSON.stringify(ev, null, 2)}
+              {stringifyEventCapped(ev)}
             </pre>
           </div>
         ))}
@@ -201,26 +235,36 @@ function TimelineRow({
  * duration, token totals, status). Body is a per-turn waterfall with
  * its own pxPerMs density picker — long turns don't impose their
  * scale on short neighbours and vice-versa.
+ *
+ * Collapsed by default (except the latest turn): deriveSpans + the
+ * waterfall DOM only run after expand, which is what keeps Timeline
+ * usable on long conversations.
  */
-function TurnCard({
+const TurnCard = memo(function TurnCard({
   turn,
-  selection,
+  defaultExpanded,
+  selectedSpanKey,
   onSelectSpan,
 }: {
   turn: Turn;
-  selection: TimelineSelection | null;
+  defaultExpanded: boolean;
+  selectedSpanKey: string | null;
   onSelectSpan: (span: Span) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const { spans, totalMs } = useMemo(() => deriveSpans(turn.events), [turn.events]);
+  const [collapsed, setCollapsed] = useState(!defaultExpanded);
+
+  // Expensive: only derive waterfall spans once the card is open.
+  const { spans, totalMs } = useMemo(
+    () => (collapsed ? { spans: [] as Span[], totalMs: 0 } : deriveSpans(turn.events)),
+    [collapsed, turn.events],
+  );
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [pxPerMs, setPxPerMs] = useState<number | null>(null);
   const [mode, setMode] = useState<"auto" | "manual">("auto");
 
   // Auto-density picker: pick pxPerMs so the median consecutive event
-  // gap is ~25px wide. See memory: the right default scales with event
-  // density, not total duration.
+  // gap is ~25px wide — but never wider than MAX_CHART_PX for the turn.
   useEffect(() => {
     if (collapsed || mode === "manual" || !scrollRef.current || totalMs <= 0) return;
     const viewportChartPx = scrollRef.current.clientWidth - LABEL_COL_W - DURATION_COL_W - 64;
@@ -244,16 +288,30 @@ function TurnCard({
       const median = sorted[Math.floor(sorted.length / 2)] || 1;
       candidate = 25 / median;
     }
-    const auto = Math.min(5, Math.max(candidate, viewportChartPx / totalMs));
-    setPxPerMs(Math.max(auto, viewportChartPx / totalMs));
+    const fit = viewportChartPx / totalMs;
+    const capped = MAX_CHART_PX / totalMs;
+    // Prefer density for readability, but never exceed the pixel budget
+    // (and never go below fit-to-viewport so the whole turn stays visible
+    // without horizontal scroll when it fits).
+    const auto = Math.min(capped, Math.max(fit, Math.min(5, candidate)));
+    setPxPerMs(auto);
   }, [collapsed, mode, spans, totalMs]);
 
-  const effectivePxPerMs = pxPerMs ?? 0.05;
-  const chartPx = Math.max(200, totalMs * effectivePxPerMs);
+  const effectivePxPerMs = useMemo(() => {
+    const raw = pxPerMs ?? Math.min(0.05, MAX_CHART_PX / Math.max(totalMs, 1));
+    if (totalMs <= 0) return raw;
+    // Clamp so chart width never exceeds MAX_CHART_PX even in manual zoom.
+    return Math.min(raw, MAX_CHART_PX / totalMs);
+  }, [pxPerMs, totalMs]);
+
+  const chartPx = Math.max(200, Math.min(MAX_CHART_PX, totalMs * effectivePxPerMs));
 
   const zoomBy = (factor: number) => {
     setMode("manual");
-    setPxPerMs((p) => Math.min(50, Math.max(0.0001, (p ?? 0.05) * factor)));
+    setPxPerMs((p) => {
+      const base = p ?? effectivePxPerMs;
+      return Math.min(MAX_CHART_PX / Math.max(totalMs, 1), Math.max(0.0001, base * factor));
+    });
   };
   const fitToViewport = () => {
     if (!scrollRef.current) return;
@@ -266,16 +324,24 @@ function TurnCard({
     setPxPerMs(null);
   };
 
-  // Tick spacing: aim for ~120px between labels at the current density.
-  // pickTickStep takes a "total span across 6 ticks" arg, so multiply
-  // the desired step by 6 to get a step matching ~120px gaps.
-  const desiredStepMs = 120 / effectivePxPerMs;
-  const tickStep = pickTickStep(desiredStepMs * 6);
-  const ticks: number[] = [];
-  for (let t = 0; t <= totalMs; t += tickStep) ticks.push(t);
+  // Tick spacing: aim for ~120px between labels, then raise the step
+  // until we stay under MAX_TICKS (long schedule waits used to mint
+  // hundreds of tick nodes).
+  const ticks = useMemo(() => {
+    if (totalMs <= 0 || effectivePxPerMs <= 0) return [] as number[];
+    const desiredStepMs = 120 / effectivePxPerMs;
+    let tickStep = pickTickStep(desiredStepMs * 6);
+    while (totalMs / tickStep > MAX_TICKS) {
+      tickStep *= 2;
+    }
+    const out: number[] = [];
+    for (let t = 0; t <= totalMs; t += tickStep) out.push(t);
+    return out;
+  }, [totalMs, effectivePxPerMs]);
 
   // Aggregate per-turn cost / token totals from span events that carry
-  // model_usage. Cheap walk — span events are already in memory.
+  // model_usage. Cheap walk — runs even when collapsed so the header
+  // still shows totals.
   const tokens = useMemo(() => {
     let input = 0;
     let output = 0;
@@ -296,8 +362,15 @@ function TurnCard({
     return { input, output, cacheRead, calls };
   }, [turn.events]);
 
-  const turnDurationMs =
-    turn.endedAt && turn.triggerTs ? turn.endedAt - turn.triggerTs : totalMs;
+  const turnDurationMs = useMemo(() => {
+    if (turn.endedAt && turn.triggerTs) return Math.max(0, turn.endedAt - turn.triggerTs);
+    if (!collapsed && totalMs > 0) return totalMs;
+    // Collapsed / still-running: cheap first→last timestamp without deriveSpans.
+    if (turn.events.length === 0) return 0;
+    const first = eventTsMs(turn.events[0]);
+    const last = eventTsMs(turn.events[turn.events.length - 1]);
+    return first > 0 && last >= first ? last - first : 0;
+  }, [turn.endedAt, turn.triggerTs, turn.events, collapsed, totalMs]);
 
   const triggerTitleText = (() => {
     if (!turn.trigger) return null;
@@ -313,7 +386,10 @@ function TurnCard({
       : "border-border";
 
   return (
-    <div className={`border ${borderClass} rounded-lg bg-bg-surface/30`}>
+    <div
+      className={`border ${borderClass} rounded-lg bg-bg-surface/30`}
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 48px" }}
+    >
       {/* Header */}
       <div className="px-4 py-2.5 flex items-center gap-3 text-xs">
         <button
@@ -329,7 +405,11 @@ function TurnCard({
           <span className="text-fg-subtle truncate max-w-md italic">"{triggerTitleText}"</span>
         )}
         <span className="ml-auto flex items-center gap-3 font-mono text-fg-subtle">
-          <span>{spans.length} spans</span>
+          <span>
+            {collapsed
+              ? `${turn.events.length} events`
+              : `${spans.length} spans`}
+          </span>
           <span>{formatDuration(turnDurationMs)}</span>
           {tokens.calls > 0 && (
             <span title={`${tokens.calls} model call${tokens.calls === 1 ? "" : "s"}`}>
@@ -375,7 +455,7 @@ function TurnCard({
             {spans.map((s) => {
               const left = s.startMs * effectivePxPerMs;
               const width = s.durationMs > 0 ? Math.max(2, s.durationMs * effectivePxPerMs) : 0;
-              const isSelected = selection?.spanKey === s.key;
+              const isSelected = selectedSpanKey === s.key;
               const title = s.detail
                 ? `${s.label} — ${formatDuration(s.durationMs)} — ${s.detail}`
                 : `${s.label} — ${formatDuration(s.durationMs)}`;
@@ -427,7 +507,7 @@ function TurnCard({
       )}
     </div>
   );
-}
+});
 
 function ZoomToolbar({
   mode,

@@ -14,6 +14,7 @@ import {
   resolveKnownAgent,
 } from "@open-managed-agents/acp-runtime/known-agents";
 import type { AgentRecord as Agent } from "../../types/agent";
+import { useI18n } from "../../i18n";
 
 interface McpEntry {
   name: string;
@@ -94,6 +95,13 @@ interface AgentFormDialogProps {
    *  to refresh the list. The dialog handles its own navigation to the
    *  new agent's detail page. */
   onCreated?: () => void;
+  /** Called after a successful update in edit mode. Parent refreshes
+   *  detail/list caches; the dialog closes itself and stays on the
+   *  current route. */
+  onUpdated?: (agent: Agent) => void;
+  /** When set, the dialog opens in edit mode: skips the template step,
+   *  prefills from this agent, and PUTs `/v1/agents/:id` on save. */
+  agent?: Agent | null;
   /** Data sets the form's pickers pull from. The parent fetches these
    *  on mount (loadAux) and passes them down so the dialog doesn't have
    *  to re-fetch on every open. */
@@ -112,12 +120,84 @@ interface AgentFormDialogProps {
   }>;
 }
 
+/** Pull default_config + per-tool overrides out of an agent_toolset_20260401 entry. */
+function parseToolPolicy(tools: unknown[] | undefined): {
+  toolDefaultEnabled: boolean;
+  toolDefaultPermission: "always_allow" | "always_ask";
+  toolOverrides: Record<string, ToolOverride>;
+} {
+  const toolset = Array.isArray(tools)
+    ? (tools as Array<Record<string, unknown>>).find(
+        (t) => t?.type === "agent_toolset_20260401",
+      )
+    : undefined;
+  const dc = (toolset?.default_config ?? {}) as {
+    enabled?: boolean;
+    permission_policy?: { type?: string };
+  };
+  const cfgs = (toolset?.configs ?? []) as Array<{
+    name?: string;
+    enabled?: boolean;
+    permission_policy?: { type?: string };
+  }>;
+  const overrides: Record<string, ToolOverride> = {};
+  for (const c of cfgs) {
+    if (!c?.name) continue;
+    if (c.enabled === false) overrides[c.name] = "disabled";
+    else if (c.permission_policy?.type === "always_ask") overrides[c.name] = "always_ask";
+    else if (c.permission_policy?.type === "always_allow") overrides[c.name] = "always_allow";
+  }
+  return {
+    toolDefaultEnabled: dc.enabled ?? true,
+    toolDefaultPermission:
+      dc.permission_policy?.type === "always_ask" ? "always_ask" : "always_allow",
+    toolOverrides: overrides,
+  };
+}
+
+/** Map an API agent record into the dialog's form state. */
+function agentToForm(agent: Agent): typeof INITIAL_FORM {
+  const modelId =
+    typeof agent.model === "string" ? agent.model : agent.model?.id || "";
+  const rb = agent._oma?.runtime_binding;
+  const toolPolicy = parseToolPolicy(agent.tools as unknown[] | undefined);
+  return {
+    ...INITIAL_FORM,
+    name: agent.name || "",
+    model: modelId,
+    modelCardId: "",
+    system: agent.system || "",
+    description: agent.description || "",
+    mcpServers: (agent.mcp_servers ?? []).map((m) => ({
+      name: m.name,
+      type: m.type || "url",
+      url: m.url || "",
+    })),
+    skills: (agent.skills ?? []).map((s) => ({
+      type: (s.type === "anthropic" ? "anthropic" : "custom") as "anthropic" | "custom",
+      skill_id: s.skill_id,
+      ...(s.version ? { version: s.version } : {}),
+    })),
+    callableAgents: (agent.multiagent?.agents ?? []).map((a) => ({
+      type: "agent" as const,
+      id: a.id,
+      version: a.version ?? 1,
+    })),
+    runtimeId: rb?.runtime_id ?? "",
+    acpAgentId: rb?.acp_agent_id ?? "claude-agent-acp",
+    localSkillBlocklist: Array.isArray(rb?.local_skill_blocklist)
+      ? rb.local_skill_blocklist
+      : [],
+    ...toolPolicy,
+    enableGeneralSubagent: agent.enable_general_subagent === true,
+  };
+}
+
 /**
- * Create-agent dialog. Multi-step (template → form) with three editor
- * modes (form / yaml / json). Owns all of its own state — `form`,
- * `createStep`, `createMode`, etc. — so the parent `AgentsList` just
- * mounts it and forwards data lists + an `onCreated` hook for the
- * post-save refresh.
+ * Create / edit agent dialog. Multi-step on create (template → form) with
+ * three editor modes (form / yaml / json). Edit mode skips the template
+ * step and prefills from `agent`. Owns all of its own state so the parent
+ * just mounts it and forwards data lists + save hooks.
  *
  * Stays hand-rolled rather than wrapping `Modal` because the
  * template→form/yaml/json multi-step header doesn't fit the standard
@@ -129,6 +209,8 @@ export function AgentFormDialog({
   open,
   onClose,
   onCreated,
+  onUpdated,
+  agent: editingAgent,
   allAgents,
   customSkills,
   modelCards,
@@ -136,6 +218,8 @@ export function AgentFormDialog({
 }: AgentFormDialogProps) {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
+  const isEdit = !!editingAgent;
 
   const [createError, setCreateError] = useState("");
   const [createStep, setCreateStep] = useState<"template" | "form">("template");
@@ -145,9 +229,25 @@ export function AgentFormDialog({
   const [createMode, setCreateMode] = useState<"form" | "yaml" | "json">("form");
   const [codeValue, setCodeValue] = useState("");
   const [showMcpPicker, setShowMcpPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const createDialogRef = useRef<HTMLDivElement>(null);
   const createPreviousFocus = useRef<HTMLElement | null>(null);
+
+  // Prefill when opening in edit mode (or when the agent version changes
+  // after a concurrent refresh). Create mode starts at the template step.
+  useEffect(() => {
+    if (!open) return;
+    if (editingAgent) {
+      setForm(agentToForm(editingAgent));
+      setCreateStep("form");
+      setTab("basic");
+      setCreateMode("form");
+      setCreateError("");
+      setCodeValue("");
+      setSaving(false);
+    }
+  }, [open, editingAgent?.id, editingAgent?.version]);
 
   // Pre-select default model card when entering the form step. (tenant_id,
   // model_id) is UNIQUE in DB, so picking a card uniquely determines the
@@ -172,6 +272,7 @@ export function AgentFormDialog({
     setCreateError("");
     setCreateMode("form");
     setCodeValue("");
+    setSaving(false);
     onClose();
   };
 
@@ -264,14 +365,71 @@ export function AgentFormDialog({
 
   const create = async () => {
     setCreateError("");
+    setSaving(true);
     try {
-      const payload: Record<string, unknown> = {
-        name: form.name,
-        model: form.model,
-        system: form.system || undefined,
-        description: form.description || undefined,
-        tools: buildToolsField(),
-      };
+      const payload = buildPayload({ forUpdate: isEdit });
+      if (isEdit && editingAgent) {
+        const updated = await api<Agent>(`/v1/agents/${editingAgent.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ ...payload, version: editingAgent.version }),
+        });
+        closeCreate();
+        onUpdated?.(updated);
+      } else {
+        const agent = await api<Agent>("/v1/agents", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        closeCreate();
+        onCreated?.();
+        nav(`/agents/${agent.id}`);
+      }
+    } catch (e: any) {
+      setCreateError(
+        e?.message || (isEdit ? "Failed to update agent" : "Failed to create agent"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** Build the AMA-shape body shared by form create/update. Edit mode
+   *  always sends clearable arrays/nulls so emptying MCP/skills/roster
+   *  or unchecking subagent actually sticks. */
+  const buildPayload = ({ forUpdate }: { forUpdate: boolean }): Record<string, unknown> => {
+    const payload: Record<string, unknown> = {
+      name: form.name,
+      model: form.model,
+      tools: buildToolsField(),
+    };
+    if (forUpdate) {
+      payload.system = form.system || null;
+      payload.description = form.description || null;
+      payload.mcp_servers = form.mcpServers.length ? form.mcpServers : null;
+      payload.skills = form.skills.length ? form.skills : null;
+      payload.multiagent = form.callableAgents.length
+        ? { type: "coordinator", agents: form.callableAgents }
+        : null;
+      payload.enable_general_subagent = form.enableGeneralSubagent;
+      if (form.runtimeId && form.acpAgentId) {
+        payload._oma = {
+          harness: "acp-proxy",
+          runtime_binding: {
+            runtime_id: form.runtimeId,
+            acp_agent_id: form.acpAgentId,
+            ...(form.localSkillBlocklist.length > 0
+              ? { local_skill_blocklist: form.localSkillBlocklist }
+              : {}),
+          },
+        };
+      } else if (editingAgent?._oma?.runtime_binding) {
+        // Clearing a previously-bound local runtime — must send nulls
+        // or the binding sticks across versions.
+        payload._oma = { harness: "default", runtime_binding: null };
+      }
+    } else {
+      if (form.system) payload.system = form.system;
+      if (form.description) payload.description = form.description;
       if (form.mcpServers.length) payload.mcp_servers = form.mcpServers;
       if (form.skills.length) payload.skills = form.skills;
       if (form.callableAgents.length) {
@@ -280,9 +438,6 @@ export function AgentFormDialog({
       if (form.enableGeneralSubagent) {
         payload.enable_general_subagent = true;
       }
-      // Local-runtime agent: opt into acp-proxy harness when both runtimeId
-      // and acpAgentId are set. Partial config silently falls back to the
-      // default cloud loop — same semantics as the CLI flag pair.
       if (form.runtimeId && form.acpAgentId) {
         payload._oma = {
           harness: "acp-proxy",
@@ -295,17 +450,8 @@ export function AgentFormDialog({
           },
         };
       }
-
-      const agent = await api<Agent>("/v1/agents", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      closeCreate();
-      onCreated?.();
-      nav(`/agents/${agent.id}`);
-    } catch (e: any) {
-      setCreateError(e?.message || "Failed to create agent");
     }
+    return payload;
   };
 
   const addMcp = () =>
@@ -411,27 +557,9 @@ export function AgentFormDialog({
         // from the first agent_toolset_20260401 entry. Custom tools and
         // MCP toolsets pass through untouched in YAML/JSON view but
         // can't currently be edited in the Form view.
-        const toolset = Array.isArray(parsed.tools)
-          ? (parsed.tools as Array<Record<string, unknown>>).find(
-              (t) => t?.type === "agent_toolset_20260401",
-            )
-          : undefined;
-        const dc = (toolset?.default_config ?? {}) as {
-          enabled?: boolean;
-          permission_policy?: { type?: string };
-        };
-        const cfgs = (toolset?.configs ?? []) as Array<{
-          name?: string;
-          enabled?: boolean;
-          permission_policy?: { type?: string };
-        }>;
-        const overrides: Record<string, ToolOverride> = {};
-        for (const c of cfgs) {
-          if (!c?.name) continue;
-          if (c.enabled === false) overrides[c.name] = "disabled";
-          else if (c.permission_policy?.type === "always_ask") overrides[c.name] = "always_ask";
-          else if (c.permission_policy?.type === "always_allow") overrides[c.name] = "always_allow";
-        }
+        const toolPolicy = parseToolPolicy(
+          Array.isArray(parsed.tools) ? (parsed.tools as unknown[]) : undefined,
+        );
         setForm({
           ...INITIAL_FORM,
           name: String(parsed.name || ""),
@@ -446,18 +574,17 @@ export function AgentFormDialog({
             ? (parsed.mcp_servers as McpEntry[])
             : [],
           skills: Array.isArray(parsed.skills) ? (parsed.skills as SkillEntry[]) : [],
-          callableAgents: Array.isArray(parsed.multiagent?.agents)
-            ? (parsed.multiagent.agents as CallableEntry[])
+          callableAgents: Array.isArray(
+            (parsed.multiagent as { agents?: unknown } | undefined)?.agents,
+          )
+            ? ((parsed.multiagent as { agents: CallableEntry[] }).agents as CallableEntry[])
             : [],
           runtimeId: rb?.runtime_id ?? "",
           acpAgentId: rb?.acp_agent_id ?? "claude-agent-acp",
           localSkillBlocklist: Array.isArray(rb?.local_skill_blocklist)
             ? rb.local_skill_blocklist
             : [],
-          toolDefaultEnabled: dc.enabled ?? true,
-          toolDefaultPermission:
-            dc.permission_policy?.type === "always_ask" ? "always_ask" : "always_allow",
-          toolOverrides: overrides,
+          ...toolPolicy,
           enableGeneralSubagent: parsed.enable_general_subagent === true,
         });
       } catch {
@@ -479,9 +606,10 @@ export function AgentFormDialog({
     setCreateMode(mode);
   };
 
-  // Create agent from code editor
+  // Create / update agent from code editor
   const createFromCode = async () => {
     setCreateError("");
+    setSaving(true);
     try {
       const parsed =
         createMode === "yaml"
@@ -489,19 +617,31 @@ export function AgentFormDialog({
           : JSON.parse(codeValue);
       if (!parsed.name) {
         setCreateError("name is required");
+        setSaving(false);
         return;
       }
       if (!parsed.tools) parsed.tools = [{ type: "agent_toolset_20260401" }];
-      const agent = await api<Agent>("/v1/agents", {
-        method: "POST",
-        body: JSON.stringify(parsed),
-      });
-      closeCreate();
-      onCreated?.();
-      nav(`/agents/${agent.id}`);
+      if (isEdit && editingAgent) {
+        const updated = await api<Agent>(`/v1/agents/${editingAgent.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ ...parsed, version: editingAgent.version }),
+        });
+        closeCreate();
+        onUpdated?.(updated);
+      } else {
+        const agent = await api<Agent>("/v1/agents", {
+          method: "POST",
+          body: JSON.stringify(parsed),
+        });
+        closeCreate();
+        onCreated?.();
+        nav(`/agents/${agent.id}`);
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Invalid config";
       setCreateError(msg);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -543,15 +683,15 @@ export function AgentFormDialog({
           ref={createDialogRef}
           role="dialog"
           aria-modal="true"
-          aria-label="New Agent"
+          aria-label={isEdit ? t.agents.editAgentTitle : t.agents.newAgentTitle}
           className="bg-bg rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Template selection step */}
-          {createStep === "template" && (
+          {/* Template selection step — create only */}
+          {createStep === "template" && !isEdit && (
             <>
               <div className="px-6 pt-6 pb-4 border-b border-border">
-                <h2 className="font-display text-lg font-semibold text-fg">New Agent</h2>
+                <h2 className="font-display text-lg font-semibold text-fg">{t.agents.newAgentTitle}</h2>
                 <p className="text-sm text-fg-muted mt-1">
                   Start from a template or build from scratch.
                 </p>
@@ -601,7 +741,7 @@ export function AgentFormDialog({
                   onClick={closeCreate}
                   className="inline-flex items-center min-h-11 sm:min-h-0 px-4 py-2 text-sm text-fg-muted hover:text-fg"
                 >
-                  Cancel
+                  {t.common.cancel}
                 </button>
               </div>
             </>
@@ -612,16 +752,25 @@ export function AgentFormDialog({
             <>
               <div className="px-6 pt-6 pb-4 border-b border-border">
                 <div className="flex items-center justify-between mb-1">
-                  <button
-                    onClick={() => {
-                      setCreateStep("template");
-                      setTemplateSearch("");
-                      setCreateMode("form");
-                    }}
-                    className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                  >
-                    &larr; Templates
-                  </button>
+                  {isEdit ? (
+                    <span className="text-sm text-fg-subtle">
+                      {t.agents.editingVersion.replace(
+                        "{version}",
+                        String(editingAgent?.version ?? ""),
+                      )}
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setCreateStep("template");
+                        setTemplateSearch("");
+                        setCreateMode("form");
+                      }}
+                      className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                    >
+                      &larr; Templates
+                    </button>
+                  )}
                   <div className="flex items-center gap-0.5 bg-bg-surface rounded-md p-0.5">
                     {(["form", "yaml", "json"] as const).map((m) => (
                       <button
@@ -638,7 +787,9 @@ export function AgentFormDialog({
                     ))}
                   </div>
                 </div>
-                <h2 className="font-display text-lg font-semibold text-fg">New Agent</h2>
+                <h2 className="font-display text-lg font-semibold text-fg">
+                  {isEdit ? t.agents.editAgentTitle : t.agents.newAgentTitle}
+                </h2>
                 {createMode === "form" && (
                   <div
                     role="tablist"
@@ -795,16 +946,28 @@ export function AgentFormDialog({
                   {createMode !== "form" && <span>{createMode.toUpperCase()} editor</span>}
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="ghost" onClick={closeCreate}>
-                    Cancel
+                  <Button variant="ghost" onClick={closeCreate} disabled={saving}>
+                    {t.common.cancel}
                   </Button>
                   {createMode === "form" ? (
-                    <Button onClick={create} disabled={!form.name}>
-                      Create Agent
+                    <Button onClick={create} disabled={!form.name || saving}>
+                      {saving
+                        ? isEdit
+                          ? t.common.saving
+                          : t.common.creating
+                        : isEdit
+                          ? t.common.saveChanges
+                          : t.agents.createAgent}
                     </Button>
                   ) : (
-                    <Button onClick={createFromCode} disabled={!codeValue.trim()}>
-                      Create Agent
+                    <Button onClick={createFromCode} disabled={!codeValue.trim() || saving}>
+                      {saving
+                        ? isEdit
+                          ? t.common.saving
+                          : t.common.creating
+                        : isEdit
+                          ? t.common.saveChanges
+                          : t.agents.createAgent}
                     </Button>
                   )}
                 </div>

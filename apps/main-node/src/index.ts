@@ -1304,7 +1304,23 @@ if (consoleDir) {
     ? relative(cwd, consoleDir)
     : consoleDir;
   app.use("/*", serveStatic({ root: rootRel }));
-  app.get("/*", serveStatic({ root: rootRel, path: "index.html" }));
+  // SPA fallback for client-side routes ONLY. Never serve index.html for
+  // API/auth/health paths — a missing /v1/* handler used to fall through
+  // here and the console would fail with
+  // `Unexpected token '<' ... is not valid JSON` (HTML parsed as JSON).
+  app.get("/*", async (c, next) => {
+    const p = c.req.path;
+    if (
+      p === "/health" ||
+      p.startsWith("/v1/") ||
+      p.startsWith("/auth") ||
+      p.startsWith("/linear") ||
+      p.startsWith("/github")
+    ) {
+      return next();
+    }
+    return serveStatic({ root: rootRel, path: "index.html" })(c, next);
+  });
   logger.info({ op: "main-node.console_ui", dir: consoleDir, cwd_rel: rootRel }, "console UI served");
 }
 
