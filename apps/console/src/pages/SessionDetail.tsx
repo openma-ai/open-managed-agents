@@ -106,7 +106,7 @@ export function SessionDetail() {
     title?: string | null;
     environmentId?: string;
     vaultIds?: string[];
-    vaults?: Array<{ id: string; display_name?: string }>;
+    vaults?: Array<{ id: string; name?: string }>;
     createdAt?: string;
     agentSnapshot?: { id?: string; name?: string; model?: string | { id: string }; description?: string; version?: number };
     envSnapshot?: { id?: string; name?: string; description?: string };
@@ -514,8 +514,8 @@ export function SessionDetail() {
         if (s.vault_ids?.length) {
           Promise.all(
             s.vault_ids.map((vid) =>
-              api<{ id: string; display_name?: string }>(`/v1/vaults/${vid}`)
-                .then((v) => ({ id: v.id, display_name: v.display_name }))
+              api<{ id: string; name?: string }>(`/v1/vaults/${vid}`)
+                .then((v) => ({ id: v.id, name: v.name }))
                 .catch(() => ({ id: vid })),
             ),
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
@@ -899,11 +899,11 @@ export function SessionDetail() {
               }
             />
           )}
-          {(sessionMeta.vaults ?? sessionMeta.vaultIds?.map((id) => ({ id, display_name: undefined })) ?? []).map((v) => (
+          {(sessionMeta.vaults ?? sessionMeta.vaultIds?.map((id) => ({ id, name: undefined })) ?? []).map((v) => (
             <Badge
               key={v.id}
               icon={<VaultIcon />}
-              label={v.display_name || shortenId(v.id)}
+              label={v.name || shortenId(v.id)}
               onClick={() => setResourcePanel({ kind: "vault", id: v.id })}
             />
           ))}
@@ -1235,7 +1235,7 @@ export function SessionDetail() {
           </div>
         </>
       ) : (
-        <TimelineView events={timelineEvents} />
+        <TimelineView key={`${id ?? "session"}:${activeThreadId}`} events={timelineEvents} />
       )}
         </div>
         {resourcePanel && (

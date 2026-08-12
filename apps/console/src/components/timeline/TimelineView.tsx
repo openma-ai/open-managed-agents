@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { formatDuration, pickTickStep } from "../../lib/format";
 import type { Event } from "../../lib/events";
 import { bucketIntoTurns, deriveSpans } from "./derive";
+import { eventTsMs, resolveTurnExpanded } from "./eventTime";
 import {
   DURATION_COL_W,
   FAMILY_BAR,
@@ -28,7 +29,8 @@ import {
  * Performance notes for long sessions:
  * - Only the latest turn mounts expanded; older turns stay collapsed until
  *   clicked so we don't deriveSpans / paint waterfalls for every turn on tab
- *   switch.
+ *   switch. Expansion is controlled: when a new turn appends, the previous
+ *   latest collapses unless the user explicitly overrode it.
  * - Chart width + tick count are hard-capped (see MAX_CHART_PX / MAX_TICKS).
  * - Turn cards use `content-visibility: auto` so off-screen paint is skipped.
  */
@@ -36,7 +38,10 @@ export function TimelineView({ events }: { events: Event[] }) {
   const turns = useMemo(() => bucketIntoTurns(events), [events]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
+  /** turnId → explicit expanded override. Absent = follow auto (latest only). */
+  const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const selectedSpanKey = selection?.spanKey ?? null;
+  const latestTurnId = turns.length > 0 ? turns[turns.length - 1].id : undefined;
 
   // Auto-scroll to the latest turn when new ones land. Skip if user has
   // scrolled up — they're inspecting an older turn and shouldn't get yanked.
@@ -44,7 +49,7 @@ export function TimelineView({ events }: { events: Event[] }) {
     if (!containerRef.current) return;
     const el = containerRef.current;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-    if (nearBottom) {
+    if (nearBottom && typeof el.scrollTo === "function") {
       el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
     }
   }, [turns.length]);
@@ -66,12 +71,19 @@ export function TimelineView({ events }: { events: Event[] }) {
             prev && prev.endedAt && turn.triggerTs && turn.triggerTs > prev.endedAt
               ? turn.triggerTs - prev.endedAt
               : 0;
+          const expanded = resolveTurnExpanded(turn.id, latestTurnId, expandedOverrides);
           return (
             <Fragment key={turn.id}>
               {idleMs > 0 && <IdleDivider ms={idleMs} nextKind={turn.triggerKind} />}
               <TurnCard
                 turn={turn}
-                defaultExpanded={i === turns.length - 1}
+                expanded={expanded}
+                onToggleExpanded={() =>
+                  setExpandedOverrides((prevMap) => ({
+                    ...prevMap,
+                    [turn.id]: !expanded,
+                  }))
+                }
                 selectedSpanKey={selectedSpanKey}
                 onSelectSpan={(span) =>
                   setSelection((cur) =>
@@ -100,17 +112,6 @@ function stringifyEventCapped(ev: Event, maxChars = 50_000): string {
   } catch {
     return "[unserializable event]";
   }
-}
-
-function eventTsMs(e: Event): number {
-  const pa = (e as { processed_at?: string }).processed_at
-    ?? (e.data as { processed_at?: string } | undefined)?.processed_at;
-  if (typeof pa === "string") {
-    const t = Date.parse(pa);
-    if (Number.isFinite(t)) return t;
-  }
-  if (typeof e.ts === "number") return e.ts * 1000;
-  return 0;
 }
 
 function IdleDivider({ ms, nextKind }: { ms: number; nextKind: TurnTriggerKind }) {
@@ -242,16 +243,18 @@ function TimelineRow({
  */
 const TurnCard = memo(function TurnCard({
   turn,
-  defaultExpanded,
+  expanded,
+  onToggleExpanded,
   selectedSpanKey,
   onSelectSpan,
 }: {
   turn: Turn;
-  defaultExpanded: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   selectedSpanKey: string | null;
   onSelectSpan: (span: Span) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(!defaultExpanded);
+  const collapsed = !expanded;
 
   // Expensive: only derive waterfall spans once the card is open.
   const { spans, totalMs } = useMemo(
@@ -393,7 +396,7 @@ const TurnCard = memo(function TurnCard({
       {/* Header */}
       <div className="px-4 py-2.5 flex items-center gap-3 text-xs">
         <button
-          onClick={() => setCollapsed((c) => !c)}
+          onClick={onToggleExpanded}
           className="text-fg-subtle hover:text-fg-muted font-mono w-4 text-center"
           title={collapsed ? "Expand" : "Collapse"}
         >

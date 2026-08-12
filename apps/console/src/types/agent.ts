@@ -17,12 +17,26 @@ export interface AgentRecord {
   description?: string | null;
   tools?: unknown[];
   skills?: Array<{ skill_id: string; type: string; version?: string }>;
-  mcp_servers?: Array<{ name: string; type: string; url?: string }>;
+  mcp_servers?: Array<{
+    name: string;
+    type: string;
+    url?: string;
+    authorization_token?: string;
+    stdio?: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      port: number;
+      sse_path?: string;
+      ready_timeout_ms?: number;
+    };
+  }>;
   multiagent?: {
     type: "coordinator";
     agents: Array<{ type: "agent"; id: string; version: number }>;
   } | null;
   enable_general_subagent?: boolean;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at?: string;
   archived_at?: string;
