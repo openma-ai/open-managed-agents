@@ -315,3 +315,76 @@ export interface GitHubSessionMetadata {
   /** Set on per_issue sessions for resume keying. */
   issueKey?: string;
 }
+
+// ─── Feishu ────────────────────────────────────────────────────────────
+//
+// No OAuth dance: an installation binds when the user pastes App ID +
+// App Secret + Verification Token + Encrypt Key. Tenant type drives the
+// auth scope (internal vs. ISV/external), session granularity drives how
+// inbound messages are routed to agent sessions.
+
+export type FeishuTenantType = "internal" | "external";
+
+/** Mirrors SessionGranularity in integrations-core. Feishu doesn't have
+ *  Slack's per-thread/per-channel distinction — it has chats, with the
+ *  "per_chat × user" variant for group chats where multiple humans share
+ *  a single chat and need isolated context. */
+export type FeishuSessionGranularity = "per_chat" | "per_chat_user";
+
+export interface FeishuInstallation {
+  id: string;
+  /** Feishu's open_id for the tenant — opaque, server-decided. */
+  tenant_id: string;
+  /** Display name for the tenant. Comes from the App's tenant_name claim
+   *  in the tenant_access_token response. */
+  tenant_name: string;
+  /** Internal = single org, External = ISV app distributed across tenants. */
+  tenant_type: FeishuTenantType;
+  install_kind: "dedicated";
+  /** Bot open_id (Feishu's user-like identifier for the App-as-user). */
+  bot_open_id: string;
+  vault_id: string | null;
+  created_at: number;
+}
+
+export interface FeishuPublication {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  installation_id: string;
+  environment_id: string;
+  mode: "full";
+  /** Feishu's adapter elides `credentials_filled` — submitCredentials drives
+   *  the row straight from `pending_setup` → `live` in one call. The union
+   *  still lists it so the StatusPill component type stays unified across
+   *  providers. */
+  status:
+    | "pending_setup"
+    | "credentials_filled"
+    | "awaiting_install"
+    | "live"
+    | "needs_reauth"
+    | "unpublished";
+  persona: { name: string; avatarUrl: string | null };
+  capabilities: string[];
+  session_granularity: FeishuSessionGranularity;
+  created_at: number;
+  unpublished_at: number | null;
+}
+
+/** Submission payload for step 2 of the Feishu wizard. The four App secrets
+ *  are stored encrypted on the row; the platform mints a tenant_access_token
+ *  on demand and decrypts incoming events with `encryptKey`. */
+export interface FeishuSubmitCredentialsInput {
+  formToken: string;
+  /** Feishu App ID, prefixed `cli_…`. */
+  appId: string;
+  appSecret: string;
+  /** Token used to verify the URL-verification challenge at handshake. */
+  verificationToken: string;
+  /** AES key Feishu uses to encrypt event payloads. */
+  encryptKey: string;
+  /** Carried through to the publication row. */
+  tenantType: FeishuTenantType;
+  sessionGranularity: FeishuSessionGranularity;
+}
