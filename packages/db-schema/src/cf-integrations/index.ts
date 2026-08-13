@@ -6,7 +6,9 @@
 // github_installations, github_publications, github_webhook_events,
 // github_issue_sessions, slack_apps, slack_installations,
 // slack_publications, slack_webhook_events, slack_setup_links,
-// slack_thread_sessions.
+// slack_thread_sessions, feishu_apps, feishu_installations,
+// feishu_publications, feishu_webhook_events, feishu_setup_links,
+// feishu_thread_sessions.
 //
 // drizzle-kit consumes this barrel via drizzle.cf-integrations.config.ts
 // and emits migrations into apps/main/migrations-integrations/.
@@ -14,3 +16,4 @@
 export * from "./linear";
 export * from "./github";
 export * from "./slack";
+export * from "./feishu";
