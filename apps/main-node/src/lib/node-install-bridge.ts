@@ -50,9 +50,19 @@ import {
   type SlackContainer,
 } from "@open-managed-agents/slack";
 import {
+  ALL_FEISHU_CAPABILITIES,
+  FeishuProvider,
+  type FeishuContainer,
+} from "@open-managed-agents/feishu";
+import {
   buildNodeRepos,
   WebCryptoAesGcm,
   CryptoIdGenerator,
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
+  SqlFeishuSessionScopeRepo,
+  SqlFeishuSetupLinkRepo,
+  SqlFeishuWebhookEventStore,
   SqlSlackInstallationRepo,
   SqlSlackPublicationRepo,
   SqlSlackAppRepo,
@@ -304,6 +314,13 @@ export class NodeInstallBridge implements InstallBridge {
         userScopes: DEFAULT_SLACK_USER_SCOPES,
         defaultCapabilities: ALL_SLACK_CAPABILITIES,
       }),
+      feishu: new FeishuProvider(
+        {
+          gatewayOrigin: this.opts.gatewayOrigin,
+          defaultCapabilities: ALL_FEISHU_CAPABILITIES,
+        },
+        containers.feishu,
+      ),
     } as const;
     const provider = providers[args.provider];
     if (!provider) return jsonResp(400, { error: `unknown provider: ${args.provider}` });
@@ -498,6 +515,7 @@ export class NodeInstallBridge implements InstallBridge {
     linear: LinearContainer;
     github: GitHubContainer;
     slack: SlackContainer;
+    feishu: FeishuContainer;
   } {
     const repos = buildNodeRepos({
       sql: this.opts.sql,
@@ -536,7 +554,22 @@ export class NodeInstallBridge implements InstallBridge {
       sessions,
       vaults,
     };
-    return { linear: baseLinear, github: baseGithub, slack: baseSlack };
+    const feishuCrypto = new WebCryptoAesGcm(this.opts.platformRootSecret, "integrations.tokens");
+    const feishuIds = new CryptoIdGenerator();
+    const baseFeishu: FeishuContainer = {
+      ...repos,
+      installations: new SqlFeishuInstallationRepo(this.opts.db, feishuCrypto, feishuIds),
+      publications: new SqlFeishuPublicationRepo(this.opts.db, feishuIds, feishuCrypto),
+      webhookEvents: new SqlFeishuWebhookEventStore(this.opts.db),
+      sessionScopes: new SqlFeishuSessionScopeRepo(this.opts.db),
+      setupLinks: new SqlFeishuSetupLinkRepo(this.opts.db, feishuIds),
+      feishuInstallations: new SqlFeishuInstallationRepo(this.opts.db, feishuCrypto, feishuIds),
+      feishuPublications: new SqlFeishuPublicationRepo(this.opts.db, feishuIds, feishuCrypto),
+      feishuSessionScopes: new SqlFeishuSessionScopeRepo(this.opts.db),
+      sessions,
+      vaults,
+    };
+    return { linear: baseLinear, github: baseGithub, slack: baseSlack, feishu: baseFeishu };
   }
 }
 
@@ -721,7 +754,7 @@ class InProcessVaultManager implements VaultManager {
 export function buildNodeProvidersForRequest(
   bridge: NodeInstallBridge,
   gatewayOrigin: string,
-): { linear: LinearProvider; github: GitHubProvider; slack: SlackProvider } {
+): { linear: LinearProvider; github: GitHubProvider; slack: SlackProvider; feishu: FeishuProvider } {
   const containers = bridge.buildContainers();
   return {
     linear: new LinearProvider(containers.linear, {
@@ -740,6 +773,13 @@ export function buildNodeProvidersForRequest(
       userScopes: DEFAULT_SLACK_USER_SCOPES,
       defaultCapabilities: ALL_SLACK_CAPABILITIES,
     }),
+    feishu: new FeishuProvider(
+      {
+        gatewayOrigin,
+        defaultCapabilities: ALL_FEISHU_CAPABILITIES,
+      },
+      containers.feishu,
+    ),
   };
 }
 
