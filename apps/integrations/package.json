@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "@open-managed-agents/feishu": "workspace:*",
     "@open-managed-agents/github": "workspace:*",
     "@open-managed-agents/http-routes": "workspace:*",
     "@open-managed-agents/integrations-adapters-cf": "workspace:*",
