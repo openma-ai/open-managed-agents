@@ -16,7 +16,7 @@
     "@open-managed-agents/observability": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^13.0.3",
     "mockttp": "4.3.1",
     "pino": "^9.5.0",
     "pino-pretty": "^11.2.2",
