@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .wrangler/
+# Local D1 persistence (wrangler --persist-to=.wrangler-shared) — holds the
+# local SQLite DB incl. encrypted integration credentials. Never commit.
+.wrangler-shared/
 .dev.vars
 # Astro content-collection types cache (apps/web). Regenerated on
 # `astro check` / `astro build`; not part of source.
@@ -22,6 +25,8 @@ apps/*/wrangler.lane-*.jsonc
 .act.vars
 test-heatmap.html
 test/eval/data/
+# Coverage output (vitest --coverage HTML/JSON/clover)
+coverage/
 
 # RL training artifacts
 rl/output/
@@ -38,6 +43,7 @@ rl/tasks/terminal-bench/findings-*.md
 # IDE
 .vscode/
 .idea/
+.qoder/
 *.swp
 .DS_Store
 .claude/worktrees/
