@@ -161,7 +161,11 @@ describe("api/client — FeishuApiClient", () => {
 
       // The mint call is index 0; the sendText call is index 1.
       const sendCall = http.calls[1]!;
-      expect(sendCall.url).toBe("https://open.feishu.cn/open-apis/im/v1/messages");
+      // receive_id_type=chat_id is mandatory on the send endpoint — without
+      // it Feishu rejects with 99991672 (invalid receive_id).
+      expect(sendCall.url).toBe(
+        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+      );
       expect(sendCall.method).toBe("POST");
       expect(JSON.parse(sendCall.body ?? "{}")).toEqual({
         receive_id: "oc_chat",
@@ -169,6 +173,44 @@ describe("api/client — FeishuApiClient", () => {
         content: JSON.stringify({ text: "hello" }),
       });
       expect(sendCall.headers?.authorization).toBe("Bearer t");
+    });
+  });
+
+  describe("replyText", () => {
+    it("POSTs to im/v1/messages/{id}/reply with no receive_id", async () => {
+      http.pushScript(() => ok({ tenant_access_token: "t", expire: 7200 }));
+      http.pushScript(() => ok({ message_id: "om_reply_1" }));
+
+      const { messageId } = await client.replyText({
+        messageId: "om_inbound_9",
+        text: "ack",
+      });
+      expect(messageId).toBe("om_reply_1");
+
+      // The mint call is index 0; the reply call is index 1.
+      const replyCall = http.calls[1]!;
+      expect(replyCall.url).toBe(
+        "https://open.feishu.cn/open-apis/im/v1/messages/om_inbound_9/reply",
+      );
+      expect(replyCall.method).toBe("POST");
+      // The reply endpoint resolves the chat from the parent message, so no
+      // receive_id / receive_id_type is sent in the body or query.
+      expect(JSON.parse(replyCall.body ?? "{}")).toEqual({
+        msg_type: "text",
+        content: JSON.stringify({ text: "ack" }),
+      });
+      expect(replyCall.headers?.authorization).toBe("Bearer t");
+    });
+
+    it("URL-encodes the parent message_id", async () => {
+      http.pushScript(() => ok({ tenant_access_token: "t", expire: 7200 }));
+      http.pushScript(() => ok({ message_id: "om_reply_2" }));
+
+      await client.replyText({ messageId: "om_ /?", text: "x" });
+
+      expect(http.calls[1]!.url).toBe(
+        "https://open.feishu.cn/open-apis/im/v1/messages/om_%20%2F%3F/reply",
+      );
     });
   });
 

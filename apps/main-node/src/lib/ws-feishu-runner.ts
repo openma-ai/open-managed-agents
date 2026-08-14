@@ -28,6 +28,7 @@
 import { getLogger } from "@open-managed-agents/observability";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
+  HttpClient,
   NewInstallation,
   Publication,
   WebhookEventStore,
@@ -38,9 +39,13 @@ import {
   type FeishuPublicationRepo,
   FEISHU_PROVIDER_ID,
   type RawFeishuEventCallback,
+  FeishuApiClient,
   FeishuProvider,
   parseWsFrame,
 } from "@open-managed-agents/feishu";
+
+import type { EventStreamHub } from "./event-stream-hub";
+import { createFeishuEgressWriter } from "./feishu-egress-writer";
 
 const log = getLogger("feishu-ws-runner");
 
@@ -82,6 +87,14 @@ export interface FeishuWsRunnerOptions {
   installations: FeishuInstallationRepo;
   webhookEvents: WebhookEventStore;
   provider: FeishuProvider;
+  /**
+   * In-process event fan-out. The runner attaches a one-shot egress writer
+   * per inbound message so the agent's `agent.message` reply is mirrored
+   * back into Feishu without the agent having to call send tools itself.
+   */
+  hub: EventStreamHub;
+  /** HTTP adapter backing FeishuApiClient (auto-egress send path). */
+  http: HttpClient;
   nowMs?: () => number;
   /** Rescan interval; default 30s. */
   rescanMs?: number;
@@ -108,6 +121,8 @@ interface RunnerCtx {
   connections: Map<string, ConnEntry>;
   /** appIds with an in-flight ensureConnection (entry is set only after an await). */
   pending: Set<string>;
+  /** Per-App egress clients (FeishuApiClient mints/caches its own token). */
+  apiClients: Map<string, FeishuApiClient>;
   now: () => number;
   backoff: { min: number; max: number };
   isStopped: () => boolean;
@@ -128,6 +143,7 @@ export async function startFeishuWsRunner(
     connectionFactory,
     connections: new Map(),
     pending: new Set(),
+    apiClients: new Map(),
     now,
     backoff,
     isStopped: () => stopped,
@@ -374,8 +390,9 @@ async function handleMessage(
   );
   if (!isNew) return;
   await opts.webhookEvents.attachPublication(event.deliveryId, pub.id);
+  let routed: { sessionId: string } | null = null;
   try {
-    await opts.provider.dispatchEvent(event, pub);
+    routed = await opts.provider.dispatchEvent(event, pub);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await opts.webhookEvents.attachError(event.deliveryId, msg);
@@ -384,6 +401,62 @@ async function handleMessage(
       "dispatch failed",
     );
   }
+  if (routed && event.chatId) {
+    attachFeishuEgress(opts, ctx, appId, pub.id, routed.sessionId, event.deliveryId);
+  }
+}
+
+/**
+ * Mirror the agent's reply back into Feishu. Resolves (and caches) the App's
+ * FeishuApiClient, then subscribes a one-shot egress writer to the session's
+ * `agent.message` events. Best-effort and fully detached: a missing secret,
+ * a 401, or a send failure logs and moves on — inbound delivery already
+ * succeeded, so egress must never throw back into the message handler.
+ */
+function attachFeishuEgress(
+  opts: FeishuWsRunnerOptions,
+  ctx: RunnerCtx,
+  appId: string,
+  pubId: string,
+  sessionId: string,
+  replyToMessageId: string,
+): void {
+  void (async () => {
+    const client = await getEgressClient(opts, ctx, appId, pubId);
+    if (!client) return;
+    // hub.attach returns the unsubscribe; hand it to the writer's onDone so the
+    // writer removes itself from the hub once it has sent (or timed out).
+    const unsubscribe = opts.hub.attach(
+      sessionId,
+      createFeishuEgressWriter({
+        client,
+        messageId: replyToMessageId,
+        onDone: () => unsubscribe(),
+      }),
+    );
+  })();
+}
+
+/** Resolve (and cache) one FeishuApiClient per App; null if no decryptable secret. */
+async function getEgressClient(
+  opts: FeishuWsRunnerOptions,
+  ctx: RunnerCtx,
+  appId: string,
+  pubId: string,
+): Promise<FeishuApiClient | null> {
+  const cached = ctx.apiClients.get(appId);
+  if (cached) return cached;
+  const appSecret = await opts.pubs.getAppSecret(pubId);
+  if (!appSecret) {
+    log.warn(
+      { op: "feishu_egress.no_secret", app_id: appId, pub_id: pubId },
+      "no decryptable app_secret; skipping egress",
+    );
+    return null;
+  }
+  const client = new FeishuApiClient({ appId, appSecret }, opts.http);
+  ctx.apiClients.set(appId, client);
+  return client;
 }
 
 /**

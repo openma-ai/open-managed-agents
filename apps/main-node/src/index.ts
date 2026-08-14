@@ -94,6 +94,7 @@ import {
   SqlSlackAppRepo,
   WebCryptoAesGcm,
   CryptoIdGenerator,
+  WorkerHttpClient,
   type NodeReposEnv,
 } from "@open-managed-agents/integrations-adapters-node";
 import {
@@ -1051,12 +1052,17 @@ if (platformRootSecret && installBridge && process.env.FEISHU_WS_RUNNER === "1")
     const { startFeishuWsRunner } = await import("./lib/ws-feishu-runner.js");
     const feishuContainer = installBridge.buildContainers().feishu;
     const feishuProvider = buildNodeProvidersForRequest(installBridge, gatewayOrigin).feishu;
+    // HTTP adapter for the automatic-egress send path (FeishuApiClient). One
+    // instance serves all Feishu Apps; the client mints/caches its own token.
+    const feishuHttp = new WorkerHttpClient();
     feishuRunner = await startFeishuWsRunner({
       sql,
       pubs: feishuContainer.feishuPublications,
       installations: feishuContainer.feishuInstallations,
       webhookEvents: feishuContainer.webhookEvents,
       provider: feishuProvider,
+      hub,
+      http: feishuHttp,
     });
   } catch (err) {
     logger.warn(
@@ -1470,6 +1476,27 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
         });
       }
 
+      // Form-token reissue (wizard resume path): `<provider>/publications/<id>/form-token`.
+      // Has a dynamic :id segment so it can't fold into the static-mode regex below —
+      // handle it first and inject the id as body.publicationId (the bridge's
+      // `form-token` mode reads it). Mounted for slack/github/feishu; linear returns
+      // 410 inside the bridge.
+      const formTokenRe = /^([^/]+)\/publications\/([^/]+)\/form-token$/.exec(subpath);
+      if (formTokenRe && method === "POST") {
+        const result = await bridge.startInstallation!({
+          provider: formTokenRe[1] as "linear" | "github" | "slack" | "feishu",
+          mode: "form-token",
+          body: {
+            ...(body ?? {}),
+            publicationId: formTokenRe[2],
+          } as Record<string, unknown>,
+        });
+        return new Response(JSON.stringify(result.body), {
+          status: result.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       const m = /^([^/]+)\/publications\/(start-a1|credentials|handoff-link|personal-token)$/.exec(
         subpath,
       );
@@ -1481,7 +1508,7 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
       }
       const [, provider, mode] = m;
       const result = await bridge.startInstallation!({
-        provider: provider as "linear" | "github" | "slack",
+        provider: provider as "linear" | "github" | "slack" | "feishu",
         mode: mode as "start-a1" | "credentials" | "handoff-link" | "personal-token",
         body: (body ?? {}) as Record<string, unknown>,
       });

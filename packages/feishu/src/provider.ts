@@ -111,12 +111,8 @@ export class FeishuProvider implements IntegrationProvider {
           60 * 60, // 1h
         ),
         publicationId: pub.id,
-        requiredFields: [
-          "appId",
-          "appSecret",
-          "encryptKey",
-          "verificationToken",
-        ],
+        requiredFields: ["appId", "appSecret"],
+        optionalFields: ["encryptKey", "verificationToken"],
       },
     };
   }
@@ -126,16 +122,36 @@ export class FeishuProvider implements IntegrationProvider {
   ): Promise<InstallStep | InstallComplete> {
     const payload = input.payload as
       | {
+          kind?: string;
           formToken?: string;
           appId?: string;
           appSecret?: string;
           verificationToken?: string;
           encryptKey?: string;
           installationId?: string;
+          publicationId?: string;
+          userId?: string;
+          returnUrl?: string;
         }
       | undefined;
     if (!payload) {
       throw new Error("feishu continueInstall requires payload");
+    }
+
+    // Resume path: re-mint the formToken for an existing publication shell.
+    // The Console wizard hits this when landing with `?pub=<id>` — it must
+    // re-mint the JWT against the row's current state WITHOUT inserting a new
+    // shell, so a half-finished publication is resumed rather than orphaned.
+    // Discriminated by `kind`, mirroring Slack/GitHub's continueInstall; the
+    // bridge's `form-token` mode forwards {kind, publicationId, userId,
+    // returnUrl}. No credentials are submitted here — Stage 1/2 below stay
+    // untouched.
+    if (payload.kind === "reissue_form_token") {
+      return this.reissueFormToken({
+        publicationId: payload.publicationId ?? input.publicationId ?? "",
+        userId: payload.userId ?? "",
+        returnUrl: payload.returnUrl ?? "",
+      });
     }
 
     // Stage 1: credentials submit (status: pending_setup → credentials_filled).
@@ -220,6 +236,60 @@ export class FeishuProvider implements IntegrationProvider {
     }
 
     throw new Error("feishu continueInstall: unknown payload shape");
+  }
+
+  /**
+   * Re-mint a formToken for an existing Feishu publication shell (resume
+   * path). Caller — the install bridge's `form-token` mode — is responsible
+   * for the ownership gate; this method re-validates existence + a resumable
+   * status as defense-in-depth, mirroring SlackProvider.reissueFormToken. No
+   * new shell row is inserted; the same publication id flows back through the
+   * wizard. Returns the same `credentials_form` step shape as `startInstall`.
+   */
+  async reissueFormToken(input: {
+    publicationId: string;
+    userId: string;
+    returnUrl: string;
+  }): Promise<InstallStep> {
+    if (!input.publicationId) {
+      throw new Error("reissueFormToken: publicationId required");
+    }
+    if (!input.userId) {
+      throw new Error("reissueFormToken: userId required");
+    }
+    const pub = await this.container.feishuPublications.get(input.publicationId);
+    if (!pub) {
+      throw new Error(`reissueFormToken: unknown publicationId ${input.publicationId}`);
+    }
+    if (pub.userId !== input.userId) {
+      throw new Error("reissueFormToken: publication owner mismatch");
+    }
+    if (
+      pub.status !== "pending_setup" &&
+      pub.status !== "credentials_filled" &&
+      pub.status !== "awaiting_install"
+    ) {
+      throw new Error(`reissueFormToken: publication is '${pub.status}', cannot resume`);
+    }
+    const formToken = await this.container.jwt.sign(
+      {
+        publicationId: pub.id,
+        userId: input.userId,
+        persona: pub.persona,
+        returnUrl: input.returnUrl,
+      },
+      60 * 60, // 1h — matches startInstall
+    );
+    return {
+      kind: "step",
+      step: "credentials_form",
+      data: {
+        formToken,
+        publicationId: pub.id,
+        requiredFields: ["appId", "appSecret"],
+        optionalFields: ["encryptKey", "verificationToken"],
+      },
+    };
   }
 
   // ─── Webhook handler (legacy HTTP path — production ingest is the WS runner) ──
@@ -363,88 +433,100 @@ export class FeishuProvider implements IntegrationProvider {
   // ─── Internal: dispatch helper used by both the HTTP deferredWork path
   //     and the WS runner's onMessage handler. ────────────────────────────
 
+  /**
+   * Dispatch one normalized event into the harness.
+   *
+   * Returns the `{ sessionId }` the event was routed to (existing scope or a
+   * freshly-created session), or `null` when the event wasn't a dispatchable
+   * `im.message.receive_v1` (no chat / no scope_key). Callers — specifically
+   * the WS runner's automatic-egress path — use the returned sessionId to
+   * subscribe to that session's `agent.message` events and mirror the reply
+   * back into Feishu.
+   */
   async dispatchEvent(
     event: import("./webhook/parse").NormalizedFeishuEvent,
     pub: Publication,
-  ): Promise<void> {
-    if (event.kind === "im.message.receive_v1" && event.chatId) {
-      const scopeKey = scopeKeyFor(event, pub.sessionGranularity);
-      if (!scopeKey) {
-        await this.container.webhookEvents.attachError(
-          event.deliveryId,
-          "no scope_key for granularity",
-        );
-        return;
-      }
-      const existing =
-        await this.container.feishuSessionScopes.getByScope(
-          pub.id,
-          scopeKey,
-        );
-      if (existing && existing.status === "active") {
-        await this.container.sessions.resume(
-          pub.userId,
-          existing.sessionId,
-          {
-            type: "user.message",
-            content: [
-              {
-                type: "text",
-                text: renderFeishuSignal(event),
-              },
-            ],
-            metadata: {
-              provider: "feishu",
-              chatId: event.chatId,
-              chatType: event.chatType,
-              messageId: event.deliveryId,
-              senderOpenId: event.senderOpenId,
-            },
-          },
-        );
-        await this.container.webhookEvents.attachSession(
-          event.deliveryId,
-          existing.sessionId,
-        );
-        return;
-      }
-      const sessionId = (await this.container.sessions.create({
-        userId: pub.userId,
-        agentId: pub.agentId,
-        environmentId: pub.environmentId,
-        vaultIds: [],
-        mcpServers: [{ name: "feishu", url: "https://open.feishu.cn/mcp" }],
-        metadata: {
-          provider: "feishu",
-          chatId: event.chatId,
-          chatType: event.chatType,
-          publicationId: pub.id,
-        },
-        initialEvent: {
+  ): Promise<{ sessionId: string } | null> {
+    if (event.kind !== "im.message.receive_v1" || !event.chatId) {
+      return null;
+    }
+    const scopeKey = scopeKeyFor(event, pub.sessionGranularity);
+    if (!scopeKey) {
+      await this.container.webhookEvents.attachError(
+        event.deliveryId,
+        "no scope_key for granularity",
+      );
+      return null;
+    }
+    const existing =
+      await this.container.feishuSessionScopes.getByScope(
+        pub.id,
+        scopeKey,
+      );
+    if (existing && existing.status === "active") {
+      await this.container.sessions.resume(
+        pub.userId,
+        existing.sessionId,
+        {
           type: "user.message",
-          content: [{ type: "text", text: renderFeishuSignal(event) }],
+          content: [
+            {
+              type: "text",
+              text: renderFeishuSignal(event),
+            },
+          ],
           metadata: {
             provider: "feishu",
             chatId: event.chatId,
+            chatType: event.chatType,
             messageId: event.deliveryId,
             senderOpenId: event.senderOpenId,
           },
         },
-        additionalSystemPrompt: FEISHU_SIGNAL_PROTOCOL_PROMPT,
-      })).sessionId;
-      await this.container.feishuSessionScopes.insert({
-        tenantId: pub.tenantId,
-        publicationId: pub.id,
-        scopeKey,
-        sessionId,
-        status: "active",
-        createdAt: this.container.clock.nowMs(),
-      });
+      );
       await this.container.webhookEvents.attachSession(
         event.deliveryId,
-        sessionId,
+        existing.sessionId,
       );
+      return { sessionId: existing.sessionId };
     }
+    const sessionId = (await this.container.sessions.create({
+      userId: pub.userId,
+      agentId: pub.agentId,
+      environmentId: pub.environmentId,
+      vaultIds: [],
+      mcpServers: [{ name: "feishu", url: "https://open.feishu.cn/mcp" }],
+      metadata: {
+        provider: "feishu",
+        chatId: event.chatId,
+        chatType: event.chatType,
+        publicationId: pub.id,
+      },
+      initialEvent: {
+        type: "user.message",
+        content: [{ type: "text", text: renderFeishuSignal(event) }],
+        metadata: {
+          provider: "feishu",
+          chatId: event.chatId,
+          messageId: event.deliveryId,
+          senderOpenId: event.senderOpenId,
+        },
+      },
+      additionalSystemPrompt: FEISHU_SIGNAL_PROTOCOL_PROMPT,
+    })).sessionId;
+    await this.container.feishuSessionScopes.insert({
+      tenantId: pub.tenantId,
+      publicationId: pub.id,
+      scopeKey,
+      sessionId,
+      status: "active",
+      createdAt: this.container.clock.nowMs(),
+    });
+    await this.container.webhookEvents.attachSession(
+      event.deliveryId,
+      sessionId,
+    );
+    return { sessionId };
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────

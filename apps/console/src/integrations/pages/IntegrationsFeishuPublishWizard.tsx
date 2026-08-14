@@ -225,9 +225,7 @@ export function IntegrationsFeishuPublishWizard({
     if (
       !a1Form ||
       !appId ||
-      !appSecret ||
-      !verificationToken ||
-      !encryptKey
+      !appSecret
     )
       return;
     setError(null);
@@ -517,8 +515,9 @@ function PickStep(props: {
       </div>
 
       <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
-        No OAuth dance — Feishu uses App ID + 3 secrets pasted in the next
-        step. Setup ~3 min, requires Feishu admin access to the App console.
+        No OAuth dance — Feishu uses App ID + App Secret (required), plus two
+        optional signing keys, pasted in the next step. Setup ~3 min, requires
+        Feishu admin access to the App console.
       </div>
 
       <div className="pt-1">
@@ -610,8 +609,12 @@ function CredentialsStep(props: {
           From the App's <strong>Credentials &amp; Basic Info</strong> page
           (<strong>App ID</strong>, <strong>App Secret</strong>,
           <strong> Verification Token</strong>) and{" "}
-          <strong>Event Subscriptions → Encrypt Key</strong>. All four are
-          encrypted at rest with the platform root secret.
+          <strong>Event Subscriptions → Encrypt Key</strong>.{" "}
+          <strong>App ID</strong> and <strong>App Secret</strong> are required;
+          the <strong>Verification Token</strong> and <strong>Encrypt Key</strong>{" "}
+          are optional — they're only used for the HTTP webhook ingest path, not
+          the long-connection (WebSocket) mode this App uses. All provided values
+          are encrypted at rest with the platform root secret.
         </p>
         <div className="grid md:grid-cols-2 gap-4">
           <Field label="App ID">
@@ -629,14 +632,14 @@ function CredentialsStep(props: {
               className={inputCls}
             />
           </Field>
-          <Field label="Verification Token">
+          <Field label="Verification Token (optional)">
             <SecretInput
               value={props.verificationToken}
               onChange={(e) => props.setVerificationToken(e.target.value)}
               className={inputCls}
             />
           </Field>
-          <Field label="Encrypt Key">
+          <Field label="Encrypt Key (optional)">
             <SecretInput
               value={props.encryptKey}
               onChange={(e) => props.setEncryptKey(e.target.value)}
@@ -644,6 +647,12 @@ function CredentialsStep(props: {
             />
           </Field>
         </div>
+
+        <p className="text-[12px] text-fg-subtle mt-2">
+          Verification Token &amp; Encrypt Key are optional — leave them blank
+          for long-connection (WebSocket) Apps. Provide them only if your App
+          uses the HTTP event-callback ingest path.
+        </p>
 
         <div className="mt-4 flex items-center gap-3 flex-wrap">
           <button
@@ -658,9 +667,7 @@ function CredentialsStep(props: {
             disabled={
               props.working ||
               !props.appId ||
-              !props.appSecret ||
-              !props.verificationToken ||
-              !props.encryptKey
+              !props.appSecret
             }
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
@@ -690,9 +697,9 @@ function CompleteStep({
         </div>
         <p className="text-fg-muted text-[12px] leading-relaxed">
           Your agent is <code>live</code>. Feishu will deliver events from any
-          chat the bot has been added to; the platform will mint a tenant
-          access token on demand and decrypt inbound events with the Encrypt
-          Key you provided.
+          chat the bot has been added to; the platform mints a tenant access
+          token on demand and — when you provided one — decrypts inbound HTTP
+          events with the Encrypt Key.
         </p>
         {publicationId && (
           <p className="text-fg-muted text-[12px] mt-2">

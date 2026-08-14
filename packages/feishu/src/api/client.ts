@@ -86,16 +86,47 @@ export class FeishuApiClient {
     return this.getTenantAccessToken();
   }
 
-  /** POST im/v1/messages — send a text message into a chat. */
+  /**
+   * POST im/v1/messages — send a text message into a chat.
+   *
+   * `receive_id_type=chat_id` is mandatory: without it Feishu rejects the
+   * send with 99991672 (invalid receive_id). This endpoint was historically
+   * unexercised (the WS ingest path never sent), so the omission was latent.
+   */
   async sendText(input: {
     chatId: string;
     text: string;
   }): Promise<{ messageId: string }> {
-    const res = await this.postJson<{ message_id: string }>("/im/v1/messages", {
-      receive_id: input.chatId,
-      msg_type: "text",
-      content: JSON.stringify({ text: input.text }),
-    });
+    const res = await this.postJson<{ message_id: string }>(
+      "/im/v1/messages?receive_id_type=chat_id",
+      {
+        receive_id: input.chatId,
+        msg_type: "text",
+        content: JSON.stringify({ text: input.text }),
+      },
+    );
+    return { messageId: res.message_id };
+  }
+
+  /**
+   * POST im/v1/messages/{id}/reply — reply to a specific inbound message.
+   *
+   * Used by the automatic-egress path so bot replies thread under the user's
+   * message in group chats (and read as a direct answer in p2p). The reply
+   * endpoint resolves the target chat from the parent message_id, so it needs
+   * no `receive_id` / `receive_id_type`.
+   */
+  async replyText(input: {
+    messageId: string;
+    text: string;
+  }): Promise<{ messageId: string }> {
+    const res = await this.postJson<{ message_id: string }>(
+      `/im/v1/messages/${encodeURIComponent(input.messageId)}/reply`,
+      {
+        msg_type: "text",
+        content: JSON.stringify({ text: input.text }),
+      },
+    );
     return { messageId: res.message_id };
   }
 
@@ -170,22 +201,42 @@ export class FeishuApiClient {
         msg: `auth mint failed: HTTP ${res.status}`,
       });
     }
-    const parsed = this.parseEnvelope<{
-      tenant_access_token: string;
-      expire: number;
-    }>(res.body, res.status);
-    if (parsed.code !== 0 || !parsed.data) {
+    const parsed = this.parseEnvelope<{ tenant_access_token?: string; expire?: number }>(
+      res.body,
+      res.status,
+    );
+    // The auth/v3/tenant_access_token/internal response carries
+    // tenant_access_token + expire at the TOP LEVEL (no `data` wrapper), e.g.
+    //   {"code":0,"msg":"ok","tenant_access_token":"t-…","expire":7200}
+    // parseEnvelope models only {code,msg,data,tenant_key}, so reach the
+    // top-level token fields via a structural cast. Coerce code (Feishu emits
+    // numeric or string "0") and read the token from top-level or data.
+    if (Number(parsed.code) !== 0) {
       throw new FeishuApiError({
-        code: parsed.code,
+        code: Number(parsed.code),
         msg: parsed.msg,
         tenantKey: parsed.tenant_key,
       });
     }
+    const envelope = parsed as unknown as {
+      tenant_access_token?: string;
+      expire?: number;
+      data?: { tenant_access_token?: string; expire?: number };
+    };
+    const accessToken = envelope.tenant_access_token ?? envelope.data?.tenant_access_token;
+    const expire = envelope.expire ?? envelope.data?.expire;
+    if (!accessToken || typeof expire !== "number") {
+      throw new FeishuApiError({
+        code: Number(parsed.code),
+        msg: `auth response missing tenant_access_token/expire: ${res.body.slice(0, 200)}`,
+        tenantKey: parsed.tenant_key,
+      });
+    }
     const token: FeishuTenantAccessToken = {
-      accessToken: parsed.data.tenant_access_token,
+      accessToken,
       // Feishu's `expire` is in seconds and is the relative TTL, not absolute.
-      expiresAt: this.now() + parsed.data.expire * 1000,
-      rawExpire: parsed.data.expire,
+      expiresAt: this.now() + expire * 1000,
+      rawExpire: expire,
     };
     this.cached = token;
     return token;
@@ -274,9 +325,11 @@ export class FeishuApiClient {
       });
     }
     const parsed = this.parseEnvelope<T>(res.body, res.status);
-    if (parsed.code !== 0) {
+    // Coerce: Feishu returns numeric 0 here but string "0" on the reply
+    // endpoint — both are success. A non-zero (numeric or string) is the error.
+    if (Number(parsed.code) !== 0) {
       throw new FeishuApiError({
-        code: parsed.code,
+        code: Number(parsed.code),
         msg: parsed.msg,
         tenantKey: parsed.tenant_key,
       });

@@ -58,6 +58,15 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
 
     if (deps.disabled) {
       c.set("tenant_id", "default");
+      // AUTH_DISABLED is dev-only ("every request becomes tenant_id=default").
+      // Also synthesize user_id=default so user-scoped endpoints
+      // (/v1/integrations/*, /v1/api_keys, etc.) work for local single-user
+      // testing — without this, the integrations surface is unusable under
+      // AUTH_DISABLED because every user-scoped route rejects with
+      // "legacy keys lack user_id". Only main-node consumes this shared
+      // middleware (apps/main has its own auth.ts), so the blast radius is
+      // dev-only.
+      c.set("user_id", "default");
       return next();
     }
 

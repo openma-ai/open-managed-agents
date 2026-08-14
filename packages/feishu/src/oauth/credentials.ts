@@ -1,13 +1,20 @@
 // Feishu App credential validation.
 //
-// Feishu Apps require 4 secrets at install time:
-//   - app_id           (cli_…)        — public, plaintext
-//   - app_secret                       — used to mint tenant_access_token
-//   - verification_token               — legacy signing material (optional)
-//   - encrypt_key                      — preferred HMAC signing key
+// Four credential fields are collected at install time:
+//   - app_id           (cli_…)        — public, plaintext               (required)
+//   - app_secret                       — mints tenant_access_token       (required)
+//   - verification_token               — HTTP webhook signing material   (optional)
+//   - encrypt_key                      — preferred HTTP webhook HMAC key (optional)
 //
-// We validate format / length only here — actual reachability is checked by
-// the WS runner when it does the test-ping.
+// Only app_id + app_secret are required — they mint the tenant_access_token
+// used by both the WebSocket runner (the canonical ingest path) and the API
+// client. The two signing fields are consumed solely by the legacy HTTP
+// webhook path (provider.handleWebhook — the URL-verification handshake +
+// event signature); the WS long-connection runner never reads them, so an App
+// configured in long-connection mode may leave both blank.
+//
+// We validate format / length only (and only when a field is present) —
+// actual reachability is checked by the WS runner when it does the test-ping.
 
 export interface FeishuAppCredentialsInput {
   appId: string;
@@ -69,12 +76,10 @@ export function validateFeishuAppCredentials(
   }
 
   const encryptKey = input.encryptKey?.trim() ?? "";
-  if (!encryptKey) {
-    errors.push({
-      field: "encryptKey",
-      message: "Encrypt Key is required (Feishu's URL verification signing key)",
-    });
-  } else if (encryptKey.length < MIN_ENCRYPT_KEY_LENGTH) {
+  // Optional (mirrors verificationToken): only length-check when provided.
+  // The encrypt key is consumed solely on the HTTP webhook ingest path; the
+  // WS runner — the canonical ingest — doesn't use it.
+  if (encryptKey && encryptKey.length < MIN_ENCRYPT_KEY_LENGTH) {
     errors.push({
       field: "encryptKey",
       message: `Encrypt Key must be at least ${MIN_ENCRYPT_KEY_LENGTH} characters`,

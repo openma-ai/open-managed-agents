@@ -405,6 +405,38 @@ export class NodeInstallBridge implements InstallBridge {
       }
     }
 
+    if (args.mode === "form-token") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_form_token_removed",
+          remediation:
+            "Linear's resume path is publication-first — no form-token reissue. Re-POST /v1/integrations/linear/publications to resume.",
+        });
+      }
+      // The route layer (http-routes integrations) already gated ownership +
+      // resumable status before forwarding; the provider re-validates as
+      // defense-in-depth. `body.publicationId` is injected by
+      // bridgeAsInstallProxy.forward from the subpath's :id segment.
+      const publicationId = (body.publicationId as string | undefined) ?? "";
+      const userId = (body.userId as string | undefined) ?? "";
+      const returnUrl = (body.returnUrl as string | undefined) ?? "";
+      if (!publicationId || !userId) {
+        return jsonResp(400, { error: "publicationId, userId required" });
+      }
+      try {
+        const result = await provider.continueInstall({
+          publicationId,
+          payload: { kind: "reissue_form_token", publicationId, userId, returnUrl },
+        });
+        if (result.kind !== "step" || result.step !== "credentials_form") {
+          return jsonResp(500, { error: "unexpected reissue result", result });
+        }
+        return jsonResp(200, result.data);
+      } catch (err) {
+        return mapInstallErrorToResp(args.provider, "form-token", err);
+      }
+    }
+
     if (args.mode === "create-publication") {
       if (args.provider !== "linear") {
         return jsonResp(400, { error: "create-publication is linear-only" });
@@ -831,7 +863,7 @@ function credentialsBadInputBody(provider: string, required: string[]): Record<s
 
 function mapInstallErrorToResp(
   provider: string,
-  flow: "credentials" | "handoff",
+  flow: "credentials" | "handoff" | "form-token",
   err: unknown,
 ): StartInstallationResult {
   const msg = err instanceof Error ? err.message : String(err);
@@ -852,7 +884,12 @@ function mapInstallErrorToResp(
     });
   }
   return jsonResp(400, {
-    error: flow === "handoff" ? "handoff_failed" : "credentials_failed",
+    error:
+      flow === "handoff"
+        ? "handoff_failed"
+        : flow === "form-token"
+          ? "form_token_failed"
+          : "credentials_failed",
     details: msg,
   });
 }
