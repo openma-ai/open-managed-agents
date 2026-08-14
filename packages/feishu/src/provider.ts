@@ -418,14 +418,20 @@ export class FeishuProvider implements IntegrationProvider {
     _toolName: string,
     _input: unknown,
   ): Promise<McpToolResult> {
-    // MVP: real tool execution lives in apps/main-node/src/lib/node-session-router.ts
-    // (mirrors the Slack pattern — the provider only describes the tool).
+    // NOTE: provider-level mcpTools()/invokeMcpTool() are unused scaffolding —
+    // no runtime path lists or invokes them (true across every provider:
+    // Slack/GitHub/Linear/Feishu). The real Feishu tool-execution surface is
+    // the in-process AI-SDK `tool()` map registered in
+    // apps/main-node/src/lib/feishu-agent-tools.ts (mcp__feishu__im_message_send,
+    // mcp__feishu__im_chat_read), merged into the harness tools from
+    // buildHarnessContext. These descriptor/entry methods are kept only to
+    // satisfy the IntegrationProvider contract.
     return {
       ok: false,
       error: {
         code: "not_implemented",
         message:
-          "Feishu MCP tool execution lives in apps/main-node (MVP scaffolding).",
+          "Feishu tool execution is in-process in apps/main-node/src/lib/feishu-agent-tools.ts, not the provider invokeMcpTool path.",
       },
     };
   }
