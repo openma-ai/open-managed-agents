@@ -1504,7 +1504,10 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
       // `form-token` mode reads it). Mounted for slack/github/feishu; linear returns
       // 410 inside the bridge.
       const formTokenRe = /^([^/]+)\/publications\/([^/]+)\/form-token$/.exec(subpath);
-      if (formTokenRe && method === "POST") {
+      // The http-routes forwarder omits `method` on this path; the CF
+      // counterpart defaults to POST (apps/main/src/routes/integrations.ts)
+      // — mirror that here so wizard refresh-resume works on Node.
+      if (formTokenRe && (method ?? "POST") === "POST") {
         const result = await bridge.startInstallation!({
           provider: formTokenRe[1] as "linear" | "github" | "slack" | "feishu",
           mode: "form-token",
