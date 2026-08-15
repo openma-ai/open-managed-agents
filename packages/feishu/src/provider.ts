@@ -191,6 +191,18 @@ export class FeishuProvider implements IntegrationProvider {
         verificationToken: payload.verificationToken ?? null,
         encryptKey: payload.encryptKey ?? null,
       });
+      // One Feishu App backs exactly one live bot: the WS connection and
+      // inbound routing are keyed by app_id. Reject early with a clear
+      // error instead of letting the new publication silently hang
+      // behind the live one (it would never flip).
+      const inUse = await this.container.feishuPublications.findByAppId(
+        normalized.appId,
+      );
+      if (inUse && inUse.status === "live" && inUse.id !== publicationId) {
+        throw new Error(
+          `app_in_use: Feishu App ${normalized.appId} already backs a live bot — unpublish it first (one app = one bot)`,
+        );
+      }
       await this.container.feishuPublications.setCredentials(publicationId, {
         appId: normalized.appId,
         appSecretCipher: await this.container.crypto.encrypt(
