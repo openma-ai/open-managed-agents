@@ -65,6 +65,8 @@ class FakePubs {
   appSecrets = new Map<string, string | null>(); // pubId -> secret
   pubsByAppId = new Map<string, Publication>(); // appId -> pub
   bindCalls: Array<{ publicationId: string; installationId: string }> = [];
+  /** Mirrors the real repo: bindInstallation flips the row to live. */
+  onBind?: (publicationId: string) => void;
   getAppSecret = async (pubId: string): Promise<string | null> =>
     this.appSecrets.get(pubId) ?? null;
   findByAppId = async (appId: string): Promise<Publication | null> =>
@@ -74,6 +76,7 @@ class FakePubs {
     installationId: string;
   }): Promise<void> => {
     this.bindCalls.push(input);
+    this.onBind?.(input.publicationId);
   };
 }
 
@@ -126,7 +129,7 @@ class FakeFactory {
   };
 }
 
-function makeSql(rows: () => Array<{ id: string; app_id: string | null }>): SqlClient {
+function makeSql(rows: () => Array<{ id: string; app_id: string | null; status?: string }>): SqlClient {
   return {
     prepare: (_q: string) => ({
       all: async <T>(): Promise<{ results: T[] }> =>
@@ -143,7 +146,7 @@ describe("ws-feishu-runner", () => {
   let dispatchCalls: NormalizedFeishuEvent[];
   let provider: FeishuProvider;
   let factory: FakeFactory;
-  let rows: Array<{ id: string; app_id: string | null }>;
+  let rows: Array<{ id: string; app_id: string | null; status?: string }>;
   let sql: SqlClient;
   let runners: Array<{ stop: () => Promise<void> }>;
 
@@ -162,6 +165,9 @@ describe("ws-feishu-runner", () => {
     rows = [];
     sql = makeSql(() => rows);
     runners = [];
+    pubs.onBind = (pid) => {
+      for (const r of rows) if (r.id === pid) r.status = "live";
+    };
   });
 
   afterEach(async () => {
@@ -188,7 +194,7 @@ describe("ws-feishu-runner", () => {
   function seed(pub: Publication & { appId: string }, secret: string | null) {
     pubs.pubsByAppId.set(pub.appId, pub);
     pubs.appSecrets.set(pub.id, secret);
-    rows = [{ id: pub.id, app_id: pub.appId }];
+    rows = [{ id: pub.id, app_id: pub.appId, status: pub.status }];
   }
 
   it("reconnects the flattened SDK payload to parseWsFrame and dispatches", async () => {
@@ -306,6 +312,26 @@ describe("ws-feishu-runner", () => {
       { id: "om_2", err: "dispatch boom" },
     ]);
     expect(dispatchCalls).toHaveLength(0); // provider stub never succeeded
+  });
+
+  it("flips a pending row that appears while the connection is already live (no restart)", async () => {
+    seed(makePub({ id: "pub_1", appId: "cli_a", status: "live", installationId: "inst_0" }), "secret");
+    await start();
+    await sleep(20); // handshake ok, connection live
+
+    // Wizard completes for a NEW publication on the same app while the
+    // runner is up (e.g. re-publish after an unpublish). The old code
+    // only flipped inside the handshake callback → this row hung at
+    // credentials_filled until a process restart.
+    const pending = makePub({ id: "pub_2", appId: "cli_a", status: "credentials_filled", installationId: "" });
+    pubs.pubsByAppId.set("cli_a", pending);
+    pubs.appSecrets.set("pub_2", "secret");
+    rows = [{ id: "pub_2", app_id: "cli_a", status: "credentials_filled" }];
+    await sleep(20); // next tick: live connection + pending row → flip
+
+    expect(pubs.bindCalls).toEqual([
+      { publicationId: "pub_2", installationId: "inst_1" },
+    ]);
   });
 
   it("drops a connection when its publication leaves the target set", async () => {

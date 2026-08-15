@@ -445,6 +445,42 @@ describe("feishu SQL adapters", () => {
       expect(found?.id).toBe(shell.id);
     });
 
+    it("findByAppId ranks active rows above stale unpublished leftovers", async () => {
+      const pubRepo = new SqlFeishuPublicationRepo(drz as unknown as OmaDb, ids, crypto);
+      const mkShell = () =>
+        pubRepo.insertShell({
+          tenantId: "tn_1",
+          userId: "u_1",
+          agentId: "ag_1",
+          environmentId: "env_1",
+          persona: { name: "A", avatarUrl: null },
+          capabilities: new Set([]),
+          sessionGranularity: "per_chat",
+        });
+      const creds = (id: string) =>
+        pubRepo.setCredentials(id, {
+          appId: "cli_shared",
+          appSecretCipher: "c",
+          verificationTokenCipher: "",
+          encryptKeyCipher: "",
+        });
+      // Discarded first attempt leaves an unpublished row for the app…
+      const stale = await mkShell();
+      await creds(stale.id);
+      await pubRepo.markUnpublished(stale.id, Date.now());
+      // …then a fresh wizard run reuses the same app.
+      const fresh = await mkShell();
+      await creds(fresh.id);
+      // The stale row must not shadow the pending one (WS runner flip +
+      // inbound routing both rely on this lookup).
+      const found = await pubRepo.findByAppId("cli_shared");
+      expect(found?.id).toBe(fresh.id);
+      // And a live row outranks everything.
+      await pubRepo.bindInstallation({ publicationId: stale.id, installationId: "inst_9" });
+      const live = await pubRepo.findByAppId("cli_shared");
+      expect(live?.id).toBe(stale.id);
+    });
+
     it("getCredentialState reports which secrets are present", async () => {
       const pubRepo = new SqlFeishuPublicationRepo(drz as unknown as OmaDb, ids, crypto);
       const shell = await pubRepo.insertShell({

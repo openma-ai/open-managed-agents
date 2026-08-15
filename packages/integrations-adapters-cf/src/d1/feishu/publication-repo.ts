@@ -261,14 +261,30 @@ export class SqlFeishuPublicationRepo implements FeishuPublicationRepo {
   }
 
   async findByAppId(appId: string): Promise<Publication | null> {
-    const row = await getOne<typeof feishu_publications.$inferSelect>(
+    // One Feishu App accumulates multiple publication rows over its
+    // lifetime (retried wizard runs, unpublished leftovers). Rank active
+    // rows first — live > awaiting_install > credentials_filled >
+    // pending_setup > anything else, newest within a rank — so a stale
+    // row can never shadow a live or pending publication sharing the
+    // same app_id (the WS runner's flip and the provider's inbound
+    // routing both rely on this lookup).
+    const rows = await getAll<typeof feishu_publications.$inferSelect>(
       this.db
         .select()
         .from(feishu_publications)
-        .where(eq(feishu_publications.app_id, appId))
-        .limit(1),
+        .where(eq(feishu_publications.app_id, appId)),
     );
-    return row ? this.toDomain(row) : null;
+    if (rows.length === 0) return null;
+    const rank = (s: string): number =>
+      s === "live" ? 0
+      : s === "awaiting_install" ? 1
+      : s === "credentials_filled" ? 2
+      : s === "pending_setup" ? 3
+      : 4;
+    rows.sort(
+      (a, b) => rank(a.status) - rank(b.status) || b.created_at - a.created_at,
+    );
+    return this.toDomain(rows[0]!);
   }
 
   async updateStatus(id: string, status: PublicationStatus): Promise<void> {

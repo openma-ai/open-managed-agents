@@ -121,6 +121,9 @@ interface RunnerCtx {
   connections: Map<string, ConnEntry>;
   /** appIds with an in-flight ensureConnection (entry is set only after an await). */
   pending: Set<string>;
+  /** appIds with an in-flight flip — serializes flips per app so two
+   *  concurrent reconcile/handshake paths can't double-insert installations. */
+  flipping: Set<string>;
   /** Per-App egress clients (FeishuApiClient mints/caches its own token). */
   apiClients: Map<string, FeishuApiClient>;
   now: () => number;
@@ -143,6 +146,7 @@ export async function startFeishuWsRunner(
     connectionFactory,
     connections: new Map(),
     pending: new Set(),
+    flipping: new Set(),
     apiClients: new Map(),
     now,
     backoff,
@@ -187,9 +191,9 @@ export async function startFeishuWsRunner(
 async function reconcile(opts: FeishuWsRunnerOptions, ctx: RunnerCtx): Promise<void> {
   const rows = await opts.sql
     .prepare(
-      `SELECT id, app_id FROM feishu_publications WHERE status IN ${TARGET_STATUSES}`,
+      `SELECT id, app_id, status FROM feishu_publications WHERE status IN ${TARGET_STATUSES}`,
     )
-    .all<{ id: string; app_id: string | null }>();
+    .all<{ id: string; app_id: string | null; status: string }>();
 
   const seen = new Set<string>();
   for (const row of rows.results ?? []) {
@@ -197,6 +201,12 @@ async function reconcile(opts: FeishuWsRunnerOptions, ctx: RunnerCtx): Promise<v
     seen.add(row.app_id);
     const existing = ctx.connections.get(row.app_id);
     if (existing && (existing.state === "starting" || existing.state === "live")) {
+      // Connection already up — but a pending row for this app may have
+      // appeared after the handshake that would have flipped it (wizard
+      // completed mid-connection). Flip it now so no restart is needed.
+      if (row.status === "credentials_filled" || row.status === "awaiting_install") {
+        requestFlip(opts, ctx, row.app_id);
+      }
       continue;
     }
     if (ctx.pending.has(row.app_id)) continue; // in-flight setup
@@ -225,6 +235,23 @@ function backoffFor(
   attempts: number,
 ): number {
   return Math.min(b.max, b.min * 2 ** Math.min(attempts, 5));
+}
+
+/** At-most-one in-flight flip per app; failures logged, never fatal. */
+function requestFlip(
+  opts: FeishuWsRunnerOptions,
+  ctx: RunnerCtx,
+  appId: string,
+): void {
+  if (ctx.flipping.has(appId)) return;
+  ctx.flipping.add(appId);
+  void flipToLiveIfPending(opts, appId)
+    .catch((err) => {
+      log.warn({ err, op: "feishu_ws_runner.flip_failed", app_id: appId }, "flip failed");
+    })
+    .finally(() => {
+      ctx.flipping.delete(appId);
+    });
 }
 
 async function ensureConnection(
@@ -278,12 +305,7 @@ async function ensureConnection(
         { op: "feishu_ws_runner.connected", app_id: appId },
         "ws handshake ok",
       );
-      await flipToLiveIfPending(opts, appId).catch((err) => {
-        log.warn(
-          { err: String(err), op: "feishu_ws_runner.flip_failed", app_id: appId },
-          "flip to live failed",
-        );
-      });
+      requestFlip(opts, ctx, appId);
     },
     (err: unknown) => {
       if (ctx.isStopped()) return;
