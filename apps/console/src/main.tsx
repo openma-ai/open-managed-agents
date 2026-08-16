@@ -58,6 +58,11 @@ import {
   IntegrationsSlackWorkspace,
   IntegrationsSlackPublishPage,
 } from "./pages/IntegrationsSlack";
+import {
+  IntegrationsFeishuList,
+  IntegrationsFeishuWorkspace,
+  IntegrationsFeishuPublishPage,
+} from "./pages/IntegrationsFeishu";
 import { consolePlugins } from "./plugins/registry";
 
 /**
@@ -224,6 +229,23 @@ const protectedRoutes: RouteObject[] = [
           {
             path: "installations/:id",
             element: <IntegrationsSlackWorkspace />,
+            handle: { crumb: "Workspace" },
+          },
+        ],
+      },
+      {
+        path: "feishu",
+        handle: { crumb: "Feishu" },
+        children: [
+          { index: true, element: <IntegrationsFeishuList /> },
+          {
+            path: "publish",
+            element: <IntegrationsFeishuPublishPage />,
+            handle: { crumb: "Publish" },
+          },
+          {
+            path: "installations/:id",
+            element: <IntegrationsFeishuWorkspace />,
             handle: { crumb: "Workspace" },
           },
         ],

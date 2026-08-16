@@ -25,18 +25,36 @@ export interface TestDb {
   cleanup: () => void;
 }
 
-export async function bootstrapTestDb(): Promise<TestDb> {
+export interface BootstrapTestDbOptions {
+  /**
+   * Flip `PRAGMA foreign_keys = ON` on both the drizzle connection and the
+   * SqlClient connection. Defaults to false (matches D1's runtime default —
+   * see packages/sql-client/src/adapters/better-sqlite3.ts).
+   *
+   * Migration / cascade tests that need to assert FK enforcement (ON DELETE
+   * CASCADE / SET NULL, composite FK rejection) pass true.
+   */
+  foreignKeys?: boolean;
+}
+
+export async function bootstrapTestDb(
+  options: BootstrapTestDbOptions = {},
+): Promise<TestDb> {
+  const foreignKeys = options.foreignKeys ?? false;
+  const pragma = `PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`;
   const tmpDir = mkdtempSync(join(tmpdir(), "oma-test-"));
   const dbPath = join(tmpDir, "test.db");
   const sqliteRaw = new BetterSqlite3(dbPath);
-  // Match D1's default; see packages/sql-client/src/adapters/better-sqlite3.ts.
-  sqliteRaw.exec("PRAGMA foreign_keys = OFF");
+  sqliteRaw.exec(pragma);
   const drz = drizzle(sqliteRaw);
   const migrationsFolder = fileURLToPath(
     new URL("../../migrations-sqlite", import.meta.url),
   );
   migrate(drz, { migrationsFolder });
   const sql = await createBetterSqlite3SqlClient(dbPath);
+  // createBetterSqlite3SqlClient hardcodes FK OFF at construction; flip it to
+  // match the requested mode so the SqlClient connection enforces FKs too.
+  await sql.exec(pragma);
   return {
     sql,
     db: drz as unknown as OmaDb,

@@ -4,6 +4,8 @@ import linearPublications from "./routes/linear/publications";
 import githubPublications from "./routes/github/publications";
 import slackPublications from "./routes/slack/publications";
 import slackSetupPage from "./routes/slack/setup-page";
+import feishuPublications from "./routes/feishu/publications";
+import feishuSetupPage from "./routes/feishu/setup-page";
 import githubManifest from "./routes/github/manifest";
 import { buildProviders } from "./providers";
 import { buildContainer } from "./wire";
@@ -56,6 +58,7 @@ app.all("/admin/*", (c) => {
 app.use("/linear/webhook/*", webhookRateLimitMiddleware);
 app.use("/github/webhook/*", webhookRateLimitMiddleware);
 app.use("/slack/webhook/*", webhookRateLimitMiddleware);
+app.use("/feishu/webhook/*", webhookRateLimitMiddleware);
 
 // Publications/manifest-start CF-side wrappers (kept). These accept
 // formToken POSTs from the browser and publish setup flows. Mounted
@@ -65,6 +68,8 @@ app.route("/github/publications", githubPublications);
 app.route("/github/manifest", githubManifest);
 app.route("/slack/publications", slackPublications);
 app.route("/slack-setup", slackSetupPage);
+app.route("/feishu/publications", feishuPublications);
+app.route("/feishu-setup", feishuSetupPage);
 
 // Package routes: OAuth callbacks, setup pages, Linear MCP, GitHub
 // internal refresh, webhook receivers. The CfInstallBridge wraps the
@@ -81,6 +86,7 @@ app.use("*", async (c, next) => {
       linear: (req) => providers.linear.handleWebhook(req),
       github: (req) => providers.github.handleWebhook(req),
       slack: (req) => providers.slack.handleWebhook(req),
+      feishu: (req) => providers.feishu.handleWebhook(req),
     },
     internalSecret: env.INTEGRATIONS_INTERNAL_SECRET ?? null,
     rateLimit: {

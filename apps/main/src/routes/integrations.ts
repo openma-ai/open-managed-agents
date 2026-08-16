@@ -10,6 +10,8 @@ import type { Env } from "@open-managed-agents/shared";
 import {
   buildCfRepos,
   CryptoIdGenerator,
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
   SqlGitHubAppRepo,
   SqlGitHubInstallationRepo,
   SqlGitHubPublicationRepo,
@@ -33,7 +35,7 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
   const env = c.env;
   const k = (env as unknown as Record<string, unknown>).PLATFORM_ROOT_SECRET;
   if (typeof k !== "string" || !k || !env.INTEGRATIONS_DB) {
-    return { linear: null, github: null, slack: null };
+    return { linear: null, github: null, slack: null, feishu: null };
   }
   const linearRepos = buildCfRepos({
     integrationsDb: env.INTEGRATIONS_DB,
@@ -42,7 +44,7 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
   });
   // Slack/GitHub need their parallel installations/publications/apps repos —
   // buildCfRepos exposes the github_* ones, but slack lives in slack_*
-  // tables and uses Slack-specific SQL repos.
+  // tables and uses Slack-specific SQL repos. Feishu is in feishu_*.
   const crypto = new WebCryptoAesGcm(k, "integrations.tokens");
   const ids = new CryptoIdGenerator();
   const idb = drizzle(env.INTEGRATIONS_DB);
@@ -62,6 +64,10 @@ function bagsFor(c: import("hono").Context<{ Bindings: Env } & Vars>): Integrati
       installations: new SqlSlackInstallationRepo(idb, crypto, ids),
       publications: new SqlSlackPublicationRepo(idb, ids, crypto),
       apps: new SqlSlackAppRepo(idb, crypto, ids),
+    },
+    feishu: {
+      installations: new SqlFeishuInstallationRepo(idb, crypto, ids),
+      publications: new SqlFeishuPublicationRepo(idb, ids, crypto),
     },
   };
 }

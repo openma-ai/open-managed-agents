@@ -22,6 +22,7 @@ import {
   RuntimesIcon,
   DashboardIcon,
   EnvIcon,
+  FeishuIcon,
   FilesIcon,
   GitHubIcon,
   LinearIcon,
@@ -88,6 +89,7 @@ function useNavGroups(): NavGroup[] {
         { to: "/integrations/linear", label: "Linear", icon: LinearIcon },
         { to: "/integrations/github", label: "GitHub", icon: GitHubIcon },
         { to: "/integrations/slack", label: "Slack", icon: SlackIcon },
+        { to: "/integrations/feishu", label: "Feishu", icon: FeishuIcon },
       ],
     },
   ];

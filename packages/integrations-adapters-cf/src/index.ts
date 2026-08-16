@@ -34,6 +34,12 @@ export { SqlSlackPublicationRepo } from "./d1/slack/publication-repo";
 export { SqlSlackWebhookEventStore } from "./d1/slack/webhook-event-store";
 export { SqlSlackSessionScopeRepo } from "./d1/slack/session-scope-repo";
 export { SqlSlackSetupLinkRepo } from "./d1/slack/setup-link-repo";
+// Feishu adapters — parallel to Slack's, separate feishu_* tables.
+export { SqlFeishuInstallationRepo } from "./d1/feishu/installation-repo";
+export { SqlFeishuPublicationRepo } from "./d1/feishu/publication-repo";
+export { SqlFeishuWebhookEventStore } from "./d1/feishu/webhook-event-store";
+export { SqlFeishuSessionScopeRepo } from "./d1/feishu/session-scope-repo";
+export { SqlFeishuSetupLinkRepo } from "./d1/feishu/setup-link-repo";
 export { ServiceBindingSessionCreator } from "./service-binding-session-creator";
 export type { ServiceBindingSessionCreatorOptions } from "./service-binding-session-creator";
 export { ServiceBindingVaultManager } from "./service-binding-vault-manager";

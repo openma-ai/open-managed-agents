@@ -22,7 +22,7 @@
   },
   "devDependencies": {
     "@open-managed-agents/schema": "workspace:*",
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^13.0.3",
     "vitest": "^4.1.3"
   }
 }

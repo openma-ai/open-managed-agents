@@ -87,11 +87,14 @@ import {
 } from "@open-managed-agents/http-routes";
 import {
   buildNodeRepos,
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
   SqlSlackInstallationRepo,
   SqlSlackPublicationRepo,
   SqlSlackAppRepo,
   WebCryptoAesGcm,
   CryptoIdGenerator,
+  WorkerHttpClient,
   type NodeReposEnv,
 } from "@open-managed-agents/integrations-adapters-node";
 import {
@@ -100,6 +103,11 @@ import {
 } from "./lib/node-install-bridge.js";
 import { OmaVaultResolver } from "@open-managed-agents/oma-cap-adapter";
 import { NodeSessionRouter } from "./lib/node-session-router.js";
+import {
+  configureFeishuAgentTools,
+  resolveFeishuAgentTools,
+  sqlSessionMetadataReader,
+} from "./lib/feishu-agent-tools.js";
 import { nodeOutputsAdapter } from "./lib/node-outputs-adapter.js";
 import { nodeSessionLifecycle } from "./lib/node-session-lifecycle.js";
 import { NodeWorkspaceBackupService } from "./lib/node-workspace-backup.js";
@@ -369,6 +377,7 @@ const memoryWatcher = memoryBlobLocalDir && useQueue
     : { stop: async () => {} };
 
 let s3Poller: { stop: () => Promise<void> } | null = null;
+let feishuRunner: { stop: () => Promise<void> } | null = null;
 if (s3MemoryConfig) {
   // memory_blob_poller_lease lives in the consolidated baseline already; no
   // separate schema bootstrap needed here.
@@ -579,11 +588,19 @@ const sessionRegistry = new SessionRegistry({
     });
     await runtime.refreshHistory();
     const rawSystemPrompt = input.agent.system ?? "";
+    // Feishu-backed sessions get two live tools (mcp__feishu__im_message_send,
+    // mcp__feishu__im_chat_read) wired straight to FeishuApiClient. Non-Feishu
+    // sessions resolve to {} (a safe no-op spread). Token handling lives inside
+    // FeishuApiClient — see lib/feishu-agent-tools.ts.
+    const feishuTools = await resolveFeishuAgentTools(input.sessionId);
     return {
       agent: input.agent,
       userMessage: input.userMessage,
       session_id: input.sessionId,
-      tools: input.tools as HarnessContext["tools"],
+      tools: {
+        ...(input.tools as Record<string, unknown>),
+        ...feishuTools,
+      } as HarnessContext["tools"],
       model: input.model,
       systemPrompt: composeSystemPrompt(rawSystemPrompt),
       rawSystemPrompt,
@@ -1037,6 +1054,46 @@ if (platformRootSecret) {
   });
 }
 
+// Feishu WebSocket long-connection runner — the production ingest path for
+// Feishu and the driver of the `credentials_filled / awaiting_install → live`
+// status flip. The bot dials OUT, so (unlike the legacy HTTP webhook) no
+// public URL is needed. Opt-in (`FEISHU_WS_RUNNER=1`) until it has been
+// exercised against real Feishu app credentials — otherwise a stale
+// publication with fake creds would dial out and backoff-loop on every boot.
+if (platformRootSecret && installBridge && process.env.FEISHU_WS_RUNNER === "1") {
+  try {
+    const { startFeishuWsRunner } = await import("./lib/ws-feishu-runner.js");
+    const feishuContainer = installBridge.buildContainers().feishu;
+    const feishuProvider = buildNodeProvidersForRequest(installBridge, gatewayOrigin).feishu;
+    // HTTP adapter for the automatic-egress send path (FeishuApiClient). One
+    // instance serves all Feishu Apps; the client mints/caches its own token.
+    const feishuHttp = new WorkerHttpClient();
+    // Wire the live Feishu agent tools (send/read) into the harness tool map
+    // for Feishu-backed sessions. Same publication repo + HTTP adapter as the
+    // runner — the WS runner is the only ingest path that produces Feishu
+    // sessions, so this is the only place that needs configuring.
+    configureFeishuAgentTools({
+      reader: sqlSessionMetadataReader(sql),
+      pubs: feishuContainer.feishuPublications,
+      http: feishuHttp,
+    });
+    feishuRunner = await startFeishuWsRunner({
+      sql,
+      pubs: feishuContainer.feishuPublications,
+      installations: feishuContainer.feishuInstallations,
+      webhookEvents: feishuContainer.webhookEvents,
+      provider: feishuProvider,
+      hub,
+      http: feishuHttp,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, op: "main-node.feishu_ws_runner_start_failed" },
+      "feishu ws runner failed to start",
+    );
+  }
+}
+
 if (platformRootSecret) {
   const integrationsRepoEnv: NodeReposEnv = {
     sql,
@@ -1066,6 +1123,10 @@ if (platformRootSecret) {
             installations: new SqlSlackInstallationRepo(drizzleDb, slackCrypto, slackIds),
             publications: new SqlSlackPublicationRepo(drizzleDb, slackIds, slackCrypto),
             apps: new SqlSlackAppRepo(drizzleDb, slackCrypto, slackIds),
+          },
+          feishu: {
+            installations: new SqlFeishuInstallationRepo(drizzleDb, slackCrypto, slackIds),
+            publications: new SqlFeishuPublicationRepo(drizzleDb, slackIds, slackCrypto),
           },
         };
       },
@@ -1129,6 +1190,42 @@ v1.delete("/files/:id", async (c) => {
     }
     throw err;
   }
+});
+
+// ── Session ↔ memory_store binding (Node-specific; not in package yet) ──
+v1.post("/sessions/:id/memory_stores", async (c) => {
+  const sid = c.req.param("id");
+  const session = await sql
+    .prepare(`SELECT id FROM sessions WHERE tenant_id = ? AND id = ?`)
+    .bind(c.var.tenant_id, sid)
+    .first();
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json<{ store_id: string; access?: string }>();
+  if (!body.store_id) return c.json({ error: "store_id is required" }, 400);
+  const store = await memoryService.getStore({
+    tenantId: c.var.tenant_id,
+    storeId: body.store_id,
+  });
+  if (!store) return c.json({ error: "Memory store not found" }, 404);
+  const access = body.access === "read_only" ? "read_only" : "read_write";
+  await sql
+    .prepare(
+      `INSERT INTO session_memory_stores (session_id, store_id, access, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(session_id, store_id) DO UPDATE SET access = excluded.access`,
+    )
+    .bind(sid, body.store_id, access, Date.now())
+    .run();
+  return c.json({ session_id: sid, store_id: body.store_id, access }, 201);
+});
+v1.get("/sessions/:id/memory_stores", async (c) => {
+  const r = await sql
+    .prepare(
+      `SELECT store_id, access, created_at FROM session_memory_stores WHERE session_id = ?`,
+    )
+    .bind(c.req.param("id"))
+    .all<{ store_id: string; access: string; created_at: number }>();
+  return c.json({ data: r.results ?? [] });
 });
 
 app.route("/v1", v1);
@@ -1207,6 +1304,10 @@ if (platformRootSecret) {
             publications: new SqlSlackPublicationRepo(drizzleDb, slackIds, slackCrypto),
             apps: new SqlSlackAppRepo(drizzleDb, slackCrypto, slackIds),
           },
+          feishu: {
+            installations: new SqlFeishuInstallationRepo(drizzleDb, slackCrypto, slackIds),
+            publications: new SqlFeishuPublicationRepo(drizzleDb, slackIds, slackCrypto),
+          },
         };
       },
       installProxy: installBridge ? bridgeAsInstallProxy(installBridge) : null,
@@ -1259,42 +1360,6 @@ const _capResolver = new OmaVaultResolver({
   },
 });
 void _capResolver;
-
-// ── Session ↔ memory_store binding (Node-specific; not in package yet) ──
-v1.post("/sessions/:id/memory_stores", async (c) => {
-  const sid = c.req.param("id");
-  const session = await sql
-    .prepare(`SELECT id FROM sessions WHERE tenant_id = ? AND id = ?`)
-    .bind(c.var.tenant_id, sid)
-    .first();
-  if (!session) return c.json({ error: "Session not found" }, 404);
-  const body = await c.req.json<{ store_id: string; access?: string }>();
-  if (!body.store_id) return c.json({ error: "store_id is required" }, 400);
-  const store = await memoryService.getStore({
-    tenantId: c.var.tenant_id,
-    storeId: body.store_id,
-  });
-  if (!store) return c.json({ error: "Memory store not found" }, 404);
-  const access = body.access === "read_only" ? "read_only" : "read_write";
-  await sql
-    .prepare(
-      `INSERT INTO session_memory_stores (session_id, store_id, access, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(session_id, store_id) DO UPDATE SET access = excluded.access`,
-    )
-    .bind(sid, body.store_id, access, Date.now())
-    .run();
-  return c.json({ session_id: sid, store_id: body.store_id, access }, 201);
-});
-v1.get("/sessions/:id/memory_stores", async (c) => {
-  const r = await sql
-    .prepare(
-      `SELECT store_id, access, created_at FROM session_memory_stores WHERE session_id = ?`,
-    )
-    .bind(c.req.param("id"))
-    .all<{ store_id: string; access: string; created_at: number }>();
-  return c.json({ data: r.results ?? [] });
-});
 
 // ── Console UI (optional) ──
 const consoleDir = process.env.CONSOLE_DIR;
@@ -1365,6 +1430,9 @@ const shutdown = async (signal: string) => {
   try { await memoryWatcher.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.watcher_stop_failed" }, "memory watcher stop failed"); }
   if (s3Poller) {
     try { await s3Poller.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.s3_poller_stop_failed" }, "s3-poller stop failed"); }
+  }
+  if (feishuRunner) {
+    try { await feishuRunner.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.feishu_runner_stop_failed" }, "feishu ws runner stop failed"); }
   }
   if (hub instanceof PgEventStreamHub) {
     try { await hub.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.pg_hub_stop_failed" }, "pg-hub stop failed"); }
@@ -1446,6 +1514,30 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
         });
       }
 
+      // Form-token reissue (wizard resume path): `<provider>/publications/<id>/form-token`.
+      // Has a dynamic :id segment so it can't fold into the static-mode regex below —
+      // handle it first and inject the id as body.publicationId (the bridge's
+      // `form-token` mode reads it). Mounted for slack/github/feishu; linear returns
+      // 410 inside the bridge.
+      const formTokenRe = /^([^/]+)\/publications\/([^/]+)\/form-token$/.exec(subpath);
+      // The http-routes forwarder omits `method` on this path; the CF
+      // counterpart defaults to POST (apps/main/src/routes/integrations.ts)
+      // — mirror that here so wizard refresh-resume works on Node.
+      if (formTokenRe && (method ?? "POST") === "POST") {
+        const result = await bridge.startInstallation!({
+          provider: formTokenRe[1] as "linear" | "github" | "slack" | "feishu",
+          mode: "form-token",
+          body: {
+            ...(body ?? {}),
+            publicationId: formTokenRe[2],
+          } as Record<string, unknown>,
+        });
+        return new Response(JSON.stringify(result.body), {
+          status: result.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       const m = /^([^/]+)\/publications\/(start-a1|credentials|handoff-link|personal-token)$/.exec(
         subpath,
       );
@@ -1457,7 +1549,7 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
       }
       const [, provider, mode] = m;
       const result = await bridge.startInstallation!({
-        provider: provider as "linear" | "github" | "slack",
+        provider: provider as "linear" | "github" | "slack" | "feishu",
         mode: mode as "start-a1" | "credentials" | "handoff-link" | "personal-token",
         body: (body ?? {}) as Record<string, unknown>,
       });
