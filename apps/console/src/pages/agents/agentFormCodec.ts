@@ -12,6 +12,8 @@ export interface McpEntry {
   name: string;
   type: string;
   url: string;
+  /** Stable identity used to preserve fields when an existing server is renamed. */
+  originalName?: string;
 }
 
 export interface SkillEntry {
@@ -164,6 +166,7 @@ export function configToForm(config: Record<string, unknown>): FormState {
           name: String(m.name || ""),
           type: String(m.type || "url"),
           url: typeof m.url === "string" ? m.url : "",
+          originalName: String(m.name || "") || undefined,
         }))
       : [],
     skills: Array.isArray(config.skills)
@@ -235,7 +238,6 @@ export function mergeToolsField(
   form: FormState,
 ): unknown[] {
   const existing = Array.isArray(existingTools) ? existingTools : [];
-  const formMcpNames = form.mcpServers.map((m) => m.name).filter(Boolean);
   const result: unknown[] = [buildManagedToolset(form)];
 
   for (const tool of existing) {
@@ -249,20 +251,24 @@ export function mergeToolsField(
     result.push(tool);
   }
 
-  for (const name of formMcpNames) {
+  for (const mcp of form.mcpServers.filter((m) => m.name)) {
     const prior = existing.find(
       (t) =>
         t &&
         typeof t === "object" &&
         (t as { type?: unknown }).type === "mcp_toolset" &&
-        (t as { mcp_server_name?: unknown }).mcp_server_name === name,
+        (t as { mcp_server_name?: unknown }).mcp_server_name ===
+          (mcp.originalName || mcp.name),
     );
     if (prior) {
-      result.push(prior);
+      result.push({
+        ...structuredClone(prior as Record<string, unknown>),
+        mcp_server_name: mcp.name,
+      });
     } else {
       result.push({
         type: "mcp_toolset",
-        mcp_server_name: name,
+        mcp_server_name: mcp.name,
         default_config: { permission_policy: { type: "always_allow" } },
       });
     }
@@ -293,7 +299,7 @@ export function mergeMcpServers(
   return formServers
     .filter((m) => m.name)
     .map((m) => {
-      const prior = priorByName.get(m.name);
+      const prior = priorByName.get(m.originalName || m.name);
       if (!prior) {
         return { name: m.name, type: m.type || "url", ...(m.url ? { url: m.url } : {}) };
       }

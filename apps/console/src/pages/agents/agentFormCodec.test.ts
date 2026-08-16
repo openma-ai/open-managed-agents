@@ -114,6 +114,34 @@ describe("agentFormCodec lossless update", () => {
     expect(merged[0].type).toBe("stdio");
   });
 
+  it("preserves MCP config and tool policy when an existing server is renamed", () => {
+    const agent = sampleAgent();
+    const form = agentToForm(agent);
+    form.mcpServers[0].name = "renamed-github";
+
+    const payload = mergeFormIntoConfig(form, agentToPreservedConfig(agent), {
+      forUpdate: true,
+    });
+
+    expect(payload.mcp_servers).toEqual([
+      {
+        name: "renamed-github",
+        type: "stdio",
+        stdio: {
+          command: "uvx",
+          args: ["mcp-server-github"],
+          port: 8765,
+          ready_timeout_ms: 30_000,
+        },
+      },
+    ]);
+    expect(payload.tools).toContainEqual({
+      type: "mcp_toolset",
+      mcp_server_name: "renamed-github",
+      default_config: { permission_policy: { type: "always_ask" } },
+    });
+  });
+
   it("round-trips unsupported top-level fields through form update merge", () => {
     const agent = sampleAgent();
     const form = agentToForm(agent);
