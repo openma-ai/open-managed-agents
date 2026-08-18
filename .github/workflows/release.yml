@@ -81,7 +81,7 @@ jobs:
         # No `publish` input → action only opens the Version PR. Publishing
         # is in the next job, gated on environment approval.
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           version: pnpm changeset version
           commit: "chore: version packages"
@@ -128,7 +128,7 @@ jobs:
         # — no version step. It detects nothing to bump and runs the
         # publish script directly. createGithubReleases mirrors the
         # CHANGELOG entries to GitHub Releases.
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           publish: pnpm release
           createGithubReleases: true
