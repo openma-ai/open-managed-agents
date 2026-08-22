@@ -95,7 +95,10 @@ export interface SessionMachineDeps {
    *  Async because shells often need to warm up state (e.g. read the
    *  event log into the harness's history cache) before harness.run
    *  reads from it. */
-  buildHarness(): { run: (ctx: unknown) => Promise<void> };
+  /** Receives the resolved agent so the shell can honour `agent.harness`.
+   *  Zero-arg implementations stay assignable, so existing shells that always
+   *  build one harness keep working unchanged. */
+  buildHarness(agent: AgentConfig): { run: (ctx: unknown) => Promise<void> };
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
@@ -176,7 +179,7 @@ export class SessionStateMachine {
         model,
       });
 
-      const harness = this.deps.buildHarness();
+      const harness = this.deps.buildHarness(agent);
       await harness.run(ctx);
     } finally {
       this.activeTurnId = null;

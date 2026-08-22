@@ -598,7 +598,22 @@ const sessionRegistry = new SessionRegistry({
       toMarkdown: toMarkdownProvider,
     });
   },
-  buildHarness: () => {
+  // Honour `agent.harness`. Previously this always built DefaultHarness, so on
+  // the Node path AgentConfig.harness was silently ignored and every agent got
+  // the default loop regardless of its stored config.
+  //
+  // Registration is explicit here rather than imported from apps/agent's worker
+  // entrypoint, so the Node shell doesn't pull Cloudflare-only bindings in.
+  // AcpProxyHarness is deliberately NOT registered: it requires env.RUNTIME_ROOM,
+  // a Durable Object namespace that does not exist outside Workers.
+  buildHarness: (agent) => {
+    const name = agent.harness?.trim() || "default";
+    if (name !== "default") {
+      throw new Error(
+        `Unknown harness "${name}" on the Node runtime. Registered: default. ` +
+          `(acp-proxy is Workers-only — it needs the RUNTIME_ROOM Durable Object binding.)`,
+      );
+    }
     const h = new DefaultHarness();
     return { run: (ctx: unknown) => h.run(ctx as HarnessContext) };
   },

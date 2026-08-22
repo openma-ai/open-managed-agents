@@ -81,7 +81,7 @@ export interface SessionRegistryDeps {
 
   /** Build harness instance + context. Each is platform-neutral so the
    *  machine just calls .run(ctx). */
-  buildHarness(): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): { run: (ctx: unknown) => Promise<void> };
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
@@ -265,7 +265,7 @@ export class SessionRegistry {
       mountSessionOutputs: async () => {},
       buildModel: (agent) => this.deps.buildModel(agent, tenantId),
       buildTools: (agent, sb) => this.deps.buildTools(agent, sb, tenantId),
-      buildHarness: () => this.deps.buildHarness(),
+      buildHarness: (agent) => this.deps.buildHarness(agent),
       buildHarnessContext: (input) =>
         this.deps.buildHarnessContext({
           ...input,
