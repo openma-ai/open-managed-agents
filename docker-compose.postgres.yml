@@ -43,6 +43,11 @@ services:
       SANDBOX_WORKDIR: /app/data/sandboxes
       MEMORY_BLOB_DIR: /app/data/memory-blobs
       SESSION_OUTPUTS_DIR: /app/data/session-outputs
+      # Absolute, like its three siblings above: the server's cwd is
+      # /app/apps/main-node, so the "./data/files-blobs" default in
+      # apps/main-node/src/index.ts resolves outside the /app/data mount and
+      # into a root-owned dir, and the server crash-loops on EACCES.
+      FILES_BLOB_DIR: /app/data/files-blobs
       OMA_VAULT_PROXY_URL: http://oma-vault:14322
       OMA_VAULT_CA_CERT: /app/data/oma-vault-ca/ca.crt
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
