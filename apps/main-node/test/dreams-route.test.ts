@@ -111,6 +111,9 @@ async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> 
       SESSION_OUTPUTS_DIR: join(opts.dataDir, "outputs"),
       AUTH_DISABLED: "1",
       BETTER_AUTH_SECRET: "test-secret-only-for-vitest",
+      // Required since main-node fails closed without it; without a value here
+      // the spawned server exits at boot and the test times out on /health.
+      PLATFORM_ROOT_SECRET: "dGVzdC1vbmx5LXJvb3Qtc2VjcmV0LWZvci12aXRlc3Q=",
       DREAM_CURATOR_MODE: "dedup",
       NODE_ENV: "test",
     },
