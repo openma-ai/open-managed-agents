@@ -1007,7 +1007,16 @@ v1.route("/environments", buildEnvironmentRoutes({
   environments: environmentsService,
   sessions: sessionsService,
 }));
-v1.route("/model_cards", buildModelCardRoutes({ modelCards: modelCardsService }));
+// internalSecret gates GET /model_cards/:id/key, which serves a decrypted API
+// key. Read from the environment directly rather than the
+// `integrationsInternalToken` const, which is declared further down this file.
+v1.route(
+  "/model_cards",
+  buildModelCardRoutes({
+    modelCards: modelCardsService,
+    internalSecret: process.env.INTEGRATIONS_INTERNAL_TOKEN ?? null,
+  }),
+);
 v1.get("/models/list", (c) =>
   c.json({
     data: [

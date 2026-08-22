@@ -18,6 +18,23 @@ interface Vars {
   Variables: { tenant_id: string };
 }
 
+/**
+ * Constant-time string compare. Hand-rolled rather than node:crypto's
+ * timingSafeEqual because this package also runs on Workers.
+ *
+ * Length is not secret here (the secret is operator-configured, not
+ * attacker-chosen), but we still compare over a fixed number of iterations so
+ * an early mismatch doesn't return faster than a late one.
+ */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
 function toApiShape(card: ModelCardRow) {
   return {
     id: card.id,
@@ -132,11 +149,21 @@ function parsePageQuery(c: {
 
 export interface ModelCardRoutesDeps {
   modelCards: ModelCardService;
+  /**
+   * Shared secret required by `GET /:id/key`, which returns a decrypted API key
+   * in cleartext. Without this, any caller holding a tenant-scoped API key or a
+   * console session can read every model-card credential in the tenant — and
+   * `membership.role` is stored but never enforced, so "any member" means "any
+   * member". Wire it from INTEGRATIONS_INTERNAL_TOKEN.
+   *
+   * When unset the route fails closed (503) rather than serving cleartext.
+   */
+  internalSecret?: string | null;
 }
 
 export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
   const app = new Hono<Vars>();
-  const { modelCards } = deps;
+  const { modelCards, internalSecret } = deps;
 
   // POST / — create
   app.post("/", async (c) => {
@@ -316,8 +343,17 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
     }
   });
 
-  // GET /:id/key — cleartext key (agent / internal consumers)
+  // GET /:id/key — cleartext key (agent / internal consumers only).
+  // Gated: see ModelCardRoutesDeps.internalSecret. Timing-safe compare so the
+  // secret can't be recovered a byte at a time.
   app.get("/:id/key", async (c) => {
+    if (!internalSecret) {
+      return c.json({ error: "Key retrieval is not enabled on this deployment" }, 503);
+    }
+    const presented = c.req.header("x-internal-secret") ?? "";
+    if (!timingSafeEqualStr(presented, internalSecret)) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
     const apiKey = await modelCards.getApiKey({
       tenantId: c.var.tenant_id,
       cardId: c.req.param("id"),
