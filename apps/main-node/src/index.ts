@@ -222,6 +222,30 @@ await ensureEventLogSchema(sql, dialect);
 // wiring, not schema bootstrap.
 const platformRootSecret = process.env.PLATFORM_ROOT_SECRET;
 
+// Fail closed. Without this secret, createSqliteModelCardService falls back to
+// model-cards-store's `identityCrypto` (a no-op cipher) and every model-card
+// API key is written to the database in PLAINTEXT — with no error, no warning,
+// and a /health that still reports "ok". That is not a state a server should be
+// able to reach silently, so refuse to boot instead.
+//
+// Ephemeral local dev that genuinely wants throwaway plaintext credentials can
+// opt in explicitly; there is deliberately no way to reach it by omission.
+if (!platformRootSecret) {
+  if (process.env.OMA_ALLOW_PLAINTEXT_CREDENTIALS === "1") {
+    console.warn(
+      "[startup] PLATFORM_ROOT_SECRET is unset and OMA_ALLOW_PLAINTEXT_CREDENTIALS=1: " +
+        "model-card API keys will be stored UNENCRYPTED. Never use this outside throwaway dev.",
+    );
+  } else {
+    throw new Error(
+      "PLATFORM_ROOT_SECRET is required: it encrypts model-card API keys and integration " +
+        "OAuth tokens at rest. Without it credentials are stored in plaintext. " +
+        "Generate one with `openssl rand -base64 32`, or set " +
+        "OMA_ALLOW_PLAINTEXT_CREDENTIALS=1 to accept plaintext storage in throwaway dev.",
+    );
+  }
+}
+
 // ─── Auth ───────────────────────────────────────────────────────────────
 
 const authDisabled = process.env.AUTH_DISABLED === "1";
