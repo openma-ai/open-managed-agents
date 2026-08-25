@@ -95,7 +95,7 @@ async function onWrite(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // raced with delete
     throw err;
   }
-  const text = buf.toString("utf8");
+  const text = buf.toString();
   const sha = createHash("sha256").update(buf).digest("hex");
   const result = await opts.memoryRepo.upsertFromEvent({
     storeId: parsed.storeId,

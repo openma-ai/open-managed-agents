@@ -24,6 +24,7 @@ import {
   spawn,
   type ChildProcess,
 } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { promises as fs } from "node:fs";
 import {
   chmodSync,
@@ -126,10 +127,10 @@ export class LocalSubprocessSandbox implements SandboxExecutor {
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        stdout += chunk.toString();
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        stderr += chunk.toString();
       });
 
       const killer = setTimeout(() => {
@@ -519,8 +520,8 @@ class BackgroundProcess implements ProcessHandle {
   constructor(public id: string, child: ChildProcess) {
     this.child = child;
     this.pid = child.pid ?? 0;
-    child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString("utf8"); });
-    child.stderr?.on("data", (b: Buffer) => { this.stderr += b.toString("utf8"); });
+    child.stdout?.on("data", (b: Buffer) => { this.stdout += b.toString(); });
+    child.stderr?.on("data", (b: Buffer) => { this.stderr += b.toString(); });
     child.on("close", (code, signal) => {
       this.exitCode = code;
       this.exitSignal = signal as NodeJS.Signals | null;
