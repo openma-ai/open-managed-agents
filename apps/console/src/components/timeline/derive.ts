@@ -1,5 +1,6 @@
 import { formatDuration } from "../../lib/format";
 import type { Event } from "../../lib/events";
+import { eventTsMs } from "./eventTime";
 import type { Span, Turn, TurnTriggerKind } from "./types";
 
 /**
@@ -12,20 +13,13 @@ import type { Span, Turn, TurnTriggerKind } from "./types";
  * can show the underlying JSON without re-walking the stream.
  *
  * timestamp basis is `processed_at` (millisecond ISO string set by
- * SessionDO at write time). The legacy `ts` field is unix SECONDS and
- * collapses sub-second events together — only used as a fallback for
- * very old sessions that predate processed_at.
+ * SessionDO at write time). The legacy `ts` field may be an ISO string
+ * or unix SECONDS — see eventTsMs.
  */
 export function deriveSpans(events: Event[]): { spans: Span[]; totalMs: number } {
   const tsMs = (e: Event): number | null => {
-    const pa = (e.data as { processed_at?: string } | undefined)?.processed_at
-      ?? (e as { processed_at?: string }).processed_at;
-    if (typeof pa === "string") {
-      const t = Date.parse(pa);
-      if (Number.isFinite(t)) return t;
-    }
-    if (typeof e.ts === "number") return e.ts * 1000;
-    return null;
+    const t = eventTsMs(e);
+    return t > 0 ? t : null;
   };
 
   const timed = events.map((e) => ({ e, t: tsMs(e) })).filter((x): x is { e: Event; t: number } => x.t !== null);
@@ -280,12 +274,7 @@ export function deriveSpans(events: Event[]): { spans: Span[]; totalMs: number }
 }
 
 function parseEventTs(e: Event): number {
-  const ts = (e as { processed_at?: string }).processed_at;
-  if (typeof ts === "string") {
-    const t = new Date(ts).getTime();
-    if (Number.isFinite(t)) return t;
-  }
-  return 0;
+  return eventTsMs(e);
 }
 
 /**

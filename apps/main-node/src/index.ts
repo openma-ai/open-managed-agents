@@ -951,6 +951,34 @@ v1.route("/evals", buildEvalRoutes({
 // Stubs for routes the console hits but main-node doesn't yet implement.
 v1.get("/runtimes", (c) => c.json({ data: [] }));
 v1.get("/skills", (c) => c.json({ data: [] }));
+v1.get("/stats", async (c) => {
+  const tenantId = c.get("tenant_id");
+  const [
+    agents,
+    sessions,
+    environments,
+    vaults,
+    modelCards,
+    apiKeys,
+  ] = await Promise.all([
+    agentsService.count({ tenantId }),
+    sessionsService.count({ tenantId }),
+    environmentsService.count({ tenantId }),
+    vaultService.count({ tenantId }),
+    modelCardsService.list({ tenantId }),
+    apiKeyStorage.listByTenant(tenantId),
+  ]);
+
+  return c.json({
+    agents,
+    sessions,
+    environments,
+    vaults,
+    skills: 0,
+    model_cards: modelCards.filter((card) => card.archived_at === null).length,
+    api_keys: apiKeys.length,
+  });
+});
 v1.route("/environments", buildEnvironmentRoutes({
   environments: environmentsService,
   sessions: sessionsService,
@@ -1369,7 +1397,23 @@ if (consoleDir) {
     ? relative(cwd, consoleDir)
     : consoleDir;
   app.use("/*", serveStatic({ root: rootRel }));
-  app.get("/*", serveStatic({ root: rootRel, path: "index.html" }));
+  // SPA fallback for client-side routes ONLY. Never serve index.html for
+  // API/auth/health paths — a missing /v1/* handler used to fall through
+  // here and the console would fail with
+  // `Unexpected token '<' ... is not valid JSON` (HTML parsed as JSON).
+  app.get("/*", async (c, next) => {
+    const p = c.req.path;
+    if (
+      p === "/health" ||
+      p.startsWith("/v1/") ||
+      p.startsWith("/auth") ||
+      p.startsWith("/linear") ||
+      p.startsWith("/github")
+    ) {
+      return next();
+    }
+    return serveStatic({ root: rootRel, path: "index.html" })(c, next);
+  });
   logger.info({ op: "main-node.console_ui", dir: consoleDir, cwd_rel: rootRel }, "console UI served");
 }
 

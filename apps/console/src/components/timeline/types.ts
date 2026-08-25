@@ -8,6 +8,13 @@ import type { Event } from "../../lib/events";
 export const LABEL_COL_W = 224; // === w-56
 export const DURATION_COL_W = 80; // === w-20
 export const SIDE_PANEL_W = 420;
+/** Hard cap on waterfall chart width. Auto density based on median event
+ *  gaps can otherwise produce hundreds of thousands of CSS pixels for a
+ *  multi-minute turn (or a schedule wait), which freezes the main thread
+ *  when switching to Timeline on long sessions. */
+export const MAX_CHART_PX = 4_000;
+/** Keep time-axis tick DOM nodes bounded regardless of turn duration. */
+export const MAX_TICKS = 48;
 
 /**
  * One row in the timeline waterfall. A span can be an instant marker

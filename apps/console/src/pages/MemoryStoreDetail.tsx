@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useApi } from "../lib/api";
-import { useApiQuery } from "../lib/useApiQuery";
+import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "../i18n";
 
 interface MemoryStore {
   id: string;
@@ -48,6 +48,7 @@ export function MemoryStoreDetail() {
   const { id: storeId } = useParams<{ id: string }>();
   const nav = useNavigate();
   const { api } = useApi();
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<TabKey>("memories");
   const [error, setError] = useState<string | null>(null);
 
@@ -136,29 +137,78 @@ export function MemoryStoreDetail() {
               </Button>
             </>
           }
+          toolbar={
+            <div
+              role="tablist"
+              aria-label="Memory store sections"
+              className="flex items-center gap-1 -my-1.5"
+            >
+              <SectionTab
+                label="Memories"
+                active={tab === "memories"}
+                onClick={() => setTab("memories")}
+              />
+              <SectionTab
+                label="Version history"
+                active={tab === "versions"}
+                onClick={() => setTab("versions")}
+              />
+              <SectionTab
+                label="Settings"
+                active={tab === "settings"}
+                onClick={() => setTab("settings")}
+              />
+            </div>
+          }
         />
       }
     >
-      <div>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} aria-label="Memory store sections" className="mt-2">
-          <TabsList className="mb-6">
-            <TabsTrigger value="memories">Memories</TabsTrigger>
-            <TabsTrigger value="versions">Version history</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="memories">
-            <MemoriesPanel storeId={storeId} archived={!!store.archived_at} />
-          </TabsContent>
-          <TabsContent value="versions">
-            <VersionsPanel storeId={storeId} />
-          </TabsContent>
-          <TabsContent value="settings">
-            <SettingsPanel store={store} archived={!!store.archived_at} />
-          </TabsContent>
-        </Tabs>
-      </div>
+      {tab === "memories" && (
+        <MemoriesPanel storeId={storeId} archived={!!store.archived_at} />
+      )}
+      {tab === "versions" && <VersionsPanel storeId={storeId} />}
+      {tab === "settings" && (
+        <SettingsPanel
+          store={store}
+          archived={!!store.archived_at}
+          onUpdated={() => {
+            if (!storeId) return;
+            void queryClient.invalidateQueries({
+              queryKey: [`/v1/memory_stores/${storeId}`],
+            });
+            void queryClient.invalidateQueries({ queryKey: ["/v1/memory_stores"] });
+          }}
+        />
+      )}
     </Page>
+  );
+}
+
+/** Matches SessionDetail's ViewTab — ghost pill, no underline / muted rail. */
+function SectionTab({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
+      className={`inline-flex items-center justify-center px-3 py-2 min-h-11 sm:min-h-0 text-sm rounded-md my-1.5 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+        active
+          ? "bg-bg-surface text-brand font-semibold"
+          : "text-fg-subtle hover:text-fg-muted hover:bg-bg-surface/60"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -582,36 +632,136 @@ function VersionsPanel({ storeId }: { storeId: string }) {
 }
 
 // =================================================================
-// Settings tab — info + archive + delete
+// Settings tab — editable name/description + read-only ids
 // =================================================================
 
-function SettingsPanel({ store, archived }: { store: MemoryStore; archived: boolean }) {
+function SettingsPanel({
+  store,
+  archived,
+  onUpdated,
+}: {
+  store: MemoryStore;
+  archived: boolean;
+  onUpdated: () => void;
+}) {
+  const { api } = useApi();
+  const { t } = useI18n();
+  const [name, setName] = useState(store.name);
+  const [description, setDescription] = useState(store.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Keep local drafts in sync when the TQ cache refreshes the store.
+  useEffect(() => {
+    setName(store.name);
+    setDescription(store.description ?? "");
+  }, [store.id, store.name, store.description]);
+
+  const dirty =
+    name.trim() !== store.name ||
+    (description.trim() || "") !== (store.description ?? "");
+
+  const save = async () => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setError(t.common.nameRequired);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/v1/memory_stores/${store.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: trimmedName,
+          description: description.trim() || null,
+        }),
+      });
+      onUpdated();
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputCls =
+    "w-full border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
+
   return (
-    <div className="space-y-4 text-sm">
+    <div className="space-y-4 text-sm max-w-xl">
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
       <div>
-        <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">Store ID</div>
+        <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">{t.common.id}</div>
         <code className="font-mono text-xs">{store.id}</code>
       </div>
+
       <div>
-        <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">Mount path</div>
-        <code className="font-mono text-xs">/mnt/memory/{store.name}/</code>
+        <label htmlFor="memory-store-name" className="text-fg-muted text-xs uppercase tracking-wider mb-1 block">
+          {t.common.name}
+        </label>
+        <input
+          id="memory-store-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={archived || saving}
+          className={inputCls}
+        />
         <p className="text-fg-subtle text-xs mt-1">
-          When this store is attached to a session, the agent reads/writes under this path with standard file tools.
+          {t.memory.mountPathHint}{" "}
+          <code className="font-mono">/mnt/memory/{name.trim() || store.name}/</code>
         </p>
       </div>
+
       <div>
-        <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">Created</div>
+        <label htmlFor="memory-store-desc" className="text-fg-muted text-xs uppercase tracking-wider mb-1 block">
+          {t.common.description}
+        </label>
+        <textarea
+          id="memory-store-desc"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          disabled={archived || saving}
+          rows={3}
+          className={`${inputCls} resize-y`}
+        />
+      </div>
+
+      <div>
+        <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">{t.common.created}</div>
         <span>{new Date(store.created_at).toLocaleString()}</span>
       </div>
       {archived && (
         <div>
-          <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">Archived</div>
+          <div className="text-fg-muted text-xs uppercase tracking-wider mb-1">{t.common.archived}</div>
           <span>{new Date(store.archived_at!).toLocaleString()}</span>
-          <p className="text-fg-subtle text-xs mt-1">Archived stores are read-only and cannot be attached to new sessions.</p>
         </div>
       )}
+
+      {!archived && (
+        <div className="flex items-center gap-2 pt-2">
+          <Button onClick={save} disabled={saving || !dirty || !name.trim()}>
+            {saving ? t.common.saving : t.common.saveChanges}
+          </Button>
+          {dirty && (
+            <button
+              onClick={() => {
+                setName(store.name);
+                setDescription(store.description ?? "");
+                setError(null);
+              }}
+              disabled={saving}
+              className="text-xs text-fg-muted hover:text-fg"
+            >
+              {t.common.reset}
+            </button>
+          )}
+        </div>
+      )}
+
       <p className="text-fg-subtle text-xs pt-4 border-t border-border">
-        To archive or delete this store, use the actions in the page header.
+        {t.memory.settingsArchiveHint}
       </p>
     </div>
   );

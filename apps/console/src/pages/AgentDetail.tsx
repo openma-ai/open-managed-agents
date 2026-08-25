@@ -1,12 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router";
 import { useApi } from "../lib/api";
-import { useApiQuery } from "../lib/useApiQuery";
+import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
 import { FeishuIcon, GitHubIcon, LinearIcon, SlackIcon } from "../components/icons";
 import { Page } from "../components/Page";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
+import type { ModelCard } from "@open-managed-agents/api-types";
 import type { AgentRecord as Agent } from "../types/agent";
+import { AgentFormDialog } from "./agents/AgentFormDialog";
+import { useI18n } from "../i18n";
 
 /** Shared publication shape across Linear / GitHub / Slack — they all
  *  expose the same id / status / mode / persona / workspace_name fields. */
@@ -18,10 +21,37 @@ interface Pub {
   workspace_name: string | null;
 }
 
+type Runtime = {
+  id: string;
+  hostname: string;
+  status: string;
+  agents: Array<{ id: string }>;
+  local_skills?: Record<
+    string,
+    Array<{
+      id: string;
+      name?: string;
+      description?: string;
+      source?: string;
+      source_label?: string;
+    }>
+  >;
+};
+
 export function AgentDetail() {
   const { id } = useParams();
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+
+  const [showEdit, setShowEdit] = useState(false);
+  const [allAgents, setAllAgents] = useState<Agent[]>([]);
+  const [customSkills, setCustomSkills] = useState<
+    Array<{ id: string; name: string; description: string }>
+  >([]);
+  const [modelCards, setModelCards] = useState<ModelCard[]>([]);
+  const [runtimes, setRuntimes] = useState<Runtime[]>([]);
 
   // Single-resource fetches via TQ. `enabled: !!id` defers until the route
   // param is available; the publication queries inherit the same gate.
@@ -63,6 +93,38 @@ export function AgentDetail() {
     { enabled },
   );
 
+  // Aux data for the edit dialog pickers — same sources as AgentsList.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
+        if (!cancelled) setAllAgents(all.data ?? []);
+      } catch (e) {
+        console.warn("[AgentDetail] /v1/agents aux fetch failed", e);
+      }
+      await Promise.allSettled([
+        (async () => {
+          const sk = await api<{
+            data: Array<{ id: string; name: string; description: string }>;
+          }>("/v1/skills");
+          if (!cancelled) setCustomSkills(sk.data ?? []);
+        })().catch((e) => console.warn("[AgentDetail] /v1/skills aux fetch failed", e)),
+        (async () => {
+          const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
+          if (!cancelled) setModelCards(mc.data ?? []);
+        })().catch((e) => console.warn("[AgentDetail] /v1/model_cards aux fetch failed", e)),
+        (async () => {
+          const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
+          if (!cancelled) setRuntimes(rt.runtimes ?? []);
+        })().catch((e) => console.warn("[AgentDetail] /v1/runtimes aux fetch failed", e)),
+      ]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
   const versions = versionsRes?.data ?? [];
   // Filter to live publications only — same predicate the old useEffect ran.
   const linearPubs = useMemo(
@@ -86,6 +148,13 @@ export function AgentDetail() {
 
   const modelStr = (m: Agent["model"]) => typeof m === "string" ? m : `${m?.id} (${m?.speed || "standard"})`;
 
+  const refreshAgent = () => {
+    if (!id) return;
+    void queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}`] });
+    void queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}/versions`] });
+    void queryClient.invalidateQueries({ queryKey: ["/v1/agents"] });
+  };
+
   const archive = async () => {
     if (!confirm("Archive this agent?")) return;
     await api(`/v1/agents/${id}/archive`, { method: "POST", body: "{}" });
@@ -101,6 +170,8 @@ export function AgentDetail() {
   if (error) return <div className="p-10 text-danger">Error: {error}</div>;
   if (!agent) return <div className="p-10 text-fg-subtle">Loading...</div>;
 
+  const archived = !!agent.archived_at;
+
   return (
     <Page
       header={
@@ -108,11 +179,16 @@ export function AgentDetail() {
           title={agent.name}
           actions={
             <>
-              <Button variant="outline" size="sm" onClick={archive}>
-                Archive
+              {!archived && (
+                <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}>
+                  {t.common.edit}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={archive} disabled={archived}>
+                {t.common.archive}
               </Button>
               <Button variant="destructive" size="sm" onClick={del}>
-                Delete
+                {t.common.delete}
               </Button>
             </>
           }
@@ -218,6 +294,20 @@ export function AgentDetail() {
         </div>
       )}
       </div>
+
+      <AgentFormDialog
+        open={showEdit}
+        onClose={() => setShowEdit(false)}
+        agent={agent}
+        onUpdated={() => {
+          setShowEdit(false);
+          refreshAgent();
+        }}
+        allAgents={allAgents}
+        customSkills={customSkills}
+        modelCards={modelCards}
+        runtimes={runtimes}
+      />
     </Page>
   );
 }

@@ -5,6 +5,13 @@ export const zhCN: Messages = {
     loading: "加载中…",
     cancel: "取消",
     create: "创建",
+    edit: "编辑",
+    save: "保存",
+    saveChanges: "保存更改",
+    saving: "保存中…",
+    creating: "创建中…",
+    rename: "重命名",
+    reset: "重置",
     delete: "删除",
     archive: "归档",
     unarchive: "取消归档",
@@ -12,6 +19,7 @@ export const zhCN: Messages = {
     search: "搜索…",
     status: "状态",
     name: "名称",
+    description: "描述",
     created: "创建时间",
     id: "ID",
     model: "模型",
@@ -28,6 +36,7 @@ export const zhCN: Messages = {
     loadingMore: "加载更多…",
     columns: "列",
     visibleColumns: "可见列",
+    nameRequired: "名称为必填项",
   },
 
   nav: {
@@ -136,6 +145,11 @@ export const zhCN: Messages = {
 
   agents: {
     newAgent: "+ 新建智能体",
+    editAgent: "编辑",
+    newAgentTitle: "新建智能体",
+    editAgentTitle: "编辑智能体",
+    createAgent: "创建智能体",
+    editingVersion: "正在编辑 v{version}",
     searchAgents: "搜索智能体…",
     noMatchingAgents: "没有匹配的智能体",
     noAgentsYet: "还没有智能体",
@@ -152,6 +166,9 @@ export const zhCN: Messages = {
     searchSessions: "搜索会话…",
     noMatchingSessions: "没有匹配的会话",
     noSessionsYet: "还没有会话",
+    editTitle: "编辑标题",
+    untitledSession: "未命名会话",
+    sessionTitle: "会话标题",
   },
 
   vaults: {
@@ -159,6 +176,13 @@ export const zhCN: Messages = {
     searchVaults: "搜索保险库…",
     noMatchingVaults: "没有匹配的保险库",
     noVaultsYet: "还没有保险库",
+    renameVault: "重命名保险库",
+    editCredential: "编辑凭证",
+    displayName: "显示名称",
+    newToken: "新令牌",
+    newTokenOptional: "新令牌（可选）",
+    leaveBlankKeepToken: "留空则保留当前令牌",
+    oauthEditHint: "OAuth 凭证仅可重命名；如需刷新令牌，请通过「添加」重新连接。",
   },
 
   environments: {
@@ -209,6 +233,8 @@ export const zhCN: Messages = {
     searchMemoryStores: "搜索记忆存储…",
     noMatchingMemoryStores: "没有匹配的记忆存储",
     noMemoryStoresYet: "还没有记忆存储",
+    mountPathHint: "挂载路径将变为",
+    settingsArchiveHint: "如需归档或删除此存储，请使用页面顶部的操作按钮。",
   },
 
   runtimes: {
