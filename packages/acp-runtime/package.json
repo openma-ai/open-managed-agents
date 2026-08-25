@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "typescript": "^5.8.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.3"
   }
 }

@@ -78,7 +78,7 @@
     "msw": "^2.14.5",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.8.0",
+    "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.3"
   }
