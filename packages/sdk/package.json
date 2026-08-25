@@ -21,6 +21,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -47,6 +48,6 @@
     "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }

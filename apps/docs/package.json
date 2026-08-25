@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
+    "typecheck": "astro check",
     "preview": "astro preview",
     "deploy": "astro build && wrangler deploy",
     "deploy:staging": "astro build && wrangler deploy --env staging"
@@ -19,6 +20,8 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "wrangler": "^4.125.0"
   }
 }
