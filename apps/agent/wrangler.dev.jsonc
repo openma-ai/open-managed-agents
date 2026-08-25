@@ -8,7 +8,7 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "../../node_modules/@cloudflare/sandbox/Dockerfile",
+      "image": "./node_modules/@cloudflare/sandbox/Dockerfile",
       "instance_type": "lite",
       "max_instances": 5
     }
