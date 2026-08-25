@@ -32,6 +32,11 @@ import { WorkerHttpClient } from "./http";
 import { CryptoIdGenerator } from "./ids";
 import { WebCryptoJwtSigner } from "./jwt";
 import {
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
+  SqlFeishuSessionScopeRepo,
+  SqlFeishuSetupLinkRepo,
+  SqlFeishuWebhookEventStore,
   SqlGitHubAppRepo,
   SqlGitHubInstallationRepo,
   SqlGitHubIssueSessionRepo,
@@ -90,6 +95,14 @@ export function buildNodeRepos(env: NodeReposEnv) {
   const setupLinks = new SqlLinearSetupLinkRepo(env.db, ids);
   const dispatchRules = new SqlLinearDispatchRuleRepo(env.db, ids);
   const sessionScopes = new SqlSlackSessionScopeRepo(env.db);
+  // Feishu-specific repos (parallel to Slack) — encrypted app_secret +
+  // encrypt_key + verification_token stored on the publication row,
+  // tenant_access_token cached with 2h TTL.
+  const feishuInstallations = new SqlFeishuInstallationRepo(env.db, cryptoImpl, ids);
+  const feishuPublications = new SqlFeishuPublicationRepo(env.db, ids, cryptoImpl);
+  const feishuWebhookEvents = new SqlFeishuWebhookEventStore(env.db);
+  const feishuSessionScopes = new SqlFeishuSessionScopeRepo(env.db);
+  const feishuSetupLinks = new SqlFeishuSetupLinkRepo(env.db, ids);
 
   return {
     clock,
@@ -112,6 +125,11 @@ export function buildNodeRepos(env: NodeReposEnv) {
     sessionScopes,
     setupLinks,
     dispatchRules,
+    feishuInstallations,
+    feishuPublications,
+    feishuWebhookEvents,
+    feishuSessionScopes,
+    feishuSetupLinks,
   };
 }
 

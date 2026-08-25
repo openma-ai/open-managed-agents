@@ -15,6 +15,20 @@
       "when": 1785159584989,
       "tag": "0001_drop_integration_publication_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786511506292,
+      "tag": "0002_glossy_patriot",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786626001758,
+      "tag": "0003_feishu_publication_first",
+      "breakpoints": true
     }
   ]
 }

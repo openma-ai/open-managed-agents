@@ -5,6 +5,13 @@ export const en: Messages = {
     loading: "Loading…",
     cancel: "Cancel",
     create: "Create",
+    edit: "Edit",
+    save: "Save",
+    saveChanges: "Save changes",
+    saving: "Saving…",
+    creating: "Creating…",
+    rename: "Rename",
+    reset: "Reset",
     delete: "Delete",
     archive: "Archive",
     unarchive: "Unarchive",
@@ -12,6 +19,7 @@ export const en: Messages = {
     search: "Search…",
     status: "Status",
     name: "Name",
+    description: "Description",
     created: "Created",
     id: "ID",
     model: "Model",
@@ -28,6 +36,7 @@ export const en: Messages = {
     loadingMore: "Loading more…",
     columns: "Columns",
     visibleColumns: "Visible columns",
+    nameRequired: "Name is required",
   },
 
   nav: {
@@ -137,6 +146,11 @@ export const en: Messages = {
 
   agents: {
     newAgent: "+ New agent",
+    editAgent: "Edit",
+    newAgentTitle: "New Agent",
+    editAgentTitle: "Edit Agent",
+    createAgent: "Create Agent",
+    editingVersion: "Editing v{version}",
     searchAgents: "Search agents…",
     noMatchingAgents: "No matching agents",
     noAgentsYet: "No agents yet",
@@ -153,6 +167,9 @@ export const en: Messages = {
     searchSessions: "Search sessions…",
     noMatchingSessions: "No matching sessions",
     noSessionsYet: "No sessions yet",
+    editTitle: "Edit title",
+    untitledSession: "Untitled session",
+    sessionTitle: "Session title",
   },
 
   vaults: {
@@ -160,6 +177,14 @@ export const en: Messages = {
     searchVaults: "Search vaults…",
     noMatchingVaults: "No matching vaults",
     noVaultsYet: "No vaults yet",
+    renameVault: "Rename vault",
+    editCredential: "Edit credential",
+    displayName: "Display name",
+    newToken: "New token",
+    newTokenOptional: "New token (optional)",
+    leaveBlankKeepToken: "Leave blank to keep current token",
+    oauthEditHint:
+      "OAuth credentials keep their tokens; rename only. Re-connect via Add to refresh OAuth.",
   },
 
   environments: {
@@ -210,6 +235,9 @@ export const en: Messages = {
     searchMemoryStores: "Search memory stores…",
     noMatchingMemoryStores: "No matching memory stores",
     noMemoryStoresYet: "No memory stores yet",
+    mountPathHint: "Mount path becomes",
+    settingsArchiveHint:
+      "To archive or delete this store, use the actions in the page header.",
   },
 
   runtimes: {

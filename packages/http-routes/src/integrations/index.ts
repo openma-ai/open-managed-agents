@@ -51,6 +51,7 @@ export interface IntegrationsBags {
   linear: IntegrationsRepoBag | null;
   github: IntegrationsRepoBag | null;
   slack: IntegrationsRepoBag | null;
+  feishu: IntegrationsRepoBag | null;
 }
 
 /**
@@ -109,7 +110,7 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
     );
   });
 
-  function bagOr503(c: import("hono").Context, provider: "linear" | "github" | "slack") {
+  function bagOr503(c: import("hono").Context, provider: "linear" | "github" | "slack" | "feishu") {
     const bags = deps.bags(c);
     const bag = bags[provider];
     if (!bag) {
@@ -124,7 +125,7 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
     return { bag, err: null };
   }
 
-  function buildProviderRoutes(provider: "linear" | "github" | "slack") {
+  function buildProviderRoutes(provider: "linear" | "github" | "slack" | "feishu") {
     const sub = new Hono<Vars>();
 
     sub.get("/installations", async (c) => {
@@ -498,6 +499,7 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
   app.route("/linear", buildProviderRoutes("linear"));
   app.route("/github", buildProviderRoutes("github"));
   app.route("/slack", buildProviderRoutes("slack"));
+  app.route("/feishu", buildProviderRoutes("feishu"));
 
   return app;
 }
