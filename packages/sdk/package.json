@@ -21,6 +21,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
