@@ -58,7 +58,7 @@ export class LocalFsBlobStore implements BlobStore {
     try {
       const path = this.pathFor(key);
       const buf = await fs.readFile(path);
-      const text = buf.toString("utf8");
+      const text = buf.toString();
       return {
         text,
         etag: sha256Hex(buf),

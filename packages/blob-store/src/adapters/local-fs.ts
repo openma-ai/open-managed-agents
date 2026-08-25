@@ -60,7 +60,7 @@ export class LocalFsBlobStore implements BlobStore {
         httpMetadata: meta?.httpMetadata,
         customMetadata: meta?.customMetadata,
         body: streamFromBytes(bytes),
-        text: async () => buf.toString("utf8"),
+        text: async () => buf.toString(),
         arrayBuffer: async () =>
           bytes.buffer.slice(
             bytes.byteOffset,
