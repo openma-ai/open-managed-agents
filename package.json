@@ -73,8 +73,8 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.95.1",
-    "@changesets/changelog-git": "^0.2.1",
-    "@changesets/cli": "^2.31.0",
+    "@changesets/changelog-git": "^1.0.0",
+    "@changesets/cli": "^3.0.1",
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@cloudflare/workers-types": "^5.20260801.1",
     "@playwright/test": "^1.59.1",
