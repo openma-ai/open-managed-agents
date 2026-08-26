@@ -8,7 +8,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "deploy": "astro build && wrangler deploy",
-    "typecheck": "astro check"
+    "typecheck": "astro check",
+    "test": "astro build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",
