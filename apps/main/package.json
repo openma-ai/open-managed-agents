@@ -6,7 +6,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",
-    "@cloudflare/sandbox": "^0.12.4",
+    "@cloudflare/sandbox": "^0.12.7",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/agents-store": "workspace:*",
     "@open-managed-agents/blob-store": "workspace:*",

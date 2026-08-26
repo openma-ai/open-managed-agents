@@ -24,6 +24,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { BlobStore } from "@open-managed-agents/blob-store";
 import type {
@@ -70,7 +71,7 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
   }): Promise<OrchestratorBackupHandle | null> {
     const tarBytes = await this.tarWorkspace(input.sandbox);
     if (!tarBytes) return null;
-    const id = `wsb_${randomBytes(8).toString("hex")}`;
+    const id = `wsb_${Buffer.from(randomBytes(8)).toString("hex")}`;
     const blobKey = `workspace-backups/${input.tenantId}/${input.sessionId}/${id}.tar`;
     await this.deps.blobs.put(blobKey, tarBytes, {
       httpMetadata: { contentType: "application/x-tar" },
@@ -155,7 +156,7 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
   /** tar the sandbox's /workspace into bytes. Best-effort: returns null on
    *  any failure (caller treats as "no backup", proceeds). */
   private async tarWorkspace(sandbox: SandboxExecutor): Promise<Uint8Array | null> {
-    const tmpInside = `/tmp/oma-ws-${randomBytes(6).toString("hex")}.tar`;
+    const tmpInside = `/tmp/oma-ws-${Buffer.from(randomBytes(6)).toString("hex")}.tar`;
     const out = await sandbox.exec(
       `cd /workspace 2>/dev/null && tar -cf '${tmpInside}' --exclude='./node_modules' --exclude='./.cache' --exclude='./__pycache__' --exclude='./.next' . 2>&1 || echo '[exit 1]'`,
       120_000,
@@ -186,9 +187,9 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
     if (!sandbox.writeFileBytes) {
       return { ok: false, error: "sandbox missing writeFileBytes" };
     }
-    const tmpHost = join(tmpdir(), `oma-ws-restore-${randomBytes(6).toString("hex")}.tar`);
+    const tmpHost = join(tmpdir(), `oma-ws-restore-${Buffer.from(randomBytes(6)).toString("hex")}.tar`);
     await fs.writeFile(tmpHost, tarBytes);
-    const tmpInside = `/tmp/oma-ws-restore-${randomBytes(6).toString("hex")}.tar`;
+    const tmpInside = `/tmp/oma-ws-restore-${Buffer.from(randomBytes(6)).toString("hex")}.tar`;
     try {
       await sandbox.writeFileBytes(tmpInside, tarBytes);
       const out = await sandbox.exec(

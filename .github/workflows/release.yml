@@ -50,7 +50,7 @@ jobs:
       contents: write       # push bump commits to changeset-release/main branch
       pull-requests: write  # open / update the Version Packages PR
     outputs:
-      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
+      hasChangesets: ${{ steps.changesets.outputs['has-changesets'] }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -59,7 +59,7 @@ jobs:
 
       - name: Setup pnpm
         # No version pin — reads `packageManager` from root package.json.
-        uses: pnpm/action-setup@v6.0.9
+        uses: pnpm/action-setup@v6.0.10
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -78,16 +78,15 @@ jobs:
         run: pnpm test
 
       - name: Create / update Version Packages PR
-        # No `publish` input → action only opens the Version PR. Publishing
+        # No `publish-script` input → action only opens the Version PR. Publishing
         # is in the next job, gated on environment approval.
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: pnpm changeset version
-          commit: "chore: version packages"
-          title: "chore: version packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version-script: pnpm changeset version
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   publish:
     needs: version-pr
@@ -109,7 +108,7 @@ jobs:
 
       - name: Setup pnpm
         # No version pin — reads `packageManager` from root package.json.
-        uses: pnpm/action-setup@v6.0.9
+        uses: pnpm/action-setup@v6.0.10
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -126,13 +125,13 @@ jobs:
       - name: Publish to npm
         # `changesets/action` again, but this time only the publish path
         # — no version step. It detects nothing to bump and runs the
-        # publish script directly. createGithubReleases mirrors the
+        # publish script directly. create-github-releases mirrors the
         # CHANGELOG entries to GitHub Releases.
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          publish: pnpm release
-          createGithubReleases: true
+          publish-script: pnpm release
+          create-github-releases: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Clear setup-node's placeholder so npm publish falls back to OIDC.
           NODE_AUTH_TOKEN: ''
