@@ -9,12 +9,17 @@
     "./registry": "./src/registry.ts",
     "./known-agents": "./src/known-agents.ts"
   },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.20.0",
+    "@openma/common": "github:openma-ai/openma-common#v0.4.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.8.0"
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.3"
   }
 }

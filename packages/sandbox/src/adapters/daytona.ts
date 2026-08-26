@@ -32,6 +32,7 @@
 import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "../ports";
 import { readS3MemoryBucket } from "../ports";
 import { promises as fs } from "node:fs";
+import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
 
 const moduleLogger = getLogger("daytona-sandbox");
@@ -189,7 +190,7 @@ export class DaytonaSandbox implements SandboxExecutor {
   async readFile(path: string): Promise<string> {
     const sb = await this.ensureSandbox();
     const buf = await sb.fs.downloadFile(this.normalise(path));
-    return buf.toString("utf8");
+    return buf.toString();
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {

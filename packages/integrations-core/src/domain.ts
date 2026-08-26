@@ -3,7 +3,7 @@
 // These are the shapes passed across package boundaries. Concrete adapters
 // (D1, GraphQL clients) translate to and from these types.
 
-export type ProviderId = "linear" | "github" | "slack";
+export type ProviderId = "linear" | "github" | "slack" | "feishu";
 
 /** External workspace id (Linear workspace, Slack team, etc.). */
 export type WorkspaceId = string;
@@ -75,7 +75,20 @@ export type CapabilityKey =
   | "reaction.add"
   | "reaction.remove"
   | "user.read"
-  | "canvas.write";
+  | "canvas.write"
+  // Feishu-specific
+  | "im.message.read"
+  | "im.message.send"
+  | "im.message.update"
+  | "im.message.delete"
+  | "im.chat.read"
+  | "im.chat.members"
+  | "im.chat.create"
+  | "im.reaction.add"
+  | "im.reaction.remove"
+  | "contact.user.read"
+  | "bitable.read"
+  | "bitable.write";
 
 export type CapabilitySet = ReadonlySet<CapabilityKey>;
 
@@ -229,7 +242,13 @@ export type SessionScopeStatus =
    *  but we keep the row so audits can spot repeated failures. */
   | "failed";
 
-export type SessionGranularity = "per_issue" | "per_thread" | "per_event" | "per_channel";
+export type SessionGranularity =
+  | "per_issue"
+  | "per_thread"
+  | "per_event"
+  | "per_channel"
+  | "per_chat"
+  | "per_chat_user";
 
 export interface Installation {
   id: string;

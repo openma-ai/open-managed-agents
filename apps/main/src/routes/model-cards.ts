@@ -6,6 +6,7 @@ import {
   type ModelCardRow,
 } from "@open-managed-agents/model-cards-store";
 import type { Services } from "@open-managed-agents/services";
+import { modelCardProbeUrl } from "@open-managed-agents/http-routes";
 import { jsonPage, parsePageQuery } from "../lib/list-page";
 
 const app = new Hono<{
@@ -63,9 +64,7 @@ async function probeModelCard(opts: {
   const isOai = /^(oai|openai|oai-compatible)$/.test(provider);
   if (!isAnt && !isOai) return { ok: null, reason: "unsupported_provider" };
 
-  const url = isAnt
-    ? `${opts.baseUrl ?? "https://api.anthropic.com"}/v1/messages`
-    : `${opts.baseUrl ?? "https://api.openai.com"}/v1/chat/completions`;
+  const url = modelCardProbeUrl(opts.provider, opts.baseUrl);
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(opts.customHeaders ?? {}),

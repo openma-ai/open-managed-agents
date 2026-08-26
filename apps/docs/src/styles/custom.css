@@ -1,22 +1,25 @@
-/* openma docs theme — derived from .impeccable.md.
-   Accent matches the canonical brand coral (#FF6B50); in light mode the
+@import '@fontsource-variable/geist';
+@import '@openma/common/brand/tokens.css';
+
+/* openma docs theme.
+   Accent is sourced from the shared OpenMA token package; in light mode the
    accent darkens to #e0512f (spec's --brand-hover family) so inline body
    links pass WCAG AA-normal contrast (4.5:1) on a white surface. The
    logo, hero, and dark-mode accents stay coral.
 
-   Brand fonts (DM Sans, Source Serif 4, JetBrains Mono) are loaded via
+   Brand fonts (Geist, Source Serif 4, JetBrains Mono) are loaded via
    Starlight's head[] config in astro.config.mjs — non-blocking via
    print-onload, with a <noscript> fallback. Removed from this file so
    the @import waterfall doesn't gate FCP. */
 
 :root {
-  /* Starlight body + mono fonts — overridden so docs uses DM Sans / JBM. */
-  --sl-font: 'DM Sans', -apple-system, 'Segoe UI', sans-serif;
+  /* Starlight body + mono fonts — aligned with Console and Web. */
+  --sl-font: 'Geist Variable', -apple-system, 'Segoe UI', sans-serif;
   --sl-font-system-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
 
   /* Dark-theme defaults. */
   --sl-color-accent-low: #4a1a10;
-  --sl-color-accent: #ff6b50;
+  --sl-color-accent: var(--brand);
   --sl-color-accent-high: #ffd9d0;
 }
 
@@ -27,6 +30,11 @@
   --sl-color-accent-low: #ffd9d0;
   --sl-color-accent: #e0512f;
   --sl-color-accent-high: #5a1a0a;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 /* Headings use Source Serif 4 — matches the console's font-display token.

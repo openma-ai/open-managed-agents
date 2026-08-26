@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { startTransition, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link } from "react-router";
 import { useApi } from "../lib/api";
 import { toast } from "sonner";
@@ -16,6 +16,11 @@ import {
 } from "./session-detail/Trajectory";
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
+import {
+  projectCanonicalChatTurns,
+  type WireSessionEvent,
+} from "@openma/common/session-events/managed";
+import { CanonicalSessionTurn } from "../components/session/CanonicalSessionTurn";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
 // ai-elements primitives — used to render the chat surface (messages,
@@ -49,6 +54,7 @@ import {
   usePromptInputAttachments,
 } from "../components/ai-elements/prompt-input";
 import { CodeBlock } from "../components/ai-elements/code-block";
+import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
 
@@ -68,6 +74,7 @@ interface PendingEntry {
 export function SessionDetail() {
   const { id } = useParams();
   const { api, streamEvents } = useApi();
+  const { t } = useI18n();
   const [events, setEvents] = useState<Event[]>([]);
   /** In-flight assistant streams keyed by message_id. Each entry holds
    *  the deltas accumulated so far. Wiped on the matching agent.message
@@ -96,13 +103,17 @@ export function SessionDetail() {
   const [localPending, setLocalPending] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
   const [sessionMeta, setSessionMeta] = useState<{
+    title?: string | null;
     environmentId?: string;
     vaultIds?: string[];
-    vaults?: Array<{ id: string; display_name?: string }>;
+    vaults?: Array<{ id: string; name?: string }>;
     createdAt?: string;
     agentSnapshot?: { id?: string; name?: string; model?: string | { id: string }; description?: string; version?: number };
     envSnapshot?: { id?: string; name?: string; description?: string };
   }>({});
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
   const [resourcePanel, setResourcePanel] = useState<
     | { kind: "agent"; id: string }
     | { kind: "environment"; id: string }
@@ -460,6 +471,9 @@ export function SessionDetail() {
     setToolInputStreams(new Map());
     setAgentId("");
     setSessionMeta({});
+    setEditingTitle(false);
+    setTitleDraft("");
+    setSavingTitle(false);
     setStatus("idle");
     setTrajectory(undefined);
     setThreads([]);
@@ -469,6 +483,7 @@ export function SessionDetail() {
 
     // Load session info
     api<{
+      title?: string | null;
       environment_id?: string;
       vault_ids?: string[];
       created_at?: string;
@@ -478,11 +493,13 @@ export function SessionDetail() {
       .then((s) => {
         setAgentId(s.agent?.id || "");
         setSessionMeta({
+          title: s.title ?? null,
           environmentId: s.environment_id,
           vaultIds: s.vault_ids,
           createdAt: s.created_at,
           agentSnapshot: s.agent,
         });
+        setTitleDraft(s.title ?? "");
 
         // Live-resolve env + vault names by id. Per the id-only ref decision
         // (memory: session-resource-refs), the session API does not pre-bake
@@ -497,8 +514,8 @@ export function SessionDetail() {
         if (s.vault_ids?.length) {
           Promise.all(
             s.vault_ids.map((vid) =>
-              api<{ id: string; display_name?: string }>(`/v1/vaults/${vid}`)
-                .then((v) => ({ id: v.id, display_name: v.display_name }))
+              api<{ id: string; name?: string }>(`/v1/vaults/${vid}`)
+                .then((v) => ({ id: v.id, name: v.name }))
                 .catch(() => ({ id: vid })),
             ),
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
@@ -729,6 +746,21 @@ export function SessionDetail() {
   // mode where a DO eviction killed an in-flight stream and no clean
   // status_idle was ever broadcast.
   const [interrupting, setInterrupting] = useState(false);
+  const canonicalTurns = useMemo(
+    () => projectCanonicalChatTurns(events as WireSessionEvent[], { threadId: activeThreadId }),
+    [activeThreadId, events],
+  );
+  /** Stable filtered list for Timeline — avoid reallocating on every
+   *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
+   *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
+  const timelineEvents = useMemo(
+    () =>
+      events.filter((e) => {
+        const tid = (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
+        return tid === activeThreadId;
+      }),
+    [events, activeThreadId],
+  );
   const interrupt = async () => {
     if (!id) return;
     setInterrupting(true);
@@ -748,6 +780,26 @@ export function SessionDetail() {
     setInterrupting(false);
   };
 
+  const saveTitle = async () => {
+    if (!id) return;
+    setSavingTitle(true);
+    try {
+      const updated = await api<{ title?: string | null }>(`/v1/sessions/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ title: titleDraft.trim() }),
+      });
+      setSessionMeta((prev) => ({
+        ...prev,
+        title: updated.title ?? (titleDraft.trim() || null),
+      }));
+      setEditingTitle(false);
+    } catch (e) {
+      console.error("rename session failed", e);
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header — badges row + page-specific action buttons.
@@ -757,6 +809,63 @@ export function SessionDetail() {
           right (`ml-auto`) of the badges row so the page-level chrome
           stays one band tall. */}
       <div className="pl-3 pr-4 py-3 flex flex-col gap-2 shrink-0">
+        {/* Editable session title — optional metadata; empty shows a
+            muted "Untitled" affordance so rename is discoverable. */}
+        <div className="flex items-center gap-2 min-h-8">
+          {editingTitle ? (
+            <>
+              <input
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                className="flex-1 min-w-0 border border-border rounded-md px-2.5 py-1.5 text-sm bg-bg text-fg outline-none focus:border-brand"
+                placeholder={t.sessions.sessionTitle}
+                autoFocus
+                disabled={savingTitle}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveTitle();
+                  if (e.key === "Escape") {
+                    setEditingTitle(false);
+                    setTitleDraft(sessionMeta.title ?? "");
+                  }
+                }}
+              />
+              <button
+                onClick={() => void saveTitle()}
+                disabled={savingTitle}
+                className="inline-flex items-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium bg-brand text-brand-fg disabled:opacity-50"
+              >
+                {savingTitle ? t.common.saving : t.common.save}
+              </button>
+              <button
+                onClick={() => {
+                  setEditingTitle(false);
+                  setTitleDraft(sessionMeta.title ?? "");
+                }}
+                disabled={savingTitle}
+                className="inline-flex items-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs text-fg-muted hover:text-fg"
+              >
+                {t.common.cancel}
+              </button>
+            </>
+          ) : (
+            <>
+              <h2 className="text-sm font-medium text-fg truncate min-w-0">
+                {sessionMeta.title?.trim() || (
+                  <span className="text-fg-subtle font-normal">{t.sessions.untitledSession}</span>
+                )}
+              </h2>
+              <button
+                onClick={() => {
+                  setTitleDraft(sessionMeta.title ?? "");
+                  setEditingTitle(true);
+                }}
+                className="inline-flex items-center px-2 py-0.5 min-h-11 sm:min-h-0 rounded text-xs text-fg-subtle hover:text-fg hover:bg-bg-surface shrink-0"
+              >
+                {t.sessions.editTitle}
+              </button>
+            </>
+          )}
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
           {/* Trajectory outcome chip — only when the trajectory has actually
@@ -790,11 +899,11 @@ export function SessionDetail() {
               }
             />
           )}
-          {(sessionMeta.vaults ?? sessionMeta.vaultIds?.map((id) => ({ id, display_name: undefined })) ?? []).map((v) => (
+          {(sessionMeta.vaults ?? sessionMeta.vaultIds?.map((id) => ({ id, name: undefined })) ?? []).map((v) => (
             <Badge
               key={v.id}
               icon={<VaultIcon />}
-              label={v.display_name || shortenId(v.id)}
+              label={v.name || shortenId(v.id)}
               onClick={() => setResourcePanel({ kind: "vault", id: v.id })}
             />
           ))}
@@ -850,7 +959,11 @@ export function SessionDetail() {
       {/* View tabs */}
       <div role="tablist" aria-label="Session view" className="pl-3 pr-4 flex items-center gap-1 shrink-0">
         <ViewTab label="Conversation" active={view === "chat"} onClick={() => setView("chat")} />
-        <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
+        <ViewTab
+          label="Timeline"
+          active={view === "timeline"}
+          onClick={() => startTransition(() => setView("timeline"))}
+        />
         {view === "timeline" && (
           <span className="ml-auto text-xs text-fg-subtle font-mono">{events.length} events</span>
         )}
@@ -973,121 +1086,9 @@ export function SessionDetail() {
                    nothing else streaming yet */}
           <Conversation className="flex-1 min-h-0">
             <ConversationContent className="pl-3 pr-4 py-6 gap-4">
-              {(() => {
-                // Server-returned events are now in canonical drain order
-                // (events.seq = INSERT order = what the model saw). The
-                // pre-3a3e7ec client-side sort by processed_at_ms is
-                // retired; pending events live in a separate outbox below
-                // and never mix into this seq-ordered timeline.
-                const filtered = events.filter((e) => {
-                  const tid = (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-                  return tid === activeThreadId;
-                });
-                // Pre-pair tool_use ↔ result events. Three flavors per the
-                // wire spec emitted in default-loop.ts:emitToolCallEvent /
-                // emitToolResultEvent:
-                //   • builtin tools  → agent.tool_use         + agent.tool_result        (key: tool_use_id)
-                //   • custom tools   → agent.custom_tool_use  + agent.tool_result        (key: tool_use_id) ← same result type
-                //   • MCP tools      → agent.mcp_tool_use     + agent.mcp_tool_result    (key: mcp_tool_use_id)
-                // The previous pairing only covered builtin → custom tools
-                // (e.g. general_subagent) showed their result as an "unpaired"
-                // orphan block because the use side was custom_tool_use.
-                const resultByToolUseId = new Map<string, typeof filtered[number]>();
-                // session.error → upstream model_request_end error_message
-                // map. session.error's payload from SSE only carries the
-                // generic "No output generated. Check the stream for errors."
-                // — the actionable cause (e.g. "usage limit exceeded (2056)",
-                // "context length", "401 from upstream") is on the preceding
-                // span.model_request_end with is_error=true. Walk forward
-                // remembering the last failed model end and attach it to the
-                // next session.error we hit. Cleared by any model_request_end
-                // with finish_reason!=error (succeeded → previous failure is
-                // no longer the immediate cause). Keyed by stable event id
-                // so EventRender can look it up at render time.
-                const sessionErrorCause = new Map<string, { error: string; model?: string }>();
-                let pendingModelErr: { error: string; model?: string } | null = null;
-                for (const ev of filtered) {
-                  if (ev.type === "agent.tool_result") {
-                    const id = (ev as { tool_use_id?: string }).tool_use_id;
-                    if (id) resultByToolUseId.set(id, ev);
-                  } else if (ev.type === "agent.mcp_tool_result") {
-                    const id = (ev as { mcp_tool_use_id?: string }).mcp_tool_use_id;
-                    if (id) resultByToolUseId.set(id, ev);
-                  } else if (ev.type === "span.model_request_end") {
-                    const d = (ev as { data?: { finish_reason?: string; error_message?: string; model?: string }; finish_reason?: string; error_message?: string; model?: string });
-                    const finish = d.data?.finish_reason ?? d.finish_reason;
-                    const errMsg = d.data?.error_message ?? d.error_message;
-                    const model = d.data?.model ?? d.model;
-                    if (finish === "error" && errMsg) {
-                      pendingModelErr = { error: errMsg, model };
-                    } else if (finish && finish !== "error") {
-                      pendingModelErr = null;
-                    }
-                  } else if (ev.type === "session.error") {
-                    const id = (ev as { id?: string }).id;
-                    if (id && pendingModelErr) {
-                      sessionErrorCause.set(id, pendingModelErr);
-                      pendingModelErr = null;
-                    }
-                  }
-                }
-                const pairedResultIds = new Set<string>();
-                return filtered.map((e, i) => {
-                  // Stable React key — `e.id` (sevt_*) lives on every event
-                  // server-side via the stamp callback in session-do.ts, so
-                  // SSE-arrived rows already have it. Fall back to seq for
-                  // legacy events that pre-date the stamp, and to a synthetic
-                  // marker (type + index) as last resort. Index alone broke
-                  // because new events appended mid-list re-keyed every later
-                  // bubble → React unmount/remount → the entire conversation
-                  // appeared to flicker on every chunk delivery.
-                  const stableKey =
-                    (e as { id?: string }).id
-                    ?? (e as { seq?: number }).seq
-                    ?? `idx-${e.type}-${i}`;
-                  // Tool-result that's been folded into its use card —
-                  // skip standalone render. Both wire shapes: agent.tool_result
-                  // (covers builtin + custom) keys on tool_use_id;
-                  // agent.mcp_tool_result keys on mcp_tool_use_id.
-                  if (e.type === "agent.tool_result") {
-                    const tuid = (e as { tool_use_id?: string }).tool_use_id;
-                    if (tuid && pairedResultIds.has(tuid)) return null;
-                  }
-                  if (e.type === "agent.mcp_tool_result") {
-                    const tuid = (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
-                    if (tuid && pairedResultIds.has(tuid)) return null;
-                  }
-                  // Tool-use of any flavor: pair with its result if present,
-                  // render as one card. All three use-types carry the
-                  // call id on EventBase.id (overrides the inherited field
-                  // per emitToolCallEvent), so the lookup is uniform.
-                  let pairedResult: typeof filtered[number] | undefined;
-                  if (
-                    e.type === "agent.tool_use"
-                    || e.type === "agent.custom_tool_use"
-                    || e.type === "agent.mcp_tool_use"
-                  ) {
-                    const tuid = (e as { id?: string }).id;
-                    if (tuid && resultByToolUseId.has(tuid)) {
-                      pairedResult = resultByToolUseId.get(tuid);
-                      pairedResultIds.add(tuid);
-                    }
-                  }
-                  return (
-                    <EventRender
-                      key={stableKey}
-                      event={e}
-                      livePending={false}
-                      pairedResult={pairedResult}
-                      modelErrorCause={
-                        e.type === "session.error"
-                          ? sessionErrorCause.get((e as { id?: string }).id ?? "")
-                          : undefined
-                      }
-                    />
-                  );
-                });
-              })()}
+              {canonicalTurns.map((turn) => (
+                <CanonicalSessionTurn key={turn.id} turn={turn} />
+              ))}
               {/* Optimistic outbox slot — what the user just typed before
                   the server's system.user_message_pending broadcast lands.
                   Rendered above the server-mirrored outbox so the typed
@@ -1234,12 +1235,7 @@ export function SessionDetail() {
           </div>
         </>
       ) : (
-        <TimelineView
-          events={events.filter((e) => {
-            const tid = (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-            return tid === activeThreadId;
-          })}
-        />
+        <TimelineView key={`${id ?? "session"}:${activeThreadId}`} events={timelineEvents} />
       )}
         </div>
         {resourcePanel && (
@@ -1732,5 +1728,3 @@ function EventRender({
       return null;
   }
 }
-
-

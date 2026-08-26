@@ -338,15 +338,19 @@ function toRow(r: typeof model_cards.$inferSelect): ModelCardRow {
         ? (JSON.parse(r.custom_headers) as Record<string, string>)
         : null,
     api_key_preview: r.api_key_preview,
-    is_default: r.is_default === 1,
+    // postgres.js returns BIGINT columns as strings by default, even though
+    // the cross-dialect Drizzle schema models these flags/timestamps as
+    // numbers. Normalize at the adapter boundary so SQLite and PG expose the
+    // same domain shape.
+    is_default: Number(r.is_default) === 1,
     created_at: msToIso(r.created_at),
     updated_at: r.updated_at !== null ? msToIso(r.updated_at) : null,
     archived_at: r.archived_at !== null ? msToIso(r.archived_at) : null,
   };
 }
 
-function msToIso(ms: number): string {
-  return new Date(ms).toISOString();
+function msToIso(ms: number | string | bigint): string {
+  return new Date(Number(ms)).toISOString();
 }
 
 /**

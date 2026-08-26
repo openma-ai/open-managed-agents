@@ -29,6 +29,7 @@ import {
   SlackIcon,
   VaultIcon,
 } from "./icons";
+import { useI18n } from "../i18n";
 
 interface NavCommand {
   label: string;
@@ -43,23 +44,26 @@ interface NavCommand {
 // self-contained. If the sidebar gains an item, add it here too. (We
 // intentionally don't auto-derive from Layout's navGroups because the
 // palette wants slightly different ordering and aliases.)
-const COMMANDS: NavCommand[] = [
-  { label: "Dashboard",          to: "/",                          group: "Overview",       icon: DashboardIcon },
-  { label: "Agents",             to: "/agents",                    group: "Managed Agents", icon: AgentIcon },
-  { label: "Sessions",           to: "/sessions",                  group: "Managed Agents", icon: SessionsIcon },
-  { label: "Files",              to: "/files",                     group: "Managed Agents", icon: FilesIcon },
-  { label: "Eval Runs",          to: "/evals",                     group: "Managed Agents", icon: SessionsIcon, aliases: "evaluations evals" },
-  { label: "Environments",       to: "/environments",              group: "Infrastructure", icon: EnvIcon, aliases: "envs sandboxes" },
-  { label: "Credential Vaults",  to: "/vaults",                    group: "Infrastructure", icon: VaultIcon, aliases: "secrets credentials" },
-  { label: "Skills",             to: "/skills",                    group: "Configuration",  icon: SkillsIcon },
-  { label: "Memory Stores",      to: "/memory",                    group: "Configuration",  icon: MemoryIcon },
-  { label: "Model Cards",        to: "/model-cards",               group: "Configuration",  icon: ModelCardsIcon },
-  { label: "API Keys",           to: "/api-keys",                  group: "Configuration",  icon: ApiKeysIcon, aliases: "tokens" },
-  { label: "Local Runtimes",     to: "/runtimes",                  group: "Configuration",  icon: RuntimesIcon },
-  { label: "Linear",             to: "/integrations/linear",       group: "Integrations",   icon: LinearIcon },
-  { label: "GitHub",             to: "/integrations/github",       group: "Integrations",   icon: GitHubIcon },
-  { label: "Slack",              to: "/integrations/slack",        group: "Integrations",   icon: SlackIcon },
-];
+function useCommands(): NavCommand[] {
+  const { t } = useI18n();
+  return [
+    { label: t.nav.dashboard,          to: "/",                          group: t.nav.overview,       icon: DashboardIcon },
+    { label: t.nav.agents,             to: "/agents",                    group: t.nav.managedAgents, icon: AgentIcon },
+    { label: t.nav.sessions,           to: "/sessions",                  group: t.nav.managedAgents, icon: SessionsIcon },
+    { label: t.nav.files,              to: "/files",                     group: t.nav.managedAgents, icon: FilesIcon },
+    { label: t.nav.evalRuns,           to: "/evals",                     group: t.nav.managedAgents, icon: SessionsIcon, aliases: "evaluations evals" },
+    { label: t.nav.environments,       to: "/environments",              group: t.nav.infrastructure, icon: EnvIcon, aliases: "envs sandboxes" },
+    { label: t.nav.credentialVaults,   to: "/vaults",                    group: t.nav.infrastructure, icon: VaultIcon, aliases: "secrets credentials" },
+    { label: t.nav.skills,             to: "/skills",                    group: t.nav.configuration,  icon: SkillsIcon },
+    { label: t.nav.memoryStores,       to: "/memory",                    group: t.nav.configuration,  icon: MemoryIcon },
+    { label: t.nav.modelCards,         to: "/model-cards",               group: t.nav.configuration,  icon: ModelCardsIcon },
+    { label: t.nav.apiKeys,            to: "/api-keys",                  group: t.nav.configuration,  icon: ApiKeysIcon, aliases: "tokens" },
+    { label: t.nav.localRuntimes,      to: "/runtimes",                  group: t.nav.configuration,  icon: RuntimesIcon },
+    { label: "Linear",                 to: "/integrations/linear",       group: t.nav.integrations,   icon: LinearIcon },
+    { label: "GitHub",                 to: "/integrations/github",       group: t.nav.integrations,   icon: GitHubIcon },
+    { label: "Slack",                  to: "/integrations/slack",        group: t.nav.integrations,   icon: SlackIcon },
+  ];
+}
 
 /**
  * Global Cmd+K (⌘K / Ctrl+K) command palette. Quick-jump anywhere in the
@@ -74,6 +78,8 @@ const COMMANDS: NavCommand[] = [
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const nav = useNavigate();
+  const { t } = useI18n();
+  const COMMANDS = useCommands();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,12 +110,12 @@ export function CommandPalette() {
     <CommandDialog
       open={open}
       onOpenChange={setOpen}
-      title="Command palette"
-      description="Jump to any page in the console."
+      title={t.command.title}
+      description={t.command.description}
     >
-      <CommandInput placeholder="Jump to…" />
+      <CommandInput placeholder={t.command.jumpTo} />
       <CommandList>
-        <CommandEmpty>No matches.</CommandEmpty>
+        <CommandEmpty>{t.command.noMatches}</CommandEmpty>
         {Object.entries(grouped).map(([group, items]) => (
           <CommandGroup key={group} heading={group}>
             {items.map((cmd) => {

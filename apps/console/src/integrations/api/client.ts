@@ -4,9 +4,12 @@
 // configurable for tests; defaults to the Console's same-origin "".
 //
 // Each integration provider gets a sub-client (api.linear.*, api.slack.*,
-// api.github.*) with the same method shapes. Provider-specific quirks
-// (e.g. signingSecret vs webhookSecret) live in narrow input types.
+// api.github.*, api.feishu.*) with the same method shapes. Provider-specific
+// quirks (e.g. signingSecret vs webhookSecret) live in narrow input types.
+// FeishuClient lives in ./feishu-client.ts so its coverage is isolated.
 
+import { FeishuClient } from "./feishu-client";
+import { request } from "./request";
 import type {
   A1FormStep,
   A1InstallLink,
@@ -34,39 +37,6 @@ import type {
 
 export interface IntegrationsApiOptions {
   basePath?: string;
-}
-
-async function request<T = unknown>(
-  basePath: string,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(`${basePath}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init?.body ? { "content-type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
-  if (!res.ok) {
-    // Server may emit either the legacy `{error: "<str>", details?}` shape
-    // (older endpoints) or the Anthropic-compat envelope `{type:"error",
-    // error:{type, message}, request_id}`. Honor both so thrown errors
-    // carry a real message either way.
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string | { message?: string };
-      details?: string;
-    };
-    let msg: string;
-    if (body.details) msg = body.details;
-    else if (typeof body.error === "string") msg = body.error;
-    else if (body.error && typeof body.error === "object" && body.error.message)
-      msg = body.error.message;
-    else msg = `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  return (await res.json()) as T;
 }
 
 // ─── Linear sub-client ─────────────────────────────────────────────────
@@ -464,6 +434,7 @@ export class IntegrationsApi {
   readonly linear: LinearClient;
   readonly slack: SlackClient;
   readonly github: GitHubClient;
+  readonly feishu: FeishuClient;
 
   constructor(opts: IntegrationsApiOptions = {}) {
     const basePath = opts.basePath ?? "";
@@ -471,6 +442,7 @@ export class IntegrationsApi {
     this.linear = new LinearClient(basePath);
     this.slack = new SlackClient(basePath);
     this.github = new GitHubClient(basePath);
+    this.feishu = new FeishuClient(basePath);
   }
 
   // ─── Linear backward-compat shims ─────────────────────────────────────

@@ -12,16 +12,31 @@ export interface AgentRecord {
   id: string;
   name: string;
   model: string | { id: string; speed?: string };
-  system?: string;
+  system?: string | null;
   version: number;
-  description?: string;
+  description?: string | null;
   tools?: unknown[];
-  skills?: unknown[];
-  mcp_servers?: unknown[];
+  skills?: Array<{ skill_id: string; type: string; version?: string }>;
+  mcp_servers?: Array<{
+    name: string;
+    type: string;
+    url?: string;
+    authorization_token?: string;
+    stdio?: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      port: number;
+      sse_path?: string;
+      ready_timeout_ms?: number;
+    };
+  }>;
   multiagent?: {
     type: "coordinator";
     agents: Array<{ type: "agent"; id: string; version: number }>;
   } | null;
+  enable_general_subagent?: boolean;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at?: string;
   archived_at?: string;
@@ -31,7 +46,11 @@ export interface AgentRecord {
   _oma?: {
     aux_model?: { id: string; speed?: string };
     harness?: string;
-    runtime_binding?: { runtime_id: string; acp_agent_id: string };
+    runtime_binding?: {
+      runtime_id: string;
+      acp_agent_id: string;
+      local_skill_blocklist?: string[];
+    };
     appendable_prompts?: string[];
   };
 }

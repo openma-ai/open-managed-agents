@@ -31,8 +31,10 @@ services:
         required: false
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      ANTHROPIC_CUSTOM_HEADERS: ${ANTHROPIC_CUSTOM_HEADERS:-}
+      # Optional Anthropic-compat proxy settings belong in .env
+      # (ANTHROPIC_BASE_URL / ANTHROPIC_CUSTOM_HEADERS). Do NOT default
+      # them to "" here — @ai-sdk/anthropic validates baseURL on
+      # module init and rejects empty string.
       # Main store: postgres. main-node detects postgres:// scheme on
       # DATABASE_URL and routes every store package through the PG adapter.
       DATABASE_URL: postgres://oma:oma@postgres:5432/oma

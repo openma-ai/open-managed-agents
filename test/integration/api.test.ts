@@ -568,7 +568,15 @@ describe("Session isolation", () => {
     const agentRes = await api("/v1/agents", {
       method: "POST",
       headers: HEADERS,
-      body: JSON.stringify({ name: "Shared", model: "claude-sonnet-4-6", system: "ok" }),
+      body: JSON.stringify({
+        name: "Shared",
+        model: "claude-sonnet-4-6",
+        system: "ok",
+        // This test exercises event-log isolation, not the provider adapter.
+        // Keep it on the in-process harness so posting an event never reaches
+        // the real Anthropic API.
+        harness: "test",
+      }),
     });
     const agent = (await agentRes.json()) as any;
     const envRes = await api("/v1/environments", {

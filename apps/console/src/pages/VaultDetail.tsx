@@ -19,6 +19,7 @@ import { PopoverContent } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { MCP_REGISTRY, type McpRegistryEntry } from "../data/mcp-registry";
+import { useI18n } from "../i18n";
 
 // =================================================================
 // Types
@@ -81,6 +82,7 @@ export function VaultDetail() {
   const { api } = useApi();
   const nav = useNavigate();
   const queryClient = useQueryClient();
+  const { t } = useI18n();
 
   const { data: vault, error: vaultError } = useApiQuery<Vault>(
     id ? `/v1/vaults/${id}` : null,
@@ -105,6 +107,8 @@ export function VaultDetail() {
   }, [credentials, status]);
 
   const [showAddCred, setShowAddCred] = useState(false);
+  const [showRename, setShowRename] = useState(false);
+  const [editingCred, setEditingCred] = useState<Credential | null>(null);
 
   // Refetch credentials after a successful add/delete. Mirrors the old
   // `openVault(selectedVault)` reload from VaultsList, but goes through
@@ -116,6 +120,12 @@ export function VaultDetail() {
       queryKey: [`/v1/vaults/${id}/credentials`],
     });
   }, [id, refetchCreds, queryClient]);
+
+  const reloadVault = useCallback(() => {
+    if (!id) return;
+    void queryClient.invalidateQueries({ queryKey: [`/v1/vaults/${id}`] });
+    void queryClient.invalidateQueries({ queryKey: ["/v1/vaults"] });
+  }, [id, queryClient]);
 
   const archive = async () => {
     if (!id) return;
@@ -209,12 +219,17 @@ export function VaultDetail() {
           actions={
             <>
               {!archived && (
+                <Button variant="outline" size="sm" onClick={() => setShowRename(true)}>
+                  {t.common.rename}
+                </Button>
+              )}
+              {!archived && (
                 <Button variant="outline" size="sm" onClick={archive}>
-                  Archive
+                  {t.common.archive}
                 </Button>
               )}
               <Button variant="destructive" size="sm" onClick={del}>
-                Delete
+                {t.common.delete}
               </Button>
             </>
           }
@@ -326,12 +341,20 @@ export function VaultDetail() {
                         <td className="px-4 py-3 text-fg-muted">
                           {new Date(c.updated_at ?? c.created_at).toLocaleString()}
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          {!c.archived_at && (
+                            <button
+                              onClick={() => setEditingCred(c)}
+                              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                            >
+                              {t.common.edit}
+                            </button>
+                          )}
                           <button
                             onClick={() => deleteCred(c.id)}
                             className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                           >
-                            Delete
+                            {t.common.delete}
                           </button>
                         </td>
                       </tr>
@@ -354,7 +377,227 @@ export function VaultDetail() {
           }}
         />
       )}
+
+      {showRename && (
+        <RenameVaultModal
+          vault={vault}
+          onClose={() => setShowRename(false)}
+          onSaved={() => {
+            setShowRename(false);
+            reloadVault();
+          }}
+        />
+      )}
+
+      {editingCred && (
+        <EditCredentialModal
+          vault={vault}
+          credential={editingCred}
+          onClose={() => setEditingCred(null)}
+          onSaved={() => {
+            setEditingCred(null);
+            reloadCredentials();
+          }}
+        />
+      )}
     </Page>
+  );
+}
+
+// =================================================================
+// Rename vault
+// =================================================================
+
+function RenameVaultModal({
+  vault,
+  onClose,
+  onSaved,
+}: {
+  vault: Vault;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { api } = useApi();
+  const { t } = useI18n();
+  const [name, setName] = useState(vault.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError(t.common.nameRequired);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/v1/vaults/${vault.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: trimmed }),
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to rename vault");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t.vaults.renameVault}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            {t.common.cancel}
+          </Button>
+          <Button onClick={save} disabled={saving || !name.trim()}>
+            {saving ? t.common.saving : t.common.save}
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <div className="mb-3 text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+      <label htmlFor="vault-rename" className="text-sm text-fg-muted block mb-1">
+        {t.common.name}
+      </label>
+      <input
+        id="vault-rename"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        className={inputCls}
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+        }}
+      />
+    </Modal>
+  );
+}
+
+// =================================================================
+// Edit credential — display name + optional secret rotation
+// =================================================================
+
+function EditCredentialModal({
+  vault,
+  credential,
+  onClose,
+  onSaved,
+}: {
+  vault: Vault;
+  credential: Credential;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { api } = useApi();
+  const { t } = useI18n();
+  const [displayName, setDisplayName] = useState(credential.display_name);
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const canRotateToken =
+    credential.auth.type === "static_bearer" || credential.auth.type === "cap_cli";
+
+  const save = async () => {
+    const trimmed = displayName.trim();
+    if (!trimmed) {
+      setError(t.common.nameRequired);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const body: { display_name: string; auth?: Record<string, string> } = {
+        display_name: trimmed,
+      };
+      if (canRotateToken && token.trim()) {
+        body.auth = { token: token.trim() };
+      }
+      await api(`/v1/vaults/${vault.id}/credentials/${credential.id}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update credential");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t.vaults.editCredential}
+      subtitle={
+        credential.auth.type === "mcp_oauth" ? t.vaults.oauthEditHint : undefined
+      }
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            {t.common.cancel}
+          </Button>
+          <Button onClick={save} disabled={saving || !displayName.trim()}>
+            {saving ? t.common.saving : t.common.save}
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <div className="mb-3 text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+      <div className="space-y-3">
+        <div>
+          <label htmlFor="cred-edit-name" className="text-sm text-fg-muted block mb-1">
+            {t.vaults.displayName}
+          </label>
+          <input
+            id="cred-edit-name"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            className={inputCls}
+            autoFocus
+          />
+        </div>
+        <div className="text-xs text-fg-subtle">
+          Type: <span className="font-mono">{credential.auth.type}</span>
+          {(credential.auth.mcp_server_url || credential.auth.cli_id) && (
+            <>
+              {" · "}
+              <span className="font-mono">
+                {credential.auth.mcp_server_url || credential.auth.cli_id}
+              </span>
+            </>
+          )}
+        </div>
+        {canRotateToken && (
+          <div>
+            <label htmlFor="cred-edit-token" className="text-sm text-fg-muted block mb-1">
+              {t.vaults.newTokenOptional}
+            </label>
+            <SecretInput
+              id="cred-edit-token"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              className={inputCls}
+              placeholder={t.vaults.leaveBlankKeepToken}
+            />
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

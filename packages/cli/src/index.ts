@@ -5,6 +5,11 @@ import { join, dirname } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, chmodSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { AgentConfig, ModelCard, SessionMeta } from "@open-managed-agents/api-types";
+import {
+  normalizeSessionEvent,
+  type WireSessionEvent,
+} from "@openma/common/session-events/managed";
+import { DEFAULT_BRIDGE_SERVER_URL } from "./bridge/lib/defaults.js";
 import { currentProfile } from "./bridge/lib/platform.js";
 
 // ─── Config ───
@@ -307,49 +312,49 @@ async function streamChat(config: Config, sessionId: string, text: string): Prom
   let textOpen = false;       // are we mid-message-text on the current line?
   let thinkOpen = false;      // are we mid-thinking on stderr?
   for await (const ev of parseSSE(res)) {
-    const t = ev.type as string;
-    switch (t) {
-      case "agent.message_chunk":
-        process.stdout.write(String(ev.delta ?? ""));
+    const normalized = normalizeSessionEvent(ev as WireSessionEvent);
+    switch (normalized.kind) {
+      case "assistant_delta":
+        process.stdout.write(normalized.text);
         textOpen = true;
         break;
-      case "agent.message_stream_end":
-      case "agent.message":
+      case "assistant_stream_end":
+      case "assistant_message":
         if (textOpen) { process.stdout.write("\n"); textOpen = false; }
         break;
-      case "agent.thinking_chunk":
+      case "thinking_delta":
         if (!thinkOpen) {
           process.stderr.write(dim("💭 "));
           thinkOpen = true;
         }
-        process.stderr.write(dim(String(ev.delta ?? "")));
+        process.stderr.write(dim(normalized.text));
         break;
-      case "agent.thinking_stream_end":
-      case "agent.thinking":
+      case "thinking_stream_end":
+      case "thinking":
         if (thinkOpen) { process.stderr.write("\n"); thinkOpen = false; }
         break;
-      case "agent.tool_use_input_stream_start":
-        process.stdout.write(cyan(`→ tool: ${(ev as { tool_name?: string }).tool_name ?? "?"}`) + dim(" preparing…\n"));
+      case "tool_input_start":
+        process.stdout.write(cyan(`→ tool: ${normalized.name}`) + dim(" preparing…\n"));
         break;
-      case "agent.tool_use":
-      case "agent.mcp_tool_use":
-      case "agent.custom_tool_use":
-        process.stdout.write(cyan(`→ tool: ${ev.name}`) + " " + dim(JSON.stringify(ev.input ?? {})) + "\n");
+      case "tool_use":
+        process.stdout.write(cyan(`→ ${normalized.tool.family} tool: ${normalized.tool.name}`) + " " + dim(JSON.stringify(normalized.tool.input ?? {})) + "\n");
         break;
-      case "agent.tool_result":
-      case "agent.mcp_tool_result": {
-        const out = typeof ev.content === "string" ? ev.content : JSON.stringify(ev.content ?? "");
+      case "tool_result": {
+        const out = typeof normalized.output === "string"
+          ? normalized.output
+          : JSON.stringify(normalized.output ?? "");
         const trimmed = out.length > 280 ? out.slice(0, 280) + "…" : out;
         process.stdout.write(dim("← ") + trimmed + "\n");
         break;
       }
-      case "session.warning":
-        process.stderr.write(yellow(`⚠ ${ev.source}: ${ev.message}`) + "\n");
+      case "notice":
+        process.stderr.write(yellow(
+          normalized.tone === "error"
+            ? `✗ error: ${normalized.message}`
+            : `⚠ ${normalized.source ? `${normalized.source}: ` : ""}${normalized.message}`,
+        ) + "\n");
         break;
-      case "session.error":
-        process.stderr.write(yellow(`✗ error: ${ev.error}`) + "\n");
-        break;
-      case "session.status_idle":
+      case "turn_complete":
         if (textOpen) { process.stdout.write("\n"); textOpen = false; }
         return;
     }
@@ -2281,7 +2286,7 @@ async function main() {
         // would fail at exchange ("invalid code"). Two separate flags are
         // still useful for split dev setups (web on one host, api on
         // another) — keep --browser-origin as an explicit override.
-        const serverUrl = flag(args, "--server-url") ?? "https://openma.dev";
+        const serverUrl = flag(args, "--server-url") ?? DEFAULT_BRIDGE_SERVER_URL;
         const { runSetup } = await import("./bridge/commands/setup.js");
         await runSetup({
           serverUrl,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { ArchiveIcon, TrashIcon } from "lucide-react";
+import { ArchiveIcon, PencilIcon, TrashIcon } from "lucide-react";
 
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
@@ -13,6 +13,7 @@ import { PopoverContent } from "@/components/ui/popover";
 import type { ModelCard } from "@open-managed-agents/api-types";
 import type { AgentRecord as Agent } from "../types/agent";
 import { AgentFormDialog } from "./agents/AgentFormDialog";
+import { useI18n } from "../i18n";
 
 type Runtime = {
   id: string;
@@ -45,6 +46,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function AgentsList() {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
   const [customSkills, setCustomSkills] = useState<
     Array<{ id: string; name: string; description: string }>
@@ -53,6 +55,7 @@ export function AgentsList() {
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [, setAuxLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
   // Server-driven filter state. Each piece flows into agentsParams below
   // → useInfiniteApiQuery resets to page 1 on params change → the list
@@ -98,21 +101,21 @@ export function AgentsList() {
     setAuxLoading(true);
     try {
       const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
-      setAllAgents(all.data);
+      setAllAgents(all.data ?? []);
       await Promise.allSettled([
         (async () => {
           const sk = await api<{
             data: Array<{ id: string; name: string; description: string }>;
           }>("/v1/skills");
-          setCustomSkills(sk.data);
+          setCustomSkills(sk.data ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/skills aux fetch failed", e)),
         (async () => {
           const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
-          setModelCards(mc.data);
+          setModelCards(mc.data ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/model_cards aux fetch failed", e)),
         (async () => {
           const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
-          setRuntimes(rt.runtimes);
+          setRuntimes(rt.runtimes ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/runtimes aux fetch failed", e)),
       ]);
     } finally {
@@ -135,7 +138,7 @@ export function AgentsList() {
       {
         id: "id",
         accessorKey: "id",
-        header: "ID",
+        header: t.common.id,
         cell: ({ row }) => (
           <span title={row.original.id} className="font-mono text-xs text-fg-muted">
             {row.original.id}
@@ -146,14 +149,14 @@ export function AgentsList() {
       {
         id: "name",
         accessorKey: "name",
-        header: "Name",
+        header: t.common.name,
         cell: ({ row }) => <span className="font-medium text-fg">{row.original.name}</span>,
         enableHiding: false,
       },
       {
         id: "model",
         accessorFn: (a) => modelStr(a.model),
-        header: "Model",
+        header: t.common.model,
         cell: ({ row }) => (
           <span className="text-fg-muted">{modelStr(row.original.model)}</span>
         ),
@@ -161,7 +164,7 @@ export function AgentsList() {
       {
         id: "status",
         accessorFn: (a) => (a.archived_at ? "archived" : "active"),
-        header: "Status",
+        header: t.common.status,
         cell: ({ row }) => (
           <span
             className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
@@ -170,14 +173,14 @@ export function AgentsList() {
                 : "bg-success-subtle text-success"
             }`}
           >
-            {row.original.archived_at ? "archived" : "active"}
+            {row.original.archived_at ? t.common.archived : t.common.active}
           </span>
         ),
       },
       {
         id: "created",
         accessorFn: (a) => a.created_at,
-        header: "Created",
+        header: t.common.created,
         cell: ({ row }) => (
           <span className="text-fg-muted">
             {new Date(row.original.created_at).toLocaleDateString()}
@@ -192,10 +195,25 @@ export function AgentsList() {
           const archived = !!a.archived_at;
           return (
             <RowActionsMenu
-              label={`Actions for ${a.name}`}
+              label={`${t.common.actions} for ${a.name}`}
               actions={[
                 {
-                  label: archived ? "Unarchive" : "Archive",
+                  label: t.agents.editAgent,
+                  icon: <PencilIcon className="size-4" />,
+                  disabled: archived,
+                  onSelect: async () => {
+                    try {
+                      // Fetch fresh so the form has full config + current
+                      // version (list rows can be stale within TQ staleTime).
+                      const fresh = await api<Agent>(`/v1/agents/${a.id}`);
+                      setEditingAgent(fresh);
+                    } catch {
+                      setEditingAgent(a);
+                    }
+                  },
+                },
+                {
+                  label: archived ? t.common.unarchive : t.common.archive,
                   icon: <ArchiveIcon className="size-4" />,
                   disabled: archived,
                   onSelect: async () => {
@@ -209,11 +227,11 @@ export function AgentsList() {
                   },
                 },
                 {
-                  label: "Delete",
+                  label: t.common.delete,
                   icon: <TrashIcon className="size-4" />,
                   destructive: true,
                   onSelect: async () => {
-                    if (!confirm(`Delete ${a.name}? This can't be undone.`)) return;
+                    if (!confirm(`${t.agents.deleteAgent} ${a.name}? ${t.agents.confirmDelete}`)) return;
                     try {
                       await api(`/v1/agents/${a.id}`, { method: "DELETE" });
                       refreshAgents();
@@ -270,9 +288,9 @@ export function AgentsList() {
 
   return (
     <DataTable<Agent>
-      createLabel="+ New agent"
+      createLabel={t.agents.newAgent}
       onCreate={() => setShowCreate(true)}
-      searchPlaceholder="Search agents..."
+      searchPlaceholder={t.agents.searchAgents}
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
@@ -283,22 +301,22 @@ export function AgentsList() {
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
-      emptyTitle={search ? "No matching agents" : "No agents yet"}
+      emptyTitle={search ? t.agents.noMatchingAgents : t.agents.noAgentsYet}
       emptyKind="agent"
       emptyAction={
-        !search && <Button onClick={() => setShowCreate(true)}>+ New agent</Button>
+        !search && <Button onClick={() => setShowCreate(true)}>{t.agents.newAgent}</Button>
       }
       emptySubtitle={
         search ? (
-          "Try a different search term."
+          t.agents.tryDifferentSearch
         ) : (
           <>
-            <p>Create your first agent to get started.</p>
+            <p>{t.agents.createFirstAgent}</p>
             <button
               onClick={() => nav("/")}
               className="inline-flex items-center min-h-11 sm:min-h-0 mt-3 text-sm text-brand hover:underline"
             >
-              Get started with the quickstart guide →
+              {t.agents.getStartedGuide}
             </button>
           </>
         )
@@ -306,9 +324,22 @@ export function AgentsList() {
       columns={columns}
     >
       <AgentFormDialog
-        open={showCreate}
-        onClose={() => setShowCreate(false)}
-        onCreated={refreshAgents}
+        open={showCreate || !!editingAgent}
+        onClose={() => {
+          setShowCreate(false);
+          setEditingAgent(null);
+        }}
+        onCreated={() => {
+          setShowCreate(false);
+          refreshAgents();
+          void loadAux();
+        }}
+        agent={editingAgent}
+        onUpdated={() => {
+          setEditingAgent(null);
+          refreshAgents();
+          void loadAux();
+        }}
         allAgents={allAgents}
         customSkills={customSkills}
         modelCards={modelCards}

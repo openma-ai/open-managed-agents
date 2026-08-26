@@ -107,13 +107,16 @@ export interface StartInstallationArgs {
    * /v1/integrations/{provider}/. Linear's publication-first refactor
    * adds the `create-publication` and `submit-credentials-pub` modes
    * (which key on a publication id rather than a form-token JWT);
-   * Slack/GitHub still ship the legacy three.
+   * Slack/GitHub/Feishu ship the legacy three plus `form-token` (re-mint
+   * a formToken to resume an existing publication shell — the wizard's
+   * `?pub=` hydration path).
    */
   mode:
     | "start-a1"
     | "credentials"
     | "handoff-link"
     | "personal-token"
+    | "form-token"
     | "create-publication"
     | "submit-credentials-pub";
   /** Parsed JSON body from the originating route. Provider-specific shape;

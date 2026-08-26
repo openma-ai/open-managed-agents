@@ -17,15 +17,21 @@
   <!-- Subtle geometric mark (top right) — orange tinted blocks evoking the
        harness/sandbox/infrastructure split shown in the homepage diagram. -->
   <g opacity="0.18" transform="translate(960, 80)">
-    <rect x="0"   y="0"   width="160" height="36" fill="#f97316" rx="4"/>
-    <rect x="0"   y="56"  width="160" height="36" fill="#f97316" rx="4"/>
-    <rect x="0"   y="112" width="160" height="36" fill="#f97316" rx="4"/>
+    <rect x="0"   y="0"   width="160" height="36" fill="#f84f32" rx="4"/>
+    <rect x="0"   y="56"  width="160" height="36" fill="#f84f32" rx="4"/>
+    <rect x="0"   y="112" width="160" height="36" fill="#f84f32" rx="4"/>
   </g>
 
   <!-- Brand row -->
   <g transform="translate(80, 100)">
+    <g transform="translate(0 -40) scale(.12) translate(-240 -244)" fill="#f84f32">
+      <path d="M279 363H346C356 363 363 371 363 381V397C363 407 356 414 346 414H320C312 414 308 419 308 427V620C308 628 313 633 321 633H349C357 633 363 640 363 648V665C363 675 355 683 345 683H279C265 683 254 672 254 658V388C254 374 265 363 279 363Z"/>
+      <path d="M748 363H681C671 363 666 371 666 381V397C666 407 673 414 683 414H708C716 414 720 419 720 427V620C720 628 715 633 707 633H680C671 633 666 640 666 648V665C666 675 674 683 684 683H748C762 683 773 672 773 658V388C773 374 762 363 748 363Z"/>
+      <path d="M500 258C496 258 491 260 488 264C486 267 485 271 485 275V343C485 351 491 357 499 357H575C583 357 587 348 581 342L507 264C505 261 503 258 500 258Z"/>
+      <circle cx="535" cy="520" r="42"/>
+    </g>
     <!-- Wordmark (mono) -->
-    <text x="0" y="0"
+    <text x="82" y="0"
       font-family="'JetBrains Mono','Menlo','Monaco',monospace"
       font-weight="700"
       font-size="36"
@@ -79,5 +85,5 @@
   </g>
 
   <!-- Brand accent bar bottom -->
-  <rect x="0" y="620" width="1200" height="10" fill="#f97316"/>
+  <rect x="0" y="620" width="1200" height="10" fill="#f84f32"/>
 </svg>

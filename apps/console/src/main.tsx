@@ -14,8 +14,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 // JetBrains Mono when the network fetch resolves, producing a visible
 // width shift in the sidebar header.
 import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/geist";
 import "./index.css";
 import { AuthProvider } from "./lib/auth";
+import { I18nProvider } from "./i18n";
 import { Toaster } from "./components/ui/sonner";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -56,6 +58,11 @@ import {
   IntegrationsSlackWorkspace,
   IntegrationsSlackPublishPage,
 } from "./pages/IntegrationsSlack";
+import {
+  IntegrationsFeishuList,
+  IntegrationsFeishuWorkspace,
+  IntegrationsFeishuPublishPage,
+} from "./pages/IntegrationsFeishu";
 import { consolePlugins } from "./plugins/registry";
 
 /**
@@ -226,6 +233,23 @@ const protectedRoutes: RouteObject[] = [
           },
         ],
       },
+      {
+        path: "feishu",
+        handle: { crumb: "Feishu" },
+        children: [
+          { index: true, element: <IntegrationsFeishuList /> },
+          {
+            path: "publish",
+            element: <IntegrationsFeishuPublishPage />,
+            handle: { crumb: "Publish" },
+          },
+          {
+            path: "installations/:id",
+            element: <IntegrationsFeishuWorkspace />,
+            handle: { crumb: "Workspace" },
+          },
+        ],
+      },
     ],
   },
   // Plugin-contributed routes (hosted-only extensions). Default empty in
@@ -249,14 +273,16 @@ const router = createBrowserRouter([
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
+      <I18nProvider>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
           <Suspense fallback={null}>
-            <RouterProvider router={router} />
-          </Suspense>
-        </AuthProvider>
-        <Toaster />
-      </QueryClientProvider>
+              <RouterProvider router={router} />
+            </Suspense>
+          </AuthProvider>
+          <Toaster />
+        </QueryClientProvider>
+      </I18nProvider>
     </ErrorBoundary>
   </StrictMode>,
 );

@@ -11,6 +11,7 @@ import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { RowActionsMenu } from "../components/RowActionsMenu";
+import { useI18n } from "../i18n";
 
 interface Env {
   id: string;
@@ -32,6 +33,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function EnvironmentsList() {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
 
@@ -213,9 +215,9 @@ export function EnvironmentsList() {
 
   return (
     <DataTable<Env>
-      createLabel="+ Add environment"
+      createLabel={t.environments.newEnvironment}
       onCreate={() => setShowCreate(true)}
-      searchPlaceholder="Search environments..."
+      searchPlaceholder={t.environments.searchEnvironments}
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
@@ -226,15 +228,15 @@ export function EnvironmentsList() {
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
-      emptyTitle={search ? "No matching environments" : "No environments yet"}
+      emptyTitle={search ? t.environments.noMatchingEnvironments : t.environments.noEnvironmentsYet}
       emptyKind="env"
       emptyAction={
-        !search && <Button onClick={() => setShowCreate(true)}>+ Add environment</Button>
+        !search && <Button onClick={() => setShowCreate(true)}>{t.environments.newEnvironment}</Button>
       }
       emptySubtitle={
         search
-          ? "Try a different search term."
-          : "Create your first environment to get started."
+          ? t.agents.tryDifferentSearch
+          : t.environments.noEnvironmentsYet
       }
       columns={columns}
     >

@@ -5,6 +5,7 @@ import { useApi, getActiveTenantId, setActiveTenantId } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Modal } from "./Modal";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "../i18n";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,6 +43,7 @@ function displayName(t: Tenant): string {
 export function TenantSwitcher() {
   const [active, setActive] = useState<string>("");
   const [createOpen, setCreateOpen] = useState(false);
+  const { t } = useI18n();
 
   // TQ replaces the previous mount-once useEffect that hand-rolled a fetch
   // + setState. Dedup means a re-mount (sidebar collapse/expand) reuses the
@@ -96,7 +98,7 @@ export function TenantSwitcher() {
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label="Switch workspace"
+            aria-label={t.profile.switchWorkspace}
             disabled={!ready}
             className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left disabled:cursor-default disabled:hover:bg-transparent outline-none focus-visible:bg-sidebar-accent"
           >
@@ -159,7 +161,7 @@ export function TenantSwitcher() {
             className="text-fg-muted"
           >
             <PlusIcon className="size-4 shrink-0" />
-            Create workspace…
+            {t.profile.createWorkspace}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -188,6 +190,7 @@ function CreateTenantModal({
   onCreated: (t: Tenant) => void;
 }) {
   const { api } = useApi();
+  const { t } = useI18n();
   const [name, setName] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -210,22 +213,21 @@ function CreateTenantModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Create workspace">
+    <Modal open={open} onClose={onClose} title={t.profile.createWorkspace.replace("…", "")}>
       <div className="space-y-4">
         <p className="text-sm text-fg-muted">
-          A workspace is an isolated container for agents, sessions, vaults,
-          and integrations. You'll be the owner of the new one.
+          {t.profile.createWorkspaceDesc}
         </p>
         <div>
           <label htmlFor="tenant-create-name" className="block text-xs uppercase tracking-wider text-fg-subtle mb-1">
-            Name
+            {t.profile.workspaceName}
           </label>
           <input
             id="tenant-create-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
-            placeholder="e.g. Acme Production"
+            placeholder={t.profile.workspacePlaceholder}
             autoFocus
             disabled={working}
             className="w-full bg-bg border border-border rounded-lg px-3 py-2 min-h-11 sm:min-h-0 text-sm outline-none focus:border-border-strong"
@@ -242,10 +244,10 @@ function CreateTenantModal({
             disabled={working}
             className="inline-flex items-center justify-center px-4 py-2 min-h-11 sm:min-h-0 rounded-lg border border-border text-sm text-fg-muted hover:bg-bg-surface disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <Button onClick={submit} disabled={working || !name.trim()}>
-            {working ? "Creating…" : "Create workspace"}
+            {working ? t.profile.creating : t.profile.createWorkspace.replace("…", "")}
           </Button>
         </div>
       </div>

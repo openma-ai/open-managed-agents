@@ -74,9 +74,7 @@ export const linear_publications = pgTable(
     tenant_id: text("tenant_id").notNull(),
     user_id: text("user_id").notNull(),
     agent_id: text("agent_id").notNull(),
-    installation_id: text("installation_id")
-      .notNull()
-      .references(() => linear_installations.id),
+    installation_id: text("installation_id").notNull(),
     mode: text("mode").notNull(),
     status: text("status").notNull(),
     persona_name: text("persona_name").notNull(),

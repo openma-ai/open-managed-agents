@@ -4,15 +4,22 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ## Getting Started
 
+This repository uses the Node.js version in `.node-version` and the pnpm
+version declared by `packageManager` in `package.json`. Use a Node version
+manager and Corepack so local installs match CI, especially for native modules
+such as `better-sqlite3`.
+
 1. Fork the repository
 2. Clone your fork locally
-3. Create a new branch for your changes (`git checkout -b feature/your-feature-name`)
+3. Activate the version from `.node-version`
+4. Run `corepack enable && pnpm install --frozen-lockfile`
+5. Create a new branch for your changes (`git checkout -b feature/your-feature-name`)
 
 ## Development Workflow
 
 - Keep your changes focused and atomic
 - Write clear, descriptive commit messages
-- Test your changes before submitting
+- Run `pnpm typecheck && pnpm test` before submitting
 - Keep your branch up to date with the main branch
 
 ## Pull Request Process

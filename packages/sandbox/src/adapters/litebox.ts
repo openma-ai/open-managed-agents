@@ -28,6 +28,7 @@ import { promises as fs, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
 
 const moduleLogger = getLogger("litebox-sandbox");
@@ -85,7 +86,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
     };
     // Per-instance host scratch dir for copyIn / copyOut staging. Cleaned
     // up on destroy.
-    this.tmpRoot = join(tmpdir(), `oma-litebox-${randomBytes(6).toString("hex")}`);
+    this.tmpRoot = join(tmpdir(), `oma-litebox-${Buffer.from(randomBytes(6)).toString("hex")}`);
     mkdirSync(this.tmpRoot, { recursive: true });
   }
 
@@ -215,7 +216,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   async readFile(path: string): Promise<string> {
     const box = await this.ensureBox();
-    const tmp = join(this.tmpRoot, `read-${randomBytes(6).toString("hex")}`);
+    const tmp = join(this.tmpRoot, `read-${Buffer.from(randomBytes(6)).toString("hex")}`);
     try {
       await box.copyOut(this.normalise(path), tmp);
       return await fs.readFile(tmp, "utf8");
@@ -226,7 +227,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   async readFileBytes(path: string): Promise<Uint8Array> {
     const box = await this.ensureBox();
-    const tmp = join(this.tmpRoot, `read-${randomBytes(6).toString("hex")}`);
+    const tmp = join(this.tmpRoot, `read-${Buffer.from(randomBytes(6)).toString("hex")}`);
     try {
       await box.copyOut(this.normalise(path), tmp);
       const buf = await fs.readFile(tmp);
@@ -238,7 +239,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   async writeFile(path: string, content: string): Promise<string> {
     const box = await this.ensureBox();
-    const tmp = join(this.tmpRoot, `write-${randomBytes(6).toString("hex")}`);
+    const tmp = join(this.tmpRoot, `write-${Buffer.from(randomBytes(6)).toString("hex")}`);
     const target = this.normalise(path);
     await fs.writeFile(tmp, content, "utf8");
     try {
@@ -251,7 +252,7 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
     const box = await this.ensureBox();
-    const tmp = join(this.tmpRoot, `write-${randomBytes(6).toString("hex")}`);
+    const tmp = join(this.tmpRoot, `write-${Buffer.from(randomBytes(6)).toString("hex")}`);
     const target = this.normalise(path);
     await fs.writeFile(tmp, bytes);
     try {

@@ -6,6 +6,7 @@ import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { RowActionsMenu } from "../components/RowActionsMenu";
+import { useI18n } from "../i18n";
 
 interface ApiKey {
   id: string;
@@ -16,6 +17,7 @@ interface ApiKey {
 
 export function ApiKeysList() {
   const { api } = useApi();
+  const { t } = useI18n();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -43,7 +45,7 @@ export function ApiKeysList() {
     try {
       const result = await api<{ key: string }>("/v1/api_keys", {
         method: "POST",
-        body: JSON.stringify({ name: name || "Untitled key" }),
+        body: JSON.stringify({ name: name || t.apiKeys.untitledKey }),
       });
       setCreatedKey(result.key);
       setName("");
@@ -135,12 +137,12 @@ export function ApiKeysList() {
 
   return (
     <DataTable<ApiKey>
-      createLabel="+ New API key"
+      createLabel={t.apiKeys.newApiKey}
       onCreate={() => setShowCreate(true)}
       data={keys}
       loading={loading}
       getRowId={(k) => k.id}
-      emptyTitle="No API keys yet"
+      emptyTitle={t.apiKeys.noApiKeysYet}
       emptyKind="api_key"
       emptySubtitle="Create an API key to access the platform from CLI or SDK."
       columns={columns}

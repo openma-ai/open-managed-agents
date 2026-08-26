@@ -533,6 +533,110 @@ describe("NodeInstallBridge", () => {
     expect(r.status).toBe(400);
     expect((r.body as { error?: string }).error).toMatch(/personal-token/);
   });
+
+  it("startInstallation feishu/form-token reissues a fresh formToken for an existing shell (resume)", async () => {
+    const { bridge } = await bootstrap();
+    // Seed a feishu publication shell via start-a1 (status pending_setup).
+    const a1 = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "start-a1",
+      body: {
+        userId: USER,
+        agentId: "agt_dummy",
+        environmentId: "env-local-runtime",
+        personaName: "Feishu Bot",
+        personaAvatarUrl: null,
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    expect(a1.status).toBe(200);
+    const pubId = (a1.body as { publicationId: string }).publicationId;
+
+    // Resume: reissue a fresh formToken against the SAME shell — no new row.
+    const r = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "form-token",
+      body: {
+        publicationId: pubId,
+        userId: USER,
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    expect(r.status).toBe(200);
+    const data = r.body as {
+      formToken?: string;
+      publicationId?: string;
+      requiredFields?: string[];
+      optionalFields?: string[];
+    };
+    expect(typeof data.formToken).toBe("string");
+    // Note: we do NOT assert the token differs from a1's — a deterministic
+    // HMAC JWT re-signed in the same second with identical claims is
+    // byte-identical. What matters is that it's a VALID token carrying the
+    // SAME publicationId (resumes the shell, doesn't mint a new one).
+    expect(data.publicationId).toBe(pubId); // same shell, not a new one
+    expect(decodeJwtPayload(data.formToken!).publicationId).toBe(pubId);
+    // encryptKey + verificationToken are optional (HTTP-webhook path only);
+    // only appId + appSecret are required. The wizard surfaces both lists.
+    expect(data.requiredFields).toEqual(["appId", "appSecret"]);
+    expect(data.optionalFields).toEqual(["encryptKey", "verificationToken"]);
+  });
+
+  it("startInstallation feishu/form-token rejects missing publicationId/userId", async () => {
+    const { bridge } = await bootstrap();
+    const r = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "form-token",
+      body: { userId: USER },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error?: string }).error).toMatch(/required/);
+  });
+
+  it("startInstallation feishu/form-token maps an unknown publicationId to 400 form_token_failed", async () => {
+    const { bridge } = await bootstrap();
+    const r = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "form-token",
+      body: {
+        publicationId: "pub_does_not_exist",
+        userId: USER,
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error?: string }).error).toBe("form_token_failed");
+  });
+
+  it("startInstallation feishu/form-token rejects an owner mismatch (provider defense-in-depth)", async () => {
+    const { bridge } = await bootstrap();
+    const a1 = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "start-a1",
+      body: {
+        userId: USER,
+        agentId: "agt_dummy",
+        environmentId: "env-local-runtime",
+        personaName: "Feishu Bot",
+        personaAvatarUrl: null,
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    const pubId = (a1.body as { publicationId: string }).publicationId;
+    // The route layer gates ownership; the provider re-validates as
+    // defense-in-depth — a mismatched userId surfaces as form_token_failed.
+    const r = await bridge.startInstallation({
+      provider: "feishu",
+      mode: "form-token",
+      body: {
+        publicationId: pubId,
+        userId: "usr_someone_else",
+        returnUrl: "https://console.example.com/done",
+      },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error?: string }).error).toBe("form_token_failed");
+  });
 });
 
 async function createTestAgent(sql: SqlClient, agents: ReturnType<typeof createSqliteAgentService>) {
@@ -546,6 +650,12 @@ async function createTestAgent(sql: SqlClient, agents: ReturnType<typeof createS
     },
   });
   return row;
+}
+
+/** Decode a JWT's payload segment WITHOUT verifying (test-only). */
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  const payload = token.split(".")[1] ?? "";
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
 // Minimal RSA test private key for mintAppJwt — short enough to embed.

@@ -10,7 +10,6 @@
     "skipLibCheck": true,
     "outDir": "dist",
     "rootDir": "src",
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
       "@/registry/default/ui/*": ["./src/components/ui/*"],

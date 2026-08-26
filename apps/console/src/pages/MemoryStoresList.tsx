@@ -11,6 +11,7 @@ import { RowActionsMenu } from "../components/RowActionsMenu";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
+import { useI18n } from "../i18n";
 
 interface MemoryStore {
   id: string;
@@ -31,6 +32,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 export function MemoryStoresList() {
   const { api } = useApi();
   const nav = useNavigate();
+  const { t } = useI18n();
 
   // Server-driven filter state. Each piece flows into storesParams below
   // → useApiQuery refetches on params change → the list reflects exactly
@@ -221,12 +223,12 @@ export function MemoryStoresList() {
 
   return (
     <DataTable<MemoryStore>
-      createLabel="+ New store"
+      createLabel={t.memory.newMemoryStore}
       onCreate={() => {
         setShowCreate(true);
         setFormError(null);
       }}
-      searchPlaceholder="Search memory stores..."
+      searchPlaceholder={t.memory.searchMemoryStores}
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
@@ -234,7 +236,7 @@ export function MemoryStoresList() {
       loading={loading}
       getRowId={(s) => s.id}
       onRowClick={(s) => nav(`/memory/${s.id}`)}
-      emptyTitle="No memory stores"
+      emptyTitle={t.memory.noMemoryStoresYet}
       emptyKind="memory"
       emptyAction={
         <Button
@@ -243,7 +245,7 @@ export function MemoryStoresList() {
             setFormError(null);
           }}
         >
-          + New store
+          {t.memory.newMemoryStore}
         </Button>
       }
       emptySubtitle="Create a memory store to give your agents long-term context across sessions."

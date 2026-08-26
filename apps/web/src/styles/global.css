@@ -1,49 +1,25 @@
 @import "tailwindcss";
+@import "@openma/common/brand/tokens.css";
 
 /* Mirror the Console design tokens so cross-link feel is consistent. */
 @theme {
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Source Serif 4", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --color-bg: #fdfdfc;
-  --color-bg-surface: #f5f5f5;
-  --color-fg: #171717;
-  --color-fg-muted: #737373;
-  /* Tertiary text — small kicker labels, dates, breadcrumbs. #707070 lands
-     at ~4.84:1 against --color-bg (#fdfdfc warm-tinted), comfortably above
-     AA-normal (4.5:1). Earlier #767676 was just under threshold (4.43:1)
-     because the bg isn't pure white. */
-  --color-fg-subtle: #707070;
-  --color-border: #e5e5e5;
-  --color-border-strong: #d4d4d4;
-  /* Coral brand — matches .impeccable.md (#FF6B50) and the console + logo. */
-  --color-brand: #ff6b50;
-  --color-brand-hover: #e85a40;
-  --color-brand-subtle: #fff0ec;
-  /* Dark warm tone — pairs with brand at ~5.4:1 (AA-pass; white would be 2.96:1, AA-fail).
-     Used by anything that puts text on a brand background. */
-  --color-brand-fg: #3d2520;
-}
-
-.dark {
-  --color-bg: #161616;
-  --color-bg-surface: #222222;
-  --color-fg: #ededed;
-  --color-fg-muted: #999999;
-  /* Tertiary text in dark mode — bumped from #6b6b6b to #9b9b9b for AA
-     contrast (≥4.5:1) against --color-bg. */
-  --color-fg-subtle: #9b9b9b;
-  --color-border: #333333;
-  --color-border-strong: #444444;
-  /* Brand stays #ff6b50 in dark too — spec calls for identical hue both modes;
-     it lands at ~6.5:1 on the dark bg so it passes AA without darkening. */
-  --color-brand: #ff6b50;
-  --color-brand-hover: #ff8068;
-  --color-brand-subtle: #3d2520;
-  /* Same dark fg in dark mode — brand stays coral, the dark-on-coral pair
-     keeps AA contrast (white-on-coral fails at any size below ~24px bold). */
-  --color-brand-fg: #3d2520;
+  --color-bg: var(--bg);
+  --color-bg-sidebar: var(--bg-sidebar);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-bubble: var(--bg-bubble);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-fg: var(--brand-fg);
 }
 
 html {

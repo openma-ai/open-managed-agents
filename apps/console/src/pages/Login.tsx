@@ -7,6 +7,7 @@ import { Turnstile } from "../components/Turnstile";
 import { Logo } from "../components/Logo";
 import { setActiveTenantId } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
+import { useI18n } from "../i18n";
 
 // Clear browser-cached tenant pin on every successful auth transition.
 // The pin is per-user — different login → different membership set →
@@ -37,6 +38,7 @@ export function Login() {
   const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const { t } = useI18n();
   // /auth-info is a public unauthenticated endpoint advertising which
   // providers (google / email-otp) are wired up and the Turnstile public
   // site key. TQ keeps the result cached + deduped across this page's
@@ -474,7 +476,7 @@ export function Login() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className={inputCls}
-                placeholder="Min 8 characters"
+                placeholder={t.login.minChars}
                 required
                 minLength={8}
                 name="password"

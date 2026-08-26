@@ -15,12 +15,14 @@
     "@astrojs/check": "^0.9.9",
     "@astrojs/rss": "^4.0.10",
     "@astrojs/sitemap": "^3.4.1",
+    "@fontsource-variable/geist": "^5.2.8",
     "@tailwindcss/vite": "^4.1.0",
+    "@openma/common": "github:openma-ai/openma-common#v0.4.0",
     "astro": "^5.13.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.8.0"
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   },
   "devDependencies": {
-    "wrangler": "^4.83.0"
+    "wrangler": "^4.125.0"
   }
 }

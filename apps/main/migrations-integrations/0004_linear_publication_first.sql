@@ -19,9 +19,10 @@
 -- keyed by `pub_id`. The `linear_apps` table stays in place for legacy
 -- installs already in flight; new pubs never write to it.
 --
--- All migrations here are additive (ALTER ADD COLUMN). `installation_id`
--- stays NOT NULL on the publications row — pending pubs use the empty
--- string sentinel until step 3 binds the real installation.
+-- `installation_id` stays NOT NULL on the publications row. Pending pubs use
+-- the empty string sentinel until step 3 binds the real installation; the
+-- publication-to-installation FK is removed by migration 0007 because this
+-- flow intentionally creates the child-shaped record first.
 
 ALTER TABLE "linear_publications" ADD COLUMN "client_id"            TEXT;
 ALTER TABLE "linear_publications" ADD COLUMN "client_secret_cipher" TEXT;

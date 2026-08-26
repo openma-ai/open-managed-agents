@@ -33,6 +33,11 @@ import { CryptoIdGenerator } from "./ids";
 import { WebCryptoJwtSigner } from "./jwt";
 import { SqlLinearAppRepo } from "./d1/app-repo";
 import { SqlLinearDispatchRuleRepo } from "./d1/dispatch-rule-repo";
+import { SqlFeishuInstallationRepo } from "./d1/feishu/installation-repo";
+import { SqlFeishuPublicationRepo } from "./d1/feishu/publication-repo";
+import { SqlFeishuSessionScopeRepo } from "./d1/feishu/session-scope-repo";
+import { SqlFeishuSetupLinkRepo } from "./d1/feishu/setup-link-repo";
+import { SqlFeishuWebhookEventStore } from "./d1/feishu/webhook-event-store";
 import { SqlGitHubAppRepo } from "./d1/github-app-repo";
 import { SqlGitHubInstallationRepo } from "./d1/github/installation-repo";
 import { SqlGitHubIssueSessionRepo } from "./d1/github/issue-session-repo";
@@ -120,6 +125,15 @@ export function buildCfRepos(env: CfReposEnv) {
   // required by the Container interface. Drizzle-wrapped because the SQL
   // adapter takes the OmaDb port, not a raw D1Database.
   const sessionScopes = new SqlSlackSessionScopeRepo(drizzleIdb);
+  // Feishu-specific repos — parallel to Slack. Feishu has no OAuth, so its
+  // installations/publications repos hold encrypted app_secret + encrypt_key
+  // + verification_token + a placeholder tenant_access_token cipher (the
+  // runner writes a real one once the credentials are validated).
+  const feishuInstallations = new SqlFeishuInstallationRepo(drizzleIdb, cryptoImpl, ids);
+  const feishuPublications = new SqlFeishuPublicationRepo(drizzleIdb, ids, cryptoImpl);
+  const feishuWebhookEvents = new SqlFeishuWebhookEventStore(drizzleIdb);
+  const feishuSessionScopes = new SqlFeishuSessionScopeRepo(drizzleIdb);
+  const feishuSetupLinks = new SqlFeishuSetupLinkRepo(drizzleIdb, ids);
 
   return {
     clock,
@@ -142,6 +156,11 @@ export function buildCfRepos(env: CfReposEnv) {
     sessionScopes,
     setupLinks,
     dispatchRules,
+    feishuInstallations,
+    feishuPublications,
+    feishuWebhookEvents,
+    feishuSessionScopes,
+    feishuSetupLinks,
   };
 }
 

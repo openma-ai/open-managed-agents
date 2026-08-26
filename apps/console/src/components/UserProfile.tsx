@@ -21,6 +21,7 @@ import { useAuth } from "../lib/auth";
 import { useTheme } from "../lib/theme";
 import { authClient } from "../lib/auth-client";
 import { Avatar } from "./Avatar";
+import { useI18n, AVAILABLE_LOCALES } from "../i18n";
 
 /**
  * Bottom-of-sidebar user profile menu. Single click target opens a
@@ -46,6 +47,7 @@ const THEME_OPTIONS = [
 export function UserProfile() {
   const { user } = useAuth();
   const { theme, setTheme } = useTheme();
+  const { t, locale, setLocale } = useI18n();
 
   if (!user) return null;
 
@@ -61,7 +63,7 @@ export function UserProfile() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="Account menu"
+          aria-label={t.profile.accountMenu}
           className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left"
         >
           <Avatar name={label} size="sm" />
@@ -107,7 +109,7 @@ export function UserProfile() {
               rel="noopener noreferrer"
             >
               <BookOpenIcon className="size-4 opacity-80" />
-              Documentation
+              {t.profile.documentation}
             </a>
           </DropdownMenuItem>
         </DropdownMenuGroup>
@@ -115,7 +117,31 @@ export function UserProfile() {
         <DropdownMenuSeparator />
 
         <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium">
-          Theme
+          Language
+        </DropdownMenuLabel>
+        <DropdownMenuGroup>
+          {AVAILABLE_LOCALES.map(({ value, label, flag }) => {
+            const active = locale === value;
+            return (
+              <DropdownMenuItem
+                key={value}
+                onClick={() => setLocale(value)}
+                onSelect={(e) => e.preventDefault()}
+              >
+                <span className="size-4 inline-flex items-center justify-center text-xs font-mono opacity-80">
+                  {flag}
+                </span>
+                {label}
+                {active && <CheckIcon className="ml-auto size-4 text-brand" />}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuGroup>
+
+        <DropdownMenuSeparator />
+
+        <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium">
+          {t.profile.theme}
         </DropdownMenuLabel>
         <DropdownMenuGroup>
           {THEME_OPTIONS.map(({ value, label: optLabel, Icon }) => {
@@ -141,7 +167,7 @@ export function UserProfile() {
           className="text-danger focus:text-danger focus:bg-danger/10"
         >
           <LogOutIcon className="size-4" />
-          Sign out
+          {t.profile.signOut}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
