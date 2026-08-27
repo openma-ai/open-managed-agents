@@ -18,7 +18,7 @@ interface ClawHubPackage {
   ownerHandle: string;
 }
 
-// GET /v1/clawhub/search?q=xxx — search ClawHub registry
+// GET /v1/oma/clawhub/search?q=xxx — search ClawHub registry
 app.get("/search", async (c) => {
   const q = c.req.query("q") || "";
   const res = await fetch(`${CLAWHUB_BASE}/packages${q ? `?q=${encodeURIComponent(q)}` : ""}`);
@@ -37,7 +37,7 @@ app.get("/search", async (c) => {
   return c.json({ data: skills });
 });
 
-// POST /v1/clawhub/install — install a skill from ClawHub
+// POST /v1/oma/clawhub/install — install a skill from ClawHub
 app.post("/install", async (c) => {
   const t = c.get("tenant_id");
   const body = await c.req.json<{ slug: string }>();

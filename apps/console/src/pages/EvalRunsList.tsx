@@ -103,7 +103,7 @@ export function EvalRunsList() {
   // the previous `anyActive` guard without the manual setInterval +
   // cancelled flag dance.
   const { data: runsRes, isLoading: loading, refetch } = useApiQuery<{ data: EvalRunSummary[] }>(
-    "/v1/evals/runs",
+    "/v1/oma/evals/runs",
     params,
     {
       refetchInterval: (query) => {
@@ -217,7 +217,7 @@ export function EvalRunsList() {
                   onSelect: async () => {
                     if (!confirm(`Cancel eval run ${r.id}? In-flight tasks will be marked failed.`)) return;
                     try {
-                      await api(`/v1/evals/runs/${r.id}`, { method: "DELETE" });
+                      await api(`/v1/oma/evals/runs/${r.id}`, { method: "DELETE" });
                       void refetch();
                     } catch {}
                   },
@@ -229,7 +229,7 @@ export function EvalRunsList() {
                   onSelect: async () => {
                     if (!confirm(`Delete eval run ${r.id}? This can't be undone.`)) return;
                     try {
-                      await api(`/v1/evals/runs/${r.id}`, { method: "DELETE" });
+                      await api(`/v1/oma/evals/runs/${r.id}`, { method: "DELETE" });
                       void refetch();
                     } catch {}
                   },
@@ -288,7 +288,7 @@ export function EvalRunsList() {
         status === "any" ? (
           <p>
             Submit one with{" "}
-            <code className="px-1 py-0.5 bg-bg-surface rounded text-fg-muted">POST /v1/evals/runs</code>{" "}
+            <code className="px-1 py-0.5 bg-bg-surface rounded text-fg-muted">POST /v1/oma/evals/runs</code>{" "}
             or{" "}
             <code className="px-1 py-0.5 bg-bg-surface rounded text-fg-muted">npx tsx rl/tasks/terminal-bench/run-cloud.ts</code>.
           </p>

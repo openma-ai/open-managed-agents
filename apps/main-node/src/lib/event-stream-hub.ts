@@ -11,6 +11,12 @@
 // it.
 
 import type { SessionEvent } from "@open-managed-agents/shared";
+import type { SessionRealtimeHub } from "@open-managed-agents/session-realtime";
+import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
+
+export function createManagedSessionRealtimeHub(): SessionRealtimeHub {
+  return new MemorySessionRealtimeHub();
+}
 
 export interface EventWriter {
   /** True after .close() or after the underlying stream errored. The hub

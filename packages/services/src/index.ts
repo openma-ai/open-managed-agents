@@ -166,7 +166,7 @@ export interface Services {
   /**
    * Usage event recorder/reader. Per-tenant `usage_events` table populated
    * by sandbox / browser / session lifecycle hooks; consumed by the hosted
-   * billing worker's reconcile cron via /v1/internal/usage_events. OSS owns
+   * billing worker's reconcile cron via /v1/oma/internal/usage_events. OSS owns
    * the count, hosted owns the rate map + ledger debit. See
    * packages/services/src/usage.ts for details.
    */

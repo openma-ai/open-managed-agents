@@ -1,0 +1,15 @@
+{
+  "name": "@open-managed-agents/environment-store-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/environment-store": "workspace:*"
+  },
+  "devDependencies": { "vitest": "^4.1.3" }
+}

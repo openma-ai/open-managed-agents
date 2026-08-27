@@ -871,7 +871,7 @@ function linearLandingPage(_opts: { token: string; personaName: string }): strin
   // OAuth callback URL directly. Function kept as a deprecated stub so any
   // forgotten import surfaces a build error rather than runtime null.
   throw new Error(
-    "linearLandingPage removed in publication-first refactor — use POST /v1/integrations/linear/publications instead",
+    "linearLandingPage removed in publication-first refactor — use POST /v1/oma/integrations/linear/publications instead",
   );
 }
 

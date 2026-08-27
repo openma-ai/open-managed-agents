@@ -1,0 +1,23 @@
+{
+  "name": "@open-managed-agents/managed-agents-adapters-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/app": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/session-runtime-contract": "workspace:*",
+    "croner": "^9.1.0",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

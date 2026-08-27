@@ -18,15 +18,15 @@ describe("Background task schedule polling", () => {
   });
 
   it("recoverEventQueue schedule is set when event is posted", async () => {
-    const a = await post("/v1/agents", { name: "SchedTest", model: "claude-sonnet-4-6", harness: "noop" });
+    const a = await post("/v1/oma/agents", { name: "SchedTest", model: "claude-sonnet-4-6", harness: "noop" });
     const agent = await a.json();
-    const e = await post("/v1/environments", { name: "sched-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "sched-env", config: { type: "cloud" } });
     const environment = await e.json();
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: environment.id });
     const session = await s.json();
 
     // Post event — should trigger schedule(5, "recoverEventQueue")
-    await post(`/v1/sessions/${session.id}/events`, {
+    await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "test" }] }],
     });
 
@@ -44,15 +44,15 @@ describe("Background task schedule polling", () => {
   });
 
   it("schedule(N, callback) writes to cf_agents_schedules table", async () => {
-    const a = await post("/v1/agents", { name: "TableTest", model: "claude-sonnet-4-6", harness: "noop" });
+    const a = await post("/v1/oma/agents", { name: "TableTest", model: "claude-sonnet-4-6", harness: "noop" });
     const agent = await a.json();
-    const e = await post("/v1/environments", { name: "table-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "table-env", config: { type: "cloud" } });
     const environment = await e.json();
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: environment.id });
     const session = await s.json();
 
     // Post event to trigger schedule
-    const res = await post(`/v1/sessions/${session.id}/events`, {
+    const res = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "go" }] }],
     });
     expect(res.status).toBe(202);

@@ -27,7 +27,7 @@ export interface Env {
   // distinct label per use, so JWT signing keys ≠ token encryption keys).
   PLATFORM_ROOT_SECRET: string;
 
-  // Shared secret with apps/main, gating /v1/internal/* endpoints. Must match
+  // Shared secret with apps/main, gating /v1/oma/internal/* endpoints. Must match
   // INTEGRATIONS_INTERNAL_SECRET on the main worker.
   INTEGRATIONS_INTERNAL_SECRET: string;
 

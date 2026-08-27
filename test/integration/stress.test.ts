@@ -28,7 +28,7 @@ registerHarness("noop", () => ({ async run() {} }));
 
 // Helper: create agent + env + session quickly
 async function createFullSession(overrides?: Record<string, unknown>) {
-  const agentRes = await post("/v1/agents", {
+  const agentRes = await post("/v1/oma/agents", {
     name: "Stress Agent",
     model: "claude-sonnet-4-6",
     system: "You are helpful.",
@@ -36,12 +36,12 @@ async function createFullSession(overrides?: Record<string, unknown>) {
     ...overrides,
   });
   const agent = (await agentRes.json()) as any;
-  const envRes = await post("/v1/environments", {
+  const envRes = await post("/v1/oma/environments", {
     name: "stress-env",
     config: { type: "cloud" },
   });
   const environment = (await envRes.json()) as any;
-  const sessRes = await post("/v1/sessions", {
+  const sessRes = await post("/v1/oma/sessions", {
     agent: agent.id,
     environment_id: environment.id,
     title: "Stress Test",
@@ -127,13 +127,13 @@ describe("Session DO - direct", () => {
 
   beforeAll(async () => {
     // Create real agent + env in KV so processUserMessage can find them
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "DO Direct Agent",
       model: "claude-sonnet-4-6",
       harness: "noop",
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "do-direct-env",
       config: { type: "cloud" },
     });
@@ -394,7 +394,7 @@ describe("History - complex conversions", () => {
 describe("Stress tests", () => {
   it("handles 20 agents created simultaneously", async () => {
     const promises = Array.from({ length: 20 }, (_, i) =>
-      post("/v1/agents", { name: `Stress-${i}`, model: "claude-sonnet-4-6", harness: "noop" })
+      post("/v1/oma/agents", { name: `Stress-${i}`, model: "claude-sonnet-4-6", harness: "noop" })
     );
     const results = await Promise.all(promises);
     expect(results.every((r) => r.status === 201)).toBe(true);
@@ -403,20 +403,20 @@ describe("Stress tests", () => {
   });
 
   it("handles 10 sessions on same agent simultaneously", async () => {
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "Multi-Session",
       model: "claude-sonnet-4-6",
       harness: "noop",
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "multi-env",
       config: { type: "cloud" },
     });
     const environment = (await envRes.json()) as any;
 
     const promises = Array.from({ length: 10 }, () =>
-      post("/v1/sessions", {
+      post("/v1/oma/sessions", {
         agent: agent.id,
         environment_id: environment.id,
         title: "Concurrent",
@@ -438,7 +438,7 @@ describe("Stress tests", () => {
 
     // Post events to all 5 simultaneously
     const promises = sessions.map((sid) =>
-      post(`/v1/sessions/${sid}/events`, {
+      post(`/v1/oma/sessions/${sid}/events`, {
         events: [{ type: "user.message", content: [{ type: "text", text: "concurrent-event" }] }],
       })
     );
@@ -449,7 +449,7 @@ describe("Stress tests", () => {
   it("large payload (500KB message) accepted", async () => {
     const { session } = await createFullSession();
     const largeText = "x".repeat(500 * 1024); // 500KB
-    const res = await post(`/v1/sessions/${session.id}/events`, {
+    const res = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: largeText }] }],
     });
     expect(res.status).toBe(202);
@@ -457,7 +457,7 @@ describe("Stress tests", () => {
 
   it("very long agent name (255 chars)", async () => {
     const longName = "A".repeat(255);
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: longName,
       model: "claude-sonnet-4-6",
       harness: "noop",
@@ -480,7 +480,7 @@ describe("Stress tests", () => {
         },
       },
     };
-    const res = await post(`/v1/sessions/${session.id}`, {
+    const res = await post(`/v1/oma/sessions/${session.id}`, {
       metadata: deepMeta,
     });
     expect(res.status).toBe(200);
@@ -489,7 +489,7 @@ describe("Stress tests", () => {
   });
 
   it("empty string fields are preserved (not nullified)", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "EmptyFields",
       model: "claude-sonnet-4-6",
       system: "",
@@ -500,12 +500,12 @@ describe("Stress tests", () => {
     // system defaults to "" when falsy but is stored as ""
     expect(agent.system).toBeNull();
     // Also verify empty title on session is preserved
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "empty-env",
       config: { type: "cloud" },
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await post("/v1/sessions", {
+    const sessRes = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: environment.id,
       title: "",
@@ -516,7 +516,7 @@ describe("Stress tests", () => {
 
   it("special characters in all string fields", async () => {
     const special = "Hello <script>alert('xss')</script> & \"quotes\" 'apostrophe' \n\ttabs\nnewlines";
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: special,
       model: "claude-sonnet-4-6",
       system: special,
@@ -528,12 +528,12 @@ describe("Stress tests", () => {
     expect(agent.system).toBe(special);
 
     // Also verify special chars in session title
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "special-env",
       config: { type: "cloud" },
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await post("/v1/sessions", {
+    const sessRes = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: environment.id,
       title: special,
@@ -549,7 +549,7 @@ describe("Stress tests", () => {
 describe("Full lifecycle", () => {
   it("complete flow: create agent -> env -> session -> events -> archive -> verify archived", async () => {
     // Create agent
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "Lifecycle Agent",
       model: "claude-sonnet-4-6",
       system: "lifecycle test",
@@ -559,7 +559,7 @@ describe("Full lifecycle", () => {
     const agent = (await agentRes.json()) as any;
 
     // Create environment
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "lifecycle-env",
       config: { type: "cloud" },
     });
@@ -567,7 +567,7 @@ describe("Full lifecycle", () => {
     const environment = (await envRes.json()) as any;
 
     // Create session
-    const sessRes = await post("/v1/sessions", {
+    const sessRes = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: environment.id,
       title: "Lifecycle Session",
@@ -576,7 +576,7 @@ describe("Full lifecycle", () => {
     const session = (await sessRes.json()) as any;
 
     // Post events
-    const eventRes = await post(`/v1/sessions/${session.id}/events`, {
+    const eventRes = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "lifecycle msg" }] }],
     });
     expect(eventRes.status).toBe(202);
@@ -585,20 +585,20 @@ describe("Full lifecycle", () => {
     await new Promise((r) => setTimeout(r, 300));
 
     // Verify events exist
-    const eventsRes = await get(`/v1/sessions/${session.id}/events`, {
+    const eventsRes = await get(`/v1/oma/sessions/${session.id}/events`, {
       Accept: "application/json",
     });
     const eventsBody = (await eventsRes.json()) as any;
     expect(eventsBody.data.length).toBeGreaterThanOrEqual(1);
 
     // Archive session
-    const archRes = await post(`/v1/sessions/${session.id}/archive`, {});
+    const archRes = await post(`/v1/oma/sessions/${session.id}/archive`, {});
     expect(archRes.status).toBe(200);
     const archived = (await archRes.json()) as any;
     expect(archived.archived_at).toBeTruthy();
 
     // Verify archived via GET
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     const fetched = (await getRes.json()) as any;
     expect(fetched.archived_at).toBeTruthy();
   });
@@ -607,46 +607,46 @@ describe("Full lifecycle", () => {
     const { agent, session } = await createFullSession();
 
     // Try to delete agent with active session — should fail
-    const delRes = await del(`/v1/agents/${agent.id}`);
+    const delRes = await del(`/v1/oma/agents/${agent.id}`);
     expect(delRes.status).toBe(409);
 
     // Archive session first, then delete should work
-    await post(`/v1/sessions/${session.id}/archive`, {});
-    const delRes2 = await del(`/v1/agents/${agent.id}`);
+    await post(`/v1/oma/sessions/${session.id}/archive`, {});
+    const delRes2 = await del(`/v1/oma/agents/${agent.id}`);
     expect(delRes2.status).toBe(200);
 
     // Agent should be 404
-    const agentGet = await get(`/v1/agents/${agent.id}`);
+    const agentGet = await get(`/v1/oma/agents/${agent.id}`);
     expect(agentGet.status).toBe(404);
 
     // Session still accessible with agent snapshot
-    const sessGet = await get(`/v1/sessions/${session.id}`);
+    const sessGet = await get(`/v1/oma/sessions/${session.id}`);
     expect(sessGet.status).toBe(200);
     const sessBody = (await sessGet.json()) as any;
     expect(sessBody.agent).toBeDefined();
   });
 
   it("multiple sessions on same env are independent", async () => {
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "Shared Env Agent",
       model: "claude-sonnet-4-6",
       harness: "noop",
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "shared-env",
       config: { type: "cloud" },
     });
     const environment = (await envRes.json()) as any;
 
-    const s1 = await post("/v1/sessions", {
+    const s1 = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: environment.id,
       title: "Session A",
     });
     const sess1 = (await s1.json()) as any;
 
-    const s2 = await post("/v1/sessions", {
+    const s2 = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: environment.id,
       title: "Session B",
@@ -654,10 +654,10 @@ describe("Full lifecycle", () => {
     const sess2 = (await s2.json()) as any;
 
     // Post different events to each
-    await post(`/v1/sessions/${sess1.id}/events`, {
+    await post(`/v1/oma/sessions/${sess1.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "only-session-a" }] }],
     });
-    await post(`/v1/sessions/${sess2.id}/events`, {
+    await post(`/v1/oma/sessions/${sess2.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "only-session-b" }] }],
     });
 
@@ -684,16 +684,16 @@ describe("Full lifecycle", () => {
     const { session } = await createFullSession();
 
     // Post an event
-    await post(`/v1/sessions/${session.id}/events`, {
+    await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "before cleanup" }] }],
     });
 
     // Delete session
-    const delRes = await del(`/v1/sessions/${session.id}`);
+    const delRes = await del(`/v1/oma/sessions/${session.id}`);
     expect(delRes.status).toBe(200);
 
     // Session should be gone from KV
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     expect(getRes.status).toBe(404);
 
     // DO should be terminated
@@ -704,9 +704,9 @@ describe("Full lifecycle", () => {
 
   it("archived session rejects new events (409)", async () => {
     const { session } = await createFullSession();
-    await post(`/v1/sessions/${session.id}/archive`, {});
+    await post(`/v1/oma/sessions/${session.id}/archive`, {});
 
-    const res = await post(`/v1/sessions/${session.id}/events`, {
+    const res = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "post-archive" }] }],
     });
     expect(res.status).toBe(409);
@@ -720,7 +720,7 @@ describe("Full lifecycle", () => {
 // ============================================================
 describe("Error boundaries", () => {
   it("malformed JSON body returns error", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: H,
       body: "not json at all {{{",
@@ -730,7 +730,7 @@ describe("Error boundaries", () => {
   });
 
   it("missing Content-Type header still works (Hono handles)", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: { "x-api-key": "test-key" },
       body: JSON.stringify({ name: "NoCT", model: "claude-sonnet-4-6", harness: "noop" }),
@@ -747,7 +747,7 @@ describe("Error boundaries", () => {
       system: "z".repeat(2 * 1024 * 1024),
       harness: "noop",
     });
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: H,
       body: bigBody,
@@ -760,41 +760,41 @@ describe("Error boundaries", () => {
 
   it("invalid agent ID format still works (no format validation)", async () => {
     // The API does not validate ID format — it just does KV lookup
-    const res = await get("/v1/agents/not-a-valid-id-format");
+    const res = await get("/v1/oma/agents/not-a-valid-id-format");
     expect(res.status).toBe(404);
   });
 
   it("double-archive is idempotent", async () => {
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "DoubleArchive",
       model: "claude-sonnet-4-6",
       harness: "noop",
     });
     const agent = (await agentRes.json()) as any;
 
-    const arch1 = await post(`/v1/agents/${agent.id}/archive`, {});
+    const arch1 = await post(`/v1/oma/agents/${agent.id}/archive`, {});
     expect(arch1.status).toBe(200);
     const body1 = (await arch1.json()) as any;
     expect(body1.archived_at).toBeTruthy();
 
-    const arch2 = await post(`/v1/agents/${agent.id}/archive`, {});
+    const arch2 = await post(`/v1/oma/agents/${agent.id}/archive`, {});
     expect(arch2.status).toBe(200);
     const body2 = (await arch2.json()) as any;
     expect(body2.archived_at).toBeTruthy();
   });
 
   it("double-delete returns 404 on second", async () => {
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "DoubleDelete",
       model: "claude-sonnet-4-6",
       harness: "noop",
     });
     const agent = (await agentRes.json()) as any;
 
-    const del1 = await del(`/v1/agents/${agent.id}`);
+    const del1 = await del(`/v1/oma/agents/${agent.id}`);
     expect(del1.status).toBe(200);
 
-    const del2 = await del(`/v1/agents/${agent.id}`);
+    const del2 = await del(`/v1/oma/agents/${agent.id}`);
     expect(del2.status).toBe(404);
   });
 });

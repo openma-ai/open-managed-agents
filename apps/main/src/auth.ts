@@ -16,12 +16,12 @@ export const authMiddleware = createMiddleware<{
   Variables: { tenant_id: string; user_id?: string };
 }>(async (c, next) => {
   // Internal endpoints have their own header-secret auth (see routes/internal.ts)
-  if (c.req.path.startsWith("/v1/internal/")) {
+  if (c.req.path.startsWith("/v1/oma/internal/")) {
     return next();
   }
   // MCP proxy authenticates via Bearer oma_* on every request — its own
   // resolveProxyTarget validates token + session ownership in one shot.
-  if (c.req.path.startsWith("/v1/mcp-proxy/")) {
+  if (c.req.path.startsWith("/v1/oma/mcp-proxy/")) {
     return next();
   }
 
@@ -51,7 +51,7 @@ export const authMiddleware = createMiddleware<{
     } else if (c.env.MAIN_DB) {
       // Backwards compat: legacy keys minted before user_id was tracked.
       // If the tenant has exactly one user, attribute the request to them so
-      // user-scoped endpoints (e.g. /v1/integrations/*) keep working without
+      // user-scoped endpoints (e.g. /v1/oma/integrations/*) keep working without
       // requiring everyone to regenerate. Multi-user tenants must explicitly
       // regenerate; we don't guess.
       try {

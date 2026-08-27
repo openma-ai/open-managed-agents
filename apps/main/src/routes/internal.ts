@@ -11,9 +11,9 @@ import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 // session, no API key. Routes here MUST NOT be exposed publicly; they trust
 // the calling worker to have already authenticated the OMA user.
 //
-// Mounted at /v1/internal/* in apps/main/src/index.ts.
+// Mounted at /v1/oma/internal/* in apps/main/src/index.ts.
 //
-// EXCEPTION: /v1/internal/usage_events/* uses BILLING_INTERNAL_SECRET
+// EXCEPTION: /v1/oma/internal/usage_events/* uses BILLING_INTERNAL_SECRET
 // (separate Bearer header, separate scope) because the caller is the
 // hosted billing worker — a different trust principal than the
 // integrations gateway. Mounted as a sub-app at the bottom of this file
@@ -133,15 +133,15 @@ function integrationsOrigin(env: Env): string {
 // the binding isn't configured.
 //
 // Scope: every route in `app` (the integrations-internal API). The
-// /v1/internal/usage_events/* sub-app is mounted on a separate Hono
+// /v1/oma/internal/usage_events/* sub-app is mounted on a separate Hono
 // instance below with its OWN bearer auth (BILLING_INTERNAL_SECRET) so
 // the two trust principals don't share a secret.
 app.use("*", async (c, next) => {
   // Skip integrations-secret check for paths owned by the billing sub-app
-  // — they're mounted on the same /v1/internal/* prefix from a different
+  // — they're mounted on the same /v1/oma/internal/* prefix from a different
   // Hono. Without this short-circuit the integrations gate would 401 the
   // billing worker before the request ever reached its own auth middleware.
-  if (c.req.path.startsWith("/v1/internal/usage_events")) {
+  if (c.req.path.startsWith("/v1/oma/internal/usage_events")) {
     return next();
   }
   const expected = c.env.INTEGRATIONS_INTERNAL_SECRET;
@@ -217,7 +217,7 @@ interface RotateBody {
 }
 
 /**
- * POST /v1/internal/sessions
+ * POST /v1/oma/internal/sessions
  * Body: CreateSessionBody. Creates a new session and (optionally) seeds it
  * with an initial user message. Returns { sessionId }.
  */
@@ -415,7 +415,7 @@ app.post("/sessions", async (c) => {
 });
 
 /**
- * POST /v1/internal/sessions/:id/events
+ * POST /v1/oma/internal/sessions/:id/events
  * Body: ResumeSessionBody. Appends an event to an existing session.
  */
 app.post("/sessions/:id/events", async (c) => {
@@ -455,7 +455,7 @@ app.post("/sessions/:id/events", async (c) => {
 });
 
 /**
- * GET /v1/internal/sessions/:id
+ * GET /v1/oma/internal/sessions/:id
  * Returns the persisted session record (id + metadata + snapshots) so the
  * integrations gateway can validate per-session MCP tokens and resolve the
  * publication. O(1) PRIMARY KEY lookup via the sessions-store cross-tenant
@@ -470,7 +470,7 @@ app.get("/sessions/:id", async (c) => {
 });
 
 /**
- * POST /v1/internal/vaults
+ * POST /v1/oma/internal/vaults
  * Body discriminated by `action`:
  *   - "create_with_credential":  CreateVaultCredentialBody  → fresh vault + static_bearer
  *   - "add_cap_cli":             AddCapCliBody              → cap_cli cred (in existing or fresh vault)
@@ -558,7 +558,7 @@ app.post("/vaults", async (c) => {
 });
 
 /**
- * POST /v1/internal/vaults/rotate
+ * POST /v1/oma/internal/vaults/rotate
  * Replace the token on a credential in the given vault, looking it up by
  * type (and cli_id for cap_cli). Used to refresh short-lived upstream
  * tokens (e.g. GitHub installation tokens, ~1hr TTL) without the caller
@@ -643,14 +643,14 @@ async function fetchVaultCredentials(
 // ─── Local ACP runtime ────────────────────────────────────────────────────
 
 
-// /v1/internal/runtime-attach-harness was removed: AcpProxyHarness on the
+// /v1/oma/internal/runtime-attach-harness was removed: AcpProxyHarness on the
 // agent worker now binds RUNTIME_ROOM directly via cross-script DO binding
 // (apps/agent/wrangler.jsonc → script_name: "managed-agents") and calls
 // `runtime_room_stub.fetch("http://runtime-room/_attach_harness", ...)`.
 // One less worker hop, no shared INTEGRATIONS_INTERNAL_SECRET on agent.
 
 // ─────────────────────────────────────────────────────────────────────
-// /v1/internal/usage_events/* — billing reconcile API
+// /v1/oma/internal/usage_events/* — billing reconcile API
 //
 // Service-to-service: the hosted billing worker
 // (managed-agents-billing) calls these endpoints from a daily cron to
@@ -685,7 +685,7 @@ billingApp.use("/usage_events/*", async (c, next) => {
 });
 
 /**
- * GET /v1/internal/usage_events
+ * GET /v1/oma/internal/usage_events
  * Query:
  *   tenant_id  optional — filter to a single tenant. If omitted, returns
  *              unbilled events across ALL tenants on every shard, ordered
@@ -742,7 +742,7 @@ billingApp.get("/usage_events", async (c) => {
 });
 
 /**
- * POST /v1/internal/usage_events/ack
+ * POST /v1/oma/internal/usage_events/ack
  * Body: { ids: number[] }
  *
  * Marks the given ids as billed (sets billed_at = now). Idempotent: a
@@ -775,10 +775,10 @@ async function listUnbilledTenantsOnShard(
   return services.usage.listUnbilledTenants();
 }
 
-// Mount the billing sub-app onto the same /v1/internal/* base. Because
+// Mount the billing sub-app onto the same /v1/oma/internal/* base. Because
 // we Hono-mount via `app.route("/", billingApp)`, every billingApp path
-// becomes a sibling under `/v1/internal/*` — and the integrations auth
-// middleware above explicitly skips /v1/internal/usage_events/* paths
+// becomes a sibling under `/v1/oma/internal/*` — and the integrations auth
+// middleware above explicitly skips /v1/oma/internal/usage_events/* paths
 // so this sub-app's own bearer middleware is the only gate.
 app.route("/", billingApp);
 

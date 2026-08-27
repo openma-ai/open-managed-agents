@@ -1,6 +1,6 @@
 // Cap CLI OAuth Device Authorization Grant routes.
 //
-// Distinct from /v1/oauth/* (which is browser Authorization Code + PKCE
+// Distinct from /v1/oma/oauth/* (which is browser Authorization Code + PKCE
 // for MCP servers). Cap's flow is RFC 8628 — designed for CLIs that have
 // no browser callback. The user gets a code + URL, visits it on any
 // device, enters the code; we poll the upstream until ready.
@@ -61,7 +61,7 @@ interface DeviceFlowSession {
   readonly state: DeviceFlowState;
 }
 
-// ─── POST /v1/cap-cli/oauth/initiate ─────────────────────────────────────
+// ─── POST /v1/oma/cap-cli/oauth/initiate ─────────────────────────────────────
 
 interface InitiateBody {
   vault_id: string;
@@ -119,7 +119,7 @@ app.post("/initiate", async (c) => {
   });
 });
 
-// ─── POST /v1/cap-cli/oauth/poll ─────────────────────────────────────────
+// ─── POST /v1/oma/cap-cli/oauth/poll ─────────────────────────────────────────
 
 interface PollBody {
   session_id: string;

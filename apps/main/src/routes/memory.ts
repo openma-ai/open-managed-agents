@@ -115,7 +115,7 @@ app.get("/", async (c) => {
   // status: enum filter on archive state. Whitelist strictly — any
   // unknown value is a 400, NOT a silent fallback to "any". Matches the
   // pattern in packages/http-routes (used by main-node) so both runtimes
-  // serve identical semantics on /v1/memory_stores.
+  // serve identical semantics on /v1/oma/memory_stores.
   const statusRaw = c.req.query("status");
   let status: "active" | "archived" | "any" | undefined;
   if (statusRaw !== undefined) {
@@ -191,7 +191,7 @@ app.get("/:id", async (c) => {
   return c.json(toApiStore(store));
 });
 
-// POST/PUT /v1/memory_stores/:id — update memory store. Anthropic uses
+// POST/PUT /v1/oma/memory_stores/:id — update memory store. Anthropic uses
 // POST per their REST conventions; PUT accepted as a body-replace alias
 // (matches our agents / sessions update routes).
 app.on(["PUT", "POST"], "/:id", async (c) => {

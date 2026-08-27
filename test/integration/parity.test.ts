@@ -60,7 +60,7 @@ describe("Rate limiting", () => {
   });
 
   it("rate limit middleware is wired — normal requests succeed", async () => {
-    const res = await get("/v1/agents");
+    const res = await get("/v1/oma/agents");
     expect(res.status).toBe(200);
   });
 });
@@ -72,16 +72,16 @@ describe("user.define_outcome event", () => {
   let sessionId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", {
+    const a = await post("/v1/oma/agents", {
       name: "OutcomeAgent",
       model: "claude-sonnet-4-6",
       harness: "parity-noop",
     });
-    const e = await post("/v1/environments", {
+    const e = await post("/v1/oma/environments", {
       name: "outcome-env",
       config: { type: "cloud" },
     });
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: ((await a.json()) as any).id,
       environment_id: ((await e.json()) as any).id,
     });
@@ -89,7 +89,7 @@ describe("user.define_outcome event", () => {
   });
 
   it("accepts user.define_outcome event", async () => {
-    const res = await post(`/v1/sessions/${sessionId}/events`, {
+    const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [
         {
           type: "user.define_outcome",
@@ -101,7 +101,7 @@ describe("user.define_outcome event", () => {
   });
 
   it("accepts user.define_outcome with criteria", async () => {
-    const res = await post(`/v1/sessions/${sessionId}/events`, {
+    const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [
         {
           type: "user.define_outcome",
@@ -155,7 +155,7 @@ describe("user.define_outcome event", () => {
 // ============================================================
 describe("Vaults CRUD", () => {
   it("creates a vault", async () => {
-    const res = await post("/v1/vaults", { name: "Test Vault" });
+    const res = await post("/v1/oma/vaults", { name: "Test Vault" });
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
     expect(body.id).toMatch(/^vlt-/);
@@ -164,14 +164,14 @@ describe("Vaults CRUD", () => {
   });
 
   it("rejects vault without name", async () => {
-    const res = await post("/v1/vaults", {});
+    const res = await post("/v1/oma/vaults", {});
     expect(res.status).toBe(400);
   });
 
   it("lists vaults", async () => {
     // Create one to be sure
-    await post("/v1/vaults", { name: "List Vault" });
-    const res = await get("/v1/vaults");
+    await post("/v1/oma/vaults", { name: "List Vault" });
+    const res = await get("/v1/oma/vaults");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -179,9 +179,9 @@ describe("Vaults CRUD", () => {
   });
 
   it("gets vault by id", async () => {
-    const createRes = await post("/v1/vaults", { name: "Get Vault" });
+    const createRes = await post("/v1/oma/vaults", { name: "Get Vault" });
     const vault = (await createRes.json()) as any;
-    const res = await get(`/v1/vaults/${vault.id}`);
+    const res = await get(`/v1/oma/vaults/${vault.id}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.id).toBe(vault.id);
@@ -189,51 +189,51 @@ describe("Vaults CRUD", () => {
   });
 
   it("returns 404 for nonexistent vault", async () => {
-    const res = await get("/v1/vaults/vlt_nonexistent");
+    const res = await get("/v1/oma/vaults/vlt_nonexistent");
     expect(res.status).toBe(404);
   });
 
   it("archives vault", async () => {
-    const createRes = await post("/v1/vaults", { name: "Archive Vault" });
+    const createRes = await post("/v1/oma/vaults", { name: "Archive Vault" });
     const vault = (await createRes.json()) as any;
-    const res = await post(`/v1/vaults/${vault.id}/archive`, {});
+    const res = await post(`/v1/oma/vaults/${vault.id}/archive`, {});
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.archived_at).toBeTruthy();
   });
 
   it("deletes vault", async () => {
-    const createRes = await post("/v1/vaults", { name: "Delete Vault" });
+    const createRes = await post("/v1/oma/vaults", { name: "Delete Vault" });
     const vault = (await createRes.json()) as any;
-    const res = await del(`/v1/vaults/${vault.id}`);
+    const res = await del(`/v1/oma/vaults/${vault.id}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.type).toBe("vault_deleted");
 
     // Verify it's gone
-    const getRes = await get(`/v1/vaults/${vault.id}`);
+    const getRes = await get(`/v1/oma/vaults/${vault.id}`);
     expect(getRes.status).toBe(404);
   });
 
   it("excludes archived vaults by default", async () => {
-    const createRes = await post("/v1/vaults", { name: "Archived Vault" });
+    const createRes = await post("/v1/oma/vaults", { name: "Archived Vault" });
     const vault = (await createRes.json()) as any;
-    await post(`/v1/vaults/${vault.id}/archive`, {});
+    await post(`/v1/oma/vaults/${vault.id}/archive`, {});
 
-    const listRes = await get("/v1/vaults");
+    const listRes = await get("/v1/oma/vaults");
     const body = (await listRes.json()) as any;
     const archivedInList = body.data.find((v: any) => v.id === vault.id);
     expect(archivedInList).toBeUndefined();
   });
 
   it("includes archived vaults when requested", async () => {
-    const createRes = await post("/v1/vaults", {
+    const createRes = await post("/v1/oma/vaults", {
       name: "Archived Vault Include",
     });
     const vault = (await createRes.json()) as any;
-    await post(`/v1/vaults/${vault.id}/archive`, {});
+    await post(`/v1/oma/vaults/${vault.id}/archive`, {});
 
-    const listRes = await get("/v1/vaults?include_archived=true");
+    const listRes = await get("/v1/oma/vaults?include_archived=true");
     const body = (await listRes.json()) as any;
     const found = body.data.find((v: any) => v.id === vault.id);
     expect(found).toBeTruthy();
@@ -248,12 +248,12 @@ describe("Credentials CRUD", () => {
   let vaultId: string;
 
   beforeAll(async () => {
-    const res = await post("/v1/vaults", { name: "Cred Vault" });
+    const res = await post("/v1/oma/vaults", { name: "Cred Vault" });
     vaultId = ((await res.json()) as any).id;
   });
 
   it("creates a credential", async () => {
-    const res = await post(`/v1/vaults/${vaultId}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vaultId}/credentials`, {
       display_name: "Test Cred",
       auth: {
         type: "static_bearer",
@@ -272,12 +272,12 @@ describe("Credentials CRUD", () => {
   });
 
   it("rejects credential without required fields", async () => {
-    const res = await post(`/v1/vaults/${vaultId}/credentials`, {});
+    const res = await post(`/v1/oma/vaults/${vaultId}/credentials`, {});
     expect(res.status).toBe(400);
   });
 
   it("returns 404 for credential on nonexistent vault", async () => {
-    const res = await post("/v1/vaults/vlt_ghost/credentials", {
+    const res = await post("/v1/oma/vaults/vlt_ghost/credentials", {
       display_name: "X",
       auth: { type: "static_bearer", mcp_server_url: "https://x.com", token: "t" },
     });
@@ -285,7 +285,7 @@ describe("Credentials CRUD", () => {
   });
 
   it("lists credentials (no secrets)", async () => {
-    const res = await get(`/v1/vaults/${vaultId}/credentials`);
+    const res = await get(`/v1/oma/vaults/${vaultId}/credentials`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -300,14 +300,14 @@ describe("Credentials CRUD", () => {
   });
 
   it("archives credential", async () => {
-    const createRes = await post(`/v1/vaults/${vaultId}/credentials`, {
+    const createRes = await post(`/v1/oma/vaults/${vaultId}/credentials`, {
       display_name: "To Archive",
       auth: { type: "static_bearer", mcp_server_url: "https://x.com", token: "t" },
     });
     const cred = (await createRes.json()) as any;
 
     const archRes = await post(
-      `/v1/vaults/${vaultId}/credentials/${cred.id}/archive`,
+      `/v1/oma/vaults/${vaultId}/credentials/${cred.id}/archive`,
       {}
     );
     expect(archRes.status).toBe(200);
@@ -318,14 +318,14 @@ describe("Credentials CRUD", () => {
   });
 
   it("deletes credential", async () => {
-    const createRes = await post(`/v1/vaults/${vaultId}/credentials`, {
+    const createRes = await post(`/v1/oma/vaults/${vaultId}/credentials`, {
       display_name: "To Delete",
       auth: { type: "static_bearer", mcp_server_url: "https://x.com", token: "t" },
     });
     const cred = (await createRes.json()) as any;
 
     const delRes = await del(
-      `/v1/vaults/${vaultId}/credentials/${cred.id}`
+      `/v1/oma/vaults/${vaultId}/credentials/${cred.id}`
     );
     expect(delRes.status).toBe(200);
     const body = (await delRes.json()) as any;
@@ -333,7 +333,7 @@ describe("Credentials CRUD", () => {
   });
 
   it("creates oauth credential with all secret fields stripped", async () => {
-    const res = await post(`/v1/vaults/${vaultId}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vaultId}/credentials`, {
       display_name: "OAuth Cred",
       auth: {
         type: "mcp_oauth",

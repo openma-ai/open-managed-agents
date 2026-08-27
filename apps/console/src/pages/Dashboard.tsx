@@ -33,11 +33,11 @@ export function Dashboard() {
   const { t } = useI18n();
 
   // Headline cards + recent panel each ride their own TQ query so the
-  // dashboard renders the parts it has — a flaky /v1/stats no longer
+  // dashboard renders the parts it has — a flaky /v1/oma/stats no longer
   // blocks the recent-sessions panel and vice versa. The previous
   // hand-rolled `Promise.all` + single `loading` boolean made one failure
   // hide both panels.
-  const statsQuery = useApiQuery<Stats>("/v1/stats");
+  const statsQuery = useApiQuery<Stats>("/v1/oma/stats");
   const sessionsQuery = useApiQuery<{ data: RecentSession[] }>(
     "/v1/sessions",
     { limit: "5" },

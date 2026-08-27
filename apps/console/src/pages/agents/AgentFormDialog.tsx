@@ -801,7 +801,7 @@ function BasicTab({
               onValueChange={(v, item) => {
                 setForm({ ...form, modelCardId: v, model: item?.model_id ?? v });
               }}
-              endpoint="/v1/model_cards"
+              endpoint="/v1/oma/model_cards"
               getValue={(mc) => mc.id}
               getLabel={(mc) => (
                 <span>

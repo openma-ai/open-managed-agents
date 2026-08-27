@@ -1,0 +1,2 @@
+ALTER TABLE `managed_environment_work` ADD `session_id` text;--> statement-breakpoint
+CREATE INDEX `idx_managed_environment_work_session` ON `managed_environment_work` (`workspace_id`,`session_id`,`state`,`created_at`,`id`);

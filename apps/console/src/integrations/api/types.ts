@@ -1,4 +1,4 @@
-// DTO shapes returned by apps/main /v1/integrations/* endpoints. Keep
+// DTO shapes returned by apps/main /v1/oma/integrations/* endpoints. Keep
 // snake_case to match the wire format — JS clients can still read them
 // without ceremony.
 

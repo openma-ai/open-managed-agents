@@ -31,13 +31,17 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
       !collectedFiles.includes(relativeFixturePath),
       `generated test artifact was collected by the root Cloudflare test project: ${relativeFixturePath}`,
     );
-    const nodeOnlyAcpTests = collectedFiles.filter((path) =>
-      path.startsWith("packages/acp-runtime/"),
+    const nodeOnlyPackageTests = collectedFiles.filter((path) =>
+      [
+        "packages/acp-runtime/",
+        "packages/cli/",
+        "packages/managed-agents-runtime/",
+      ].some((prefix) => path.startsWith(prefix)),
     );
     assert.deepEqual(
-      nodeOnlyAcpTests,
+      nodeOnlyPackageTests,
       [],
-      `Node-only ACP runtime tests were collected by the root Cloudflare test project: ${nodeOnlyAcpTests.join(", ")}`,
+      `Node-only package tests were collected by the root Cloudflare test project: ${nodeOnlyPackageTests.join(", ")}`,
     );
   } finally {
     rmSync(buildDir, { recursive: true, force: true });

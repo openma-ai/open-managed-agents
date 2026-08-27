@@ -5,7 +5,7 @@
 //   - The plaintext `api_key` is NEVER part of ModelCardRow. The service
 //     exposes a separate `getApiKey()` method for callers that legitimately
 //     need the cleartext (the agent worker's model resolver and the
-//     `/v1/model_cards/:id/key` route). List/get responses carry only
+//     `/v1/oma/model_cards/:id/key` route). List/get responses carry only
 //     `api_key_preview` (last 4 chars), matching the legacy KV row shape.
 //   - `is_default` is denormalized (boolean) for fast `getDefault` reads.
 //     The DB enforces "at most one default per tenant" via a partial UNIQUE

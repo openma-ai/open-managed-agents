@@ -10,7 +10,7 @@ import type {
 
 export interface ServiceBindingVaultManagerOptions {
   internalSecret: string;
-  /** Path on apps/main. Defaults to "/v1/internal/vaults". */
+  /** Path on apps/main. Defaults to "/v1/oma/internal/vaults". */
   path?: string;
 }
 
@@ -25,7 +25,7 @@ export class ServiceBindingVaultManager implements VaultManager {
     if (!opts.internalSecret) {
       throw new Error("ServiceBindingVaultManager: internalSecret required");
     }
-    this.path = opts.path ?? "/v1/internal/vaults";
+    this.path = opts.path ?? "/v1/oma/internal/vaults";
     this.secret = opts.internalSecret;
   }
 

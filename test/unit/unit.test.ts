@@ -28,7 +28,7 @@ describe.skip("SqliteHistory message conversion", () => {
   ) {
     registerHarness(harnessName, harnessFactory);
 
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -39,14 +39,14 @@ describe.skip("SqliteHistory message conversion", () => {
     });
     const agent = (await agentRes.json()) as any;
 
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
 
-    const sessRes = await api("/v1/sessions", {
+    const sessRes = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -80,7 +80,7 @@ describe.skip("SqliteHistory message conversion", () => {
     }));
 
     // Post message to trigger harness
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -120,7 +120,7 @@ describe.skip("SqliteHistory message conversion", () => {
       },
     }));
 
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -168,7 +168,7 @@ describe.skip("SqliteHistory message conversion", () => {
     }));
 
     // First message
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -178,7 +178,7 @@ describe.skip("SqliteHistory message conversion", () => {
     await new Promise((r) => setTimeout(r, 200));
 
     // Second message
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -268,7 +268,7 @@ describe("Tool building", () => {
       },
     }));
 
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -303,7 +303,7 @@ describe("Tool building", () => {
   });
 
   it("empty tools array defaults to full toolset", async () => {
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "NoTools", model: "claude-sonnet-4-6" }),
@@ -332,19 +332,19 @@ describe.skip("WebSocket broadcast", () => {
       },
     }));
 
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "BC", model: "claude-sonnet-4-6", harness: "broadcast-test" }),
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await api("/v1/sessions", {
+    const sessRes = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -369,7 +369,7 @@ describe.skip("WebSocket broadcast", () => {
     ws2.addEventListener("message", (e) => events2.push(JSON.parse(e.data as string)));
 
     // Trigger harness
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -403,19 +403,19 @@ describe("Edge cases", () => {
 
   async function createSession() {
     registerHarness("noop", () => ({ async run() {} }));
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Edge", model: "claude-sonnet-4-6", harness: "noop" }),
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await api("/v1/sessions", {
+    const sessRes = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -426,7 +426,7 @@ describe("Edge cases", () => {
   it("handles unicode in messages", async () => {
     const session = await createSession();
     const text = "你好世界 🌍 こんにちは мир 🚀";
-    const res = await api(`/v1/sessions/${session.id}/events`, {
+    const res = await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -455,7 +455,7 @@ describe("Edge cases", () => {
   it("handles large message payload (100KB)", async () => {
     const session = await createSession();
     const bigText = "x".repeat(100_000);
-    const res = await api(`/v1/sessions/${session.id}/events`, {
+    const res = await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -466,7 +466,7 @@ describe("Edge cases", () => {
   });
 
   it("handles special characters in agent name and system prompt", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -478,7 +478,7 @@ describe("Edge cases", () => {
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
 
-    const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
     const fetched = (await getRes.json()) as any;
     expect(fetched.name).toBe('Agent "with" <special> & chars');
     expect(fetched.system).toContain("\n");
@@ -486,7 +486,7 @@ describe("Edge cases", () => {
 
   it("handles empty content array in user message", async () => {
     const session = await createSession();
-    const res = await api(`/v1/sessions/${session.id}/events`, {
+    const res = await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -500,7 +500,7 @@ describe("Edge cases", () => {
   it("agent IDs are unique across creates", async () => {
     const ids = new Set<string>();
     for (let i = 0; i < 5; i++) {
-      const res = await api("/v1/agents", {
+      const res = await api("/v1/oma/agents", {
         method: "POST",
         headers: HEADERS,
         body: JSON.stringify({ name: `U${i}`, model: "claude-sonnet-4-6" }),
@@ -528,19 +528,19 @@ describe.skip("Harness error handling", () => {
       },
     }));
 
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Crash", model: "claude-sonnet-4-6", harness: "crash-harness" }),
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await api("/v1/sessions", {
+    const sessRes = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -548,7 +548,7 @@ describe.skip("Harness error handling", () => {
     const session = (await sessRes.json()) as any;
 
     // Trigger the crashing harness
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -588,7 +588,7 @@ describe.skip("Harness error handling", () => {
 
   it("unknown harness falls back to default", async () => {
     // Agent with non-existent harness — should fall back to "default"
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -598,13 +598,13 @@ describe.skip("Harness error handling", () => {
       }),
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
-    const sessRes = await api("/v1/sessions", {
+    const sessRes = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -612,7 +612,7 @@ describe.skip("Harness error handling", () => {
     const session = (await sessRes.json()) as any;
 
     // Post event — should not crash with "Unknown harness"
-    const res = await api(`/v1/sessions/${session.id}/events`, {
+    const res = await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({

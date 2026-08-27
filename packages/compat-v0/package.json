@@ -1,0 +1,57 @@
+{
+  "name": "@open-managed-agents/compat-v0",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./agents": "./src/agents.ts",
+    "./credentials": "./src/credentials.ts",
+    "./deployments": "./src/deployments.ts",
+    "./deployment-runs": "./src/deployment-runs.ts",
+    "./dreams": "./src/dreams.ts",
+    "./environments": "./src/environments.ts",
+    "./environment-work": "./src/environment-work.ts",
+    "./files": "./src/files.ts",
+    "./memory-stores": "./src/memory-stores.ts",
+    "./memories": "./src/memories.ts",
+    "./session-events": "./src/session-events.ts",
+    "./session-resources": "./src/session-resources.ts",
+    "./session-threads": "./src/session-threads.ts",
+    "./sessions": "./src/sessions.ts",
+    "./skills": "./src/skills.ts",
+    "./tunnels": "./src/tunnels.ts",
+    "./user-profiles": "./src/user-profiles.ts",
+    "./vaults": "./src/vaults.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/agent-store": "workspace:*",
+    "@open-managed-agents/app": "workspace:*",
+    "@open-managed-agents/credential-store": "workspace:*",
+    "@open-managed-agents/deployment-store": "workspace:*",
+    "@open-managed-agents/deployment-run-store": "workspace:*",
+    "@open-managed-agents/dream-store": "workspace:*",
+    "@open-managed-agents/environment-store": "workspace:*",
+    "@open-managed-agents/environment-work-store": "workspace:*",
+    "@open-managed-agents/file-store": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/memory-store-store": "workspace:*",
+    "@open-managed-agents/memory-document-store": "workspace:*",
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/session-event-store": "workspace:*",
+    "@open-managed-agents/session-resource-store": "workspace:*",
+    "@open-managed-agents/session-thread-store": "workspace:*",
+    "@open-managed-agents/session-store": "workspace:*",
+    "@open-managed-agents/skill-store": "workspace:*",
+    "@open-managed-agents/tunnel-store": "workspace:*",
+    "@open-managed-agents/user-profile-store": "workspace:*",
+    "@open-managed-agents/vault-store": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

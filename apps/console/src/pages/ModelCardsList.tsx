@@ -81,7 +81,7 @@ export function ModelCardsList() {
     isLoadingMore,
     loadMore,
     refresh: load,
-  } = useInfiniteApiQuery<ModelCard>("/v1/model_cards", { limit: 20, params: cardsParams });
+  } = useInfiniteApiQuery<ModelCard>("/v1/oma/model_cards", { limit: 20, params: cardsParams });
 
   // Fetch models from official API using the user's key
   const fetchModels = useCallback(async (provider: string, apiKey: string) => {
@@ -91,7 +91,7 @@ export function ModelCardsList() {
     }
     setModelsLoading(true);
     try {
-      const result = await api<{ data: Array<{ id: string; name: string }> }>("/v1/models/list", {
+      const result = await api<{ data: Array<{ id: string; name: string }> }>("/v1/oma/models/list", {
         method: "POST",
         body: JSON.stringify({ provider, api_key: apiKey }),
       });
@@ -130,12 +130,12 @@ export function ModelCardsList() {
       if (Object.keys(hdrs).length > 0) payload.custom_headers = hdrs;
       if (editingId) {
         if (!form.api_key) delete payload.api_key;
-        await api(`/v1/model_cards/${editingId}`, { method: "POST", body: JSON.stringify(payload) });
+        await api(`/v1/oma/model_cards/${editingId}`, { method: "POST", body: JSON.stringify(payload) });
       } else {
         // Create returns the card + a probe result. Surface it so the user
         // finds out NOW if their api_key / base_url / model id is broken.
         const created = await api<{ probe?: { ok: boolean | null; message?: string; reason?: string } }>(
-          "/v1/model_cards",
+          "/v1/oma/model_cards",
           { method: "POST", body: JSON.stringify(payload) },
         );
         const probe = created.probe;
@@ -155,7 +155,7 @@ export function ModelCardsList() {
   };
 
   const remove = async (id: string) => {
-    try { await api(`/v1/model_cards/${id}`, { method: "DELETE" }); load(); } catch {}
+    try { await api(`/v1/oma/model_cards/${id}`, { method: "DELETE" }); load(); } catch {}
   };
 
   const startEdit = (card: ModelCard) => {

@@ -1,16 +1,124 @@
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
-import { servicesMiddleware, tenantDbMiddleware, getCfServicesForTenant } from "@open-managed-agents/services";
 import {
-  buildAgentRoutes,
-  buildVaultRoutes,
+  buildCfTenantDbProvider,
+  servicesMiddleware,
+  tenantDbMiddleware,
+  getCfServicesForTenant,
+} from "@open-managed-agents/services";
+import {
+  buildAgentRoutes as buildLegacyAgentRoutes,
+  buildVaultRoutes as buildLegacyVaultRoutes,
   buildSessionRoutes,
   buildApiKeyRoutes,
   buildMeRoutes,
   buildTenantRoutes,
   mintApiKeyOnStorage,
 } from "@open-managed-agents/http-routes";
+import {
+  buildAgentRoutes as buildManagedAgentRoutes,
+  buildCredentialRoutes as buildManagedCredentialRoutes,
+  buildDeploymentRoutes as buildManagedDeploymentRoutes,
+  buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
+  buildDreamRoutes as buildManagedDreamRoutes,
+  buildEnvironmentRoutes as buildManagedEnvironmentRoutes,
+  buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes,
+  buildFileRoutes as buildManagedFileRoutes,
+  buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes,
+  buildMemoryRoutes as buildManagedMemoryRoutes,
+  buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes,
+  buildModelRoutes as buildManagedModelRoutes,
+  buildSkillRoutes as buildManagedSkillRoutes,
+  buildSkillVersionRoutes as buildManagedSkillVersionRoutes,
+  buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes,
+  buildTunnelRoutes as buildManagedTunnelRoutes,
+  buildVaultRoutes as buildManagedVaultRoutes,
+  buildUserProfileRoutes as buildManagedUserProfileRoutes,
+  buildManagedSessionsApi,
+} from "@open-managed-agents/managed-agents-api";
+import {
+  SessionRuntimeProjectionApplicationService,
+  type SessionEnvironmentSourcePort,
+} from "@open-managed-agents/managed-agents-application";
+import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
+import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
+import { agentsModule } from "@open-managed-agents/app/modules/agents";
+import { credentialsModule } from "@open-managed-agents/app/modules/credentials";
+import { deploymentRunsModule } from "@open-managed-agents/app/modules/deployment-runs";
+import {
+  deploymentAgentSourcePort,
+  deploymentEnvironmentSourcePort,
+  deploymentFileSourcePort,
+  deploymentMemoryStoreSourcePort,
+  deploymentSchedulePlannerPort,
+  deploymentSessionLauncherPort,
+  deploymentVaultSourcePort,
+  deploymentsModule,
+} from "@open-managed-agents/app/modules/deployments";
+import {
+  dreamCuratorPort,
+  dreamExecutionModule,
+  dreamMemoryStoreSourcePort,
+  dreamMemoryWorkspacePort,
+  dreamSessionSourcePort,
+  dreamsModule,
+} from "@open-managed-agents/app/modules/dreams";
+import { environmentsModule } from "@open-managed-agents/app/modules/environments";
+import {
+  environmentSessionWorkEnqueuerPort,
+  environmentWorkAvailabilityWaiterPort,
+  environmentWorkEnqueuerModule,
+  environmentWorkEnvironmentSourcePort,
+  environmentWorkModule,
+  environmentWorkSessionCredentialIssuerPort,
+} from "@open-managed-agents/app/modules/environment-work";
+import { filesModule } from "@open-managed-agents/app/modules/files";
+import { memoryStoresModule } from "@open-managed-agents/app/modules/memory-stores";
+import {
+  memoriesModule,
+  memoryContentDescriptorPort,
+  memoryStoreForMemorySourcePort,
+  memoryVersionActorPort,
+  memoryVersionsModule,
+} from "@open-managed-agents/app/modules/memories";
+import {
+  skillPackageCompilerPort,
+  skillsModule,
+  skillVersionsModule,
+} from "@open-managed-agents/app/modules/skills";
+import {
+  tunnelCertificateAuthorityPort,
+  tunnelCertificatesModule,
+  tunnelProvisionerPort,
+  tunnelTokenManagerPort,
+  tunnelsModule,
+} from "@open-managed-agents/app/modules/tunnels";
+import {
+  userProfileEnrollmentIssuerPort,
+  userProfilesModule,
+} from "@open-managed-agents/app/modules/user-profiles";
+import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
+import {
+  modelCatalogSourcePort,
+  modelsModule,
+} from "@open-managed-agents/app/modules/models";
+import { createCloudflarePlatform } from "@open-managed-agents/platform-cloudflare";
+import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
+import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
+import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
+import {
+  SqlDeploymentAgentSource,
+  SqlDeploymentVaultSource,
+  SqlFileMetadataPersistence,
+  SqlMemoryStoreSource,
+  SqlManagedSessionsComposition,
+  SqlSessionEnvironmentSource,
+  SqlSessionSource,
+  SqlSessionRuntimeProjectionPersistence,
+} from "@open-managed-agents/managed-agents-adapters-sql";
+import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
+import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import {
   createCfShardPoolService,
   createCfTenantShardDirectoryService,
@@ -22,6 +130,28 @@ import { rateLimitMiddleware, authRateLimitMiddleware } from "./rate-limit";
 import { cfRouteServices } from "./lib/cf-route-services";
 import { cfApiKeyStorage } from "./lib/cf-api-key-storage";
 import { CfSessionRouter } from "./lib/cf-session-router";
+import { CfManagedRuntimeFetcher } from "./lib/cf-managed-runtime-fetcher";
+import { CfManagedSessionRuntimeAdapter } from "./lib/cf-managed-session-runtime";
+import { CfManagedSessionSecretSealer } from "./lib/cf-managed-session-secret-sealer";
+import {
+  AnthropicMessagesDreamCurator,
+  ApplicationDreamMemoryWorkspace,
+  ConfiguredModelCatalogSource,
+  decodeRuntimeProducedSessionEvent,
+  CronDeploymentSchedulePlanner,
+  EnvironmentAwareSessionLifecycleRouter,
+  TimerEnvironmentWorkAvailabilityWaiter,
+  IndeterminateCredentialValidationProbe,
+  inProcessDreamExecutionSchedulerModule,
+  LocalTunnelProvisioner,
+  OpaqueEnvironmentWorkSessionCredentialIssuer,
+  DeduplicatingDreamCurator,
+  WebCryptoTunnelCertificateAuthority,
+  WebCryptoTunnelTokenManager,
+  WebCryptoMemoryContentDescriptor,
+  ZipSkillPackageCompiler,
+} from "@open-managed-agents/managed-agents-adapters-runtime";
+import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import {
   cfSessionLifecycle,
   cfOutputsAdapter,
@@ -29,13 +159,13 @@ import {
 } from "./lib/cf-session-lifecycle";
 import { validateAgentLimits } from "./lib/limits";
 import { listMemberships, hasMembership } from "./auth-config";
-import environmentsRoutes from "./routes/environments";
+import legacyEnvironmentsRoutes from "./routes/environments";
 import oauthRoutes from "./routes/oauth";
 import capCliOauthRoutes from "./routes/cap-cli-oauth";
-import memoryRoutes from "./routes/memory";
+import legacyMemoryRoutes from "./routes/memory";
 import dreamsRoutes from "./routes/dreams";
-import filesRoutes from "./routes/files";
-import skillsRoutes from "./routes/skills";
+import legacyFilesRoutes from "./routes/files";
+import legacySkillsRoutes from "./routes/skills";
 import modelCardsRoutes from "./routes/model-cards";
 import modelsRoutes from "./routes/models";
 import clawhubRoutes from "./routes/clawhub";
@@ -168,13 +298,13 @@ type AppCtx = import("hono").Context<{
 const cfRouteServicesFromCtx = (c: AppCtx) =>
   cfRouteServices(c as never);
 
-const agentsRoutes = new Hono<{
+const legacyAgentsRoutes = new Hono<{
   Bindings: Env;
   Variables: { tenant_id: string; user_id?: string };
 }>().all("*", (c) => {
   const ctx = c as unknown as AppCtx;
   const services = ctx.var.services;
-  const app = buildAgentRoutes({
+  const app = buildLegacyAgentRoutes({
     services: () => cfRouteServicesFromCtx(ctx),
     validateModel: async (tenantId, model) => {
       const cards = await services.modelCards.list({ tenantId });
@@ -200,10 +330,265 @@ const agentsRoutes = new Hono<{
   return invokePackage(c, app);
 });
 
-const vaultsRoutes = new Hono<{ Bindings: Env; Variables: { tenant_id: string } }>().all("*", (c) => {
+const managedModelCatalog = new ConfiguredModelCatalogSource([
+  {
+    id: "claude-opus-5",
+    allowedFallbackModels: null,
+    capabilities: null,
+    createdAt: "1970-01-01T00:00:00.000Z",
+    displayName: "Claude Opus 5",
+    maxInputTokens: null,
+    maxTokens: null,
+  },
+]);
+const managedAgentsPlatform = createCloudflarePlatform({
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+  },
+  modules: () => [
+    providePort(modelCatalogSourcePort, managedModelCatalog),
+    agentsModule(),
+    environmentsModule(),
+    memoryStoresModule(),
+    modelsModule(),
+    providePort(userProfileEnrollmentIssuerPort, {
+      issue: async () => ({
+        type: "conflict" as const,
+        message: "User Profile enrollment is unavailable in self-hosted mode",
+      }),
+    }),
+    userProfilesModule(),
+  ],
+});
+
+const managedFilesPlatform = createCloudflarePlatform({
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+  },
+  modules: () => [filesModule()],
+});
+
+const managedAgentsRoutes = buildManagedAgentRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  return managedAgentsPlatform
+    .app({
+      workspaceId: request.tenant_id,
+      sql: new CfD1SqlClient(request.tenantDb),
+    })
+    .port(managedAgentsPortTokens.agents);
+});
+
+const managedEnvironmentsRoutes = buildManagedEnvironmentRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  return managedAgentsPlatform
+    .app({
+      workspaceId: request.tenant_id,
+      sql: new CfD1SqlClient(request.tenantDb),
+    })
+    .port(managedAgentsPortTokens.environments);
+});
+
+const managedFilesRoutes = buildManagedFileRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+    services: import("@open-managed-agents/services").Services;
+  };
+  const blobs = request.services.filesBlob;
+  if (blobs === null) {
+    throw new Error("FILES_BUCKET binding is required for managed Files");
+  }
+  return managedFilesPlatform.app({
+    workspaceId: request.tenant_id,
+    sql: new CfD1SqlClient(request.tenantDb),
+    fileContent: new BlobFileContentStore(blobs),
+  }).port(managedAgentsPortTokens.files);
+});
+
+const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  return managedAgentsPlatform
+    .app({
+      workspaceId: request.tenant_id,
+      sql: new CfD1SqlClient(request.tenantDb),
+    })
+    .port(managedAgentsPortTokens.memoryStores);
+});
+
+const managedMemoryContent = new WebCryptoMemoryContentDescriptor();
+function managedMemoryActor(userId: string | undefined) {
+  return userId === undefined
+    ? { kind: "api" as const, apiKeyId: "self_hosted" }
+    : { kind: "user" as const, userId };
+}
+const managedMemoriesRoutes = buildManagedMemoryRoutes((context) => {
+  return managedMemoriesApplicationFor(context as unknown as AppCtx)
+    .port(managedAgentsPortTokens.memories);
+});
+const managedMemoryVersionsRoutes = buildManagedMemoryVersionRoutes((context) => {
+  return managedMemoriesApplicationFor(context as unknown as AppCtx)
+    .port(managedAgentsPortTokens.memoryVersions);
+});
+
+function managedMemoriesApplicationFor(ctx: AppCtx) {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const platform = createCloudflarePlatform({
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) => `${
+        namespace === "memory"
+          ? "mem"
+          : namespace === "memory-version"
+            ? "memver"
+            : namespace
+      }_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(
+        memoryStoreForMemorySourcePort,
+        new SqlMemoryStoreSource(client),
+      ),
+      providePort(memoryContentDescriptorPort, managedMemoryContent),
+      providePort(
+        memoryVersionActorPort,
+        managedMemoryActor(ctx.var.user_id),
+      ),
+      memoriesModule(),
+      memoryVersionsModule(),
+    ],
+  });
+  return platform.app({ workspaceId: ctx.var.tenant_id, sql: client });
+}
+
+const managedSkillCompiler = new ZipSkillPackageCompiler();
+let lastManagedSkillVersion = 0n;
+function nextManagedSkillVersion(): string {
+  const now = BigInt(Date.now()) * 1_000n;
+  lastManagedSkillVersion = now > lastManagedSkillVersion
+    ? now
+    : lastManagedSkillVersion + 1n;
+  return lastManagedSkillVersion.toString();
+}
+function managedSkillsApplicationFor(ctx: AppCtx) {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const platform = createCloudflarePlatform({
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        namespace === "skill-version-value"
+          ? nextManagedSkillVersion()
+          : `${namespace === "skill-version" ? "skv" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(skillPackageCompilerPort, managedSkillCompiler),
+      skillsModule(),
+      skillVersionsModule(),
+    ],
+  });
+  return platform.app({ workspaceId: ctx.var.tenant_id, sql: client });
+}
+const managedSkillsRoutes = buildManagedSkillRoutes((context) =>
+  managedSkillsApplicationFor(context as unknown as AppCtx)
+    .port(managedAgentsPortTokens.skills),
+);
+const managedSkillVersionsRoutes = buildManagedSkillVersionRoutes((context) =>
+  managedSkillsApplicationFor(context as unknown as AppCtx)
+    .port(managedAgentsPortTokens.skillVersions),
+);
+
+const legacyVaultsRoutes = new Hono<{ Bindings: Env; Variables: { tenant_id: string } }>().all("*", (c) => {
   const ctx = c as unknown as AppCtx;
-  const app = buildVaultRoutes({ services: () => cfRouteServicesFromCtx(ctx) });
+  const app = buildLegacyVaultRoutes({ services: () => cfRouteServicesFromCtx(ctx) });
   return invokePackage(c, app);
+});
+
+const managedVaultsPlatform = createCloudflarePlatform({
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "vault" ? "vlt" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+  },
+  modules: () => [vaultsModule()],
+});
+const managedVaultsRoutes = buildManagedVaultRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  return managedVaultsPlatform.app({
+    workspaceId: request.tenant_id,
+    sql: new CfD1SqlClient(request.tenantDb),
+  }).port(managedAgentsPortTokens.vaults);
+});
+
+const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
+const managedCredentialsPlatform = createCloudflarePlatform({
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "credential" ? "vcrd" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+  },
+  modules: () => [credentialsModule()],
+});
+const managedCredentialsRoutes = buildManagedCredentialRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  const credentialCrypto = context.env.PLATFORM_ROOT_SECRET === undefined
+    ? null
+    : new WebCryptoAesGcm(
+        context.env.PLATFORM_ROOT_SECRET,
+        "managed.vault.credentials",
+      );
+  const cipher: CredentialDocumentCipher = {
+    seal: async ({ plaintext }) => {
+      if (credentialCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Vault credentials",
+        );
+      }
+      return { ciphertext: await credentialCrypto.encrypt(plaintext) };
+    },
+    open: async ({ ciphertext }) => {
+      if (credentialCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Vault credentials",
+        );
+      }
+      return { plaintext: await credentialCrypto.decrypt(ciphertext) };
+    },
+  };
+  return managedCredentialsPlatform.app({
+    workspaceId: request.tenant_id,
+    sql: new CfD1SqlClient(request.tenantDb),
+    credentialCipher: cipher,
+    credentialValidation: managedCredentialValidation,
+  }).port(managedAgentsPortTokens.credentials);
+});
+
+const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
+  const request = context.var as {
+    tenant_id: string;
+    tenantDb: D1Database;
+  };
+  return managedAgentsPlatform.app({
+    workspaceId: request.tenant_id,
+    sql: new CfD1SqlClient(request.tenantDb),
+  }).port(managedAgentsPortTokens.userProfiles);
 });
 
 const apiKeysRoutes = new Hono<{
@@ -284,7 +669,7 @@ const tenantsRoutes = new Hono<{
   return invokePackage(c, app);
 });
 
-const sessionsRoutes = new Hono<{
+const legacySessionsRoutes = new Hono<{
   Bindings: Env;
   Variables: { tenant_id: string; user_id?: string };
 }>().all("*", (c) => {
@@ -309,6 +694,388 @@ const sessionsRoutes = new Hono<{
     lifecycle: cfSessionLifecycle(c as never),
   });
   return invokePackage(c, app);
+});
+
+function managedSessionEnvironmentSource(
+  client: CfD1SqlClient,
+): SessionEnvironmentSourcePort {
+  const persistedEnvironments = new SqlSessionEnvironmentSource(client);
+  return {
+    find: (input) => {
+      if (input.environmentId !== LOCAL_RUNTIME_ENV_ID) {
+        return persistedEnvironments.find(input);
+      }
+      return Promise.resolve({
+        id: input.environmentId,
+        archivedAt: null,
+        config: {
+          type: "cloud" as const,
+          networking: { type: "unrestricted" as const },
+          packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] },
+        },
+        createdAt: "1970-01-01T00:00:00.000Z",
+        description: "Cloudflare local runtime",
+        metadata: {},
+        name: "Local runtime",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+    },
+  };
+}
+
+function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsComposition {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const environments = managedSessionEnvironmentSource(client);
+  const runtime = new CfManagedSessionRuntimeAdapter(
+    new CfManagedRuntimeFetcher(ctx.env),
+  );
+  const workspaceId = ctx.var.tenant_id;
+  const selfHostedWork = managedEnvironmentWorkApplicationFor(ctx)
+    .port(environmentSessionWorkEnqueuerPort);
+  return new SqlManagedSessionsComposition({
+    client,
+    environments,
+    lifecycle: new EnvironmentAwareSessionLifecycleRouter({
+      environments,
+      runtime,
+      selfHostedWork,
+    }),
+    runtime,
+    sealer: new CfManagedSessionSecretSealer(ctx.env.PLATFORM_ROOT_SECRET),
+    clock: { now: () => new Date() },
+    ids: {
+      nextSessionId: () =>
+        `session_${crypto.randomUUID().replaceAll("-", "")}`,
+      nextEventId: () =>
+        `sevt_${crypto.randomUUID().replaceAll("-", "")}`,
+      nextOutcomeId: () =>
+        `outc_${crypto.randomUUID().replaceAll("-", "")}`,
+      nextResourceId: () =>
+        `sesrsc_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+  });
+}
+
+const managedSessionsRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const composition = managedSessionsCompositionFor(ctx);
+  const ports = composition.portsFor(ctx.var.tenant_id);
+  return invokePackage(
+    c,
+    buildManagedSessionsApi({
+      sessions: () => ports.sessions,
+      sessionEvents: () => ports.sessionEvents,
+      sessionResources: () => ports.sessionResources,
+      sessionThreads: () => ports.sessionThreads,
+      sessionThreadEvents: () => ports.sessionThreadEvents,
+    }),
+  );
+});
+
+const managedDeploymentSchedulePlanner = new CronDeploymentSchedulePlanner();
+const managedDeploymentsPlatform = createCloudflarePlatform({
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "deployment" ? "depl" : namespace === "deployment-run" ? "drun" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+  },
+});
+const managedEnvironmentWorkAvailability =
+  new TimerEnvironmentWorkAvailabilityWaiter();
+
+function managedDeploymentCipherFor(ctx: AppCtx): DeploymentResourceSecretCipher {
+  const deploymentCrypto = ctx.env.PLATFORM_ROOT_SECRET === undefined
+    ? null
+    : new WebCryptoAesGcm(
+        ctx.env.PLATFORM_ROOT_SECRET,
+        "managed.deployments.resources",
+      );
+  return {
+    seal: async ({ plaintext }) => {
+      if (deploymentCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Deployment resource credentials",
+        );
+      }
+      return { ciphertext: await deploymentCrypto.encrypt(plaintext) };
+    },
+    open: async ({ ciphertext }) => {
+      if (deploymentCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Deployment resource credentials",
+        );
+      }
+      return { plaintext: await deploymentCrypto.decrypt(ciphertext) };
+    },
+  };
+}
+
+function managedEnvironmentWorkCipherFor(
+  ctx: AppCtx,
+): EnvironmentWorkSecretCipher {
+  const workCrypto = ctx.env.PLATFORM_ROOT_SECRET === undefined
+    ? null
+    : new WebCryptoAesGcm(
+        ctx.env.PLATFORM_ROOT_SECRET,
+        "managed.environment-work.secret",
+      );
+  return {
+    seal: async ({ plaintext }) => {
+      if (workCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+        );
+      }
+      return { ciphertext: await workCrypto.encrypt(plaintext) };
+    },
+    open: async ({ ciphertext }) => {
+      if (workCrypto === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+        );
+      }
+      return { plaintext: await workCrypto.decrypt(ciphertext) };
+    },
+  };
+}
+
+function managedEnvironmentWorkApplicationFor(ctx: AppCtx) {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const platform = createCloudflarePlatform({
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "environment-work" ? "work" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(
+        environmentWorkEnvironmentSourcePort,
+        managedSessionEnvironmentSource(client),
+      ),
+      providePort(
+        environmentWorkAvailabilityWaiterPort,
+        managedEnvironmentWorkAvailability,
+      ),
+      providePort(
+        environmentWorkSessionCredentialIssuerPort,
+        new OpaqueEnvironmentWorkSessionCredentialIssuer({
+          nextToken: () => crypto.randomUUID().replaceAll("-", ""),
+          apiBaseUrl: new URL(ctx.req.url).origin,
+        }),
+      ),
+      environmentWorkModule(),
+      environmentWorkEnqueuerModule(),
+    ],
+  });
+  return platform.app({
+    workspaceId: ctx.var.tenant_id,
+    sql: client,
+    environmentWorkCipher: managedEnvironmentWorkCipherFor(ctx),
+  });
+}
+
+function managedDeploymentsApplicationFor(ctx: AppCtx) {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const workspaceId = ctx.var.tenant_id;
+  const sessions = managedSessionsCompositionFor(ctx).portsFor(workspaceId);
+  return managedDeploymentsPlatform.app({
+    workspaceId,
+    sql: client,
+    deploymentCipher: managedDeploymentCipherFor(ctx),
+    modules: [
+      providePort(deploymentAgentSourcePort, new SqlDeploymentAgentSource(client)),
+      providePort(
+        deploymentEnvironmentSourcePort,
+        managedSessionEnvironmentSource(client),
+      ),
+      providePort(deploymentFileSourcePort, new SqlFileMetadataPersistence(client)),
+      providePort(deploymentMemoryStoreSourcePort, new SqlMemoryStoreSource(client)),
+      providePort(deploymentSchedulePlannerPort, managedDeploymentSchedulePlanner),
+      providePort(deploymentSessionLauncherPort, sessions.deploymentSessionLauncher),
+      providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(client)),
+      deploymentRunsModule(),
+      deploymentsModule(),
+    ],
+  });
+}
+
+const managedDeploymentsRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const port = managedDeploymentsApplicationFor(ctx)
+    .port(managedAgentsPortTokens.deployments);
+  return invokePackage(c, buildManagedDeploymentRoutes(() => port));
+});
+
+const managedDeploymentRunsRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const port = managedDeploymentsApplicationFor(ctx)
+    .port(managedAgentsPortTokens.deploymentRuns);
+  return invokePackage(c, buildManagedDeploymentRunRoutes(() => port));
+});
+
+const managedEnvironmentWorkRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const port = managedEnvironmentWorkApplicationFor(ctx)
+    .port(managedAgentsPortTokens.environmentWork);
+  return invokePackage(c, buildManagedEnvironmentWorkRoutes(() => port));
+});
+
+function managedDreamCuratorFor(ctx: AppCtx) {
+  const environment = ctx.env as Env & {
+    ANTHROPIC_API_KEY?: string;
+    ANTHROPIC_BASE_URL?: string;
+    DREAM_CURATOR_MODE?: string;
+  };
+  return environment.DREAM_CURATOR_MODE === "dedup" ||
+      environment.ANTHROPIC_API_KEY === undefined
+    ? new DeduplicatingDreamCurator()
+    : new AnthropicMessagesDreamCurator({
+        apiKey: environment.ANTHROPIC_API_KEY,
+        ...(environment.ANTHROPIC_BASE_URL !== undefined && {
+          baseUrl: environment.ANTHROPIC_BASE_URL,
+        }),
+      });
+}
+function managedDreamsApplicationFor(ctx: AppCtx) {
+  const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const workspaceId = ctx.var.tenant_id;
+  const memoryStoreSource = new SqlMemoryStoreSource(client);
+  const platform = createCloudflarePlatform({
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) => `${
+        namespace === "memory_store"
+          ? "memstore"
+          : namespace === "memory"
+            ? "mem"
+            : namespace === "memory-version"
+              ? "memver"
+              : "dream"
+      }_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(dreamMemoryStoreSourcePort, memoryStoreSource),
+      providePort(memoryStoreForMemorySourcePort, memoryStoreSource),
+      providePort(memoryContentDescriptorPort, managedMemoryContent),
+      providePort(memoryVersionActorPort, {
+        kind: "service_account",
+        serviceAccountId: "dream_executor",
+      }),
+      providePort(dreamSessionSourcePort, new SqlSessionSource(client)),
+      providePort(dreamCuratorPort, managedDreamCuratorFor(ctx)),
+      defineAppModule({
+        name: "managed-agents:dream-memory-workspace",
+        provides: [dreamMemoryWorkspacePort],
+        requires: [
+          managedAgentsPortTokens.memoryStores,
+          managedAgentsPortTokens.memories,
+        ],
+        setup: ({ port }) => ({
+          ports: [bindPort(
+            dreamMemoryWorkspacePort,
+            new ApplicationDreamMemoryWorkspace({
+              workspaceId,
+              memoryStores: port(managedAgentsPortTokens.memoryStores),
+              memories: port(managedAgentsPortTokens.memories),
+            }),
+          )],
+        }),
+      }),
+      memoryStoresModule(),
+      memoriesModule(),
+      dreamExecutionModule(),
+      inProcessDreamExecutionSchedulerModule({
+        defer: (task) => ctx.executionCtx.waitUntil(task),
+      }),
+      dreamsModule(),
+    ],
+  });
+  return platform.app({ workspaceId, sql: client });
+}
+
+const managedDreamsRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const port = managedDreamsApplicationFor(ctx)
+    .port(managedAgentsPortTokens.dreams);
+  return invokePackage(c, buildManagedDreamRoutes(() => port));
+});
+
+const managedModelsRoutes = buildManagedModelRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+      sql: new CfD1SqlClient(
+        (context.var as { tenantDb: D1Database }).tenantDb,
+      ),
+    })
+    .port(managedAgentsPortTokens.models),
+);
+
+function managedTunnelsApplicationFor(ctx: AppCtx) {
+  const provisioner = new LocalTunnelProvisioner({
+      domainSuffix:
+        (ctx.env as Env & { TUNNEL_DOMAIN_SUFFIX?: string })
+          .TUNNEL_DOMAIN_SUFFIX ?? "tunnels.localhost",
+      nextTokenId: () =>
+        `ttok_${crypto.randomUUID().replaceAll("-", "")}`,
+    });
+  const tokens = new WebCryptoTunnelTokenManager({
+      rootSecret: ctx.env.PLATFORM_ROOT_SECRET,
+      nextTokenId: () =>
+        `ttok_${crypto.randomUUID().replaceAll("-", "")}`,
+    });
+  const certificateAuthority = new WebCryptoTunnelCertificateAuthority();
+  const platform = createCloudflarePlatform({
+    sql: new CfD1SqlClient(ctx.var.tenantDb),
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "tunnel" ? "tnl" : "tcrt"}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(tunnelProvisionerPort, provisioner),
+      providePort(tunnelTokenManagerPort, tokens),
+      providePort(tunnelCertificateAuthorityPort, certificateAuthority),
+      tunnelsModule(),
+      tunnelCertificatesModule(),
+    ],
+  });
+  return platform.app({ workspaceId: ctx.var.tenant_id });
+}
+
+const managedTunnelsRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; user_id?: string };
+}>().all("*", (c) => {
+  const ctx = c as unknown as AppCtx;
+  const application = managedTunnelsApplicationFor(ctx);
+  const tunnels = application.port(managedAgentsPortTokens.tunnels);
+  const certificates = application.port(
+    managedAgentsPortTokens.tunnelCertificates,
+  );
+
+  const packageApp = new Hono();
+  packageApp.route("/", buildManagedTunnelRoutes(() => tunnels));
+  packageApp.route(
+    "/",
+    buildManagedTunnelCertificateRoutes(() => certificates),
+  );
+  return invokePackage(c, packageApp);
 });
 
 /**
@@ -369,27 +1136,35 @@ function invokePackage(
     c.executionCtx,
   );
 }
-app.route("/v1/agents", agentsRoutes);
-app.route("/v1/environments", environmentsRoutes);
-app.route("/v1/sessions", sessionsRoutes);
-app.route("/v1/vaults", vaultsRoutes);
-app.route("/v1/oauth", oauthRoutes);
-app.route("/v1/cap-cli/oauth", capCliOauthRoutes);
-app.route("/v1/memory_stores", memoryRoutes);
-app.route("/v1/dreams", dreamsRoutes);
-app.route("/v1/files", filesRoutes);
-app.route("/v1/skills", skillsRoutes);
-app.route("/v1/model_cards", modelCardsRoutes);
-app.route("/v1/models", modelsRoutes);
-app.route("/v1/clawhub", clawhubRoutes);
-app.route("/v1/api_keys", apiKeysRoutes);
-app.route("/v1/me", meRoutes);
-app.route("/v1/tenants", tenantsRoutes);
-app.route("/v1/evals", evalsRoutes);
-app.route("/v1/cost_report", costReportRoutes);
-app.route("/v1/integrations", integrationsRoutes);
-app.route("/v1/runtimes", runtimesRoutes);
-app.route("/v1/stats", statsRoutes);
+app.route("/v1/agents", managedAgentsRoutes);
+app.route("/v1/oma/agents", legacyAgentsRoutes);
+app.route("/v1/environments", managedEnvironmentsRoutes);
+app.route("/v1/environments", managedEnvironmentWorkRoutes);
+app.route("/v1/oma/environments", legacyEnvironmentsRoutes);
+app.route("/v1/sessions", managedSessionsRoutes);
+app.route("/v1/oma/sessions", legacySessionsRoutes);
+app.route("/v1/vaults", managedVaultsRoutes);
+app.route("/v1/vaults", managedCredentialsRoutes);
+app.route("/v1/user_profiles", managedUserProfilesRoutes);
+app.route("/v1/oma/vaults", legacyVaultsRoutes);
+app.route("/v1/oma/cap-cli/oauth", capCliOauthRoutes);
+app.route("/v1/memory_stores", managedMemoryStoresRoutes);
+app.route("/v1/memory_stores", managedMemoriesRoutes);
+app.route("/v1/memory_stores", managedMemoryVersionsRoutes);
+app.route("/v1/oma/memory_stores", legacyMemoryRoutes);
+app.route("/v1/skills", managedSkillsRoutes);
+app.route("/v1/skills", managedSkillVersionsRoutes);
+app.route("/v1/deployments", managedDeploymentsRoutes);
+app.route("/v1/deployment_runs", managedDeploymentRunsRoutes);
+app.route("/v1/dreams", managedDreamsRoutes);
+app.route("/v1/oma/dreams", dreamsRoutes);
+app.route("/v1/tunnels", managedTunnelsRoutes);
+app.route("/v1/models", managedModelsRoutes);
+app.route("/v1/files", managedFilesRoutes);
+app.route("/v1/oma/files", legacyFilesRoutes);
+app.route("/v1/oma/skills", legacySkillsRoutes);
+app.route("/v1/oma/models", modelsRoutes);
+app.route("/v1/oma/stats", statsRoutes);
 
 // Billing-API proxy needs the session-resolved tenant_id, so it must
 // run authMiddleware first. The proxy handler below short-circuits
@@ -437,7 +1212,7 @@ app.all("/billing-api/*", async (c) => {
 });
 // MCP proxy bypasses /v1/* authMiddleware (declared in auth.ts as a
 // path-prefix skip) — auth is the Bearer oma_* the ACP child sends.
-app.route("/v1/mcp-proxy", mcpProxyRoutes);
+app.route("/v1/oma/mcp-proxy", mcpProxyRoutes);
 
 // /v1/oma/* aliases — OMA-only namespaces re-mounted under an `oma/` prefix
 // so the public surface can grow into a clean two-tier API:
@@ -458,7 +1233,7 @@ app.route("/v1/oma/integrations", integrationsRoutes);
 app.route("/v1/oma/runtimes", runtimesRoutes);
 app.route("/v1/oma/oauth", oauthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
-// /v1/mcp-proxy is intentionally NOT aliased: auth.ts path-prefix skip is
+// /v1/oma/mcp-proxy is intentionally NOT aliased: auth.ts path-prefix skip is
 // scoped to that exact prefix, and the proxy does its own session-ownership
 // check downstream. Re-mounting under /v1/oma/mcp-proxy would route through
 // the standard authMiddleware and break the ACP child's transport.
@@ -491,7 +1266,7 @@ app.get("/agents/runtime/_attach", async (c) => {
 // Internal endpoints (NOT auth-middleware'd; secured by header secret inside
 // the route file). Called only by the integrations gateway worker via service
 // binding.
-app.route("/v1/internal", internalRoutes);
+app.route("/v1/oma/internal", internalRoutes);
 
 // Proxy public integrations gateway paths to the INTEGRATIONS service binding
 // so Linear/GitHub can hit the OAuth callback / webhook URLs at this worker's
@@ -572,12 +1347,50 @@ export { RuntimeRoom } from "./runtime-room";
  * our own deployment.
  *
  * Local-runtime path (claude-agent-acp daemon) keeps using the public
- * /v1/mcp-proxy/<sid>/<server> HTTP endpoint with apiKey auth — the
+ * /v1/oma/mcp-proxy/<sid>/<server> HTTP endpoint with apiKey auth — the
  * daemon doesn't have a service binding, so it has to authenticate the
  * old way. Both paths converge on the same `resolveProxyTargetByTenant` +
  * `forwardToUpstream` helpers in routes/mcp-proxy.ts.
  */
 export class McpProxyRpc extends WorkerEntrypoint<Env> {
+  async managedSessionEventProduced(opts: {
+    workspaceId: string;
+    sessionId: string;
+    event: string;
+  }): Promise<
+    | { type: "recorded" }
+    | { type: "ignored" }
+    | { type: "not_found" }
+    | { type: "version_conflict" }
+  > {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(opts.event);
+    } catch {
+      return { type: "ignored" };
+    }
+    const event = decodeRuntimeProducedSessionEvent(raw);
+    if (event === null) return { type: "ignored" };
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(
+      opts.workspaceId,
+    );
+    const persistence = new SqlSessionRuntimeProjectionPersistence(
+      new CfD1SqlClient(tenantDb),
+    );
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await new SessionRuntimeProjectionApplicationService({
+        workspaceId: opts.workspaceId,
+        persistence,
+      }).recordSessionRuntimeEvents({
+        sessionId: opts.sessionId,
+        events: [event],
+      });
+      if (result.type === "recorded") return { type: "recorded" };
+      if (result.type === "not_found") return { type: "not_found" };
+    }
+    return { type: "version_conflict" };
+  }
+
   async mcpForward(opts: {
     tenantId: string;
     sessionId: string;
@@ -653,7 +1466,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    * (Notion's tools/list never returned, hanging the whole turn).
    *
    * 401-refresh-and-retry: handled by `forwardWithRefresh` (shared with
-   * the legacy mcpForward + HTTP /v1/mcp-proxy paths). When the first
+   * the legacy mcpForward + HTTP /v1/oma/mcp-proxy paths). When the first
    * upstream response is 401 AND the resolved credential carries
    * `mcp_oauth` refresh metadata (refresh_token + token_endpoint), we
    * hit the token_endpoint, persist the rotated tokens back to D1, and

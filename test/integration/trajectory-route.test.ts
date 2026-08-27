@@ -38,7 +38,7 @@ function api(path: string, init?: RequestInit) {
 }
 
 async function setup() {
-  const agentRes = await api("/v1/agents", {
+  const agentRes = await api("/v1/oma/agents", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -51,14 +51,14 @@ async function setup() {
   });
   const agent = (await agentRes.json()) as any;
 
-  const envRes = await api("/v1/environments", {
+  const envRes = await api("/v1/oma/environments", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name: "test-env", config: { type: "cloud" } }),
   });
   const environment = (await envRes.json()) as any;
 
-  const sessRes = await api("/v1/sessions", {
+  const sessRes = await api("/v1/oma/sessions", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ agent: agent.id, environment_id: environment.id, title: "trajectory test" }),
@@ -69,7 +69,7 @@ async function setup() {
 }
 
 async function postMessageAndWait(sessionId: string, text: string): Promise<void> {
-  await api(`/v1/sessions/${sessionId}/events`, {
+  await api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -83,17 +83,17 @@ async function postMessageAndWait(sessionId: string, text: string): Promise<void
 }
 
 async function getTrajectory(sessionId: string): Promise<Response> {
-  return api(`/v1/sessions/${sessionId}/trajectory`, { headers: HEADERS });
+  return api(`/v1/oma/sessions/${sessionId}/trajectory`, { headers: HEADERS });
 }
 
-describe("GET /v1/sessions/:id/trajectory", () => {
+describe("GET /v1/oma/sessions/:id/trajectory", () => {
   it("returns 404 for unknown session", async () => {
-    const res = await api("/v1/sessions/sess-ghost/trajectory", { headers: HEADERS });
+    const res = await api("/v1/oma/sessions/sess-ghost/trajectory", { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 
   it("requires auth", async () => {
-    const res = await api("/v1/sessions/sess-x/trajectory");
+    const res = await api("/v1/oma/sessions/sess-x/trajectory");
     expect(res.status).toBe(401);
   });
 

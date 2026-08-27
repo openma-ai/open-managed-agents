@@ -62,7 +62,7 @@ export function RuntimesList() {
     isLoading: loading,
     refetch,
   } = useApiQuery<{ runtimes: Runtime[] }>(
-    "/v1/runtimes",
+    "/v1/oma/runtimes",
     undefined,
     { refetchInterval: 15_000 },
   );
@@ -70,7 +70,7 @@ export function RuntimesList() {
 
   // Client-side status filter. Unlike AgentsList (server-paginated, server-
   // filtered), this list is small — a handful of runtimes per tenant — and
-  // already fully loaded by `/v1/runtimes`. The 15s heartbeat poll keeps
+  // already fully loaded by `/v1/oma/runtimes`. The 15s heartbeat poll keeps
   // online/offline fresh, so filtering the array in-memory dodges a server
   // round-trip per chip toggle and avoids resetting the polled query each
   // time the user flips the chip. If runtimes ever grow into the hundreds
@@ -83,7 +83,7 @@ export function RuntimesList() {
   const remove = async (id: string) => {
     if (!confirm("Revoke this runtime? Daemon on that machine will stop being able to attach.")) return;
     try {
-      await api(`/v1/runtimes/${id}`, { method: "DELETE" });
+      await api(`/v1/oma/runtimes/${id}`, { method: "DELETE" });
       void refetch();
     } catch { /* ignore */ }
   };

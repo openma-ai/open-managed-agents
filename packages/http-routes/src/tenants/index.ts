@@ -112,7 +112,7 @@ export interface MeRoutesDeps {
   } | null>;
   loadTenant?: (tenantId: string) => Promise<{ id: string; name: string } | null>;
   listMemberships?: (userId: string) => Promise<MembershipRow[]>;
-  /** Mint a long-lived API key. Used by POST /v1/me/cli-tokens; reuses
+  /** Mint a long-lived API key. Used by POST /v1/oma/me/cli-tokens; reuses
    *  the api-keys storage. */
   mintApiKey?: (input: {
     tenantId: string;

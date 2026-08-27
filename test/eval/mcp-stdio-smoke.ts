@@ -22,7 +22,7 @@ if (!MINIMAX_KEY) {
   throw new Error(
     "MINIMAX_API_KEY env var required. Either export it from .dev.vars " +
       "(ANTHROPIC_API_KEY there is the same MiniMax key), or pull from " +
-      "the MiniMax model card via /v1/model_cards/{id}/key.",
+      "the MiniMax model card via /v1/oma/model_cards/{id}/key.",
   );
 }
 const MINIMAX_HOST = process.env.MINIMAX_API_HOST || "https://api.example.com";

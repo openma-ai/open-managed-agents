@@ -19,6 +19,7 @@ import { readCreds } from "../lib/config.js";
 import { osTag, currentProfile, paths } from "../lib/platform.js";
 import { detectAll, loadRegistry } from "@open-managed-agents/acp-runtime/registry";
 import { SessionManager } from "../lib/session-manager.js";
+import { createNodeSessionManagerRuntimeDependencies } from "../lib/node-session-runtime.js";
 import { detectLocalSkills } from "../lib/local-skills.js";
 import { printBanner, log, c } from "../lib/style.js";
 import { PKG_VERSION } from "../lib/version.js";
@@ -190,9 +191,12 @@ export async function runDaemon(): Promise<void> {
   // SessionManager survives WS drops — keeps the ACP child processes alive
   // so a brief network blip doesn't kill in-progress conversations. Each
   // WS attach calls setSender() to point at the new socket.
-  const sessions = new SessionManager(() => {
-    /* placeholder — replaced on first attach via setSender */
-  });
+  const sessions = new SessionManager(
+    () => {
+      /* placeholder — replaced on first attach via setSender */
+    },
+    createNodeSessionManagerRuntimeDependencies(),
+  );
   // Wire daemon's identity into SessionManager so it can fetch session
   // bundles from main and stamp the right per-tenant API key onto ACP
   // children's MCP proxy auth (no spawn-env LLM key — user manages that

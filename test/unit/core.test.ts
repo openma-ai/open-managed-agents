@@ -29,14 +29,14 @@ async function createAgentAndEnv(overrides?: {
   agentBody?: Record<string, unknown>;
   envBody?: Record<string, unknown>;
 }) {
-  const agentRes = await post("/v1/agents", {
+  const agentRes = await post("/v1/oma/agents", {
     name: "Core Test Agent",
     model: "claude-sonnet-4-6",
     ...overrides?.agentBody,
   });
   const agent = (await agentRes.json()) as any;
 
-  const envRes = await post("/v1/environments", {
+  const envRes = await post("/v1/oma/environments", {
     name: "core-test-env",
     config: { type: "cloud" },
     ...overrides?.envBody,
@@ -51,7 +51,7 @@ async function createSession(
   environmentId: string,
   extra?: Record<string, unknown>
 ) {
-  const sessRes = await post("/v1/sessions", {
+  const sessRes = await post("/v1/oma/sessions", {
     agent: agentId,
     environment_id: environmentId,
     ...extra,
@@ -292,7 +292,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("handles creating agent with description", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "Full Agent",
       model: "claude-sonnet-4-6",
       system: "You are a comprehensive assistant.",
@@ -320,7 +320,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("handles environment with packages config", async () => {
-    const res = await post("/v1/environments", {
+    const res = await post("/v1/oma/environments", {
       name: "packaged-env",
       config: {
         type: "cloud",
@@ -356,7 +356,7 @@ describe("Edge cases - concurrent and complex operations", () => {
     expect(session.vault_ids).toEqual(["vlt_abc", "vlt_def"]);
 
     // Verify persisted via GET
-    const getRes = await api(`/v1/sessions/${session.id}`, {
+    const getRes = await api(`/v1/oma/sessions/${session.id}`, {
       headers: HEADERS,
     });
     const fetched = (await getRes.json()) as any;
@@ -416,12 +416,12 @@ describe("Edge cases - concurrent and complex operations", () => {
       { skill_id: "web_research" },
       { skill_id: "pptx" },
     ]);
-    // No hardcoded built-in skills — all managed via /v1/skills API
+    // No hardcoded built-in skills — all managed via /v1/oma/skills API
     expect(skills).toHaveLength(0);
   });
 
   it("agent with custom tools via API is stored", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "Custom Tool Agent",
       model: "claude-sonnet-4-6",
       tools: [
@@ -437,7 +437,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("agent with mixed tools (toolset + custom) both stored", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "Mixed Tools Agent",
       model: "claude-sonnet-4-6",
       tools: [
@@ -464,7 +464,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   // service→repo→toRow chain that only surfaces when no other _oma field
   // is set. Re-enable once tracked down.
   it.skip("agent with all supported fields via API", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "Full Agent",
       model: { id: "claude-sonnet-4-6", speed: "fast" },
       system: "You are comprehensive.",
@@ -485,7 +485,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("agent model as object {id, speed} via API", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "Speed Agent",
       model: { id: "claude-opus-4-6", speed: "fast" },
     });
@@ -496,7 +496,7 @@ describe("Edge cases - concurrent and complex operations", () => {
   });
 
   it("agent update system preserves tools in version history", async () => {
-    const createRes = await post("/v1/agents", {
+    const createRes = await post("/v1/oma/agents", {
       name: "Versioned Tools",
       model: "claude-sonnet-4-6",
       system: "v1 system",
@@ -509,20 +509,20 @@ describe("Edge cases - concurrent and complex operations", () => {
     const agent = (await createRes.json()) as any;
 
     // Update system
-    await api(`/v1/agents/${agent.id}`, {
+    await api(`/v1/oma/agents/${agent.id}`, {
       method: "PUT",
       headers: HEADERS,
       body: JSON.stringify({ system: "v2 system" }),
     });
 
     // Version 1 should have original system
-    const v1Res = await api(`/v1/agents/${agent.id}/versions/1`, { headers: HEADERS });
+    const v1Res = await api(`/v1/oma/agents/${agent.id}/versions/1`, { headers: HEADERS });
     const v1 = (await v1Res.json()) as any;
     expect(v1.system).toBe("v1 system");
     expect(v1.tools[0].default_config.enabled).toBe(false);
 
     // Current should have updated system
-    const currentRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+    const currentRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
     const current = (await currentRes.json()) as any;
     expect(current.system).toBe("v2 system");
     expect(current.version).toBe(2);
@@ -544,14 +544,14 @@ describe("Edge cases - concurrent and complex operations", () => {
       },
     }));
 
-    const agentRes = await post("/v1/agents", {
+    const agentRes = await post("/v1/oma/agents", {
       name: "Unicode Echo",
       model: "claude-sonnet-4-6",
       harness: "echo-unicode",
     });
     const agent = (await agentRes.json()) as any;
 
-    const envRes = await post("/v1/environments", {
+    const envRes = await post("/v1/oma/environments", {
       name: "e",
       config: { type: "cloud" },
     });
@@ -560,7 +560,7 @@ describe("Edge cases - concurrent and complex operations", () => {
     const session = await createSession(agent.id, environment.id);
 
     const unicodeText = "Erd\u0151s \u2013 R\u00e9nyi \u2228 \u00e9l\u00e9ments \ud83c\udf1f \u6d4b\u8bd5";
-    await api(`/v1/sessions/${session.id}/events`, {
+    await api(`/v1/oma/sessions/${session.id}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -606,7 +606,7 @@ describe("Edge cases - concurrent and complex operations", () => {
 
     expect(session.title).toBe("My test conversation");
 
-    const getRes = await api(`/v1/sessions/${session.id}`, {
+    const getRes = await api(`/v1/oma/sessions/${session.id}`, {
       headers: HEADERS,
     });
     const fetched = (await getRes.json()) as any;

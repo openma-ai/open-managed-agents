@@ -48,59 +48,59 @@ describe("FeishuClient — API routing", () => {
     harness?.restore();
   });
 
-  it("listInstallations → GET /v1/integrations/feishu/installations", async () => {
+  it("listInstallations → GET /v1/oma/integrations/feishu/installations", async () => {
     harness = mockFetch([{ body: { data: [{ id: "i1", tenant_id: "tk_1" }] } }]);
     const out = await api.feishu.listInstallations();
     expect(out).toHaveLength(1);
-    expect(harness.findCalls("/v1/integrations/feishu/installations")).toHaveLength(1);
+    expect(harness.findCalls("/v1/oma/integrations/feishu/installations")).toHaveLength(1);
     expect(harness.calls[0]?.init?.method).toBeUndefined(); // GET default
   });
 
-  it("listPublications → GET /v1/integrations/feishu/installations/:id/publications", async () => {
+  it("listPublications → GET /v1/oma/integrations/feishu/installations/:id/publications", async () => {
     harness = mockFetch([{ body: { data: [] } }]);
     await api.feishu.listPublications("inst_1");
     expect(harness.calls[0]?.url).toBe(
-      "https://api.test/v1/integrations/feishu/installations/inst_1/publications",
+      "https://api.test/v1/oma/integrations/feishu/installations/inst_1/publications",
     );
   });
 
-  it("listAgentPublications → GET /v1/integrations/feishu/agents/:id/publications", async () => {
+  it("listAgentPublications → GET /v1/oma/integrations/feishu/agents/:id/publications", async () => {
     harness = mockFetch([{ body: { data: [] } }]);
     await api.feishu.listAgentPublications("ag_1");
     expect(harness.calls[0]?.url).toBe(
-      "https://api.test/v1/integrations/feishu/agents/ag_1/publications",
+      "https://api.test/v1/oma/integrations/feishu/agents/ag_1/publications",
     );
   });
 
-  it("listPendingPublications → GET /v1/integrations/feishu/publications?status=pending", async () => {
+  it("listPendingPublications → GET /v1/oma/integrations/feishu/publications?status=pending", async () => {
     harness = mockFetch([{ body: { data: [] } }]);
     await api.feishu.listPendingPublications();
     expect(harness.calls[0]?.url).toBe(
-      "https://api.test/v1/integrations/feishu/publications?status=pending",
+      "https://api.test/v1/oma/integrations/feishu/publications?status=pending",
     );
   });
 
-  it("reissueFormToken → POST /v1/integrations/feishu/publications/:id/form-token", async () => {
+  it("reissueFormToken → POST /v1/oma/integrations/feishu/publications/:id/form-token", async () => {
     harness = mockFetch([{ body: { formToken: "ft_1" } }]);
     const out = await api.feishu.reissueFormToken("pub_1");
     expect(out.formToken).toBe("ft_1");
     const call = harness.calls[0]!;
     expect(call.url).toBe(
-      "https://api.test/v1/integrations/feishu/publications/pub_1/form-token",
+      "https://api.test/v1/oma/integrations/feishu/publications/pub_1/form-token",
     );
     expect(call.init?.method).toBe("POST");
     expect(JSON.parse(call.init?.body as string)).toEqual({});
   });
 
-  it("getPublication → GET /v1/integrations/feishu/publications/:id", async () => {
+  it("getPublication → GET /v1/oma/integrations/feishu/publications/:id", async () => {
     harness = mockFetch([{ body: { id: "pub_1" } }]);
     await api.feishu.getPublication("pub_1");
     expect(harness.calls[0]?.url).toBe(
-      "https://api.test/v1/integrations/feishu/publications/pub_1",
+      "https://api.test/v1/oma/integrations/feishu/publications/pub_1",
     );
   });
 
-  it("updatePublication → PATCH /v1/integrations/feishu/publications/:id with body", async () => {
+  it("updatePublication → PATCH /v1/oma/integrations/feishu/publications/:id with body", async () => {
     harness = mockFetch([{ body: { id: "pub_1", status: "live" } }]);
     await api.feishu.updatePublication("pub_1", {
       persona: { name: "Renamed", avatarUrl: null },
@@ -116,17 +116,17 @@ describe("FeishuClient — API routing", () => {
     });
   });
 
-  it("unpublish → DELETE /v1/integrations/feishu/publications/:id", async () => {
+  it("unpublish → DELETE /v1/oma/integrations/feishu/publications/:id", async () => {
     harness = mockFetch([{ body: {} }]);
     await api.feishu.unpublish("pub_1");
     const call = harness.calls[0]!;
     expect(call.init?.method).toBe("DELETE");
     expect(call.url).toBe(
-      "https://api.test/v1/integrations/feishu/publications/pub_1",
+      "https://api.test/v1/oma/integrations/feishu/publications/pub_1",
     );
   });
 
-  it("startA1 → POST /v1/integrations/feishu/start-a1 with full input", async () => {
+  it("startA1 → POST /v1/oma/integrations/feishu/start-a1 with full input", async () => {
     harness = mockFetch([
       {
         body: {
@@ -148,7 +148,7 @@ describe("FeishuClient — API routing", () => {
     expect(out.publicationId).toBe("pub_1");
     const call = harness.calls[0]!;
     expect(call.init?.method).toBe("POST");
-    expect(call.url).toBe("https://api.test/v1/integrations/feishu/start-a1");
+    expect(call.url).toBe("https://api.test/v1/oma/integrations/feishu/start-a1");
     expect(JSON.parse(call.init?.body as string)).toEqual({
       agentId: "ag_1",
       environmentId: "env_1",
@@ -158,7 +158,7 @@ describe("FeishuClient — API routing", () => {
     });
   });
 
-  it("submitCredentials → POST /v1/integrations/feishu/credentials with 4 secrets + tenantType + granularity", async () => {
+  it("submitCredentials → POST /v1/oma/integrations/feishu/credentials with 4 secrets + tenantType + granularity", async () => {
     harness = mockFetch([
       { body: { url: "https://x/install", callbackUrl: "cb", webhookUrl: "wh", publicationId: "pub_1" } },
     ]);
@@ -173,7 +173,7 @@ describe("FeishuClient — API routing", () => {
     });
     expect(out.publicationId).toBe("pub_1");
     const call = harness.calls[0]!;
-    expect(call.url).toBe("https://api.test/v1/integrations/feishu/credentials");
+    expect(call.url).toBe("https://api.test/v1/oma/integrations/feishu/credentials");
     expect(JSON.parse(call.init?.body as string)).toEqual({
       formToken: "ft_1",
       appId: "cli_x",
@@ -226,7 +226,7 @@ describe("FeishuClient — API routing", () => {
     harness = mockFetch([{ body: { data: [] } }]);
     await api.feishu.getPublication("pub/with/slash");
     expect(harness.calls[0]?.url).toBe(
-      "https://api.test/v1/integrations/feishu/publications/pub%2Fwith%2Fslash",
+      "https://api.test/v1/oma/integrations/feishu/publications/pub%2Fwith%2Fslash",
     );
   });
 });

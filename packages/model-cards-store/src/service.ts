@@ -217,7 +217,7 @@ export class ModelCardService {
 
   /**
    * Returns the cleartext api_key for a card. Used by:
-   *   - The /v1/model_cards/:id/key route (consumed by the agent worker
+   *   - The /v1/oma/model_cards/:id/key route (consumed by the agent worker
    *     when it can't read MAIN_DB directly — staging today, prod TBD).
    *   - The agent worker's resolveModelCardCredentials path.
    * Returns null when the card doesn't exist OR the cipher decrypt fails

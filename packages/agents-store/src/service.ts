@@ -345,7 +345,7 @@ export class AgentService {
     });
   }
 
-  /** Cheap COUNT for /v1/stats. Default counts only non-archived rows
+  /** Cheap COUNT for /v1/oma/stats. Default counts only non-archived rows
    *  (matches what the dashboard headline numbers represent). */
   async count(opts: {
     tenantId: string;

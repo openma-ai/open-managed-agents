@@ -25,7 +25,7 @@
  *
  * OMA-specific:
  *   - On session.start we fetch the spawn-cwd bundle (AGENTS.md + skills)
- *     from main's `/v1/internal/runtime-session-bundle?sid=&agent_id=` and
+ *     from main's `/v1/oma/internal/runtime-session-bundle?sid=&agent_id=` and
  *     materialize files into the session cwd before issuing session/new.
  *   - The OMA `oma_*` PAT is passed to the ACP child as `mcpServers[].
  *     authorization_token` for each remote MCP server in the agent config.
@@ -36,7 +36,20 @@ import { spawn as childSpawn } from "node:child_process";
 import { AcpRuntimeImpl } from "@open-managed-agents/acp-runtime";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
-import type { AcpSession } from "@open-managed-agents/acp-runtime";
+import type {
+  AcpRuntime,
+  AcpSession,
+  SessionOptions,
+} from "@open-managed-agents/acp-runtime";
+import {
+  createManagedAgentsRuntime,
+  type ManagedAgentsRuntime,
+} from "@open-managed-agents/runtime";
+import {
+  encodeSessionHostEvent,
+  type SessionHostEvent,
+  type SessionStartCommand,
+} from "@openma/common/session-kernel";
 import { ensureSessionCwd, removeSessionCwd, writeBundle } from "./session-cwd.js";
 import { setupClaudeConfigDir } from "./claude-config-dir.js";
 
@@ -91,6 +104,23 @@ export interface SessionManagerEnv {
   runtimeToken: string;
 }
 
+export interface SessionManagerRuntimeScope {
+  id: string;
+  agentApiKey: string;
+}
+
+export interface SessionManagerPreparationInput {
+  command: SessionStartCommand;
+  scope: SessionManagerRuntimeScope;
+  environment: SessionManagerEnv;
+}
+
+export interface SessionManagerRuntimeDependencies {
+  acpRuntime: AcpRuntime;
+  prepareSession(input: SessionManagerPreparationInput): Promise<SessionOptions>;
+  releaseSession?(sessionId: string): Promise<void>;
+}
+
 interface BundleFile { path: string; content: string }
 interface BundleMcpServer {
   name: string;
@@ -131,14 +161,53 @@ export class SessionManager {
    * daemon calls `setTenantKeys()`.
    */
   #tenantKeys = new Map<string, string>();
+  #managedRuntime: ManagedAgentsRuntime | undefined;
+  #runtimeDependencies: SessionManagerRuntimeDependencies | undefined;
+  #runtimeScopes = new Map<string, SessionManagerRuntimeScope>();
   /** Set by `drain()` to refuse new session.start while in-flight turns
    *  finish. Existing sessions keep accepting prompts so a user mid-turn
    *  doesn't hit "session not ready" mid-stream just because the daemon
    *  is on its way out. */
   #draining = false;
 
-  constructor(send: Sender) {
+  constructor(send: Sender, runtimeDependencies?: SessionManagerRuntimeDependencies) {
     this.#send = send;
+    if (runtimeDependencies) {
+      this.#runtimeDependencies = runtimeDependencies;
+      this.#managedRuntime = createManagedAgentsRuntime({
+        acpRuntime: runtimeDependencies.acpRuntime,
+        sessionPreparation: {
+          prepare: (command) => {
+            const scope = this.#runtimeScopes.get(command.sessionId);
+            if (!scope) {
+              throw new Error(`missing runtime scope for session ${command.sessionId}`);
+            }
+            return runtimeDependencies.prepareSession({
+              command,
+              scope,
+              environment: { ...this.#env },
+            });
+          },
+        },
+      });
+      this.#attachManagedRuntime();
+    }
+  }
+
+  #attachManagedRuntime(): void {
+    this.#managedRuntime?.attach({
+      publish: (event) => this.#publishManagedRuntimeEvent(event),
+    });
+  }
+
+  #publishManagedRuntimeEvent(event: SessionHostEvent): void {
+    const scope = this.#runtimeScopes.get(event.sessionId);
+    this.#send(encodeSessionHostEvent(event, {
+      tenantId: scope?.id,
+    }) as ManagerOut);
+    if (event.type === "session.disposed") {
+      this.#runtimeScopes.delete(event.sessionId);
+    }
   }
 
   setSpawnEnv(env: SessionManagerEnv): void {
@@ -163,9 +232,11 @@ export class SessionManager {
 
   setSender(send: Sender): void {
     this.#send = send;
+    this.#attachManagedRuntime();
   }
 
   has(session_id: string): boolean {
+    if (this.#managedRuntime) return this.#managedRuntime.hasSession(session_id);
     return this.#sessions.has(session_id);
   }
 
@@ -174,17 +245,23 @@ export class SessionManager {
    *  finally block when the ACP child finishes streaming. drain() polls
    *  this to know when it's safe to exit. */
   activeTurnCount(): number {
+    if (this.#managedRuntime) return this.#managedRuntime.activeTurnCount();
     let n = 0;
     for (const s of this.#sessions.values()) n += s.turns.size;
     return n;
   }
 
   sessionCount(): number {
+    if (this.#managedRuntime) return this.#managedRuntime.sessionCount();
     return this.#sessions.size;
   }
 
   /** Re-announce alive sessions to the server (used after WS reconnect). */
   announceAll(): void {
+    if (this.#managedRuntime) {
+      this.#managedRuntime.announceAll();
+      return;
+    }
     for (const [session_id, sess] of this.#sessions) {
       this.#send({ type: "session.ready", session_id, tenant_id: sess.tenantId, acp_session_id: sess.acpSessionId });
     }
@@ -241,6 +318,25 @@ export class SessionManager {
     process.stderr.write(
       `  → tenant-key selected sid=${p.session_id.slice(0, 8)} tenant=${tenantId.slice(0, 14)}\n`,
     );
+    if (this.#managedRuntime) {
+      if (!this.#managedRuntime.hasSession(p.session_id)) {
+        this.#runtimeScopes.set(p.session_id, {
+          id: tenantId,
+          agentApiKey: tenantKey,
+        });
+      }
+      await this.#managedRuntime.dispatch({
+        type: "session.start",
+        sessionId: p.session_id,
+        agentId: p.agent_id,
+        runtime: "local",
+        ...(p.cwd ? { cwd: p.cwd } : {}),
+        ...(p.resume?.acp_session_id
+          ? { acpSessionId: p.resume.acp_session_id }
+          : {}),
+      });
+      return;
+    }
     // Idempotent: if we already have this session, just re-ack ready.
     const existing = this.#sessions.get(p.session_id);
     if (existing) {
@@ -406,6 +502,15 @@ export class SessionManager {
   }
 
   async prompt(p: SessionPromptParams): Promise<void> {
+    if (this.#managedRuntime) {
+      await this.#managedRuntime.dispatch({
+        type: "session.prompt",
+        sessionId: p.session_id,
+        turnId: p.turn_id,
+        text: p.text,
+      });
+      return;
+    }
     const sess = this.#sessions.get(p.session_id);
     if (!sess) {
       this.#send({
@@ -468,12 +573,29 @@ export class SessionManager {
   }
 
   cancel(session_id: string, turn_id: string): void {
+    if (this.#managedRuntime) {
+      void this.#managedRuntime.dispatch({
+        type: "session.cancel",
+        sessionId: session_id,
+        turnId: turn_id,
+      });
+      return;
+    }
     const sess = this.#sessions.get(session_id);
     if (!sess) return;
     sess.turns.get(turn_id)?.abort();
   }
 
   async dispose(session_id: string): Promise<void> {
+    if (this.#managedRuntime) {
+      await this.#managedRuntime.dispatch({
+        type: "session.dispose",
+        sessionId: session_id,
+      });
+      await (this.#runtimeDependencies?.releaseSession?.(session_id)
+        ?? removeSessionCwd(session_id));
+      return;
+    }
     const sess = this.#sessions.get(session_id);
     // Capture tenantId before #killChild deletes the session entry — the
     // outbound session.disposed must still carry the pin so the server-side
@@ -490,6 +612,10 @@ export class SessionManager {
    *  still live at the platform; the daemon coming back tomorrow needs the
    *  same dirs to spawn fresh ACP children with the same transcripts. */
   async disposeAll(): Promise<void> {
+    if (this.#managedRuntime) {
+      await this.#managedRuntime.drain({ deadlineMs: 0, abortGraceMs: 0 });
+      return;
+    }
     const ids = [...this.#sessions.keys()];
     await Promise.all(ids.map((id) => this.#killChild(id)));
   }
@@ -524,6 +650,12 @@ export class SessionManager {
    * existing drain.
    */
   async drain(deadlineMs: number, opts?: { onProgress?: (active: number, msLeft: number) => void }): Promise<{ initialTurns: number; abortedTurns: number; sessions: number }> {
+    if (this.#managedRuntime) {
+      return this.#managedRuntime.drain({
+        deadlineMs,
+        onProgress: opts?.onProgress,
+      });
+    }
     if (this.#draining) {
       const t0 = Date.now();
       while (this.#sessions.size > 0 && Date.now() - t0 < deadlineMs) {

@@ -6,7 +6,7 @@ import { Logo } from "../components/Logo";
 
 /** Browser-side handler for `oma bridge setup`. The CLI binds a random
  *  127.0.0.1 port and opens this URL with `?cb=http://127.0.0.1:<port>/cb&state=<nonce>`.
- *  The user authenticates (cookie session), POSTs /v1/runtimes/connect-runtime
+ *  The user authenticates (cookie session), POSTs /v1/oma/runtimes/connect-runtime
  *  to mint a one-time exchange code, then this page redirects back to the
  *  CLI's loopback listener with `?code=...&state=...`. The CLI exchanges
  *  the code at /agents/runtime/exchange for a permanent runtime token.
@@ -43,7 +43,7 @@ export function ConnectRuntime() {
   const [error, setError] = useState("");
 
   // Validate URL params synchronously so an invalid callback never wastes
-  // a /v1/me roundtrip. The `enabled` gate on the query below carries the
+  // a /v1/oma/me roundtrip. The `enabled` gate on the query below carries the
   // same guard for the actual fetch.
   const paramsValid = callbackOk && !!state && state.length >= 8;
   useEffect(() => {
@@ -58,13 +58,13 @@ export function ConnectRuntime() {
     }
   }, [callbackOk, state]);
 
-  // /v1/me lookup via TQ. Deduped across the page's lifetime; a tab switch
+  // /v1/oma/me lookup via TQ. Deduped across the page's lifetime; a tab switch
   // away and back doesn't re-hit the endpoint within staleTime.
-  const meQuery = useApiQuery<MeResponse>(paramsValid ? "/v1/me" : null);
+  const meQuery = useApiQuery<MeResponse>(paramsValid ? "/v1/oma/me" : null);
   const me = meQuery.data ?? null;
   const loading = paramsValid ? meQuery.isLoading : false;
 
-  // /v1/me failure: 401 → show "Sign in" CTA; everything else → inline.
+  // /v1/oma/me failure: 401 → show "Sign in" CTA; everything else → inline.
   useEffect(() => {
     const err = meQuery.error;
     if (!err) return;
@@ -86,7 +86,7 @@ export function ConnectRuntime() {
     setError("");
     try {
       const { code } = await api<{ code: string; expires_at: number }>(
-        "/v1/runtimes/connect-runtime",
+        "/v1/oma/runtimes/connect-runtime",
         {
           method: "POST",
           body: JSON.stringify({ state }),

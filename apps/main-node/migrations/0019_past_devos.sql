@@ -1,0 +1,2 @@
+ALTER TABLE "managed_environment_work" ADD COLUMN "session_id" text;--> statement-breakpoint
+CREATE INDEX "idx_managed_environment_work_session" ON "managed_environment_work" USING btree ("workspace_id","session_id","state","created_at","id");

@@ -4,7 +4,7 @@
  *   1. Bind 127.0.0.1:<rand-port> as a single-shot HTTP server.
  *   2. Open the user's browser to https://app.openma.dev/connect-runtime?cb=…&state=…
  *   3. User clicks "Allow this machine" (already auth'd via session cookie).
- *      Browser POSTs /v1/runtimes/connect-runtime → gets one-time `code`.
+ *      Browser POSTs /v1/oma/runtimes/connect-runtime → gets one-time `code`.
  *      Browser redirects to http://127.0.0.1:<port>/cb?code=…&state=…
  *   4. Local server receives the code, returns a "✓ All set" HTML page,
  *      shuts down.

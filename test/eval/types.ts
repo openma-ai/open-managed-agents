@@ -32,7 +32,7 @@ export interface SetupFile {
 }
 
 /**
- * Files uploaded via POST /v1/files BEFORE the turns run.
+ * Files uploaded via POST /v1/oma/files BEFORE the turns run.
  * The resulting file_ids (in upload order) are passed to turn.message when
  * message is a function — used by T6.3 to test the file_id resolver path.
  */
@@ -90,7 +90,7 @@ export interface EvalTask {
   // Files written to sandbox in a setup turn before the eval starts
   setupFiles?: SetupFile[];
 
-  // Files uploaded via POST /v1/files before the turns. Their file_ids are
+  // Files uploaded via POST /v1/oma/files before the turns. Their file_ids are
   // passed to turn.message when it's a function. Use this to test the
   // file_id → inline base64 + sandbox auto-mount path.
   setupUploads?: SetupUpload[];

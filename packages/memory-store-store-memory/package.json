@@ -1,0 +1,18 @@
+{
+  "name": "@open-managed-agents/memory-store-store-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/memory-store-store": "workspace:*"
+  },
+  "devDependencies": {
+    "@open-managed-agents/domain": "workspace:*",
+    "vitest": "^4.1.3"
+  }
+}

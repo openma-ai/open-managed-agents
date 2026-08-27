@@ -260,7 +260,7 @@ interface OAuthState {
 // ─── Routes ───
 
 /**
- * GET /v1/oauth/authorize
+ * GET /v1/oma/oauth/authorize
  *
  * Starts the MCP OAuth 2.1 flow. Discovers OAuth endpoints from the
  * MCP server's .well-known metadata, then redirects to the authorization page.
@@ -292,7 +292,7 @@ app.get("/authorize", async (c) => {
   }
 
   const baseUrl = getBaseUrl(c);
-  const callbackUri = `${baseUrl}/v1/oauth/callback`;
+  const callbackUri = `${baseUrl}/v1/oma/oauth/callback`;
 
   // Discover OAuth metadata from the MCP server
   let meta: Awaited<ReturnType<typeof discoverOAuthMeta>>;
@@ -327,7 +327,7 @@ app.get("/authorize", async (c) => {
 
   // Known-provider preset: GitHub OAuth doesn't support DCR. Operator
   // must pre-register an OAuth App at https://github.com/settings/developers
-  // (Authorization callback URL = ${baseUrl}/v1/oauth/callback) and set
+  // (Authorization callback URL = ${baseUrl}/v1/oma/oauth/callback) and set
   // GITHUB_OAUTH_CLIENT_ID + GITHUB_OAUTH_CLIENT_SECRET env vars on the
   // main worker. Without them this MCP server can't onboard.
   if (!clientId && /^https:\/\/github\.com\/login\/oauth\/?$/.test(meta.authServer.issuer)) {
@@ -350,7 +350,7 @@ app.get("/authorize", async (c) => {
   // arbitrary redirect_uris (returns invalid_redirect_uri unless the
   // domain is on their partner-portal allowlist). Operator workflow:
   // register an app at https://open.feishu.cn (Web App, redirect URL =
-  // ${baseUrl}/v1/oauth/callback), then set FEISHU_OAUTH_CLIENT_ID +
+  // ${baseUrl}/v1/oma/oauth/callback), then set FEISHU_OAUTH_CLIENT_ID +
   // FEISHU_OAUTH_CLIENT_SECRET on the main worker.
   if (!clientId && /^https:\/\/accounts\.feishu\.cn\//.test(meta.authServer.issuer)) {
     if (c.env.FEISHU_OAUTH_CLIENT_ID && c.env.FEISHU_OAUTH_CLIENT_SECRET) {
@@ -373,7 +373,7 @@ app.get("/authorize", async (c) => {
   // (open.larksuite.com vs open.feishu.cn) and separate OAuth Apps.
   // Same DCR-rejection behavior as Feishu. Operator workflow: register
   // an app at https://open.larksuite.com (Web App, redirect URL =
-  // ${baseUrl}/v1/oauth/callback), then set LARK_OAUTH_CLIENT_ID +
+  // ${baseUrl}/v1/oma/oauth/callback), then set LARK_OAUTH_CLIENT_ID +
   // LARK_OAUTH_CLIENT_SECRET on the main worker.
   if (!clientId && /^https:\/\/accounts\.larksuite\.com\//.test(meta.authServer.issuer)) {
     if (c.env.LARK_OAUTH_CLIENT_ID && c.env.LARK_OAUTH_CLIENT_SECRET) {
@@ -393,7 +393,7 @@ app.get("/authorize", async (c) => {
 
   // Known-provider preset: Asana publishes ASM but no registration_endpoint.
   // Operator workflow: visit https://app.asana.com/0/my-apps, create an
-  // OAuth app with redirect URL ${baseUrl}/v1/oauth/callback, then set
+  // OAuth app with redirect URL ${baseUrl}/v1/oma/oauth/callback, then set
   // ASANA_OAUTH_CLIENT_ID + ASANA_OAUTH_CLIENT_SECRET on the main worker.
   if (!clientId && /^https:\/\/app\.asana\.com\/?$/.test(meta.authServer.issuer)) {
     if (c.env.ASANA_OAUTH_CLIENT_ID && c.env.ASANA_OAUTH_CLIENT_SECRET) {
@@ -415,7 +415,7 @@ app.get("/authorize", async (c) => {
   // behind an allowlist form (returns invalid_request: "integration is
   // not currently allowlisted"). Operator workflow: visit
   // https://app.clickup.com/settings/apps, create an OAuth app with
-  // redirect URL ${baseUrl}/v1/oauth/callback, then set
+  // redirect URL ${baseUrl}/v1/oma/oauth/callback, then set
   // CLICKUP_OAUTH_CLIENT_ID + CLICKUP_OAUTH_CLIENT_SECRET on the main worker.
   if (!clientId && /^https:\/\/mcp\.clickup\.com\/?$/.test(meta.authServer.issuer)) {
     if (c.env.CLICKUP_OAUTH_CLIENT_ID && c.env.CLICKUP_OAUTH_CLIENT_SECRET) {
@@ -439,7 +439,7 @@ app.get("/authorize", async (c) => {
   // scopes for the integrations gateway. This one is for the Slack MCP
   // server (https://mcp.slack.com/mcp) and uses user-scope tokens.
   // Operator workflow: visit https://api.slack.com/apps, create an app
-  // with redirect URL ${baseUrl}/v1/oauth/callback, then set
+  // with redirect URL ${baseUrl}/v1/oma/oauth/callback, then set
   // SLACK_OAUTH_CLIENT_ID + SLACK_OAUTH_CLIENT_SECRET on the main worker.
   if (!clientId && /^https:\/\/slack\.com\/?$/.test(meta.authServer.issuer)) {
     if (c.env.SLACK_OAUTH_CLIENT_ID && c.env.SLACK_OAUTH_CLIENT_SECRET) {
@@ -511,7 +511,7 @@ app.get("/authorize", async (c) => {
 });
 
 /**
- * GET /v1/oauth/callback
+ * GET /v1/oma/oauth/callback
  *
  * OAuth callback handler. Exchanges authorization code for tokens,
  * creates/updates credential in vault, redirects user back to console.
@@ -544,7 +544,7 @@ app.get("/callback", async (c) => {
   const tokenBody = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: `${baseUrl}/v1/oauth/callback`,
+    redirect_uri: `${baseUrl}/v1/oma/oauth/callback`,
     client_id: oauthState.client_id,
     code_verifier: oauthState.code_verifier,
     resource: oauthState.resource_uri,
@@ -694,7 +694,7 @@ app.get("/callback", async (c) => {
 });
 
 /**
- * POST /v1/oauth/refresh
+ * POST /v1/oma/oauth/refresh
  *
  * Refresh an OAuth token. Called by the outbound worker when a 401 is received.
  * Body: { vault_id, credential_id }

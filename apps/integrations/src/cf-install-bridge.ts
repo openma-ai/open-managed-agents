@@ -180,7 +180,7 @@ export class CfInstallBridge implements InstallBridge {
   ): Promise<LinearMcpCredentialLookupResult> {
     const env = this.opts.env;
     const sessionRes = await env.MAIN.fetch(
-      `http://main/v1/internal/sessions/${encodeURIComponent(args.sessionId)}`,
+      `http://main/v1/oma/internal/sessions/${encodeURIComponent(args.sessionId)}`,
       {
         method: "GET",
         headers: { "x-internal-secret": env.INTEGRATIONS_INTERNAL_SECRET },

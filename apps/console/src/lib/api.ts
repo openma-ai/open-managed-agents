@@ -102,9 +102,9 @@ export function setActiveTenantId(id: string | null): void {
 /** Endpoints whose 401/403 are part of normal app flow and should NOT
  *  surface as a toast. /auth-info is checked on every page load to decide
  *  whether to show the login screen — a 401 means "not logged in", which
- *  the login screen already communicates. /v1/me 401 is handled the same
+ *  the login screen already communicates. /v1/oma/me 401 is handled the same
  *  way by the sidebar bootstrapping path. */
-const SILENT_AUTH_PATHS = ["/auth-info", "/v1/me"];
+const SILENT_AUTH_PATHS = ["/auth-info", "/v1/oma/me"];
 
 function shouldSilenceAuthError(path: string, status: number): boolean {
   if (status !== 401 && status !== 403) return false;

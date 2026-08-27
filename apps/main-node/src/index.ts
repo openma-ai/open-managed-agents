@@ -58,18 +58,19 @@ import { generateEventId } from "@open-managed-agents/shared";
 import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
 import { resolveModel } from "@open-managed-agents/agent/harness/provider";
+import { generateText } from "ai";
 import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 import { applyBetterAuthSchema } from "@open-managed-agents/schema";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
 import {
-  buildAgentRoutes,
-  buildVaultRoutes,
+  buildAgentRoutes as buildLegacyAgentRoutes,
+  buildVaultRoutes as buildLegacyVaultRoutes,
   buildModelCardRoutes,
-  buildEnvironmentRoutes,
+  buildEnvironmentRoutes as buildLegacyEnvironmentRoutes,
   buildSessionRoutes,
-  buildMemoryRoutes,
+  buildMemoryRoutes as buildLegacyMemoryRoutes,
   buildDreamRoutes,
   buildTenantRoutes,
   buildMeRoutes,
@@ -85,6 +86,150 @@ import {
   mintApiKeyOnStorage,
   sha256Hex,
 } from "@open-managed-agents/http-routes";
+import {
+  buildAgentRoutes as buildManagedAgentRoutes,
+  buildCredentialRoutes as buildManagedCredentialRoutes,
+  buildDeploymentRoutes as buildManagedDeploymentRoutes,
+  buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
+  buildDreamRoutes as buildManagedDreamRoutes,
+  buildEnvironmentRoutes as buildManagedEnvironmentRoutes,
+  buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes,
+  buildFileRoutes as buildManagedFileRoutes,
+  buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes,
+  buildMemoryRoutes as buildManagedMemoryRoutes,
+  buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes,
+  buildModelRoutes as buildManagedModelRoutes,
+  buildSkillRoutes as buildManagedSkillRoutes,
+  buildSkillVersionRoutes as buildManagedSkillVersionRoutes,
+  buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes,
+  buildTunnelRoutes as buildManagedTunnelRoutes,
+  buildVaultRoutes as buildManagedVaultRoutes,
+  buildUserProfileRoutes as buildManagedUserProfileRoutes,
+  buildManagedSessionsApi,
+} from "@open-managed-agents/managed-agents-api";
+import {
+  SessionRuntimeHistoryApplicationService,
+  SessionRuntimeProjectionApplicationService,
+  type SessionEnvironmentSourcePort,
+} from "@open-managed-agents/managed-agents-application";
+import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
+import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
+import { agentsModule } from "@open-managed-agents/app/modules/agents";
+import { credentialsModule } from "@open-managed-agents/app/modules/credentials";
+import { deploymentRunsModule } from "@open-managed-agents/app/modules/deployment-runs";
+import {
+  deploymentAgentSourcePort,
+  deploymentEnvironmentSourcePort,
+  deploymentFileSourcePort,
+  deploymentMemoryStoreSourcePort,
+  deploymentSchedulePlannerPort,
+  deploymentSessionLauncherPort,
+  deploymentVaultSourcePort,
+  deploymentsModule,
+} from "@open-managed-agents/app/modules/deployments";
+import {
+  dreamCuratorPort,
+  dreamExecutionModule,
+  dreamMemoryStoreSourcePort,
+  dreamMemoryWorkspacePort,
+  dreamSessionSourcePort,
+  dreamsModule,
+} from "@open-managed-agents/app/modules/dreams";
+import { environmentsModule } from "@open-managed-agents/app/modules/environments";
+import {
+  environmentSessionWorkEnqueuerPort,
+  environmentWorkAvailabilityWaiterPort,
+  environmentWorkEnqueuerModule,
+  environmentWorkEnvironmentSourcePort,
+  environmentWorkModule,
+  environmentWorkSessionCredentialIssuerPort,
+} from "@open-managed-agents/app/modules/environment-work";
+import { filesModule } from "@open-managed-agents/app/modules/files";
+import { memoryStoresModule } from "@open-managed-agents/app/modules/memory-stores";
+import {
+  memoriesModule,
+  memoryContentDescriptorPort,
+  memoryStoreForMemorySourcePort,
+  memoryVersionActorPort,
+  memoryVersionsModule,
+} from "@open-managed-agents/app/modules/memories";
+import {
+  skillPackageCompilerPort,
+  skillsModule,
+  skillVersionsModule,
+} from "@open-managed-agents/app/modules/skills";
+import {
+  tunnelCertificateAuthorityPort,
+  tunnelCertificatesModule,
+  tunnelProvisionerPort,
+  tunnelTokenManagerPort,
+  tunnelsModule,
+} from "@open-managed-agents/app/modules/tunnels";
+import {
+  userProfileEnrollmentIssuerPort,
+  userProfilesModule,
+} from "@open-managed-agents/app/modules/user-profiles";
+import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
+import {
+  modelCatalogSourcePort,
+  modelsModule,
+} from "@open-managed-agents/app/modules/models";
+import { createNodePlatform } from "@open-managed-agents/platform-node";
+import { SqlFileStore } from "@open-managed-agents/file-store-sql";
+import {
+  SqlCredentialStore,
+  type CredentialDocumentCipher,
+} from "@open-managed-agents/credential-store-sql";
+import { SqlVaultStore } from "@open-managed-agents/vault-store-sql";
+import {
+  SqlDeploymentStore,
+  type DeploymentResourceSecretCipher,
+} from "@open-managed-agents/deployment-store-sql";
+import { SqlDeploymentRunStore } from "@open-managed-agents/deployment-run-store-sql";
+import { SqlDreamStore } from "@open-managed-agents/dream-store-sql";
+import { SqlMemoryStoreStore } from "@open-managed-agents/memory-store-store-sql";
+import { SqlMemoryDocumentStore } from "@open-managed-agents/memory-document-store-sql";
+import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
+import { SqlTunnelStore } from "@open-managed-agents/tunnel-store-sql";
+import { SqlUserProfileStore } from "@open-managed-agents/user-profile-store-sql";
+import {
+  SqlEnvironmentWorkStore,
+  type EnvironmentWorkSecretCipher,
+} from "@open-managed-agents/environment-work-store-sql";
+import {
+  SqlAgentPersistence,
+  SqlDeploymentAgentSource,
+  SqlDeploymentVaultSource,
+  SqlEnvironmentPersistence,
+  SqlFileMetadataPersistence,
+  SqlMemoryStoreSource,
+  SqlManagedSessionsComposition,
+  SqlSessionEnvironmentSource,
+  SqlSessionSource,
+  SqlSessionRuntimeProjectionPersistence,
+} from "@open-managed-agents/managed-agents-adapters-sql";
+import {
+  createSqlSessionRuntimeReaders,
+} from "@open-managed-agents/session-runtime-sql";
+import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
+import {
+  AnthropicMessagesDreamCurator,
+  ApplicationDreamMemoryWorkspace,
+  ConfiguredModelCatalogSource,
+  CronDeploymentSchedulePlanner,
+  EnvironmentAwareSessionLifecycleRouter,
+  TimerEnvironmentWorkAvailabilityWaiter,
+  IndeterminateCredentialValidationProbe,
+  inProcessDreamExecutionSchedulerModule,
+  LocalTunnelProvisioner,
+  OpaqueEnvironmentWorkSessionCredentialIssuer,
+  DeduplicatingDreamCurator,
+  WebCryptoTunnelCertificateAuthority,
+  WebCryptoTunnelTokenManager,
+  WebCryptoMemoryContentDescriptor,
+  ZipSkillPackageCompiler,
+} from "@open-managed-agents/managed-agents-adapters-runtime";
+import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import {
   buildNodeRepos,
   SqlFeishuInstallationRepo,
@@ -128,7 +273,7 @@ import { startMemoryBlobWatcher } from "./lib/memory-blob-watcher.js";
 import { buildNodeScheduler } from "./lib/node-scheduler-jobs.js";
 import { startNodeMemoryQueue } from "./lib/node-memory-queue.js";
 import { mkdirSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { nanoid } from "nanoid";
 import {
   InProcessEventStreamHub,
@@ -138,6 +283,19 @@ import { PgEventStreamHub } from "./lib/pg-event-stream-hub";
 import { NodeHarnessRuntime } from "./lib/node-harness-runtime";
 import { SessionRegistry } from "./registry.js";
 import { buildNodeSkillsRoutes } from "./lib/node-skills-routes.js";
+import { ManagedNodeDefaultHarness } from "./lib/node-managed-default-harness.js";
+import {
+  allowAllLegacyHarnessTools,
+  toLegacyHarnessAgentConfig,
+} from "./lib/node-managed-agent-codec.js";
+import { NodeManagedConfirmedToolExecutor } from "./lib/node-managed-confirmed-tool-executor.js";
+import { NodeManagedOutcomeEvaluator } from "./lib/node-managed-outcome-evaluator.js";
+import {
+  ApplicationBackedNodeManagedSessionRuntimeEngine,
+  DefaultNodeManagedSessionRuntimeDriver,
+  NodeManagedSessionRuntimeAdapter,
+} from "./lib/node-managed-session-runtime.js";
+import { DefaultNodeManagedSessionRunner } from "./lib/node-managed-session-runner.js";
 
 const toMarkdownProvider = nodeToMarkdown();
 
@@ -216,6 +374,48 @@ if (usePostgres) {
   migrate(drizzleDb as never, { migrationsFolder });
 }
 await ensureEventLogSchema(sql, dialect);
+const managedAgentsPersistence = new SqlAgentPersistence(sql);
+const managedModelCatalog = new ConfiguredModelCatalogSource([
+  {
+    id: "claude-opus-5",
+    allowedFallbackModels: null,
+    capabilities: null,
+    createdAt: "1970-01-01T00:00:00.000Z",
+    displayName: "Claude Opus 5",
+    maxInputTokens: null,
+    maxTokens: null,
+  },
+]);
+const managedAgentsPlatform = createNodePlatform({
+  stores: {
+    agents: managedAgentsPersistence,
+    environments: new SqlEnvironmentPersistence(sql),
+    files: new SqlFileStore(sql),
+    memoryStores: new SqlMemoryStoreStore(sql),
+    userProfiles: new SqlUserProfileStore(sql),
+  },
+  fileContent: () => new BlobFileContentStore(filesBlob),
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${nanoid()}`,
+  },
+  modules: () => [
+    providePort(modelCatalogSourcePort, managedModelCatalog),
+    agentsModule(),
+    environmentsModule(),
+    filesModule(),
+    memoryStoresModule(),
+    modelsModule(),
+    providePort(userProfileEnrollmentIssuerPort, {
+      issue: async () => ({
+        type: "conflict" as const,
+        message: "User Profile enrollment is unavailable in self-hosted mode",
+      }),
+    }),
+    userProfilesModule(),
+  ],
+});
 
 // Integrations subsystem boot is gated on PLATFORM_ROOT_SECRET (used to
 // encrypt OAuth tokens etc.). Tables are part of the consolidated baseline
@@ -616,6 +816,602 @@ const sessionRegistry = new SessionRegistry({
 
 await sessionRegistry.bootstrap();
 
+// ─── Official Managed Sessions composition ─────────────────────────────
+
+const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
+  confirmedTools: new NodeManagedConfirmedToolExecutor({
+    buildExecutableTools: async ({ workspaceId, session, sandbox }) => {
+      const agent = allowAllLegacyHarnessTools(
+        toLegacyHarnessAgentConfig(session),
+      );
+      const creds = await resolveNodeModelCreds(workspaceId, agent.model);
+      return buildTools(agent, sandbox, {
+        ANTHROPIC_API_KEY: creds.apiKey,
+        ANTHROPIC_BASE_URL: creds.baseURL,
+        toMarkdown: toMarkdownProvider,
+        tenantId: workspaceId,
+        sessionId: session.id,
+      });
+    },
+  }),
+  outcomes: new NodeManagedOutcomeEvaluator({
+    buildModel: async ({ workspaceId, session }) => {
+      const creds = await resolveNodeModelCreds(workspaceId, session.agent.model);
+      return resolveModel(
+        creds.wireModel,
+        creds.apiKey,
+        creds.baseURL,
+        creds.apiCompat,
+        creds.customHeaders,
+      );
+    },
+    judge: async ({ model, system, prompt, abortSignal }) => {
+      const result = await generateText({
+        model,
+        system,
+        prompt,
+        abortSignal,
+      });
+      return {
+        text: result.text,
+        usage: {
+          inputTokens: result.usage.inputTokens ?? 0,
+          outputTokens: result.usage.outputTokens ?? 0,
+        },
+      };
+    },
+  }),
+  buildSandbox: ({ session }) =>
+    buildSandbox(
+      session.id,
+      join(process.env.SANDBOX_WORKDIR ?? "./data/sandboxes", session.id),
+    ),
+  buildModel: async ({ workspaceId, session }) => {
+    const creds = await resolveNodeModelCreds(workspaceId, session.agent.model);
+    return resolveModel(
+      creds.wireModel,
+      creds.apiKey,
+      creds.baseURL,
+      creds.apiCompat,
+      creds.customHeaders,
+    );
+  },
+  buildTools: async ({ workspaceId, session, sandbox }) => {
+    const agent = toLegacyHarnessAgentConfig(session);
+    const creds = await resolveNodeModelCreds(workspaceId, agent.model);
+    return buildTools(agent, sandbox, {
+      ANTHROPIC_API_KEY: creds.apiKey,
+      ANTHROPIC_BASE_URL: creds.baseURL,
+      toMarkdown: toMarkdownProvider,
+      tenantId: workspaceId,
+      sessionId: session.id,
+    });
+  },
+  buildHarness: () => new ManagedNodeDefaultHarness(),
+  buildHarnessContext: async (input) => {
+    const agent = toLegacyHarnessAgentConfig(input.session);
+    const creds = await resolveNodeModelCreds(input.workspaceId, agent.model);
+    const rawSystemPrompt = input.session.agent.system ?? "";
+    const feishuTools = await resolveFeishuAgentTools(input.session.id);
+    return {
+      agent,
+      userMessage: { type: "user.message", content: [] },
+      session_id: input.session.id,
+      tenant_id: input.workspaceId,
+      tools: { ...input.tools, ...feishuTools },
+      model: input.model,
+      systemPrompt: composeSystemPrompt(rawSystemPrompt),
+      rawSystemPrompt,
+      env: {
+        ANTHROPIC_API_KEY: creds.apiKey,
+        ANTHROPIC_BASE_URL: creds.baseURL,
+      },
+      runtime: input.runtime,
+    } satisfies HarnessContext;
+  },
+  clock: { now: () => new Date() },
+  ids: { nextEventId: () => `sevt_${nanoid()}` },
+});
+
+const managedRuntimeReaders = createSqlSessionRuntimeReaders(sql);
+const managedRuntimeEngine = new ApplicationBackedNodeManagedSessionRuntimeEngine({
+  historyFor: (workspaceId) =>
+    new SessionRuntimeHistoryApplicationService({
+      workspaceId,
+      source: managedRuntimeReaders.history,
+    }),
+  runner: managedRuntimeRunner,
+});
+const managedRuntimeDriver = new DefaultNodeManagedSessionRuntimeDriver({
+  engine: managedRuntimeEngine,
+  realtime: new MemorySessionRealtimeHub(),
+  projectionFor: (workspaceId) =>
+    new SessionRuntimeProjectionApplicationService({
+      workspaceId,
+      persistence: new SqlSessionRuntimeProjectionPersistence(sql),
+    }),
+});
+const managedSessionRuntime = new NodeManagedSessionRuntimeAdapter(
+  managedRuntimeDriver,
+);
+
+const persistedManagedEnvironments = new SqlSessionEnvironmentSource(sql);
+const nodeManagedEnvironments: SessionEnvironmentSourcePort = {
+  find: async (input) => {
+    if (input.environmentId !== "env-local-runtime") {
+      return persistedManagedEnvironments.find(input);
+    }
+    return {
+      id: input.environmentId,
+      archivedAt: null,
+      config: {
+        type: "cloud",
+        networking: { type: "unrestricted" },
+        packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] },
+      },
+      createdAt: "1970-01-01T00:00:00.000Z",
+      description: "Node self-hosted runtime",
+      metadata: {},
+      name: "Local runtime",
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    };
+  },
+};
+const managedSessionLifecycle = new EnvironmentAwareSessionLifecycleRouter({
+  environments: nodeManagedEnvironments,
+  runtime: managedSessionRuntime,
+  selfHostedWork: {
+    enqueue: (input) =>
+      managedEnvironmentWorkEnqueuerFor(input.workspaceId).enqueue(input),
+    stop: (input) =>
+      managedEnvironmentWorkEnqueuerFor(input.workspaceId).stop(input),
+  },
+});
+const managedResourceCipher = platformRootSecret === undefined
+  ? null
+  : new WebCryptoAesGcm(platformRootSecret, "managed.sessions.resources");
+const managedSessionsComposition = new SqlManagedSessionsComposition({
+  client: sql,
+  environments: nodeManagedEnvironments,
+  lifecycle: managedSessionLifecycle,
+  runtime: managedSessionRuntime,
+  sealer: {
+    seal: async (value) => {
+      if (managedResourceCipher === null) {
+        throw new Error(
+          "PLATFORM_ROOT_SECRET is required for managed Session resource credentials",
+        );
+      }
+      return managedResourceCipher.encrypt(value);
+    },
+  },
+  clock: { now: () => new Date() },
+  ids: {
+    nextSessionId: () => `session_${nanoid()}`,
+    nextEventId: () => `sevt_${nanoid()}`,
+    nextOutcomeId: () => `outc_${nanoid()}`,
+    nextResourceId: () => `sesrsc_${nanoid()}`,
+  },
+});
+
+const managedDeploymentCrypto = platformRootSecret === undefined
+  ? null
+  : new WebCryptoAesGcm(platformRootSecret, "managed.deployments.resources");
+const managedDeploymentCipher: DeploymentResourceSecretCipher = {
+  seal: async ({ plaintext }) => {
+    if (managedDeploymentCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Deployment resource credentials",
+      );
+    }
+    return { ciphertext: await managedDeploymentCrypto.encrypt(plaintext) };
+  },
+  open: async ({ ciphertext }) => {
+    if (managedDeploymentCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Deployment resource credentials",
+      );
+    }
+    return { plaintext: await managedDeploymentCrypto.decrypt(ciphertext) };
+  },
+};
+const managedDeploymentSchedulePlanner = new CronDeploymentSchedulePlanner();
+const managedEnvironmentWorkAvailability =
+  new TimerEnvironmentWorkAvailabilityWaiter();
+const managedEnvironmentWorkCrypto = platformRootSecret === undefined
+  ? null
+  : new WebCryptoAesGcm(platformRootSecret, "managed.environment-work.secret");
+const managedEnvironmentWorkCipher: EnvironmentWorkSecretCipher = {
+  seal: async ({ plaintext }) => {
+    if (managedEnvironmentWorkCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+      );
+    }
+    return {
+      ciphertext: await managedEnvironmentWorkCrypto.encrypt(plaintext),
+    };
+  },
+  open: async ({ ciphertext }) => {
+    if (managedEnvironmentWorkCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+      );
+    }
+    return {
+      plaintext: await managedEnvironmentWorkCrypto.decrypt(ciphertext),
+    };
+  },
+};
+const managedEnvironmentWorkCredentials =
+  new OpaqueEnvironmentWorkSessionCredentialIssuer({
+    nextToken: () => nanoid(48),
+    ...(process.env.PUBLIC_BASE_URL !== undefined && {
+      apiBaseUrl: process.env.PUBLIC_BASE_URL,
+    }),
+  });
+const managedEnvironmentWorkPlatform = createNodePlatform({
+  stores: {
+    environmentWork: new SqlEnvironmentWorkStore(
+      sql,
+      managedEnvironmentWorkCipher,
+    ),
+  },
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "environment-work" ? "work" : namespace}_${nanoid()}`,
+  },
+  modules: () => [
+    providePort(environmentWorkEnvironmentSourcePort, nodeManagedEnvironments),
+    providePort(
+      environmentWorkAvailabilityWaiterPort,
+      managedEnvironmentWorkAvailability,
+    ),
+    providePort(
+      environmentWorkSessionCredentialIssuerPort,
+      managedEnvironmentWorkCredentials,
+    ),
+    environmentWorkModule(),
+    environmentWorkEnqueuerModule(),
+  ],
+});
+function managedEnvironmentWorkEnqueuerFor(
+  workspaceId: string,
+) {
+  return managedEnvironmentWorkPlatform
+    .app({ workspaceId })
+    .port(environmentSessionWorkEnqueuerPort);
+}
+const managedDeploymentsPlatform = createNodePlatform({
+  stores: {
+    deployments: new SqlDeploymentStore(sql, managedDeploymentCipher),
+    deploymentRuns: new SqlDeploymentRunStore(sql),
+  },
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "deployment" ? "depl" : namespace === "deployment-run" ? "drun" : namespace}_${nanoid()}`,
+  },
+  modules: (scope) => [
+    providePort(deploymentAgentSourcePort, new SqlDeploymentAgentSource(sql)),
+    providePort(deploymentEnvironmentSourcePort, nodeManagedEnvironments),
+    providePort(deploymentFileSourcePort, new SqlFileMetadataPersistence(sql)),
+    providePort(deploymentMemoryStoreSourcePort, new SqlMemoryStoreSource(sql)),
+    providePort(deploymentSchedulePlannerPort, managedDeploymentSchedulePlanner),
+    providePort(
+      deploymentSessionLauncherPort,
+      managedSessionsComposition.portsFor(scope.workspaceId)
+        .deploymentSessionLauncher,
+    ),
+    providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(sql)),
+    deploymentRunsModule(),
+    deploymentsModule(),
+  ],
+});
+const managedDeploymentsRoutes = buildManagedDeploymentRoutes((context) => {
+  const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+  return managedDeploymentsPlatform
+    .app({ workspaceId })
+    .port(managedAgentsPortTokens.deployments);
+});
+const managedDeploymentRunsRoutes = buildManagedDeploymentRunRoutes((context) => {
+  const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+  return managedDeploymentsPlatform
+    .app({ workspaceId })
+    .port(managedAgentsPortTokens.deploymentRuns);
+});
+
+const managedEnvironmentsRoutes = buildManagedEnvironmentRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.environments),
+);
+
+const managedEnvironmentWorkRoutes = buildManagedEnvironmentWorkRoutes(
+  (context) =>
+    managedEnvironmentWorkPlatform
+      .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
+      .port(managedAgentsPortTokens.environmentWork),
+);
+
+const managedDreamCurator =
+  process.env.DREAM_CURATOR_MODE === "dedup" ||
+    process.env.ANTHROPIC_API_KEY === undefined
+  ? new DeduplicatingDreamCurator()
+  : new AnthropicMessagesDreamCurator({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      ...(process.env.ANTHROPIC_BASE_URL !== undefined && {
+        baseUrl: process.env.ANTHROPIC_BASE_URL,
+      }),
+    });
+const managedDreamsPlatform = createNodePlatform({
+  stores: {
+    dreams: new SqlDreamStore(sql),
+    memoryStores: new SqlMemoryStoreStore(sql),
+    memories: new SqlMemoryDocumentStore(sql),
+  },
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) => `${
+      namespace === "memory_store"
+        ? "memstore"
+        : namespace === "memory"
+          ? "mem"
+          : namespace === "memory-version"
+            ? "memver"
+            : "dream"
+    }_${nanoid()}`,
+  },
+  modules: (scope) => {
+    const memoryStoreSource = new SqlMemoryStoreSource(sql);
+    return [
+      providePort(dreamMemoryStoreSourcePort, memoryStoreSource),
+      providePort(memoryStoreForMemorySourcePort, memoryStoreSource),
+      providePort(memoryContentDescriptorPort, managedMemoryContent),
+      providePort(memoryVersionActorPort, {
+        kind: "service_account",
+        serviceAccountId: "dream_executor",
+      }),
+      providePort(dreamSessionSourcePort, new SqlSessionSource(sql)),
+      providePort(dreamCuratorPort, managedDreamCurator),
+      defineAppModule({
+        name: "managed-agents:dream-memory-workspace",
+        provides: [dreamMemoryWorkspacePort],
+        requires: [
+          managedAgentsPortTokens.memoryStores,
+          managedAgentsPortTokens.memories,
+        ],
+        setup: ({ port }) => ({
+          ports: [bindPort(
+            dreamMemoryWorkspacePort,
+            new ApplicationDreamMemoryWorkspace({
+              workspaceId: scope.workspaceId,
+              memoryStores: port(managedAgentsPortTokens.memoryStores),
+              memories: port(managedAgentsPortTokens.memories),
+            }),
+          )],
+        }),
+      }),
+      memoryStoresModule(),
+      memoriesModule(),
+      dreamExecutionModule(),
+      inProcessDreamExecutionSchedulerModule({
+        defer: (task) => {
+          void task;
+        },
+      }),
+      dreamsModule(),
+    ];
+  },
+});
+const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
+  managedDreamsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.dreams),
+);
+
+const managedModelsRoutes = buildManagedModelRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.models),
+);
+
+const managedTunnelProvisioner = new LocalTunnelProvisioner({
+  domainSuffix: process.env.TUNNEL_DOMAIN_SUFFIX ?? "tunnels.localhost",
+  nextTokenId: () => `ttok_${nanoid()}`,
+});
+const managedTunnelTokens = new WebCryptoTunnelTokenManager({
+  rootSecret: platformRootSecret,
+  nextTokenId: () => `ttok_${nanoid()}`,
+});
+const managedTunnelCertificates = new WebCryptoTunnelCertificateAuthority();
+const managedTunnelsPlatform = createNodePlatform({
+  stores: { tunnels: new SqlTunnelStore(sql) },
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "tunnel" ? "tnl" : "tcrt"}_${nanoid()}`,
+  },
+  modules: () => [
+    providePort(tunnelProvisionerPort, managedTunnelProvisioner),
+    providePort(tunnelTokenManagerPort, managedTunnelTokens),
+    providePort(tunnelCertificateAuthorityPort, managedTunnelCertificates),
+    tunnelsModule(),
+    tunnelCertificatesModule(),
+  ],
+});
+const managedTunnelsRoutes = buildManagedTunnelRoutes((context) =>
+  managedTunnelsPlatform.app({
+    workspaceId: (context.var as { tenant_id: string }).tenant_id,
+  }).port(managedAgentsPortTokens.tunnels),
+);
+const managedTunnelCertificateRoutes = buildManagedTunnelCertificateRoutes(
+  (context) => managedTunnelsPlatform.app({
+    workspaceId: (context.var as { tenant_id: string }).tenant_id,
+  }).port(managedAgentsPortTokens.tunnelCertificates),
+);
+
+const managedFilesRoutes = buildManagedFileRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.files)
+);
+
+const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.memoryStores),
+);
+
+const managedMemoryContent = new WebCryptoMemoryContentDescriptor();
+const managedMemoryDocuments = new SqlMemoryDocumentStore(sql);
+function managedMemoryActor(userId: string | undefined) {
+  return userId === undefined
+    ? { kind: "api" as const, apiKeyId: "self_hosted" }
+    : { kind: "user" as const, userId };
+}
+function managedMemoriesApplicationFor(context: unknown) {
+  const request = (context as {
+    var: { tenant_id: string; user_id?: string };
+  }).var;
+  const platform = createNodePlatform({
+    stores: {
+      memoryStores: new SqlMemoryStoreStore(sql),
+      memories: managedMemoryDocuments,
+    },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) => `${
+        namespace === "memory"
+          ? "mem"
+          : namespace === "memory-version"
+            ? "memver"
+            : namespace
+      }_${nanoid()}`,
+    },
+    modules: () => [
+      providePort(
+        memoryStoreForMemorySourcePort,
+        new SqlMemoryStoreSource(sql),
+      ),
+      providePort(memoryContentDescriptorPort, managedMemoryContent),
+      providePort(
+        memoryVersionActorPort,
+        managedMemoryActor(request.user_id),
+      ),
+      memoriesModule(),
+      memoryVersionsModule(),
+    ],
+  });
+  return platform.app({ workspaceId: request.tenant_id });
+}
+const managedMemoriesRoutes = buildManagedMemoryRoutes((context) =>
+  managedMemoriesApplicationFor(context)
+    .port(managedAgentsPortTokens.memories),
+);
+const managedMemoryVersionsRoutes = buildManagedMemoryVersionRoutes((context) =>
+  managedMemoriesApplicationFor(context)
+    .port(managedAgentsPortTokens.memoryVersions),
+);
+
+const managedSkillCompiler = new ZipSkillPackageCompiler();
+let lastManagedSkillVersion = 0n;
+function nextManagedSkillVersion(): string {
+  const now = BigInt(Date.now()) * 1_000n;
+  lastManagedSkillVersion = now > lastManagedSkillVersion
+    ? now
+    : lastManagedSkillVersion + 1n;
+  return lastManagedSkillVersion.toString();
+}
+const managedSkillsPlatform = createNodePlatform({
+  stores: { skills: new SqlSkillStore(sql) },
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      namespace === "skill-version-value"
+        ? nextManagedSkillVersion()
+        : `${namespace === "skill-version" ? "skv" : namespace}_${nanoid()}`,
+  },
+  modules: () => [
+    providePort(skillPackageCompilerPort, managedSkillCompiler),
+    skillsModule(),
+    skillVersionsModule(),
+  ],
+});
+const managedSkillsRoutes = buildManagedSkillRoutes((context) =>
+  managedSkillsPlatform.app({
+    workspaceId: (context.var as { tenant_id: string }).tenant_id,
+  }).port(managedAgentsPortTokens.skills),
+);
+const managedSkillVersionsRoutes = buildManagedSkillVersionRoutes((context) =>
+  managedSkillsPlatform.app({
+    workspaceId: (context.var as { tenant_id: string }).tenant_id,
+  }).port(managedAgentsPortTokens.skillVersions),
+);
+
+const managedCredentialCrypto = platformRootSecret === undefined
+  ? null
+  : new WebCryptoAesGcm(platformRootSecret, "managed.vault.credentials");
+const managedCredentialCipher: CredentialDocumentCipher = {
+  seal: async ({ plaintext }) => {
+    if (managedCredentialCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Vault credentials",
+      );
+    }
+    return { ciphertext: await managedCredentialCrypto.encrypt(plaintext) };
+  },
+  open: async ({ ciphertext }) => {
+    if (managedCredentialCrypto === null) {
+      throw new Error(
+        "PLATFORM_ROOT_SECRET is required for managed Vault credentials",
+      );
+    }
+    return { plaintext: await managedCredentialCrypto.decrypt(ciphertext) };
+  },
+};
+const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
+const managedCredentialsPlatform = createNodePlatform({
+  stores: {
+    credentials: new SqlCredentialStore(sql, managedCredentialCipher),
+    vaults: new SqlVaultStore(sql),
+  },
+  credentialValidation: managedCredentialValidation,
+  clock: { now: () => new Date() },
+  ids: {
+    next: (namespace) =>
+      `${namespace === "credential" ? "vcrd" : namespace === "vault" ? "vlt" : namespace}_${nanoid()}`,
+  },
+  modules: () => [vaultsModule(), credentialsModule()],
+});
+const managedVaultsRoutes = buildManagedVaultRoutes((context) =>
+  managedCredentialsPlatform
+    .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
+    .port(managedAgentsPortTokens.vaults),
+);
+const managedCredentialsRoutes = buildManagedCredentialRoutes((context) =>
+  managedCredentialsPlatform
+    .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
+    .port(managedAgentsPortTokens.credentials),
+);
+
+const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
+  managedAgentsPlatform
+    .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
+    .port(managedAgentsPortTokens.userProfiles),
+);
+
 // ─── Services bundle ────────────────────────────────────────────────────
 
 const kv = new SqlKvStore({ db: drizzleDb, tenantId: "default" });
@@ -860,7 +1656,14 @@ v1.use("*", authMw);
 // Mount route bundles. Same paths CF uses; behavior preserved. Once a tenant
 // has configured model cards, agent model handles must resolve to an active
 // card; an empty card set keeps the legacy ANTHROPIC_API_KEY fallback usable.
-v1.route("/agents", buildAgentRoutes({
+v1.route("/agents", buildManagedAgentRoutes((context) =>
+  managedAgentsPlatform
+    .app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    })
+    .port(managedAgentsPortTokens.agents),
+));
+v1.route("/oma/agents", buildLegacyAgentRoutes({
   services,
   validateModel: async (tenantId, model) => {
     const cards = await modelCardsService.list({ tenantId });
@@ -882,7 +1685,29 @@ const sessionRouter = new NodeSessionRouter({
   registry: sessionRegistry,
   newEventLog,
 });
-v1.route("/sessions", buildSessionRoutes({
+v1.route("/sessions", buildManagedSessionsApi({
+  sessions: (context) =>
+    managedSessionsComposition.portsFor(
+      (context.var as { tenant_id: string }).tenant_id,
+    ).sessions,
+  sessionEvents: (context) =>
+    managedSessionsComposition.portsFor(
+      (context.var as { tenant_id: string }).tenant_id,
+    ).sessionEvents,
+  sessionResources: (context) =>
+    managedSessionsComposition.portsFor(
+      (context.var as { tenant_id: string }).tenant_id,
+    ).sessionResources,
+  sessionThreads: (context) =>
+    managedSessionsComposition.portsFor(
+      (context.var as { tenant_id: string }).tenant_id,
+    ).sessionThreads,
+  sessionThreadEvents: (context) =>
+    managedSessionsComposition.portsFor(
+      (context.var as { tenant_id: string }).tenant_id,
+    ).sessionThreadEvents,
+}));
+v1.route("/oma/sessions", buildSessionRoutes({
   services,
   router: sessionRouter,
   outputs: nodeOutputsAdapter(outputsRoot),
@@ -899,9 +1724,22 @@ v1.route("/sessions", buildSessionRoutes({
     } as unknown as import("@open-managed-agents/shared").EnvironmentConfig;
   },
 }));
-v1.route("/vaults", buildVaultRoutes({ services }));
-v1.route("/memory_stores", buildMemoryRoutes({ services }));
-v1.route("/dreams", buildDreamRoutes({
+v1.route("/vaults", managedVaultsRoutes);
+v1.route("/vaults", managedCredentialsRoutes);
+v1.route("/user_profiles", managedUserProfilesRoutes);
+v1.route("/oma/vaults", buildLegacyVaultRoutes({ services }));
+v1.route("/memory_stores", managedMemoryStoresRoutes);
+v1.route("/memory_stores", managedMemoriesRoutes);
+v1.route("/memory_stores", managedMemoryVersionsRoutes);
+v1.route("/models", managedModelsRoutes);
+v1.route("/oma/memory_stores", buildLegacyMemoryRoutes({ services }));
+v1.route("/skills", managedSkillsRoutes);
+v1.route("/skills", managedSkillVersionsRoutes);
+v1.route("/deployments", managedDeploymentsRoutes);
+v1.route("/deployment_runs", managedDeploymentRunsRoutes);
+v1.route("/environments", managedEnvironmentWorkRoutes);
+v1.route("/dreams", managedDreamsRoutes);
+v1.route("/oma/dreams", buildDreamRoutes({
   services,
   curatorEnv: {
     DREAM_CURATOR_MODE: process.env.DREAM_CURATOR_MODE,
@@ -909,7 +1747,9 @@ v1.route("/dreams", buildDreamRoutes({
     ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
   },
 }));
-v1.route("/me", buildMeRoutes({
+v1.route("/tunnels", managedTunnelsRoutes);
+v1.route("/tunnels", managedTunnelCertificateRoutes);
+v1.route("/oma/me", buildMeRoutes({
   services,
   authDisabled,
   loadTenant: async (tenantId) => {
@@ -941,18 +1781,18 @@ v1.route("/me", buildMeRoutes({
   },
   mintApiKey: (input) => mintApiKeyOnStorage(apiKeyStorage, input),
 }));
-v1.route("/tenants", buildTenantRoutes({ services }));
-v1.route("/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
-v1.route("/evals", buildEvalRoutes({
+v1.route("/oma/tenants", buildTenantRoutes({ services }));
+v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
+v1.route("/oma/evals", buildEvalRoutes({
   evals: evalsService,
   agents: agentsService,
   environments: environmentsService,
 }));
 
-// Stubs for routes the console hits but main-node doesn't yet implement.
-v1.get("/runtimes", (c) => c.json({ data: [] }));
-v1.route("/skills", buildNodeSkillsRoutes({ db: drizzleDb, blobs: filesBlob }));
-v1.get("/stats", async (c) => {
+// OMA-only stubs used by the self-hosted console.
+v1.route("/oma/skills", buildNodeSkillsRoutes({ db: drizzleDb, blobs: filesBlob }));
+v1.get("/oma/runtimes", (c) => c.json({ data: [] }));
+v1.get("/oma/stats", async (c) => {
   const tenantId = c.get("tenant_id");
   const [
     agents,
@@ -980,12 +1820,14 @@ v1.get("/stats", async (c) => {
     api_keys: apiKeys.length,
   });
 });
-v1.route("/environments", buildEnvironmentRoutes({
+v1.route("/environments", managedEnvironmentsRoutes);
+v1.route("/oma/environments", buildLegacyEnvironmentRoutes({
   environments: environmentsService,
   sessions: sessionsService,
 }));
-v1.route("/model_cards", buildModelCardRoutes({ modelCards: modelCardsService }));
-v1.get("/models/list", (c) =>
+v1.route("/files", managedFilesRoutes);
+v1.route("/oma/model_cards", buildModelCardRoutes({ modelCards: modelCardsService }));
+v1.get("/oma/models/list", (c) =>
   c.json({
     data: [
       { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5", speeds: ["standard", "fast"] },
@@ -994,9 +1836,9 @@ v1.get("/models/list", (c) =>
     ],
   }),
 );
-// Console ModelCardsList fetches suggestions via POST /v1/models/list with
+// Console ModelCardsList fetches suggestions via POST /v1/oma/models/list with
 // the user's key — proxy through to Anthropic/OpenAI when possible.
-v1.post("/models/list", async (c) => {
+v1.post("/oma/models/list", async (c) => {
   const body = await c.req.json<{ provider?: string; api_key?: string }>();
   const provider = body.provider || "ant";
   const apiKey = body.api_key || "";
@@ -1036,9 +1878,9 @@ v1.post("/models/list", async (c) => {
     );
   }
 });
-v1.get("/integrations/github/credentials", (c) => c.json({ data: [] }));
-v1.get("/integrations/linear/credentials", (c) => c.json({ data: [] }));
-v1.get("/integrations/slack/credentials", (c) => c.json({ data: [] }));
+v1.get("/oma/integrations/github/credentials", (c) => c.json({ data: [] }));
+v1.get("/oma/integrations/linear/credentials", (c) => c.json({ data: [] }));
+v1.get("/oma/integrations/slack/credentials", (c) => c.json({ data: [] }));
 
 // Real integration CRUD + lookup (linear/github/slack publications,
 // installations, dispatch rules). Active only when PLATFORM_ROOT_SECRET is
@@ -1130,7 +1972,7 @@ if (platformRootSecret) {
     PLATFORM_ROOT_SECRET: platformRootSecret,
   };
   v1.route(
-    "/integrations",
+    "/oma/integrations",
     buildIntegrationsRoutes({
       bags: () => {
         const repos = buildNodeRepos(integrationsRepoEnv);
@@ -1172,7 +2014,7 @@ if (platformRootSecret) {
 // POST /v1/sessions/:id/files (lifecycle.promoteSandboxFile) and the
 // CF-only POST /v1/files (multipart upload from the browser) — that
 // route can be ported when console upload UX needs it.
-v1.get("/files", async (c) => {
+v1.get("/oma/files", async (c) => {
   const t = c.var.tenant_id;
   const scopeId = c.req.query("scope_id") ?? undefined;
   const limitParam = c.req.query("limit");
@@ -1186,7 +2028,7 @@ v1.get("/files", async (c) => {
   });
   return c.json({ data: rows.map(toFileRecord), has_more: false });
 });
-v1.get("/files/:id/content", async (c) => {
+v1.get("/oma/files/:id/content", async (c) => {
   const id = c.req.param("id");
   const t = c.var.tenant_id;
   const row = await filesService.get({ tenantId: t, fileId: id });
@@ -1198,14 +2040,14 @@ v1.get("/files/:id/content", async (c) => {
     headers: { "Content-Type": row.media_type },
   });
 });
-v1.get("/files/:id", async (c) => {
+v1.get("/oma/files/:id", async (c) => {
   const id = c.req.param("id");
   const t = c.var.tenant_id;
   const row = await filesService.get({ tenantId: t, fileId: id });
   if (!row) return c.json({ error: "File not found" }, 404);
   return c.json(toFileRecord(row));
 });
-v1.delete("/files/:id", async (c) => {
+v1.delete("/oma/files/:id", async (c) => {
   try {
     const deleted = await filesService.delete({
       tenantId: c.var.tenant_id,
@@ -1222,7 +2064,7 @@ v1.delete("/files/:id", async (c) => {
 });
 
 // ── Session ↔ memory_store binding (Node-specific; not in package yet) ──
-v1.post("/sessions/:id/memory_stores", async (c) => {
+v1.post("/oma/sessions/:id/memory_stores", async (c) => {
   const sid = c.req.param("id");
   const session = await sql
     .prepare(`SELECT id FROM sessions WHERE tenant_id = ? AND id = ?`)
@@ -1247,7 +2089,7 @@ v1.post("/sessions/:id/memory_stores", async (c) => {
     .run();
   return c.json({ session_id: sid, store_id: body.store_id, access }, 201);
 });
-v1.get("/sessions/:id/memory_stores", async (c) => {
+v1.get("/oma/sessions/:id/memory_stores", async (c) => {
   const r = await sql
     .prepare(
       `SELECT store_id, access, created_at FROM session_memory_stores WHERE session_id = ?`,
@@ -1258,91 +2100,6 @@ v1.get("/sessions/:id/memory_stores", async (c) => {
 });
 
 app.route("/v1", v1);
-
-// /v1/oma/* mirror — same Hono sub-app mounted twice. New OMA-only
-// endpoints should be added here only; the bare /v1/<resource> mounts
-// stay live for back-compat with Console + CLI.
-app.route("/v1/oma/me", buildMeRoutes({
-  services,
-  authDisabled,
-  loadTenant: async (tenantId) => {
-    const r = await sql
-      .prepare(`SELECT id, name FROM "tenant" WHERE id = ?`)
-      .bind(tenantId)
-      .first<{ id: string; name: string }>();
-    return r ?? null;
-  },
-  listMemberships: async (userId) => {
-    const r = await sql
-      .prepare(
-        `SELECT t.id AS id, t.name AS name, m.role AS role, m.created_at AS created_at
-           FROM "membership" m JOIN "tenant" t ON t.id = m.tenant_id
-          WHERE m.user_id = ? ORDER BY m.created_at ASC, t.id ASC`,
-      )
-      .bind(userId)
-      .all<{ id: string; name: string; role: string; created_at: number }>();
-    return r.results ?? [];
-  },
-  hasMembership: async (userId, tenantId) => {
-    const row = await sql
-      .prepare(
-        `SELECT 1 AS one FROM membership WHERE user_id = ? AND tenant_id = ? LIMIT 1`,
-      )
-      .bind(userId, tenantId)
-      .first<{ one: number }>();
-    return row !== null;
-  },
-  mintApiKey: (input) => mintApiKeyOnStorage(apiKeyStorage, input),
-}));
-app.route("/v1/oma/tenants", buildTenantRoutes({ services }));
-app.route("/v1/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
-app.route("/v1/oma/evals", buildEvalRoutes({
-  evals: evalsService,
-  agents: agentsService,
-}));
-
-// /v1/oma/integrations mirror — same factory used twice. New OMA-only
-// endpoints (if any) get added in the package, not here.
-if (platformRootSecret) {
-  const integrationsRepoEnvOma: NodeReposEnv = {
-    sql,
-    db: drizzleDb,
-    PLATFORM_ROOT_SECRET: platformRootSecret,
-  };
-  app.route(
-    "/v1/oma/integrations",
-    buildIntegrationsRoutes({
-      bags: () => {
-        const repos = buildNodeRepos(integrationsRepoEnvOma);
-        const slackCrypto = new WebCryptoAesGcm(platformRootSecret, "integrations.tokens");
-        const slackIds = new CryptoIdGenerator();
-        return {
-          linear: {
-            installations: repos.linearInstallations,
-            publications: repos.linearPublications,
-            apps: repos.apps,
-            dispatchRules: repos.dispatchRules,
-          },
-          github: {
-            installations: repos.githubInstallations,
-            publications: repos.githubPublications,
-            githubApps: repos.githubApps,
-          },
-          slack: {
-            installations: new SqlSlackInstallationRepo(drizzleDb, slackCrypto, slackIds),
-            publications: new SqlSlackPublicationRepo(drizzleDb, slackIds, slackCrypto),
-            apps: new SqlSlackAppRepo(drizzleDb, slackCrypto, slackIds),
-          },
-          feishu: {
-            installations: new SqlFeishuInstallationRepo(drizzleDb, slackCrypto, slackIds),
-            publications: new SqlFeishuPublicationRepo(drizzleDb, slackIds, slackCrypto),
-          },
-        };
-      },
-      installProxy: installBridge ? bridgeAsInstallProxy(installBridge) : null,
-    }),
-  );
-}
 
 // ─── Integrations gateway (OAuth callbacks, setup pages, Linear MCP,
 // GitHub internal refresh, webhooks) — mounted on `app` (NOT under /v1)
@@ -1455,6 +2212,11 @@ logger.info({ op: "main-node.scheduler.started" }, "scheduler started");
 
 const shutdown = async (signal: string) => {
   logger.info({ op: "main-node.shutdown", signal }, `received ${signal}, shutting down`);
+  try { await managedSessionsComposition.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_sessions_stop_failed" }, "managed Sessions app graphs stop failed"); }
+  try { await managedAgentsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_platform_stop_failed" }, "managed platform stop failed"); }
+  try { await managedCredentialsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_credentials_platform_stop_failed" }, "managed Credentials platform stop failed"); }
+  try { await managedDeploymentsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_deployments_platform_stop_failed" }, "managed Deployments platform stop failed"); }
+  try { await managedDreamsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_dreams_platform_stop_failed" }, "managed Dreams platform stop failed"); }
   try { await scheduler.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.scheduler_stop_failed" }, "scheduler stop failed"); }
   try { await memoryWatcher.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.watcher_stop_failed" }, "memory watcher stop failed"); }
   if (s3Poller) {

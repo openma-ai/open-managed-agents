@@ -21,29 +21,29 @@ api() { curl -sS "$BASE$1" -H "x-api-key: $KEY" -H "content-type: application/js
 
 create_agent() {
   local name="$1" system="$2"
-  api /v1/agents -X POST -d "{\"name\":\"$name\",\"model\":\"openai/gpt-5.4\",\"system\":\"$system\",\"tools\":[{\"type\":\"agent_toolset_20260401\"}]}" | jq -r .id
+  api /v1/oma/agents -X POST -d "{\"name\":\"$name\",\"model\":\"openai/gpt-5.4\",\"system\":\"$system\",\"tools\":[{\"type\":\"agent_toolset_20260401\"}]}" | jq -r .id
 }
 
 create_env() {
-  api /v1/environments -X POST -d '{"name":"e2e-env","config":{"type":"cloud"}}' | jq -r .id
+  api /v1/oma/environments -X POST -d '{"name":"e2e-env","config":{"type":"cloud"}}' | jq -r .id
 }
 
 create_session() {
   local aid="$1" eid="$2"
-  api /v1/sessions -X POST -d "{\"agent\":\"$aid\",\"environment_id\":\"$eid\"}" | jq -r .id
+  api /v1/oma/sessions -X POST -d "{\"agent\":\"$aid\",\"environment_id\":\"$eid\"}" | jq -r .id
 }
 
 send_and_collect() {
   local sid="$1" text="$2" timeout="${3:-60}"
   local f=$(mktemp)
   # Start SSE listener
-  curl -sS -N "$BASE/v1/sessions/$sid/events" \
+  curl -sS -N "$BASE/v1/oma/sessions/$sid/events" \
     -H "x-api-key: $KEY" -H "Accept: text/event-stream" \
     --max-time "$timeout" > "$f" 2>/dev/null &
   local pid=$!
   sleep 1
   # Send message
-  api "/v1/sessions/$sid/events" -X POST \
+  api "/v1/oma/sessions/$sid/events" -X POST \
     -d "{\"events\":[{\"type\":\"user.message\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}]}" > /dev/null
   # Wait for completion
   local elapsed=0
@@ -136,11 +136,11 @@ AID5=$(create_agent "Versioned" "VERSION_1")
 SID5=$(create_session "$AID5" "$ENV_ID")
 
 # Update agent to v2
-api "/v1/agents/$AID5" -X PUT -d '{"system":"VERSION_2"}' > /dev/null
-VER=$(api "/v1/agents/$AID5" | jq -r .version)
+api "/v1/oma/agents/$AID5" -X PUT -d '{"system":"VERSION_2"}' > /dev/null
+VER=$(api "/v1/oma/agents/$AID5" | jq -r .version)
 check "agent is v2" "2" "$VER"
 
-SNAP=$(api "/v1/sessions/$SID5" | jq -r '.agent.system // empty')
+SNAP=$(api "/v1/oma/sessions/$SID5" | jq -r '.agent.system // empty')
 if [ "$SNAP" = "VERSION_1" ]; then
   check "snapshot preserved v1" "true" "true"
 else
@@ -159,10 +159,10 @@ SID6=$(create_session "$AID6" "$ENV_ID")
 SSE6=$(send_and_collect "$SID6" "Say hello." 30)
 check "session works" "agent.message" "$SSE6"
 
-ARCHIVED=$(api "/v1/sessions/$SID6/archive" -X POST)
+ARCHIVED=$(api "/v1/oma/sessions/$SID6/archive" -X POST)
 check "archived" "archived_at" "$ARCHIVED"
 
-EVENTS=$(api "/v1/sessions/$SID6/events" -H "Accept: application/json")
+EVENTS=$(api "/v1/oma/sessions/$SID6/events" -H "Accept: application/json")
 EC=$(echo "$EVENTS" | jq '.data | length' 2>/dev/null)
 check "events persisted" "true" "$([ "${EC:-0}" -gt 0 ] && echo true || echo false)"
 
@@ -172,11 +172,11 @@ echo "========================================"
 echo "USE CASE 7: Vaults + credentials"
 echo "========================================"
 
-VAULT=$(api /v1/vaults -X POST -d '{"name":"E2E Vault"}')
+VAULT=$(api /v1/oma/vaults -X POST -d '{"name":"E2E Vault"}')
 VID=$(echo "$VAULT" | jq -r .id)
 check "vault created" "vlt-" "$VID"
 
-CRED=$(api "/v1/vaults/$VID/credentials" -X POST -d '{"display_name":"Token","auth":{"type":"static_bearer","mcp_server_url":"https://mcp.e2e.com","token":"secret"}}')
+CRED=$(api "/v1/oma/vaults/$VID/credentials" -X POST -d '{"display_name":"Token","auth":{"type":"static_bearer","mcp_server_url":"https://mcp.e2e.com","token":"secret"}}')
 CID=$(echo "$CRED" | jq -r .id)
 check "credential created" "cred-" "$CID"
 check "secret stripped" "null" "$(echo "$CRED" | jq -r '.auth.token // "null"')"
@@ -187,18 +187,18 @@ echo "========================================"
 echo "USE CASE 8: Memory stores"
 echo "========================================"
 
-STORE=$(api /v1/memory_stores -X POST -d '{"name":"E2E Memory","description":"Test store"}')
+STORE=$(api /v1/oma/memory_stores -X POST -d '{"name":"E2E Memory","description":"Test store"}')
 MSID=$(echo "$STORE" | jq -r .id)
 check "store created" "memstore-" "$MSID"
 
-api "/v1/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/one.md","content":"First note"}' > /dev/null
-api "/v1/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/two.md","content":"Second note"}' > /dev/null
+api "/v1/oma/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/one.md","content":"First note"}' > /dev/null
+api "/v1/oma/memory_stores/$MSID/memories" -X POST -d '{"path":"/notes/two.md","content":"Second note"}' > /dev/null
 
-MEMS=$(api "/v1/memory_stores/$MSID/memories")
+MEMS=$(api "/v1/oma/memory_stores/$MSID/memories")
 check "2 memories" "2" "$(echo "$MEMS" | jq '.data | length')"
 
 MID=$(echo "$MEMS" | jq -r '.data[0].id')
-MEM=$(api "/v1/memory_stores/$MSID/memories/$MID")
+MEM=$(api "/v1/oma/memory_stores/$MSID/memories/$MID")
 check "has sha256" "content_sha256" "$MEM"
 
 # ============================================================
@@ -207,11 +207,11 @@ echo "========================================"
 echo "USE CASE 9: Files API"
 echo "========================================"
 
-FILE=$(api /v1/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv","downloadable":true}')
+FILE=$(api /v1/oma/files -X POST -d '{"filename":"test.csv","content":"a,b\n1,2","media_type":"text/csv","downloadable":true}')
 FID=$(echo "$FILE" | jq -r .id)
 check "file uploaded" "file-" "$FID"
 
-CONTENT=$(api "/v1/files/$FID/content")
+CONTENT=$(api "/v1/oma/files/$FID/content")
 check "downloadable" "a,b" "$CONTENT"
 
 # ============================================================
@@ -221,7 +221,7 @@ echo "USE CASE 10: Rate limiting"
 echo "========================================"
 
 for i in $(seq 1 5); do
-  S=$(api /v1/agents -X POST -d "{\"name\":\"Rate$i\",\"model\":\"openai/gpt-5.4\"}" -o /dev/null -w "%{http_code}")
+  S=$(api /v1/oma/agents -X POST -d "{\"name\":\"Rate$i\",\"model\":\"openai/gpt-5.4\"}" -o /dev/null -w "%{http_code}")
   [ "$S" = "429" ] && echo "  ! Rate limited at $i" && break
 done
 check "5 requests OK" "true" "true"
@@ -233,7 +233,7 @@ echo "USE CASE 11: Constraints"
 echo "========================================"
 
 # Duplicate mcp_server_url
-DUP=$(api "/v1/vaults/$VID/credentials" -X POST -d '{"display_name":"Dup","auth":{"type":"static_bearer","mcp_server_url":"https://mcp.e2e.com","token":"x"}}')
+DUP=$(api "/v1/oma/vaults/$VID/credentials" -X POST -d '{"display_name":"Dup","auth":{"type":"static_bearer","mcp_server_url":"https://mcp.e2e.com","token":"x"}}')
 check "dup rejected" "already exists" "$DUP"
 
 # ============================================================

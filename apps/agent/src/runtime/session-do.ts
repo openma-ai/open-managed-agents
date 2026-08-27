@@ -89,6 +89,14 @@ import { spawnStdioMcpServers, type StdioMcpConfig } from "./mcp-spawner";
 import {
   findLatestBackup as findWorkspaceBackup,
 } from "./workspace-backups";
+import {
+  createSessionWakeups,
+  type SessionWakeupApplication,
+  type SessionWakeupDelivery,
+} from "@open-managed-agents/session-wakeup";
+import {
+  CloudflareSessionWakeupScheduler,
+} from "@open-managed-agents/session-wakeup-cloudflare";
 
 interface SessionInitParams {
   agent_id: string;
@@ -276,14 +284,6 @@ const INITIAL_SESSION_STATE: SessionState = {
  * reused across turns, destroyed on session delete/terminate.
  */
 
-// Per-session cap on pending schedule-tool wakeups. Each pending wakeup, when
-// it fires, injects a user.message and spawns a model turn — without a cap a
-// runaway agent (cron loop, repeated tight delays) burns token quota until
-// human intervention. 20 is comfortably above legitimate use (handful of
-// reminders + a couple of cron schedules) and low enough that wedging it is
-// obvious within seconds of the first model call.
-const MAX_PENDING_WAKEUPS = 20;
-
 // ── Constants inherited from cf-agents v0.11.2 schema ──────────────────
 //
 // We replaced `extends Agent` with `extends DurableObject` and reimplemented
@@ -308,6 +308,9 @@ export class SessionDO extends DurableObject<Env> {
   // until /init writes the row. _runtimeAdapter is the cached adapter
   // instance scoped to this DO's session.
   private _runtimeAdapter: RuntimeAdapter | null = null;
+  private _managedProjectionChain: Promise<void> = Promise.resolve();
+  private readonly _wakeupScheduler: CloudflareSessionWakeupScheduler;
+  private readonly _wakeups: SessionWakeupApplication;
 
   /**
    * Set of turn ids currently in flight in THIS DO isolate.
@@ -378,7 +381,84 @@ export class SessionDO extends DurableObject<Env> {
     super(ctx, env);
     this._ensureCfAgentsSchema();
     this._loadStateFromSql();
+    this._wakeupScheduler = new CloudflareSessionWakeupScheduler({
+      backend: {
+        create: async (input) => {
+          const record = await this.schedule(
+            input.when,
+            input.callback,
+            input.payload,
+          );
+          return record;
+        },
+        list: () => this.getSchedules(),
+        cancel: (input) => this.cancelSchedule(input.id),
+      },
+    });
+    this._wakeups = createSessionWakeups({
+      sessions: {
+        find: async (input) => {
+          const scope = this._wakeupScope();
+          if (
+            input.workspaceId !== scope.workspaceId ||
+            input.sessionId !== scope.sessionId
+          ) return { type: "not_found" };
+          return {
+            type: "found",
+            session: {
+              id: scope.sessionId,
+              status: this.deriveStatus(),
+            },
+          };
+        },
+      },
+      scheduler: this._wakeupScheduler,
+      events: {
+        wakeupScheduled: async ({ wakeup }) => {
+          this.persistAndBroadcastEvent({
+            type: "span.wakeup_scheduled",
+            id: wakeup.causalEventId,
+            schedule_id: wakeup.id,
+            fire_at: wakeup.kind === "one_shot" ? wakeup.fireAt : undefined,
+            cron: wakeup.kind === "cron" ? wakeup.cron : undefined,
+            kind: wakeup.kind,
+          } as unknown as SessionEvent);
+        },
+        wakeupFired: async ({ wakeup, firedAt }) => {
+          const event: UserMessageEvent = {
+            type: "user.message",
+            content: [{ type: "text", text: wakeup.prompt }],
+            parent_event_id: wakeup.causalEventId,
+            metadata: {
+              harness: "schedule",
+              kind: "wakeup",
+              wakeup_kind: wakeup.kind,
+              scheduled_at: wakeup.scheduledAt,
+              fired_at: firedAt,
+            },
+          };
+          this.ensureSchema();
+          this._stampEventForPending(event);
+          this.pending!.enqueue(event);
+          this._broadcastPendingFrame(event, "sthr_primary");
+          try {
+            await this.schedule(5, "recoverEventQueue" as keyof this);
+          } catch {}
+          this.drainEventQueue();
+        },
+      },
+      clock: { now: () => new Date() },
+      ids: { nextEventId: () => generateEventId() },
+    });
     this._initialized = true;
+  }
+
+  /** Compatibility scope for v0 DO-level callers that schedule before /init. */
+  private _wakeupScope(): { workspaceId: string; sessionId: string } {
+    return {
+      workspaceId: this.state.tenant_id || "default",
+      sessionId: this.state.session_id || "__legacy_uninitialized_session__",
+    };
   }
 
   /** Build a tenant-scoped KV key */
@@ -776,83 +856,46 @@ export class SessionDO extends DurableObject<Env> {
     cron?: string;
     prompt: string;
   }): Promise<{ id: string; fire_at?: string; cron?: string; kind: "one_shot" | "cron" }> {
-    if (this.deriveStatus() === "terminated") {
+    const scope = this._wakeupScope();
+    const result = await this._wakeups.schedule({
+      ...scope,
+      prompt: args.prompt,
+      ...(args.delay_seconds !== undefined && {
+        delaySeconds: args.delay_seconds,
+      }),
+      ...(args.at !== undefined && { at: args.at }),
+      ...(args.cron !== undefined && { cron: args.cron }),
+    });
+    if (result.type === "scheduled") {
+      return {
+        id: result.wakeup.id,
+        fire_at: result.wakeup.kind === "one_shot"
+          ? result.wakeup.fireAt
+          : undefined,
+        cron: result.wakeup.kind === "cron" ? result.wakeup.cron : undefined,
+        kind: result.wakeup.kind,
+      };
+    }
+    if (result.type === "terminated") {
       throw new Error("session is terminated; cannot schedule wakeup");
     }
-    const provided = [args.delay_seconds, args.at, args.cron].filter((x) => x != null);
-    if (provided.length !== 1) {
-      throw new Error("must provide exactly one of delay_seconds | at | cron");
-    }
-    if (!args.prompt || !args.prompt.trim()) {
-      throw new Error("prompt is required");
-    }
-
-    // Failsafe vs runaway cron loops: cap pending wakeups per session.
-    // Without this, an agent that misuses cron (`*/1 * * * *` repeated, or a
-    // tight delay_seconds=5 loop) can pile up unbounded schedules — each
-    // fire injects a user.message + spawns a model turn, burning token quota
-    // until someone notices. Filter to onScheduledWakeup callbacks so the
-    // framework's internal recoverEventQueue / pollBackgroundTasks rows
-    // don't count against the budget.
-    const pending = this.getSchedules().filter((s) => s.callback === "onScheduledWakeup").length;
-    if (pending >= MAX_PENDING_WAKEUPS) {
+    if (result.type === "capacity_reached") {
       throw new Error(
-        `pending wakeup cap reached (${pending}/${MAX_PENDING_WAKEUPS}); ` +
-        `call list_schedules to inspect, cancel_schedule to free a slot`,
+        `pending wakeup cap reached (${result.pending}/${result.limit}); ` +
+        "call list_schedules to inspect, cancel_schedule to free a slot",
       );
     }
-
-    let when: number | Date | string;
-    let kind: "one_shot" | "cron";
-    if (typeof args.delay_seconds === "number") {
-      when = args.delay_seconds;
-      kind = "one_shot";
-    } else if (args.at) {
-      const d = new Date(args.at);
-      if (Number.isNaN(d.getTime())) throw new Error(`invalid 'at' timestamp: ${args.at}`);
-      when = d;
-      kind = "one_shot";
-    } else {
-      when = args.cron!;
-      kind = "cron";
+    if (result.type === "invalid_input") {
+      if (result.path === "timing") {
+        throw new Error("must provide exactly one of delay_seconds | at | cron");
+      }
+      if (result.path === "at") {
+        throw new Error(`invalid 'at' timestamp: ${args.at ?? ""}`);
+      }
+      if (result.path === "prompt") throw new Error("prompt is required");
+      throw new Error(result.message);
     }
-
-    const sched = await this.schedule(when, "onScheduledWakeup" as keyof this, {
-      prompt: args.prompt,
-      scheduled_at: new Date().toISOString(),
-      kind,
-      // Mint the span event id up front so the eventual wakeup user.message
-      // can set parent_event_id = this id. EventBase.parent_event_id is the
-      // existing causal-predecessor field (tool_result→tool_use uses it the
-      // same way) — Console / SDK / dashboards that already understand it
-      // get correct schedule→wakeup linking for free.
-      parent_event_id: generateEventId(),
-    });
-
-    const fireAt = typeof sched.time === "number" ? new Date(sched.time * 1000).toISOString() : undefined;
-
-    // Trajectory event mirroring span.background_task_scheduled. Use the
-    // persisting variant so the event lands in the events table — the agent
-    // (and operators) can later see when wakeups were registered, without
-    // relying on WS subscribers being attached at schedule time.
-    this.persistAndBroadcastEvent({
-      type: "span.wakeup_scheduled",
-      // Pre-minted id so onScheduledWakeup can stamp this on the wakeup
-      // user.message's parent_event_id. The schedule_id (framework's) is
-      // exposed separately for cancel/list addressing.
-      id: (sched.payload as { parent_event_id?: string } | undefined)?.parent_event_id,
-      schedule_id: sched.id,
-      fire_at: fireAt,
-      cron: kind === "cron" ? args.cron : undefined,
-      kind,
-    } as unknown as SessionEvent);
-
-    return {
-      id: sched.id,
-      fire_at: fireAt,
-      cron: kind === "cron" ? args.cron : undefined,
-      kind,
-    };
+    throw new Error("session is not initialized; cannot schedule wakeup");
   }
 
   /**
@@ -866,39 +909,18 @@ export class SessionDO extends DurableObject<Env> {
     scheduled_at: string;
     kind: "one_shot" | "cron";
     parent_event_id?: string;
-  }): Promise<void> {
-    if (this.deriveStatus() === "terminated") {
-      // Skip silently — terminated sessions should not be resurrected.
-      // For cron schedules the row stays in agents-fw storage; ops can
-      // cancel via list/cancel tools or a future REST surface.
-      return;
-    }
-    const event: UserMessageEvent = {
-      type: "user.message",
-      content: [{ type: "text", text: payload.prompt }],
-      // Causal link back to the span.wakeup_scheduled event whose alarm
-      // just fired. Same field tool_result→tool_use uses; Console waterfall
-      // pairs with it to draw the schedule-waiting bar (and any future
-      // consumer that walks event ancestry gets it for free).
-      ...(payload.parent_event_id ? { parent_event_id: payload.parent_event_id } : {}),
-      metadata: {
-        harness: "schedule",
-        kind: "wakeup",
-        wakeup_kind: payload.kind,
-        scheduled_at: payload.scheduled_at,
-        fired_at: new Date().toISOString(),
-      },
-    };
-    // Wakeups go through the pending queue so the harness sees them in
-    // the same order as real user.message events. Mirrors the POST /event
-    // user.message path: stamp id + clear processed_at, enqueue, then
-    // broadcast the system.user_message_pending frame.
-    this.ensureSchema();
-    this._stampEventForPending(event);
-    this.pending!.enqueue(event);
-    this._broadcastPendingFrame(event, "sthr_primary");
-    try { await this.schedule(5, "recoverEventQueue" as keyof this); } catch {}
-    this.drainEventQueue();
+  } | SessionWakeupDelivery): Promise<void> {
+    const scope = this._wakeupScope();
+    const wakeup: SessionWakeupDelivery = "workspaceId" in payload
+      ? payload
+      : {
+          ...scope,
+          prompt: payload.prompt,
+          scheduledAt: payload.scheduled_at,
+          causalEventId: payload.parent_event_id ?? generateEventId(),
+          kind: payload.kind,
+        };
+    await this._wakeups.fire({ wakeup });
   }
 
   /**
@@ -906,15 +928,12 @@ export class SessionDO extends DurableObject<Env> {
    * actually removed (false = id not found / already fired / not a wakeup).
    */
   async cancelWakeup(id: string): Promise<{ cancelled: boolean }> {
-    if (!id) return { cancelled: false };
-    // Defense: only cancel if it's a wakeup schedule, so an agent can't
-    // cancel internal recoverEventQueue / pollBackgroundTasks rows.
-    const sched = this.getSchedule(id);
-    if (!sched || sched.callback !== "onScheduledWakeup") {
-      return { cancelled: false };
-    }
-    const ok = await this.cancelSchedule(id);
-    return { cancelled: !!ok };
+    const scope = this._wakeupScope();
+    const result = await this._wakeups.cancel({
+      ...scope,
+      wakeupId: id,
+    });
+    return { cancelled: result.type === "cancelled" };
   }
 
   /**
@@ -929,20 +948,13 @@ export class SessionDO extends DurableObject<Env> {
     prompt: string;
     kind: "one_shot" | "cron";
   }> {
-    type WakeupPayload = { prompt?: string; kind?: "one_shot" | "cron" };
-    const schedules = this.getSchedules();
-    return schedules
-      .filter((s) => s.callback === "onScheduledWakeup")
-      .map((s) => {
-        const payload = (s.payload ?? {}) as WakeupPayload;
-        return {
-          id: s.id,
-          fire_at: typeof s.time === "number" ? new Date(s.time * 1000).toISOString() : undefined,
-          cron: s.type === "cron" ? s.cron : undefined,
-          prompt: payload.prompt ?? "",
-          kind: payload.kind ?? "one_shot",
-        };
-      });
+    return this._wakeupScheduler.listNow(this._wakeupScope()).map((wakeup) => ({
+      id: wakeup.id,
+      fire_at: wakeup.kind === "one_shot" ? wakeup.fireAt : undefined,
+      cron: wakeup.kind === "cron" ? wakeup.cron : undefined,
+      prompt: wakeup.prompt,
+      kind: wakeup.kind,
+    }));
   }
 
   /**
@@ -3302,6 +3314,31 @@ export class SessionDO extends DurableObject<Env> {
         // Connection already closed
       }
     }
+    this.projectManagedRuntimeEvent(event);
+  }
+
+  private projectManagedRuntimeEvent(event: SessionEvent): void {
+    const binding = this.env.MAIN_MCP;
+    const workspaceId = this._state?.tenant_id;
+    const sessionId = this._state?.session_id;
+    if (!binding || !workspaceId || !sessionId) return;
+    const eventDocument = JSON.stringify(event);
+    this._managedProjectionChain = this._managedProjectionChain
+      .then(async () => {
+        const result = await binding.managedSessionEventProduced({
+          workspaceId,
+          sessionId,
+          event: eventDocument,
+        });
+        if (result.type === "version_conflict") {
+          throw new Error("managed session projection revision conflict");
+        }
+      })
+      .catch((err) => {
+        console.warn(
+          `[session_do] managed runtime event projection failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
   }
 
   /**

@@ -12,6 +12,7 @@
 
 export * from "./auth";
 export * from "./agents";
+export * from "./managed-agents";
 export * from "./sessions";
 export * from "./memory";
 export * from "./vaults";

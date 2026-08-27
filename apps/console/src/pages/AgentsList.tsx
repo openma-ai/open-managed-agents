@@ -110,13 +110,13 @@ export function AgentsList() {
           setCustomSkills(sk.data ?? []);
         })().catch((e) => console.warn("[AgentsList] /v1/skills aux fetch failed", e)),
         (async () => {
-          const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
+          const mc = await api<{ data: ModelCard[] }>("/v1/oma/model_cards?limit=200");
           setModelCards(mc.data ?? []);
-        })().catch((e) => console.warn("[AgentsList] /v1/model_cards aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentsList] /v1/oma/model_cards aux fetch failed", e)),
         (async () => {
-          const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
+          const rt = await api<{ runtimes: Runtime[] }>("/v1/oma/runtimes");
           setRuntimes(rt.runtimes ?? []);
-        })().catch((e) => console.warn("[AgentsList] /v1/runtimes aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentsList] /v1/oma/runtimes aux fetch failed", e)),
       ]);
     } finally {
       setAuxLoading(false);

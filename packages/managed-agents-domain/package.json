@@ -1,0 +1,26 @@
+{
+  "name": "@open-managed-agents/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./agents": "./src/agents/index.ts",
+    "./credentials": "./src/credentials/index.ts",
+    "./deployments": "./src/deployments/index.ts",
+    "./dreams": "./src/dreams/index.ts",
+    "./environments": "./src/environments/index.ts",
+    "./environment-work": "./src/environment-work/index.ts",
+    "./files": "./src/files/index.ts",
+    "./memory-stores": "./src/memory-stores/index.ts",
+    "./memories": "./src/memories/index.ts",
+    "./sessions": "./src/sessions/index.ts",
+    "./skills": "./src/skills/index.ts",
+    "./tunnels": "./src/tunnels/index.ts",
+    "./user-profiles": "./src/user-profiles/index.ts",
+    "./vaults": "./src/vaults/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

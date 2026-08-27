@@ -110,7 +110,7 @@ export async function createAgent(config: {
   mcp_servers?: unknown[];
   aux_model?: string;
 }): Promise<string> {
-  const data = await post("/v1/agents", {
+  const data = await post("/v1/oma/agents", {
     name: config.name,
     model: config.model || "claude-sonnet-4-6",
     system: config.system,
@@ -123,7 +123,7 @@ export async function createAgent(config: {
 }
 
 export async function deleteAgent(agentId: string): Promise<void> {
-  await del(`/v1/agents/${agentId}`).catch(() => {});
+  await del(`/v1/oma/agents/${agentId}`).catch(() => {});
 }
 
 // ---- Environment ----
@@ -133,7 +133,7 @@ let sharedEnvId: string | null = null;
 export async function getOrCreateEnvironment(): Promise<string> {
   if (sharedEnvId) return sharedEnvId;
 
-  const list = await get("/v1/environments");
+  const list = await get("/v1/oma/environments");
   const envs = list.data || [];
 
   // Prefer a ready environment with sandbox-default binding (known to work)
@@ -154,7 +154,7 @@ export async function getOrCreateEnvironment(): Promise<string> {
     return sharedEnvId!;
   }
 
-  const data = await post("/v1/environments", {
+  const data = await post("/v1/oma/environments", {
     name: `eval-default-${Date.now()}`,
     config: { type: "cloud", networking: { type: "unrestricted" } },
   });
@@ -166,7 +166,7 @@ export async function getOrCreateEnvironment(): Promise<string> {
 // ---- Session CRUD ----
 
 export async function createSession(agentId: string, envId: string): Promise<string> {
-  const data = await post("/v1/sessions", {
+  const data = await post("/v1/oma/sessions", {
     agent: agentId,
     environment_id: envId,
     title: `eval-${Date.now()}`,
@@ -194,7 +194,7 @@ export async function createSession(agentId: string, envId: string): Promise<str
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await del(`/v1/sessions/${sessionId}`).catch(() => {});
+  await del(`/v1/oma/sessions/${sessionId}`).catch(() => {});
 }
 
 // ---- Message posting ----
@@ -211,7 +211,7 @@ export async function postBlocks(sessionId: string, content: unknown[]): Promise
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 300_000);
   try {
-    const url = `${API_URL}/v1/sessions/${sessionId}/events`;
+    const url = `${API_URL}/v1/oma/sessions/${sessionId}/events`;
     const res = await fetch(url, {
       method: "POST",
       headers,
@@ -230,7 +230,7 @@ export async function postBlocks(sessionId: string, content: unknown[]): Promise
 }
 
 /**
- * Upload a file via POST /v1/files (JSON body). Returns the new file_id.
+ * Upload a file via POST /v1/oma/files (JSON body). Returns the new file_id.
  * Used by EvalTask.setupUploads.
  */
 export async function uploadFile(
@@ -239,7 +239,7 @@ export async function uploadFile(
   media_type: string,
   encoding: "base64" | "utf8" = "base64",
 ): Promise<string> {
-  const data = await post("/v1/files", {
+  const data = await post("/v1/oma/files", {
     filename,
     content,
     media_type,
@@ -252,7 +252,7 @@ export async function uploadFile(
 // ---- Event collection ----
 
 export async function getEvents(sessionId: string, afterSeq?: number): Promise<SSEEvent[]> {
-  let path = `/v1/sessions/${sessionId}/events?limit=1000&order=asc`;
+  let path = `/v1/oma/sessions/${sessionId}/events?limit=1000&order=asc`;
   if (afterSeq !== undefined) path += `&after_seq=${afterSeq}`;
   const res = await api(path);
   const text = await res.text();
@@ -376,7 +376,7 @@ export interface CleanupHandle {
 }
 
 /**
- * Run a raw shell command in this session's sandbox via /v1/sessions/:id/exec.
+ * Run a raw shell command in this session's sandbox via /v1/oma/sessions/:id/exec.
  * Bypasses the agent — used by RL rollout's verify_script flow so the model
  * doesn't have to re-execute deterministic infra.
  *
@@ -388,7 +388,7 @@ export async function execInSandbox(
   command: string,
   timeoutMs: number = 600_000,
 ): Promise<{ exit_code: number; output: string }> {
-  const url = `${API_URL}/v1/sessions/${sessionId}/exec`;
+  const url = `${API_URL}/v1/oma/sessions/${sessionId}/exec`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 5_000); // extra slack
   try {

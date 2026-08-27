@@ -89,7 +89,7 @@ export const multimodalSuite: EvalTask[] = [
       idleNoError(),
     ),
   },
-  // T6.3 — PDF via file_id (validates POST /v1/files → message file_id reference
+  // T6.3 — PDF via file_id (validates POST /v1/oma/files → message file_id reference
   // → server-side resolver inlines base64 → Claude reads the PDF). This is the
   // Anthropic Files-API ↔ Messages-API binding equivalent.
   {

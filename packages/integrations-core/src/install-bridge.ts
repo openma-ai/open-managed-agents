@@ -104,7 +104,7 @@ export interface StartInstallationArgs {
   provider: ProviderId;
   /**
    * Which sub-route is being invoked. Mirrors the endpoints under
-   * /v1/integrations/{provider}/. Linear's publication-first refactor
+   * /v1/oma/integrations/{provider}/. Linear's publication-first refactor
    * adds the `create-publication` and `submit-credentials-pub` modes
    * (which key on a publication id rather than a form-token JWT);
    * Slack/GitHub/Feishu ship the legacy three plus `form-token` (re-mint

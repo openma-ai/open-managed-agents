@@ -66,7 +66,7 @@ export interface VaultRepo {
     },
   ): Promise<{ items: VaultRow[]; hasMore: boolean }>;
 
-  /** Cheap COUNT(*) for /v1/stats. Index `idx_vaults_tenant` covers it. */
+  /** Cheap COUNT(*) for /v1/oma/stats. Index `idx_vaults_tenant` covers it. */
   count(tenantId: string, opts: { includeArchived: boolean }): Promise<number>;
 
   update(

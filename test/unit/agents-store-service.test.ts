@@ -115,7 +115,7 @@ describe("AgentService — list + filter", () => {
     expect(list.map((v) => v.id)).toEqual([first.id, second.id]);
   });
 
-  it("list includes archived by default (matches legacy GET /v1/agents)", async () => {
+  it("list includes archived by default (matches legacy GET /v1/oma/agents)", async () => {
     // The legacy route returned ALL agents regardless of archived state — only
     // the rendered "archived_at" surfaced the difference. Service mirrors that
     // (includeArchived defaults to true).

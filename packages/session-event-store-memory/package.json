@@ -1,0 +1,22 @@
+{
+  "name": "@open-managed-agents/session-event-store-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/session-event-store": "workspace:*",
+    "@open-managed-agents/session-store": "workspace:*"
+  },
+  "devDependencies": {
+    "@open-managed-agents/session-store-memory": "workspace:*",
+    "vitest": "^4.1.3"
+  }
+}

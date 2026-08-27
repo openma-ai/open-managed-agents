@@ -35,12 +35,12 @@ check "health endpoint" '"ok"' "$HEALTH"
 
 echo ""
 echo "=== Auth ==="
-NO_AUTH=$(curl -sS "$BASE_URL/v1/agents" -X POST -H "content-type: application/json" -d '{"name":"x","model":"x"}' -o /dev/null -w "%{http_code}")
+NO_AUTH=$(curl -sS "$BASE_URL/v1/oma/agents" -X POST -H "content-type: application/json" -d '{"name":"x","model":"x"}' -o /dev/null -w "%{http_code}")
 check "rejects no API key" "401" "$NO_AUTH"
 
 echo ""
 echo "=== Create Agent ==="
-AGENT=$(api /v1/agents -X POST -d '{
+AGENT=$(api /v1/oma/agents -X POST -d '{
   "name": "E2E Test Agent",
   "model": "openai/gpt-5.4",
   "system": "You are a helpful coding assistant. Keep responses brief.",
@@ -53,12 +53,12 @@ check "agent name" "E2E Test Agent" "$AGENT"
 
 echo ""
 echo "=== Get Agent ==="
-AGENT_GET=$(api "/v1/agents/$AGENT_ID")
+AGENT_GET=$(api "/v1/oma/agents/$AGENT_ID")
 check "get agent by id" "$AGENT_ID" "$AGENT_GET"
 
 echo ""
 echo "=== Create Environment ==="
-ENV=$(api /v1/environments -X POST -d '{
+ENV=$(api /v1/oma/environments -X POST -d '{
   "name": "e2e-env",
   "config": {"type": "cloud", "networking": {"type": "unrestricted"}}
 }')
@@ -68,7 +68,7 @@ check "env id prefix" "env-" "$ENV_ID"
 
 echo ""
 echo "=== Create Session ==="
-SESSION=$(api /v1/sessions -X POST -d "{
+SESSION=$(api /v1/oma/sessions -X POST -d "{
   \"agent\": \"$AGENT_ID\",
   \"environment_id\": \"$ENV_ID\",
   \"title\": \"E2E Test\"
@@ -80,14 +80,14 @@ check "session status idle" "idle" "$SESSION"
 
 echo ""
 echo "=== Get Session ==="
-SESSION_GET=$(api "/v1/sessions/$SESSION_ID")
+SESSION_GET=$(api "/v1/oma/sessions/$SESSION_ID")
 check "get session" "$SESSION_ID" "$SESSION_GET"
 
 echo ""
 echo "=== Open SSE Stream (background) ==="
 SSE_FILE=$(mktemp)
 # Start SSE listener in background, collect events for up to 120s
-curl -sS -N "$BASE_URL/v1/sessions/$SESSION_ID/events/stream" \
+curl -sS -N "$BASE_URL/v1/oma/sessions/$SESSION_ID/events/stream" \
   -H "x-api-key: $API_KEY" -H "Accept: text/event-stream" \
   --max-time 120 > "$SSE_FILE" 2>/dev/null &
 SSE_PID=$!
@@ -95,7 +95,7 @@ sleep 1
 
 echo ""
 echo "=== Post User Message ==="
-POST_STATUS=$(api "/v1/sessions/$SESSION_ID/events" -X POST \
+POST_STATUS=$(api "/v1/oma/sessions/$SESSION_ID/events" -X POST \
   -d '{
     "events": [{
       "type": "user.message",
@@ -140,7 +140,7 @@ check "received session.status_idle" "session.status_idle" "$SSE_CONTENT"
 # Also test the /events/stream alias
 echo ""
 echo "=== Test /events/stream alias ==="
-STREAM_STATUS=$(curl -sS "$BASE_URL/v1/sessions/$SESSION_ID/events/stream" \
+STREAM_STATUS=$(curl -sS "$BASE_URL/v1/oma/sessions/$SESSION_ID/events/stream" \
   -H "x-api-key: $API_KEY" \
   --max-time 3 -o /dev/null -w "%{http_code}" 2>/dev/null || echo "200")
 check "stream alias returns 200" "200" "$STREAM_STATUS"

@@ -175,7 +175,7 @@ export class AcpProxyHarness implements HarnessInterface {
     // namespace-scoped; the cross-script binding in wrangler.jsonc lets the
     // agent worker hold a stub without going through main as a service.
     // Headers (`x-attach-role`, `x-session-id`) match what the now-removed
-    // /v1/internal/runtime-attach-harness endpoint used to inject — DO's
+    // /v1/oma/internal/runtime-attach-harness endpoint used to inject — DO's
     // fetch handler already keys off them. `x-harness-tenant` is the
     // step-2 multi-tenant addition — RuntimeRoom stashes it per-sid and
     // uses it to inject `tenant_id` into outbound session-scoped frames so

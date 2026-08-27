@@ -73,22 +73,22 @@ export function AgentDetail() {
   // to the /linear/agents/:id/publications + /slack/agents/:id/publications
   // + /github/agents/:id/publications routes added on the main worker.
   const { data: linearRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/linear/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/linear/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: githubRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/github/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/github/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: slackRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/slack/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/slack/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: feishuRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/feishu/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/feishu/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
@@ -111,13 +111,13 @@ export function AgentDetail() {
           if (!cancelled) setCustomSkills(sk.data ?? []);
         })().catch((e) => console.warn("[AgentDetail] /v1/skills aux fetch failed", e)),
         (async () => {
-          const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
+          const mc = await api<{ data: ModelCard[] }>("/v1/oma/model_cards?limit=200");
           if (!cancelled) setModelCards(mc.data ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/model_cards aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentDetail] /v1/oma/model_cards aux fetch failed", e)),
         (async () => {
-          const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
+          const rt = await api<{ runtimes: Runtime[] }>("/v1/oma/runtimes");
           if (!cancelled) setRuntimes(rt.runtimes ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/runtimes aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentDetail] /v1/oma/runtimes aux fetch failed", e)),
       ]);
     })();
     return () => {

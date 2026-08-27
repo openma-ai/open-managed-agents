@@ -116,7 +116,7 @@ async function runOneTrial(task: EvalTask, trialIndex: number): Promise<EvalTria
       await setupFiles(sessionId, task.setupFiles);
     }
 
-    // Setup uploaded files (POST /v1/files) — file_ids passed to dynamic
+    // Setup uploaded files (POST /v1/oma/files) — file_ids passed to dynamic
     // turn.message functions. Used by file_id resolver tests (T6.3).
     const uploadedFileIds: string[] = [];
     if (task.setupUploads && task.setupUploads.length > 0) {
@@ -419,7 +419,7 @@ function log(taskId: string, msg: string): void {
 // The runner today returns SSEEvent[] from sendAndWait. New scorers consume a
 // full Trajectory envelope. We synthesize a minimal Trajectory from events so
 // scorers can be developed/used immediately, before the eval CLI is rewritten
-// to fetch the canonical /v1/sessions/:id/trajectory endpoint (Phase 1d).
+// to fetch the canonical /v1/oma/sessions/:id/trajectory endpoint (Phase 1d).
 
 function synthesizeTrajectory(taskId: string, events: SSEEvent[]): Trajectory {
   const stored: StoredEvent[] = events.map((e, i) => ({

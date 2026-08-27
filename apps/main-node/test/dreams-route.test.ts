@@ -22,7 +22,7 @@ const DREAM_HEADERS = {
   "anthropic-beta": "managed-agents-2026-04-01,dreaming-2026-04-21",
 };
 
-describe("main-node /v1/dreams", () => {
+describe("main-node /v1/oma/dreams", () => {
   let dataDir: string;
   let h: ProcessHandle | null = null;
 
@@ -45,7 +45,7 @@ describe("main-node /v1/dreams", () => {
 
   it("runs a dream through the local Node API without an LLM key when dedup curator is enabled", async () => {
     h = await startMainNode({ dataDir });
-    const base = `http://localhost:${h.port}/v1`;
+    const base = `http://localhost:${h.port}/v1/oma`;
 
     const inputStore = await createMemoryStore(base, "node-dream-input");
     await writeMemory(base, inputStore, "/notes/a.md", "alpha");

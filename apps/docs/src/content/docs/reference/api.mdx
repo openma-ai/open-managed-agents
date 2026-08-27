@@ -151,10 +151,10 @@ Delete.
 
 Per-tenant LLM credentials. Keys are AES-256-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` directly on the row (no Vault indirection). List responses surface only the last-4 preview.
 
-### `GET /v1/model_cards`
+### `GET /v1/oma/model_cards`
 List configured model cards.
 
-### `POST /v1/model_cards`
+### `POST /v1/oma/model_cards`
 Add a model card. Runs a 6-second capability probe so a bad key fails loudly. Body:
 ```json
 {
@@ -169,63 +169,63 @@ Add a model card. Runs a 6-second capability probe so a bad key fails loudly. Bo
 
 `provider` is one of `ant` | `ant-compatible` | `oai` | `oai-compatible`. `model_id` is the string an agent sets as `agent.model = "<model_id>"` to bind this card.
 
-### `POST /v1/model_cards/:id`
+### `POST /v1/oma/model_cards/:id`
 Rotate the api_key, base_url, headers, or default model. Body shape matches `POST`. In-flight sessions keep the cached key until next credential resolve.
 
-### `DELETE /v1/model_cards/:id`
+### `DELETE /v1/oma/model_cards/:id`
 Delete.
 
-### `GET /v1/model_cards/:id/key` *(internal — agent worker only)*
+### `GET /v1/oma/model_cards/:id/key` *(internal — agent worker only)*
 Returns cleartext credentials for the agent worker. Not exposed publicly.
 
 ## Integrations
 
-### `GET /v1/integrations`
+### `GET /v1/oma/integrations`
 List shipped + active integrations.
 
-### `GET /v1/integrations/:id/install`
+### `GET /v1/oma/integrations/:id/install`
 Start the OAuth flow for the integration. Returns a redirect URL.
 
-### `POST /v1/integrations/:id/uninstall`
+### `POST /v1/oma/integrations/:id/uninstall`
 Revoke the install.
 
-### `GET /v1/integrations/:id/publications`
+### `GET /v1/oma/integrations/:id/publications`
 List publications (which agents serve which workspaces).
 
-### `POST /v1/integrations/:id/publications`
+### `POST /v1/oma/integrations/:id/publications`
 Create a publication.
 
-### `DELETE /v1/integrations/:id/publications/:pub_id`
+### `DELETE /v1/oma/integrations/:id/publications/:pub_id`
 Delete a publication.
 
 ## Evals
 
-### `GET /v1/evals`
+### `GET /v1/oma/evals`
 List eval runs.
 
-### `POST /v1/evals`
+### `POST /v1/oma/evals`
 Start an eval.
 
-### `GET /v1/evals/:id`
+### `GET /v1/oma/evals/:id`
 Get an eval's results.
 
 ## API Keys
 
-### `GET /v1/api_keys`
+### `GET /v1/oma/api_keys`
 List your keys (the actual key value is not returned).
 
-### `POST /v1/api_keys`
+### `POST /v1/oma/api_keys`
 Create. Body: `{ "name": "..." }`. Returns the key once — store it now.
 
-### `DELETE /v1/api_keys/:id`
+### `DELETE /v1/oma/api_keys/:id`
 Revoke.
 
 ## OAuth (Console use)
 
-### `GET /v1/oauth/:provider/authorize`
+### `GET /v1/oma/oauth/:provider/authorize`
 Start an OAuth flow (Google sign-in for the Console).
 
-### `GET /v1/oauth/:provider/callback`
+### `GET /v1/oma/oauth/:provider/callback`
 OAuth callback handler.
 
 ## Health

@@ -44,6 +44,17 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import { log, logWarn, logError } from "@open-managed-agents/shared";
+import {
+  decodeSessionCommand,
+  decodeSessionHostEvent,
+  encodeSessionCommand,
+  encodeSessionHostEvent,
+} from "@openma/common/session-kernel";
+import {
+  authorizeRuntimeHostEvent,
+  planRuntimeHostEventEffects,
+  selectRuntimeCommandTenant,
+} from "@open-managed-agents/runtime-relay";
 
 type Side = "daemon" | "harness";
 
@@ -250,12 +261,9 @@ export class RuntimeRoom extends DurableObject<Env> {
     //   session.complete { session_id, turn_id }
     //   session.error    { session_id, turn_id?, message }
     //   session.disposed { session_id }
-    if (typeof parsed.type === "string" && parsed.type.startsWith("session.")) {
-      const sid = parsed.session_id as string | undefined;
-      if (!sid) {
-        logWarn({ op: "runtime_room.daemon_msg_no_sid", type: parsed.type }, "daemon message missing session_id");
-        return;
-      }
+    const event = decodeSessionHostEvent(parsed);
+    if (event !== null) {
+      const sid = event.sessionId;
       // Tenant validation (additive — step 2 of rollout). When the daemon
       // sends a `tenant_id` field, two checks fire:
       //   1. is it in this runtime's authorized set?
@@ -272,30 +280,40 @@ export class RuntimeRoom extends DurableObject<Env> {
         } catch (e) {
           logWarn({ op: "runtime_room.ensure_authorized_failed", err: String(e), runtime_id: this.runtimeId }, "authorized-tenants lazy load failed; allowing for back-compat");
         }
-        if (this.#authorizedTenants && !this.#authorizedTenants.has(reportedTenant)) {
+      }
+      const pinnedTenant = this.#sessionTenant.get(sid);
+      const authorization = authorizeRuntimeHostEvent({
+        authorizedTenantIds: this.#authorizedTenants === null
+          ? null
+          : [...this.#authorizedTenants],
+        ...(reportedTenant !== null && { reportedTenantId: reportedTenant }),
+        ...(pinnedTenant !== undefined && { pinnedTenantId: pinnedTenant }),
+      });
+      if (authorization.type === "rejected") {
+        if (authorization.reason === "tenant_not_authorized") {
           logWarn(
             { op: "runtime_room.daemon_tenant_not_authorized", type: parsed.type, session_id: sid, runtime_id: this.runtimeId, reported_tenant: reportedTenant },
             "daemon reported tenant_id not in authorized set — dropping",
           );
-          return;
-        }
-        const pinnedTenant = this.#sessionTenant.get(sid);
-        // Session-scoped types we cross-check. session.ready can arrive
-        // before the harness pin if the daemon races (acceptable), so we
-        // skip cross-check when pin is absent.
-        if (pinnedTenant && pinnedTenant !== reportedTenant) {
+        } else {
           logWarn(
             { op: "runtime_room.daemon_tenant_session_mismatch", type: parsed.type, session_id: sid, reported_tenant: reportedTenant, pinned_tenant: pinnedTenant },
             "daemon reported tenant_id does not match session's pinned tenant — dropping",
           );
-          return;
         }
+        return;
       }
       // Persist transition states so a harness opening its WS *after* the
       // daemon already replied still receives the message. Per-event /
       // per-complete are streamed and lost-on-late-attach is acceptable for v1.
-      if (parsed.type === "session.ready" || parsed.type === "session.error") {
-        await this.ctx.storage.put(this.sessionStateKey(sid), parsed);
+      const forwarded = encodeSessionHostEvent(event, {
+        ...(reportedTenant !== null && { tenantId: reportedTenant }),
+      });
+      const effects = planRuntimeHostEventEffects(event);
+      if (effects.replay === "put") {
+        await this.ctx.storage.put(this.sessionStateKey(sid), forwarded);
+      } else if (effects.replay === "delete") {
+        await this.ctx.storage.delete(this.sessionStateKey(sid));
       }
       // Persist the acp_session_id whenever the daemon advertises one — both
       // first-time session.ready (after session/new) and re-attach session.ready
@@ -304,18 +322,15 @@ export class RuntimeRoom extends DurableObject<Env> {
       // we survive daemon restarts without losing conversation history (the
       // ACP child's persisted state is in its cwd; session/load tells it
       // which conversation to reopen). See onHarnessMessage below.
-      if (parsed.type === "session.ready") {
-        const acpSid = parsed.acp_session_id;
-        if (typeof acpSid === "string" && acpSid.length > 0) {
-          await this.ctx.storage.put(this.acpSessionKey(sid), acpSid);
-        }
-      }
-      if (parsed.type === "session.disposed") {
-        await this.ctx.storage.delete(this.sessionStateKey(sid));
-        // User explicitly killed this session — recovery no longer wanted.
+      if (effects.acpSession.type === "put") {
+        await this.ctx.storage.put(
+          this.acpSessionKey(sid),
+          effects.acpSession.acpSessionId,
+        );
+      } else if (effects.acpSession.type === "delete") {
         await this.ctx.storage.delete(this.acpSessionKey(sid));
       }
-      this.broadcastToHarness(sid, parsed);
+      this.broadcastToHarness(sid, forwarded);
       return;
     }
 
@@ -323,33 +338,37 @@ export class RuntimeRoom extends DurableObject<Env> {
   }
 
   private async onHarnessMessage(sid: string, parsed: { type?: string; [k: string]: unknown }): Promise<void> {
-    // Harness side speaks the canonical clash protocol verbatim — daemon
-    // doesn't need a translation step.
+    // Relay wire conversion is owned by openma-common/session-kernel.
     //   { type: "session.start", agent_id, cwd?, resume? }   → forwards as-is
     //   { type: "session.prompt", turn_id, text }            → forwards as-is
     //   { type: "session.cancel", turn_id }                  → forwards as-is
     //   { type: "session.dispose" }                          → forwards as-is
     const daemon = this.ctx.getWebSockets("daemon")[0];
     if (!daemon) {
-      this.broadcastToHarness(sid, {
+      this.broadcastToHarness(sid, encodeSessionHostEvent({
         type: "session.error",
-        session_id: sid,
+        sessionId: sid,
         message: "runtime daemon offline",
-      });
+      }));
       return;
     }
-    const out: { [k: string]: unknown } = { ...parsed, session_id: sid };
+    const wire: { [k: string]: unknown } = { ...parsed, session_id: sid };
     // Inject tenant_id from the session pin (set by attachHarness from the
     // x-harness-tenant header). v2-aware daemons read this on every
     // session.start / .prompt / .cancel / .dispose to pick the right
     // per-tenant API key for the spawned ACP child. Absent when the harness
     // didn't supply the header (legacy server-side path or test) — the
     // daemon falls back to its single legacy key in that case (step 2 is
-    // additive, not enforcing). Never overwrite a caller-supplied tenant_id.
-    if (out.tenant_id === undefined) {
-      const pinned = this.#sessionTenant.get(sid);
-      if (pinned) out.tenant_id = pinned;
-    }
+    // additive, not enforcing). A cloud-side pin wins over a caller-supplied
+    // tenant_id; without a pin the legacy supplied value is preserved.
+    const pinnedTenant = this.#sessionTenant.get(sid);
+    const suppliedTenant = typeof parsed.tenant_id === "string"
+      ? parsed.tenant_id
+      : undefined;
+    const selectedTenant = selectRuntimeCommandTenant({
+      ...(pinnedTenant !== undefined && { pinnedTenantId: pinnedTenant }),
+      ...(suppliedTenant !== undefined && { suppliedTenantId: suppliedTenant }),
+    });
     // session.start carries an optional `resume.acp_session_id`. Today no
     // harness builds that — the cloud-side AcpProxyHarness sends bare
     // session.start. We inject it here from DO storage so daemon restarts
@@ -359,15 +378,26 @@ export class RuntimeRoom extends DurableObject<Env> {
     // packages/acp-runtime/src/session.ts:108). Skipped when the harness
     // already supplied a resume payload — never overwrite caller intent.
     if (parsed.type === "session.start") {
-      const existing = (parsed.resume as { acp_session_id?: string } | undefined)?.acp_session_id;
+      const existing = (wire.resume as { acp_session_id?: string } | undefined)?.acp_session_id;
       if (!existing) {
         const acpSid = await this.ctx.storage.get<string>(this.acpSessionKey(sid));
         if (acpSid) {
-          out.resume = { acp_session_id: acpSid };
+          wire.resume = { acp_session_id: acpSid };
           log({ op: "runtime_room.inject_resume", session_id: sid, acp_session_id: acpSid }, "injected resume.acp_session_id for recovery");
         }
       }
     }
+    const command = decodeSessionCommand(wire);
+    if (command === null) {
+      logWarn(
+        { op: "runtime_room.invalid_harness_message", type: parsed.type, session_id: sid },
+        "invalid harness relay message",
+      );
+      return;
+    }
+    const out = encodeSessionCommand(command, {
+      ...(selectedTenant !== undefined && { tenantId: selectedTenant }),
+    });
     try {
       daemon.send(JSON.stringify(out));
     } catch (e) {

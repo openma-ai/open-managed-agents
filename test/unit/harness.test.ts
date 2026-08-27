@@ -47,7 +47,7 @@ describe("Skills system", () => {
   });
 
   it("no hardcoded built-in skills — all skills via API/KV", () => {
-    // Built-in skills removed — all skills are managed via /v1/skills API
+    // Built-in skills removed — all skills are managed via /v1/oma/skills API
     const skills = resolveSkills([
       { skill_id: "web_research" },
       { skill_id: "pptx" },

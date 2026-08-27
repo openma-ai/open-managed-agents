@@ -12,7 +12,7 @@ function api(path: string, init?: RequestInit) {
 }
 
 export async function createReadyEnvironment(name = "test-env") {
-  const envRes = await api("/v1/environments", {
+  const envRes = await api("/v1/oma/environments", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name, config: { type: "cloud" } }),
@@ -35,7 +35,7 @@ export async function createReadyEnvironment(name = "test-env") {
 }
 
 export async function createFullSession(opts?: { agentOverrides?: Record<string, unknown> }) {
-  const agentRes = await api("/v1/agents", {
+  const agentRes = await api("/v1/oma/agents", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -49,7 +49,7 @@ export async function createFullSession(opts?: { agentOverrides?: Record<string,
   });
   const agent = (await agentRes.json()) as any;
   const environment = await createReadyEnvironment();
-  const sessRes = await api("/v1/sessions", {
+  const sessRes = await api("/v1/oma/sessions", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ agent: agent.id, environment_id: environment.id, title: "Test" }),
@@ -59,7 +59,7 @@ export async function createFullSession(opts?: { agentOverrides?: Record<string,
 }
 
 export function postMessage(sessionId: string, text: string) {
-  return api(`/v1/sessions/${sessionId}/events`, {
+  return api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({

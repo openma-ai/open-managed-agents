@@ -331,7 +331,7 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(410, {
           error: "linear_legacy_install_removed",
           remediation:
-            "Linear's install flow is now publication-first. POST /v1/integrations/linear/publications instead.",
+            "Linear's install flow is now publication-first. POST /v1/oma/integrations/linear/publications instead.",
         });
       }
       if (!body.userId || !body.agentId || !body.environmentId || !body.personaName || !body.returnUrl) {
@@ -361,7 +361,7 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(410, {
           error: "linear_legacy_install_removed",
           remediation:
-            "Linear's install flow is now publication-first. PATCH /v1/integrations/linear/publications/<id>/credentials instead.",
+            "Linear's install flow is now publication-first. PATCH /v1/oma/integrations/linear/publications/<id>/credentials instead.",
         });
       }
       const required = requiredCredentialsKeys(args.provider);
@@ -387,7 +387,7 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(410, {
           error: "linear_handoff_removed",
           remediation:
-            "Linear's handoff page is gone with the publication-first refactor — share the callback URL from POST /v1/integrations/linear/publications directly.",
+            "Linear's handoff page is gone with the publication-first refactor — share the callback URL from POST /v1/oma/integrations/linear/publications directly.",
         });
       }
       if (!body.formToken) return jsonResp(400, { error: "formToken required" });
@@ -410,7 +410,7 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(410, {
           error: "linear_form_token_removed",
           remediation:
-            "Linear's resume path is publication-first — no form-token reissue. Re-POST /v1/integrations/linear/publications to resume.",
+            "Linear's resume path is publication-first — no form-token reissue. Re-POST /v1/oma/integrations/linear/publications to resume.",
         });
       }
       // The route layer (http-routes integrations) already gated ownership +

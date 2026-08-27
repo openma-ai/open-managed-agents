@@ -26,7 +26,7 @@ collect_sse() {
   local sess_id="$1" timeout="${2:-90}"
   local sse_file=$(mktemp)
 
-  curl -sS -N "$BASE/v1/sessions/$sess_id/events" \
+  curl -sS -N "$BASE/v1/oma/sessions/$sess_id/events" \
     -H "x-api-key: $KEY" -H "Accept: text/event-stream" \
     --max-time "$timeout" > "$sse_file" 2>/dev/null &
   local pid=$!
@@ -49,14 +49,14 @@ wait_for_idle() {
 
 send_msg() {
   local sess_id="$1" text="$2"
-  api "/v1/sessions/$sess_id/events" -X POST \
+  api "/v1/oma/sessions/$sess_id/events" -X POST \
     -d "{\"events\":[{\"type\":\"user.message\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}]}" \
     -o /dev/null -w "%{http_code}"
 }
 
 # Setup
 echo "=== Setup ==="
-AGENT=$(api /v1/agents -X POST -d '{
+AGENT=$(api /v1/oma/agents -X POST -d '{
   "name":"Tool Test Agent",
   "model":"openai/gpt-5.4",
   "system":"You are a coding assistant. When asked to create files or run commands, always use the available tools (bash, write, read). Be concise.",
@@ -65,7 +65,7 @@ AGENT=$(api /v1/agents -X POST -d '{
 AGENT_ID=$(echo "$AGENT" | jq -r .id)
 echo "Agent: $AGENT_ID"
 
-ENV=$(api /v1/environments -X POST -d '{"name":"tools-env","config":{"type":"cloud"}}')
+ENV=$(api /v1/oma/environments -X POST -d '{"name":"tools-env","config":{"type":"cloud"}}')
 ENV_ID=$(echo "$ENV" | jq -r .id)
 echo "Env: $ENV_ID"
 
@@ -77,7 +77,7 @@ echo "========================================"
 echo "TEST 1: Write a file using write tool"
 echo "========================================"
 
-SESS1=$(api /v1/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Write Test\"}")
+SESS1=$(api /v1/oma/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Write Test\"}")
 SESS1_ID=$(echo "$SESS1" | jq -r .id)
 echo "Session: $SESS1_ID"
 
@@ -106,7 +106,7 @@ echo "========================================"
 echo "TEST 2: Run a bash command"
 echo "========================================"
 
-SESS2=$(api /v1/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Bash Test\"}")
+SESS2=$(api /v1/oma/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Bash Test\"}")
 SESS2_ID=$(echo "$SESS2" | jq -r .id)
 echo "Session: $SESS2_ID"
 
@@ -134,7 +134,7 @@ echo "========================================"
 echo "TEST 3: Multi-step tool usage"
 echo "========================================"
 
-SESS3=$(api /v1/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Multi-step\"}")
+SESS3=$(api /v1/oma/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Multi-step\"}")
 SESS3_ID=$(echo "$SESS3" | jq -r .id)
 echo "Session: $SESS3_ID"
 
@@ -165,7 +165,7 @@ echo "========================================"
 echo "TEST 4: Multi-turn conversation"
 echo "========================================"
 
-SESS4=$(api /v1/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Multi-turn\"}")
+SESS4=$(api /v1/oma/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Multi-turn\"}")
 SESS4_ID=$(echo "$SESS4" | jq -r .id)
 echo "Session: $SESS4_ID"
 
@@ -189,7 +189,7 @@ check "turn 2: got agent reply" "agent.message" "$T2_SSE"
 rm -f "$SSE_FILE"
 
 # Verify events pagination shows all events from both turns
-EVENTS=$(api "/v1/sessions/$SESS4_ID/events" -H "Accept: application/json")
+EVENTS=$(api "/v1/oma/sessions/$SESS4_ID/events" -H "Accept: application/json")
 EVENT_COUNT=$(echo "$EVENTS" | jq '.data | length')
 echo "  Total events across 2 turns: $EVENT_COUNT"
 check "multi-turn events accumulated" "true" "$([ "$EVENT_COUNT" -ge 6 ] && echo true || echo false)"
@@ -202,12 +202,12 @@ echo "========================================"
 echo "TEST 5: User interrupt"
 echo "========================================"
 
-SESS5=$(api /v1/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Interrupt\"}")
+SESS5=$(api /v1/oma/sessions -X POST -d "{\"agent\":\"$AGENT_ID\",\"environment_id\":\"$ENV_ID\",\"title\":\"Interrupt\"}")
 SESS5_ID=$(echo "$SESS5" | jq -r .id)
 echo "Session: $SESS5_ID"
 
 # Send interrupt (even without a running task, it should be accepted)
-INT_STATUS=$(api "/v1/sessions/$SESS5_ID/events" -X POST \
+INT_STATUS=$(api "/v1/oma/sessions/$SESS5_ID/events" -X POST \
   -d '{"events":[{"type":"user.interrupt"}]}' -o /dev/null -w "%{http_code}")
 check "interrupt accepted (202)" "202" "$INT_STATUS"
 
@@ -216,8 +216,8 @@ check "interrupt accepted (202)" "202" "$INT_STATUS"
 # ============================================================
 echo ""
 echo "=== Cleanup ==="
-api "/v1/agents/$AGENT_ID" -X DELETE > /dev/null
-api "/v1/environments/$ENV_ID" -X DELETE > /dev/null
+api "/v1/oma/agents/$AGENT_ID" -X DELETE > /dev/null
+api "/v1/oma/environments/$ENV_ID" -X DELETE > /dev/null
 echo "  ✓ Cleaned up"
 
 echo ""

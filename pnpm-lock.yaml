@@ -28,8 +28,8 @@ importers:
         version: 4.3.6
     devDependencies:
       '@anthropic-ai/sdk':
-        specifier: 0.95.1
-        version: 0.95.1(zod@4.3.6)
+        specifier: 0.120.0
+        version: 0.120.0(zod@4.3.6)
       '@changesets/changelog-git':
         specifier: ^1.0.0
         version: 1.0.0
@@ -132,6 +132,12 @@ importers:
       '@open-managed-agents/session-secrets-store':
         specifier: workspace:*
         version: link:../../packages/session-secrets-store
+      '@open-managed-agents/session-wakeup':
+        specifier: workspace:*
+        version: link:../../packages/session-wakeup
+      '@open-managed-agents/session-wakeup-cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/session-wakeup-cloudflare
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../../packages/sessions-store
@@ -452,6 +458,9 @@ importers:
       '@open-managed-agents/agents-store':
         specifier: workspace:*
         version: link:../../packages/agents-store
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-app
       '@open-managed-agents/blob-store':
         specifier: workspace:*
         version: link:../../packages/blob-store
@@ -461,15 +470,24 @@ importers:
       '@open-managed-agents/cf-billing':
         specifier: workspace:*
         version: link:../../packages/cf-billing
+      '@open-managed-agents/credential-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/credential-store-sql
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../../packages/credentials-store
+      '@open-managed-agents/deployment-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/deployment-store-sql
       '@open-managed-agents/dreams-pipeline':
         specifier: workspace:*
         version: link:../../packages/dreams-pipeline
       '@open-managed-agents/dreams-store':
         specifier: workspace:*
         version: link:../../packages/dreams-store
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/environment-work-store-sql
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -494,6 +512,21 @@ importers:
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../../packages/kv-store
+      '@open-managed-agents/managed-agents-adapters-blob':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-blob
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-runtime
+      '@open-managed-agents/managed-agents-adapters-sql':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-sql
+      '@open-managed-agents/managed-agents-api':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-api
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-application
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../../packages/memory-store
@@ -506,9 +539,15 @@ importers:
       '@open-managed-agents/outbound-snapshots-store':
         specifier: workspace:*
         version: link:../../packages/outbound-snapshots-store
+      '@open-managed-agents/platform-cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/platform-cloudflare
       '@open-managed-agents/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@open-managed-agents/runtime-relay':
+        specifier: workspace:*
+        version: link:../../packages/runtime-relay
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../../packages/scheduler
@@ -518,6 +557,9 @@ importers:
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime-contract
       '@open-managed-agents/session-secrets-store':
         specifier: workspace:*
         version: link:../../packages/session-secrets-store
@@ -539,6 +581,9 @@ importers:
       '@open-managed-agents/vaults-store':
         specifier: workspace:*
         version: link:../../packages/vaults-store
+      '@openma/common':
+        specifier: link:../../../openma-common
+        version: link:../../../openma-common
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -569,6 +614,9 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-app
       '@open-managed-agents/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -581,18 +629,33 @@ importers:
       '@open-managed-agents/browser-harness':
         specifier: workspace:*
         version: link:../../packages/browser-harness
+      '@open-managed-agents/credential-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/credential-store-sql
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../../packages/credentials-store
       '@open-managed-agents/db-schema':
         specifier: workspace:*
         version: link:../../packages/db-schema
+      '@open-managed-agents/deployment-run-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/deployment-run-store-sql
+      '@open-managed-agents/deployment-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/deployment-store-sql
+      '@open-managed-agents/dream-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/dream-store-sql
       '@open-managed-agents/dreams-store':
         specifier: workspace:*
         version: link:../../packages/dreams-store
       '@open-managed-agents/email':
         specifier: workspace:*
         version: link:../../packages/email
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/environment-work-store-sql
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -608,6 +671,9 @@ importers:
       '@open-managed-agents/feishu':
         specifier: workspace:*
         version: link:../../packages/feishu
+      '@open-managed-agents/file-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/file-store-sql
       '@open-managed-agents/files-store':
         specifier: workspace:*
         version: link:../../packages/files-store
@@ -629,12 +695,33 @@ importers:
       '@open-managed-agents/linear':
         specifier: workspace:*
         version: link:../../packages/linear
+      '@open-managed-agents/managed-agents-adapters-blob':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-blob
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-runtime
+      '@open-managed-agents/managed-agents-adapters-sql':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-sql
+      '@open-managed-agents/managed-agents-api':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-api
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-application
       '@open-managed-agents/markdown':
         specifier: workspace:*
         version: link:../../packages/markdown
+      '@open-managed-agents/memory-document-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/memory-document-store-sql
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../../packages/memory-store
+      '@open-managed-agents/memory-store-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/memory-store-store-sql
       '@open-managed-agents/model-cards-store':
         specifier: workspace:*
         version: link:../../packages/model-cards-store
@@ -644,6 +731,9 @@ importers:
       '@open-managed-agents/oma-cap-adapter':
         specifier: workspace:*
         version: link:../../packages/oma-cap-adapter
+      '@open-managed-agents/platform-node':
+        specifier: workspace:*
+        version: link:../../packages/platform-node
       '@open-managed-agents/queue':
         specifier: workspace:*
         version: link:../../packages/queue
@@ -662,24 +752,51 @@ importers:
       '@open-managed-agents/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@open-managed-agents/session-realtime':
+        specifier: workspace:*
+        version: link:../../packages/session-realtime
+      '@open-managed-agents/session-realtime-memory':
+        specifier: workspace:*
+        version: link:../../packages/session-realtime-memory
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime-contract
+      '@open-managed-agents/session-runtime-sql':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime-sql
+      '@open-managed-agents/session-thread-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/session-thread-store-sql
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../../packages/sessions-store
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@open-managed-agents/skill-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/skill-store-sql
       '@open-managed-agents/slack':
         specifier: workspace:*
         version: link:../../packages/slack
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../../packages/sql-client
+      '@open-managed-agents/tunnel-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/tunnel-store-sql
+      '@open-managed-agents/user-profile-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/user-profile-store-sql
       '@open-managed-agents/vault-forward':
         specifier: workspace:*
         version: link:../../packages/vault-forward
+      '@open-managed-agents/vault-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/vault-store-sql
       '@open-managed-agents/vaults-store':
         specifier: workspace:*
         version: link:../../packages/vaults-store
@@ -726,6 +843,9 @@ importers:
         specifier: ^7.2.0
         version: 7.2.4
     devDependencies:
+      '@anthropic-ai/sdk':
+        specifier: 0.120.0
+        version: 0.120.0(zod@4.4.3)
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -829,6 +949,41 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
+  packages/agent-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/agent-store-memory:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/agent-store-sql:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/agents-store:
     dependencies:
       '@open-managed-agents/db-schema':
@@ -911,6 +1066,9 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
+      '@open-managed-agents/runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-runtime
       '@openma/common':
         specifier: github:openma-ai/openma-common#v0.4.0
         version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e5e6f9e68d49e646afe38eae0b579b1ac4320c29(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
@@ -929,9 +1087,117 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
       ws:
         specifier: ^8.18.0
         version: 8.18.0
+
+  packages/compat-v0:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/credential-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/credential-store-memory:
+    dependencies:
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/credential-store-sql:
+    dependencies:
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/credentials-store:
     dependencies:
@@ -962,6 +1228,123 @@ importers:
       postgres:
         specifier: '*'
         version: 3.4.9
+
+  packages/deployment-run-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/deployment-run-store-memory:
+    dependencies:
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+    devDependencies:
+      '@open-managed-agents/deployment-store-memory':
+        specifier: workspace:*
+        version: link:../deployment-store-memory
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/deployment-run-store-sql:
+    dependencies:
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/deployment-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/deployment-store-memory:
+    dependencies:
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/deployment-store-sql:
+    dependencies:
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/dream-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/dream-store-memory:
+    dependencies:
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+    devDependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/dream-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/dreams-pipeline:
     dependencies:
@@ -995,6 +1378,73 @@ importers:
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/environment-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/environment-store-memory:
+    dependencies:
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/environment-store-sql:
+    dependencies:
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/environment-work-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/environment-work-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/environment-work-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/environments-store:
     dependencies:
@@ -1071,6 +1521,40 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^4.1.3
         version: 4.1.10(vitest@4.1.4)
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/file-content-store: {}
+
+  packages/file-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/file-store-memory:
+    dependencies:
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/file-store-sql:
+    dependencies:
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
@@ -1272,11 +1756,425 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/managed-agents-adapters-blob:
+    dependencies:
+      '@open-managed-agents/blob-store':
+        specifier: workspace:*
+        version: link:../blob-store
+      '@open-managed-agents/file-content-store':
+        specifier: workspace:*
+        version: link:../file-content-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-adapters-http:
+    dependencies:
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/managed-agents-api':
+        specifier: workspace:*
+        version: link:../managed-agents-api
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/oma-api':
+        specifier: workspace:*
+        version: link:../oma-api
+      '@open-managed-agents/oma-models':
+        specifier: workspace:*
+        version: link:../oma-models
+      hono:
+        specifier: 4.12.12
+        version: 4.12.12
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-adapters-runtime:
+    dependencies:
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      croner:
+        specifier: ^9.1.0
+        version: 9.1.0
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-adapters-sql:
+    dependencies:
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/credential-store-sql':
+        specifier: workspace:*
+        version: link:../credential-store-sql
+      '@open-managed-agents/deployment-run-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-run-store-sql
+      '@open-managed-agents/deployment-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-store-sql
+      '@open-managed-agents/dream-store-sql':
+        specifier: workspace:*
+        version: link:../dream-store-sql
+      '@open-managed-agents/environment-store-sql':
+        specifier: workspace:*
+        version: link:../environment-store-sql
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../environment-work-store-sql
+      '@open-managed-agents/file-store-sql':
+        specifier: workspace:*
+        version: link:../file-store-sql
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/memory-document-store-sql':
+        specifier: workspace:*
+        version: link:../memory-document-store-sql
+      '@open-managed-agents/memory-store-store-sql':
+        specifier: workspace:*
+        version: link:../memory-store-store-sql
+      '@open-managed-agents/platform':
+        specifier: workspace:*
+        version: link:../platform
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-event-store-sql':
+        specifier: workspace:*
+        version: link:../session-event-store-sql
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-resource-store-sql':
+        specifier: workspace:*
+        version: link:../session-resource-store-sql
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      '@open-managed-agents/session-runtime-sql':
+        specifier: workspace:*
+        version: link:../session-runtime-sql
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-store-sql':
+        specifier: workspace:*
+        version: link:../session-store-sql
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/session-thread-store-sql':
+        specifier: workspace:*
+        version: link:../session-thread-store-sql
+      '@open-managed-agents/skill-store-sql':
+        specifier: workspace:*
+        version: link:../skill-store-sql
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/tunnel-store-sql':
+        specifier: workspace:*
+        version: link:../tunnel-store-sql
+      '@open-managed-agents/user-profile-store-sql':
+        specifier: workspace:*
+        version: link:../user-profile-store-sql
+      '@open-managed-agents/vault-store-sql':
+        specifier: workspace:*
+        version: link:../vault-store-sql
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      postgres:
+        specifier: ^3.4.0
+        version: 3.4.9
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-api:
+    dependencies:
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      hono:
+        specifier: 4.12.12
+        version: 4.12.12
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@anthropic-ai/sdk':
+        specifier: 0.120.0
+        version: 0.120.0(zod@4.3.6)
+
+  packages/managed-agents-app:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/file-content-store':
+        specifier: workspace:*
+        version: link:../file-content-store
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/oma-models':
+        specifier: workspace:*
+        version: link:../oma-models
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+    devDependencies:
+      '@open-managed-agents/credential-store-memory':
+        specifier: workspace:*
+        version: link:../credential-store-memory
+      '@open-managed-agents/deployment-store-memory':
+        specifier: workspace:*
+        version: link:../deployment-store-memory
+      '@open-managed-agents/dream-store-memory':
+        specifier: workspace:*
+        version: link:../dream-store-memory
+      '@open-managed-agents/environment-store-memory':
+        specifier: workspace:*
+        version: link:../environment-store-memory
+      '@open-managed-agents/environment-work-store-memory':
+        specifier: workspace:*
+        version: link:../environment-work-store-memory
+      '@open-managed-agents/file-store-memory':
+        specifier: workspace:*
+        version: link:../file-store-memory
+      '@open-managed-agents/memory-document-store-memory':
+        specifier: workspace:*
+        version: link:../memory-document-store-memory
+      '@open-managed-agents/memory-store-store-memory':
+        specifier: workspace:*
+        version: link:../memory-store-store-memory
+      '@open-managed-agents/session-event-store-memory':
+        specifier: workspace:*
+        version: link:../session-event-store-memory
+      '@open-managed-agents/session-store-memory':
+        specifier: workspace:*
+        version: link:../session-store-memory
+      '@open-managed-agents/skill-store-memory':
+        specifier: workspace:*
+        version: link:../skill-store-memory
+      '@open-managed-agents/tunnel-store-memory':
+        specifier: workspace:*
+        version: link:../tunnel-store-memory
+      '@open-managed-agents/user-profile-store-memory':
+        specifier: workspace:*
+        version: link:../user-profile-store-memory
+      '@open-managed-agents/vault-store-memory':
+        specifier: workspace:*
+        version: link:../vault-store-memory
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-application:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/file-content-store':
+        specifier: workspace:*
+        version: link:../file-content-store
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-agents-domain: {}
+
+  packages/managed-agents-runtime:
+    dependencies:
+      '@open-managed-agents/acp-runtime':
+        specifier: workspace:*
+        version: link:../acp-runtime
+      '@openma/common':
+        specifier: link:../../../openma-common
+        version: link:../../../openma-common
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/markdown:
     dependencies:
       turndown:
         specifier: ^7.2.0
         version: 7.2.4
+
+  packages/memory-document-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/memory-document-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/memory-document-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/memory-store:
     dependencies:
@@ -1295,6 +2193,50 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260822.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
+
+  packages/memory-store-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/memory-store-store-memory:
+    dependencies:
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+    devDependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/memory-store-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/migrate-v0:
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/model-cards-store:
     dependencies:
@@ -1351,6 +2293,19 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
+  packages/oma-api:
+    dependencies:
+      '@open-managed-agents/oma-models':
+        specifier: workspace:*
+        version: link:../oma-models
+      hono:
+        specifier: 4.12.12
+        version: 4.12.12
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/oma-cap-adapter:
     dependencies:
       '@open-managed-agents/cap':
@@ -1366,11 +2321,284 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/oma-models:
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/outbound-snapshots-store:
     dependencies:
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/platform:
+    dependencies:
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/platform-cloudflare:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/credential-store-sql':
+        specifier: workspace:*
+        version: link:../credential-store-sql
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-run-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-run-store-sql
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/deployment-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-store-sql
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/dream-store-sql':
+        specifier: workspace:*
+        version: link:../dream-store-sql
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/environment-store-sql':
+        specifier: workspace:*
+        version: link:../environment-store-sql
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../environment-work-store-sql
+      '@open-managed-agents/file-content-store':
+        specifier: workspace:*
+        version: link:../file-content-store
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/file-store-sql':
+        specifier: workspace:*
+        version: link:../file-store-sql
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/memory-document-store-sql':
+        specifier: workspace:*
+        version: link:../memory-document-store-sql
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/memory-store-store-sql':
+        specifier: workspace:*
+        version: link:../memory-store-store-sql
+      '@open-managed-agents/platform':
+        specifier: workspace:*
+        version: link:../platform
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-event-store-sql':
+        specifier: workspace:*
+        version: link:../session-event-store-sql
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-resource-store-sql':
+        specifier: workspace:*
+        version: link:../session-resource-store-sql
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-store-sql':
+        specifier: workspace:*
+        version: link:../session-store-sql
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/session-thread-store-sql':
+        specifier: workspace:*
+        version: link:../session-thread-store-sql
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/skill-store-sql':
+        specifier: workspace:*
+        version: link:../skill-store-sql
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+      '@open-managed-agents/tunnel-store-sql':
+        specifier: workspace:*
+        version: link:../tunnel-store-sql
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+      '@open-managed-agents/user-profile-store-sql':
+        specifier: workspace:*
+        version: link:../user-profile-store-sql
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+      '@open-managed-agents/vault-store-sql':
+        specifier: workspace:*
+        version: link:../vault-store-sql
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/platform-node:
+    dependencies:
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-memory':
+        specifier: workspace:*
+        version: link:../agent-store-memory
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/credential-store':
+        specifier: workspace:*
+        version: link:../credential-store
+      '@open-managed-agents/credential-store-memory':
+        specifier: workspace:*
+        version: link:../credential-store-memory
+      '@open-managed-agents/deployment-run-store':
+        specifier: workspace:*
+        version: link:../deployment-run-store
+      '@open-managed-agents/deployment-run-store-memory':
+        specifier: workspace:*
+        version: link:../deployment-run-store-memory
+      '@open-managed-agents/deployment-store':
+        specifier: workspace:*
+        version: link:../deployment-store
+      '@open-managed-agents/deployment-store-memory':
+        specifier: workspace:*
+        version: link:../deployment-store-memory
+      '@open-managed-agents/dream-store':
+        specifier: workspace:*
+        version: link:../dream-store
+      '@open-managed-agents/dream-store-memory':
+        specifier: workspace:*
+        version: link:../dream-store-memory
+      '@open-managed-agents/environment-store':
+        specifier: workspace:*
+        version: link:../environment-store
+      '@open-managed-agents/environment-store-memory':
+        specifier: workspace:*
+        version: link:../environment-store-memory
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/environment-work-store-memory':
+        specifier: workspace:*
+        version: link:../environment-work-store-memory
+      '@open-managed-agents/file-content-store':
+        specifier: workspace:*
+        version: link:../file-content-store
+      '@open-managed-agents/file-store':
+        specifier: workspace:*
+        version: link:../file-store
+      '@open-managed-agents/file-store-memory':
+        specifier: workspace:*
+        version: link:../file-store-memory
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/memory-document-store':
+        specifier: workspace:*
+        version: link:../memory-document-store
+      '@open-managed-agents/memory-document-store-memory':
+        specifier: workspace:*
+        version: link:../memory-document-store-memory
+      '@open-managed-agents/memory-store-store':
+        specifier: workspace:*
+        version: link:../memory-store-store
+      '@open-managed-agents/memory-store-store-memory':
+        specifier: workspace:*
+        version: link:../memory-store-store-memory
+      '@open-managed-agents/platform':
+        specifier: workspace:*
+        version: link:../platform
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-event-store-memory':
+        specifier: workspace:*
+        version: link:../session-event-store-memory
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-resource-store-memory':
+        specifier: workspace:*
+        version: link:../session-resource-store-memory
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/session-store-memory':
+        specifier: workspace:*
+        version: link:../session-store-memory
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/session-thread-store-memory':
+        specifier: workspace:*
+        version: link:../session-thread-store-memory
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/skill-store-memory':
+        specifier: workspace:*
+        version: link:../skill-store-memory
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+      '@open-managed-agents/tunnel-store-memory':
+        specifier: workspace:*
+        version: link:../tunnel-store-memory
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+      '@open-managed-agents/user-profile-store-memory':
+        specifier: workspace:*
+        version: link:../user-profile-store-memory
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+      '@open-managed-agents/vault-store-memory':
+        specifier: workspace:*
+        version: link:../vault-store-memory
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/queue:
     dependencies:
@@ -1401,6 +2629,16 @@ importers:
       hono:
         specifier: ^4.7.0
         version: 4.12.12
+
+  packages/runtime-relay:
+    dependencies:
+      '@openma/common':
+        specifier: link:../../../openma-common
+        version: link:../../../openma-common
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/sandbox:
     dependencies:
@@ -1526,6 +2764,94 @@ importers:
         specifier: ^4.7.0
         version: 4.12.12
 
+  packages/session-event-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-event-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+    devDependencies:
+      '@open-managed-agents/session-store-memory':
+        specifier: workspace:*
+        version: link:../session-store-memory
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-event-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-realtime:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-realtime-memory:
+    dependencies:
+      '@open-managed-agents/session-realtime':
+        specifier: workspace:*
+        version: link:../session-realtime
+
+  packages/session-resource-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-resource-store-memory:
+    dependencies:
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-resource-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/session-runtime:
     dependencies:
       '@open-managed-agents/event-log':
@@ -1554,11 +2880,122 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
+  packages/session-runtime-contract:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-runtime-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+
   packages/session-secrets-store:
     dependencies:
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/session-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-store-sql:
+    dependencies:
+      '@open-managed-agents/session-store':
+        specifier: workspace:*
+        version: link:../session-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+
+  packages/session-thread-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/session-thread-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-thread-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/session-thread-store':
+        specifier: workspace:*
+        version: link:../session-thread-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-wakeup:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-wakeup-cloudflare:
+    dependencies:
+      '@open-managed-agents/session-wakeup':
+        specifier: workspace:*
+        version: link:../session-wakeup
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/session-wakeup-memory:
+    dependencies:
+      '@open-managed-agents/session-wakeup':
+        specifier: workspace:*
+        version: link:../session-wakeup
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/sessions-store:
     dependencies:
@@ -1586,6 +3023,44 @@ importers:
       nanoid:
         specifier: ^5.1.0
         version: 5.1.7
+
+  packages/skill-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/skill-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/skill-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/skill-store':
+        specifier: workspace:*
+        version: link:../skill-store
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/slack:
     dependencies:
@@ -1622,6 +3097,82 @@ importers:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260822.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
 
+  packages/tunnel-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/tunnel-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/tunnel-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/tunnel-store':
+        specifier: workspace:*
+        version: link:../tunnel-store
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/user-profile-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/user-profile-store-memory:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/user-profile-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/user-profile-store':
+        specifier: workspace:*
+        version: link:../user-profile-store
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/vault-forward:
     dependencies:
       '@open-managed-agents/credentials-store':
@@ -1631,6 +3182,41 @@ importers:
         specifier: workspace:*
         version: link:../shared
     devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/vault-store:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+
+  packages/vault-store-memory:
+    dependencies:
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/vault-store-sql:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/vault-store':
+        specifier: workspace:*
+        version: link:../vault-store
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
@@ -1703,8 +3289,8 @@ packages:
   '@antfu/install-pkg@1.1.0':
     resolution: {integrity: sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ==}
 
-  '@anthropic-ai/sdk@0.95.1':
-    resolution: {integrity: sha512-OO9AF7hmAoU492c/mD7Q2cPqI2WNAj7rAPHlawgBeUgpwiboLRiDs+grsErGWeHHP9ZRWfzq2OVrODTt8aITVg==}
+  '@anthropic-ai/sdk@0.120.0':
+    resolution: {integrity: sha512-ZlvmNFT/iIF6JD13rxbbMWD8nvGR0RaUp6yMQnoc+4Af0YjVVe/bIdW1XSQQsoxXAtg1NaT6Vak0LKFlJ4d37Q==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -9219,11 +10805,6 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nanoid@3.3.16:
-    resolution: {integrity: sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==}
-    engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
-    hasBin: true
-
   nanoid@3.3.18:
     resolution: {integrity: sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
@@ -11348,12 +12929,19 @@ snapshots:
       package-manager-detector: 1.6.0
       tinyexec: 1.1.1
 
-  '@anthropic-ai/sdk@0.95.1(zod@4.3.6)':
+  '@anthropic-ai/sdk@0.120.0(zod@4.3.6)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
     optionalDependencies:
       zod: 4.3.6
+
+  '@anthropic-ai/sdk@0.120.0(zod@4.4.3)':
+    dependencies:
+      json-schema-to-ts: 3.1.1
+      standardwebhooks: 1.0.0
+    optionalDependencies:
+      zod: 4.4.3
 
   '@asamuzakjp/css-color@5.1.11':
     dependencies:
@@ -13243,10 +14831,6 @@ snapshots:
     dependencies:
       hono: 4.12.12
 
-  '@hono/node-server@1.19.14(hono@4.13.3)':
-    dependencies:
-      hono: 4.13.3
-
   '@hookform/resolvers@5.2.2(react-hook-form@7.75.0(react@19.2.8))':
     dependencies:
       '@standard-schema/utils': 0.3.0
@@ -13673,7 +15257,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.14(hono@4.13.3)
+      '@hono/node-server': 1.19.14(hono@4.12.12)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -13683,7 +15267,7 @@ snapshots:
       eventsource-parser: 3.0.8
       express: 5.2.1
       express-rate-limit: 8.5.2(express@5.2.1)
-      hono: 4.13.3
+      hono: 4.12.12
       jose: 6.2.2
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -16924,6 +18508,15 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
+  '@vitest/mocker@4.1.4(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))':
+    dependencies:
+      '@vitest/spy': 4.1.4
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      msw: 2.14.6(@types/node@26.2.0)(typescript@7.0.2)
+      vite: 8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0)
+
   '@vitest/mocker@4.1.4(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.4
@@ -19309,7 +20902,7 @@ snapshots:
 
   json-schema-to-ts@3.1.1:
     dependencies:
-      '@babel/runtime': 7.29.2
+      '@babel/runtime': 7.29.7
       ts-algebra: 2.0.0
 
   json-schema-traverse@1.0.0: {}
@@ -20266,8 +21859,6 @@ snapshots:
 
   nanoid@3.3.11: {}
 
-  nanoid@3.3.16: {}
-
   nanoid@3.3.18: {}
 
   nanoid@5.1.7: {}
@@ -20642,13 +22233,13 @@ snapshots:
 
   postcss@8.5.10:
     dependencies:
-      nanoid: 3.3.11
+      nanoid: 3.3.18
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
   postcss@8.5.25:
     dependencies:
-      nanoid: 3.3.16
+      nanoid: 3.3.18
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
@@ -22081,6 +23672,21 @@ snapshots:
       tsx: 4.21.0
       yaml: 2.9.0
 
+  vite@8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0):
+    dependencies:
+      lightningcss: 1.33.0
+      picomatch: 4.0.5
+      postcss: 8.5.26
+      rolldown: 1.0.0-rc.15
+      tinyglobby: 0.2.17
+    optionalDependencies:
+      '@types/node': 26.2.0
+      esbuild: 0.25.12
+      fsevents: 2.3.3
+      jiti: 2.6.1
+      tsx: 4.21.0
+      yaml: 2.9.0
+
   vite@8.0.8(@types/node@26.2.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
@@ -22118,6 +23724,35 @@ snapshots:
   vitefu@1.1.3(vite@7.3.6(@types/node@26.3.0)(jiti@2.6.1)(lightningcss@1.33.0)(tsx@4.21.0)(yaml@2.9.0)):
     optionalDependencies:
       vite: 7.3.6(@types/node@26.3.0)(jiti@2.6.1)(lightningcss@1.33.0)(tsx@4.21.0)(yaml@2.9.0)
+
+  vitest@4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0)):
+    dependencies:
+      '@vitest/expect': 4.1.4
+      '@vitest/mocker': 4.1.4(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+      '@vitest/pretty-format': 4.1.4
+      '@vitest/runner': 4.1.4
+      '@vitest/snapshot': 4.1.4
+      '@vitest/spy': 4.1.4
+      '@vitest/utils': 4.1.4
+      es-module-lexer: 2.0.0
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      obug: 2.1.1
+      pathe: 2.0.3
+      picomatch: 4.0.5
+      std-env: 4.0.0
+      tinybench: 2.9.0
+      tinyexec: 1.1.1
+      tinyglobby: 0.2.17
+      tinyrainbow: 3.1.0
+      vite: 8.0.8(@types/node@26.2.0)(esbuild@0.25.12)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.0
+      '@types/node': 26.2.0
+      jsdom: 29.1.1(@noble/hashes@2.2.0)
+    transitivePeerDependencies:
+      - msw
 
   vitest@4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.2.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.2.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0)):
     dependencies:

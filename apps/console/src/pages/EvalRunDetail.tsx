@@ -95,7 +95,7 @@ export function EvalRunDetail() {
     isLoading: loading,
     error: queryError,
   } = useApiQuery<EvalRunDetail>(
-    id ? `/v1/evals/runs/${id}` : null,
+    id ? `/v1/oma/evals/runs/${id}` : null,
     undefined,
     {
       refetchInterval: (query) => {

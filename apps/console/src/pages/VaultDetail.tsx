@@ -736,7 +736,7 @@ function AddCredentialModal({
     if (opts?.clientId) params.set("client_id", opts.clientId);
     if (opts?.clientSecret) params.set("client_secret", opts.clientSecret);
     window.open(
-      `/v1/oauth/authorize?${params.toString()}`,
+      `/v1/oma/oauth/authorize?${params.toString()}`,
       "oauth",
       "width=600,height=700,popup=yes",
     );
@@ -783,7 +783,7 @@ function AddCredentialModal({
     //   - Bearer type or Access token filled → POST a credential
     //     immediately (mcp_oauth if refresh_token present, else
     //     static_bearer). Button reads "Add credential".
-    //   - Otherwise → start /v1/oauth/authorize popup. Button reads
+    //   - Otherwise → start /v1/oma/oauth/authorize popup. Button reads
     //     "Connect". Picking a registry row only fills the MCP Server
     //     field, never auto-connects.
     if (!customForm.url) return;
@@ -831,7 +831,7 @@ function AddCredentialModal({
         verification_uri_complete?: string;
         interval_seconds: number;
         expires_at_ms: number;
-      }>(`/v1/cap-cli/oauth/initiate`, {
+      }>(`/v1/oma/cap-cli/oauth/initiate`, {
         method: "POST",
         body: JSON.stringify({ vault_id: vault.id, cli_id: cliForm.cli_id }),
       });
@@ -873,7 +873,7 @@ function AddCredentialModal({
           oauth_error?: string;
           description?: string;
           credential_id?: string;
-        }>(`/v1/cap-cli/oauth/poll`, {
+        }>(`/v1/oma/cap-cli/oauth/poll`, {
           method: "POST",
           body: JSON.stringify({ session_id: flow.session_id }),
         });

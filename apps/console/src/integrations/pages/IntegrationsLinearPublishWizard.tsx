@@ -38,8 +38,8 @@ const STEPS: Array<{ id: Step; label: string }> = [
  * Publication-first wizard. Three discrete steps, each touching exactly
  * one anchor row server-side:
  *
- *   1. POST  /v1/integrations/linear/publications      → creates pending pub
- *   2. PATCH /v1/integrations/linear/publications/:id/credentials
+ *   1. POST  /v1/oma/integrations/linear/publications      → creates pending pub
+ *   2. PATCH /v1/oma/integrations/linear/publications/:id/credentials
  *                                                       → fills + advances
  *   3. <a href={install_url}>                           → OAuth callback
  *                                                         binds installation

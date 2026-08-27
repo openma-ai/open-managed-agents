@@ -1,4 +1,4 @@
-// /v1/stats — aggregate counts for the dashboard headline.
+// /v1/oma/stats — aggregate counts for the dashboard headline.
 //
 // Replaces the legacy "fetch /v1/agents?limit=1000 then read .data.length"
 // pattern in console/Dashboard.tsx, which pulled every row across seven

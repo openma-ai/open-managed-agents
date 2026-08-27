@@ -28,7 +28,7 @@ export function ApiKeysList() {
   const load = async () => {
     setLoading(true);
     try {
-      setKeys((await api<{ data: ApiKey[] }>("/v1/api_keys")).data);
+      setKeys((await api<{ data: ApiKey[] }>("/v1/oma/api_keys")).data);
     } catch {}
     setLoading(false);
   };
@@ -43,7 +43,7 @@ export function ApiKeysList() {
   const create = useAsyncAction(async () => {
     setError("");
     try {
-      const result = await api<{ key: string }>("/v1/api_keys", {
+      const result = await api<{ key: string }>("/v1/oma/api_keys", {
         method: "POST",
         body: JSON.stringify({ name: name || t.apiKeys.untitledKey }),
       });
@@ -58,7 +58,7 @@ export function ApiKeysList() {
   const remove = async (id: string) => {
     if (!confirm("Revoke this API key? This cannot be undone.")) return;
     try {
-      await api(`/v1/api_keys/${id}`, { method: "DELETE" });
+      await api(`/v1/oma/api_keys/${id}`, { method: "DELETE" });
       load();
     } catch {}
   };

@@ -30,7 +30,7 @@ function api(path: string, init?: RequestInit) {
 
 // Helper: create a full agent+env+session setup
 async function createFullSession(opts?: { agentOverrides?: Record<string, unknown> }) {
-  const agentRes = await api("/v1/agents", {
+  const agentRes = await api("/v1/oma/agents", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -43,13 +43,13 @@ async function createFullSession(opts?: { agentOverrides?: Record<string, unknow
     }),
   });
   const agent = (await agentRes.json()) as any;
-  const envRes = await api("/v1/environments", {
+  const envRes = await api("/v1/oma/environments", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name: "test-env", config: { type: "cloud" } }),
   });
   const environment = (await envRes.json()) as any;
-  const sessRes = await api("/v1/sessions", {
+  const sessRes = await api("/v1/oma/sessions", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ agent: agent.id, environment_id: environment.id, title: "Test" }),
@@ -60,7 +60,7 @@ async function createFullSession(opts?: { agentOverrides?: Record<string, unknow
 
 // Helper: post a user message
 function postMessage(sessionId: string, text: string) {
-  return api(`/v1/sessions/${sessionId}/events`, {
+  return api(`/v1/oma/sessions/${sessionId}/events`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -114,7 +114,7 @@ async function collectReplayedEvents(sessionId: string): Promise<any[]> {
 // ============================================================
 describe("Auth", () => {
   it("rejects missing API key", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "x", model: "x" }),
@@ -123,7 +123,7 @@ describe("Auth", () => {
   });
 
   it("rejects wrong API key", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: { "x-api-key": "wrong", "Content-Type": "application/json" },
       body: JSON.stringify({ name: "x", model: "x" }),
@@ -142,7 +142,7 @@ describe("Auth", () => {
 // ============================================================
 describe("Agent CRUD", () => {
   it("creates and retrieves an agent", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -158,7 +158,7 @@ describe("Agent CRUD", () => {
     expect(agent.version).toBe(1);
     expect(agent.created_at).toBeTruthy();
 
-    const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
     expect(getRes.status).toBe(200);
     const fetched = (await getRes.json()) as any;
     expect(fetched.id).toBe(agent.id);
@@ -166,7 +166,7 @@ describe("Agent CRUD", () => {
   });
 
   it("defaults tools when omitted", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Minimal", model: "claude-sonnet-4-6" }),
@@ -176,7 +176,7 @@ describe("Agent CRUD", () => {
   });
 
   it("stores custom harness field", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Custom", model: "claude-sonnet-4-6", _oma: { harness: "coding" } }),
@@ -186,7 +186,7 @@ describe("Agent CRUD", () => {
   });
 
   it("stores selective tool config", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -205,7 +205,7 @@ describe("Agent CRUD", () => {
   });
 
   it("rejects agent without name", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ model: "claude-sonnet-4-6" }),
@@ -214,7 +214,7 @@ describe("Agent CRUD", () => {
   });
 
   it("rejects agent without model", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "No Model" }),
@@ -223,13 +223,13 @@ describe("Agent CRUD", () => {
   });
 
   it("returns 404 for unknown agent", async () => {
-    const res = await api("/v1/agents/agent_nonexistent", { headers: HEADERS });
+    const res = await api("/v1/oma/agents/agent_nonexistent", { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 
   it("saves version history on update", async () => {
     // Create an agent
-    const createRes = await api("/v1/agents", {
+    const createRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Versioned", model: "claude-sonnet-4-6", system: "v1 system" }),
@@ -238,14 +238,14 @@ describe("Agent CRUD", () => {
     expect(agent.version).toBe(1);
 
     // Update it
-    await api(`/v1/agents/${agent.id}`, {
+    await api(`/v1/oma/agents/${agent.id}`, {
       method: "PUT",
       headers: HEADERS,
       body: JSON.stringify({ system: "v2 system" }),
     });
 
     // List versions
-    const versionsRes = await api(`/v1/agents/${agent.id}/versions`, { headers: HEADERS });
+    const versionsRes = await api(`/v1/oma/agents/${agent.id}/versions`, { headers: HEADERS });
     expect(versionsRes.status).toBe(200);
     const versions = (await versionsRes.json()) as any;
     expect(versions.data.length).toBe(1);
@@ -253,25 +253,25 @@ describe("Agent CRUD", () => {
     expect(versions.data[0].system).toBe("v1 system");
 
     // Get specific version
-    const v1Res = await api(`/v1/agents/${agent.id}/versions/1`, { headers: HEADERS });
+    const v1Res = await api(`/v1/oma/agents/${agent.id}/versions/1`, { headers: HEADERS });
     expect(v1Res.status).toBe(200);
     const v1 = (await v1Res.json()) as any;
     expect(v1.system).toBe("v1 system");
   });
 
   it("returns 404 for versions of unknown agent", async () => {
-    const res = await api("/v1/agents/agent_nonexistent/versions", { headers: HEADERS });
+    const res = await api("/v1/oma/agents/agent_nonexistent/versions", { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 
   it("returns 404 for unknown version", async () => {
-    const createRes = await api("/v1/agents", {
+    const createRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "NoVersions", model: "claude-sonnet-4-6" }),
     });
     const agent = (await createRes.json()) as any;
-    const res = await api(`/v1/agents/${agent.id}/versions/99`, { headers: HEADERS });
+    const res = await api(`/v1/oma/agents/${agent.id}/versions/99`, { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 });
@@ -281,7 +281,7 @@ describe("Agent CRUD", () => {
 // ============================================================
 describe("Environment CRUD", () => {
   it("creates and retrieves an environment", async () => {
-    const res = await api("/v1/environments", {
+    const res = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -293,13 +293,13 @@ describe("Environment CRUD", () => {
     const env = (await res.json()) as any;
     expect(env.id).toMatch(/^env-/);
 
-    const getRes = await api(`/v1/environments/${env.id}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/environments/${env.id}`, { headers: HEADERS });
     const fetched = (await getRes.json()) as any;
     expect(fetched.config.networking.type).toBe("unrestricted");
   });
 
   it("returns 404 for unknown environment", async () => {
-    const res = await api("/v1/environments/env_nonexistent", { headers: HEADERS });
+    const res = await api("/v1/oma/environments/env_nonexistent", { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 });
@@ -321,14 +321,14 @@ describe("Session CRUD", () => {
   });
 
   it("rejects session with nonexistent agent", async () => {
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
 
-    const res = await api("/v1/sessions", {
+    const res = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: "agent_ghost", environment_id: environment.id }),
@@ -337,14 +337,14 @@ describe("Session CRUD", () => {
   });
 
   it("rejects session with nonexistent environment", async () => {
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "A", model: "claude-sonnet-4-6" }),
     });
     const agent = (await agentRes.json()) as any;
 
-    const res = await api("/v1/sessions", {
+    const res = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: "env_ghost" }),
@@ -353,13 +353,13 @@ describe("Session CRUD", () => {
   });
 
   it("returns 404 for unknown session", async () => {
-    const res = await api("/v1/sessions/sess_ghost", { headers: HEADERS });
+    const res = await api("/v1/oma/sessions/sess_ghost", { headers: HEADERS });
     expect(res.status).toBe(404);
   });
 
   it("includes agent snapshot in GET response", async () => {
     const { session } = await createFullSession();
-    const getRes = await api(`/v1/sessions/${session.id}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/sessions/${session.id}`, { headers: HEADERS });
     expect(getRes.status).toBe(200);
     const body = (await getRes.json()) as any;
     expect(body.agent).toBeDefined();
@@ -386,7 +386,7 @@ describe("Event posting", () => {
   });
 
   it("rejects unsupported event type", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ events: [{ type: "system.ping" }] }),
@@ -398,7 +398,7 @@ describe("Event posting", () => {
   });
 
   it("rejects empty events array", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ events: [] }),
@@ -407,7 +407,7 @@ describe("Event posting", () => {
   });
 
   it("rejects missing events field", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ message: "hello" }),
@@ -421,7 +421,7 @@ describe("Event posting", () => {
   });
 
   it("accepts multiple events in one request", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -565,7 +565,7 @@ describe("DO resilience", () => {
 // ============================================================
 describe("Session isolation", () => {
   it("two sessions on same agent have independent event logs", async () => {
-    const agentRes = await api("/v1/agents", {
+    const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -579,21 +579,21 @@ describe("Session isolation", () => {
       }),
     });
     const agent = (await agentRes.json()) as any;
-    const envRes = await api("/v1/environments", {
+    const envRes = await api("/v1/oma/environments", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e", config: { type: "cloud" } }),
     });
     const environment = (await envRes.json()) as any;
 
-    const s1Res = await api("/v1/sessions", {
+    const s1Res = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
     });
     const s1 = (await s1Res.json()) as any;
 
-    const s2Res = await api("/v1/sessions", {
+    const s2Res = await api("/v1/oma/sessions", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent: agent.id, environment_id: environment.id }),
@@ -627,7 +627,7 @@ describe("SSE endpoints", () => {
   });
 
   it.skip("GET /events returns text/event-stream", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       headers: { "x-api-key": "test-key", Accept: "text/event-stream" },
     });
     expect(res.status).toBe(200);
@@ -635,7 +635,7 @@ describe("SSE endpoints", () => {
   });
 
   it("GET /events returns JSON when Accept is application/json", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       headers: { "x-api-key": "test-key", Accept: "application/json" },
     });
     expect(res.status).toBe(200);
@@ -645,7 +645,7 @@ describe("SSE endpoints", () => {
   });
 
   it("GET /events defaults to JSON when no Accept header", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
       headers: { "x-api-key": "test-key" },
     });
     expect(res.status).toBe(200);
@@ -654,7 +654,7 @@ describe("SSE endpoints", () => {
   });
 
   it.skip("GET /events/stream also works (Anthropic alias)", async () => {
-    const res = await api(`/v1/sessions/${sessionId}/events/stream`, {
+    const res = await api(`/v1/oma/sessions/${sessionId}/events/stream`, {
       headers: { "x-api-key": "test-key" },
     });
     expect(res.status).toBe(200);
@@ -662,7 +662,7 @@ describe("SSE endpoints", () => {
   });
 
   it("SSE returns 404 for nonexistent session", async () => {
-    const res = await api("/v1/sessions/sess_ghost/events", {
+    const res = await api("/v1/oma/sessions/sess_ghost/events", {
       headers: { "x-api-key": "test-key" },
     });
     expect(res.status).toBe(404);
@@ -742,7 +742,7 @@ describe("SSE endpoint matrix", () => {
     // Open stream first (default = no replay, no chunks). Then post a turn.
     // Live broadcast must deliver spec event types but NOT the OMA-extension
     // system.user_message_pending that the SessionDO emits on every enqueue.
-    const streamRes = await api(`/v1/sessions/${session.id}/events/stream`, {
+    const streamRes = await api(`/v1/oma/sessions/${session.id}/events/stream`, {
       headers: { "x-api-key": "test-key", Accept: "text/event-stream" },
     });
     expect(streamRes.status).toBe(200);
@@ -770,7 +770,7 @@ describe("SSE endpoint matrix", () => {
   it("?include=chunks: admits OMA extension events", async () => {
     const { session } = await createFullSession();
     const streamRes = await api(
-      `/v1/sessions/${session.id}/events/stream?include=chunks`,
+      `/v1/oma/sessions/${session.id}/events/stream?include=chunks`,
       { headers: { "x-api-key": "test-key", Accept: "text/event-stream" } },
     );
     expect(streamRes.status).toBe(200);
@@ -790,7 +790,7 @@ describe("SSE endpoint matrix", () => {
   async function waitForUserMessages(sessionId: string, n: number, maxWaitMs = 5000): Promise<any[]> {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      const r = await api(`/v1/sessions/${sessionId}/events`, {
+      const r = await api(`/v1/oma/sessions/${sessionId}/events`, {
         headers: { "x-api-key": "test-key", Accept: "application/json" },
       });
       const body = (await r.json()) as { data: any[] };
@@ -813,7 +813,7 @@ describe("SSE endpoint matrix", () => {
     await waitForUserMessages(session.id, 2);
 
     const streamRes = await api(
-      `/v1/sessions/${session.id}/events/stream?replay=1`,
+      `/v1/oma/sessions/${session.id}/events/stream?replay=1`,
       { headers: { "x-api-key": "test-key", Accept: "text/event-stream" } },
     );
     expect(streamRes.status).toBe(200);
@@ -840,7 +840,7 @@ describe("SSE endpoint matrix", () => {
     expect(allUsers.length).toBeGreaterThanOrEqual(2);
     const cursorSeq = allUsers[0].seq;
 
-    const streamRes = await api(`/v1/sessions/${session.id}/events/stream`, {
+    const streamRes = await api(`/v1/oma/sessions/${session.id}/events/stream`, {
       headers: {
         "x-api-key": "test-key",
         Accept: "text/event-stream",

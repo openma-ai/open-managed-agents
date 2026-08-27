@@ -62,17 +62,17 @@ async function collectReplayedEvents(sessionId: string, waitMs = 50): Promise<an
 // ============================================================
 describe("Agent + Session snapshot", () => {
   it("session with vault_ids includes them in GET response", async () => {
-    const a = await post("/v1/agents", { name: "VaultAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "VaultAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: "vlt-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "vlt-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const v1 = await post("/v1/vaults", { name: "snap-vault-1" });
+    const v1 = await post("/v1/oma/vaults", { name: "snap-vault-1" });
     const vault1 = (await v1.json()) as any;
-    const v2 = await post("/v1/vaults", { name: "snap-vault-2" });
+    const v2 = await post("/v1/oma/vaults", { name: "snap-vault-2" });
     const vault2 = (await v2.json()) as any;
 
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: envObj.id,
       vault_ids: [vault1.id, vault2.id],
@@ -81,25 +81,25 @@ describe("Agent + Session snapshot", () => {
     const session = (await s.json()) as any;
     expect(session.vault_ids).toEqual([vault1.id, vault2.id]);
 
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     const fetched = (await getRes.json()) as any;
     expect(fetched.vault_ids).toEqual([vault1.id, vault2.id]);
   });
 
   it("agent update after session creation does not change session snapshot", async () => {
-    const a = await post("/v1/agents", {
+    const a = await post("/v1/oma/agents", {
       name: "SnapAgent", model: "claude-sonnet-4-6", system: "snap-v1", harness: "cross-noop",
     });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: "snap-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "snap-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await s.json()) as any;
 
-    await put(`/v1/agents/${agent.id}`, { system: "snap-v2" });
+    await put(`/v1/oma/agents/${agent.id}`, { system: "snap-v2" });
 
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     const fetched = (await getRes.json()) as any;
     if (fetched.agent) {
       expect(fetched.agent.system).toBe("snap-v1");
@@ -107,41 +107,41 @@ describe("Agent + Session snapshot", () => {
   });
 
   it("archived agent does not prevent session access", async () => {
-    const a = await post("/v1/agents", { name: "ArchiveSnapAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "ArchiveSnapAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: "archsnap-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "archsnap-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await s.json()) as any;
 
-    await post(`/v1/agents/${agent.id}/archive`, {});
+    await post(`/v1/oma/agents/${agent.id}/archive`, {});
 
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     expect(getRes.status).toBe(200);
     const fetched = (await getRes.json()) as any;
     expect(fetched.agent).toBeDefined();
   });
 
   it("cannot delete agent with active session, archive first", async () => {
-    const a = await post("/v1/agents", { name: "DelSnapAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "DelSnapAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: "delsnap-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "delsnap-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await s.json()) as any;
 
     // Can't delete with active session
-    const delRes = await del(`/v1/agents/${agent.id}`);
+    const delRes = await del(`/v1/oma/agents/${agent.id}`);
     expect(delRes.status).toBe(409);
 
     // Archive session then delete
-    await post(`/v1/sessions/${session.id}/archive`, {});
-    const delRes2 = await del(`/v1/agents/${agent.id}`);
+    await post(`/v1/oma/sessions/${session.id}/archive`, {});
+    const delRes2 = await del(`/v1/oma/agents/${agent.id}`);
     expect(delRes2.status).toBe(200);
 
-    const sessGet = await get(`/v1/sessions/${session.id}`);
+    const sessGet = await get(`/v1/oma/sessions/${session.id}`);
     expect(sessGet.status).toBe(200);
     const fetched = (await sessGet.json()) as any;
     expect(fetched.agent).toBeDefined();
@@ -149,24 +149,24 @@ describe("Agent + Session snapshot", () => {
   });
 
   it("two sessions from same agent with update between have independent snapshots", async () => {
-    const a = await post("/v1/agents", {
+    const a = await post("/v1/oma/agents", {
       name: "DualSnap", model: "claude-sonnet-4-6", system: "dual-v1", harness: "cross-noop",
     });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: "dualsnap-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "dualsnap-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const s1 = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s1 = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session1 = (await s1.json()) as any;
 
-    await put(`/v1/agents/${agent.id}`, { system: "dual-v2" });
+    await put(`/v1/oma/agents/${agent.id}`, { system: "dual-v2" });
 
-    const s2 = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s2 = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session2 = (await s2.json()) as any;
 
-    const get1 = await get(`/v1/sessions/${session1.id}`);
+    const get1 = await get(`/v1/oma/sessions/${session1.id}`);
     const fetched1 = (await get1.json()) as any;
-    const get2 = await get(`/v1/sessions/${session2.id}`);
+    const get2 = await get(`/v1/oma/sessions/${session2.id}`);
     const fetched2 = (await get2.json()) as any;
 
     if (fetched1.agent && fetched2.agent) {
@@ -176,7 +176,7 @@ describe("Agent + Session snapshot", () => {
   });
 
   it("agent with all optional fields creates session successfully", async () => {
-    const a = await post("/v1/agents", {
+    const a = await post("/v1/oma/agents", {
       name: "FullOptAgent",
       model: "claude-sonnet-4-6",
       system: "full system",
@@ -189,10 +189,10 @@ describe("Agent + Session snapshot", () => {
     expect(a.status).toBe(201);
     const agent = (await a.json()) as any;
 
-    const e = await post("/v1/environments", { name: "fullopt-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "fullopt-env", config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
 
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     expect(s.status).toBe(201);
   });
 });
@@ -206,24 +206,24 @@ describe("File + Session resource", () => {
   let envId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", { name: "FileResAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "FileResAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     agentId = ((await a.json()) as any).id;
-    const e = await post("/v1/environments", { name: "fileres-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "fileres-env", config: { type: "cloud" } });
     envId = ((await e.json()) as any).id;
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     sessionId = ((await s.json()) as any).id;
   });
 
   it("session with multiple file resources lists all", async () => {
-    const f1 = await post("/v1/files", { filename: "a.txt", content: "aaa", media_type: "text/plain" });
-    const f2 = await post("/v1/files", { filename: "b.txt", content: "bbb", media_type: "text/plain" });
+    const f1 = await post("/v1/oma/files", { filename: "a.txt", content: "aaa", media_type: "text/plain" });
+    const f2 = await post("/v1/oma/files", { filename: "b.txt", content: "bbb", media_type: "text/plain" });
     const file1 = (await f1.json()) as any;
     const file2 = (await f2.json()) as any;
 
-    await post(`/v1/sessions/${sessionId}/resources`, { type: "file", file_id: file1.id, mount_path: "/data/a.txt" });
-    await post(`/v1/sessions/${sessionId}/resources`, { type: "file", file_id: file2.id, mount_path: "/data/b.txt" });
+    await post(`/v1/oma/sessions/${sessionId}/resources`, { type: "file", file_id: file1.id, mount_path: "/data/a.txt" });
+    await post(`/v1/oma/sessions/${sessionId}/resources`, { type: "file", file_id: file2.id, mount_path: "/data/b.txt" });
 
-    const listRes = await get(`/v1/sessions/${sessionId}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${sessionId}/resources`);
     const body = (await listRes.json()) as any;
     const filePaths = body.data.filter((r: any) => r.type === "file").map((r: any) => r.mount_path);
     expect(filePaths).toContain("/data/a.txt");
@@ -231,10 +231,10 @@ describe("File + Session resource", () => {
   });
 
   it("scoped file copy download returns original content", async () => {
-    const f = await post("/v1/files", { filename: "copy-src.txt", content: "copy-original-content", media_type: "text/plain", downloadable: true });
+    const f = await post("/v1/oma/files", { filename: "copy-src.txt", content: "copy-original-content", media_type: "text/plain", downloadable: true });
     const file = (await f.json()) as any;
 
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{ type: "file", file_id: file.id }],
@@ -242,17 +242,17 @@ describe("File + Session resource", () => {
     const session = (await s.json()) as any;
     const scopedFileId = session.resources[0].file_id;
 
-    const contentRes = await get(`/v1/files/${scopedFileId}/content`);
+    const contentRes = await get(`/v1/oma/files/${scopedFileId}/content`);
     expect(contentRes.status).toBe(200);
     const text = await contentRes.text();
     expect(text).toBe("copy-original-content");
   });
 
   it("file resource with mount_path is preserved", async () => {
-    const f = await post("/v1/files", { filename: "mounted.txt", content: "mounted", media_type: "text/plain" });
+    const f = await post("/v1/oma/files", { filename: "mounted.txt", content: "mounted", media_type: "text/plain" });
     const file = (await f.json()) as any;
 
-    const res = await post(`/v1/sessions/${sessionId}/resources`, {
+    const res = await post(`/v1/oma/sessions/${sessionId}/resources`, {
       type: "file",
       file_id: file.id,
       mount_path: "/workspace/custom/path.txt",
@@ -263,43 +263,43 @@ describe("File + Session resource", () => {
   });
 
   it("duplicate file with different mount_paths creates two resources", async () => {
-    const f = await post("/v1/files", { filename: "dup.txt", content: "dup content", media_type: "text/plain" });
+    const f = await post("/v1/oma/files", { filename: "dup.txt", content: "dup content", media_type: "text/plain" });
     const file = (await f.json()) as any;
 
-    const newSess = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const newSess = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sid = ((await newSess.json()) as any).id;
 
-    const r1 = await post(`/v1/sessions/${sid}/resources`, { type: "file", file_id: file.id, mount_path: "/path/a" });
-    const r2 = await post(`/v1/sessions/${sid}/resources`, { type: "file", file_id: file.id, mount_path: "/path/b" });
+    const r1 = await post(`/v1/oma/sessions/${sid}/resources`, { type: "file", file_id: file.id, mount_path: "/path/a" });
+    const r2 = await post(`/v1/oma/sessions/${sid}/resources`, { type: "file", file_id: file.id, mount_path: "/path/b" });
     expect(r1.status).toBe(201);
     expect(r2.status).toBe(201);
 
-    const listRes = await get(`/v1/sessions/${sid}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${sid}/resources`);
     const body = (await listRes.json()) as any;
     expect(body.data.length).toBeGreaterThanOrEqual(2);
   });
 
   it("deleting resource does not cascade-delete the file", async () => {
-    const f = await post("/v1/files", { filename: "nodelete.txt", content: "persistent", media_type: "text/plain" });
+    const f = await post("/v1/oma/files", { filename: "nodelete.txt", content: "persistent", media_type: "text/plain" });
     const file = (await f.json()) as any;
 
-    const addRes = await post(`/v1/sessions/${sessionId}/resources`, {
+    const addRes = await post(`/v1/oma/sessions/${sessionId}/resources`, {
       type: "file",
       file_id: file.id,
       mount_path: "/tmp/nodelete.txt",
     });
     const resource = (await addRes.json()) as any;
 
-    await del(`/v1/sessions/${sessionId}/resources/${resource.id}`);
+    await del(`/v1/oma/sessions/${sessionId}/resources/${resource.id}`);
 
-    const fileGet = await get(`/v1/files/${file.id}`);
+    const fileGet = await get(`/v1/oma/files/${file.id}`);
     expect(fileGet.status).toBe(200);
   });
 
   it("file resources with different media types (json, csv, txt)", async () => {
-    const fJson = await post("/v1/files", { filename: "data.json", content: '{"a":1}', media_type: "application/json", encoding: "utf8" });
-    const fCsv = await post("/v1/files", { filename: "data.csv", content: "a,b\n1,2", media_type: "text/csv" });
-    const fTxt = await post("/v1/files", { filename: "data.txt", content: "plain text", media_type: "text/plain" });
+    const fJson = await post("/v1/oma/files", { filename: "data.json", content: '{"a":1}', media_type: "application/json", encoding: "utf8" });
+    const fCsv = await post("/v1/oma/files", { filename: "data.csv", content: "a,b\n1,2", media_type: "text/csv" });
+    const fTxt = await post("/v1/oma/files", { filename: "data.txt", content: "plain text", media_type: "text/plain" });
 
     const jsonFile = (await fJson.json()) as any;
     const csvFile = (await fCsv.json()) as any;
@@ -309,14 +309,14 @@ describe("File + Session resource", () => {
     expect(csvFile.media_type).toBe("text/csv");
     expect(txtFile.media_type).toBe("text/plain");
 
-    const newSess = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const newSess = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sid = ((await newSess.json()) as any).id;
 
-    await post(`/v1/sessions/${sid}/resources`, { type: "file", file_id: jsonFile.id });
-    await post(`/v1/sessions/${sid}/resources`, { type: "file", file_id: csvFile.id });
-    await post(`/v1/sessions/${sid}/resources`, { type: "file", file_id: txtFile.id });
+    await post(`/v1/oma/sessions/${sid}/resources`, { type: "file", file_id: jsonFile.id });
+    await post(`/v1/oma/sessions/${sid}/resources`, { type: "file", file_id: csvFile.id });
+    await post(`/v1/oma/sessions/${sid}/resources`, { type: "file", file_id: txtFile.id });
 
-    const listRes = await get(`/v1/sessions/${sid}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${sid}/resources`);
     const body = (await listRes.json()) as any;
     expect(body.data.filter((r: any) => r.type === "file").length).toBeGreaterThanOrEqual(3);
   });
@@ -330,17 +330,17 @@ describe("Memory + Session", () => {
   let envId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", { name: "MemSessAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "MemSessAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     agentId = ((await a.json()) as any).id;
-    const e = await post("/v1/environments", { name: "memsess-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "memsess-env", config: { type: "cloud" } });
     envId = ((await e.json()) as any).id;
   });
 
   it("session with memory_store resource is listed", async () => {
-    const store = await post("/v1/memory_stores", { name: "sess-mem-store" });
+    const store = await post("/v1/oma/memory_stores", { name: "sess-mem-store" });
     const storeObj = (await store.json()) as any;
 
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{ type: "memory_store", memory_store_id: storeObj.id }],
@@ -353,20 +353,20 @@ describe("Memory + Session", () => {
   });
 
   it("multiple memory_store resources on same session", async () => {
-    const s1 = await post("/v1/memory_stores", { name: "multi-mem-1" });
-    const s2 = await post("/v1/memory_stores", { name: "multi-mem-2" });
+    const s1 = await post("/v1/oma/memory_stores", { name: "multi-mem-1" });
+    const s2 = await post("/v1/oma/memory_stores", { name: "multi-mem-2" });
     const store1 = (await s1.json()) as any;
     const store2 = (await s2.json()) as any;
 
-    const sess = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const sess = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await sess.json()) as any).id;
 
-    const r1 = await post(`/v1/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: store1.id });
-    const r2 = await post(`/v1/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: store2.id });
+    const r1 = await post(`/v1/oma/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: store1.id });
+    const r2 = await post(`/v1/oma/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: store2.id });
     expect(r1.status).toBe(201);
     expect(r2.status).toBe(201);
 
-    const listRes = await get(`/v1/sessions/${sessionId}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${sessionId}/resources`);
     const body = (await listRes.json()) as any;
     const memStoreIds = body.data.filter((r: any) => r.type === "memory_store").map((r: any) => r.memory_store_id);
     expect(memStoreIds).toContain(store1.id);
@@ -374,39 +374,39 @@ describe("Memory + Session", () => {
   });
 
   it("memory store CRUD is independent of session resource link", async () => {
-    const store = await post("/v1/memory_stores", { name: "independent-store" });
+    const store = await post("/v1/oma/memory_stores", { name: "independent-store" });
     const storeObj = (await store.json()) as any;
 
-    const sess = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const sess = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await sess.json()) as any).id;
-    await post(`/v1/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: storeObj.id });
+    await post(`/v1/oma/sessions/${sessionId}/resources`, { type: "memory_store", memory_store_id: storeObj.id });
 
     // Create and read memory items independently
-    const memRes = await post(`/v1/memory_stores/${storeObj.id}/memories`, {
+    const memRes = await post(`/v1/oma/memory_stores/${storeObj.id}/memories`, {
       path: "independent/test.txt",
       content: "independent content",
     });
     expect(memRes.status).toBe(201);
     const mem = (await memRes.json()) as any;
 
-    const getRes = await get(`/v1/memory_stores/${storeObj.id}/memories/${mem.id}`);
+    const getRes = await get(`/v1/oma/memory_stores/${storeObj.id}/memories/${mem.id}`);
     expect(getRes.status).toBe(200);
     const fetched = (await getRes.json()) as any;
     expect(fetched.content).toBe("independent content");
   });
 
   it("session with memory_store resource shows in session GET", async () => {
-    const store = await post("/v1/memory_stores", { name: "get-visible-store" });
+    const store = await post("/v1/oma/memory_stores", { name: "get-visible-store" });
     const storeObj = (await store.json()) as any;
 
-    const sess = await post("/v1/sessions", {
+    const sess = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{ type: "memory_store", memory_store_id: storeObj.id }],
     });
     const session = (await sess.json()) as any;
 
-    const listRes = await get(`/v1/sessions/${session.id}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${session.id}/resources`);
     expect(listRes.status).toBe(200);
     const body = (await listRes.json()) as any;
     expect(body.data.some((r: any) => r.memory_store_id === storeObj.id)).toBe(true);
@@ -418,15 +418,15 @@ describe("Memory + Session", () => {
 // ============================================================
 describe("Vault + Credential", () => {
   it("static_bearer credential secret stripped on list", async () => {
-    const v = await post("/v1/vaults", { name: "strip-vault-sb" });
+    const v = await post("/v1/oma/vaults", { name: "strip-vault-sb" });
     const vault = (await v.json()) as any;
 
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Bearer Cred",
       auth: { type: "static_bearer", mcp_server_url: "https://sb-strip.example.com", token: "secret-value" },
     });
 
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     for (const cred of body.data) {
       expect(cred.auth.token).toBeUndefined();
@@ -434,10 +434,10 @@ describe("Vault + Credential", () => {
   });
 
   it("mcp_oauth credential all secret fields stripped", async () => {
-    const v = await post("/v1/vaults", { name: "strip-vault-oauth" });
+    const v = await post("/v1/oma/vaults", { name: "strip-vault-oauth" });
     const vault = (await v.json()) as any;
 
-    const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "OAuth Cred",
       auth: {
         type: "mcp_oauth",
@@ -459,34 +459,34 @@ describe("Vault + Credential", () => {
   });
 
   it("vault archive hides credentials from default list", async () => {
-    const v = await post("/v1/vaults", { name: "archive-cred-vault" });
+    const v = await post("/v1/oma/vaults", { name: "archive-cred-vault" });
     const vault = (await v.json()) as any;
 
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Hidden Cred",
       auth: { type: "static_bearer", mcp_server_url: "https://hidden.example.com", token: "t" },
     });
 
-    await post(`/v1/vaults/${vault.id}/archive`, {});
+    await post(`/v1/oma/vaults/${vault.id}/archive`, {});
 
-    const listRes = await get("/v1/vaults");
+    const listRes = await get("/v1/oma/vaults");
     const body = (await listRes.json()) as any;
     const found = body.data.find((v2: any) => v2.id === vault.id);
     expect(found).toBeUndefined();
   });
 
   it("credential update preserves non-secret fields", async () => {
-    const v = await post("/v1/vaults", { name: "update-cred-vault" });
+    const v = await post("/v1/oma/vaults", { name: "update-cred-vault" });
     const vault = (await v.json()) as any;
 
-    const createRes = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const createRes = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Updatable Cred",
       auth: { type: "static_bearer", mcp_server_url: "https://updatable.example.com", token: "old-token" },
     });
     const cred = (await createRes.json()) as any;
 
     // Re-read to verify non-secret fields
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     const found = body.data.find((c: any) => c.id === cred.id);
     expect(found).toBeTruthy();
@@ -496,34 +496,34 @@ describe("Vault + Credential", () => {
   });
 
   it("vault with max credentials (20) lists all", async () => {
-    const v = await post("/v1/vaults", { name: "max-cred-vault" });
+    const v = await post("/v1/oma/vaults", { name: "max-cred-vault" });
     const vault = (await v.json()) as any;
 
     for (let i = 0; i < 20; i++) {
-      const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+      const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
         display_name: `maxcred-${i}`,
         auth: { type: "static_bearer", mcp_server_url: `https://max-${i}.example.com`, token: `t-${i}` },
       });
       expect(res.status).toBe(201);
     }
 
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     expect(body.data.length).toBe(20);
   });
 
   it("archived vault hidden from default list", async () => {
-    const v = await post("/v1/vaults", { name: "hidden-vault" });
+    const v = await post("/v1/oma/vaults", { name: "hidden-vault" });
     const vault = (await v.json()) as any;
 
-    await post(`/v1/vaults/${vault.id}/archive`, {});
+    await post(`/v1/oma/vaults/${vault.id}/archive`, {});
 
-    const listRes = await get("/v1/vaults");
+    const listRes = await get("/v1/oma/vaults");
     const body = (await listRes.json()) as any;
     const found = body.data.find((v2: any) => v2.id === vault.id);
     expect(found).toBeUndefined();
 
-    const archivedList = await get("/v1/vaults?include_archived=true");
+    const archivedList = await get("/v1/oma/vaults?include_archived=true");
     const archivedBody = (await archivedList.json()) as any;
     const archivedFound = archivedBody.data.find((v2: any) => v2.id === vault.id);
     expect(archivedFound).toBeTruthy();
@@ -537,7 +537,7 @@ describe("Vault + Credential", () => {
 describe("Cross-entity lifecycle", () => {
   it("full workflow: agent -> env -> session -> file resource -> events -> verify", async () => {
     // Agent
-    const aRes = await post("/v1/agents", {
+    const aRes = await post("/v1/oma/agents", {
       name: "FullFlowAgent",
       model: "claude-sonnet-4-6",
       system: "full flow test",
@@ -547,17 +547,17 @@ describe("Cross-entity lifecycle", () => {
     const agent = (await aRes.json()) as any;
 
     // Environment
-    const eRes = await post("/v1/environments", { name: "fullflow-env", config: { type: "cloud" } });
+    const eRes = await post("/v1/oma/environments", { name: "fullflow-env", config: { type: "cloud" } });
     expect(eRes.status).toBe(201);
     const envObj = (await eRes.json()) as any;
 
     // File
-    const fRes = await post("/v1/files", { filename: "flow.txt", content: "flow content", media_type: "text/plain" });
+    const fRes = await post("/v1/oma/files", { filename: "flow.txt", content: "flow content", media_type: "text/plain" });
     expect(fRes.status).toBe(201);
     const file = (await fRes.json()) as any;
 
     // Session with file resource
-    const sRes = await post("/v1/sessions", {
+    const sRes = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: envObj.id,
       resources: [{ type: "file", file_id: file.id, mount_path: "/data/flow.txt" }],
@@ -566,7 +566,7 @@ describe("Cross-entity lifecycle", () => {
     const session = (await sRes.json()) as any;
 
     // Post event
-    const evtRes = await post(`/v1/sessions/${session.id}/events`, {
+    const evtRes = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "trigger flow" }] }],
     });
     expect(evtRes.status).toBe(202);
@@ -582,37 +582,37 @@ describe("Cross-entity lifecycle", () => {
   });
 
   it("delete env blocked by active session -> archive session -> delete succeeds", async () => {
-    const aRes = await post("/v1/agents", { name: "EnvBlockAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const aRes = await post("/v1/oma/agents", { name: "EnvBlockAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     const agent = (await aRes.json()) as any;
-    const eRes = await post("/v1/environments", { name: "envblock-env", config: { type: "cloud" } });
+    const eRes = await post("/v1/oma/environments", { name: "envblock-env", config: { type: "cloud" } });
     const envObj = (await eRes.json()) as any;
 
-    const sRes = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const sRes = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await sRes.json()) as any;
 
     // Delete should be blocked
-    const delRes = await del(`/v1/environments/${envObj.id}`);
+    const delRes = await del(`/v1/oma/environments/${envObj.id}`);
     expect(delRes.status).toBe(409);
 
     // Archive the session
-    await post(`/v1/sessions/${session.id}/archive`, {});
+    await post(`/v1/oma/sessions/${session.id}/archive`, {});
 
     // Now delete should succeed
-    const delRes2 = await del(`/v1/environments/${envObj.id}`);
+    const delRes2 = await del(`/v1/oma/environments/${envObj.id}`);
     expect(delRes2.status).toBe(200);
   });
 
   it("agent version history across 3 updates saves 2 versions", async () => {
-    const aRes = await post("/v1/agents", {
+    const aRes = await post("/v1/oma/agents", {
       name: "VersionChain", model: "claude-sonnet-4-6", system: "ver-1", harness: "cross-noop",
     });
     const agent = (await aRes.json()) as any;
     expect(agent.version).toBe(1);
 
-    await put(`/v1/agents/${agent.id}`, { system: "ver-2" });
-    await put(`/v1/agents/${agent.id}`, { system: "ver-3" });
+    await put(`/v1/oma/agents/${agent.id}`, { system: "ver-2" });
+    await put(`/v1/oma/agents/${agent.id}`, { system: "ver-3" });
 
-    const versionsRes = await get(`/v1/agents/${agent.id}/versions`);
+    const versionsRes = await get(`/v1/oma/agents/${agent.id}/versions`);
     const versions = (await versionsRes.json()) as any;
     expect(versions.data.length).toBe(2);
     expect(versions.data[0].version).toBe(1);
@@ -620,38 +620,38 @@ describe("Cross-entity lifecycle", () => {
     expect(versions.data[1].version).toBe(2);
     expect(versions.data[1].system).toBe("ver-2");
 
-    const currentRes = await get(`/v1/agents/${agent.id}`);
+    const currentRes = await get(`/v1/oma/agents/${agent.id}`);
     const current = (await currentRes.json()) as any;
     expect(current.version).toBe(3);
     expect(current.system).toBe("ver-3");
   });
 
   it("create all entities then archive all and verify archived_at", async () => {
-    const aRes = await post("/v1/agents", { name: "ArchAll", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const aRes = await post("/v1/oma/agents", { name: "ArchAll", model: "claude-sonnet-4-6", harness: "cross-noop" });
     const agent = (await aRes.json()) as any;
-    const eRes = await post("/v1/environments", { name: "archall-env", config: { type: "cloud" } });
+    const eRes = await post("/v1/oma/environments", { name: "archall-env", config: { type: "cloud" } });
     const envObj = (await eRes.json()) as any;
-    const sRes = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const sRes = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await sRes.json()) as any;
-    const vRes = await post("/v1/vaults", { name: "archall-vault" });
+    const vRes = await post("/v1/oma/vaults", { name: "archall-vault" });
     const vault = (await vRes.json()) as any;
-    const msRes = await post("/v1/memory_stores", { name: "archall-mem" });
+    const msRes = await post("/v1/oma/memory_stores", { name: "archall-mem" });
     const memStore = (await msRes.json()) as any;
 
     // Archive all
-    const archAgent = await post(`/v1/agents/${agent.id}/archive`, {});
+    const archAgent = await post(`/v1/oma/agents/${agent.id}/archive`, {});
     expect(((await archAgent.json()) as any).archived_at).toBeTruthy();
 
-    const archSession = await post(`/v1/sessions/${session.id}/archive`, {});
+    const archSession = await post(`/v1/oma/sessions/${session.id}/archive`, {});
     expect(((await archSession.json()) as any).archived_at).toBeTruthy();
 
-    const archEnv = await post(`/v1/environments/${envObj.id}/archive`, {});
+    const archEnv = await post(`/v1/oma/environments/${envObj.id}/archive`, {});
     expect(((await archEnv.json()) as any).archived_at).toBeTruthy();
 
-    const archVault = await post(`/v1/vaults/${vault.id}/archive`, {});
+    const archVault = await post(`/v1/oma/vaults/${vault.id}/archive`, {});
     expect(((await archVault.json()) as any).archived_at).toBeTruthy();
 
-    const archMem = await post(`/v1/memory_stores/${memStore.id}/archive`, {});
+    const archMem = await post(`/v1/oma/memory_stores/${memStore.id}/archive`, {});
     expect(((await archMem.json()) as any).archived_at).toBeTruthy();
   });
 });
@@ -664,20 +664,20 @@ describe("Event type combinations", () => {
   let envId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", { name: "EvtCombo", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "EvtCombo", model: "claude-sonnet-4-6", harness: "cross-noop" });
     agentId = ((await a.json()) as any).id;
-    const e = await post("/v1/environments", { name: "evtcombo-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "evtcombo-env", config: { type: "cloud" } });
     envId = ((await e.json()) as any).id;
   });
 
   it("user.message + user.interrupt both appear in replay", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "combo msg" }] }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.interrupt" }],
     });
 
@@ -689,13 +689,13 @@ describe("Event type combinations", () => {
   });
 
   it("user.define_outcome + user.message both stored", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.define_outcome", outcome: { description: "Do something" } }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "after outcome" }] }],
     });
 
@@ -707,13 +707,13 @@ describe("Event type combinations", () => {
   });
 
   it("user.tool_confirmation + user.custom_tool_result stored", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.tool_confirmation", tool_use_id: "tc_combo", result: "allow" }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.custom_tool_result", custom_tool_use_id: "ct_combo", content: [{ type: "text", text: "result" }] }],
     });
 
@@ -725,22 +725,22 @@ describe("Event type combinations", () => {
   });
 
   it("all user event types in one session appear in replay", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "msg" }] }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.interrupt" }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.tool_confirmation", tool_use_id: "tc_all", result: "deny", deny_message: "no" }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.custom_tool_result", custom_tool_use_id: "ct_all", content: [{ type: "text", text: "r" }] }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.define_outcome", outcome: { description: "all-types" } }],
     });
 
@@ -755,11 +755,11 @@ describe("Event type combinations", () => {
   });
 
   it("events across multiple POST requests are all preserved", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
     for (let i = 0; i < 5; i++) {
-      await post(`/v1/sessions/${sessionId}/events`, {
+      await post(`/v1/oma/sessions/${sessionId}/events`, {
         events: [{ type: "user.message", content: [{ type: "text", text: `multi-${i}` }] }],
       });
     }
@@ -775,23 +775,23 @@ describe("Event type combinations", () => {
   });
 
   it("event pagination across different types", async () => {
-    const s = await post("/v1/sessions", { agent: agentId, environment_id: envId });
+    const s = await post("/v1/oma/sessions", { agent: agentId, environment_id: envId });
     const sessionId = ((await s.json()) as any).id;
 
     // Post several event types
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "pag1" }] }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.interrupt" }],
     });
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "pag2" }] }],
     });
 
     await new Promise((r) => setTimeout(r, 200));
 
-    const page1 = await get(`/v1/sessions/${sessionId}/events?limit=2`, { Accept: "application/json" });
+    const page1 = await get(`/v1/oma/sessions/${sessionId}/events?limit=2`, { Accept: "application/json" });
     const body1 = (await page1.json()) as any;
     expect(body1.data.length).toBe(2);
     expect(typeof body1.has_more).toBe("boolean");
@@ -805,9 +805,9 @@ describe("Session metadata operations", () => {
   let sessionId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", { name: "MetaAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
-    const e = await post("/v1/environments", { name: "meta-env", config: { type: "cloud" } });
-    const s = await post("/v1/sessions", {
+    const a = await post("/v1/oma/agents", { name: "MetaAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const e = await post("/v1/oma/environments", { name: "meta-env", config: { type: "cloud" } });
+    const s = await post("/v1/oma/sessions", {
       agent: ((await a.json()) as any).id,
       environment_id: ((await e.json()) as any).id,
       title: "MetaSession",
@@ -816,16 +816,16 @@ describe("Session metadata operations", () => {
   });
 
   it("metadata merge: add keys incrementally", async () => {
-    await post(`/v1/sessions/${sessionId}`, { metadata: { key1: "value1" } });
-    const res = await post(`/v1/sessions/${sessionId}`, { metadata: { key2: "value2" } });
+    await post(`/v1/oma/sessions/${sessionId}`, { metadata: { key1: "value1" } });
+    const res = await post(`/v1/oma/sessions/${sessionId}`, { metadata: { key2: "value2" } });
     const body = (await res.json()) as any;
     expect(body.metadata.key1).toBe("value1");
     expect(body.metadata.key2).toBe("value2");
   });
 
   it("metadata null deletes specific key while preserving others", async () => {
-    await post(`/v1/sessions/${sessionId}`, { metadata: { keep: "yes", remove: "no" } });
-    const res = await post(`/v1/sessions/${sessionId}`, { metadata: { remove: null } });
+    await post(`/v1/oma/sessions/${sessionId}`, { metadata: { keep: "yes", remove: "no" } });
+    const res = await post(`/v1/oma/sessions/${sessionId}`, { metadata: { remove: null } });
     const body = (await res.json()) as any;
     expect(body.metadata.keep).toBe("yes");
     expect(body.metadata.remove).toBeUndefined();
@@ -842,19 +842,19 @@ describe("Session metadata operations", () => {
         },
       },
     };
-    const res = await post(`/v1/sessions/${sessionId}`, { metadata: deepMeta });
+    const res = await post(`/v1/oma/sessions/${sessionId}`, { metadata: deepMeta });
     const body = (await res.json()) as any;
     expect(body.metadata.outer.inner.deep.value).toBe("nested-deep");
     expect(body.metadata.outer.inner.deep.list).toEqual([1, 2, 3]);
   });
 
   it("empty metadata update causes no change", async () => {
-    const beforeRes = await get(`/v1/sessions/${sessionId}`);
+    const beforeRes = await get(`/v1/oma/sessions/${sessionId}`);
     const before = (await beforeRes.json()) as any;
 
-    await post(`/v1/sessions/${sessionId}`, { metadata: {} });
+    await post(`/v1/oma/sessions/${sessionId}`, { metadata: {} });
 
-    const afterRes = await get(`/v1/sessions/${sessionId}`);
+    const afterRes = await get(`/v1/oma/sessions/${sessionId}`);
     const after = (await afterRes.json()) as any;
 
     // Keys from previous tests should still be present
@@ -862,8 +862,8 @@ describe("Session metadata operations", () => {
   });
 
   it("overwrite existing metadata key", async () => {
-    await post(`/v1/sessions/${sessionId}`, { metadata: { overwrite: "original" } });
-    const res = await post(`/v1/sessions/${sessionId}`, { metadata: { overwrite: "updated" } });
+    await post(`/v1/oma/sessions/${sessionId}`, { metadata: { overwrite: "original" } });
+    const res = await post(`/v1/oma/sessions/${sessionId}`, { metadata: { overwrite: "updated" } });
     const body = (await res.json()) as any;
     expect(body.metadata.overwrite).toBe("updated");
   });
@@ -877,14 +877,14 @@ describe("GitHub Repository + Env Secret resources", () => {
   let envId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/agents", { name: "GitResAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
+    const a = await post("/v1/oma/agents", { name: "GitResAgent", model: "claude-sonnet-4-6", harness: "cross-noop" });
     agentId = ((await a.json()) as any).id;
-    const e = await post("/v1/environments", { name: "gitres-env", config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: "gitres-env", config: { type: "cloud" } });
     envId = ((await e.json()) as any).id;
   });
 
   it("session with github_repository resource stores URL and checkout", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -902,7 +902,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("github_repo type alias works the same as github_repository", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -917,7 +917,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("authorization_token is NOT returned in session response", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -934,7 +934,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("authorization_token is NOT returned in resource list", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -945,7 +945,7 @@ describe("GitHub Repository + Env Secret resources", () => {
     });
     const session = (await s.json()) as any;
 
-    const listRes = await get(`/v1/sessions/${session.id}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${session.id}/resources`);
     const body = (await listRes.json()) as any;
     const gitRes = body.data.find((r: any) => r.type === "github_repository");
     expect(gitRes).toBeTruthy();
@@ -954,7 +954,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("github_repository with default mount_path gets /workspace", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -967,7 +967,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("github_repository with custom mount_path preserves it", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -981,7 +981,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("github_repository with commit SHA checkout", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -995,7 +995,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it.skip("env_secret resource stores name but not value", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -1015,7 +1015,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it.skip("env_secret value not in resource list response", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [{
@@ -1026,7 +1026,7 @@ describe("GitHub Repository + Env Secret resources", () => {
     });
     const session = (await s.json()) as any;
 
-    const listRes = await get(`/v1/sessions/${session.id}/resources`);
+    const listRes = await get(`/v1/oma/sessions/${session.id}/resources`);
     const body = (await listRes.json()) as any;
     const envRes = body.data.find((r: any) => r.type === "env_secret");
     expect(envRes).toBeTruthy();
@@ -1036,7 +1036,7 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it.skip("multiple env_secrets on one session", async () => {
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [
@@ -1055,10 +1055,10 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it.skip("mixed resource types: github + env_secret + file", async () => {
-    const f = await post("/v1/files", { filename: "mixed.txt", content: "mixed content", media_type: "text/plain" });
+    const f = await post("/v1/oma/files", { filename: "mixed.txt", content: "mixed content", media_type: "text/plain" });
     const file = (await f.json()) as any;
 
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       resources: [
@@ -1082,10 +1082,10 @@ describe("GitHub Repository + Env Secret resources", () => {
   });
 
   it("github_repository + vault_ids on same session", async () => {
-    const v = await post("/v1/vaults", { name: "git-vault-combo" });
+    const v = await post("/v1/oma/vaults", { name: "git-vault-combo" });
     const vault = (await v.json()) as any;
 
-    const s = await post("/v1/sessions", {
+    const s = await post("/v1/oma/sessions", {
       agent: agentId,
       environment_id: envId,
       vault_ids: [vault.id],
@@ -1107,10 +1107,10 @@ describe("GitHub Repository + Env Secret resources", () => {
 // ============================================================
 describe("cap_cli Credentials", () => {
   it("cap_cli credential stores cli_id", async () => {
-    const v = await post("/v1/vaults", { name: "capcli-vault" });
+    const v = await post("/v1/oma/vaults", { name: "capcli-vault" });
     const vault = (await v.json()) as any;
 
-    const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Cloudflare API token",
       auth: {
         type: "cap_cli",
@@ -1127,10 +1127,10 @@ describe("cap_cli Credentials", () => {
   });
 
   it("cap_cli token stripped from credential list", async () => {
-    const v = await post("/v1/vaults", { name: "capcli-strip-vault" });
+    const v = await post("/v1/oma/vaults", { name: "capcli-strip-vault" });
     const vault = (await v.json()) as any;
 
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "GH CLI",
       auth: {
         type: "cap_cli",
@@ -1139,7 +1139,7 @@ describe("cap_cli Credentials", () => {
       },
     });
 
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     for (const cred of body.data) {
       expect(cred.auth.token).toBeUndefined();
@@ -1148,10 +1148,10 @@ describe("cap_cli Credentials", () => {
   });
 
   it("cap_cli with extras (e.g. AWS access_key_id)", async () => {
-    const v = await post("/v1/vaults", { name: "extras-vault" });
+    const v = await post("/v1/oma/vaults", { name: "extras-vault" });
     const vault = (await v.json()) as any;
 
-    const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "AWS account",
       auth: {
         type: "cap_cli",
@@ -1167,23 +1167,23 @@ describe("cap_cli Credentials", () => {
   });
 
   it("vault with mixed credential types", async () => {
-    const v = await post("/v1/vaults", { name: "mixed-cred-vault" });
+    const v = await post("/v1/oma/vaults", { name: "mixed-cred-vault" });
     const vault = (await v.json()) as any;
 
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Bearer for MCP",
       auth: { type: "static_bearer", mcp_server_url: "https://mcp.example.com", token: "bearer_tok" },
     });
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "AWS CLI",
       auth: { type: "cap_cli", cli_id: "aws", token: "aws_tok" },
     });
-    await post(`/v1/vaults/${vault.id}/credentials`, {
+    await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "OAuth MCP",
       auth: { type: "mcp_oauth", mcp_server_url: "https://oauth.example.com", access_token: "at", refresh_token: "rt" },
     });
 
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     expect(body.data).toHaveLength(3);
     const types = body.data.map((c: any) => c.auth.type);
@@ -1200,19 +1200,19 @@ describe("cap_cli Credentials", () => {
   });
 
   it("cap_cli credential delete works", async () => {
-    const v = await post("/v1/vaults", { name: "capcli-del-vault" });
+    const v = await post("/v1/oma/vaults", { name: "capcli-del-vault" });
     const vault = (await v.json()) as any;
 
-    const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "Deletable",
       auth: { type: "cap_cli", cli_id: "kubectl", token: "k_tok" },
     });
     const cred = (await res.json()) as any;
 
-    const delRes = await del(`/v1/vaults/${vault.id}/credentials/${cred.id}`);
+    const delRes = await del(`/v1/oma/vaults/${vault.id}/credentials/${cred.id}`);
     expect(delRes.status).toBe(200);
 
-    const listRes = await get(`/v1/vaults/${vault.id}/credentials`);
+    const listRes = await get(`/v1/oma/vaults/${vault.id}/credentials`);
     const body = (await listRes.json()) as any;
     expect(body.data.find((c: any) => c.id === cred.id)).toBeUndefined();
   });
@@ -1254,10 +1254,10 @@ describe("Resource Mounter types", () => {
 // ============================================================
 describe("Environment list and update", () => {
   it("environment list returns all environments including archived", async () => {
-    await post("/v1/environments", { name: "env-list-a", config: { type: "cloud" } });
-    await post("/v1/environments", { name: "env-list-b", config: { type: "cloud" } });
+    await post("/v1/oma/environments", { name: "env-list-a", config: { type: "cloud" } });
+    await post("/v1/oma/environments", { name: "env-list-b", config: { type: "cloud" } });
 
-    const res = await get("/v1/environments");
+    const res = await get("/v1/oma/environments");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data.length).toBeGreaterThanOrEqual(2);
@@ -1266,11 +1266,11 @@ describe("Environment list and update", () => {
   });
 
   it("environment list includes archived (no filter on environments)", async () => {
-    const eRes = await post("/v1/environments", { name: "env-arch-visible", config: { type: "cloud" } });
+    const eRes = await post("/v1/oma/environments", { name: "env-arch-visible", config: { type: "cloud" } });
     const envObj = (await eRes.json()) as any;
-    await post(`/v1/environments/${envObj.id}/archive`, {});
+    await post(`/v1/oma/environments/${envObj.id}/archive`, {});
 
-    const listRes = await get("/v1/environments?status=archived&limit=100");
+    const listRes = await get("/v1/oma/environments?status=archived&limit=100");
     const body = (await listRes.json()) as any;
     const found = body.data.find((e: any) => e.id === envObj.id);
     expect(found).toBeTruthy();
@@ -1278,13 +1278,13 @@ describe("Environment list and update", () => {
   });
 
   it("environment update preserves config when only name changes", async () => {
-    const eRes = await post("/v1/environments", {
+    const eRes = await post("/v1/oma/environments", {
       name: "env-preserve-cfg",
       config: { type: "cloud", networking: { type: "limited", allowed_hosts: ["api.example.com"] } },
     });
     const envObj = (await eRes.json()) as any;
 
-    const updateRes = await put(`/v1/environments/${envObj.id}`, { name: "env-renamed" });
+    const updateRes = await put(`/v1/oma/environments/${envObj.id}`, { name: "env-renamed" });
     expect(updateRes.status).toBe(200);
     const updated = (await updateRes.json()) as any;
     expect(updated.name).toBe("env-renamed");

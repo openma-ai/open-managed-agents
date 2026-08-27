@@ -8,6 +8,132 @@
       "when": 1779351194565,
       "tag": "0000_consolidated",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787682985955,
+      "tag": "0001_yummy_cobalt_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787684623747,
+      "tag": "0002_spooky_captain_flint",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787685010456,
+      "tag": "0003_heavy_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787685756048,
+      "tag": "0004_parched_terrax",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787686302413,
+      "tag": "0005_breezy_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787686916447,
+      "tag": "0006_sharp_fallen_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787687513136,
+      "tag": "0007_military_darkhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787687779212,
+      "tag": "0008_melted_hobgoblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787696199853,
+      "tag": "0009_dashing_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787696785478,
+      "tag": "0010_complete_gorgon",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1787697260381,
+      "tag": "0011_third_spiral",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787697897248,
+      "tag": "0012_omniscient_maverick",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1787699123325,
+      "tag": "0013_fat_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1787700377388,
+      "tag": "0014_nervous_hawkeye",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1787701902528,
+      "tag": "0015_famous_captain_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1787702247007,
+      "tag": "0016_empty_umar",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1787703071570,
+      "tag": "0017_adorable_fenris",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1787703438834,
+      "tag": "0018_vengeful_the_renegades",
+      "breakpoints": true
     }
   ]
 }

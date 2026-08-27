@@ -8,7 +8,7 @@ interface ProviderModel {
   name: string;
 }
 
-// POST /v1/models/list — fetch models from official provider API using caller's key
+// POST /v1/oma/models/list — fetch models from official provider API using caller's key
 // Body: { provider: "ant" | "oai", api_key: string }
 app.post("/list", async (c) => {
   const body = await c.req.json<{ provider?: string; api_key?: string }>();

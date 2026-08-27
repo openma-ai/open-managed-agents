@@ -13,7 +13,7 @@ import { useI18n } from "../i18n";
 // The pin is per-user — different login → different membership set →
 // the previous user's tenant id is at best meaningless and at worst
 // triggers "Not a member" 403s on every subsequent request.
-// TenantSwitcher repopulates from /v1/me/tenants on next page load.
+// TenantSwitcher repopulates from /v1/oma/me/tenants on next page load.
 function onLoginSuccess(redirect: () => void) {
   setActiveTenantId(null);
   redirect();
