@@ -680,6 +680,9 @@ importers:
       croner:
         specifier: ^9.0.0
         version: 9.1.0
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
       hono:
         specifier: ^4.7.0
         version: 4.12.12

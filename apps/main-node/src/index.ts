@@ -129,6 +129,7 @@ import {
 import { PgEventStreamHub } from "./lib/pg-event-stream-hub";
 import { NodeHarnessRuntime } from "./lib/node-harness-runtime";
 import { SessionRegistry } from "./registry.js";
+import { buildNodeSkillsRoutes } from "./lib/node-skills-routes.js";
 
 const toMarkdownProvider = nodeToMarkdown();
 
@@ -933,7 +934,7 @@ v1.route("/evals", buildEvalRoutes({
 
 // Stubs for routes the console hits but main-node doesn't yet implement.
 v1.get("/runtimes", (c) => c.json({ data: [] }));
-v1.get("/skills", (c) => c.json({ data: [] }));
+v1.route("/skills", buildNodeSkillsRoutes({ db: drizzleDb, blobs: filesBlob }));
 v1.route("/environments", buildEnvironmentRoutes({
   environments: environmentsService,
   sessions: sessionsService,
