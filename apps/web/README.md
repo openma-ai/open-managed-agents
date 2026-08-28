@@ -81,7 +81,7 @@ What ships:
 | `robots.txt` | allows all, points at sitemap, disallows `/drafts/` |
 | Canonical URLs | per-page via `canonical` prop on Base layout |
 | Open Graph | full set (title, description, type, image, locale, article:published_time, article:modified_time) — Twitter renderers fall back to og:* when twitter:* is absent, so we don't duplicate |
-| JSON-LD | `Organization` + `WebSite` (with SearchAction stub) on every page; `BlogPosting` + `BreadcrumbList` on each post |
+| JSON-LD | `Organization` + `WebSite` on every page; `BlogPosting` + `BreadcrumbList` on each post. Add `SearchAction` only after a working site-search route ships. |
 | Reading time | computed from word count, shown on post + emitted in JSON-LD as `wordCount` if needed later |
 | theme-color | matches light/dark brand color so browser chrome blends in |
 | robots meta | `index, follow, max-image-preview:large, max-snippet:-1` (eligibility for rich results) |
@@ -104,6 +104,6 @@ Validate after deploy:
 - Categories / tag pages (would help long-tail SEO once content > ~30 posts)
 - Newsletter signup
 - **og-default.png** — referenced in Base.astro but not committed. Drop a 1200×630 PNG at `public/og-default.png` before launch. Or wire up per-post OG image generation via `astro-og-canvas` / `satori-html` (build-time, no runtime cost) — the `BlogPostSchemaInput.image` field already supports per-post overrides.
-- Pagefind static search (`pnpm add pagefind` + post-build script). The `WebSite` JSON-LD already has the `SearchAction` stub.
+- Pagefind static search (`pnpm add pagefind` + post-build script). Add matching `SearchAction` JSON-LD only when the search route is live.
 
 These are deliberate omissions — add when content volume justifies.

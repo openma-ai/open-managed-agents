@@ -22,5 +22,20 @@ export default defineConfig({
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     globals: false,
     css: false,
+    coverage: {
+      // Feishu coverage only — exclude the rest of the console. Other
+      // providers/sections are tested separately.
+      include: [
+        "src/integrations/api/feishu-client.ts",
+        "src/integrations/api/request.ts",
+      ],
+      reporter: ["text", "html"],
+      thresholds: {
+        lines: 80,
+        branches: 70,
+        functions: 70,
+        statements: 80,
+      },
+    },
   },
 });

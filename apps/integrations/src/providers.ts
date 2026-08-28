@@ -19,14 +19,19 @@ import {
   DEFAULT_SLACK_BOT_SCOPES,
   DEFAULT_SLACK_USER_SCOPES,
 } from "@open-managed-agents/slack";
+import {
+  FeishuProvider,
+  ALL_FEISHU_CAPABILITIES,
+} from "@open-managed-agents/feishu";
 import type { LinearContainer } from "@open-managed-agents/linear";
-import { buildContainer, buildGitHubContainer, buildSlackContainer } from "./wire";
+import { buildContainer, buildGitHubContainer, buildSlackContainer, buildFeishuContainer } from "./wire";
 import type { Env } from "./env";
 
 export interface ProviderBundle {
   linear: LinearProvider;
   github: GitHubProvider;
   slack: SlackProvider;
+  feishu: FeishuProvider;
 }
 
 /**
@@ -59,5 +64,13 @@ export function buildProviders(env: Env, linearContainer?: LinearContainer): Pro
     defaultCapabilities: ALL_SLACK_CAPABILITIES,
   });
 
-  return { linear, github, slack };
+  const feishu = new FeishuProvider(
+    {
+      gatewayOrigin,
+      defaultCapabilities: ALL_FEISHU_CAPABILITIES,
+    },
+    buildFeishuContainer(env),
+  );
+
+  return { linear, github, slack, feishu };
 }

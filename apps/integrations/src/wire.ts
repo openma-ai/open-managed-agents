@@ -19,6 +19,11 @@
 
 import {
   buildCfContainer,
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
+  SqlFeishuSessionScopeRepo,
+  SqlFeishuSetupLinkRepo,
+  SqlFeishuWebhookEventStore,
   SqlGitHubWebhookEventStore,
   SqlSlackAppRepo,
   SqlSlackInstallationRepo,
@@ -29,6 +34,7 @@ import {
   type CfContainerEnv,
 } from "@open-managed-agents/integrations-adapters-cf";
 import { drizzle } from "drizzle-orm/d1";
+import type { FeishuContainer } from "@open-managed-agents/feishu";
 import type { GitHubContainer } from "@open-managed-agents/github";
 import type { LinearContainer } from "@open-managed-agents/linear";
 import type { SlackContainer } from "@open-managed-agents/slack";
@@ -112,5 +118,33 @@ export function buildSlackContainer(env: Env): SlackContainer {
     webhookEvents: new SqlSlackWebhookEventStore(idb),
     sessionScopes: new SqlSlackSessionScopeRepo(idb),
     setupLinks: new SqlSlackSetupLinkRepo(idb, base.ids),
+  };
+}
+
+/**
+ * Feishu container — parallel `feishu_*` tables, with the Feishu-specific
+ * FeishuInstallationRepo / FeishuPublicationRepo / FeishuSessionScopeRepo.
+ *
+ * Reuses every shared adapter from buildCfContainer. The slots that
+ * IntegrationProvider consumers read (`installations`, `publications`,
+ * `webhookEvents`, `sessionScopes`, `setupLinks`) are bound to the
+ * Feishu-flavored D1 repos; the base `Container` slots stay satisfied by
+ * whatever buildCfContainer put there (Slack for the unused-but-required
+ * `sessionScopes` slot, Linear's slack-shaped `sessionScopes` is fine
+ * because Feishu's slot is the narrower FeishuSessionScopeRepo).
+ */
+export function buildFeishuContainer(env: Env): FeishuContainer {
+  const base = buildCfContainer(cfEnvOf(env));
+  const idb = drizzle(env.INTEGRATIONS_DB);
+  return {
+    ...base,
+    installations: new SqlFeishuInstallationRepo(idb, base.crypto, base.ids),
+    publications: new SqlFeishuPublicationRepo(idb, base.ids, base.crypto),
+    webhookEvents: new SqlFeishuWebhookEventStore(idb),
+    sessionScopes: new SqlFeishuSessionScopeRepo(idb),
+    setupLinks: new SqlFeishuSetupLinkRepo(idb, base.ids),
+    feishuInstallations: new SqlFeishuInstallationRepo(idb, base.crypto, base.ids),
+    feishuPublications: new SqlFeishuPublicationRepo(idb, base.ids, base.crypto),
+    feishuSessionScopes: new SqlFeishuSessionScopeRepo(idb),
   };
 }

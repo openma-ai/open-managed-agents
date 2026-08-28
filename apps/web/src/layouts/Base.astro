@@ -33,11 +33,14 @@ const {
 } = Astro.props;
 
 const SITE = "https://openma.dev";
-// Append " — Open Managed Agents" only when the title doesn't already
-// contain the full brand. We deliberately don't match on "openma"
-// alone, so a post like "Hello, openma" still gets the suffix for
-// SERP branding.
-const fullTitle = /open managed agents/i.test(title)
+// Append the long brand only when the title has no explicit brand treatment.
+// A casual mention such as "Hello, openma" still receives the suffix, while
+// `OpenMA: ...` and `... | OpenMA` remain deliberately concise.
+const hasBrandTreatment =
+  /open managed agents/i.test(title) ||
+  /^openma(?=[:\s—-])/i.test(title) ||
+  /\|\s*openma$/i.test(title);
+const fullTitle = hasBrandTreatment
   ? title
   : `${title} — Open Managed Agents`;
 const desc = description ?? "Open-source alternative to Claude Managed Agents. Run Claude agents yourself on Cloudflare Workers or Docker. MCP + Claude Code skills built in. Apache 2.0.";

@@ -15,6 +15,13 @@ export interface Messages {
     loading: string;
     cancel: string;
     create: string;
+    edit: string;
+    save: string;
+    saveChanges: string;
+    saving: string;
+    creating: string;
+    rename: string;
+    reset: string;
     delete: string;
     archive: string;
     unarchive: string;
@@ -22,6 +29,7 @@ export interface Messages {
     search: string;
     status: string;
     name: string;
+    description: string;
     created: string;
     id: string;
     model: string;
@@ -38,6 +46,7 @@ export interface Messages {
     loadingMore: string;
     columns: string;
     visibleColumns: string;
+    nameRequired: string;
   };
 
   // Sidebar navigation
@@ -148,6 +157,11 @@ export interface Messages {
   // Agents list
   agents: {
     newAgent: string;
+    editAgent: string;
+    newAgentTitle: string;
+    editAgentTitle: string;
+    createAgent: string;
+    editingVersion: string;
     searchAgents: string;
     noMatchingAgents: string;
     noAgentsYet: string;
@@ -165,6 +179,9 @@ export interface Messages {
     searchSessions: string;
     noMatchingSessions: string;
     noSessionsYet: string;
+    editTitle: string;
+    untitledSession: string;
+    sessionTitle: string;
   };
 
   // Vaults list
@@ -173,6 +190,13 @@ export interface Messages {
     searchVaults: string;
     noMatchingVaults: string;
     noVaultsYet: string;
+    renameVault: string;
+    editCredential: string;
+    displayName: string;
+    newToken: string;
+    newTokenOptional: string;
+    leaveBlankKeepToken: string;
+    oauthEditHint: string;
   };
 
   // Environments list
@@ -230,6 +254,8 @@ export interface Messages {
     searchMemoryStores: string;
     noMatchingMemoryStores: string;
     noMemoryStoresYet: string;
+    mountPathHint: string;
+    settingsArchiveHint: string;
   };
 
   // Runtimes

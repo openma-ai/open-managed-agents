@@ -31,13 +31,14 @@ const log = getLogger("http-routes.integrations.gateway");
 
 /** Per-provider webhook handler closure. The host wires this to
  *  `provider.handleWebhook(req)` — keeps `@open-managed-agents/{linear,
- *  github,slack}` out of the http-routes deps. */
+ *  github,slack,feishu}` out of the http-routes deps. */
 export type WebhookHandler = (req: WebhookRequest) => Promise<WebhookOutcome>;
 
 export interface WebhookHandlers {
   linear?: WebhookHandler | null;
   github?: WebhookHandler | null;
   slack?: WebhookHandler | null;
+  feishu?: WebhookHandler | null;
 }
 
 /** Per-tenant rate-limit hook (CF wires the binding; Node soft-passes). */
@@ -414,6 +415,25 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
     return c.html(slackLandingPage({ token, personaName: form.persona.name }));
   });
 
+  // ─── Feishu ──────────────────────────────────────────────────────────
+  // Feishu has no OAuth callback — credentials are App ID + App Secret +
+  // Encrypt Key + Verification Token, pasted onto the publication row by
+  // the admin via /feishu-setup/<token>. The only HTTP webhook path is the
+  // legacy URL verification handshake (the WS runner is the canonical
+  // ingest). Production binds the `/feishu/webhook/pub/:pubId` URL onto
+  // the App's "Event Subscriptions" page; the same URL also handles the
+  // verification challenge.
+  app.get("/feishu-setup/:token", async (c) => {
+    const token = c.req.param("token");
+    let form: { persona: { name: string }; userId: string; agentId: string };
+    try {
+      form = await deps.jwt.verify<typeof form>(token);
+    } catch (err) {
+      return c.html(errorPage(err instanceof Error ? err.message : String(err)), 400);
+    }
+    return c.html(feishuLandingPage({ token, personaName: form.persona.name }));
+  });
+
   // ─── Webhooks ────────────────────────────────────────────────────────
   // Same /provider/webhook/app/:appId shape CF used. Each handler reads
   // the raw body, lowercases headers, and asks the provider via the
@@ -421,6 +441,7 @@ export function buildIntegrationsGatewayRoutes(deps: IntegrationsGatewayDeps) {
   if (deps.webhooks.linear) mountLinearWebhook(app, deps.webhooks.linear, deps.rateLimit);
   if (deps.webhooks.github) mountGithubWebhook(app, deps.webhooks.github, deps.rateLimit);
   if (deps.webhooks.slack) mountSlackWebhook(app, deps.webhooks.slack, deps.rateLimit);
+  if (deps.webhooks.feishu) mountFeishuWebhook(app, deps.webhooks.feishu, deps.rateLimit);
 
   // ─── Linear MCP ──────────────────────────────────────────────────────
   app.post("/linear/mcp/:sessionId", async (c) => {
@@ -580,6 +601,60 @@ function mountSlackWebhook(
         log.warn(
           { op: "slack.webhook.deferred.failed", err: err instanceof Error ? err.message : String(err) },
           "slack deferred work failed",
+        );
+      });
+      try {
+        c.executionCtx?.waitUntil(work);
+      } catch {
+        // c.executionCtx accessor throws on Node when not provided; the
+        // promise still runs in the background.
+      }
+    }
+    return c.json({ ok: outcome.handled, reason: outcome.reason ?? null }, 200);
+  });
+}
+
+function mountFeishuWebhook(
+  app: Hono,
+  handler: WebhookHandler,
+  rl: RateLimitHooks | undefined,
+) {
+  // Publication-first webhook URL — production Feishu apps point here
+  // because pub_id is known at shell-create time, before the Feishu App
+  // exists. Same dispatch path Slack uses: parse, dedup by delivery id,
+  // dispatch via deferredWork under c.executionCtx.waitUntil so the isolate
+  // stays alive past the 3-sec response window. The HTTP path also handles
+  // the URL verification handshake (challengeResponse in the outcome);
+  // the WS runner is the canonical ingest, so most production traffic
+  // never reaches here.
+  app.post("/feishu/webhook/pub/:pubId", async (c) => {
+    const pubId = c.req.param("pubId");
+    const rawBody = await c.req.raw.text();
+    const headers: Record<string, string> = {};
+    c.req.raw.headers.forEach((value, key) => (headers[key.toLowerCase()] = value));
+    if (pubId) headers["x-internal-pub-id"] = pubId;
+    const outcome = await handler({
+      providerId: "feishu",
+      installationId: pubId,
+      deliveryId: null,
+      headers,
+      rawBody,
+    });
+    if (outcome.challengeResponse !== undefined) {
+      return new Response(outcome.challengeResponse, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (outcome.tenantId && rl?.shouldDropForTenant) {
+      const dropped = await rl.shouldDropForTenant(outcome.tenantId);
+      if (dropped) return c.json({ ok: false, reason: "tenant_rate_limited" }, 200);
+    }
+    if (outcome.deferredWork) {
+      const work = outcome.deferredWork().catch((err) => {
+        log.warn(
+          { op: "feishu.webhook.deferred.failed", err: err instanceof Error ? err.message : String(err) },
+          "feishu deferred work failed",
         );
       });
       try {
@@ -962,6 +1037,83 @@ function slackLandingPage(opts: { token: string; personaName: string }): string 
         window.location.href = data.url;
       } catch (err) {
         msg.textContent = "Network error: " + err.message;
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function feishuLandingPage(opts: { token: string; personaName: string }): string {
+  // Feishu's install flow is credential-based, not OAuth: the admin pastes
+  // their App's credentials onto the publication row directly. After the
+  // form submits and /feishu/publications/credentials returns OK, the
+  // provider flips status to credentials_filled and the Console wizard
+  // shows a "next: open developer portal" step. Unlike Slack, there's no
+  // redirect to a vendor OAuth authorize URL.
+  const escapedToken = escapeHtml(opts.token);
+  const escapedName = escapeHtml(opts.personaName);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Feishu app setup — ${escapedName}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="font:15px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 20px;color:#111">
+  <h1>Set up "${escapedName}" in your Feishu workspace</h1>
+  <p>Open <a href="https://open.feishu.cn/app" target="_blank">open.feishu.cn/app</a>
+  and create (or select) the App you want to bind. Then paste the credentials below.</p>
+  <p style="font-size:13px;color:#555">
+    You'll need <strong>App ID</strong>, <strong>App Secret</strong>, <strong>Verification Token</strong>,
+    and <strong>Encrypt Key</strong>. The first two are on the App's "Credentials &amp; Basic Info" page;
+    the latter two are on "Event Subscriptions" — set both, then disable URL verification (we use WebSocket).
+  </p>
+  <form id="f" style="margin-top:16px">
+    <label>App ID<input id="appid" required autocomplete="off" placeholder="cli_…"></label><br>
+    <label>App Secret<input id="appsec" type="password" required autocomplete="off"></label><br>
+    <label>Verification Token<input id="vtok" type="password" required autocomplete="off"></label><br>
+    <label>Encrypt Key<input id="ekey" type="password" required autocomplete="off"></label><br>
+    <button id="submit" type="submit">Continue →</button>
+    <p id="msg"></p>
+  </form>
+  <script>
+    const TOKEN = ${JSON.stringify(escapedToken)};
+    document.getElementById("f").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("submit");
+      const msg = document.getElementById("msg");
+      btn.disabled = true;
+      msg.textContent = "Validating with Feishu…";
+      msg.className = "";
+      try {
+        const res = await fetch("/feishu/publications/credentials", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            formToken: TOKEN,
+            appId: document.getElementById("appid").value.trim(),
+            appSecret: document.getElementById("appsec").value.trim(),
+            verificationToken: document.getElementById("vtok").value.trim(),
+            encryptKey: document.getElementById("ekey").value.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg.textContent = "Error: " + (data.details || data.error || res.status);
+          msg.className = "err";
+          btn.disabled = false;
+          return;
+        }
+        msg.textContent = "Saved. Continue in the Console wizard…";
+        msg.className = "ok";
+        if (data.returnUrl) {
+          window.location.href = data.returnUrl;
+        }
+      } catch (err) {
+        msg.textContent = "Network error: " + err.message;
+        msg.className = "err";
         btn.disabled = false;
       }
     });

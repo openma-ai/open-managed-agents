@@ -8,7 +8,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "deploy": "astro build && wrangler deploy",
-    "typecheck": "astro check"
+    "typecheck": "astro check",
+    "test": "astro build && node --test tests/*.node.mjs"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",
@@ -19,9 +20,9 @@
     "@openma/common": "github:openma-ai/openma-common#v0.4.0",
     "astro": "^5.13.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.8.0"
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   },
   "devDependencies": {
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.125.0"
   }
 }

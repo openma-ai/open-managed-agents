@@ -55,5 +55,18 @@ export {
   SqlSlackSetupLinkRepo,
 } from "@open-managed-agents/integrations-adapters-cf";
 
+// Feishu adapter classes are dialect-blind (Drizzle on top of OmaDb), so
+// the CF and Node packages share one canonical impl in -cf. The
+// installation repo's `getTenantAccessToken` / `setTenantAccessToken` is
+// implemented in Drizzle against feishu_installations; on Node it works
+// the same way (PG and SQLite both support `returning`).
+export {
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
+  SqlFeishuSessionScopeRepo,
+  SqlFeishuSetupLinkRepo,
+  SqlFeishuWebhookEventStore,
+} from "@open-managed-agents/integrations-adapters-cf";
+
 export { buildNodeRepos, buildNodeContainer } from "./node-container";
 export type { NodeReposEnv, NodeContainerEnv } from "./node-container";

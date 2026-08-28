@@ -1,7 +1,8 @@
 // apps/console/src/integrations
 //
-// React UI for managing 3rd-party integrations (Linear + GitHub + Slack).
-// Pages are composed into the console app via react-router routes in main.tsx.
+// React UI for managing 3rd-party integrations (Linear + GitHub + Slack +
+// Feishu). Pages are composed into the console app via react-router routes
+// in main.tsx.
 
 export { IntegrationsLinearList } from "./pages/IntegrationsLinearList";
 export { IntegrationsLinearWorkspace } from "./pages/IntegrationsLinearWorkspace";
@@ -13,6 +14,9 @@ export { IntegrationsGitHubBindWizard } from "./pages/IntegrationsGitHubBindWiza
 export { IntegrationsSlackList } from "./pages/IntegrationsSlackList";
 export { IntegrationsSlackWorkspace } from "./pages/IntegrationsSlackWorkspace";
 export { IntegrationsSlackPublishWizard } from "./pages/IntegrationsSlackPublishWizard";
+export { IntegrationsFeishuList } from "./pages/IntegrationsFeishuList";
+export { IntegrationsFeishuWorkspace } from "./pages/IntegrationsFeishuWorkspace";
+export { IntegrationsFeishuPublishWizard } from "./pages/IntegrationsFeishuPublishWizard";
 export { IntegrationsApi } from "./api/client";
 export { StatusPill, type PublicationStatus } from "./components/StatusPill";
 export { relativeTime } from "./components/relativeTime";
@@ -27,6 +31,11 @@ export type {
   SlackInstallation,
   SlackPublication,
   SlackSubmitCredentialsInput,
+  FeishuInstallation,
+  FeishuPublication,
+  FeishuSubmitCredentialsInput,
+  FeishuSessionGranularity,
+  FeishuTenantType,
   PublishWizardInput,
   A1FormStep,
   A1InstallLink,

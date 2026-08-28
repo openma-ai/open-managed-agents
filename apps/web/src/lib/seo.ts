@@ -3,9 +3,8 @@
 // Schema choice:
 //   - Organization: emitted on every page in Base.astro. Tells Google
 //     who the publisher is; powers the knowledge panel + sitelinks.
-//   - WebSite: also on every page. Includes a SearchAction stub so we
-//     can wire up sitelinks search box later (currently no-op until we
-//     have search).
+//   - WebSite: also on every page. Only describes routes that exist;
+//     add SearchAction if and when the site ships a working search page.
 //   - SoftwareApplication: emitted on the homepage. Tells Google this
 //     site represents a product — eligible for software-style rich
 //     snippets and reinforces the "Open Managed Agents" entity name.
@@ -60,17 +59,6 @@ export function websiteSchema() {
     url: SITE_URL,
     description:
       "Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.",
-    potentialAction: {
-      "@type": "SearchAction",
-      // Stub for future sitelinks search box. Google indexes this even
-      // without a search page; if/when we add Pagefind, we wire the
-      // urlTemplate to /search?q={search_term_string}.
-      target: {
-        "@type": "EntryPoint",
-        urlTemplate: `${SITE_URL}/search?q={search_term_string}`,
-      },
-      "query-input": "required name=search_term_string",
-    },
   };
 }
 

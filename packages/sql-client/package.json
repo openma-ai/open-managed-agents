@@ -13,7 +13,7 @@
     "@open-managed-agents/shared": "workspace:*"
   },
   "peerDependencies": {
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^13.0.3",
     "postgres": "^3.4.0"
   },
   "peerDependenciesMeta": {

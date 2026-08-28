@@ -190,6 +190,7 @@ export default defineConfig({
       "packages/acp-runtime/**",
       "packages/cap/test/**",
       "packages/integrations-adapters-node/**",
+      "packages/integrations-adapters-cf/test/**",
       "packages/session-runtime/test/**",
     ],
     pool: cloudflarePool(cfWorkerOptions),

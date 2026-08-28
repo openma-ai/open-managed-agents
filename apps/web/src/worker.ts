@@ -54,7 +54,24 @@ const LEGACY_MARKETING_REDIRECTS: Record<string, string> = {
     "/blog/claude-tag-open-source-alternative/",
   "/blog/self-host-claude-tag-style-slack-ai-agent/":
     "/blog/self-hosted-claude-tag-open-source/",
+  "/blog/open-source-alternatives-to-anthropic-managed-agents-2026/":
+    "/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+  "/blog/migrate-from-anthropic-managed-agents/":
+    "/blog/migrate-from-claude-managed-agents/",
+  "/blog/anthropic-managed-agents-vs-open-managed-agents/":
+    "/blog/claude-managed-agents-vs-open-managed-agents/",
 };
+
+const MARKETING_PATHS = new Set([
+  "/claude-tag-alternative",
+  "/claude-tag-open-source",
+  "/self-hosted-claude-tag",
+]);
+
+function legacyMarketingRedirect(pathname: string): string | undefined {
+  const canonicalPath = pathname.endsWith("/") ? pathname : `${pathname}/`;
+  return LEGACY_MARKETING_REDIRECTS[canonicalPath];
+}
 
 function isConsolePath(pathname: string): boolean {
   return CONSOLE_PATH_PREFIXES.some(
@@ -75,6 +92,26 @@ function wwwToApex(url: URL): URL {
 function apexToApp(url: URL): URL {
   const out = new URL(url.toString());
   out.hostname = `app.${out.hostname}`;
+  return out;
+}
+
+function trailingSlashCanonical(url: URL): URL | undefined {
+  const isMarketingPath =
+    url.pathname === "/blog" ||
+    url.pathname.startsWith("/blog/") ||
+    MARKETING_PATHS.has(url.pathname);
+
+  if (!isMarketingPath || url.pathname.endsWith("/")) {
+    return undefined;
+  }
+
+  const lastSegment = url.pathname.slice(url.pathname.lastIndexOf("/") + 1);
+  if (lastSegment.includes(".")) {
+    return undefined;
+  }
+
+  const out = new URL(url.toString());
+  out.pathname = `${url.pathname}/`;
   return out;
 }
 
@@ -99,7 +136,7 @@ export default {
       return Response.redirect(wwwToApex(url).toString(), 301);
     }
 
-    const legacyMarketingPath = LEGACY_MARKETING_REDIRECTS[url.pathname];
+    const legacyMarketingPath = legacyMarketingRedirect(url.pathname);
     if (legacyMarketingPath) {
       const out = new URL(url.toString());
       out.pathname = legacyMarketingPath;
@@ -108,6 +145,11 @@ export default {
 
     if (isConsolePath(url.pathname)) {
       return Response.redirect(apexToApp(url).toString(), 301);
+    }
+
+    const canonicalUrl = trailingSlashCanonical(url);
+    if (canonicalUrl) {
+      return Response.redirect(canonicalUrl.toString(), 301);
     }
 
     return env.ASSETS.fetch(request);

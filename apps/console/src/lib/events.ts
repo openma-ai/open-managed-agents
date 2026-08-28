@@ -26,9 +26,9 @@ export interface Event {
    *  in-flight chunks with the eventually-committed message. */
   message_id?: string;
   delta?: string;
-  /** ISO timestamp. Server sets it for stored events; the client tags
-   *  streamed events on arrival with Date.now() as a best-effort fallback. */
-  ts?: string;
+  /** ISO timestamp or legacy unix seconds. Server sets ISO for stored
+   *  events; the client may tag streamed events on arrival. */
+  ts?: string | number;
   /** Server-side monotonic seq. Only set for events fetched from /events. */
   seq?: number;
   [key: string]: unknown;

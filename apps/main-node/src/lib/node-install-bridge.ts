@@ -50,9 +50,19 @@ import {
   type SlackContainer,
 } from "@open-managed-agents/slack";
 import {
+  ALL_FEISHU_CAPABILITIES,
+  FeishuProvider,
+  type FeishuContainer,
+} from "@open-managed-agents/feishu";
+import {
   buildNodeRepos,
   WebCryptoAesGcm,
   CryptoIdGenerator,
+  SqlFeishuInstallationRepo,
+  SqlFeishuPublicationRepo,
+  SqlFeishuSessionScopeRepo,
+  SqlFeishuSetupLinkRepo,
+  SqlFeishuWebhookEventStore,
   SqlSlackInstallationRepo,
   SqlSlackPublicationRepo,
   SqlSlackAppRepo,
@@ -304,6 +314,13 @@ export class NodeInstallBridge implements InstallBridge {
         userScopes: DEFAULT_SLACK_USER_SCOPES,
         defaultCapabilities: ALL_SLACK_CAPABILITIES,
       }),
+      feishu: new FeishuProvider(
+        {
+          gatewayOrigin: this.opts.gatewayOrigin,
+          defaultCapabilities: ALL_FEISHU_CAPABILITIES,
+        },
+        containers.feishu,
+      ),
     } as const;
     const provider = providers[args.provider];
     if (!provider) return jsonResp(400, { error: `unknown provider: ${args.provider}` });
@@ -385,6 +402,38 @@ export class NodeInstallBridge implements InstallBridge {
         return jsonResp(200, result.data);
       } catch (err) {
         return mapInstallErrorToResp(args.provider, "handoff", err);
+      }
+    }
+
+    if (args.mode === "form-token") {
+      if (args.provider === "linear") {
+        return jsonResp(410, {
+          error: "linear_form_token_removed",
+          remediation:
+            "Linear's resume path is publication-first — no form-token reissue. Re-POST /v1/integrations/linear/publications to resume.",
+        });
+      }
+      // The route layer (http-routes integrations) already gated ownership +
+      // resumable status before forwarding; the provider re-validates as
+      // defense-in-depth. `body.publicationId` is injected by
+      // bridgeAsInstallProxy.forward from the subpath's :id segment.
+      const publicationId = (body.publicationId as string | undefined) ?? "";
+      const userId = (body.userId as string | undefined) ?? "";
+      const returnUrl = (body.returnUrl as string | undefined) ?? "";
+      if (!publicationId || !userId) {
+        return jsonResp(400, { error: "publicationId, userId required" });
+      }
+      try {
+        const result = await provider.continueInstall({
+          publicationId,
+          payload: { kind: "reissue_form_token", publicationId, userId, returnUrl },
+        });
+        if (result.kind !== "step" || result.step !== "credentials_form") {
+          return jsonResp(500, { error: "unexpected reissue result", result });
+        }
+        return jsonResp(200, result.data);
+      } catch (err) {
+        return mapInstallErrorToResp(args.provider, "form-token", err);
       }
     }
 
@@ -498,6 +547,7 @@ export class NodeInstallBridge implements InstallBridge {
     linear: LinearContainer;
     github: GitHubContainer;
     slack: SlackContainer;
+    feishu: FeishuContainer;
   } {
     const repos = buildNodeRepos({
       sql: this.opts.sql,
@@ -536,7 +586,22 @@ export class NodeInstallBridge implements InstallBridge {
       sessions,
       vaults,
     };
-    return { linear: baseLinear, github: baseGithub, slack: baseSlack };
+    const feishuCrypto = new WebCryptoAesGcm(this.opts.platformRootSecret, "integrations.tokens");
+    const feishuIds = new CryptoIdGenerator();
+    const baseFeishu: FeishuContainer = {
+      ...repos,
+      installations: new SqlFeishuInstallationRepo(this.opts.db, feishuCrypto, feishuIds),
+      publications: new SqlFeishuPublicationRepo(this.opts.db, feishuIds, feishuCrypto),
+      webhookEvents: new SqlFeishuWebhookEventStore(this.opts.db),
+      sessionScopes: new SqlFeishuSessionScopeRepo(this.opts.db),
+      setupLinks: new SqlFeishuSetupLinkRepo(this.opts.db, feishuIds),
+      feishuInstallations: new SqlFeishuInstallationRepo(this.opts.db, feishuCrypto, feishuIds),
+      feishuPublications: new SqlFeishuPublicationRepo(this.opts.db, feishuIds, feishuCrypto),
+      feishuSessionScopes: new SqlFeishuSessionScopeRepo(this.opts.db),
+      sessions,
+      vaults,
+    };
+    return { linear: baseLinear, github: baseGithub, slack: baseSlack, feishu: baseFeishu };
   }
 }
 
@@ -721,7 +786,7 @@ class InProcessVaultManager implements VaultManager {
 export function buildNodeProvidersForRequest(
   bridge: NodeInstallBridge,
   gatewayOrigin: string,
-): { linear: LinearProvider; github: GitHubProvider; slack: SlackProvider } {
+): { linear: LinearProvider; github: GitHubProvider; slack: SlackProvider; feishu: FeishuProvider } {
   const containers = bridge.buildContainers();
   return {
     linear: new LinearProvider(containers.linear, {
@@ -740,6 +805,13 @@ export function buildNodeProvidersForRequest(
       userScopes: DEFAULT_SLACK_USER_SCOPES,
       defaultCapabilities: ALL_SLACK_CAPABILITIES,
     }),
+    feishu: new FeishuProvider(
+      {
+        gatewayOrigin,
+        defaultCapabilities: ALL_FEISHU_CAPABILITIES,
+      },
+      containers.feishu,
+    ),
   };
 }
 
@@ -791,7 +863,7 @@ function credentialsBadInputBody(provider: string, required: string[]): Record<s
 
 function mapInstallErrorToResp(
   provider: string,
-  flow: "credentials" | "handoff",
+  flow: "credentials" | "handoff" | "form-token",
   err: unknown,
 ): StartInstallationResult {
   const msg = err instanceof Error ? err.message : String(err);
@@ -812,7 +884,12 @@ function mapInstallErrorToResp(
     });
   }
   return jsonResp(400, {
-    error: flow === "handoff" ? "handoff_failed" : "credentials_failed",
+    error:
+      flow === "handoff"
+        ? "handoff_failed"
+        : flow === "form-token"
+          ? "form_token_failed"
+          : "credentials_failed",
     details: msg,
   });
 }
