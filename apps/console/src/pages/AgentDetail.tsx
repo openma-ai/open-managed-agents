@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useApi } from "../lib/api";
-import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
+import { useApiQuery } from "../lib/useApiQuery";
 import { FeishuIcon, GitHubIcon, LinearIcon, SlackIcon } from "../components/icons";
 import { Page } from "../components/Page";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
-import type { ModelCard } from "@open-managed-agents/api-types";
 import type { AgentRecord as Agent } from "../types/agent";
 import { AgentFormDialog } from "./agents/AgentFormDialog";
-import { useI18n } from "../i18n";
 
 /** Shared publication shape across Linear / GitHub / Slack — they all
  *  expose the same id / status / mode / persona / workspace_name fields. */
@@ -21,37 +20,12 @@ interface Pub {
   workspace_name: string | null;
 }
 
-type Runtime = {
-  id: string;
-  hostname: string;
-  status: string;
-  agents: Array<{ id: string }>;
-  local_skills?: Record<
-    string,
-    Array<{
-      id: string;
-      name?: string;
-      description?: string;
-      source?: string;
-      source_label?: string;
-    }>
-  >;
-};
-
 export function AgentDetail() {
   const { id } = useParams();
   const { api } = useApi();
   const nav = useNavigate();
-  const { t } = useI18n();
   const queryClient = useQueryClient();
-
   const [showEdit, setShowEdit] = useState(false);
-  const [allAgents, setAllAgents] = useState<Agent[]>([]);
-  const [customSkills, setCustomSkills] = useState<
-    Array<{ id: string; name: string; description: string }>
-  >([]);
-  const [modelCards, setModelCards] = useState<ModelCard[]>([]);
-  const [runtimes, setRuntimes] = useState<Runtime[]>([]);
 
   // Single-resource fetches via TQ. `enabled: !!id` defers until the route
   // param is available; the publication queries inherit the same gate.
@@ -69,6 +43,12 @@ export function AgentDetail() {
     undefined,
     { enabled },
   );
+  const { data: skillsRes } = useApiQuery<{ data: Array<{ id: string; name: string; description: string }> }>(
+    "/v1/skills",
+  );
+  const { data: modelCardsRes } = useApiQuery<{ data: any[] }>("/v1/model_cards");
+  const { data: allAgentsRes } = useApiQuery<{ data: Agent[] }>("/v1/agents");
+
   // Reverse-lookup publications per provider. Each endpoint exists thanks
   // to the /linear/agents/:id/publications + /slack/agents/:id/publications
   // + /github/agents/:id/publications routes added on the main worker.
@@ -93,39 +73,26 @@ export function AgentDetail() {
     { enabled },
   );
 
-  // Aux data for the edit dialog pickers — same sources as AgentsList.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
-        if (!cancelled) setAllAgents(all.data ?? []);
-      } catch (e) {
-        console.warn("[AgentDetail] /v1/agents aux fetch failed", e);
-      }
-      await Promise.allSettled([
-        (async () => {
-          const sk = await api<{
-            data: Array<{ id: string; name: string; description: string }>;
-          }>("/v1/skills");
-          if (!cancelled) setCustomSkills(sk.data ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/skills aux fetch failed", e)),
-        (async () => {
-          const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
-          if (!cancelled) setModelCards(mc.data ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/model_cards aux fetch failed", e)),
-        (async () => {
-          const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
-          if (!cancelled) setRuntimes(rt.runtimes ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/runtimes aux fetch failed", e)),
-      ]);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [api]);
-
   const versions = versionsRes?.data ?? [];
+  const allVersions = useMemo(() => {
+    if (!agent) return [];
+    const history = [...versions].filter((h) => h.version !== agent.version);
+    return [
+      {
+        version: agent.version,
+        model: agent.model,
+        system: agent.system,
+        isCurrent: true,
+      },
+      ...history.map((h) => ({
+        version: h.version,
+        model: h.model,
+        system: h.system,
+        isCurrent: false,
+      })),
+    ].sort((a, b) => b.version - a.version);
+  }, [agent, versions]);
+
   // Filter to live publications only — same predicate the old useEffect ran.
   const linearPubs = useMemo(
     () => (linearRes?.data ?? []).filter((p) => p.status === "live"),
@@ -148,13 +115,6 @@ export function AgentDetail() {
 
   const modelStr = (m: Agent["model"]) => typeof m === "string" ? m : `${m?.id} (${m?.speed || "standard"})`;
 
-  const refreshAgent = () => {
-    if (!id) return;
-    void queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}`] });
-    void queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}/versions`] });
-    void queryClient.invalidateQueries({ queryKey: ["/v1/agents"] });
-  };
-
   const archive = async () => {
     if (!confirm("Archive this agent?")) return;
     await api(`/v1/agents/${id}/archive`, { method: "POST", body: "{}" });
@@ -170,8 +130,6 @@ export function AgentDetail() {
   if (error) return <div className="p-10 text-danger">Error: {error}</div>;
   if (!agent) return <div className="p-10 text-fg-subtle">Loading...</div>;
 
-  const archived = !!agent.archived_at;
-
   return (
     <Page
       header={
@@ -179,16 +137,14 @@ export function AgentDetail() {
           title={agent.name}
           actions={
             <>
-              {!archived && (
-                <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}>
-                  {t.common.edit}
-                </Button>
-              )}
-              <Button variant="outline" size="sm" onClick={archive} disabled={archived}>
-                {t.common.archive}
+              <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}>
+                Edit
+              </Button>
+              <Button variant="outline" size="sm" onClick={archive}>
+                Archive
               </Button>
               <Button variant="destructive" size="sm" onClick={del}>
-                {t.common.delete}
+                Delete
               </Button>
             </>
           }
@@ -214,6 +170,18 @@ export function AgentDetail() {
           <span className="text-fg-muted">Version</span><span>v{agent.version}</span>
           <span className="text-fg-muted">Tools</span>
           <span>{(agent.tools || []).map((t: any) => t.type === "custom" ? `Custom: ${t.name}` : t.type).join(", ") || "None"}</span>
+          <span className="text-fg-muted">Skills</span>
+          <span>
+            {(agent.skills || [])
+              .map((s: any) => s.skill_id || s.id)
+              .join(", ") || "None"}
+          </span>
+          <span className="text-fg-muted">MCP Servers</span>
+          <span>
+            {(agent.mcp_servers || [])
+              .map((m: any) => m.name || m.url)
+              .join(", ") || "None"}
+          </span>
           <span className="text-fg-muted">Created</span><span>{new Date(agent.created_at).toLocaleString()}</span>
           <span className="text-fg-muted">Updated</span><span>{new Date(agent.updated_at || agent.created_at).toLocaleString()}</span>
           {agent.archived_at && <><span className="text-fg-muted">Archived</span><span className="text-warning">{new Date(agent.archived_at).toLocaleString()}</span></>}
@@ -268,7 +236,7 @@ export function AgentDetail() {
       )}
 
       {/* Version history */}
-      {versions.length > 0 && (
+      {allVersions.length > 0 && (
         <div className="mt-8 max-w-2xl">
           <h2 className="font-display text-base font-semibold mb-2">Version History</h2>
           <div className="border border-border rounded-lg overflow-x-auto">
@@ -281,9 +249,16 @@ export function AgentDetail() {
                 </tr>
               </thead>
               <tbody>
-                {versions.map((v) => (
+                {allVersions.map((v) => (
                   <tr key={v.version} className="border-t border-border">
-                    <td className="px-4 py-2">v{v.version}</td>
+                    <td className="px-4 py-2 flex items-center gap-2">
+                      <span className="font-mono">v{v.version}</span>
+                      {v.isCurrent && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/15 text-brand font-medium">
+                          Current
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2 text-fg-muted">{modelStr(v.model)}</td>
                     <td className="px-4 py-2 text-fg-muted max-w-xs truncate">{v.system || "—"}</td>
                   </tr>
@@ -295,19 +270,21 @@ export function AgentDetail() {
       )}
       </div>
 
-      <AgentFormDialog
-        open={showEdit}
-        onClose={() => setShowEdit(false)}
-        agent={agent}
-        onUpdated={() => {
-          setShowEdit(false);
-          refreshAgent();
-        }}
-        allAgents={allAgents}
-        customSkills={customSkills}
-        modelCards={modelCards}
-        runtimes={runtimes}
-      />
+      {showEdit && (
+        <AgentFormDialog
+          open={showEdit}
+          onClose={() => setShowEdit(false)}
+          agent={agent}
+          onCreated={() => {
+            setShowEdit(false);
+            queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}`] });
+            queryClient.invalidateQueries({ queryKey: [`/v1/agents/${id}/versions`] });
+          }}
+          allAgents={allAgentsRes?.data || []}
+          customSkills={skillsRes?.data || []}
+          modelCards={modelCardsRes?.data || []}
+        />
+      )}
     </Page>
   );
 }
