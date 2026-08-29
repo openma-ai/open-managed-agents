@@ -24,10 +24,17 @@ export const isBuiltinTool = (name: string): boolean =>
   BUILTIN_TOOLS.has(name) || isMcpTool(name) || name.startsWith("call_agent_");
 
 
-/**
- * Extract the MCP server name from a tool name like "mcp_github_call" or "mcp_github_list_tools".
- */
+/** Extract the MCP server name from current and legacy projected tool names. */
 function extractMcpServerName(toolName: string): string {
+  // Current SDK shape: mcp__<server>__<tool>. The registered tool metadata
+  // is the authoritative source (see emitToolCallEvent); this parser is the
+  // fallback for custom harnesses that construct an MCP tool directly.
+  if (toolName.startsWith("mcp__")) {
+    const withoutPrefix = toolName.slice("mcp__".length);
+    const separator = withoutPrefix.indexOf("__");
+    return separator >= 0 ? withoutPrefix.slice(0, separator) : withoutPrefix;
+  }
+
   // mcp_{server_name}_{call|list_tools}
   const withoutPrefix = toolName.slice(4); // Remove "mcp_"
   const lastUnderscore = withoutPrefix.lastIndexOf("_");
@@ -74,10 +81,14 @@ function emitToolCallEvent(
   }
 
   if (isMcpTool(toolName)) {
+    const registeredServerName = tools[toolName]?.metadata?.serverName;
     runtime.broadcast({
       type: "agent.mcp_tool_use",
       id: toolCallId,
-      mcp_server_name: extractMcpServerName(toolName),
+      mcp_server_name:
+        typeof registeredServerName === "string" && registeredServerName.length > 0
+          ? registeredServerName
+          : extractMcpServerName(toolName),
       name: toolName,
       input: callInput,
     });

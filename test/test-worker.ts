@@ -4,7 +4,7 @@
  */
 
 // --- Main worker routes ---
-import mainApp from "../apps/main/src/index";
+import mainApp, { McpProxyRpc as MainMcpProxyRpc } from "../apps/main/src/index";
 
 // --- Agent worker DO + harness registration ---
 import { registerHarness } from "../apps/agent/src/harness/registry";
@@ -352,9 +352,38 @@ async function applyMigrations(
   }
 }
 
-export default {
-  async fetch(req: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+// The vitest runner does not expose named WorkerEntrypoints, so the combined
+// test worker uses the production MCP entrypoint as its default export. This
+// preserves its RPC methods (including managedSessionEventProduced) while
+// routing ordinary HTTP requests into the real main app.
+export default class TestWorker extends MainMcpProxyRpc {
+  /**
+   * Keep direct module imports used by the D1 unit tests compatible with the
+   * previous module-worker default export. Wrangler ignores static handlers;
+   * they are only exercised when a test imports this class and calls
+   * `TestWorker.fetch(request, env, ctx)` directly.
+   */
+  static async fetch(req: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     await ensureMigrations(env);
     return mainApp.fetch(req, env, ctx);
-  },
-};
+  }
+
+  override async managedSessionEventProduced(
+    opts: Parameters<MainMcpProxyRpc["managedSessionEventProduced"]>[0],
+  ): ReturnType<MainMcpProxyRpc["managedSessionEventProduced"]> {
+    // SessionDO-only tests can produce events before any HTTP request reaches
+    // the combined worker. Production applies D1 migrations during deploy;
+    // the test entrypoint must provide the equivalent bootstrap before the
+    // real projection method touches MAIN_DB.
+    await ensureMigrations(this.env);
+    return super.managedSessionEventProduced(opts);
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    await ensureMigrations(this.env);
+    if (req.headers.has("x-oma-mcp-server")) {
+      return super.fetch(req);
+    }
+    return mainApp.fetch(req, this.env, this.ctx);
+  }
+}
