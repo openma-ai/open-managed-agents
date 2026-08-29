@@ -14,7 +14,7 @@ import { registerHarness } from "./harness/registry";
 import { DefaultHarness } from "./harness/default-loop";
 import { AcpProxyHarness } from "./harness/acp-proxy-loop";
 import { PiHarness } from "./harness/pi-loop";
-registerHarness("default", () => new PiHarness());
+registerHarness("default", () => new DefaultHarness());
 registerHarness("pi", () => new PiHarness());
 registerHarness("ai-sdk", () => new DefaultHarness());
 registerHarness("acp-proxy", () => new AcpProxyHarness());

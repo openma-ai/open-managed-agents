@@ -57,7 +57,10 @@ import type { SessionEvent } from "@open-managed-agents/shared";
 import { generateEventId } from "@open-managed-agents/shared";
 import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
-import { resolveModel } from "@open-managed-agents/agent/harness/provider";
+import {
+  createPiModelRuntime,
+  toAiSdkLanguageModel,
+} from "@open-managed-agents/agent/harness/pi-provider";
 import { generateText } from "ai";
 import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
@@ -688,7 +691,7 @@ async function resolveNodeModelCreds(
   wireModel: string;
   apiKey: string;
   baseURL?: string;
-  apiCompat?: "ant" | "ant-compatible" | "oai" | "oai-compatible";
+  provider?: string;
   customHeaders?: Record<string, string>;
 }> {
   const handle = typeof agentModel === "string" ? agentModel : agentModel.id;
@@ -697,17 +700,11 @@ async function resolveNodeModelCreds(
     if (card && !card.archived_at) {
       const key = await modelCardsService.getApiKey({ tenantId, cardId: card.id });
       if (key) {
-        const OAI = new Set(["oai", "oai-compatible"]);
-        const ANT = new Set(["ant", "ant-compatible"]);
-        const apiCompat =
-          OAI.has(card.provider) || ANT.has(card.provider)
-            ? (card.provider as "ant" | "ant-compatible" | "oai" | "oai-compatible")
-            : undefined;
         return {
           wireModel: card.model,
           apiKey: key,
           baseURL: card.base_url ?? undefined,
-          apiCompat,
+          provider: card.provider,
           customHeaders: card.custom_headers ?? undefined,
         };
       }
@@ -731,6 +728,20 @@ async function resolveNodeModelCreds(
   };
 }
 
+async function buildNodeLanguageModel(
+  tenantId: string,
+  agentModel: string | { id: string; speed?: string },
+) {
+  const creds = await resolveNodeModelCreds(tenantId, agentModel);
+  return toAiSdkLanguageModel(createPiModelRuntime({
+    model: creds.wireModel,
+    apiKey: creds.apiKey,
+    provider: creds.provider,
+    baseURL: creds.baseURL,
+    customHeaders: creds.customHeaders,
+  }));
+}
+
 const sessionRegistry = new SessionRegistry({
   sql,
   hub,
@@ -741,16 +752,7 @@ const sessionRegistry = new SessionRegistry({
   buildSandbox,
   sandboxWorkdirRoot: process.env.SANDBOX_WORKDIR ?? "./data/sandboxes",
   sqlDialect: dialect,
-  buildModel: async (agent, tenantId) => {
-    const creds = await resolveNodeModelCreds(tenantId, agent.model);
-    return resolveModel(
-      creds.wireModel,
-      creds.apiKey,
-      creds.baseURL,
-      creds.apiCompat,
-      creds.customHeaders,
-    );
-  },
+  buildModel: (agent, tenantId) => buildNodeLanguageModel(tenantId, agent.model),
   buildTools: async (agent, sandbox, tenantId) => {
     const creds = await resolveNodeModelCreds(tenantId, agent.model);
     return buildTools(agent, sandbox, {
@@ -819,16 +821,8 @@ const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     },
   }),
   outcomes: new NodeManagedOutcomeEvaluator({
-    buildModel: async ({ workspaceId, session }) => {
-      const creds = await resolveNodeModelCreds(workspaceId, session.agent.model);
-      return resolveModel(
-        creds.wireModel,
-        creds.apiKey,
-        creds.baseURL,
-        creds.apiCompat,
-        creds.customHeaders,
-      );
-    },
+    buildModel: ({ workspaceId, session }) =>
+      buildNodeLanguageModel(workspaceId, session.agent.model),
     judge: async ({ model, system, prompt, abortSignal }) => {
       const result = await generateText({
         model,
@@ -850,16 +844,8 @@ const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
       session.id,
       join(process.env.SANDBOX_WORKDIR ?? "./data/sandboxes", session.id),
     ),
-  buildModel: async ({ workspaceId, session }) => {
-    const creds = await resolveNodeModelCreds(workspaceId, session.agent.model);
-    return resolveModel(
-      creds.wireModel,
-      creds.apiKey,
-      creds.baseURL,
-      creds.apiCompat,
-      creds.customHeaders,
-    );
-  },
+  buildModel: ({ workspaceId, session }) =>
+    buildNodeLanguageModel(workspaceId, session.agent.model),
   buildTools: async ({ workspaceId, session, sandbox }) => {
     const agent = toLegacyHarnessAgentConfig(session);
     const creds = await resolveNodeModelCreds(workspaceId, agent.model);

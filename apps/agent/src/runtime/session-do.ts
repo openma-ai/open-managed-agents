@@ -63,9 +63,10 @@ import type {
 import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle, FileResolver } from "../harness/interface";
 import { resolveHarness } from "../harness/registry";
 import { composeSystemPrompt } from "../harness/platform-guidance";
-import { resolveModel } from "../harness/provider";
-import type { ApiCompat } from "../harness/provider";
-import { createPiModelRuntime } from "../harness/pi-provider";
+import {
+  createPiModelRuntime,
+  toAiSdkLanguageModel,
+} from "../harness/pi-provider";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
 import { extractTextFromContent } from "@open-managed-agents/shared";
@@ -3530,8 +3531,8 @@ export class SessionDO extends DurableObject<Env> {
    *   - `model` — the LLM string to send to the provider. card.model when a
    *     card is found; otherwise the input handle (env-only path assumes
    *     the user wrote a real LLM model name in agent.model).
-   *   - `apiKey`, `baseURL`, `apiCompat`, `customHeaders` — same as before,
-   *     source-of-truth depends on whether a card was matched.
+   *   - `apiKey`, `baseURL`, `provider`, `customHeaders` — Pi model runtime
+   *     inputs whose source depends on whether a card was matched.
    */
   private async resolveModelCardCredentials(
     handle: string,
@@ -3539,7 +3540,6 @@ export class SessionDO extends DurableObject<Env> {
     model: string;
     apiKey: string;
     baseURL?: string;
-    apiCompat: ApiCompat;
     provider?: string;
     customHeaders?: Record<string, string>;
   }> {
@@ -3570,14 +3570,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    const OAI_PROVIDERS = new Set(["oai", "oai-compatible"]);
-    const ANT_PROVIDERS = new Set(["ant", "ant-compatible"]);
-    let apiCompat: ApiCompat = "ant";
-    if (provider && (OAI_PROVIDERS.has(provider) || ANT_PROVIDERS.has(provider))) {
-      apiCompat = provider as ApiCompat;
-    }
-
-    return { model: wireModel, apiKey, baseURL, apiCompat, provider, customHeaders };
+    return { model: wireModel, apiKey, baseURL, provider, customHeaders };
   }
 
   /**
@@ -3593,7 +3586,13 @@ export class SessionDO extends DurableObject<Env> {
     if (!agent.aux_model) return null;
     const handle = typeof agent.aux_model === "string" ? agent.aux_model : agent.aux_model.id;
     const creds = await this.resolveModelCardCredentials(handle);
-    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders);
+    const model = toAiSdkLanguageModel(createPiModelRuntime({
+      model: creds.model,
+      apiKey: creds.apiKey,
+      provider: creds.provider,
+      baseURL: creds.baseURL,
+      customHeaders: creds.customHeaders,
+    }));
     return { model, modelInfo: { model_id: handle } };
   }
 
@@ -4077,13 +4076,14 @@ export class SessionDO extends DurableObject<Env> {
     const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
     const subHandle = subModelId || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
     const subCreds = await this.resolveModelCardCredentials(subHandle);
-    const subModel = resolveModel(
-      subCreds.model,
-      subCreds.apiKey,
-      subCreds.baseURL,
-      subCreds.apiCompat,
-      subCreds.customHeaders,
-    );
+    const subPiRuntime = createPiModelRuntime({
+      model: subCreds.model,
+      apiKey: subCreds.apiKey,
+      provider: subCreds.provider,
+      baseURL: subCreds.baseURL,
+      customHeaders: subCreds.customHeaders,
+    });
+    const subModel = toAiSdkLanguageModel(subPiRuntime);
 
     // Per-thread abort controller. Registered in _threadAbortControllers
     // so a `user.interrupt` with this thread's session_thread_id (handled
@@ -4101,17 +4101,7 @@ export class SessionDO extends DurableObject<Env> {
       userMessage: userMsg,
       tools: subTools,
       model: subModel,
-      ...(resolvedHarnessName === "pi" || resolvedHarnessName === "default"
-        ? {
-            pi: createPiModelRuntime({
-              model: subCreds.model,
-              apiKey: subCreds.apiKey,
-              provider: subCreds.provider,
-              baseURL: subCreds.baseURL,
-              customHeaders: subCreds.customHeaders,
-            }),
-          }
-        : {}),
+      pi: subPiRuntime,
       systemPrompt: subAgent.system || "",
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
@@ -4366,7 +4356,14 @@ export class SessionDO extends DurableObject<Env> {
     const handle = typeof agent.model === "string" ? agent.model : agent.model?.id;
     const effectiveHandle = handle || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
     const creds = await this.resolveModelCardCredentials(effectiveHandle);
-    const model = resolveModel(creds.model, creds.apiKey, creds.baseURL, creds.apiCompat, creds.customHeaders);
+    const piRuntime = createPiModelRuntime({
+      model: creds.model,
+      apiKey: creds.apiKey,
+      provider: creds.provider,
+      baseURL: creds.baseURL,
+      customHeaders: creds.customHeaders,
+    });
+    const model = toAiSdkLanguageModel(piRuntime);
 
     // Build system prompt: agent.system + platform guidance + skill /
     // memory_store / appendable_prompt content (the latter passed in as
@@ -4553,17 +4550,7 @@ export class SessionDO extends DurableObject<Env> {
       tenant_id: this.state.tenant_id,
       tools: allTools,
       model,
-      ...(resolvedHarnessName === "pi" || resolvedHarnessName === "default"
-        ? {
-            pi: createPiModelRuntime({
-              model: creds.model,
-              apiKey: creds.apiKey,
-              provider: creds.provider,
-              baseURL: creds.baseURL,
-              customHeaders: creds.customHeaders,
-            }),
-          }
-        : {}),
+      pi: piRuntime,
       systemPrompt,
       rawSystemPrompt,
       platformReminders,
@@ -4694,13 +4681,7 @@ export class SessionDO extends DurableObject<Env> {
       if (outcome) {
         const outcomeModelId =
           typeof agent.model === "string" ? agent.model : agent.model?.id;
-        const judgeModel = resolveModel(
-          outcomeModelId ||
-            ctx.env.ANTHROPIC_MODEL ||
-            "claude-sonnet-4-6",
-          ctx.env.ANTHROPIC_API_KEY,
-          ctx.env.ANTHROPIC_BASE_URL,
-        );
+        const judgeModel = ctx.model;
         try {
           await runOutcomeSupervisor({
             outcome,

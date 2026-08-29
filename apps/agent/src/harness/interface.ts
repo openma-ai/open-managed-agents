@@ -182,13 +182,13 @@ export interface HarnessContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
 
-  /** Platform-prepared model: resolved from agent config with API key. */
+  /** AI SDK projection of the platform-prepared Pi model runtime. */
   model: LanguageModel;
 
   /**
-   * Tenant-scoped Pi provider/model composition. Harnesses that use Pi read
-   * this Port instead of constructing providers or resolving credentials.
-   * Optional while the legacy AI SDK harness remains a migration fallback.
+   * Tenant-scoped Pi provider/model runtime for harnesses that consume Pi
+   * directly. DefaultHarness uses the same runtime through `model` above.
+   * Optional because not every platform enables the standalone PiHarness.
    */
   pi?: PiModelRuntime;
 

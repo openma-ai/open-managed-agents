@@ -5,14 +5,13 @@ import {
   type Model,
   type Models,
   type Provider,
+  type ProviderHeaders,
   type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
-import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+export { toAiSdkLanguageModel } from "./pi-ai-sdk";
 
 export interface PiModelRuntime {
   models: Models;
@@ -32,8 +31,8 @@ export interface PiModelCardBinding {
 interface ProviderPlan {
   id: string;
   name: string;
-  api: Api;
-  streams: ProviderStreams;
+  api?: Api;
+  streams?: ProviderStreams;
   catalog: Provider;
 }
 
@@ -48,8 +47,10 @@ interface ProviderPlan {
  */
 export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime {
   const plan = resolveProviderPlan(input.provider);
-  const catalogModel = plan.catalog.getModels().find((model) => model.id === input.model);
+  const catalogModels = plan.catalog.getModels();
+  const catalogModel = catalogModels.find((model) => model.id === input.model);
   const baseUrl = input.baseURL ?? catalogModel?.baseUrl ?? plan.catalog.baseUrl;
+  const api = plan.api ?? catalogModel?.api ?? inferProviderApi(plan.id, catalogModels);
 
   if (!baseUrl) {
     throw new Error(`Pi provider ${plan.id} does not define a base URL`);
@@ -60,14 +61,14 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
         ...catalogModel,
         id: input.model,
         provider: plan.id,
-        api: plan.api,
+        api,
         baseUrl,
       }
     : {
         id: input.model,
         name: input.model,
         provider: plan.id,
-        api: plan.api,
+        api,
         baseUrl,
         reasoning: false,
         input: ["text", "image"],
@@ -83,7 +84,7 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
     id: plan.id,
     name: plan.name,
     baseUrl,
-    headers: input.customHeaders,
+    headers: mergeHeaders(plan.catalog.headers, input.customHeaders),
     auth: {
       apiKey: {
         name: "OpenMA model card",
@@ -95,7 +96,7 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
       },
     },
     models: [model],
-    api: plan.streams,
+    api: plan.streams ?? delegateProviderStreams(plan.catalog),
   });
 
   const models = createModels();
@@ -104,16 +105,15 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
 }
 
 function resolveProviderPlan(provider: string | undefined): ProviderPlan {
-  switch ((provider ?? "ant").toLowerCase()) {
-    case "ant":
-    case "anthropic":
-      return {
-        id: "anthropic",
-        name: "Anthropic",
-        api: "anthropic-messages",
-        streams: anthropicMessagesApi(),
-        catalog: anthropicProvider(),
-      };
+  const requested = (provider ?? "ant").toLowerCase();
+  const providers = builtinProviders();
+  const getBuiltin = (id: string): Provider => {
+    const match = providers.find((candidate) => candidate.id === id);
+    if (!match) throw new Error(`Pi built-in provider "${id}" is unavailable`);
+    return match;
+  };
+
+  switch (requested) {
     case "ant-compatible":
     case "anthropic-compatible":
       return {
@@ -121,16 +121,7 @@ function resolveProviderPlan(provider: string | undefined): ProviderPlan {
         name: "Anthropic-compatible",
         api: "anthropic-messages",
         streams: anthropicMessagesApi(),
-        catalog: anthropicProvider(),
-      };
-    case "oai":
-    case "openai":
-      return {
-        id: "openai",
-        name: "OpenAI",
-        api: "openai-responses",
-        streams: openAIResponsesApi(),
-        catalog: openaiProvider(),
+        catalog: getBuiltin("anthropic"),
       };
     case "oai-compatible":
     case "openai-compatible":
@@ -139,19 +130,54 @@ function resolveProviderPlan(provider: string | undefined): ProviderPlan {
         name: "OpenAI-compatible",
         api: "openai-completions",
         streams: openAICompletionsApi(),
-        catalog: openaiProvider(),
+        catalog: getBuiltin("openai"),
       };
-    case "deepseek":
-      return {
-        id: "deepseek",
-        name: "DeepSeek",
-        api: "openai-completions",
-        streams: openAICompletionsApi(),
-        catalog: deepseekProvider(),
-      };
-    default:
-      throw new Error(
-        `Unsupported model-card provider "${provider}". Use a Pi provider id supported by the model-card adapter.`,
-      );
   }
+
+  const id = requested === "ant" ? "anthropic" : requested === "oai" ? "openai" : requested;
+  const catalog = getBuiltin(id);
+  return { id, name: catalog.name, catalog };
+}
+
+function inferProviderApi(providerId: string, models: readonly Model<Api>[]): Api {
+  const apis = new Set(models.map((model) => model.api));
+  if (apis.size === 1) return apis.values().next().value as Api;
+  throw new Error(
+    `Model is not in Pi's ${providerId} catalog and its API cannot be inferred; `
+      + "use a catalog model or a legacy compatible provider tag for a custom endpoint",
+  );
+}
+
+function delegateProviderStreams(provider: Provider): ProviderStreams {
+  return {
+    stream: (model, context, options) => provider.stream(model, context, options),
+    streamSimple: (model, context, options) => provider.streamSimple(model, context, options),
+    ...(provider.fetchDeferred
+      ? {
+          fetchDeferred: (model, handle, options) =>
+            provider.fetchDeferred!(model, handle, options),
+        }
+      : {}),
+    ...(provider.cancelDeferred
+      ? {
+          cancelDeferred: (model, handle, options) =>
+            provider.cancelDeferred!(model, handle, options),
+        }
+      : {}),
+  };
+}
+
+function mergeHeaders(
+  base: ProviderHeaders | undefined,
+  override: Record<string, string> | undefined,
+): ProviderHeaders | undefined {
+  if (!base && !override) return undefined;
+  const merged = { ...base };
+  for (const [name, value] of Object.entries(override ?? {})) {
+    for (const existing of Object.keys(merged)) {
+      if (existing.toLowerCase() === name.toLowerCase()) delete merged[existing];
+    }
+    merged[name] = value;
+  }
+  return merged;
 }
