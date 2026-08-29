@@ -51,10 +51,27 @@ describe("main-node official Managed Agents route", () => {
       baseURL: `http://127.0.0.1:${handle.port}`,
       maxRetries: 0,
     });
+    const modelId = `route-test-model-${randomBytes(6).toString("hex")}`;
+    const modelCard = await fetch(
+      `http://127.0.0.1:${handle.port}/v1/oma/model_cards`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": "test-key",
+        },
+        body: JSON.stringify({
+          provider: "ant",
+          model_id: modelId,
+          api_key: "sk-ant-route-test-key",
+        }),
+      },
+    );
+    expect(modelCard.status).toBe(201);
 
     const created = await client.beta.agents.create({
       name: "Node Managed Agent",
-      model: "claude-opus-5",
+      model: modelId,
       metadata: { owner: "platform" },
     });
     const retrieved = await client.beta.agents.retrieve(created.id);
@@ -63,7 +80,7 @@ describe("main-node official Managed Agents route", () => {
       id: expect.stringMatching(/^agent_/),
       type: "agent",
       name: "Node Managed Agent",
-      model: { id: "claude-opus-5" },
+      model: { id: modelId },
       metadata: { owner: "platform" },
       version: 1,
     });
@@ -86,15 +103,15 @@ describe("main-node official Managed Agents route", () => {
     ]);
     expect(retrieved).toEqual(created);
 
-    const models = await client.beta.models.list({ limit: 1 });
-    const retrievedModel = await client.beta.models.retrieve("claude-opus-5");
-    expect(models.data).toEqual([retrievedModel]);
+    const models = await client.beta.models.list({ limit: 100 });
+    const retrievedModel = await client.beta.models.retrieve(modelId);
+    expect(models.data).toContainEqual(retrievedModel);
     expect(retrievedModel).toEqual({
-      id: "claude-opus-5",
+      id: modelId,
       allowed_fallback_models: null,
       capabilities: null,
-      created_at: "1970-01-01T00:00:00.000Z",
-      display_name: "Claude Opus 5",
+      created_at: expect.any(String),
+      display_name: modelId,
       max_input_tokens: null,
       max_tokens: null,
       type: "model",
@@ -230,7 +247,7 @@ describe("main-node official Managed Agents route", () => {
       inputs: [
         { type: "memory_store", memory_store_id: createdMemoryStore.id },
       ],
-      model: "claude-opus-5",
+      model: modelId,
       instructions: "Keep durable project decisions",
     });
     expect(createdDream).toMatchObject({
@@ -241,7 +258,7 @@ describe("main-node official Managed Agents route", () => {
       inputs: [
         { type: "memory_store", memory_store_id: createdMemoryStore.id },
       ],
-      model: { id: "claude-opus-5" },
+      model: { id: modelId },
       output_behavior: { type: "create_new" },
       outputs: [],
     });

@@ -65,6 +65,7 @@ import { resolveHarness } from "../harness/registry";
 import { composeSystemPrompt } from "../harness/platform-guidance";
 import { resolveModel } from "../harness/provider";
 import type { ApiCompat } from "../harness/provider";
+import { createPiModelRuntime } from "../harness/pi-provider";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
 import { extractTextFromContent } from "@open-managed-agents/shared";
@@ -3539,6 +3540,7 @@ export class SessionDO extends DurableObject<Env> {
     apiKey: string;
     baseURL?: string;
     apiCompat: ApiCompat;
+    provider?: string;
     customHeaders?: Record<string, string>;
   }> {
     let apiKey = this.env.ANTHROPIC_API_KEY;
@@ -3575,7 +3577,7 @@ export class SessionDO extends DurableObject<Env> {
       apiCompat = provider as ApiCompat;
     }
 
-    return { model: wireModel, apiKey, baseURL, apiCompat, customHeaders };
+    return { model: wireModel, apiKey, baseURL, apiCompat, provider, customHeaders };
   }
 
   /**
@@ -4030,14 +4032,16 @@ export class SessionDO extends DurableObject<Env> {
 
     // Resolve harness for the sub-agent
     let harness: HarnessInterface;
+    let resolvedHarnessName = subAgent.harness || "default";
     try {
-      harness = resolveHarness(subAgent.harness);
+      harness = resolveHarness(resolvedHarnessName);
     } catch (err) {
       logWarn(
         { op: "session_do.subagent.harness_resolve", session_id: this.state.session_id, agent_id: subAgent.id, requested: subAgent.harness, err },
         "sub-agent harness unknown; falling back to default",
       );
-      harness = resolveHarness("default");
+      resolvedHarnessName = "default";
+      harness = resolveHarness(resolvedHarnessName);
     }
 
     // Build sub-agent tools and model (platform prepares context for sub-agent too)
@@ -4071,7 +4075,15 @@ export class SessionDO extends DurableObject<Env> {
       },
     });
     const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
-    const subModel = resolveModel(subModelId || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6", this.env.ANTHROPIC_API_KEY, this.env.ANTHROPIC_BASE_URL);
+    const subHandle = subModelId || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+    const subCreds = await this.resolveModelCardCredentials(subHandle);
+    const subModel = resolveModel(
+      subCreds.model,
+      subCreds.apiKey,
+      subCreds.baseURL,
+      subCreds.apiCompat,
+      subCreds.customHeaders,
+    );
 
     // Per-thread abort controller. Registered in _threadAbortControllers
     // so a `user.interrupt` with this thread's session_thread_id (handled
@@ -4089,6 +4101,17 @@ export class SessionDO extends DurableObject<Env> {
       userMessage: userMsg,
       tools: subTools,
       model: subModel,
+      ...(resolvedHarnessName === "pi" || resolvedHarnessName === "default"
+        ? {
+            pi: createPiModelRuntime({
+              model: subCreds.model,
+              apiKey: subCreds.apiKey,
+              provider: subCreds.provider,
+              baseURL: subCreds.baseURL,
+              customHeaders: subCreds.customHeaders,
+            }),
+          }
+        : {}),
       systemPrompt: subAgent.system || "",
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant
       // ACP child key resolution. AcpProxyHarness reads this to forward
@@ -4284,14 +4307,16 @@ export class SessionDO extends DurableObject<Env> {
 
     // Resolve harness via registry — SessionDO never imports a concrete harness
     let harness: HarnessInterface;
+    let resolvedHarnessName = agent.harness || "default";
     try {
-      harness = resolveHarness(agent.harness);
+      harness = resolveHarness(resolvedHarnessName);
     } catch (err) {
       logWarn(
         { op: "session_do.harness_resolve", session_id: this.state.session_id, agent_id: agent.id, requested: agent.harness, err },
         "agent harness unknown; falling back to default",
       );
-      harness = resolveHarness("default");
+      resolvedHarnessName = "default";
+      harness = resolveHarness(resolvedHarnessName);
     }
 
     // --- Platform prepares WHAT is available ---
@@ -4528,6 +4553,17 @@ export class SessionDO extends DurableObject<Env> {
       tenant_id: this.state.tenant_id,
       tools: allTools,
       model,
+      ...(resolvedHarnessName === "pi" || resolvedHarnessName === "default"
+        ? {
+            pi: createPiModelRuntime({
+              model: creds.model,
+              apiKey: creds.apiKey,
+              provider: creds.provider,
+              baseURL: creds.baseURL,
+              customHeaders: creds.customHeaders,
+            }),
+          }
+        : {}),
       systemPrompt,
       rawSystemPrompt,
       platformReminders,

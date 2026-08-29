@@ -108,6 +108,7 @@ import {
   buildManagedSessionsApi,
 } from "@open-managed-agents/managed-agents-api";
 import {
+  ModelsApplicationService,
   SessionRuntimeHistoryApplicationService,
   SessionRuntimeProjectionApplicationService,
   type SessionEnvironmentSourcePort,
@@ -170,10 +171,6 @@ import {
   userProfilesModule,
 } from "@open-managed-agents/app/modules/user-profiles";
 import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
-import {
-  modelCatalogSourcePort,
-  modelsModule,
-} from "@open-managed-agents/app/modules/models";
 import { createNodePlatform } from "@open-managed-agents/platform-node";
 import { SqlFileStore } from "@open-managed-agents/file-store-sql";
 import {
@@ -215,7 +212,7 @@ import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-
 import {
   AnthropicMessagesDreamCurator,
   ApplicationDreamMemoryWorkspace,
-  ConfiguredModelCatalogSource,
+  ModelCardCatalogSource,
   CronDeploymentSchedulePlanner,
   EnvironmentAwareSessionLifecycleRouter,
   TimerEnvironmentWorkAvailabilityWaiter,
@@ -375,17 +372,6 @@ if (usePostgres) {
 }
 await ensureEventLogSchema(sql, dialect);
 const managedAgentsPersistence = new SqlAgentPersistence(sql);
-const managedModelCatalog = new ConfiguredModelCatalogSource([
-  {
-    id: "claude-opus-5",
-    allowedFallbackModels: null,
-    capabilities: null,
-    createdAt: "1970-01-01T00:00:00.000Z",
-    displayName: "Claude Opus 5",
-    maxInputTokens: null,
-    maxTokens: null,
-  },
-]);
 const managedAgentsPlatform = createNodePlatform({
   stores: {
     agents: managedAgentsPersistence,
@@ -401,12 +387,10 @@ const managedAgentsPlatform = createNodePlatform({
       `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${nanoid()}`,
   },
   modules: () => [
-    providePort(modelCatalogSourcePort, managedModelCatalog),
     agentsModule(),
     environmentsModule(),
     filesModule(),
     memoryStoresModule(),
-    modelsModule(),
     providePort(userProfileEnrollmentIssuerPort, {
       issue: async () => ({
         type: "conflict" as const,
@@ -1216,11 +1200,10 @@ const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
 );
 
 const managedModelsRoutes = buildManagedModelRoutes((context) =>
-  managedAgentsPlatform
-    .app({
-      workspaceId: (context.var as { tenant_id: string }).tenant_id,
-    })
-    .port(managedAgentsPortTokens.models),
+  new ModelsApplicationService({
+    workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    catalog: new ModelCardCatalogSource(modelCardsService),
+  })
 );
 
 const managedTunnelProvisioner = new LocalTunnelProvisioner({

@@ -5,6 +5,22 @@ import { sessionWire } from "./session-fixtures";
 import { buildSessionEventsTestApi } from "./test-api";
 
 describe("Managed Agents API — GET /v1/sessions/:session_id/events", () => {
+  it("returns an explicit null next_page on the final page", async () => {
+    const api = buildSessionEventsTestApi(makeSessionEventsPort({
+      listSessionEvents: async () => ({
+        type: "page",
+        page: { events: [], nextCursor: undefined },
+      }),
+    }));
+    const response = await api.request(
+      `/v1/sessions/${sessionWire.id}/events`,
+      { headers: { "anthropic-beta": "managed-agents-2026-04-01" } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: [], next_page: null });
+  });
+
   it("maps official filters and the session.usage event into a cursor page", async () => {
     const listCalls: unknown[] = [];
     const port = makeSessionEventsPort({

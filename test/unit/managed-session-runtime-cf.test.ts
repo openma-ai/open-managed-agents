@@ -289,6 +289,12 @@ describe("CfManagedSessionRuntimeAdapter", () => {
         content: [{ type: "text", text: "Hello" }],
         processed_at: "2026-08-26T02:00:01.000Z",
       },
+      {
+        id: "event_idle_01",
+        type: "session.status_idle",
+        processed_at: "2026-08-26T02:00:02.000Z",
+        stop_reason: { type: "end_turn" },
+      },
     ]);
     const adapter = new CfManagedSessionRuntimeAdapter({
       fetch: async () =>
@@ -329,6 +335,83 @@ describe("CfManagedSessionRuntimeAdapter", () => {
         content: [{ type: "text", text: "Hello" }],
         processedAt: "2026-08-26T02:00:01.000Z",
       },
+      {
+        id: "event_idle_01",
+        type: "session.status_idle",
+        processedAt: "2026-08-26T02:00:02.000Z",
+        stopReason: { type: "end_turn" },
+      },
+    ]);
+  });
+
+  it("reconnects a dropped runtime WebSocket with replay and deduplicates canonical events", async () => {
+    const requests: Request[] = [];
+    const sockets = [
+      new FakeWebSocket([
+        {
+          id: "event_user_01",
+          type: "user.message",
+          content: [{ type: "text", text: "Hello" }],
+          processed_at: "2026-08-26T02:00:00.000Z",
+        },
+      ]),
+      new FakeWebSocket([
+        {
+          id: "event_user_01",
+          type: "user.message",
+          content: [{ type: "text", text: "Hello" }],
+          processed_at: "2026-08-26T02:00:00.000Z",
+        },
+        {
+          id: "event_running_01",
+          type: "session.status_running",
+          processed_at: "2026-08-26T02:00:01.000Z",
+        },
+        {
+          id: "event_message_01",
+          type: "agent.message",
+          content: [{ type: "text", text: "E2E_OK" }],
+          processed_at: "2026-08-26T02:00:02.000Z",
+        },
+        {
+          id: "event_idle_01",
+          type: "session.status_idle",
+          processed_at: "2026-08-26T02:00:03.000Z",
+          stop_reason: { type: "end_turn" },
+        },
+      ]),
+    ];
+    let attempt = 0;
+    const adapter = new CfManagedSessionRuntimeAdapter({
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init));
+        attempt += 1;
+        if (attempt === 2) return new Response("runtime restarting", { status: 503 });
+        const socket = sockets.shift();
+        if (socket === undefined) throw new Error("unexpected reconnect");
+        return ({ ok: true, status: 101, webSocket: socket }) as unknown as Response;
+      },
+    });
+
+    const received = [];
+    for await (const event of adapter.subscribe({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session,
+    })) {
+      received.push(event);
+    }
+
+    expect(requests.map((request) => request.headers.get("x-oma-replay"))).toEqual([
+      null,
+      "1",
+      "1",
+    ]);
+    expect(received.map(({ type }) => type)).toEqual([
+      "user.message",
+      "session.status_running",
+      "agent.message",
+      "session.status_idle",
     ]);
   });
 
@@ -346,6 +429,7 @@ describe("CfManagedSessionRuntimeAdapter", () => {
 
 class FakeWebSocket {
   private readonly listeners = new Map<string, Array<(event: object) => void>>();
+  private peerClosed = false;
 
   constructor(private readonly frames: object[]) {}
 
@@ -360,11 +444,14 @@ class FakeWebSocket {
       for (const frame of this.frames) {
         this.emit("message", { data: JSON.stringify(frame) });
       }
+      this.peerClosed = true;
       this.emit("close", {});
     });
   }
 
-  close(): void {}
+  close(): void {
+    if (this.peerClosed) throw new Error("WebSocket is already closed");
+  }
 
   private emit(type: string, event: object): void {
     for (const listener of this.listeners.get(type) ?? []) listener(event);

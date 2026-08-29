@@ -1,6 +1,7 @@
 import type { ModelMessage, LanguageModel } from "ai";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import type { FileResolver } from "../runtime/history";
+import type { PiModelRuntime } from "./pi-provider";
 
 // SandboxExecutor + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
@@ -183,6 +184,13 @@ export interface HarnessContext {
 
   /** Platform-prepared model: resolved from agent config with API key. */
   model: LanguageModel;
+
+  /**
+   * Tenant-scoped Pi provider/model composition. Harnesses that use Pi read
+   * this Port instead of constructing providers or resolving credentials.
+   * Optional while the legacy AI SDK harness remains a migration fallback.
+   */
+  pi?: PiModelRuntime;
 
   /**
    * Platform-augmented system prompt: agent.system + platform guidance

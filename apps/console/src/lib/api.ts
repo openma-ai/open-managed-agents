@@ -1,4 +1,5 @@
 const BASE = "";
+const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
@@ -137,6 +138,7 @@ export function useApi() {
           ...init,
           credentials: "include",
           headers: {
+            "anthropic-beta": MANAGED_AGENTS_BETA,
             ...(init?.body && !isFormData ? { "content-type": "application/json" } : {}),
             // Pin the workspace for this request. Backend validates membership;
             // a stale value (deleted tenant, removed membership) yields 403 and
@@ -230,17 +232,14 @@ export function useApi() {
       // header too. The native fetch we use under the hood lets us set it;
       // EventSource wouldn't.
       //
-      // Console opts into both `chunks` (token-by-token rendering, pending
-      // queue events, session.warning, extra spans) and `replay=1` (full
-      // history on connect — Console renders the persistent timeline view
-      // and the dedup keyset at SessionDetail.tsx:108-121 already handles
-      // any seq-overlap from concurrent live broadcasts; replay-on-reconnect
-      // is therefore safe — duplicates get dropped before render).
-      //
-      // Default endpoint behavior is Anthropic-spec — third-party clients
-      // using @anthropic-ai/sdk against an OMA server get a clean stream
-      // without these flags. See SPEC_EVENT_TYPES in @open-managed-agents/api-types.
-      const path = `/v1/sessions/${sessionId}/events/stream?include=chunks&replay=1`;
+      // Opt into the two delta families defined by the Managed Agents SDK.
+      // Persistent history is loaded through the cursor-paginated Events API;
+      // reconnects attach to the live stream instead of relying on OMA-only
+      // include/replay extensions.
+      const params = new URLSearchParams();
+      params.append("event_deltas[]", "agent.message");
+      params.append("event_deltas[]", "agent.thinking");
+      const path = `/v1/sessions/${sessionId}/events/stream?${params}`;
 
       // Reconnect schedule for transient failures (network blip, 5xx, EOF).
       // Resets to zero on a successful onOpen so a healthy session that
@@ -253,7 +252,10 @@ export function useApi() {
 
       void streamSse(path, {
         signal,
-        headers: activeTenant ? { "x-active-tenant": activeTenant } : {},
+        headers: {
+          "anthropic-beta": MANAGED_AGENTS_BETA,
+          ...(activeTenant ? { "x-active-tenant": activeTenant } : {}),
+        },
         async onOpen(response) {
           if (response.ok) {
             // Connection (re)established — clear the failure counter so the

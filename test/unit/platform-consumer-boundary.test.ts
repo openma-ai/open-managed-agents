@@ -7,8 +7,8 @@ describe("platform SDK consumer boundary", () => {
     expect(nodeComposition).toContain("createNodePlatform");
     expect(nodeComposition).toContain("agentsModule");
     expect(nodeComposition).toContain("managedAgentsPortTokens.agents");
-    expect(nodeComposition).toContain("modelsModule");
-    expect(nodeComposition).toContain("managedAgentsPortTokens.models");
+    expect(nodeComposition).toContain("new ModelsApplicationService({");
+    expect(nodeComposition).toContain("ModelCardCatalogSource");
     expect(nodeComposition).toContain("environmentsModule");
     expect(nodeComposition).toContain("managedAgentsPortTokens.environments");
     expect(nodeComposition).toContain("environmentWorkModule");
@@ -35,7 +35,6 @@ describe("platform SDK consumer boundary", () => {
     expect(nodeComposition).toContain("userProfilesModule");
     expect(nodeComposition).toContain("managedAgentsPortTokens.userProfiles");
     expect(nodeComposition).not.toContain("new AgentsApplicationService({");
-    expect(nodeComposition).not.toContain("new ModelsApplicationService({");
     expect(nodeComposition).not.toContain("new EnvironmentsApplicationService({");
     expect(nodeComposition).not.toContain("new EnvironmentWorkApplicationService({");
     expect(nodeComposition).not.toContain("new EnvironmentWorkEnqueuerService({");
@@ -58,8 +57,8 @@ describe("platform SDK consumer boundary", () => {
     expect(cloudflareComposition).toContain("createCloudflarePlatform");
     expect(cloudflareComposition).toContain("agentsModule");
     expect(cloudflareComposition).toContain("managedAgentsPortTokens.agents");
-    expect(cloudflareComposition).toContain("modelsModule");
-    expect(cloudflareComposition).toContain("managedAgentsPortTokens.models");
+    expect(cloudflareComposition).toContain("new ModelsApplicationService({");
+    expect(cloudflareComposition).toContain("ModelCardCatalogSource");
     expect(cloudflareComposition).toContain("environmentsModule");
     expect(cloudflareComposition).toContain("managedAgentsPortTokens.environments");
     expect(cloudflareComposition).toContain("environmentWorkModule");
@@ -86,7 +85,6 @@ describe("platform SDK consumer boundary", () => {
     expect(cloudflareComposition).toContain("userProfilesModule");
     expect(cloudflareComposition).toContain("managedAgentsPortTokens.userProfiles");
     expect(cloudflareComposition).not.toContain("new AgentsApplicationService({");
-    expect(cloudflareComposition).not.toContain("new ModelsApplicationService({");
     expect(cloudflareComposition).not.toContain("new EnvironmentsApplicationService({");
     expect(cloudflareComposition).not.toContain("new EnvironmentWorkApplicationService({");
     expect(cloudflareComposition).not.toContain("new EnvironmentWorkEnqueuerService({");

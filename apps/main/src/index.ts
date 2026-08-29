@@ -38,6 +38,7 @@ import {
   buildManagedSessionsApi,
 } from "@open-managed-agents/managed-agents-api";
 import {
+  ModelsApplicationService,
   SessionRuntimeProjectionApplicationService,
   type SessionEnvironmentSourcePort,
 } from "@open-managed-agents/managed-agents-application";
@@ -99,10 +100,6 @@ import {
   userProfilesModule,
 } from "@open-managed-agents/app/modules/user-profiles";
 import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
-import {
-  modelCatalogSourcePort,
-  modelsModule,
-} from "@open-managed-agents/app/modules/models";
 import { createCloudflarePlatform } from "@open-managed-agents/platform-cloudflare";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
@@ -136,7 +133,7 @@ import { CfManagedSessionSecretSealer } from "./lib/cf-managed-session-secret-se
 import {
   AnthropicMessagesDreamCurator,
   ApplicationDreamMemoryWorkspace,
-  ConfiguredModelCatalogSource,
+  ModelCardCatalogSource,
   decodeRuntimeProducedSessionEvent,
   CronDeploymentSchedulePlanner,
   EnvironmentAwareSessionLifecycleRouter,
@@ -330,17 +327,6 @@ const legacyAgentsRoutes = new Hono<{
   return invokePackage(c, app);
 });
 
-const managedModelCatalog = new ConfiguredModelCatalogSource([
-  {
-    id: "claude-opus-5",
-    allowedFallbackModels: null,
-    capabilities: null,
-    createdAt: "1970-01-01T00:00:00.000Z",
-    displayName: "Claude Opus 5",
-    maxInputTokens: null,
-    maxTokens: null,
-  },
-]);
 const managedAgentsPlatform = createCloudflarePlatform({
   clock: { now: () => new Date() },
   ids: {
@@ -348,11 +334,9 @@ const managedAgentsPlatform = createCloudflarePlatform({
       `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
   },
   modules: () => [
-    providePort(modelCatalogSourcePort, managedModelCatalog),
     agentsModule(),
     environmentsModule(),
     memoryStoresModule(),
-    modelsModule(),
     providePort(userProfileEnrollmentIssuerPort, {
       issue: async () => ({
         type: "conflict" as const,
@@ -1015,16 +999,13 @@ const managedDreamsRoutes = new Hono<{
   return invokePackage(c, buildManagedDreamRoutes(() => port));
 });
 
-const managedModelsRoutes = buildManagedModelRoutes((context) =>
-  managedAgentsPlatform
-    .app({
-      workspaceId: (context.var as { tenant_id: string }).tenant_id,
-      sql: new CfD1SqlClient(
-        (context.var as { tenantDb: D1Database }).tenantDb,
-      ),
-    })
-    .port(managedAgentsPortTokens.models),
-);
+const managedModelsRoutes = buildManagedModelRoutes((context) => {
+  const request = context.var as AppCtx["var"];
+  return new ModelsApplicationService({
+    workspaceId: request.tenant_id,
+    catalog: new ModelCardCatalogSource(request.services.modelCards),
+  });
+});
 
 function managedTunnelsApplicationFor(ctx: AppCtx) {
   const provisioner = new LocalTunnelProvisioner({

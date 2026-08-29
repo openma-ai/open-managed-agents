@@ -58,6 +58,8 @@
     "test:console": "pnpm --filter managed-agents-console test",
     "test:web": "pnpm --filter @open-managed-agents/web test",
     "test:e2e": "playwright test --config=playwright.config.ts",
+    "test:e2e:api": "node test/e2e/managed-agents-sdk.mjs",
+    "test:e2e:deployed-console": "playwright test test/e2e/deployed-console.spec.ts --config=playwright.config.ts",
     "db:generate:cf-auth": "drizzle-kit generate --config=drizzle.cf-auth.config.ts",
     "db:generate:cf-integrations": "drizzle-kit generate --config=drizzle.cf-integrations.config.ts",
     "db:generate:cf-router": "drizzle-kit generate --config=drizzle.cf-router.config.ts",

@@ -20,6 +20,11 @@ import type {
 export { AnthropicMessagesDreamCurator } from "./anthropic-messages-dream-curator";
 export { ApplicationDreamMemoryWorkspace } from "./application-dream-memory-workspace";
 export { ConfiguredModelCatalogSource } from "./configured-model-catalog";
+export { ModelCardCatalogSource } from "./model-card-catalog";
+export type {
+  ModelCardCatalogReader,
+  ModelCardCatalogRecord,
+} from "./model-card-catalog";
 export { configuredModelsModule } from "./configured-model-module";
 export { IndeterminateCredentialValidationProbe } from "./credential-validation-probe";
 export { CronDeploymentSchedulePlanner } from "./deployment-schedule-planner";
@@ -140,7 +145,11 @@ function normalizeRuntimeError(value: unknown): object {
 }
 
 function normalizeModelUsage(value: unknown): object {
-  const usage = camelCaseRuntimeValue(value) as Record<string, unknown>;
+  const normalized = camelCaseRuntimeValue(value);
+  const usage =
+    normalized !== null && typeof normalized === "object"
+      ? normalized as Record<string, unknown>
+      : {};
   return {
     cacheCreationInputTokens:
       typeof usage.cacheCreationInputTokens === "number"
@@ -204,6 +213,15 @@ export function decodeRuntimeEvent(
   if (!OFFICIAL_RUNTIME_EVENT_TYPES.has(raw.type)) return [];
 
   const decoded = camelCaseRuntimeValue(raw) as Record<string, unknown>;
+  // event_start/event_delta use the runtime's stable block ids. Preserve the
+  // same id on the eventual committed event so SDK consumers can atomically
+  // replace their in-flight projection instead of guessing from arrival order.
+  if (raw.type === "agent.message" && typeof raw.message_id === "string") {
+    decoded.id = raw.message_id;
+  }
+  if (raw.type === "agent.thinking" && typeof raw.thinking_id === "string") {
+    decoded.id = raw.thinking_id;
+  }
   if (raw.type === "session.error") {
     decoded.error = normalizeRuntimeError(raw.error);
   }

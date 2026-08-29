@@ -17,6 +17,10 @@ import {
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
 import {
+  reduceManagedDeltaFrame,
+  type ManagedDeltaState,
+} from "../lib/managed-stream";
+import {
   projectCanonicalChatTurns,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
@@ -44,16 +48,8 @@ import {
   ToolInput,
   ToolOutput,
 } from "../components/ai-elements/tool";
-import {
-  PromptInput,
-  PromptInputTextarea,
-  PromptInputFooter,
-  PromptInputTools,
-  PromptInputSubmit,
-  PromptInputButton,
-  usePromptInputAttachments,
-} from "../components/ai-elements/prompt-input";
 import { CodeBlock } from "../components/ai-elements/code-block";
+import { SessionComposer } from "../components/session/SessionComposer";
 import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
@@ -83,13 +79,16 @@ export function SessionDetail() {
   /** In-flight reasoning streams keyed by thinking_id. Same lifecycle
    *  as messages — drained on matching agent.thinking. */
   const [thinkingStreams, setThinkingStreams] = useState<Map<string, string>>(new Map());
+  const managedDeltaState = useRef<ManagedDeltaState>({
+    kinds: new Map(),
+    text: new Map(),
+  });
   /** In-flight tool-input streams keyed by tool_use_id. Wiped when the
    *  canonical agent.tool_use / mcp_tool_use / custom_tool_use lands
    *  with the same id (toolCallId on the AI SDK side). The accumulated
    *  string is partial JSON — render as a code block, not Markdown. */
   const [toolInputStreams, setToolInputStreams] = useState<Map<string, { name?: string; partial: string }>>(new Map());
   const [view, setView] = useState<View>("chat");
-  const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // Optimistic outbox slot — what the user typed, between hitting Send
   // and the server-side pending broadcast (system.user_message_pending)
@@ -180,6 +179,37 @@ export function SessionDetail() {
 
   const addEvent = (e: Record<string, unknown>) => {
     const ev = e as Event;
+
+    // Managed Agents v2 streaming uses an event_start/event_delta pair for
+    // both assistant text and thinking. Keep the correlation state outside
+    // React so back-to-back frames cannot race a render; mirror only the
+    // accumulated strings into component state.
+    const reducedDelta = reduceManagedDeltaFrame(managedDeltaState.current, e);
+    managedDeltaState.current = reducedDelta.state;
+    if (reducedDelta.action?.type === "open" || reducedDelta.action?.type === "append") {
+      const target = reducedDelta.action.stream === "agent.message"
+        ? setStreams
+        : setThinkingStreams;
+      const id = reducedDelta.action.id;
+      target((previous) => {
+        const next = new Map(previous);
+        next.set(id, reducedDelta.state.text.get(id) ?? "");
+        return next;
+      });
+      return;
+    }
+    if (reducedDelta.action?.type === "close") {
+      const target = reducedDelta.action.stream === "agent.message"
+        ? setStreams
+        : setThinkingStreams;
+      const id = reducedDelta.action.id;
+      target((previous) => {
+        if (!previous.has(id)) return previous;
+        const next = new Map(previous);
+        next.delete(id);
+        return next;
+      });
+    }
 
     // Streaming chunk lifecycle. None of these go into the events list
     // (would pollute history once the canonical agent.message lands);
@@ -465,6 +495,7 @@ export function SessionDetail() {
     // URL until the SSE refill catches up. Hard refresh works because
     // it re-mounts the whole tree from a fresh state. Reported 2026-05-13.
     seenKeys.current.clear();
+    managedDeltaState.current = { kinds: new Map(), text: new Map() };
     setEvents([]);
     setStreams(new Map());
     setThinkingStreams(new Map());
@@ -535,39 +566,33 @@ export function SessionDetail() {
       })
       .catch(() => {});
 
-    // Load history. The /events endpoint wraps each event as { seq, type, ts,
-    // data }; promote seq + ts onto the inner event so timeline has them.
-    // Paginate ASC from seq 0 in pages of 200 — long sessions stream older
-    // events progressively rather than blocking the UI on a single 1000-row
-    // payload (the legacy `limit=1000` would also silently truncate at the
-    // hard ceiling for ultra-long histories). Each page is added as it
-    // arrives, so the timeline starts populating after the first roundtrip.
+    // Load canonical Managed Agents history. `next_page` is an opaque cursor;
+    // do not parse it or depend on the old OMA `{seq, ts, data}` envelope.
+    // Each page is applied as it arrives so long sessions render progressively.
     void (async () => {
-      let afterSeq = 0;
-      const pageLimit = 200;
+      let page: string | undefined;
+      const seenPages = new Set<string>();
+      const pageLimit = 100;
       // Bound the loop so a malformed `next_page` never spins forever.
       // Even at 200/page this covers 100k events, well past anything the
       // sandbox SQL store retains in practice.
       for (let i = 0; i < 500; i++) {
         try {
           const res = await api<{
-            data: Array<{ seq?: number; type: string; ts?: string; data: Event }>;
-            has_more?: boolean;
+            data: Event[];
             next_page?: string | null;
-          }>(`/v1/sessions/${id}/events?limit=${pageLimit}&order=asc&after_seq=${afterSeq}`);
+          }>(
+            `/v1/sessions/${id}/events?limit=${pageLimit}&order=asc${
+              page === undefined ? "" : `&page=${encodeURIComponent(page)}`
+            }`,
+          );
           for (const e of res.data) {
-            const inner = e.data || (e as unknown as Event);
-            if (e.ts && !inner.ts) inner.ts = e.ts;
-            if (e.seq !== undefined && inner.seq === undefined) inner.seq = e.seq;
-            addEvent(inner);
+            if (!e.ts && typeof e.processed_at === "string") e.ts = e.processed_at;
+            addEvent(e);
           }
-          if (!res.has_more || !res.next_page) break;
-          // next_page is "seq_<n>" per session-do.ts:1568.
-          const m = /^seq_(\d+)$/.exec(res.next_page);
-          if (!m) break;
-          const nextAfter = parseInt(m[1], 10);
-          if (!Number.isFinite(nextAfter) || nextAfter <= afterSeq) break;
-          afterSeq = nextAfter;
+          if (!res.next_page || seenPages.has(res.next_page)) break;
+          seenPages.add(res.next_page);
+          page = res.next_page;
         } catch {
           break;
         }
@@ -587,7 +612,7 @@ export function SessionDetail() {
     // sessions intentionally don't poll: trajectory.outcome === "running"
     // is fine, the StatusPill already shows the live status.
     setTrajectory("loading");
-    api<Trajectory>(`/v1/sessions/${id}/trajectory`)
+    api<Trajectory>(`/v1/oma/sessions/${id}/trajectory`)
       .then((t) => setTrajectory(t))
       .catch(() => setTrajectory("error"));
 
@@ -620,7 +645,7 @@ export function SessionDetail() {
         cancelled_at: number | null;
         data: Event;
       }>;
-    }>(`/v1/sessions/${id}/pending`)
+    }>(`/v1/oma/sessions/${id}/pending`)
       .then((res) => {
         const next = new Map<string, PendingEntry>();
         for (const r of res.data ?? []) {
@@ -640,27 +665,10 @@ export function SessionDetail() {
     return () => { abort.abort(); };
   }, [id]);
 
-  // Encode a File as base64 (no data: URL prefix) for inline content
-  // blocks. Used so OMA backend's userContentToParts can forward the
-  // bytes straight to the AI SDK (image vision / PDF parsing) without
-  // needing to async-resolve file_id sources.
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const r = reader.result as string;
-        const idx = r.indexOf(",");
-        resolve(idx >= 0 ? r.slice(idx + 1) : r);
-      };
-      reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
-      reader.readAsDataURL(file);
-    });
-
-  const send = async (overrideText?: string, files?: File[]) => {
-    const text = (overrideText ?? input).trim();
+  const send = async (messageText: string, files?: File[]) => {
+    const text = messageText.trim();
     if (!text && !files?.length) return;
     if (!id) return;
-    setInput("");
     setLocalPending(text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : ""));
     setSending(true);
     try {
@@ -916,7 +924,7 @@ export function SessionDetail() {
                 status_idle. Recovery path for stuck-Running sessions where a
                 DO eviction killed the stream and no clean status_idle ever
                 landed. */}
-            {status === "running" && (
+            {status === "running" && view !== "chat" && (
               <button
                 onClick={() => void interrupt()}
                 disabled={interrupting}
@@ -1185,54 +1193,19 @@ export function SessionDetail() {
             <ConversationScrollButton />
           </Conversation>
 
-          {/* Prompt input. ai-elements <PromptInput> wraps a <form> with
-              an InputGroup-based textarea + attachment lifecycle; we
-              hand it our own onSubmit so the existing send() (POST
-              /events) stays the source of truth. The + button only
-              accepts images — they go inline to the model as vision
-              inputs. Non-image attachments belong on the mount-based
-              session resources path, not this button.
-
-              Wireless treatment: composer sits flush against the
-              conversation above on a `bg-bg` (white) surface — no
-              line, no top padding, just `pb-4` for breathing room
-              below. */}
-          <div className="pl-3 pr-4 pb-4 bg-bg shrink-0">
-            <PromptInput
-              accept="image/*"
-              multiple
-              maxFiles={10}
-              maxFileSize={25 * 1024 * 1024}
-              onError={(err) => toast.error(err.message)}
-              globalDrop
-              onSubmit={async ({ text, files }) => {
-                // PromptInput captured the textarea's value into `text`
-                // and the picked/dropped files into `files`, then
-                // form.reset() before this handler runs. send() owns
-                // clearing the mirrored `input` state, the optimistic
-                // outbox slot, and the file uploads.
-                const rawFiles = files
-                  .map((f) => (f as { file?: File }).file)
-                  .filter((f): f is File => f instanceof File);
-                await send(text, rawFiles);
-              }}
-            >
-              <PromptInputTextarea
-                placeholder="Send a message…  (drag an image in or click ＋)"
-                disabled={sending}
-                onChange={(e) => setInput(e.currentTarget.value)}
-              />
-              <PromptInputFooter>
-                <PromptInputTools>
-                  <AttachButton />
-                </PromptInputTools>
-                <PromptInputSubmit
-                  status={sending ? "submitted" : undefined}
-                  disabled={sending}
-                />
-              </PromptInputFooter>
-            </PromptInput>
-          </div>
+          <SessionComposer
+            interrupting={interrupting}
+            onError={(error) => toast.error(error.message)}
+            onStop={() => void interrupt()}
+            onSubmit={async ({ text, files }) => {
+              const rawFiles = files
+                .map((file) => file.file)
+                .filter((file): file is File => file instanceof File);
+              await send(text, rawFiles);
+            }}
+            running={status === "running"}
+            sending={sending}
+          />
         </>
       ) : (
         <TimelineView key={`${id ?? "session"}:${activeThreadId}`} events={timelineEvents} />
@@ -1444,30 +1417,6 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
  *   session.warning           → amber alert div  (same)
  *   anything else             → null  (timeline-only events that shouldn't appear in chat)
  */
-
-/**
- * Plain "+" button that opens the PromptInput file picker for images.
- * The stock `PromptInputActionAddAttachments` from ai-elements is a
- * DropdownMenuItem — meant to live inside an action-menu — so dropping
- * it directly into PromptInputTools threw "MenuItem must be used within
- * Menu" at render. This button reads the attachments controller from
- * context and calls `openFileDialog()` directly, no menu required.
- */
-function AttachButton() {
-  const attachments = usePromptInputAttachments();
-  return (
-    <PromptInputButton
-      type="button"
-      onClick={() => attachments.openFileDialog()}
-      aria-label="Add image"
-      title="Add image"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-    </PromptInputButton>
-  );
-}
 
 function EventRender({
   event,

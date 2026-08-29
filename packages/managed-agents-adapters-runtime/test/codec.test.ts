@@ -64,6 +64,57 @@ describe("Managed session runtime codec", () => {
     ).toEqual([]);
   });
 
+  it("normalizes a failed model span that has no usage payload", () => {
+    expect(
+      decodeRuntimeEvent(
+        {
+          id: "event_model_end_01",
+          type: "span.model_request_end",
+          model_request_start_id: "event_model_start_01",
+          processed_at: "2026-08-26T00:00:02.000Z",
+        },
+        new Set(),
+      ),
+    ).toEqual([
+      {
+        id: "event_model_end_01",
+        type: "span.model_request_end",
+        modelRequestStartId: "event_model_start_01",
+        processedAt: "2026-08-26T00:00:02.000Z",
+        isError: null,
+        modelUsage: {
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        },
+      },
+    ]);
+  });
+
+  it("uses the streamed block id for the committed message correlation", () => {
+    expect(
+      decodeRuntimeEvent(
+        {
+          id: "event_log_01",
+          type: "agent.message",
+          message_id: "message_01",
+          content: [{ type: "text", text: "Hello" }],
+          processed_at: "2026-08-26T00:00:03.000Z",
+        },
+        new Set(),
+      ),
+    ).toEqual([
+      {
+        id: "message_01",
+        type: "agent.message",
+        messageId: "message_01",
+        content: [{ type: "text", text: "Hello" }],
+        processedAt: "2026-08-26T00:00:03.000Z",
+      },
+    ]);
+  });
+
   it("encodes complete application history at the runtime boundary", () => {
     const encode = (
       runtimeCodec as typeof runtimeCodec & {

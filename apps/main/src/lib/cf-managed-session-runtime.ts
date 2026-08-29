@@ -72,7 +72,14 @@ function socketMessages(socket: RuntimeWebSocket): AsyncIterable<string> {
         yield item.value;
       }
     } finally {
-      socket.close(1000, "subscription closed");
+      try {
+        socket.close(1000, "subscription closed");
+      } catch {
+        // Peer-close and error events can transition Cloudflare's socket to
+        // CLOSED before the iterator unwinds. Closing an already-closed
+        // socket throws and must not bypass the adapter's replay/reconnect
+        // loop.
+      }
     }
   })();
 }
@@ -136,38 +143,76 @@ export class CfManagedSessionRuntimeAdapter
   private async *stream(
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
   ): AsyncIterable<StreamSessionEvent> {
-    const response = await this.fetcher.fetch(
-      `https://managed-runtime/sessions/${encodeURIComponent(input.sessionId)}/ws`,
-      {
-        method: "GET",
-        headers: {
-          Connection: "Upgrade",
-          Upgrade: "websocket",
-          "x-oma-workspace-id": input.workspaceId,
-        },
-      },
-    );
-    const socket = (response as Response & { webSocket?: RuntimeWebSocket })
-      .webSocket;
-    if (socket === undefined) {
-      throw new Error("Managed session runtime did not accept the event stream");
-    }
     const deltaTypes = new Set(input.deltaEventTypes ?? []);
-    for await (const frame of socketMessages(socket)) {
-      let raw: unknown;
+    const seenCanonicalEventIds = new Set<string>();
+    let replay = false;
+    for (;;) {
+      let response: Response;
       try {
-        raw = JSON.parse(frame);
-      } catch {
+        response = await this.fetcher.fetch(
+          `https://managed-runtime/sessions/${encodeURIComponent(input.sessionId)}/ws`,
+          {
+            method: "GET",
+            headers: {
+              Connection: "Upgrade",
+              Upgrade: "websocket",
+              "x-oma-workspace-id": input.workspaceId,
+              ...(replay && { "x-oma-replay": "1" }),
+            },
+          },
+        );
+      } catch (error) {
+        if (!replay) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
         continue;
       }
-      if (
-        "threadId" in input &&
-        (raw === null ||
-          typeof raw !== "object" ||
-          (raw as { session_thread_id?: unknown }).session_thread_id !==
-            input.threadId)
-      ) continue;
-      for (const event of decodeRuntimeEvent(raw, deltaTypes)) yield event;
+      const socket = (response as Response & {
+        webSocket?: RuntimeWebSocket | null;
+      })
+        .webSocket;
+      if (socket == null) {
+        if (replay) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        throw new Error("Managed session runtime did not accept the event stream");
+      }
+      for await (const frame of socketMessages(socket)) {
+        let raw: unknown;
+        try {
+          raw = JSON.parse(frame);
+        } catch {
+          continue;
+        }
+        if (
+          "threadId" in input &&
+          (raw === null ||
+            typeof raw !== "object" ||
+            (raw as { session_thread_id?: unknown }).session_thread_id !==
+              input.threadId)
+        ) continue;
+        const rawEvent = raw as { id?: unknown; type?: unknown };
+        const canonicalEventId =
+          typeof rawEvent.id === "string" ? rawEvent.id : undefined;
+        if (
+          canonicalEventId !== undefined &&
+          seenCanonicalEventIds.has(canonicalEventId)
+        ) continue;
+        if (canonicalEventId !== undefined) {
+          seenCanonicalEventIds.add(canonicalEventId);
+        }
+        for (const event of decodeRuntimeEvent(raw, deltaTypes)) yield event;
+        if (
+          rawEvent.type === "session.status_idle" ||
+          rawEvent.type === "session.status_terminated" ||
+          rawEvent.type === "session.deleted" ||
+          ("threadId" in input &&
+            (rawEvent.type === "session.thread_status_idle" ||
+              rawEvent.type === "session.thread_status_terminated"))
+        ) return;
+      }
+      replay = true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 
