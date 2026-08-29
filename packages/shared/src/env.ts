@@ -201,13 +201,13 @@ export interface Env {
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent
-     * worker hands AI SDK's MCP HTTP transport a custom fetch that calls
+     * worker hands the official MCP HTTP adapter a custom fetch that calls
      * `env.MAIN_MCP.fetch(req)` with three metadata headers
      * (`x-oma-tenant`, `x-oma-session`, `x-oma-mcp-server`); main worker
      * resolves the vault credential, replaces the Authorization header,
      * strips the metadata, and forwards to the upstream. Body / headers
      * / status / Mcp-Session-Id stream through both ways unchanged, so
-     * the SDK owns the protocol details (Streamable-HTTP session ids,
+     * the official SDK owns the protocol details (Streamable-HTTP session ids,
      * SSE responses, retries) and a server-side spec change can't break
      * us. Vault credentials still only live in main.
      */

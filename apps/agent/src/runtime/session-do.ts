@@ -75,7 +75,7 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildTools } from "../harness/tools";
+import { buildTools, disposeTools } from "../harness/tools";
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
@@ -589,8 +589,8 @@ export class SessionDO extends DurableObject<Env> {
   /**
    * Localhost URLs of stdio MCP servers spawned in the sandbox during warmup.
    * Indexed by mcp_servers[].name. Used to fix up the agent.mcp_servers entry
-   * before each buildTools() call so the curl-based MCP wiring talks to the
-   * right port.
+   * before each buildTools() call so the official Streamable HTTP client
+   * talks to the right port.
    */
   private spawnedMcpUrls: Map<string, string> = new Map();
   private threads = new Map<string, { agentId: string; agentConfig: AgentConfig }>();
@@ -3097,7 +3097,7 @@ export class SessionDO extends DurableObject<Env> {
 
       // Spawn stdio MCP servers in the sandbox if the agent uses any. The
       // spawned process binds on 127.0.0.1 + records the URL so subsequent
-      // buildTools calls point the curl-based MCP wiring at it.
+      // buildTools calls point the official MCP HTTP adapter at it.
       await this.spawnSessionStdioMcps(sandbox);
 
       // Mount all session resources (files, git repos, env secrets)
@@ -3682,6 +3682,7 @@ export class SessionDO extends DurableObject<Env> {
             this.broadcastEvent(toolResultEvent);
           }
         }
+        await disposeTools(allTools);
       }
     } else {
       // Denied or not found — inject denial result
@@ -4182,6 +4183,7 @@ export class SessionDO extends DurableObject<Env> {
         })
         .join("\n");
     } finally {
+      await disposeTools(subTools);
       // Identity-guarded delete: a nested runSubAgent on the same threadId
       // would have replaced our slot — don't stomp on its controller.
       if (this._threadAbortControllers.get(threadId) === abortController) {
@@ -4882,6 +4884,7 @@ export class SessionDO extends DurableObject<Env> {
       // The sandbox is still alive (container persists independently).
       // Client can send a new user.message to retry.
     } finally {
+      await disposeTools(allTools);
       // Only delete if it's still ours — a sub-agent run within the same
       // thread may have temporarily replaced it. Same-thread re-entry is
       // mutex'd by _draining so this is theoretical safety only.

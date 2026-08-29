@@ -46,6 +46,7 @@ export default defineConfig({
       { find: "@open-managed-agents/memory-store/adapters/local-fs-blob", replacement: "./packages/memory-store/src/adapters/local-fs-blob.ts" },
       { find: "@open-managed-agents/memory-store/adapters/s3-blob", replacement: "./packages/memory-store/src/adapters/s3-blob.ts" },
       { find: "@open-managed-agents/memory-store", replacement: "./packages/memory-store/src/index.ts" },
+      { find: "@open-managed-agents/mcp", replacement: "./packages/mcp/src/index.ts" },
       { find: "@open-managed-agents/dreams-store/test-fakes", replacement: "./packages/dreams-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/dreams-store", replacement: "./packages/dreams-store/src/index.ts" },
       { find: "@open-managed-agents/dreams-pipeline", replacement: "./packages/dreams-pipeline/src/index.ts" },

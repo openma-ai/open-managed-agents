@@ -61,8 +61,8 @@
   //   lookup + token injection + upstream call. The agent's DO never holds
   //   plaintext credentials — mirrors Anthropic Managed Agents' "credential
   //   proxy outside the harness" design. See apps/main/src/index.ts:McpProxyRpc
-  //   for the entrypoint, packages/binding-mcp-transport for the AI-SDK
-  //   transport adapter.
+  //   for the entrypoint; @open-managed-agents/mcp owns the official
+  //   Streamable HTTP client adapter.
   "services": [
     { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
     { "binding": "MAIN_MCP", "service": "managed-agents", "entrypoint": "McpProxyRpc" }

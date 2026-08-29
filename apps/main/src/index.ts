@@ -1426,7 +1426,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
 
   /**
    * Transparent HTTP proxy for cloud agent MCP traffic. Agent's tools.ts
-   * gives AI SDK's MCP HTTP transport a custom fetch that calls
+   * gives the official MCP HTTP adapter a custom fetch that calls
    * `env.MAIN_MCP.fetch(req)` after stamping three metadata headers:
    *   - `x-oma-tenant`
    *   - `x-oma-session`
@@ -1440,7 +1440,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
    * stream through unchanged.
    *
    * Vault credentials remain main-only — agent worker only sees the
-   * Response. The SDK's HTTP transport handles Streamable-HTTP session
+   * Response. The official SDK transport handles Streamable-HTTP session
    * id rotation, SSE response framing, retries — none of that lives
    * in this Worker anymore. The hand-rolled BindingMCPTransport that
    * preceded this dropped session ids and broke session-ful servers
