@@ -28,6 +28,10 @@ export interface HarnessInterface {
   /** Main agent loop. Required. Drives generateText and emits events. */
   run(ctx: HarnessContext): Promise<void>;
 
+  /** Release harness-owned processes. Session hosts call this before the
+   * underlying Sandbox is destroyed. */
+  dispose?(): Promise<void>;
+
   /**
    * Called once per session, after sandbox warmup, before the first user
    * message is processed. Default behavior (DefaultHarness): inject

@@ -16,3 +16,24 @@ export function resolveHarness(name?: string): HarnessInterface {
   }
   return factory();
 }
+
+/** Session-scoped harness owner. Stateful harnesses (notably ACP) retain one
+ * process across turns, while agent version/harness changes dispose the old
+ * instance before activating the replacement. */
+export class HarnessLease {
+  #active: { key: string; harness: HarnessInterface } | null = null;
+
+  async resolve(key: string, name?: string): Promise<HarnessInterface> {
+    if (this.#active?.key === key) return this.#active.harness;
+    await this.dispose();
+    const harness = resolveHarness(name);
+    this.#active = { key, harness };
+    return harness;
+  }
+
+  async dispose(): Promise<void> {
+    const active = this.#active;
+    this.#active = null;
+    await active?.harness.dispose?.();
+  }
+}

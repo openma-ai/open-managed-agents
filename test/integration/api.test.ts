@@ -185,6 +185,51 @@ describe("Agent CRUD", () => {
     expect(agent._oma.harness).toBe("coding");
   });
 
+  it("round-trips ACP sandbox configuration through the OMA envelope", async () => {
+    const acp = {
+      agent: {
+        command: "claude-agent-acp",
+        args: ["--stdio"],
+        cwd: "/workspace",
+      },
+      per_turn_timeout_ms: 120_000,
+    };
+    const res = await api("/v1/oma/agents", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        name: "Sandbox ACP",
+        model: "claude-sonnet-4-6",
+        _oma: { harness: "acp-sandbox", acp },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const agent = (await res.json()) as any;
+    expect(agent._oma).toMatchObject({ harness: "acp-sandbox", acp });
+  });
+
+  it("rejects an ACP sandbox harness without a process command", async () => {
+    const res = await api("/v1/oma/agents", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        name: "Broken Sandbox ACP",
+        model: "claude-sonnet-4-6",
+        _oma: { harness: "acp-sandbox" },
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "_oma.acp.agent.command is required for acp-sandbox",
+      },
+    });
+  });
+
   it("stores selective tool config", async () => {
     const res = await api("/v1/oma/agents", {
       method: "POST",

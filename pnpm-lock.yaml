@@ -108,6 +108,9 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
+      '@open-managed-agents/acp-runtime':
+        specifier: workspace:*
+        version: link:../../packages/acp-runtime
       '@open-managed-agents/browser-harness':
         specifier: workspace:*
         version: link:../../packages/browser-harness

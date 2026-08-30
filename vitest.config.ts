@@ -8,6 +8,8 @@ const packagesWithUnpublishedSourcemapSources = [
   "/node_modules/.pnpm/cron-schedule@",
   "/node_modules/.pnpm/standardwebhooks@",
   "/node_modules/.pnpm/@cloudflare+containers@",
+  "/node_modules/.pnpm/@openma+common@",
+  "/node_modules/.pnpm/@agentclientprotocol+sdk@",
 ];
 
 /**
@@ -288,6 +290,8 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/known-agents", replacement: "./packages/acp-runtime/src/known-agents.ts" },
+      { find: "@open-managed-agents/acp-runtime/placement", replacement: "./packages/acp-runtime/src/placement.ts" },
+      { find: "@open-managed-agents/acp-runtime/sandbox-spawner", replacement: "./packages/acp-runtime/src/spawners/sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/node-spawner", replacement: "./packages/acp-runtime/src/node-spawner.ts" },
       { find: "@open-managed-agents/acp-runtime/registry", replacement: "./packages/acp-runtime/src/registry.ts" },
       { find: "@open-managed-agents/acp-runtime", replacement: "./packages/acp-runtime/src/index.ts" },

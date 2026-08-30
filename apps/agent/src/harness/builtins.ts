@@ -1,5 +1,6 @@
 import { DefaultHarness } from "./default-loop";
 import { PiHarness } from "./pi-loop";
+import { AcpSandboxHarness } from "./acp-sandbox-loop";
 import { registerHarness } from "./registry";
 
 /**
@@ -11,4 +12,5 @@ export function registerCoreHarnesses(): void {
   registerHarness("default", () => new DefaultHarness());
   registerHarness("ai-sdk", () => new DefaultHarness());
   registerHarness("pi", () => new PiHarness());
+  registerHarness("acp-sandbox", () => new AcpSandboxHarness());
 }

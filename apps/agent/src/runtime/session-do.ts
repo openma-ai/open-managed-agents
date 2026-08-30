@@ -61,7 +61,7 @@ import type {
   SystemUserMessageCancelledEvent,
 } from "@open-managed-agents/shared";
 import type { HarnessContext, HarnessInterface, HistoryStore, SandboxExecutor, ProcessHandle, FileResolver } from "../harness/interface";
-import { resolveHarness } from "../harness/registry";
+import { HarnessLease, resolveHarness } from "../harness/registry";
 import { composeSystemPrompt } from "../harness/platform-guidance";
 import {
   createPiModelRuntime,
@@ -310,6 +310,7 @@ export class SessionDO extends DurableObject<Env> {
   // until /init writes the row. _runtimeAdapter is the cached adapter
   // instance scoped to this DO's session.
   private _runtimeAdapter: RuntimeAdapter | null = null;
+  private readonly _primaryHarness = new HarnessLease();
   private _managedProjectionChain: Promise<void> = Promise.resolve();
   private readonly _wakeupScheduler: CloudflareSessionWakeupScheduler;
   private readonly _wakeups: SessionWakeupApplication;
@@ -1603,6 +1604,7 @@ export class SessionDO extends DurableObject<Env> {
         ctrl.abort();
       }
       this._threadAbortControllers.clear();
+      await this._primaryHarness.dispose();
       // Snapshot /workspace BEFORE we destroy the container — once destroy()
       // runs the container is gone and we can't read its filesystem.
       // CF's "persist across sessions" pattern (changelog 2026-02-23):
@@ -4301,14 +4303,20 @@ export class SessionDO extends DurableObject<Env> {
     let harness: HarnessInterface;
     let resolvedHarnessName = agent.harness || "default";
     try {
-      harness = resolveHarness(resolvedHarnessName);
+      harness = await this._primaryHarness.resolve(
+        `${agent.id}:${agent.version}:${resolvedHarnessName}`,
+        resolvedHarnessName,
+      );
     } catch (err) {
       logWarn(
         { op: "session_do.harness_resolve", session_id: this.state.session_id, agent_id: agent.id, requested: agent.harness, err },
         "agent harness unknown; falling back to default",
       );
       resolvedHarnessName = "default";
-      harness = resolveHarness(resolvedHarnessName);
+      harness = await this._primaryHarness.resolve(
+        `${agent.id}:${agent.version}:${resolvedHarnessName}`,
+        resolvedHarnessName,
+      );
     }
 
     // --- Platform prepares WHAT is available ---

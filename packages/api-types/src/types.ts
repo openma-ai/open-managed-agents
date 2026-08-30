@@ -76,6 +76,24 @@ export interface AgentConfig {
    */
   aux_model?: string | { id: string; speed?: "standard" | "fast" };
   harness?: string;
+  /** ACP process configuration for the `acp-sandbox` harness. The process is
+   * spawned inside the session Sandbox through SandboxDuplexProcessPort; the
+   * OpenMA host retains ownership of the ACP loop and canonical event stream. */
+  acp?: {
+    agent: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string | undefined>;
+      cwd?: string;
+    };
+    restart?: {
+      mode: "never" | "on-crash" | "always";
+      max_restarts?: number;
+      window_ms?: number;
+    };
+    idle_timeout_ms?: number;
+    per_turn_timeout_ms?: number;
+  };
   /**
    * When set, agent runs on a user-registered local ACP runtime instead of
    * OMA's cloud SessionDO loop. `harness` MUST be "acp-proxy" for this to

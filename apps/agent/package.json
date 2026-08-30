@@ -14,6 +14,7 @@
     "./harness/provider": "./src/harness/provider.ts",
     "./harness/pi-provider": "./src/harness/pi-provider.ts",
     "./harness/pi-loop": "./src/harness/pi-loop.ts",
+    "./harness/acp-sandbox": "./src/harness/acp-sandbox-loop.ts",
     "./harness/platform-guidance": "./src/harness/platform-guidance.ts",
     "./runtime/history": "./src/runtime/history.ts"
   },
@@ -27,6 +28,7 @@
     "@earendil-works/pi-ai": "0.84.4",
     "@open-managed-agents/agents-store": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
+    "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",

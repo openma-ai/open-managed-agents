@@ -79,7 +79,7 @@ describe("AgentService — create + read", () => {
     expect(got?.tenant_id).toBe(TENANT);
   });
 
-  it("create persists optional fields verbatim (mcp_servers, skills, callable_agents, metadata, aux_model)", async () => {
+  it("create persists optional fields verbatim", async () => {
     const { service } = createInMemoryAgentService();
     const a = await service.create({
       tenantId: TENANT,
@@ -92,6 +92,10 @@ describe("AgentService — create + read", () => {
         metadata: { tag: "demo", priority: 1 },
         aux_model: "claude-haiku-4-5",
         appendable_prompts: ["prompt-a"],
+        acp: {
+          agent: { command: "claude-agent-acp", cwd: "/workspace" },
+          per_turn_timeout_ms: 120_000,
+        },
       },
     });
     expect(a.description).toBe("a test agent");
@@ -101,6 +105,10 @@ describe("AgentService — create + read", () => {
     expect(a.metadata).toEqual({ tag: "demo", priority: 1 });
     expect(a.aux_model).toBe("claude-haiku-4-5");
     expect(a.appendable_prompts).toEqual(["prompt-a"]);
+    expect(a.acp).toEqual({
+      agent: { command: "claude-agent-acp", cwd: "/workspace" },
+      per_turn_timeout_ms: 120_000,
+    });
   });
 });
 

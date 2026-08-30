@@ -44,6 +44,7 @@ function formatAgent(agent: AgentConfig) {
         : { id: agent.aux_model.id, speed: agent.aux_model.speed || ("standard" as const) };
   }
   if (agent.harness) oma.harness = agent.harness;
+  if (agent.acp) oma.acp = agent.acp;
   if (agent.runtime_binding) oma.runtime_binding = agent.runtime_binding;
   if (agent.appendable_prompts && agent.appendable_prompts.length > 0) {
     oma.appendable_prompts = agent.appendable_prompts;
@@ -65,6 +66,7 @@ function formatAgent(agent: AgentConfig) {
   const {
     aux_model: _aux,
     harness: _harness,
+    acp: _acp,
     runtime_binding: _rb,
     appendable_prompts: _ap,
     callable_agents: _ca,
@@ -173,6 +175,7 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" };
         harness?: string;
+        acp?: AgentConfig["acp"];
         runtime_binding?: AgentConfig["runtime_binding"];
         appendable_prompts?: string[];
       };
@@ -186,11 +189,18 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       callable_agents: ma.list ?? raw.callable_agents,
       aux_model: raw._oma?.aux_model,
       harness: raw._oma?.harness ?? raw.harness,
+      acp: raw._oma?.acp,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };
 
     if (!body.name) return c.json({ error: "name is required" }, 400);
+    if (body.harness === "acp-sandbox" && !body.acp?.agent?.command) {
+      return c.json(
+        { error: "_oma.acp.agent.command is required for acp-sandbox" },
+        422,
+      );
+    }
     if (!body.runtime_binding && !body.model) {
       return c.json({ error: "model is required for cloud agents" }, 400);
     }
@@ -220,6 +230,7 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
         system: body.system,
         tools: body.tools,
         harness: body.harness,
+        acp: body.acp,
         description: body.description,
         mcp_servers: body.mcp_servers,
         skills: body.skills,
@@ -372,6 +383,7 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       _oma?: {
         aux_model?: string | { id: string; speed?: "standard" | "fast" } | null;
         harness?: string;
+        acp?: AgentConfig["acp"] | null;
         runtime_binding?: AgentConfig["runtime_binding"] | null;
         appendable_prompts?: string[] | null;
       };
@@ -393,9 +405,19 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
       callable_agents: callableAgents,
       aux_model: raw._oma?.aux_model,
       harness: raw._oma?.harness ?? raw.harness,
+      acp: raw._oma?.acp,
       runtime_binding: raw._oma?.runtime_binding,
       appendable_prompts: raw._oma?.appendable_prompts,
     };
+
+    const effectiveHarness = body.harness ?? existing.harness;
+    const effectiveAcp = body.acp === null ? undefined : (body.acp ?? existing.acp);
+    if (effectiveHarness === "acp-sandbox" && !effectiveAcp?.agent?.command) {
+      return c.json(
+        { error: "_oma.acp.agent.command is required for acp-sandbox" },
+        422,
+      );
+    }
 
     if (deps.validateAgentLimits) {
       const limitCheck = deps.validateAgentLimits(body);
@@ -433,6 +455,7 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
           system: body.system,
           tools: body.tools,
           harness: body.harness,
+          acp: body.acp,
           description: body.description,
           mcp_servers: body.mcp_servers,
           skills: body.skills,
