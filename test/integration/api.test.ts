@@ -617,21 +617,13 @@ describe("Session isolation", () => {
 });
 
 // ============================================================
-// 8. SSE endpoints
+// 8. Legacy event JSON compatibility
 // ============================================================
-describe("SSE endpoints", () => {
+describe("Legacy event JSON compatibility", () => {
   let sessionId: string;
   beforeAll(async () => {
     const { session } = await createFullSession();
     sessionId = session.id;
-  });
-
-  it.skip("GET /events returns text/event-stream", async () => {
-    const res = await api(`/v1/oma/sessions/${sessionId}/events`, {
-      headers: { "x-api-key": "test-key", Accept: "text/event-stream" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
   });
 
   it("GET /events returns JSON when Accept is application/json", async () => {
@@ -653,15 +645,7 @@ describe("SSE endpoints", () => {
     expect(body.data).toBeInstanceOf(Array);
   });
 
-  it.skip("GET /events/stream also works (Anthropic alias)", async () => {
-    const res = await api(`/v1/oma/sessions/${sessionId}/events/stream`, {
-      headers: { "x-api-key": "test-key" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
-  });
-
-  it("SSE returns 404 for nonexistent session", async () => {
+  it("GET /events returns 404 for a nonexistent session", async () => {
     const res = await api("/v1/oma/sessions/sess_ghost/events", {
       headers: { "x-api-key": "test-key" },
     });

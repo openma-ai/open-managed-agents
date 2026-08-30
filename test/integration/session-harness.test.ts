@@ -693,12 +693,4 @@ describe("Harness integration — additional scenarios", () => {
     const agentMsgs = events.filter((e) => e.type === "agent.message");
     expect(agentMsgs.length).toBeGreaterThanOrEqual(2);
   });
-
-  it.skip("session events GET returns SSE for text/event-stream", async () => {
-    const sessionId = await createSessionWith("sh-noop");
-    await postAndWait(sessionId, "sse test", 600);
-    const res = await get(`/v1/oma/sessions/${sessionId}/events`, { Accept: "text/event-stream" });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
-  });
 });

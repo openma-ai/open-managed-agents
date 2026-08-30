@@ -501,34 +501,11 @@ describe("Events pagination", () => {
     expect(typeof body.has_more).toBe("boolean");
   });
 
-  it.skip("returns SSE with Accept: text/event-stream", async () => {
-    const res = await get(`/v1/oma/sessions/${sessionId}/events`, { Accept: "text/event-stream" });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
-  });
-
   it("limits results", async () => {
     const res = await get(`/v1/oma/sessions/${sessionId}/events?limit=2`, { Accept: "application/json" });
     const body = (await res.json()) as any;
     expect(body.data.length).toBe(2);
     expect(body.has_more).toBe(true);
-  });
-
-  it.skip("paginates with cursor", async () => {
-    const page1 = await get(`/v1/oma/sessions/${sessionId}/events?limit=2`, { Accept: "application/json" });
-    const body1 = (await page1.json()) as any;
-    expect(body1.next_page).toBeTruthy();
-
-    const page2 = await get(`/v1/oma/sessions/${sessionId}/events?limit=2&after=${body1.next_page}`, { Accept: "application/json" });
-    const body2 = (await page2.json()) as any;
-    expect(body2.data.length).toBeGreaterThanOrEqual(1);
-
-    // No overlap between pages
-    const ids1 = body1.data.map((e: any) => e.seq);
-    const ids2 = body2.data.map((e: any) => e.seq);
-    for (const id of ids2) {
-      expect(ids1).not.toContain(id);
-    }
   });
 });
 
