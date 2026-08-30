@@ -1,5 +1,39 @@
+import { readFile } from "node:fs/promises";
 import { defineConfig } from "vitest/config";
 import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import type { Plugin } from "vite";
+
+const packagesWithUnpublishedSourcemapSources = [
+  "/node_modules/.pnpm/@workflow+serde@",
+  "/node_modules/.pnpm/cron-schedule@",
+  "/node_modules/.pnpm/standardwebhooks@",
+  "/node_modules/.pnpm/@cloudflare+containers@",
+];
+
+/**
+ * These published packages reference source files that are absent from their
+ * npm tarballs. Strip only their unusable sourceMappingURL comments so Vite
+ * keeps validating first-party and all other dependency sourcemaps normally.
+ */
+function stripUnpublishedDependencySourcemaps(): Plugin {
+  return {
+    name: "strip-unpublished-dependency-sourcemaps",
+    enforce: "pre",
+    async load(id) {
+      const filePath = id.split("?", 1)[0];
+      const normalizedPath = filePath.replaceAll("\\", "/");
+      if (
+        !normalizedPath.endsWith(".js") ||
+        !packagesWithUnpublishedSourcemapSources.some((packagePath) => normalizedPath.includes(packagePath))
+      ) {
+        return null;
+      }
+
+      const code = await readFile(filePath, "utf8");
+      return code.replace(/^\/\/# sourceMappingURL=.*(?:\r?\n|$)/gm, "");
+    },
+  };
+}
 
 const cfWorkerOptions = {
   wrangler: { configPath: "./wrangler.test.jsonc" },
@@ -23,7 +57,7 @@ export default defineConfig({
   // cloudflareTest registers the `cloudflare:test` virtual module
   // (runInDurableObject, listDurableObjectIds, etc.) — the pool runner
   // alone doesn't expose it, only the plugin does.
-  plugins: [cloudflareTest(cfWorkerOptions)],
+  plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
   resolve: {
     // vitest-pool-workers bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph

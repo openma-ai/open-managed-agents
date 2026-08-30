@@ -64,7 +64,9 @@ describe.skip("SqliteHistory message conversion", () => {
     ws.accept();
     const events: any[] = [];
     return new Promise((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(events); }, waitMs);
     });
   }
@@ -365,8 +367,12 @@ describe.skip("WebSocket broadcast", () => {
 
     const events1: any[] = [];
     const events2: any[] = [];
-    ws1.addEventListener("message", (e) => events1.push(JSON.parse(e.data as string)));
-    ws2.addEventListener("message", (e) => events2.push(JSON.parse(e.data as string)));
+    ws1.addEventListener("message", (e) => {
+      events1.push(JSON.parse(e.data as string));
+    });
+    ws2.addEventListener("message", (e) => {
+      events2.push(JSON.parse(e.data as string));
+    });
 
     // Trigger harness
     await api(`/v1/oma/sessions/${session.id}/events`, {
@@ -444,7 +450,9 @@ describe("Edge cases", () => {
     ws.accept();
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 50);
     });
 
@@ -577,7 +585,9 @@ describe.skip("Harness error handling", () => {
     ws.accept();
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 50);
     });
 

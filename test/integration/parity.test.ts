@@ -127,9 +127,9 @@ describe("user.define_outcome event", () => {
     ws.accept();
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) =>
-        events.push(JSON.parse(e.data as string))
-      );
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => {
         ws.close();
         resolve();

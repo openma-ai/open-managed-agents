@@ -317,7 +317,9 @@ describe("History - complex conversions", () => {
     ws.accept();
     const replayed: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => replayed.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        replayed.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 100);
     });
     return replayed;

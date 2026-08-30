@@ -1314,9 +1314,13 @@ async function openSse(
         }
       }
     },
-    cancel: () => closeHandle(),
+    cancel: () => {
+      closeHandle();
+    },
   });
-  c.req.raw.signal?.addEventListener("abort", () => closeHandle());
+  c.req.raw.signal?.addEventListener("abort", () => {
+    closeHandle();
+  });
   return new Response(stream, {
     headers: {
       "content-type": "text/event-stream",

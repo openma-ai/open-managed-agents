@@ -537,9 +537,9 @@ describe("Outcomes", () => {
 
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) =>
-        events.push(JSON.parse(e.data as string))
-      );
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => {
         ws.close();
         resolve();
@@ -599,9 +599,9 @@ describe("Outcomes", () => {
 
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) =>
-        events.push(JSON.parse(e.data as string))
-      );
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => {
         ws.close();
         resolve();
@@ -660,9 +660,9 @@ describe("Outcomes", () => {
 
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) =>
-        events.push(JSON.parse(e.data as string))
-      );
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => {
         ws.close();
         resolve();

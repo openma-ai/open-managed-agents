@@ -119,7 +119,9 @@ async function collectReplayedEvents(sessionId: string, waitMs = 100): Promise<a
   ws.accept();
   const events: any[] = [];
   return new Promise((resolve) => {
-    ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+    ws.addEventListener("message", (e) => {
+      events.push(JSON.parse(e.data as string));
+    });
     setTimeout(() => {
       ws.close();
       resolve(events);

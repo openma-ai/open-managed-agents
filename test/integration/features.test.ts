@@ -453,7 +453,9 @@ describe("New event types", () => {
 
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 100);
     });
 
@@ -595,7 +597,9 @@ describe("Session harness status flow", () => {
     ws.accept();
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 100);
     });
 
@@ -625,7 +629,9 @@ describe("Session harness status flow", () => {
     ws.accept();
     const events: any[] = [];
     await new Promise<void>((resolve) => {
-      ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+      ws.addEventListener("message", (e) => {
+        events.push(JSON.parse(e.data as string));
+      });
       setTimeout(() => { ws.close(); resolve(); }, 100);
     });
 
@@ -668,7 +674,9 @@ describe("Harness crash recovery", () => {
       ws.accept();
       events = [];
       await new Promise<void>((resolve) => {
-        ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+        ws.addEventListener("message", (e) => {
+          events.push(JSON.parse(e.data as string));
+        });
         setTimeout(() => { ws.close(); resolve(); }, 50);
       });
       if (events.some((e) => e.type === "session.error")) break;
