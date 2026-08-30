@@ -1,3 +1,6 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createModels,
@@ -10,7 +13,7 @@ import type {
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
-import { createE2BSandbox } from "@open-managed-agents/sandbox/adapters/e2b";
+import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
 import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
 import type {
@@ -18,25 +21,17 @@ import type {
   HarnessRuntime,
 } from "@open-managed-agents/agent/harness/interface";
 
-const apiUrl = process.env.OMA_E2B_E2E_API_URL;
-const sandboxUrl = process.env.OMA_E2B_E2E_SANDBOX_URL;
-const apiKey = process.env.OMA_E2B_E2E_API_KEY;
-
-describe.runIf(Boolean(apiUrl && sandboxUrl && apiKey))(
-  "PiHarness over an E2B-compatible SandboxPort",
+describe(
+  "PiHarness over SandboxPort",
   () => {
-    it("executes an actual sandbox tool while only the LLM provider is mocked", async () => {
-      const sandbox = await createE2BSandbox({
-        apiUrl,
-        sandboxUrl,
-        apiKey,
-        templateId: process.env.OMA_E2B_E2E_TEMPLATE ?? "base",
-      });
+    it("executes a real local sandbox tool while only the LLM provider is mocked", async () => {
+      const workdir = await mkdtemp(join(tmpdir(), "oma-pi-harness-"));
+      const sandbox = new LocalSubprocessSandbox({ workdir });
 
       try {
         const agent: AgentConfig = {
-          id: "agent_pi_e2b",
-          name: "Pi E2B agent",
+          id: "agent_pi_sandbox",
+          name: "Pi sandbox agent",
           model: "faux-model",
           system: "Use the provided write tool.",
           tools: [
@@ -62,10 +57,10 @@ describe.runIf(Boolean(apiUrl && sandboxUrl && apiKey))(
             fauxToolCall(
               "write",
               {
-                file_path: "/tmp/openma-pi-e2b.txt",
+                file_path: "/workspace/openma-pi-harness.txt",
                 content: "pi-harness-sandbox-port-ok",
               },
-              { id: "tool-write-e2b" },
+              { id: "tool-write-sandbox" },
             ),
             { stopReason: "toolUse", responseId: "response-write" },
           ),
@@ -101,7 +96,7 @@ describe.runIf(Boolean(apiUrl && sandboxUrl && apiKey))(
         const context = {
           agent,
           userMessage,
-          session_id: "session_pi_e2b",
+          session_id: "session_pi_sandbox",
           tools,
           model: {} as HarnessContext["model"],
           pi: { models, model: faux.getModel() },
@@ -112,20 +107,20 @@ describe.runIf(Boolean(apiUrl && sandboxUrl && apiKey))(
 
         await new PiHarness().run(context);
 
-        expect(await sandbox.readFile("/tmp/openma-pi-e2b.txt")).toBe(
+        expect(await sandbox.readFile("/workspace/openma-pi-harness.txt")).toBe(
           "pi-harness-sandbox-port-ok",
         );
         expect(events).toContainEqual(
           expect.objectContaining({
             type: "agent.tool_use",
-            id: "tool-write-e2b",
+            id: "tool-write-sandbox",
             name: "write",
           }),
         );
         expect(events).toContainEqual(
           expect.objectContaining({
             type: "agent.tool_result",
-            tool_use_id: "tool-write-e2b",
+            tool_use_id: "tool-write-sandbox",
           }),
         );
         expect(events).toContainEqual(
