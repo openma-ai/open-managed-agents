@@ -7,8 +7,17 @@ import type { PiModelRuntime } from "./pi-provider";
 // non-CF runtimes (apps/main-node, future deployments) can implement the
 // same shape without depending on apps/agent's CF-only modules. Imported
 // for local use AND re-exported so existing imports keep working unchanged.
-import type { SandboxPort, ProcessHandle } from "@open-managed-agents/sandbox";
+import type {
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxPort,
+  ProcessHandle,
+} from "@open-managed-agents/sandbox";
 export type {
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
   SandboxPort,
   SandboxExecutor,
   ProcessHandle,

@@ -14,6 +14,13 @@ export default defineConfig({
   test: {
     pool: "threads",
     include: ["test/**/*.test.ts"],
+    // PostgreSQL/MinIO contracts own real containers and run through the
+    // repository-level `test:integration:storage` project.
+    exclude: [
+      "test/**/*.pg.test.ts",
+      "test/pg-*.test.ts",
+      "test/s3-memory.test.ts",
+    ],
     // Each test spawns + kills a real main-node process — give them
     // headroom on slow CI.
     testTimeout: 60_000,

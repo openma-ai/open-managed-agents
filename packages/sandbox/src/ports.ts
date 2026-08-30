@@ -23,6 +23,37 @@ export interface ProcessHandle {
   getStatus(): Promise<string>;
 }
 
+/** Structured command used when a caller needs a live stdio channel instead
+ * of the log-oriented `startProcess` handle. Kept in the sandbox package so
+ * protocol runtimes (ACP today, other harnesses later) do not leak their own
+ * process types into sandbox adapters. */
+export interface SandboxDuplexProcessSpec {
+  command: string;
+  args?: string[];
+  env?: Record<string, string | undefined>;
+  cwd?: string;
+}
+
+/** A sandbox-resident process with live stdio. This is intentionally
+ * structurally compatible with openma-common's ACP `ChildHandle`; the ACP
+ * adapter can pass it through without coupling the sandbox package to ACP. */
+export interface SandboxDuplexProcess {
+  stdin: WritableStream<Uint8Array>;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  kill(signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
+  exited: Promise<{ code: number | null; signal: string | null }>;
+}
+
+/** Narrow capability Port for protocol runtimes that require live stdio.
+ * Keeping this separate from SandboxPort makes the requirement explicit at
+ * composition time instead of discovering an optional method mid-session. */
+export interface SandboxDuplexProcessPort {
+  spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess>;
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
@@ -124,6 +155,15 @@ export interface SandboxPort {
  * while downstream harness and adapter packages adopt the Port name.
  */
 export type SandboxExecutor = SandboxPort;
+
+/** Runtime narrowing for applications that select a sandbox adapter from a
+ * generic SandboxFactory before composing an ACP or other process runtime. */
+export function supportsDuplexProcess(
+  sandbox: SandboxPort,
+): sandbox is SandboxPort & SandboxDuplexProcessPort {
+  return "spawnDuplexProcess" in sandbox
+    && typeof sandbox.spawnDuplexProcess === "function";
+}
 
 // ─── Factory contract ──────────────────────────────────────────────────
 //

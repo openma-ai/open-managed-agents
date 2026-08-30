@@ -15,11 +15,9 @@ import {
   SqlSessionThreadEventPersistence,
   SqlSessionThreadPersistence,
 } from "../src";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const enabled =
-  PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
-const pgDescribe = enabled ? describe : describe.skip;
+const PG_URL = getStorageIntegrationConfig().postgres.sessionsSql;
 const WORKSPACE_ID = "managed_sessions_adapter_pg_contract";
 
 const repository: SessionResource = {
@@ -102,7 +100,6 @@ async function cleanup(): Promise<void> {
 }
 
 beforeAll(async () => {
-  if (!enabled) return;
   assertLocalTestDatabase(PG_URL);
   connection = postgres(PG_URL, {
     max: 1,
@@ -181,12 +178,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!enabled) return;
   await cleanup();
   await connection.end({ timeout: 5 });
 });
 
-pgDescribe("Managed Sessions SQL adapters on PostgreSQL", () => {
+describe("Managed Sessions SQL adapters on PostgreSQL", () => {
   it("preserves Session, Event, resource-secret CAS, and deletion semantics", async () => {
     const sealer = { seal: async (value: string) => `sealed:${value}` };
     const sessions = new SqlSessionPersistence(client, sealer);
@@ -247,7 +243,7 @@ pgDescribe("Managed Sessions SQL adapters on PostgreSQL", () => {
       resources.replaceCurrent({
         workspaceId: WORKSPACE_ID,
         sessionId: session.id,
-        expectedRevision: 1,
+        expectedRevision: 2,
         resources: [updatedRepository],
         updatedAt: updatedRepository.updatedAt,
         secretChanges: [
@@ -260,7 +256,7 @@ pgDescribe("Managed Sessions SQL adapters on PostgreSQL", () => {
       }),
     ).resolves.toEqual({
       type: "replaced",
-      record: { resources: [updatedRepository], revision: 2 },
+      record: { resources: [updatedRepository], revision: 3 },
     });
     await expect(
       resources.replaceCurrent({
@@ -271,7 +267,7 @@ pgDescribe("Managed Sessions SQL adapters on PostgreSQL", () => {
         updatedAt: "2026-08-26T03:00:00.000Z",
         secretChanges: [],
       }),
-    ).resolves.toEqual({ type: "revision_conflict", actualRevision: 2 });
+    ).resolves.toEqual({ type: "revision_conflict", actualRevision: 3 });
     await expect(
       events.list({
         workspaceId: WORKSPACE_ID,

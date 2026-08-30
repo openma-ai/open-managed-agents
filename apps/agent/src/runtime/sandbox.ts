@@ -1,4 +1,10 @@
-import type { SandboxExecutor, ProcessHandle } from "../harness/interface";
+import type {
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxExecutor,
+  ProcessHandle,
+} from "../harness/interface";
 import type { Env } from "@open-managed-agents/shared";
 import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
@@ -12,7 +18,8 @@ const parseShellCommand = parseShell as (command: string) => {
   commands?: Array<Record<string, any>>;
 };
 
-export class CloudflareSandbox implements SandboxExecutor {
+export class CloudflareSandbox
+  implements SandboxExecutor, SandboxDuplexProcessPort {
   private sandboxPromise: Promise<any>;
   private env: Env;
   private sessionId: string;
@@ -336,6 +343,149 @@ export class CloudflareSandbox implements SandboxExecutor {
     }
   }
 
+  async spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.startProcess !== "function") {
+      throw new Error("Cloudflare sandbox does not support background processes");
+    }
+
+    // The Cloudflare SDK streams process output but does not expose stdin.
+    // Keep a FIFO open read/write inside the process and send each ACP NDJSON
+    // frame through a short sandbox exec. The process-held writer prevents an
+    // EOF between frames, preserving one long-lived ACP stdio session.
+    const channelDir = `/tmp/openma-duplex-${crypto.randomUUID()}`;
+    const stdinPath = `${channelDir}/stdin`;
+    const setup = await sandbox.exec(
+      `mkdir -p ${shellQuote(channelDir)} && mkfifo ${shellQuote(stdinPath)}`,
+      { timeout: 10_000 },
+    );
+    assertSandboxCommandSucceeded(setup, "create duplex-process channel");
+
+    let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrController!: ReadableStreamDefaultController<Uint8Array>;
+    let streamsClosed = false;
+    let cleanupStarted = false;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) { stdoutController = controller; },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) { stderrController = controller; },
+    });
+    const encoder = new TextEncoder();
+    let settleExit!: (value: { code: number | null; signal: string | null }) => void;
+    let exitSettled = false;
+    let killSignal: string | null = null;
+    const exited = new Promise<{ code: number | null; signal: string | null }>(
+      (resolveExit) => { settleExit = resolveExit; },
+    );
+    const closeStreams = (error?: Error) => {
+      if (!streamsClosed) {
+        streamsClosed = true;
+        for (const controller of [stdoutController, stderrController]) {
+          try {
+            if (error) controller.error(error);
+            else controller.close();
+          } catch {
+            // A consumer may have cancelled its branch already.
+          }
+        }
+      }
+    };
+    const cleanup = () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      void sandbox.exec(
+        `rm -f ${shellQuote(stdinPath)} && rmdir ${shellQuote(channelDir)}`,
+        { timeout: 10_000 },
+      ).catch(() => undefined);
+    };
+    const finish = (code: number | null, signal: string | null) => {
+      closeStreams();
+      if (!exitSettled) {
+        exitSettled = true;
+        settleExit({ code, signal });
+      }
+      cleanup();
+    };
+    const fail = (error: Error) => {
+      closeStreams(error);
+      if (!exitSettled) {
+        exitSettled = true;
+        settleExit({ code: null, signal: killSignal });
+      }
+      cleanup();
+    };
+
+    const command = [spec.command, ...(spec.args ?? [])]
+      .map(shellQuote)
+      .join(" ");
+    let process: {
+      kill(signal?: string): Promise<void>;
+    };
+    try {
+      process = await sandbox.startProcess(
+        `exec 3<>${shellQuote(stdinPath)}; exec ${command} <&3 3>&-`,
+        {
+          cwd: spec.cwd,
+          env: {
+            ...this.getSecretsForCommand(spec.command),
+            ...spec.env,
+          },
+          onOutput: (stream: "stdout" | "stderr", data: string) => {
+            if (streamsClosed || data.length === 0) return;
+            try {
+              (stream === "stdout" ? stdoutController : stderrController)
+                .enqueue(encoder.encode(data));
+            } catch {
+              // The corresponding consumer already cancelled its stream.
+            }
+          },
+          onExit: (code: number | null) => finish(code, killSignal),
+          onError: (error: Error) => fail(error),
+        },
+      );
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+
+    const stdin = new WritableStream<Uint8Array>({
+      write: async (chunk) => {
+        if (exitSettled) throw new Error("cannot write to an exited sandbox process");
+        const encoded = bytesToBase64(chunk);
+        const result = await sandbox.exec(
+          `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(stdinPath)}`,
+          { timeout: 30_000 },
+        );
+        assertSandboxCommandSucceeded(result, "write duplex-process stdin");
+      },
+      // The FIFO is deliberately held O_RDWR by the child, so closing a host
+      // writer does not terminate a multi-turn ACP session. Session disposal
+      // uses kill(), which is the portable lifecycle primitive here.
+      close: async () => {},
+      abort: async () => {
+        killSignal = "SIGTERM";
+        await process.kill("SIGTERM");
+        finish(null, killSignal);
+      },
+    });
+
+    return {
+      stdin,
+      stdout,
+      stderr,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        if (exitSettled) return;
+        killSignal = signal;
+        await process.kill(signal);
+        finish(null, killSignal);
+      },
+    };
+  }
+
   async readFile(path: string): Promise<string> {
     const sandbox = await this.getSandbox();
     try {
@@ -643,6 +793,32 @@ export class TestSandbox implements SandboxExecutor {
   }
   async writeFileBytes(_path: string, _bytes: Uint8Array): Promise<string> {
     return "ok";
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 8_192;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(index, index + chunkSize),
+    );
+  }
+  return btoa(binary);
+}
+
+function assertSandboxCommandSucceeded(
+  result: { success?: boolean; exitCode?: number; stderr?: string },
+  operation: string,
+): void {
+  if (result.success === false || (result.exitCode ?? 0) !== 0) {
+    throw new Error(
+      `${operation} failed (exit ${result.exitCode ?? "unknown"}): ${result.stderr ?? ""}`,
+    );
   }
 }
 

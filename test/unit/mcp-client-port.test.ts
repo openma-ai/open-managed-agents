@@ -1,95 +1,37 @@
 import { describe, expect, it } from "vitest";
 import * as harnessTools from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
-
-type JsonRpcMessage = {
-  jsonrpc: "2.0";
-  id?: string | number;
-  method?: string;
-  params?: Record<string, unknown>;
-};
-
-function jsonRpcResult(id: string | number, result: Record<string, unknown>, headers?: HeadersInit) {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
-    status: 200,
-    headers: {
-      "content-type": "application/json",
-      ...Object.fromEntries(new Headers(headers)),
-    },
-  });
-}
+import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
 
 function createFakeMcpFetch(options: { hangDelete?: boolean } = {}) {
-  const requests: Request[] = [];
-  let deleteCount = 0;
-
-  const fetch: typeof globalThis.fetch = async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request.clone());
-
-    if (request.method === "DELETE") {
-      deleteCount += 1;
-      if (options.hangDelete) {
-        return new Promise<Response>(() => undefined);
-      }
-      return new Response(null, { status: 200 });
-    }
-
-    const message = (await request.json()) as JsonRpcMessage;
-    if (message.method === "notifications/initialized") {
-      return new Response(null, { status: 202 });
-    }
-
-    if (message.method === "initialize") {
-      return jsonRpcResult(message.id!, {
-        protocolVersion: message.params?.protocolVersion as string,
-        capabilities: { tools: {} },
-        serverInfo: { name: "fake-mcp", version: "1.0.0" },
-      }, { "mcp-session-id": "mcp-session-1" });
-    }
-
-    if (message.method === "tools/list") {
-      return jsonRpcResult(message.id!, {
-        tools: [{
-          name: "echo",
-          title: "Echo",
-          description: "Echo an input value",
-          inputSchema: {
-            type: "object",
-            properties: { value: { type: "string" } },
-            required: ["value"],
-          },
-          outputSchema: {
-            type: "object",
-            properties: { echoed: { type: "string" } },
-            required: ["echoed"],
-          },
-        }],
-      });
-    }
-
-    if (message.method === "tools/call") {
-      const args = message.params?.arguments as { value?: string } | undefined;
-      return jsonRpcResult(message.id!, {
+  return createScriptedMcpServer({
+    sessionId: "mcp-session-1",
+    serverInfo: { name: "fake-mcp", version: "1.0.0" },
+    tools: [{
+      name: "echo",
+      title: "Echo",
+      description: "Echo an input value",
+      inputSchema: {
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      },
+      outputSchema: {
+        type: "object",
+        properties: { echoed: { type: "string" } },
+        required: ["echoed"],
+      },
+    }],
+    methodPlans: options.hangDelete
+      ? { DELETE: [{ type: "hang" }] }
+      : undefined,
+    callTool({ arguments: args }) {
+      return {
         content: [{ type: "text", text: `echo:${args?.value}` }],
         structuredContent: { echoed: args?.value },
-      });
-    }
-
-    return new Response(JSON.stringify({
-      jsonrpc: "2.0",
-      id: message.id,
-      error: { code: -32601, message: "Method not found" },
-    }), { status: 200, headers: { "content-type": "application/json" } });
-  };
-
-  return {
-    fetch,
-    requests,
-    get deleteCount() {
-      return deleteCount;
+      };
     },
-  };
+  });
 }
 
 describe("OpenMA MCP client port", () => {
@@ -139,13 +81,13 @@ describe("OpenMA MCP client port", () => {
       structuredContent: { echoed: "hello" },
     }));
 
-    expect(fake.requests.every((request) => request.headers.get("x-openma-port") === "strict")).toBe(true);
-    const postInitRequests = fake.requests.filter((request) => request.method === "POST").slice(1);
+    expect(fake.state.requests.every((request) => request.headers.get("x-openma-port") === "strict")).toBe(true);
+    const postInitRequests = fake.state.requests.filter((request) => request.method === "POST").slice(1);
     expect(postInitRequests.every((request) => request.headers.get("mcp-session-id") === "mcp-session-1")).toBe(true);
 
     await client.close();
     await client.close();
-    expect(fake.deleteCount).toBe(1);
+    expect(fake.state.counts.DELETE).toBe(1);
   });
 
   it("projects MCP tools into a disposable harness tool set", async () => {
@@ -183,13 +125,13 @@ describe("OpenMA MCP client port", () => {
       structuredContent: { echoed: "managed" },
     }));
 
-    expect(fake.requests.every((request) => request.headers.get("x-oma-tenant") === "tenant-1")).toBe(true);
-    expect(fake.requests.every((request) => request.headers.get("x-oma-session") === "session-1")).toBe(true);
-    expect(fake.requests.every((request) => request.headers.get("x-oma-mcp-server") === "demo")).toBe(true);
+    expect(fake.state.requests.every((request) => request.headers.get("x-oma-tenant") === "tenant-1")).toBe(true);
+    expect(fake.state.requests.every((request) => request.headers.get("x-oma-session") === "session-1")).toBe(true);
+    expect(fake.state.requests.every((request) => request.headers.get("x-oma-mcp-server") === "demo")).toBe(true);
 
     await disposeTools!(tools);
     await disposeTools!(tools);
-    expect(fake.deleteCount).toBe(1);
+    expect(fake.state.counts.DELETE).toBe(1);
   });
 
   it("bounds remote session termination so local disposal cannot hang", async () => {
@@ -214,6 +156,6 @@ describe("OpenMA MCP client port", () => {
     ]);
 
     expect(closed).toBe(true);
-    expect(fake.deleteCount).toBe(1);
+    expect(fake.state.counts.DELETE).toBe(1);
   });
 });

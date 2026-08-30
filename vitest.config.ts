@@ -328,6 +328,11 @@ export default defineConfig({
   test: {
     testTimeout: 30000,
     hookTimeout: 30000,
+    // Each file owns a workerd/miniflare runtime. Letting Vitest scale to all
+    // host CPUs exhausts the local runtime and turns trivial requests into
+    // exact 30s timeouts; four workers keeps the suite deterministic while CI
+    // runners with fewer cores still use their natural lower limit.
+    maxWorkers: 4,
     exclude: [
       "**/node_modules/**",
       "**/.git/**",
@@ -346,6 +351,7 @@ export default defineConfig({
       "packages/managed-agents-adapters-sql/test/**",
       "packages/managed-agents-adapters-runtime/test/**",
       "packages/managed-agents-runtime/**",
+      "packages/sandbox/test/**",
       "packages/agent-store-sql/test/**",
       "packages/credential-store-sql/test/**",
       "packages/deployment-store-sql/test/**",

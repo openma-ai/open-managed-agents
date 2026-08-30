@@ -1,10 +1,17 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import { getCfServicesForTenant } from "@open-managed-agents/services";
+import {
+  createScriptedLanguageModel,
+  finishChunk,
+  streamStep,
+  textChunks,
+  toolCallChunks,
+} from "../fakes/scripted-language-model";
+import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -15,14 +22,14 @@ const BROKEN_MCP_ORIGIN = "https://broken-managed-turn-mcp.example.test";
 const OAUTH_ORIGIN = "https://managed-turn-oauth.example.test";
 const HARNESS_NAME = "managed-turn-mcp-e2e";
 
-let turnModel: MockLanguageModelV3 | null = null;
+let turnModel: ReturnType<typeof createScriptedLanguageModel> | null = null;
 
 registerHarness(HARNESS_NAME, () => {
   const harness = new DefaultHarness();
   return {
     async run(ctx) {
       if (!turnModel) throw new Error("managed-turn fake LLM was not installed");
-      await harness.run({ ...ctx, model: turnModel });
+      await harness.run({ ...ctx, model: turnModel.model });
     },
   };
 });
@@ -46,105 +53,68 @@ function usage() {
   };
 }
 
-function modelStream(chunks: Array<Record<string, unknown>>) {
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
-}
-
 function createTurnModel() {
-  let call = 0;
-  return new MockLanguageModelV3({
+  const toolChunks = toolCallChunks({
+    id: "mcp-call-1",
+    toolName: "mcp__fake__echo",
+    inputDeltas: ['{"value":', '"managed"}'],
+  });
+  const finalChunks = textChunks("text-1", ["MCP echo ", "completed."]);
+  return createScriptedLanguageModel([
+    streamStep([
+      toolChunks[0],
+      { type: "response-metadata", id: "mock-response-tool" },
+      ...toolChunks.slice(1),
+      finishChunk("tool-calls", usage()),
+    ]),
+    streamStep([
+      finalChunks[0],
+      { type: "response-metadata", id: "mock-response-final" },
+      ...finalChunks.slice(1),
+      finishChunk("stop", usage()),
+    ]),
+  ], {
     provider: "openma-e2e-mock",
     modelId: "managed-turn-mock-model",
-    doStream: async () => {
-      call += 1;
-      if (call === 1) {
-        return {
-          stream: modelStream([
-            { type: "stream-start", warnings: [] },
-            { type: "response-metadata", id: "mock-response-tool" },
-            {
-              type: "tool-input-start",
-              id: "mcp-call-1",
-              toolName: "mcp__fake__echo",
-            },
-            {
-              type: "tool-input-delta",
-              id: "mcp-call-1",
-              delta: '{"value":"managed"}',
-            },
-            { type: "tool-input-end", id: "mcp-call-1" },
-            {
-              type: "tool-call",
-              toolCallId: "mcp-call-1",
-              toolName: "mcp__fake__echo",
-              input: '{"value":"managed"}',
-            },
-            {
-              type: "finish",
-              finishReason: { unified: "tool-calls", raw: "tool_use" },
-              usage: usage(),
-            },
-          ]),
-        };
-      }
-      return {
-        stream: modelStream([
-          { type: "stream-start", warnings: [] },
-          { type: "response-metadata", id: "mock-response-final" },
-          { type: "text-start", id: "text-1" },
-          { type: "text-delta", id: "text-1", delta: "MCP echo completed." },
-          { type: "text-end", id: "text-1" },
-          {
-            type: "finish",
-            finishReason: { unified: "stop", raw: "end_turn" },
-            usage: usage(),
-          },
-        ]),
-      };
-    },
   });
 }
 
 type ExternalState = {
-  discoverCount: number;
-  initializeCount: number;
-  listCount: number;
-  callCount: number;
-  deleteCount: number;
   oauthRefreshCount: number;
   staleBearerCount: number;
   freshBearerCount: number;
   sawSessionOnToolCall: boolean;
 };
 
-function jsonRpcResult(id: string | number, result: Record<string, unknown>, headers?: HeadersInit) {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
-    status: 200,
-    headers: {
-      "content-type": "application/json",
-      ...Object.fromEntries(new Headers(headers)),
-    },
-  });
-}
-
-function installExternalMocks(): { state: ExternalState; restore: () => void } {
+function installExternalMocks() {
   const originalFetch = globalThis.fetch;
   const state: ExternalState = {
-    discoverCount: 0,
-    initializeCount: 0,
-    listCount: 0,
-    callCount: 0,
-    deleteCount: 0,
     oauthRefreshCount: 0,
     staleBearerCount: 0,
     freshBearerCount: 0,
     sawSessionOnToolCall: false,
   };
+  const mcp = createScriptedMcpServer({
+    sessionId: "managed-turn-session",
+    serverInfo: { name: "managed-turn-fake", version: "1.0.0" },
+    tools: [{
+      name: "echo",
+      description: "Echo a value",
+      inputSchema: {
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      },
+    }],
+    callTool({ arguments: args, request }) {
+      state.sawSessionOnToolCall =
+        request.headers.get("mcp-session-id") === "managed-turn-session";
+      return {
+        content: [{ type: "text", text: `echo:${args?.value}` }],
+        structuredContent: { echoed: args?.value },
+      };
+    },
+  });
 
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -182,75 +152,12 @@ function installExternalMocks(): { state: ExternalState; restore: () => void } {
       return new Response("missing managed bearer", { status: 401 });
     }
 
-    if (request.method === "DELETE") {
-      state.deleteCount += 1;
-      expect(request.headers.get("mcp-session-id")).toBe("managed-turn-session");
-      return new Response(null, { status: 200 });
-    }
-    if (request.method === "GET") {
-      // This fake has no unsolicited server events. 405 is the Streamable
-      // HTTP signal that a standalone SSE listener is not supported.
-      return new Response(null, { status: 405 });
-    }
-
-    const message = (await request.json()) as {
-      id?: string | number;
-      method?: string;
-      params?: Record<string, unknown>;
-    };
-    if (message.method === "server/discover") {
-      state.discoverCount += 1;
-      return new Response(JSON.stringify({
-        jsonrpc: "2.0",
-        id: message.id,
-        error: { code: -32601, message: "Method not found" },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }
-    if (message.method === "initialize") {
-      state.initializeCount += 1;
-      return jsonRpcResult(message.id!, {
-        protocolVersion: message.params?.protocolVersion as string,
-        capabilities: { tools: {} },
-        serverInfo: { name: "managed-turn-fake", version: "1.0.0" },
-      }, { "mcp-session-id": "managed-turn-session" });
-    }
-    if (message.method === "notifications/initialized") {
-      return new Response(null, { status: 202 });
-    }
-    if (message.method === "tools/list") {
-      state.listCount += 1;
-      return jsonRpcResult(message.id!, {
-        tools: [{
-          name: "echo",
-          description: "Echo a value",
-          inputSchema: {
-            type: "object",
-            properties: { value: { type: "string" } },
-            required: ["value"],
-          },
-        }],
-      });
-    }
-    if (message.method === "tools/call") {
-      state.callCount += 1;
-      state.sawSessionOnToolCall =
-        request.headers.get("mcp-session-id") === "managed-turn-session";
-      const args = message.params?.arguments as { value?: string } | undefined;
-      return jsonRpcResult(message.id!, {
-        content: [{ type: "text", text: `echo:${args?.value}` }],
-        structuredContent: { echoed: args?.value },
-      });
-    }
-
-    return new Response(JSON.stringify({
-      jsonrpc: "2.0",
-      id: message.id,
-      error: { code: -32601, message: "Method not found" },
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    return mcp.fetch(request);
   };
 
   return {
     state,
+    mcp,
     restore() {
       globalThis.fetch = originalFetch;
     },
@@ -379,16 +286,19 @@ describe("managed turn MCP E2E", () => {
       });
 
       expect(external.state).toMatchObject({
-        discoverCount: 1,
-        initializeCount: 1,
-        listCount: 1,
-        callCount: 1,
         oauthRefreshCount: 1,
         staleBearerCount: 1,
         sawSessionOnToolCall: true,
       });
-      expect(external.state.deleteCount).toBe(1);
-      expect(turnModel.doStreamCalls).toHaveLength(2);
+      expect(external.mcp.state.counts).toMatchObject({
+        "server/discover": 1,
+        initialize: 1,
+        "tools/list": 1,
+        "tools/call": 1,
+        DELETE: 1,
+      });
+      expect(turnModel.model.doStreamCalls).toHaveLength(2);
+      expect(turnModel.assertExhausted).not.toThrow();
     } finally {
       external.restore();
     }

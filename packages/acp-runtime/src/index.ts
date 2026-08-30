@@ -14,5 +14,13 @@ export type {
 // `new AcpRuntimeImpl(spawner)`. Slightly ugly, unambiguous.
 export { AcpRuntimeImpl } from "./runtime.js";
 export { AcpSessionImpl } from "./session.js";
+export {
+  SandboxSpawner,
+  SandboxAcpUnsupportedError,
+} from "./spawners/sandbox.js";
+export {
+  createAcpRuntime,
+  type AcpRuntimePlacement,
+} from "./placement.js";
 
 export { KNOWN_ACP_AGENTS, detect, detectAll, type KnownAgentEntry } from "./registry.js";

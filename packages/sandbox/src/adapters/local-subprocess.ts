@@ -23,8 +23,10 @@
 import {
   spawn,
   type ChildProcess,
+  type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { Buffer } from "node:buffer";
+import { Readable, Writable } from "node:stream";
 import { promises as fs } from "node:fs";
 import {
   chmodSync,
@@ -34,7 +36,14 @@ import {
   symlinkSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "../ports";
+import type {
+  ProcessHandle,
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxExecutor,
+  SandboxFactory,
+} from "../ports";
 import { getLogger } from "@open-managed-agents/observability";
 
 const moduleLogger = getLogger("local-sandbox");
@@ -89,7 +98,8 @@ interface OutputsMount {
   mountRel: string;
 }
 
-export class LocalSubprocessSandbox implements SandboxExecutor {
+export class LocalSubprocessSandbox
+  implements SandboxExecutor, SandboxDuplexProcessPort {
   private workdir: string;
   private defaultTimeoutMs: number;
   private envVars: Record<string, string> = {};
@@ -177,6 +187,41 @@ export class LocalSubprocessSandbox implements SandboxExecutor {
     this.processes.set(id, proc);
     child.on("close", () => this.processes.delete(id));
     return proc;
+  }
+
+  async spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    const env = this.buildEnv(spec.command);
+    for (const [name, value] of Object.entries(spec.env ?? {})) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+    }
+    const child: ChildProcessWithoutNullStreams = spawn(
+      spec.command,
+      spec.args ?? [],
+      {
+        cwd: spec.cwd ? this.resolvePath(spec.cwd) : this.workdir,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    const exited = childExit(child);
+    return {
+      stdin: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+      stdout: Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
+      stderr: Readable.toWeb(child.stderr) as unknown as ReadableStream<Uint8Array>,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill(signal as NodeJS.Signals);
+        if (await childExitedWithin(exited, 2_000)) return;
+        if (signal !== "SIGKILL") {
+          child.kill("SIGKILL");
+          await childExitedWithin(exited, 2_000);
+        }
+      },
+    };
   }
 
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
@@ -506,6 +551,40 @@ export class LocalSubprocessSandbox implements SandboxExecutor {
       if (command.startsWith(prefix)) Object.assign(base, secrets);
     }
     return base;
+  }
+}
+
+function childExit(
+  child: ChildProcessWithoutNullStreams,
+): Promise<{ code: number | null; signal: string | null }> {
+  return new Promise((resolveExit) => {
+    let settled = false;
+    const settle = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      resolveExit({ code, signal });
+    };
+    child.once("exit", settle);
+    child.once("close", settle);
+    child.once("error", () => settle(null, null));
+  });
+}
+
+async function childExitedWithin(
+  exited: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      exited.then(() => true),
+      new Promise<false>((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(false), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

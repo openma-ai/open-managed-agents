@@ -1,7 +1,7 @@
 // PG queue — SKIP LOCKED concurrent-subscriber test.
 //
-// Skipped unless PG_TEST_URL is set (typical local: postgres://oma:oma@
-// localhost:5432/oma_pg_test). When set, asserts:
+// Runs through `pnpm test:integration:storage`, which owns a disposable
+// PostgreSQL container. It asserts:
 //   1. ensureQueueSchema applies idempotently.
 //   2. Two parallel subscribers (replicas A + B) on the same queue
 //      never see the same message — FOR UPDATE SKIP LOCKED holds.
@@ -16,25 +16,22 @@ import {
   createPgDlq,
   ensureQueueSchema,
 } from "@open-managed-agents/queue";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const enabled = PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
-const d = enabled ? describe : describe.skip;
+const PG_URL = getStorageIntegrationConfig().postgres.queue;
 
 let sql: SqlClient;
 
 beforeAll(async () => {
-  if (!enabled) return;
   sql = await createPostgresSqlClient(PG_URL);
   await ensureQueueSchema(sql);
 });
 
 afterAll(async () => {
-  if (!enabled || !sql) return;
   await sql.prepare(`DELETE FROM queue_messages WHERE queue_name LIKE ?`).bind("test-%").run();
 });
 
-d("PG queue — SKIP LOCKED concurrency", () => {
+describe("PG queue — SKIP LOCKED concurrency", () => {
   it("two subscribers on the same queue never claim the same message", async () => {
     const name = `test-skip-${Date.now()}`;
     const seenA: string[] = [];
@@ -70,6 +67,7 @@ d("PG queue — SKIP LOCKED concurrency", () => {
       workerId: "fail",
       pollIntervalMs: 50,
       maxRetries: 2,
+      logger: { warn() {} },
     });
     const dlq = createPgDlq<{ msg: string }>({
       name,

@@ -36,6 +36,7 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
         "packages/acp-runtime/",
         "packages/cli/",
         "packages/managed-agents-runtime/",
+        "packages/sandbox/test/",
       ].some((prefix) => path.startsWith(prefix)),
     );
     assert.deepEqual(

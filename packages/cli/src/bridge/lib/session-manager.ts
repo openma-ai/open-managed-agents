@@ -33,7 +33,7 @@
  */
 
 import { spawn as childSpawn } from "node:child_process";
-import { AcpRuntimeImpl } from "@open-managed-agents/acp-runtime";
+import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 import type {
@@ -151,7 +151,7 @@ interface SessionBundle {
 export class SessionManager {
   #send: Sender;
   #spawner = new NodeSpawner();
-  #runtime = new AcpRuntimeImpl(this.#spawner);
+  #runtime = createAcpRuntime({ type: "local", spawner: this.#spawner });
   #sessions = new Map<string, ActiveSession>();
   #env: SessionManagerEnv = { apiUrl: "", runtimeToken: "" };
   /**

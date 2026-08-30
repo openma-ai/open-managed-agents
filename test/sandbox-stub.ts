@@ -5,7 +5,14 @@
 // so index.ts can load without errors during tests.
 
 export class Sandbox {}
+let sandboxOverride;
+
+export function setSandboxForTest(sandbox) {
+  sandboxOverride = sandbox;
+}
+
 export function getSandbox() {
+  if (sandboxOverride) return sandboxOverride;
   return {
     exec: async () => ({ stdout: "", stderr: "", exitCode: 0, success: true }),
     readFile: async () => ({ content: "" }),

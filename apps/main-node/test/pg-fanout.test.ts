@@ -1,7 +1,7 @@
 // PG-mode end-to-end smoke for the event log + LISTEN/NOTIFY hub.
 //
-// Skipped unless PG_TEST_URL is set (typical local: postgres://oma:oma@
-// localhost:5432/oma_pg_test). When set, asserts:
+// Runs through the repository storage integration project, which owns a
+// disposable PostgreSQL container. It asserts:
 //   1. ensureSchema(sql, "postgres") + SqlEventLog.appendAsync /
 //      getEventsAsync round-trip cleanly on Postgres.
 //   2. SqlStreamRepo.start (ON CONFLICT DO NOTHING) + appendChunk
@@ -10,9 +10,7 @@
 //      sharing the same DSN — replica B's writer receives the event
 //      replica A published, within a tight latency budget.
 //
-// CI: uncomment the postgres service in your job and set PG_TEST_URL.
-// Local: run `docker compose -f docker-compose.postgres.yml up -d
-// postgres` and export PG_TEST_URL=postgres://oma:oma@localhost:5432/oma.
+// Run locally with `pnpm test:integration:storage`.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createPostgresSqlClient, type SqlClient } from "@open-managed-agents/sql-client";
@@ -22,24 +20,21 @@ import {
   ensureSchema as ensureEventLogSchema,
 } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 import { PgEventStreamHub } from "../src/lib/pg-event-stream-hub";
 import type { EventWriter } from "../src/lib/event-stream-hub";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const enabled = PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
-const d = enabled ? describe : describe.skip;
+const PG_URL = getStorageIntegrationConfig().postgres.eventFanout;
 
 let sql: SqlClient;
 const sessions: string[] = [];
 
 beforeAll(async () => {
-  if (!enabled) return;
   sql = await createPostgresSqlClient(PG_URL);
   await ensureEventLogSchema(sql, "postgres");
 });
 
 afterAll(async () => {
-  if (!enabled || !sql) return;
   // Cleanup just the rows we created — leave the schema intact for repeat runs.
   for (const sid of sessions) {
     await sql.prepare(`DELETE FROM session_events WHERE session_id = ?`).bind(sid).run();
@@ -47,7 +42,7 @@ afterAll(async () => {
   }
 });
 
-d("SqlEventLog on Postgres", () => {
+describe("SqlEventLog on Postgres", () => {
   it("appendAsync + getEventsAsync round-trip", async () => {
     const sid = uniqSid("evlog");
     sessions.push(sid);
@@ -75,7 +70,7 @@ d("SqlEventLog on Postgres", () => {
   });
 });
 
-d("SqlStreamRepo on Postgres", () => {
+describe("SqlStreamRepo on Postgres", () => {
   it("start + appendChunk (jsonb path) + finalize", async () => {
     const sid = uniqSid("stream");
     sessions.push(sid);
@@ -96,7 +91,7 @@ d("SqlStreamRepo on Postgres", () => {
   });
 });
 
-d("PgEventStreamHub fanout (two hubs, same PG)", () => {
+describe("PgEventStreamHub fanout (two hubs, same PG)", () => {
   it("replica A publish reaches replica B's local writer", async () => {
     const sid = uniqSid("fanout");
     sessions.push(sid);

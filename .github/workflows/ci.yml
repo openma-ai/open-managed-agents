@@ -38,3 +38,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Protocol coverage gate
+        run: pnpm test:coverage:protocol
+
+      - name: Storage integration tests
+        run: pnpm test:integration:storage

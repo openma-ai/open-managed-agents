@@ -1,6 +1,6 @@
 import { spawn as childSpawn } from "node:child_process";
 
-import { AcpRuntimeImpl } from "@open-managed-agents/acp-runtime";
+import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/registry";
 
@@ -40,7 +40,10 @@ interface SessionBundle {
 
 export function createNodeSessionManagerRuntimeDependencies(): SessionManagerRuntimeDependencies {
   return {
-    acpRuntime: new AcpRuntimeImpl(new NodeSpawner()),
+    acpRuntime: createAcpRuntime({
+      type: "local",
+      spawner: new NodeSpawner(),
+    }),
     prepareSession: prepareNodeSession,
     releaseSession: removeSessionCwd,
   };

@@ -3,12 +3,10 @@ import postgres from "postgres";
 import { PostgresSqlClient } from "@open-managed-agents/sql-client/adapters/postgres";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { AgentRecord } from "@open-managed-agents/managed-agents-application/agents-persistence-port";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 import { SqlAgentPersistence } from "../src";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const enabled =
-  PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
-const pgDescribe = enabled ? describe : describe.skip;
+const PG_URL = getStorageIntegrationConfig().postgres.agentsSql;
 const WORKSPACE_ID = "managed_agents_adapter_pg_contract";
 
 const agent: AgentRecord = {
@@ -39,7 +37,6 @@ function assertLocalTestDatabase(url: string): void {
 }
 
 beforeAll(async () => {
-  if (!enabled) return;
   assertLocalTestDatabase(PG_URL);
   connection = postgres(PG_URL, {
     max: 1,
@@ -85,7 +82,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!enabled) return;
   await client
     .prepare("DELETE FROM managed_agent_versions WHERE workspace_id = ?")
     .bind(WORKSPACE_ID)
@@ -97,7 +93,7 @@ afterAll(async () => {
   await connection.end({ timeout: 5 });
 });
 
-pgDescribe("SqlAgentPersistence on PostgreSQL", () => {
+describe("SqlAgentPersistence on PostgreSQL", () => {
   it("honors insert, atomic CAS, conflict, history, and list Port semantics", async () => {
     const persistence = new SqlAgentPersistence(client);
     const next = {

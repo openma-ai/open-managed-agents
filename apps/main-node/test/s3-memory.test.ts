@@ -1,17 +1,8 @@
 // S3 path round-trip smoke. Verifies the S3BlobStore + S3 memory poller
 // pipeline against a real S3-compatible endpoint.
 //
-// Skipped unless MEMORY_S3_TEST_* env vars are set. Run locally with:
-//   docker run --rm -p 19000:9000 -e MINIO_ROOT_USER=minioadmin \
-//     -e MINIO_ROOT_PASSWORD=minioadmin minio/minio:latest server /data
-//   docker run --rm --network host minio/mc \
-//     mb minio-local/oma-memory-test
-//   MEMORY_S3_TEST_ENDPOINT=http://127.0.0.1:19000 \
-//     MEMORY_S3_TEST_BUCKET=oma-memory-test \
-//     MEMORY_S3_TEST_ACCESS_KEY=minioadmin \
-//     MEMORY_S3_TEST_SECRET_KEY=minioadmin \
-//     PG_TEST_URL=postgres://oma:oma@127.0.0.1:54329/oma \
-//     pnpm --filter @open-managed-agents/main-node test s3
+// Run locally with `pnpm test:integration:storage`; the suite owns disposable
+// PostgreSQL and MinIO containers and creates the bucket before collection.
 //
 // Asserts:
 //   1. S3BlobStore.put → head → getText → delete round-trip.
@@ -19,34 +10,42 @@
 //      SQL `memories` index after one S3 poller cycle.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import {
-  createPostgresSqlClient,
-  type SqlClient,
-} from "@open-managed-agents/sql-client";
+import postgres from "postgres";
+import { drizzle } from "drizzle-orm/postgres-js";
+import type { SqlClient } from "@open-managed-agents/sql-client";
+import { PostgresSqlClient } from "@open-managed-agents/sql-client/adapters/postgres";
 import { SqlMemoryRepo } from "@open-managed-agents/memory-store";
 import { S3BlobStore } from "@open-managed-agents/memory-store/adapters/s3-blob";
 import { startS3MemoryPoller } from "../src/lib/s3-memory-poller.js";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const endpoint = process.env.MEMORY_S3_TEST_ENDPOINT ?? "";
-const bucket = process.env.MEMORY_S3_TEST_BUCKET ?? "";
-const accessKey = process.env.MEMORY_S3_TEST_ACCESS_KEY ?? "";
-const secretKey = process.env.MEMORY_S3_TEST_SECRET_KEY ?? "";
-const region = process.env.MEMORY_S3_TEST_REGION ?? "us-east-1";
-
-const enabled =
-  (PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://")) &&
-  endpoint && bucket && accessKey && secretKey;
-
-const d = enabled ? describe : describe.skip;
+const storage = getStorageIntegrationConfig();
+const PG_URL = storage.postgres.s3Memory;
+const { endpoint, bucket, accessKey, secretKey, region } = storage.s3;
 
 let sql: SqlClient;
+let connection: ReturnType<typeof postgres>;
 let blobs: S3BlobStore;
 let storeId = "";
 
 beforeAll(async () => {
-  if (!enabled) return;
-  sql = await createPostgresSqlClient(PG_URL);
+  connection = postgres(PG_URL, {
+    // Drizzle's transaction helper reserves one connection while executing
+    // its prepared writes, so the pool needs a second connection just like
+    // the production postgres.js pool.
+    max: 2,
+    types: {
+      bigint: {
+        to: 20,
+        from: [20],
+        serialize: (value: number) => value.toString(),
+        parse: (value: string) => Number(value),
+      },
+    },
+  });
+  sql = new PostgresSqlClient(
+    connection as unknown as ConstructorParameters<typeof PostgresSqlClient>[0],
+  );
   // Schema bits the poller needs.
   await sql.exec(`
     CREATE TABLE IF NOT EXISTS "memory_stores" (
@@ -108,14 +107,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!enabled) return;
   await sql.prepare(`DELETE FROM memories WHERE store_id = ?`).bind(storeId).run();
   await sql.prepare(`DELETE FROM memory_versions WHERE store_id = ?`).bind(storeId).run();
   await sql.prepare(`DELETE FROM memory_stores WHERE id = ?`).bind(storeId).run();
   await sql.prepare(`DELETE FROM memory_blob_poller_lease WHERE store_id = ?`).bind(storeId).run();
+  await connection.end({ timeout: 5 });
 });
 
-d("S3BlobStore + S3 memory poller", () => {
+describe("S3BlobStore + S3 memory poller", () => {
   it("PUT → HEAD → GET → DELETE round-trip", async () => {
     const key = `${storeId}/notes/hello.md`;
     const meta = await blobs.put(key, "hello s3");
@@ -135,7 +134,7 @@ d("S3BlobStore + S3 memory poller", () => {
     const key = `${storeId}/${path}`;
     await blobs.put(key, "via direct bucket put");
 
-    const memoryRepo = new SqlMemoryRepo(sql);
+    const memoryRepo = new SqlMemoryRepo(drizzle(connection));
     const poller = await startS3MemoryPoller({
       sql,
       sqlDialect: "postgres",

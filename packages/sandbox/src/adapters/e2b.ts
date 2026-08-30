@@ -17,7 +17,14 @@
 // Auth: pass apiKey at construction. If unset, the SDK reads E2B_API_KEY
 // from process.env.
 
-import type { ProcessHandle, SandboxPort, SandboxFactory } from "../ports";
+import type {
+  ProcessHandle,
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxFactory,
+  SandboxPort,
+} from "../ports";
 import { readS3MemoryBucket } from "../ports";
 
 // Structural types so this file compiles without `e2b` installed. The
@@ -30,15 +37,26 @@ interface E2BCommandResult {
 }
 interface E2BCommandHandle {
   pid: number;
-  kill(signal?: string): Promise<void>;
+  kill(): Promise<boolean | void>;
   wait?(): Promise<E2BCommandResult>;
+  sendStdin?(data: string | Uint8Array): Promise<void>;
+  closeStdin?(): Promise<void>;
+}
+interface E2BCommandOptions {
+  timeoutMs?: number;
+  background?: boolean;
+  cwd?: string;
+  envs?: Record<string, string>;
+  onStdout?: (data: string) => void | Promise<void>;
+  onStderr?: (data: string) => void | Promise<void>;
+  stdin?: boolean;
 }
 interface E2BSandboxLike {
   sandboxId?: string;
   commands: {
     run(
       cmd: string,
-      opts?: { timeoutMs?: number; background?: boolean },
+      opts?: E2BCommandOptions,
     ): Promise<E2BCommandResult | E2BCommandHandle>;
   };
   files: {
@@ -124,7 +142,8 @@ export async function createE2BSandbox(
   return new E2BSandboxExecutor(sb, opts);
 }
 
-export class E2BSandboxExecutor implements SandboxPort {
+export class E2BSandboxExecutor
+  implements SandboxPort, SandboxDuplexProcessPort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -167,6 +186,132 @@ export class E2BSandboxExecutor implements SandboxPort {
     if (!handle.pid) return null;
     const id = `proc_${handle.pid}_${Date.now()}`;
     return new E2BProcessHandle(id, handle);
+  }
+
+  async spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrController!: ReadableStreamDefaultController<Uint8Array>;
+    let streamsSettled = false;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) { stdoutController = controller; },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) { stderrController = controller; },
+    });
+    const encoder = new TextEncoder();
+    const settleStreams = (error?: Error) => {
+      if (streamsSettled) return;
+      streamsSettled = true;
+      for (const controller of [stdoutController, stderrController]) {
+        try {
+          if (error) controller.error(error);
+          else controller.close();
+        } catch {
+          // The corresponding consumer may already have cancelled its stream.
+        }
+      }
+    };
+    const enqueue = (
+      controller: ReadableStreamDefaultController<Uint8Array>,
+      data: string,
+    ) => {
+      if (streamsSettled || data.length === 0) return;
+      try {
+        controller.enqueue(encoder.encode(data));
+      } catch {
+        // The corresponding consumer may already have cancelled its stream.
+      }
+    };
+
+    const command = [spec.command, ...(spec.args ?? [])]
+      .map(shellEscape)
+      .join(" ");
+    const handle = (await this.sandbox.commands.run(command, {
+      background: true,
+      stdin: true,
+      // E2B otherwise closes the process event stream after 60 seconds.
+      // ConnectRPC treats a non-positive timeout as no deadline.
+      timeoutMs: 0,
+      cwd: spec.cwd,
+      envs: this.buildCommandEnv(spec.command, spec.env),
+      onStdout: (data) => enqueue(stdoutController, data),
+      onStderr: (data) => enqueue(stderrController, data),
+    })) as E2BCommandHandle;
+    if (
+      typeof handle.wait !== "function"
+      || typeof handle.sendStdin !== "function"
+      || typeof handle.closeStdin !== "function"
+    ) {
+      await handle.kill().catch(() => undefined);
+      settleStreams();
+      throw new Error(
+        "E2B SDK does not expose the live-stdin CommandHandle required by ACP",
+      );
+    }
+
+    let requestedSignal: "SIGTERM" | "SIGKILL" | null = null;
+    let exitedSettled = false;
+    let resolveExited!: (
+      value: { code: number | null; signal: string | null },
+    ) => void;
+    const exited = new Promise<{ code: number | null; signal: string | null }>(
+      (resolve) => { resolveExited = resolve; },
+    );
+    const finish = (code: number | null, signal: string | null, error?: Error) => {
+      settleStreams(error);
+      if (exitedSettled) return;
+      exitedSettled = true;
+      resolveExited({ code, signal });
+    };
+    void handle.wait().then(
+      (result) => finish(result.exitCode, requestedSignal),
+      (cause: unknown) => {
+        if (requestedSignal !== null) {
+          finish(null, requestedSignal);
+          return;
+        }
+        const exitCode = readExitCode(cause);
+        if (exitCode !== null) {
+          finish(exitCode, null);
+          return;
+        }
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        finish(null, null, error);
+      },
+    );
+
+    const stdin = new WritableStream<Uint8Array>({
+      write: async (chunk) => {
+        if (exitedSettled) throw new Error("cannot write to an exited E2B process");
+        await handle.sendStdin!(chunk);
+      },
+      close: async () => {
+        if (!exitedSettled) await handle.closeStdin!();
+      },
+      abort: async () => {
+        if (exitedSettled) return;
+        requestedSignal = "SIGKILL";
+        await handle.kill();
+        finish(null, requestedSignal);
+      },
+    });
+
+    return {
+      stdin,
+      stdout,
+      stderr,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        if (exitedSettled) return;
+        // E2B v2 currently exposes SIGKILL only. Preserve the caller's
+        // requested signal in the portable lifecycle result.
+        requestedSignal = signal;
+        await handle.kill();
+        finish(null, requestedSignal);
+      },
+    };
   }
 
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
@@ -378,22 +523,30 @@ export class E2BSandboxExecutor implements SandboxPort {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  /**
-   * Prefix env-var assignments AND command-prefix secrets to the command.
-   * E2B's commands.run doesn't take an env option (the SDK's shape is bare
-   * cmd string), so we shell-prefix instead. Matches the LocalSubprocess
-   * adapter's behaviour from the model's perspective.
-   */
+  /** Prefix env-var assignments and command-prefix secrets for the legacy
+   * string-command paths. Duplex processes use E2B v2's native `envs` field. */
   private applyEnv(command: string): string {
-    const env: Record<string, string> = { ...this.envVars };
-    for (const { prefix, secrets } of this.commandSecrets) {
-      if (command.startsWith(prefix)) Object.assign(env, secrets);
-    }
+    const env = this.buildCommandEnv(command);
     if (Object.keys(env).length === 0) return command;
     const exports = Object.entries(env)
       .map(([k, v]) => `export ${k}=${shellEscape(v)};`)
       .join(" ");
     return `${exports} ${command}`;
+  }
+
+  private buildCommandEnv(
+    command: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string> {
+    const env: Record<string, string> = { ...this.envVars };
+    for (const { prefix, secrets } of this.commandSecrets) {
+      if (command.startsWith(prefix)) Object.assign(env, secrets);
+    }
+    for (const [name, value] of Object.entries(overrides)) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+    }
+    return env;
   }
 }
 
@@ -417,7 +570,10 @@ class E2BProcessHandle implements ProcessHandle {
   }
 
   async kill(signal: string): Promise<void> {
-    try { await this.handle.kill(signal); } catch (err) {
+    // The E2B v2 command API only exposes SIGKILL; retain ProcessHandle's
+    // portable signature while delegating to the supported primitive.
+    void signal;
+    try { await this.handle.kill(); } catch (err) {
       throw new Error(`kill failed: ${(err as Error).message}`);
     }
   }
@@ -437,6 +593,18 @@ function shellEscape(value: string): string {
   // Single-quote-wrap; double any embedded single quotes via the
   // ' '\'' ' idiom which is portable across POSIX shells.
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function readExitCode(cause: unknown): number | null {
+  if (
+    typeof cause === "object"
+    && cause !== null
+    && "exitCode" in cause
+    && typeof cause.exitCode === "number"
+  ) {
+    return cause.exitCode;
+  }
+  return null;
 }
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
