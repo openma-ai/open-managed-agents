@@ -73,7 +73,9 @@ function installFetchMock(
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input as never, init);
-    const body = ["GET", "HEAD"].includes(req.method) ? null : await req.text();
+    const body = ["GET", "HEAD"].includes(req.method)
+      ? null
+      : new TextDecoder().decode(await req.arrayBuffer());
     const call: FetchCall = {
       url: req.url,
       method: req.method,

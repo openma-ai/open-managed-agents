@@ -10,6 +10,7 @@ import {
   skillVersionView,
 } from "./skill-fixtures";
 import { buildSkillsTestApi } from "./test-api";
+import { withAnthropicFormDataSupport } from "../../../test/anthropic-sdk-fetch";
 
 function makeClient(
   versions: SkillVersionsApplicationPort,
@@ -20,13 +21,13 @@ function makeClient(
     apiKey: "test-key",
     baseURL: "http://openma.test",
     maxRetries: 0,
-    fetch: async (input, init) => {
+    fetch: withAnthropicFormDataSupport(async (input, init) => {
       const request =
         input instanceof Request
           ? new Request(input, init)
           : new Request(input.toString(), init);
       return api.fetch(request);
-    },
+    }),
   });
 }
 
@@ -150,7 +151,9 @@ describe("Skills API — /v1/skills/:skill_id/versions", () => {
     expect(calls).toEqual([
       { skillId: "skill_01", version: "1759178010641129" },
     ]);
-    expect(await response.text()).toBe("zip-content");
+    expect(
+      new TextDecoder().decode(await response.arrayBuffer()),
+    ).toBe("zip-content");
   });
 
   it("deletes a version with the official tombstone", async () => {

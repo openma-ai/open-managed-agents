@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { exports } from "cloudflare:workers";
 import { unzipSync } from "fflate";
 import { beforeAll, describe, expect, it } from "vitest";
+import { withAnthropicFormDataSupport } from "../anthropic-sdk-fetch";
 
 const SKILL_MARKDOWN = `---
 name: repository-guide
@@ -10,19 +11,21 @@ description: How to work in this repository
 # Repository guide
 `;
 
-const workerFetch: typeof fetch = async (input, init) => {
-  const source =
-    input instanceof Request
-      ? input
-      : new Request(input instanceof URL ? input.toString() : input, init);
-  const url = new URL(source.url);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return fetch(source);
-  }
-  return exports.default.fetch(
-    new Request(`http://localhost${url.pathname}${url.search}`, source),
-  );
-};
+const workerFetch: typeof fetch = withAnthropicFormDataSupport(
+  async (input: RequestInfo | URL, init?: RequestInit) => {
+    const source =
+      input instanceof Request
+        ? input
+        : new Request(input instanceof URL ? input.toString() : input, init);
+    const url = new URL(source.url);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return fetch(source);
+    }
+    return exports.default.fetch(
+      new Request(`http://localhost${url.pathname}${url.search}`, source),
+    );
+  },
+);
 
 beforeAll(async () => {
   await workerFetch("http://localhost/health");

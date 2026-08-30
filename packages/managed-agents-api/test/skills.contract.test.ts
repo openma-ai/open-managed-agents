@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { SkillsApplicationPort } from "../src/index";
 import { skillView, makeSkillsPort } from "./skill-fixtures";
 import { buildSkillsTestApi } from "./test-api";
+import { withAnthropicFormDataSupport } from "../../../test/anthropic-sdk-fetch";
 
 function makeClient(port: SkillsApplicationPort): Anthropic {
   const api = buildSkillsTestApi(port);
@@ -10,13 +11,13 @@ function makeClient(port: SkillsApplicationPort): Anthropic {
     apiKey: "test-key",
     baseURL: "http://openma.test",
     maxRetries: 0,
-    fetch: async (input, init) => {
+    fetch: withAnthropicFormDataSupport(async (input, init) => {
       const request =
         input instanceof Request
           ? new Request(input, init)
           : new Request(input.toString(), init);
       return api.fetch(request);
-    },
+    }),
   });
 }
 
