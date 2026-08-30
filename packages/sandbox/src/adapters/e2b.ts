@@ -1,4 +1,4 @@
-// E2B (e2b.dev) implementation of SandboxExecutor.
+// E2B (e2b.dev) implementation of SandboxPort.
 //
 // Lazy-imports the `e2b` SDK so this package compiles without it. The
 // driver dep lives in your deployment's package.json:
@@ -8,7 +8,7 @@
 // spun up via E2B's API. Boot time ~250ms cold from a warm pool, sub-200MB
 // memory, full filesystem, network access controlled by the template image.
 //
-// Mapping to SandboxExecutor port:
+// Mapping to SandboxPort:
 //   exec(cmd)              → sandbox.commands.run(cmd) (sync mode, capture stdout/stderr/exitCode)
 //   startProcess(cmd)      → sandbox.commands.run(cmd, { background: true })
 //   readFile / writeFile   → sandbox.files.read / write
@@ -17,7 +17,7 @@
 // Auth: pass apiKey at construction. If unset, the SDK reads E2B_API_KEY
 // from process.env.
 
-import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "../ports";
+import type { ProcessHandle, SandboxPort, SandboxFactory } from "../ports";
 import { readS3MemoryBucket } from "../ports";
 
 // Structural types so this file compiles without `e2b` installed. The
@@ -52,6 +52,12 @@ interface E2BSandboxLike {
 export interface E2BSandboxOptions {
   /** E2B API key. Falls back to process.env.E2B_API_KEY. */
   apiKey?: string;
+  /** E2B-compatible control-plane URL. Falls back to E2B_API_URL. */
+  apiUrl?: string;
+  /** Optional sandbox traffic URL. Falls back to E2B_SANDBOX_URL. */
+  sandboxUrl?: string;
+  /** Optional E2B-compatible base domain. Falls back to E2B_DOMAIN. */
+  domain?: string;
   /**
    * Template id (the `template` field in E2B's UI). Default "base" matches
    * the SDK's default — has python/node/git/curl etc preinstalled. Override
@@ -92,7 +98,15 @@ export async function createE2BSandbox(
 ): Promise<E2BSandboxExecutor> {
   type E2BModule = {
     Sandbox: {
-      create(args?: { apiKey?: string; template?: string }): Promise<E2BSandboxLike>;
+      create(
+        template: string,
+        args?: {
+          apiKey?: string;
+          apiUrl?: string;
+          sandboxUrl?: string;
+          domain?: string;
+        },
+      ): Promise<E2BSandboxLike>;
     };
   };
   const mod = (await import(/* @vite-ignore */ "e2b" as string).catch((err) => {
@@ -101,14 +115,16 @@ export async function createE2BSandbox(
         `pnpm add e2b (cause: ${String(err)})`,
     );
   })) as E2BModule;
-  const sb = await mod.Sandbox.create({
+  const sb = await mod.Sandbox.create(opts.templateId ?? "base", {
     apiKey: opts.apiKey,
-    template: opts.templateId,
+    apiUrl: opts.apiUrl,
+    sandboxUrl: opts.sandboxUrl,
+    domain: opts.domain,
   });
   return new E2BSandboxExecutor(sb, opts);
 }
 
-export class E2BSandboxExecutor implements SandboxExecutor {
+export class E2BSandboxExecutor implements SandboxPort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -428,6 +444,9 @@ function shellEscape(value: string): string {
 export const sandboxFactory: SandboxFactory = async (_ctx, env) => {
   return await createE2BSandbox({
     apiKey: env.E2B_API_KEY,
+    apiUrl: env.E2B_API_URL,
+    sandboxUrl: env.E2B_SANDBOX_URL,
+    domain: env.E2B_DOMAIN,
     templateId: env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
   });

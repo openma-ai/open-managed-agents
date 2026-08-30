@@ -13,16 +13,20 @@
     "./orchestrator": "./src/orchestrator.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@open-managed-agents/observability": "workspace:*",
     "@open-managed-agents/shared": "workspace:*"
   },
   "peerDependencies": {
-    "e2b": "^1.0.0",
+    "e2b": "^2.46.1",
     "@daytonaio/sdk": "^0.171.0",
     "@boxlite-ai/boxlite": "^0.9.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
   },
   "peerDependenciesMeta": {
     "e2b": {

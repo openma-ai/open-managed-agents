@@ -3,12 +3,16 @@ import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-
 import type { FileResolver } from "../runtime/history";
 import type { PiModelRuntime } from "./pi-provider";
 
-// SandboxExecutor + ProcessHandle live in @open-managed-agents/sandbox so
+// SandboxPort + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
 // same shape without depending on apps/agent's CF-only modules. Imported
 // for local use AND re-exported so existing imports keep working unchanged.
-import type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
-export type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
+import type { SandboxPort, ProcessHandle } from "@open-managed-agents/sandbox";
+export type {
+  SandboxPort,
+  SandboxExecutor,
+  ProcessHandle,
+} from "@open-managed-agents/sandbox";
 export type { FileResolver, ResolvedFile } from "../runtime/history";
 
 export interface HarnessInterface {
@@ -79,7 +83,7 @@ export interface HarnessInterface {
 
 export interface HarnessRuntime {
   history: HistoryStore;
-  sandbox: SandboxExecutor;
+  sandbox: SandboxPort;
   /**
    * Append an event to history AND broadcast to WS subscribers. The single
    * write path for harness-emitted events (model output, system_reminder,

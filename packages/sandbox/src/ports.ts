@@ -1,5 +1,5 @@
 // Runtime-agnostic sandbox port. Originally lived in
-// apps/agent/src/harness/interface.ts as the `SandboxExecutor` and
+// apps/agent/src/harness/interface.ts as the legacy `SandboxExecutor` and
 // `ProcessHandle` interfaces; lifted here so non-CF runtimes (Node host,
 // future deployments) can implement the same shape without taking on the
 // apps/agent → cloudflare:workers → @cloudflare/sandbox import chain.
@@ -12,8 +12,8 @@
 //     child_process + per-session workdir. Local dev. NO security
 //     isolation — runs on the host filesystem. Don't ship to prod with
 //     untrusted agents.
-//   - E2BSandbox (TODO) — wraps @e2b/sdk for Firecracker microVM
-//     isolation. Production self-host path.
+//   - E2BSandboxExecutor (./adapters/e2b.ts) — wraps the official `e2b`
+//     SDK. The configured API may be E2B Cloud or any compatible service.
 
 export interface ProcessHandle {
   id: string;
@@ -23,7 +23,7 @@ export interface ProcessHandle {
   getStatus(): Promise<string>;
 }
 
-export interface SandboxExecutor {
+export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
   startProcess?(command: string): Promise<ProcessHandle | null>;
@@ -119,6 +119,12 @@ export interface SandboxExecutor {
   renewActivityTimeout?(): Promise<void>;
 }
 
+/**
+ * @deprecated Use `SandboxPort`. Kept as a source-compatible migration alias
+ * while downstream harness and adapter packages adopt the Port name.
+ */
+export type SandboxExecutor = SandboxPort;
+
 // ─── Factory contract ──────────────────────────────────────────────────
 //
 // Dependency-inversion entry point. Every adapter exports a single
@@ -157,7 +163,7 @@ export type SandboxFactoryEnv = Readonly<Record<string, string | undefined>>;
 export type SandboxFactory = (
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
-) => Promise<SandboxExecutor>;
+) => Promise<SandboxPort>;
 
 // ─── Shared adapter helpers ─────────────────────────────────────────
 //

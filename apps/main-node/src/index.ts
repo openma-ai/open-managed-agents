@@ -55,7 +55,8 @@ import { toFileRecord } from "@open-managed-agents/files-store";
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import { generateEventId } from "@open-managed-agents/shared";
-import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
+import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
+import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
 import {
   createPiModelRuntime,
@@ -66,6 +67,7 @@ import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 import { applyBetterAuthSchema } from "@open-managed-agents/schema";
+import type { OmaDb } from "@open-managed-agents/db-schema";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
 import {
   buildAgentRoutes as buildLegacyAgentRoutes,
@@ -297,6 +299,8 @@ import {
 } from "./lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "./lib/node-managed-session-runner.js";
 
+registerCoreHarnesses();
+
 const toMarkdownProvider = nodeToMarkdown();
 
 // ─── Observability bootstrap ─────────────────────────────────────────────
@@ -329,7 +333,6 @@ let backendDescription: string;
 // Constructed once at the composition root from the right concrete driver.
 // Existing SqlClient is still built alongside for the legacy applySchema /
 // integrations adapters until those finish migrating.
-import type { OmaDb } from "@open-managed-agents/db-schema";
 let drizzleDb: OmaDb<Record<string, unknown>>;
 if (usePostgres) {
   sql = await createPostgresSqlClient(dbUrl);
@@ -761,12 +764,19 @@ const sessionRegistry = new SessionRegistry({
       toMarkdown: toMarkdownProvider,
     });
   },
-  buildHarness: () => {
-    const h = new DefaultHarness();
+  buildHarness: (agent) => {
+    const h = resolveHarness(agent.harness);
     return { run: (ctx: unknown) => h.run(ctx as HarnessContext) };
   },
   buildHarnessContext: async (input) => {
     const creds = await resolveNodeModelCreds(input.tenantId, input.agent.model);
+    const pi = createPiModelRuntime({
+      model: creds.wireModel,
+      apiKey: creds.apiKey,
+      provider: creds.provider,
+      baseURL: creds.baseURL,
+      customHeaders: creds.customHeaders,
+    });
     const runtime = new NodeHarnessRuntime({
       sessionId: input.sessionId,
       log: input.eventLog,
@@ -789,6 +799,7 @@ const sessionRegistry = new SessionRegistry({
         ...feishuTools,
       } as HarnessContext["tools"],
       model: input.model,
+      pi,
       systemPrompt: composeSystemPrompt(rawSystemPrompt),
       rawSystemPrompt,
       env: {

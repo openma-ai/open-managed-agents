@@ -88,6 +88,7 @@
     "better-sqlite3": "^13.0.3",
     "chokidar": "^4.0.0",
     "croner": "^9.0.0",
+    "e2b": "^2.46.1",
     "fflate": "^0.8.2",
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
@@ -100,6 +101,7 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.120.0",
+    "@earendil-works/pi-ai": "0.84.4",
     "@types/better-sqlite3": "^9.6.0",
     "@types/pg": "^8.20.0",
     "@types/turndown": "^5.0.5",

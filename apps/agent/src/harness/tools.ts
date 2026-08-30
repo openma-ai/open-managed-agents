@@ -8,7 +8,7 @@ import {
 } from "@open-managed-agents/mcp";
 import type { AgentConfig, ToolsetConfig, CustomToolConfig, SessionEvent } from "@open-managed-agents/shared";
 import type { ToMarkdownProvider } from "@open-managed-agents/markdown";
-import type { SandboxExecutor, ProcessHandle } from "./interface";
+import type { SandboxPort, ProcessHandle } from "./interface";
 import { nanoid } from "nanoid";
 // Browser tools depend on the runtime-agnostic BrowserHarness interface.
 // Concrete adapters (CF / Node / CDP / Disabled) live in the package and
@@ -402,7 +402,7 @@ function getEnabledTools(tools: AgentConfig["tools"]): Set<string> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function buildTools(
   agentConfig: AgentConfig,
-  sandbox: SandboxExecutor,
+  sandbox: SandboxPort,
   env?: {
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_BASE_URL?: string;

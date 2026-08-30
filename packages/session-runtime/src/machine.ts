@@ -36,7 +36,7 @@ import type {
 import type { LanguageModel } from "ai";
 import { recoverInterruptedState } from "./recovery";
 import type { OrphanTurn, RuntimeAdapter, TurnId } from "./ports";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import type { SandboxPort } from "@open-managed-agents/sandbox";
 
 /**
  * Pluggable harness — both CF and Node want the same default-loop
@@ -44,7 +44,7 @@ import type { SandboxExecutor } from "@open-managed-agents/sandbox";
  * package's dep graph small (no `@open-managed-agents/agent` dep).
  *
  * The shell wires this with:
- *   buildHarness: () => new DefaultHarness()
+ *   buildHarness: (agent) => resolveHarness(agent.harness)
  *   buildContext: () => HarnessContext  // model + tools + system + ...
  */
 export interface HarnessRunFn {
@@ -61,7 +61,7 @@ export interface SessionMachineDeps {
   /** Per-session sandbox. Constructed by the shell so it can pick the
    *  backend (LocalSubprocess / E2B / Daytona / CloudflareSandbox) and
    *  inject sessionId-scoped paths.  */
-  sandbox: SandboxExecutor;
+  sandbox: SandboxPort;
 
   /** Look up the agent config. CF reads from a snapshot or the agents
    *  store; Node reads from agentsService. */
@@ -70,13 +70,13 @@ export interface SessionMachineDeps {
   /** Bind a memory store into the sandbox. Phase 2 keeps the loop in
    *  the shell to avoid pulling memory-store types into this package;
    *  the shell calls sandbox.mountMemoryStore directly via sandbox. */
-  mountMemoryStores?(opts: { sandbox: SandboxExecutor }): Promise<void>;
+  mountMemoryStores?(opts: { sandbox: SandboxPort }): Promise<void>;
 
   /** Mount /mnt/session/outputs/ into the sandbox. Per-session bound
    *  directory the agent uses to deliver final artefacts; the same path
    *  is exposed by the main worker via GET /v1/sessions/:id/outputs.
    *  Optional — sandboxes / hosts that don't support it skip silently. */
-  mountSessionOutputs?(opts: { sandbox: SandboxExecutor }): Promise<void>;
+  mountSessionOutputs?(opts: { sandbox: SandboxPort }): Promise<void>;
 
   /** Build the LanguageModel for this turn. CF reads env from
    *  bindings; Node from process.env (and optionally a model card).
@@ -86,7 +86,7 @@ export interface SessionMachineDeps {
   /** Build harness tools. The harness package owns the tool list; the
    *  machine doesn't know which tools exist, just hands the result to
    *  the harness. */
-  buildTools(agent: AgentConfig, sandbox: SandboxExecutor): Promise<unknown>;
+  buildTools(agent: AgentConfig, sandbox: SandboxPort): Promise<unknown>;
 
   /** Build the harness instance + context for one turn. The shell does
    *  this so the machine doesn't need a hard dep on
@@ -95,11 +95,11 @@ export interface SessionMachineDeps {
    *  Async because shells often need to warm up state (e.g. read the
    *  event log into the harness's history cache) before harness.run
    *  reads from it. */
-  buildHarness(): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): { run: (ctx: unknown) => Promise<void> };
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
-    sandbox: SandboxExecutor;
+    sandbox: SandboxPort;
     tools: unknown;
     model: LanguageModel;
   }): Promise<unknown>;
@@ -176,7 +176,7 @@ export class SessionStateMachine {
         model,
       });
 
-      const harness = this.deps.buildHarness();
+      const harness = this.deps.buildHarness(agent);
       await harness.run(ctx);
     } finally {
       this.activeTurnId = null;
