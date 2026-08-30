@@ -54,6 +54,7 @@ const SOURCE_OPTIONS: { value: SourceValue; label: string }[] = [
 // pre-rejection but the server will still enforce; that's an acceptable
 // degradation for an unusual config.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const SKILLS_API = "/v1/oma/skills";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -91,7 +92,7 @@ export function SkillsList() {
     data: skillsRes,
     isLoading: loading,
     refetch: refetchSkills,
-  } = useApiQuery<{ data: Skill[] }>("/v1/skills", skillsParams);
+  } = useApiQuery<{ data: Skill[] }>(SKILLS_API, skillsParams);
   const skills = skillsRes?.data ?? [];
   const load = () => {
     void refetchSkills();
@@ -161,7 +162,7 @@ export function SkillsList() {
       // SKILL.md frontmatter name; only send when the user actually typed
       // something.
       if (createTitle.trim()) fd.append("display_title", createTitle.trim());
-      await api("/v1/skills/upload", { method: "POST", body: fd });
+      await api(`${SKILLS_API}/upload`, { method: "POST", body: fd });
       setShowCreate(false);
       resetCreate();
       load();
@@ -183,9 +184,9 @@ export function SkillsList() {
     try {
       const [versionDetail, versionsRes] = await Promise.all([
         api<VersionDetail>(
-          `/v1/skills/${skill.id}/versions/${skill.latest_version}`
+          `${SKILLS_API}/${skill.id}/versions/${skill.latest_version}`
         ),
-        api<{ data: VersionSummary[] }>(`/v1/skills/${skill.id}/versions`),
+        api<{ data: VersionSummary[] }>(`${SKILLS_API}/${skill.id}/versions`),
       ]);
       setDetailFiles(versionDetail.files || []);
       setDetailVersions(versionsRes.data || []);
@@ -238,7 +239,7 @@ export function SkillsList() {
     try {
       const fd = new FormData();
       fd.append("file", nvZip);
-      await api(`/v1/skills/${detail.id}/versions/upload`, {
+      await api(`${SKILLS_API}/${detail.id}/versions/upload`, {
         method: "POST",
         body: fd,
       });
@@ -246,7 +247,7 @@ export function SkillsList() {
       setNvZip(null);
       /* refresh both the list and this detail */
       load();
-      const refreshed = await api<Skill>(`/v1/skills/${detail.id}`);
+      const refreshed = await api<Skill>(`${SKILLS_API}/${detail.id}`);
       openDetail(refreshed);
     } catch (e: any) {
       setNvError(e?.message || "Upload failed");
@@ -261,7 +262,7 @@ export function SkillsList() {
     if (!detail) return;
     if (!confirm("Delete this skill? This cannot be undone.")) return;
     try {
-      await api(`/v1/skills/${detail.id}`, { method: "DELETE" });
+      await api(`${SKILLS_API}/${detail.id}`, { method: "DELETE" });
       closeDetail();
       load();
     } catch {}
@@ -274,7 +275,7 @@ export function SkillsList() {
     const name = skill.display_title || skill.name;
     if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
     try {
-      await api(`/v1/skills/${skill.id}`, { method: "DELETE" });
+      await api(`${SKILLS_API}/${skill.id}`, { method: "DELETE" });
       load();
     } catch {}
   };

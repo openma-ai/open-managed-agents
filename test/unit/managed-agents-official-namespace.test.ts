@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import cloudflareComposition from "../../apps/main/src/index.ts?raw";
 import nodeComposition from "../../apps/main-node/src/index.ts?raw";
+import skillsConsole from "../../apps/console/src/pages/SkillsList.tsx?raw";
 
 const productionSources = import.meta.glob(
   [
@@ -53,6 +54,14 @@ describe("official /v1 namespace", () => {
         (segment) => !OFFICIAL_TOP_LEVEL.has(segment),
       ),
     ).toEqual([]);
+  });
+
+  it("keeps Node ZIP skill extensions separate from the official skills API", () => {
+    expect(nodeComposition).toContain('v1.route("/skills", managedSkillsRoutes)');
+    expect(nodeComposition).toContain('v1.route("/oma/skills", buildNodeSkillsRoutes');
+    expect(nodeComposition).not.toContain('v1.route("/skills", buildNodeSkillsRoutes');
+    expect(skillsConsole).toContain('const SKILLS_API = "/v1/oma/skills"');
+    expect(skillsConsole).not.toMatch(/["`]\/v1\/skills(?:\/|["`])/u);
   });
 
   it("keeps every production caller off removed bare OMA aliases", () => {
