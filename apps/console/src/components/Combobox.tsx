@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import {
   useCallback,
@@ -61,13 +62,47 @@ import { cn } from "@/lib/utils";
 
 interface PageResponse<T> {
   data: T[];
-  next_cursor?: string;
+  next_page?: string | null;
+  next_cursor?: string | null;
+}
+
+type PaginationContract = "managed" | "oma";
+
+export function buildComboboxPageUrl(
+  endpoint: string,
+  opts: {
+    limit: number;
+    page?: string;
+    search?: string;
+    searchParam?: "q";
+    pagination?: PaginationContract;
+  },
+): string {
+  const sp = new URLSearchParams();
+  sp.set("limit", String(opts.limit));
+  if (opts.page) {
+    sp.set(opts.pagination === "oma" ? "cursor" : "page", opts.page);
+  }
+  if (opts.search && opts.searchParam) {
+    sp.set(opts.searchParam, opts.search);
+  }
+  return `${endpoint}?${sp}`;
+}
+
+export function readComboboxNextPage(page: {
+  data?: unknown[];
+  next_page?: string | null;
+  next_cursor?: string | null;
+}, pagination: PaginationContract = "managed"): string | undefined {
+  return pagination === "oma"
+    ? page.next_cursor ?? undefined
+    : page.next_page ?? undefined;
 }
 
 export interface ComboboxProps<T> {
   value: string;
   onValueChange: (value: string, item: T | null) => void;
-  /** API path, e.g. "/v1/agents". Combobox appends `?limit=&cursor=&q=`. */
+  /** Managed API path, e.g. "/v1/agents". Feed transport uses `page`/`next_page`. */
   endpoint: string;
   /** Stable id extractor for an item. */
   getValue: (item: T) => string;
@@ -86,6 +121,11 @@ export interface ComboboxProps<T> {
   className?: string;
   /** Page size for each fetch. Default 20. */
   pageLimit?: number;
+  /** Product-only server search. Standard Managed resources do not expose
+   *  `q`, so search is client-side unless the endpoint opts in explicitly. */
+  searchParam?: "q";
+  /** Explicit only for product endpoints that retain cursor/next_cursor. */
+  pagination?: PaginationContract;
 }
 
 export function Combobox<T>({
@@ -101,6 +141,8 @@ export function Combobox<T>({
   disabled,
   className,
   pageLimit = 20,
+  searchParam,
+  pagination = "managed",
 }: ComboboxProps<T>) {
   const { api } = useApi();
   const [open, setOpen] = useState(false);
@@ -117,16 +159,26 @@ export function Combobox<T>({
 
   // ── Infinite list fetch via TQ ──
   const infiniteQuery = useInfiniteQuery<PageResponse<T>>({
-    queryKey: [endpoint, "combobox", debouncedInput, pageLimit],
+    queryKey: [
+      endpoint,
+      "combobox",
+      searchParam ? debouncedInput : "",
+      pageLimit,
+      pagination,
+    ],
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam, signal }) => {
-      const sp = new URLSearchParams();
-      sp.set("limit", String(pageLimit));
-      if (debouncedInput) sp.set("q", debouncedInput);
-      if (typeof pageParam === "string") sp.set("cursor", pageParam);
-      return api<PageResponse<T>>(`${endpoint}?${sp}`, { signal });
-    },
-    getNextPageParam: (lastPage) => lastPage.next_cursor,
+    queryFn: ({ pageParam, signal }) =>
+      api<PageResponse<T>>(
+        buildComboboxPageUrl(endpoint, {
+          limit: pageLimit,
+          page: typeof pageParam === "string" ? pageParam : undefined,
+          search: debouncedInput,
+          searchParam,
+          pagination,
+        }),
+        { signal },
+      ),
+    getNextPageParam: (page) => readComboboxNextPage(page, pagination),
     enabled: open,
     placeholderData: keepPreviousData,
   });
@@ -177,9 +229,19 @@ export function Combobox<T>({
   const isPlaceholder = !value;
 
   // ── Filter items by excludeIds ──
+  const normalizedSearch = debouncedInput.trim().toLocaleLowerCase();
+  const searched =
+    normalizedSearch && !searchParam
+      ? items.filter((it) => {
+          const text = getTextLabel
+            ? getTextLabel(it)
+            : String(getValue(it));
+          return text.toLocaleLowerCase().includes(normalizedSearch);
+        })
+      : items;
   const visible = excludeIds
-    ? items.filter((it) => !excludeIds.includes(getValue(it)))
-    : items;
+    ? searched.filter((it) => !excludeIds.includes(getValue(it)))
+    : searched;
 
   const showInitialLoading = items.length === 0 && isFetching;
 
@@ -195,7 +257,7 @@ export function Combobox<T>({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
+        <Button variant="ghost"
           type="button"
           role="combobox"
           aria-haspopup="listbox"
@@ -203,7 +265,7 @@ export function Combobox<T>({
           disabled={disabled}
           className={
             className ??
-            "w-full inline-flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
+            "w-full inline-flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
           }
         >
           <span
@@ -215,7 +277,7 @@ export function Combobox<T>({
             {labelText}
           </span>
           <ChevronDownIcon className="size-3.5 text-fg-subtle shrink-0" />
-        </button>
+        </Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
@@ -258,12 +320,12 @@ export function Combobox<T>({
             {/* Sentinel for IntersectionObserver — sits inside scroll
                 container so its own visibility tracks scroll position. */}
             {hasMore && (
-              <div ref={listEndRef} className="py-2 text-center text-[12px] text-fg-subtle">
+              <div ref={listEndRef} className="py-2 text-center text-sm text-fg-subtle">
                 {infiniteQuery.isFetchingNextPage ? "Loading..." : ""}
               </div>
             )}
             {showInitialLoading && (
-              <div className="px-3 py-6 text-center text-[13px] text-fg-subtle">
+              <div className="px-3 py-6 text-center text-sm text-fg-subtle">
                 Loading...
               </div>
             )}

@@ -1,18 +1,38 @@
 import type { ModelMessage, LanguageModel } from "ai";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import type { FileResolver } from "../runtime/history";
+import type { PiModelRuntime } from "./pi-provider";
 
-// SandboxExecutor + ProcessHandle live in @open-managed-agents/sandbox so
+// SandboxPort + ProcessHandle live in @open-managed-agents/sandbox so
 // non-CF runtimes (apps/main-node, future deployments) can implement the
 // same shape without depending on apps/agent's CF-only modules. Imported
 // for local use AND re-exported so existing imports keep working unchanged.
-import type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
-export type { SandboxExecutor, ProcessHandle } from "@open-managed-agents/sandbox";
+import type {
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxPort,
+  ProcessHandle,
+} from "@open-managed-agents/sandbox";
+export type {
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxPort,
+  SandboxExecutor,
+  ProcessHandle,
+} from "@open-managed-agents/sandbox";
 export type { FileResolver, ResolvedFile } from "../runtime/history";
+
+export type HarnessDisposeReason = "replace" | "shutdown" | "destroy";
 
 export interface HarnessInterface {
   /** Main agent loop. Required. Drives generateText and emits events. */
   run(ctx: HarnessContext): Promise<void>;
+
+  /** Release harness-owned processes. Session hosts call this before the
+   * underlying Sandbox is destroyed. */
+  dispose?(reason?: HarnessDisposeReason): Promise<void>;
 
   /**
    * Called once per session, after sandbox warmup, before the first user
@@ -78,7 +98,7 @@ export interface HarnessInterface {
 
 export interface HarnessRuntime {
   history: HistoryStore;
-  sandbox: SandboxExecutor;
+  sandbox: SandboxPort;
   /**
    * Append an event to history AND broadcast to WS subscribers. The single
    * write path for harness-emitted events (model output, system_reminder,
@@ -181,8 +201,15 @@ export interface HarnessContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
 
-  /** Platform-prepared model: resolved from agent config with API key. */
+  /** AI SDK projection of the platform-prepared Pi model runtime. */
   model: LanguageModel;
+
+  /**
+   * Tenant-scoped Pi provider/model runtime for harnesses that consume Pi
+   * directly. DefaultHarness uses the same runtime through `model` above.
+   * Optional because not every platform enables the standalone PiHarness.
+   */
+  pi?: PiModelRuntime;
 
   /**
    * Platform-augmented system prompt: agent.system + platform guidance

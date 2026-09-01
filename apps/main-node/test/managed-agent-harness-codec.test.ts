@@ -1,0 +1,218 @@
+import { describe, expect, it } from "vitest";
+import type { Session } from "@open-managed-agents/managed-agents-application";
+import {
+  allowAllLegacyHarnessTools,
+  toLegacyHarnessAgentConfig,
+} from "../src/lib/node-managed-agent-codec.js";
+
+const session: Session = {
+  id: "session_01",
+  agent: {
+    id: "agent_coordinator",
+    description: null,
+    mcpServers: [
+      { type: "url", name: "docs", url: "https://mcp.example.test" },
+    ],
+    model: {
+      id: "claude-opus-5",
+      effort: "high",
+      inferenceGeo: "us",
+      speed: "fast",
+    },
+    multiagent: {
+      type: "coordinator",
+      agents: [
+        {
+          type: "agent",
+          id: "agent_reviewer",
+          description: null,
+          mcpServers: [],
+          model: { id: "claude-sonnet-4-6" },
+          name: "Reviewer",
+          skills: [],
+          system: null,
+          tools: [],
+          version: 7,
+        },
+        { type: "advisor", model: "claude-haiku-4-5" },
+      ],
+    },
+    name: "Coordinator",
+    skills: [{ type: "custom", skillId: "skill_review", version: "3" }],
+    system: "Coordinate carefully",
+    tools: [
+      {
+        type: "agent_toolset_20260401",
+        configs: [
+          {
+            type: "web_search",
+            name: "web_search",
+            enabled: true,
+            permissionPolicy: { type: "always_ask" },
+            allowedDomains: ["docs.example.com"],
+            blockedDomains: ["private.example.com"],
+            userLocation: {
+              type: "approximate",
+              city: "Shanghai",
+              timezone: "Asia/Shanghai",
+            },
+          },
+        ],
+        defaultConfig: {
+          enabled: false,
+          permissionPolicy: { type: "always_allow" },
+        },
+      },
+      {
+        type: "mcp_toolset",
+        mcpServerName: "docs",
+        configs: [
+          {
+            name: "search",
+            enabled: true,
+            permissionPolicy: { type: "always_ask" },
+          },
+        ],
+        defaultConfig: {
+          enabled: true,
+          permissionPolicy: { type: "always_allow" },
+        },
+      },
+      {
+        type: "custom",
+        name: "release",
+        description: "Release the service",
+        inputSchema: {
+          type: "object",
+          properties: { tag: { type: "string" } },
+          required: ["tag"],
+        },
+      },
+    ],
+    version: 4,
+  },
+  archivedAt: null,
+  budget: null,
+  createdAt: "2026-08-26T00:00:00.000Z",
+  environmentId: "env_01",
+  metadata: {},
+  outcomeEvaluations: [],
+  resources: [],
+  stats: {},
+  status: "running",
+  title: null,
+  updatedAt: "2026-08-26T00:00:01.000Z",
+  usage: {},
+  vaultIds: [],
+};
+
+describe("managed Agent to legacy Node harness codec", () => {
+  it("encodes application-native resolved definitions at the final adapter", () => {
+    expect(toLegacyHarnessAgentConfig(session)).toEqual({
+      id: "agent_coordinator",
+      name: "Coordinator",
+      model: { id: "claude-opus-5", speed: "fast" },
+      system: "Coordinate carefully",
+      tools: [
+        {
+          type: "agent_toolset_20260401",
+          configs: [
+            {
+              type: "web_search",
+              name: "web_search",
+              enabled: true,
+              permission_policy: { type: "always_ask" },
+              allowed_domains: ["docs.example.com"],
+              blocked_domains: ["private.example.com"],
+              user_location: {
+                type: "approximate",
+                city: "Shanghai",
+                timezone: "Asia/Shanghai",
+              },
+            },
+          ],
+          default_config: {
+            enabled: false,
+            permission_policy: { type: "always_allow" },
+          },
+        },
+        {
+          type: "mcp_toolset",
+          mcp_server_name: "docs",
+          configs: [
+            {
+              name: "search",
+              enabled: true,
+              permission_policy: { type: "always_ask" },
+            },
+          ],
+          default_config: {
+            enabled: true,
+            permission_policy: { type: "always_allow" },
+          },
+        },
+        {
+          type: "custom",
+          name: "release",
+          description: "Release the service",
+          input_schema: {
+            type: "object",
+            properties: { tag: { type: "string" } },
+            required: ["tag"],
+          },
+        },
+      ],
+      mcp_servers: [
+        { type: "url", name: "docs", url: "https://mcp.example.test" },
+      ],
+      skills: [{ type: "custom", skill_id: "skill_review", version: "3" }],
+      callable_agents: [
+        { type: "agent", id: "agent_reviewer", version: 7 },
+      ],
+      multiagent: {
+        type: "coordinator",
+        agents: [
+          { type: "agent", id: "agent_reviewer", version: 7 },
+          { type: "advisor", model: "claude-haiku-4-5" },
+        ],
+      },
+      version: 4,
+      created_at: "2026-08-26T00:00:00.000Z",
+      updated_at: "2026-08-26T00:00:01.000Z",
+    });
+  });
+
+  it("creates a non-mutating executable copy for confirmed tool execution", () => {
+    const encoded = toLegacyHarnessAgentConfig(session);
+    const executable = allowAllLegacyHarnessTools(encoded);
+
+    expect(executable.tools.slice(0, 2)).toMatchObject([
+      {
+        default_config: { permission_policy: { type: "always_allow" } },
+        configs: [
+          { name: "web_search", permission_policy: { type: "always_allow" } },
+        ],
+      },
+      {
+        default_config: { permission_policy: { type: "always_allow" } },
+        configs: [
+          { name: "search", permission_policy: { type: "always_allow" } },
+        ],
+      },
+    ]);
+    expect(encoded.tools.slice(0, 2)).toMatchObject([
+      {
+        default_config: { permission_policy: { type: "always_allow" } },
+        configs: [
+          { name: "web_search", permission_policy: { type: "always_ask" } },
+        ],
+      },
+      {
+        default_config: { permission_policy: { type: "always_allow" } },
+        configs: [
+          { name: "search", permission_policy: { type: "always_ask" } },
+        ],
+      },
+    ]);
+  });
+});

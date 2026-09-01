@@ -89,7 +89,7 @@ export interface AgentRepo {
   ): Promise<{ items: AgentRow[]; hasMore: boolean }>;
 
   /**
-   * Cheap COUNT(*) for the same row set as `list`. Used by /v1/stats
+   * Cheap COUNT(*) for the same row set as `list`. Used by /v1/oma/stats
    * (Dashboard) to avoid pulling rows just to call `.length`. Index
    * `idx_agents_tenant (tenant_id, archived_at)` covers it.
    */

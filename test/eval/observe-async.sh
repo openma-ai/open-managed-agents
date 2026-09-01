@@ -8,7 +8,7 @@ KEY="${OMA_API_KEY}"
 H=(-H "x-api-key: $KEY" -H "Content-Type: application/json")
 
 echo "=== Step 1: Create session ==="
-SESSION=$(curl -s -X POST "$API/v1/sessions" "${H[@]}" \
+SESSION=$(curl -s -X POST "$API/v1/oma/sessions" "${H[@]}" \
   -d '{"agent": "agent-lmpvhomfo8fs408b", "environment_id": "env-qisw0fmtm88nqwyk", "title": "observe-async"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('id','ERROR'))")
 echo "Session: $SESSION"
@@ -16,7 +16,7 @@ echo "Session: $SESSION"
 echo ""
 echo "=== Step 2: POST message (measure response time) ==="
 START=$(date +%s)
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/v1/sessions/$SESSION/events" "${H[@]}" \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/v1/oma/sessions/$SESSION/events" "${H[@]}" \
   -d '{"events": [{"type": "user.message", "content": [{"type": "text", "text": "Run: echo hello && echo DONE"}]}]}' \
   --max-time 120)
 END=$(date +%s)
@@ -35,7 +35,7 @@ echo ""
 echo "=== Step 3: Poll events until idle (max 5 min) ==="
 for i in $(seq 1 60); do
   sleep 5
-  EVENTS=$(curl -s "$API/v1/sessions/$SESSION/events?limit=50&order=asc" -H "x-api-key: $KEY")
+  EVENTS=$(curl -s "$API/v1/oma/sessions/$SESSION/events?limit=50&order=asc" -H "x-api-key: $KEY")
   COUNT=$(echo "$EVENTS" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))" 2>/dev/null)
   TYPES=$(echo "$EVENTS" | python3 -c "
 import sys,json
@@ -55,7 +55,7 @@ done
 
 echo ""
 echo "=== Step 4: Final event dump ==="
-curl -s "$API/v1/sessions/$SESSION/events?limit=50&order=asc" -H "x-api-key: $KEY" | python3 -c "
+curl -s "$API/v1/oma/sessions/$SESSION/events?limit=50&order=asc" -H "x-api-key: $KEY" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 events = d.get('data',[])

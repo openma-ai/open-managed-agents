@@ -35,8 +35,8 @@ const SIZE: Record<
   { wrap: string; mark: string; icon: string; gap: string; title: string; body: string }
 > = {
   sm: { wrap: "py-6 px-4", mark: "text-base", icon: "w-7 h-7", gap: "mb-2", title: "text-sm", body: "text-xs" },
-  md: { wrap: "py-10 px-6", mark: "text-lg", icon: "w-9 h-9", gap: "mb-3", title: "text-sm", body: "text-[13px]" },
-  lg: { wrap: "py-16 px-8", mark: "text-2xl", icon: "w-10 h-10", gap: "mb-4", title: "text-base", body: "text-sm" },
+  md: { wrap: "py-10 px-6", mark: "text-lg", icon: "w-9 h-9", gap: "mb-3", title: "text-sm", body: "text-sm" },
+  lg: { wrap: "py-16 px-8", mark: "text-xl", icon: "w-10 h-10", gap: "mb-4", title: "text-base", body: "text-sm" },
 };
 
 /** Entities that have a hand-drawn illustration. Anything not listed
@@ -125,7 +125,7 @@ export function EmptyState({
         )}
       </div>
       <p className={`text-fg ${s.title} font-medium`}>{title}</p>
-      {body && <p className={`text-fg-muted mt-1.5 ${s.body}`}>{body}</p>}
+      {body && <div className={`text-fg-muted mt-1.5 ${s.body}`}>{body}</div>}
       {action && <div className="mt-4 inline-flex">{action}</div>}
     </div>
   );

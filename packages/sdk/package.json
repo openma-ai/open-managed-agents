@@ -1,8 +1,7 @@
 {
   "name": "@openma/sdk",
   "version": "0.1.0",
-  "description": "[Deprecated — use @anthropic-ai/sdk with baseURL=https://openma.dev] Official TypeScript SDK for the openma managed agents platform.",
-  "deprecated": "@openma/sdk is deprecated. The openma API is wire-compatible with Anthropic's Managed Agents API — use `@anthropic-ai/sdk` with `baseURL: 'https://openma.dev'`. See https://openma.dev/docs/cli-sdk for migration.",
+  "description": "OpenMA composition SDK: the official Anthropic Managed Agents client plus typed OpenMA extensions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,8 +19,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm run clean && tsc",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -47,7 +48,11 @@
   "bugs": {
     "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.120.0"
+  },
   "devDependencies": {
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.3"
   }
 }

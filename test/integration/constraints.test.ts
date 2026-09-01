@@ -46,7 +46,7 @@ function del(path: string) {
 }
 
 async function createAgent(overrides?: Record<string, unknown>) {
-  const res = await post("/v1/agents", {
+  const res = await post("/v1/oma/agents", {
     name: "Constraint Agent",
     model: "claude-sonnet-4-6",
     system: "You are helpful.",
@@ -58,7 +58,7 @@ async function createAgent(overrides?: Record<string, unknown>) {
 }
 
 async function createEnv(overrides?: Record<string, unknown>) {
-  const res = await post("/v1/environments", {
+  const res = await post("/v1/oma/environments", {
     name: "constraint-env",
     config: { type: "cloud" },
     ...overrides,
@@ -67,7 +67,7 @@ async function createEnv(overrides?: Record<string, unknown>) {
 }
 
 async function createSession(agentId: string, envId: string, extra?: Record<string, unknown>) {
-  const res = await post("/v1/sessions", {
+  const res = await post("/v1/oma/sessions", {
     agent: agentId,
     environment_id: envId,
     ...extra,
@@ -87,7 +87,7 @@ describe("Constraint validations", () => {
     expect(agent.version).toBe(1);
 
     // Update with the same data
-    const updateRes = await put(`/v1/agents/${agent.id}`, {
+    const updateRes = await put(`/v1/oma/agents/${agent.id}`, {
       system: "stable system",
     });
     expect(updateRes.status).toBe(200);
@@ -95,7 +95,7 @@ describe("Constraint validations", () => {
     expect(updated.version).toBe(1); // Should NOT bump
 
     // Verify no version history was created
-    const versionsRes = await api(`/v1/agents/${agent.id}/versions`, {
+    const versionsRes = await api(`/v1/oma/agents/${agent.id}/versions`, {
       headers: HEADERS,
     });
     const versions = (await versionsRes.json()) as any;
@@ -112,7 +112,7 @@ describe("Constraint validations", () => {
     expect(agent.updated_at).toBe(agent.created_at);
 
     // Update with a real change
-    const updateRes = await put(`/v1/agents/${agent.id}`, {
+    const updateRes = await put(`/v1/oma/agents/${agent.id}`, {
       system: "changed system",
     });
     const updated = (await updateRes.json()) as any;
@@ -127,12 +127,12 @@ describe("Constraint validations", () => {
   // ----------------------------------------------------------
   it("memory rejects content > 100KB", async () => {
     // Create a memory store
-    const storeRes = await post("/v1/memory_stores", { name: "size-test" });
+    const storeRes = await post("/v1/oma/memory_stores", { name: "size-test" });
     const store = (await storeRes.json()) as any;
 
     // Try to create memory with content > 100KB
     const bigContent = "x".repeat(100 * 1024 + 1);
-    const createRes = await post(`/v1/memory_stores/${store.id}/memories`, {
+    const createRes = await post(`/v1/oma/memory_stores/${store.id}/memories`, {
       path: "big-file",
       content: bigContent,
     });
@@ -142,7 +142,7 @@ describe("Constraint validations", () => {
 
     // Content exactly at limit should succeed
     const okContent = "x".repeat(100 * 1024);
-    const okRes = await post(`/v1/memory_stores/${store.id}/memories`, {
+    const okRes = await post(`/v1/oma/memory_stores/${store.id}/memories`, {
       path: "ok-file",
       content: okContent,
     });
@@ -151,7 +151,7 @@ describe("Constraint validations", () => {
     // Update with oversized content should also fail
     const mem = (await okRes.json()) as any;
     const updateRes = await post(
-      `/v1/memory_stores/${store.id}/memories/${mem.id}`,
+      `/v1/oma/memory_stores/${store.id}/memories/${mem.id}`,
       { content: bigContent }
     );
     expect(updateRes.status).toBe(400);
@@ -163,12 +163,12 @@ describe("Constraint validations", () => {
   // Vault rejects > 20 credentials
   // ----------------------------------------------------------
   it("vault rejects > 20 credentials", async () => {
-    const vaultRes = await post("/v1/vaults", { name: "limit-vault" });
+    const vaultRes = await post("/v1/oma/vaults", { name: "limit-vault" });
     const vault = (await vaultRes.json()) as any;
 
     // Create 20 credentials (the maximum)
     for (let i = 0; i < 20; i++) {
-      const res = await post(`/v1/vaults/${vault.id}/credentials`, {
+      const res = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
         display_name: `cred-${i}`,
         auth: {
           type: "static_bearer",
@@ -180,7 +180,7 @@ describe("Constraint validations", () => {
     }
 
     // The 21st should fail
-    const overRes = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const overRes = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "cred-overflow",
       auth: {
         type: "static_bearer",
@@ -197,20 +197,20 @@ describe("Constraint validations", () => {
   // Vault rejects duplicate mcp_server_url with 409
   // ----------------------------------------------------------
   it("vault rejects duplicate mcp_server_url with 409", async () => {
-    const vaultRes = await post("/v1/vaults", { name: "dup-vault" });
+    const vaultRes = await post("/v1/oma/vaults", { name: "dup-vault" });
     const vault = (await vaultRes.json()) as any;
 
     const url = "https://unique-mcp.example.com/mcp";
 
     // First credential succeeds
-    const first = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const first = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "first",
       auth: { type: "static_bearer", mcp_server_url: url, token: "a" },
     });
     expect(first.status).toBe(201);
 
     // Duplicate mcp_server_url should 409
-    const dup = await post(`/v1/vaults/${vault.id}/credentials`, {
+    const dup = await post(`/v1/oma/vaults/${vault.id}/credentials`, {
       display_name: "duplicate",
       auth: { type: "static_bearer", mcp_server_url: url, token: "b" },
     });
@@ -231,14 +231,14 @@ describe("Constraint validations", () => {
     expect(session.id).toBeTruthy();
 
     // Try to delete the environment — should be blocked
-    const deleteRes = await del(`/v1/environments/${env.id}`);
+    const deleteRes = await del(`/v1/oma/environments/${env.id}`);
     expect(deleteRes.status).toBe(409);
     const deleteBody = (await deleteRes.json()) as any;
     expect(deleteBody.error?.message ?? deleteBody.error).toContain("sessions");
 
     // After archiving the session, delete should succeed
-    await post(`/v1/sessions/${session.id}/archive`, {});
-    const deleteRes2 = await del(`/v1/environments/${env.id}`);
+    await post(`/v1/oma/sessions/${session.id}/archive`, {});
+    const deleteRes2 = await del(`/v1/oma/environments/${env.id}`);
     expect(deleteRes2.status).toBe(200);
   });
 
@@ -255,7 +255,7 @@ describe("Constraint validations", () => {
     // via the API. The API counts keys with the sesrsc: prefix.
 
     // Create a real file first (for the resource POST to reference)
-    const fileRes = await post("/v1/files", {
+    const fileRes = await post("/v1/oma/files", {
       filename: "test.txt",
       content: "hello",
       media_type: "text/plain",
@@ -266,7 +266,7 @@ describe("Constraint validations", () => {
     // filler anymore because Anthropic semantics cap a session at 8 of those.
     // file resources have a 100-per-session limit (the cap under test here).
     for (let i = 0; i < 100; i++) {
-      const res = await post(`/v1/sessions/${session.id}/resources`, {
+      const res = await post(`/v1/oma/sessions/${session.id}/resources`, {
         type: "file",
         file_id: file.id,
       });
@@ -274,7 +274,7 @@ describe("Constraint validations", () => {
     }
 
     // The 101st should fail
-    const overRes = await post(`/v1/sessions/${session.id}/resources`, {
+    const overRes = await post(`/v1/oma/sessions/${session.id}/resources`, {
       type: "file",
       file_id: file.id,
     });
@@ -300,11 +300,11 @@ describe("Constraint validations", () => {
   // Memory version actor tracking
   // ----------------------------------------------------------
   it("memory version includes actor field", async () => {
-    const storeRes = await post("/v1/memory_stores", { name: "actor-test" });
+    const storeRes = await post("/v1/oma/memory_stores", { name: "actor-test" });
     const store = (await storeRes.json()) as any;
 
     // Create a memory
-    const memRes = await post(`/v1/memory_stores/${store.id}/memories`, {
+    const memRes = await post(`/v1/oma/memory_stores/${store.id}/memories`, {
       path: "actor-check",
       content: "test content",
     });
@@ -313,7 +313,7 @@ describe("Constraint validations", () => {
 
     // List versions and check actor field
     const versionsRes = await api(
-      `/v1/memory_stores/${store.id}/memory_versions?memory_id=${mem.id}`,
+      `/v1/oma/memory_stores/${store.id}/memory_versions?memory_id=${mem.id}`,
       { headers: HEADERS }
     );
     const versions = (await versionsRes.json()) as any;
@@ -322,7 +322,7 @@ describe("Constraint validations", () => {
     // Get the full version with content to verify actor
     const verId = versions.data[0].id;
     const verRes = await api(
-      `/v1/memory_stores/${store.id}/memory_versions/${verId}`,
+      `/v1/oma/memory_stores/${store.id}/memory_versions/${verId}`,
       { headers: HEADERS }
     );
     const ver = (await verRes.json()) as any;
@@ -341,7 +341,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ description: "A helpful research assistant" });
       expect(agent.description).toBe("A helpful research assistant");
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.description).toBe("A helpful research assistant");
     });
@@ -357,7 +357,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ mcp_servers: mcpServers });
       expect(agent.mcp_servers).toEqual(mcpServers);
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.mcp_servers).toEqual(mcpServers);
     });
@@ -373,7 +373,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ skills });
       expect(agent.skills).toEqual(skills);
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.skills).toEqual(skills);
     });
@@ -389,7 +389,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ callable_agents: callableAgents });
       expect(agent.callable_agents).toEqual(callableAgents);
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.callable_agents).toEqual(callableAgents);
     });
@@ -402,7 +402,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ metadata });
       expect(agent.metadata).toEqual(metadata);
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.metadata).toEqual(metadata);
     });
@@ -415,7 +415,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ model });
       expect(agent.model).toEqual(model);
 
-      const getRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
       expect(fetched.model).toEqual(model);
     });
@@ -428,7 +428,7 @@ describe("Constraint validations", () => {
       expect(agent.mcp_servers).toEqual([]);
 
       const mcpServers = [{ name: "jira", type: "sse", url: "https://mcp.jira.com/sse" }];
-      const updateRes = await put(`/v1/agents/${agent.id}`, { mcp_servers: mcpServers });
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { mcp_servers: mcpServers });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
       expect(updated.mcp_servers).toEqual(mcpServers);
@@ -443,7 +443,7 @@ describe("Constraint validations", () => {
       expect(agent.skills).toEqual([]);
 
       const skills = [{ type: "anthropic", skill_id: "data_analysis" }];
-      const updateRes = await put(`/v1/agents/${agent.id}`, { skills });
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { skills });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
       expect(updated.skills).toEqual(skills);
@@ -458,7 +458,7 @@ describe("Constraint validations", () => {
       expect(agent.callable_agents).toEqual([]);
 
       const callableAgents = [{ type: "agent", id: "agent_xyz789", version: 3 }];
-      const updateRes = await put(`/v1/agents/${agent.id}`, { callable_agents: callableAgents });
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { callable_agents: callableAgents });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
       expect(updated.callable_agents).toEqual(callableAgents);
@@ -472,7 +472,7 @@ describe("Constraint validations", () => {
       const agent = await createAgent({ description: "original description" });
       expect(agent.description).toBe("original description");
 
-      const updateRes = await put(`/v1/agents/${agent.id}`, { description: "updated description" });
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { description: "updated description" });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
       expect(updated.description).toBe("updated description");
@@ -487,7 +487,7 @@ describe("Constraint validations", () => {
       expect(agent.metadata).toEqual({ team: "alpha", env: "staging" });
 
       // Update metadata — the route replaces the whole metadata object
-      const updateRes = await put(`/v1/agents/${agent.id}`, {
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, {
         metadata: { team: "beta", region: "us-east" },
       });
       expect(updateRes.status).toBe(200);
@@ -516,7 +516,7 @@ describe("Constraint validations", () => {
       expect(agent.version).toBe(1);
 
       // Update all extended fields to new values
-      const updateRes = await put(`/v1/agents/${agent.id}`, {
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, {
         description: "v2 agent",
         mcp_servers: [{ name: "slack", type: "sse", url: "https://mcp.slack.com/sse" }],
         skills: [{ type: "custom", skill_id: "custom_skill", version: "2.0" }],
@@ -528,7 +528,7 @@ describe("Constraint validations", () => {
       expect(updated.version).toBe(2);
 
       // Retrieve the old version (v1) and verify it preserved original fields
-      const v1Res = await api(`/v1/agents/${agent.id}/versions/1`, { headers: HEADERS });
+      const v1Res = await api(`/v1/oma/agents/${agent.id}/versions/1`, { headers: HEADERS });
       expect(v1Res.status).toBe(200);
       const v1 = (await v1Res.json()) as any;
       expect(v1.version).toBe(1);
@@ -539,7 +539,7 @@ describe("Constraint validations", () => {
       expect(v1.metadata).toEqual({ release: "v1" });
 
       // Verify current version has updated fields
-      const currentRes = await api(`/v1/agents/${agent.id}`, { headers: HEADERS });
+      const currentRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const current = (await currentRes.json()) as any;
       expect(current.version).toBe(2);
       expect(current.description).toBe("v2 agent");

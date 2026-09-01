@@ -6,6 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./node-spawner": "./src/spawners/node.ts",
+    "./sandbox-spawner": "./src/spawners/sandbox.ts",
+    "./placement": "./src/placement.ts",
     "./registry": "./src/registry.ts",
     "./known-agents": "./src/known-agents.ts"
   },
@@ -14,7 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@openma/common": "github:openma-ai/openma-common#v0.4.0",
+    "@open-managed-agents/sandbox": "workspace:*",
+    "@openma/common": "github:openma-ai/openma-common#00358ff9c1e4a694171f5617a4715602c61433e7",
     "zod": "^3.23.0"
   },
   "devDependencies": {

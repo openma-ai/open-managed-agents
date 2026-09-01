@@ -69,7 +69,7 @@ export function TextInput({
  * Chrome's saved-password autofill — `off` is ignored on type=password)
  * plus 1Password / LastPass opt-out attrs.
  *
- * Use this in any "paste a credential" UI — never `<input type="password">`
+ * Use this in any "paste a credential" UI — never `<Input type="password">`
  * directly, otherwise the browser autofills the user's iCloud/Google
  * password into a place it doesn't belong, AND the user has to paste
  * blind into a row of dot-fields.

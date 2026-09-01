@@ -1,6 +1,6 @@
 // Integrations CRUD + lookup + install-proxy routes.
 //
-// Mounted at /v1/integrations/* AND /v1/oma/integrations/* on both runtimes.
+// Mounted at /v1/oma/integrations/* AND /v1/oma/integrations/* on both runtimes.
 // CF wires the D1 repo bag via integrations-adapters-cf; Node wires the
 // SqlClient repo bag via integrations-adapters-node. The route bodies don't
 // know which.
@@ -314,7 +314,7 @@ export function buildIntegrationsRoutes(deps: IntegrationsRoutesDeps) {
 
     if (provider === "linear") {
       // ─── Linear publication-first install endpoints ────────────────
-      // Mounted only on /v1/integrations/linear/. Slack and GitHub keep
+      // Mounted only on /v1/oma/integrations/linear/. Slack and GitHub keep
       // the legacy /start-a1 + /credentials shapes above until they
       // get their own publication-first refactor.
 

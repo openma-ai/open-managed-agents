@@ -1,13 +1,15 @@
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router";
 import { useApi } from "../lib/api";
 import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { FeishuIcon, GitHubIcon, LinearIcon, SlackIcon } from "../components/icons";
 import { Page } from "../components/Page";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
 import type { ModelCard } from "@open-managed-agents/api-types";
-import type { AgentRecord as Agent } from "../types/agent";
+import type { AgentRecord as Agent, OmaAgentExtension } from "../types/agent";
 import { AgentFormDialog } from "./agents/AgentFormDialog";
 import { useI18n } from "../i18n";
 
@@ -41,6 +43,7 @@ type Runtime = {
 export function AgentDetail() {
   const { id } = useParams();
   const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -59,8 +62,13 @@ export function AgentDetail() {
   // (404 / not-installed) don't block the agent detail render, same as
   // the previous behavior where each had its own .catch.
   const enabled = !!id;
-  const { data: agent, error: agentError } = useApiQuery<Agent>(
+  const { data: managedAgent, error: agentError } = useApiQuery<Agent>(
     id ? `/v1/agents/${id}` : null,
+    undefined,
+    { enabled },
+  );
+  const { data: omaAgentExtension } = useApiQuery<OmaAgentExtension>(
+    id ? `/v1/oma/agents/${id}` : null,
     undefined,
     { enabled },
   );
@@ -73,22 +81,22 @@ export function AgentDetail() {
   // to the /linear/agents/:id/publications + /slack/agents/:id/publications
   // + /github/agents/:id/publications routes added on the main worker.
   const { data: linearRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/linear/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/linear/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: githubRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/github/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/github/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: slackRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/slack/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/slack/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
   const { data: feishuRes } = useApiQuery<{ data: Pub[] }>(
-    id ? `/v1/integrations/feishu/agents/${id}/publications` : null,
+    id ? `/v1/oma/integrations/feishu/agents/${id}/publications` : null,
     undefined,
     { enabled },
   );
@@ -98,26 +106,35 @@ export function AgentDetail() {
     let cancelled = false;
     (async () => {
       try {
-        const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
+        const all = await managedApi.agents.list({
+          limit: 200,
+          include_archived: true,
+        });
         if (!cancelled) setAllAgents(all.data ?? []);
       } catch (e) {
         console.warn("[AgentDetail] /v1/agents aux fetch failed", e);
       }
       await Promise.allSettled([
         (async () => {
-          const sk = await api<{
-            data: Array<{ id: string; name: string; description: string }>;
-          }>("/v1/skills");
-          if (!cancelled) setCustomSkills(sk.data ?? []);
+          const sk = await managedApi.skills.list({ limit: 200 });
+          if (!cancelled) {
+            setCustomSkills(
+              (sk.data ?? []).map((skill) => ({
+                id: skill.id,
+                name: skill.display_title || skill.id,
+                description: "",
+              })),
+            );
+          }
         })().catch((e) => console.warn("[AgentDetail] /v1/skills aux fetch failed", e)),
         (async () => {
-          const mc = await api<{ data: ModelCard[] }>("/v1/model_cards?limit=200");
+          const mc = await api<{ data: ModelCard[] }>("/v1/oma/model_cards?limit=200");
           if (!cancelled) setModelCards(mc.data ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/model_cards aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentDetail] /v1/oma/model_cards aux fetch failed", e)),
         (async () => {
-          const rt = await api<{ runtimes: Runtime[] }>("/v1/runtimes");
+          const rt = await api<{ runtimes: Runtime[] }>("/v1/oma/runtimes");
           if (!cancelled) setRuntimes(rt.runtimes ?? []);
-        })().catch((e) => console.warn("[AgentDetail] /v1/runtimes aux fetch failed", e)),
+        })().catch((e) => console.warn("[AgentDetail] /v1/oma/runtimes aux fetch failed", e)),
       ]);
     })();
     return () => {
@@ -125,6 +142,18 @@ export function AgentDetail() {
     };
   }, [api]);
 
+  const agent = useMemo(
+    () => managedAgent
+      ? {
+          ...managedAgent,
+          ...(omaAgentExtension?._oma ? { _oma: omaAgentExtension._oma } : {}),
+          ...(omaAgentExtension?.enable_general_subagent !== undefined
+            ? { enable_general_subagent: omaAgentExtension.enable_general_subagent }
+            : {}),
+        }
+      : undefined,
+    [managedAgent, omaAgentExtension],
+  );
   const versions = versionsRes?.data ?? [];
   // Filter to live publications only — same predicate the old useEffect ran.
   const linearPubs = useMemo(
@@ -157,13 +186,8 @@ export function AgentDetail() {
 
   const archive = async () => {
     if (!confirm("Archive this agent?")) return;
-    await api(`/v1/agents/${id}/archive`, { method: "POST", body: "{}" });
-    nav("/agents");
-  };
-
-  const del = async () => {
-    if (!confirm("Delete this agent? This cannot be undone.")) return;
-    await api(`/v1/agents/${id}`, { method: "DELETE" });
+    if (!id) return;
+    await managedApi.agents.archive(id);
     nav("/agents");
   };
 
@@ -174,9 +198,9 @@ export function AgentDetail() {
 
   return (
     <Page
+      layout="rail"
       header={
         <PageHeader
-          title={agent.name}
           actions={
             <>
               {!archived && (
@@ -187,45 +211,58 @@ export function AgentDetail() {
               <Button variant="outline" size="sm" onClick={archive} disabled={archived}>
                 {t.common.archive}
               </Button>
-              <Button variant="destructive" size="sm" onClick={del}>
-                {t.common.delete}
-              </Button>
             </>
           }
         />
       }
-    >
-      <div className="space-y-6">
-        {/* Properties grid */}
-        <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 max-w-2xl text-sm">
-          <span className="text-fg-muted">ID</span><span className="font-mono text-xs">{agent.id}</span>
-          <span className="text-fg-muted">Model</span><span>{modelStr(agent.model)}</span>
-          <span className="text-fg-muted">Harness</span><span>{agent._oma?.harness || "default"}</span>
-          {agent._oma?.runtime_binding && (
-            <>
-              <span className="text-fg-muted">Local Runtime</span>
-              <span className="text-xs">
-                <span className="font-mono">{agent._oma.runtime_binding.runtime_id.slice(0, 8)}…</span>
+      rail={
+        <section className="console-property-group" aria-label="Agent properties">
+          <h2 className="console-property-group-title">Properties</h2>
+          <dl className="console-property-list">
+            <PropertyRow label="ID"><span className="font-mono">{agent.id}</span></PropertyRow>
+            <PropertyRow label="Model">{modelStr(agent.model)}</PropertyRow>
+            <PropertyRow label="Harness">{agent._oma?.harness || "default"}</PropertyRow>
+            {agent._oma?.runtime_binding && (
+              <PropertyRow label="Local Runtime">
+                <span className="font-mono">
+                  {agent._oma.runtime_binding.runtime_id.slice(0, 8)}…
+                </span>
                 <span className="text-fg-subtle"> · ACP agent: </span>
                 <span className="font-mono">{agent._oma.runtime_binding.acp_agent_id}</span>
-              </span>
-            </>
-          )}
-          <span className="text-fg-muted">Version</span><span>v{agent.version}</span>
-          <span className="text-fg-muted">Tools</span>
-          <span>{(agent.tools || []).map((t: any) => t.type === "custom" ? `Custom: ${t.name}` : t.type).join(", ") || "None"}</span>
-          <span className="text-fg-muted">Created</span><span>{new Date(agent.created_at).toLocaleString()}</span>
-          <span className="text-fg-muted">Updated</span><span>{new Date(agent.updated_at || agent.created_at).toLocaleString()}</span>
-          {agent.archived_at && <><span className="text-fg-muted">Archived</span><span className="text-warning">{new Date(agent.archived_at).toLocaleString()}</span></>}
-        </div>
+              </PropertyRow>
+            )}
+            <PropertyRow label="Version">v{agent.version}</PropertyRow>
+            <PropertyRow label="Tools">
+              {(agent.tools || [])
+                .map((tool: any) => tool.type === "custom" ? `Custom: ${tool.name}` : tool.type)
+                .join(", ") || "None"}
+            </PropertyRow>
+            <PropertyRow label="Created">{new Date(agent.created_at).toLocaleString()}</PropertyRow>
+            <PropertyRow label="Updated">
+              {new Date(agent.updated_at || agent.created_at).toLocaleString()}
+            </PropertyRow>
+            {agent.archived_at && (
+              <PropertyRow label="Archived">
+                <span className="text-warning">{new Date(agent.archived_at).toLocaleString()}</span>
+              </PropertyRow>
+            )}
+          </dl>
+        </section>
+      }
+    >
+      <div className="console-detail-stack">
+        <header className="console-detail-title-block">
+          <h1>{agent.name}</h1>
+          {agent.description && <p>{agent.description}</p>}
+        </header>
 
       {/* Integrations — one fold per provider so adding a 4th / 5th doesn't
           push the rest of the page below the viewport. Default-open when
           there's at least one live publication so the user sees what's wired
           up at a glance; otherwise default-closed. */}
-      <div className="mt-6 max-w-2xl">
-        <h2 className="font-display text-base font-semibold mb-2">Integrations</h2>
-        <div className="space-y-2">
+      <section className="console-detail-section">
+        <h2>Integrations</h2>
+        <div className="console-integration-list">
           <IntegrationFold
             kind="linear"
             label="Linear"
@@ -255,43 +292,43 @@ export function AgentDetail() {
             agentId={agent.id}
           />
         </div>
-      </div>
+      </section>
 
       {/* System prompt */}
       {agent.system && (
-        <div className="mt-8 max-w-2xl">
-          <h2 className="font-display text-base font-semibold mb-2">System Prompt</h2>
-          <pre className="bg-bg-surface border border-border rounded-lg p-4 text-sm whitespace-pre-wrap max-h-64 overflow-y-auto font-mono text-fg-muted leading-relaxed">
+        <section className="console-detail-section">
+          <h2>System Prompt</h2>
+          <pre className="console-detail-code-block">
             {agent.system}
           </pre>
-        </div>
+        </section>
       )}
 
       {/* Version history */}
       {versions.length > 0 && (
-        <div className="mt-8 max-w-2xl">
-          <h2 className="font-display text-base font-semibold mb-2">Version History</h2>
-          <div className="border border-border rounded-lg overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                  <th className="text-left px-4 py-2">Version</th>
-                  <th className="text-left px-4 py-2">Model</th>
-                  <th className="text-left px-4 py-2">System Prompt</th>
-                </tr>
-              </thead>
-              <tbody>
+        <section className="console-detail-section">
+          <h2>Version History</h2>
+          <div className="console-detail-table-wrap">
+            <Table className="console-detail-table">
+              <TableHeader variant="wireless">
+                <TableRow variant="wireless">
+                  <TableHead>Version</TableHead>
+                  <TableHead>Model</TableHead>
+                  <TableHead>System Prompt</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {versions.map((v) => (
-                  <tr key={v.version} className="border-t border-border">
-                    <td className="px-4 py-2">v{v.version}</td>
-                    <td className="px-4 py-2 text-fg-muted">{modelStr(v.model)}</td>
-                    <td className="px-4 py-2 text-fg-muted max-w-xs truncate">{v.system || "—"}</td>
-                  </tr>
+                  <TableRow variant="wireless" key={v.version}>
+                    <TableCell>v{v.version}</TableCell>
+                    <TableCell className="text-fg-muted">{modelStr(v.model)}</TableCell>
+                    <TableCell className="max-w-xs truncate text-fg-muted">{v.system || "—"}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
-        </div>
+        </section>
       )}
       </div>
 
@@ -333,20 +370,20 @@ function IntegrationFold({
   return (
     <details
       open={pubs.length > 0}
-      className="border border-border rounded-lg bg-bg-surface/30 [&_summary::-webkit-details-marker]:hidden"
+      className="console-integration-fold [&_summary::-webkit-details-marker]:hidden"
     >
-      <summary className="px-4 py-2.5 min-h-11 sm:min-h-0 flex items-center gap-3 text-sm cursor-pointer hover:bg-bg-surface/60 list-none">
+      <summary className="console-integration-summary">
         <span className="text-fg-muted shrink-0">{icon}</span>
         <span className="font-medium text-fg">{label}</span>
         <span className="ml-auto text-xs text-fg-subtle">
           {pubs.length === 0 ? "Not published" : `${pubs.length} live`}
         </span>
       </summary>
-      <div className="px-4 pb-3 pt-2 border-t border-border/40 space-y-1.5 text-sm">
+      <div className="console-integration-content">
         {pubs.length === 0 ? (
           <Link
             to={`/integrations/${kind}/publish?agent_id=${agentId}`}
-            className="inline-flex items-center gap-1.5 min-h-11 sm:min-h-0 text-brand hover:underline"
+            className="console-detail-link"
           >
             Publish to {label} →
           </Link>
@@ -356,9 +393,9 @@ function IntegrationFold({
               <Link
                 key={p.id}
                 to={`/integrations/${kind}`}
-                className="flex items-center gap-2 min-h-11 sm:min-h-0 text-fg-muted hover:text-fg"
+                className="console-detail-link text-fg-muted hover:text-fg"
               >
-                <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-success-subtle text-success">
+                <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-success-subtle text-success">
                   Live
                 </span>
                 <span>
@@ -371,7 +408,7 @@ function IntegrationFold({
             ))}
             <Link
               to={`/integrations/${kind}/publish?agent_id=${agentId}`}
-              className="inline-flex items-center min-h-11 sm:min-h-0 text-xs text-brand hover:underline pt-1"
+              className="console-detail-link text-brand hover:underline"
             >
               + Publish to another workspace
             </Link>
@@ -379,5 +416,14 @@ function IntegrationFold({
         )}
       </div>
     </details>
+  );
+}
+
+function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="console-property-row">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
   );
 }

@@ -29,6 +29,132 @@
       "when": 1786626001758,
       "tag": "0003_feishu_publication_first",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787682986893,
+      "tag": "0004_premium_polaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787684624940,
+      "tag": "0005_bright_rafael_vega",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787685011175,
+      "tag": "0006_oval_ego",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787685757206,
+      "tag": "0007_aspiring_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787686303595,
+      "tag": "0008_public_talisman",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787686916487,
+      "tag": "0009_graceful_gunslinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1787687513176,
+      "tag": "0010_gorgeous_nocturne",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1787687779246,
+      "tag": "0011_majestic_betty_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787696200541,
+      "tag": "0012_moaning_wolf_cub",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1787696786156,
+      "tag": "0013_dazzling_sleepwalker",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1787697261131,
+      "tag": "0014_famous_red_ghost",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1787697898222,
+      "tag": "0015_large_tenebrous",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1787699124418,
+      "tag": "0016_next_leo",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1787700381336,
+      "tag": "0017_ancient_toad_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1787701903612,
+      "tag": "0018_steady_beyonder",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1787702247747,
+      "tag": "0019_hard_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1787703077687,
+      "tag": "0020_purple_luke_cage",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1787703443868,
+      "tag": "0021_eager_skreet",
+      "breakpoints": true
     }
   ]
 }

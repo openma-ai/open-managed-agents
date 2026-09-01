@@ -11,7 +11,7 @@
  *   └─────────────┬──────────────────┘
  *                 │
  *                 ├── HTTP via Bearer oma_*  (local-runtime path)
- *                 │   /v1/mcp-proxy/<sid>/<server_name>
+ *                 │   /v1/oma/mcp-proxy/<sid>/<server_name>
  *                 │
  *                 └── WorkerEntrypoint RPC via service binding
  *                     (cloud agent path — see apps/main/src/index.ts:McpProxyRpc)
@@ -26,7 +26,7 @@
  *
  * Auth surface (HTTP path):
  *   - Bearer omak_*: hashed in CONFIG_KV `apikey:<sha256>` (same row API
- *     keys created via /v1/api_keys use). Resolves to (tenant_id, user_id).
+ *     keys created via /v1/oma/api_keys use). Resolves to (tenant_id, user_id).
  *   - sid in URL: must reference a row in `sessions` belonging to the same
  *     tenant. session.archived_at IS NULL gates "this session is still alive";
  *     deletion → proxy returns 403 immediately, no token revocation needed.
@@ -413,7 +413,7 @@ export async function forwardToUpstream(
  * Body must be pre-buffered (string | null) because the request stream
  * gets consumed by the first fetch and we need to replay it on retry.
  * For Worker-to-Worker traffic both `mcpForward` and `outboundForward`
- * already pass body as a string; the public HTTP /v1/mcp-proxy endpoint
+ * already pass body as a string; the public HTTP /v1/oma/mcp-proxy endpoint
  * pre-buffers via `c.req.text()` for the same reason.
  *
  * Replaces the old apps/agent/src/outbound.ts:tryRefreshToken path,
@@ -569,7 +569,7 @@ async function tryRefreshOauth(
     if (fresh) {
       const liveAccessToken = (fresh.row.auth as unknown as Record<string, unknown>)?.[tokenField];
       if (typeof liveAccessToken === "string" && liveAccessToken !== staleAccessToken) {
-        // Another in-flight refresh (or a manual /v1/oauth/refresh) has
+        // Another in-flight refresh (or a manual /v1/oma/oauth/refresh) has
         // already rotated the token between our caller's first 401/403
         // and us reaching this re-read. Use the live token, skip the
         // token_endpoint roundtrip + the CAS write entirely.

@@ -20,6 +20,13 @@
     { "binding": "MEMORY_BUCKET", "bucket_name": "test-memory" }
   ],
 
+  "services": [
+    {
+      "binding": "MAIN_MCP",
+      "service": "managed-agents-test"
+    }
+  ],
+
   "durable_objects": {
     "bindings": [
       { "name": "SESSION_DO", "class_name": "SessionDO" },

@@ -163,16 +163,17 @@ export async function applyBetterAuthSchema(opts: {
 /**
  * Tenant + membership tables. Always installed regardless of better-auth.
  * Self-host runs these directly against the main SqlClient; CF declares
- * `tenant` + `membership` in apps/main/migrations/0001_schema.sql with the
- * legacy `createdAt`/`updatedAt` casing better-auth dropped on us.
+ * `tenant` + `membership` in apps/main/migrations/0001_schema.sql. Keep the
+ * tenant timestamp names aligned with the canonical Drizzle schemas and
+ * consolidated migrations so every SqlClient sees the same Port shape.
  */
 export async function applyTenantSchema(sql: SqlClient): Promise<void> {
   await sql.exec(`
     CREATE TABLE IF NOT EXISTS "tenant" (
       "id"         TEXT PRIMARY KEY NOT NULL,
       "name"       TEXT NOT NULL,
-      "created_at" BIGINT NOT NULL,
-      "updated_at" BIGINT NOT NULL
+      "createdAt"  BIGINT NOT NULL,
+      "updatedAt"  BIGINT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS "membership" (
       "user_id"    TEXT NOT NULL,

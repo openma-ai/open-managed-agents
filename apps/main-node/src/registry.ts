@@ -28,7 +28,7 @@ import {
 } from "@open-managed-agents/session-runtime";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { SqlStreamRepo, type SqlEventLog } from "@open-managed-agents/event-log/sql";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import type { SandboxPort } from "@open-managed-agents/sandbox";
 import type {
   OrchestratorMemoryMount,
   SandboxOrchestrator,
@@ -62,7 +62,7 @@ export interface SessionRegistryDeps {
 
   /** Build the per-session sandbox. The shell knows how to assemble a
    *  LocalSubprocess / E2B / Daytona / etc., the machine doesn't. */
-  buildSandbox(sessionId: string, workdir: string): Promise<SandboxExecutor>;
+  buildSandbox(sessionId: string, workdir: string): Promise<SandboxPort>;
 
   /** Build the LanguageModel for the agent. Reads env / model cards,
    *  applies custom headers, picks the right provider. Async when the
@@ -75,17 +75,20 @@ export interface SessionRegistryDeps {
   /** Build harness tools. Returns the tools dict the harness expects. */
   buildTools(
     agent: AgentConfig,
-    sandbox: SandboxExecutor,
+    sandbox: SandboxPort,
     tenantId: string,
   ): Promise<unknown>;
 
   /** Build harness instance + context. Each is platform-neutral so the
    *  machine just calls .run(ctx). */
-  buildHarness(): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): {
+    run: (ctx: unknown) => Promise<void>;
+    dispose?: (reason: "replace" | "shutdown" | "destroy") => Promise<void>;
+  };
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
-    sandbox: SandboxExecutor;
+    sandbox: SandboxPort;
     tools: unknown;
     model: LanguageModel;
     sessionId: string;
@@ -105,7 +108,7 @@ export interface SessionRegistryDeps {
 
 interface SessionEntry {
   machine: SessionStateMachine;
-  sandbox: SandboxExecutor;
+  sandbox: SandboxPort;
   eventLog: SqlEventLog;
 }
 
@@ -170,7 +173,7 @@ export class SessionRegistry {
     for (const p of this.map.values()) {
       try {
         const entry = await p;
-        if (entry.sandbox.destroy) await entry.sandbox.destroy();
+        await entry.machine.shutdown();
       } catch {
         /* best-effort */
       }
@@ -265,7 +268,7 @@ export class SessionRegistry {
       mountSessionOutputs: async () => {},
       buildModel: (agent) => this.deps.buildModel(agent, tenantId),
       buildTools: (agent, sb) => this.deps.buildTools(agent, sb, tenantId),
-      buildHarness: () => this.deps.buildHarness(),
+      buildHarness: (agent) => this.deps.buildHarness(agent),
       buildHarnessContext: (input) =>
         this.deps.buildHarnessContext({
           ...input,
@@ -273,6 +276,12 @@ export class SessionRegistry {
           tenantId,
           eventLog,
         }),
+      beforeSandboxDestroy: async () => {
+        await this.deps.sandboxOrchestrator.snapshotWorkspaceNow(sandbox, {
+          sessionId,
+          tenantId,
+        });
+      },
       publish: (event: SessionEvent) => this.deps.hub.publish(sessionId, event),
     });
 

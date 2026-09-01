@@ -37,14 +37,14 @@ function post(path: string, body: unknown) {
 }
 
 async function newSession(): Promise<string> {
-  const a = await post("/v1/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", harness: "noop" });
+  const a = await post("/v1/oma/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", harness: "noop" });
   const agent = await a.json();
-  const e = await post("/v1/environments", { name: "rec-env", config: { type: "cloud" } });
+  const e = await post("/v1/oma/environments", { name: "rec-env", config: { type: "cloud" } });
   const environment = await e.json();
-  const s = await post("/v1/sessions", { agent: agent.id, environment_id: environment.id });
+  const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: environment.id });
   const session = await s.json();
   // Wake the DO so ensureSchema runs once and the streams table exists.
-  await post(`/v1/sessions/${session.id}/events`, {
+  await post(`/v1/oma/sessions/${session.id}/events`, {
     events: [{ type: "user.message", content: [{ type: "text", text: "warmup" }] }],
   });
   await new Promise((r) => setTimeout(r, 200));
@@ -53,7 +53,7 @@ async function newSession(): Promise<string> {
 
 /**
  * Some test DBs have schema drift on the `environments` migration that
- * breaks /v1/environments — the unified-runtime alarm tests don't need
+ * breaks /v1/oma/environments — the unified-runtime alarm tests don't need
  * a full agent / environment / session graph, just a sessions row to
  * UPDATE. This helper inserts the minimum directly into AUTH_DB and
  * warms up the DO so its internal sqlite is initialised.

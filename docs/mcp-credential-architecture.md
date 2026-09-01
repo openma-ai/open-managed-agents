@@ -144,6 +144,7 @@ The tool the fake MCP server exposes (`fake_echo`) returns the access_token used
 - [Inside Claude Managed Agents (Pluto Security)](https://pluto.security/blog/inside-claude-managed-agents/)
 - `apps/main/src/routes/mcp-proxy.ts` — resolvers + forwardWithRefresh
 - `apps/main/src/index.ts` (`McpProxyRpc`) — RPC entrypoint
-- `apps/agent/src/runtime/binding-mcp-transport.ts` — AI SDK MCPTransport adapter
+- `packages/mcp/src/http-client.ts` — official MCP v2 Streamable HTTP adapter
+- `apps/agent/src/harness/tools.ts` — Managed Agents tool projection + lifecycle
 - `apps/agent/src/oma-sandbox.ts` — sandbox HTTPS interceptor
 - `apps/agent/src/runtime/sandbox.ts` (`setOutboundContext`) — interceptor binding wire-up

@@ -1,23 +1,29 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Controller, useFieldArray, useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { ArchiveIcon, TrashIcon } from "lucide-react";
+import type { SessionCreateParams } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 import { useApi, ApiError } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { Modal } from "../components/Modal";
+import { Select, SelectOption } from "../components/Select";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import { Combobox } from "../components/Combobox";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
+import { readManagedMetadataObject } from "../lib/managed-metadata";
 
 import type { SessionRecord as Session } from "../types/session";
 
-interface Vault { id: string; name: string; }
+interface Vault { id: string; display_name: string; }
 interface FilePick { id: string; filename: string; size_bytes: number; }
 interface MemoryStorePick { id: string; name: string; }
 
@@ -30,10 +36,13 @@ type AgentLite = {
   // don't run a sandbox container so there's nothing to pick.
   runtime_binding?: { runtime_id: string; acp_agent_id: string };
 };
+type OmaAgentLite = AgentLite & {
+  _oma?: { runtime_binding?: AgentLite["runtime_binding"] };
+};
 
 // Session status options for the toolbar status chip. "any" maps to no
 // server filter; the other four match the SessionStatus union in
-// @open-managed-agents/api-types (idle | running | rescheduling | terminated).
+// @anthropic-ai/sdk (idle | running | rescheduling | terminated).
 type StatusValue = "any" | "idle" | "running" | "rescheduling" | "terminated";
 
 const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
@@ -69,14 +78,7 @@ const FileResourceSchema = z.object({
 const MemoryStoreResourceSchema = z.object({
   kind: z.literal("memory_store"),
   memory_store_id: z.string(),
-  mount_path: z.string(),
   access: z.enum(["read_write", "read_only"]),
-});
-
-const EnvResourceSchema = z.object({
-  kind: z.literal("env"),
-  name: z.string(),
-  value: z.string(),
 });
 
 /** Discriminated union — `kind` selects which fields apply. Mapped to the
@@ -85,7 +87,6 @@ const ResourceSchema = z.discriminatedUnion("kind", [
   GithubResourceSchema,
   FileResourceSchema,
   MemoryStoreResourceSchema,
-  EnvResourceSchema,
 ]);
 
 /** Base form schema. `environment_id` is conditionally required at runtime
@@ -115,8 +116,7 @@ function blankResource(kind: ResourceRow["kind"]): ResourceRow {
   switch (kind) {
     case "github": return { kind, url: "", token: "", checkout_type: "none", checkout_name: "", mount_path: "" };
     case "file": return { kind, file_id: "", mount_path: "" };
-    case "memory_store": return { kind, memory_store_id: "", mount_path: "", access: "read_write" };
-    case "env": return { kind, name: "", value: "" };
+    case "memory_store": return { kind, memory_store_id: "", access: "read_write" };
   }
 }
 
@@ -125,7 +125,6 @@ function kindLabel(kind: ResourceRow["kind"]): string {
     case "github": return "GitHub repository";
     case "file": return "File";
     case "memory_store": return "Memory store";
-    case "env": return "Environment variable";
   }
 }
 
@@ -158,14 +157,14 @@ function defaultMountPath(githubUrl: string): string {
 }
 
 /** Tiny "🔗 Linear" pill shown when a session was triggered by a Linear webhook. */
-function LinearBadge({ metadata }: { metadata?: Record<string, unknown> }) {
-  const linear = metadata?.linear as
+function LinearBadge({ metadata }: { metadata?: Record<string, string> }) {
+  const linear = readManagedMetadataObject(metadata, "linear") as
     | { issueIdentifier?: string; issueId?: string; workspaceId?: string }
-    | undefined;
+    | null;
   if (!linear || (!linear.issueId && !linear.issueIdentifier)) return null;
   return (
     <span
-      className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-info-subtle text-info"
+      className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-info-subtle text-info"
       title={`Linear issue ${linear.issueIdentifier ?? linear.issueId}`}
     >
       🔗 {linear.issueIdentifier ?? "Linear"}
@@ -174,10 +173,10 @@ function LinearBadge({ metadata }: { metadata?: Record<string, unknown> }) {
 }
 
 /** Tiny "💬 Slack" pill shown when a session was triggered by a Slack event. */
-function SlackBadge({ metadata }: { metadata?: Record<string, unknown> }) {
-  const slack = metadata?.slack as
+function SlackBadge({ metadata }: { metadata?: Record<string, string> }) {
+  const slack = readManagedMetadataObject(metadata, "slack") as
     | { channelId?: string; threadTs?: string; workspaceId?: string }
-    | undefined;
+    | null;
   if (!slack || (!slack.channelId && !slack.threadTs)) return null;
   const label = slack.channelId
     ? slack.channelId.startsWith("D")
@@ -186,7 +185,7 @@ function SlackBadge({ metadata }: { metadata?: Record<string, unknown> }) {
     : "Slack";
   return (
     <span
-      className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-accent-violet-subtle text-accent-violet"
+      className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-accent-violet-subtle text-accent-violet"
       title={`Slack channel ${slack.channelId}${slack.threadTs ? ` thread ${slack.threadTs}` : ""}`}
     >
       💬 {label}
@@ -195,14 +194,16 @@ function SlackBadge({ metadata }: { metadata?: Record<string, unknown> }) {
 }
 
 /** Tiny "🧪 Eval" pill shown when a session was spawned by an eval-runner trial. */
-function EvalBadge({ metadata }: { metadata?: Record<string, unknown> }) {
-  const ev = metadata?.eval as { run_id?: string; task_id?: string } | undefined;
+function EvalBadge({ metadata }: { metadata?: Record<string, string> }) {
+  const ev = readManagedMetadataObject(metadata, "eval") as
+    | { run_id?: string; task_id?: string }
+    | null;
   if (!ev?.run_id) return null;
   return (
     <a
       href={`/evals/${ev.run_id}`}
       onClick={(e) => e.stopPropagation()}
-      className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-info-subtle text-info hover:opacity-80 transition-opacity"
+      className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-info-subtle text-info hover:opacity-80 transition-opacity"
       title={`Eval run ${ev.run_id}${ev.task_id ? ` · task ${ev.task_id}` : ""}`}
     >
       🧪 {ev.task_id ?? "Eval"}
@@ -212,6 +213,7 @@ function EvalBadge({ metadata }: { metadata?: Record<string, unknown> }) {
 
 export function SessionsList() {
   const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const [agents, setAgents] = useState<AgentLite[]>([]);
   // Set by the agent Combobox when the user picks an agent. Carries the
@@ -260,16 +262,15 @@ export function SessionsList() {
   const sessionsParams = useMemo(
     () => ({
       ...(filterAgent ? { agent_id: filterAgent } : {}),
-      ...(status !== "any" ? { status } : {}),
-      ...(search ? { q: search } : {}),
+      ...(status !== "any" ? { "statuses[]": status } : {}),
       ...(created.after !== undefined
-        ? { created_after: new Date(created.after).toISOString() }
+        ? { "created_at[gte]": new Date(created.after).toISOString() }
         : {}),
       ...(created.before !== undefined
-        ? { created_before: new Date(created.before).toISOString() }
+        ? { "created_at[lte]": new Date(created.before).toISOString() }
         : {}),
     }),
-    [filterAgent, status, search, created.after, created.before],
+    [filterAgent, status, created.after, created.before],
   );
   const {
     items: sessions,
@@ -350,7 +351,7 @@ export function SessionsList() {
       return;
     }
     let cancelled = false;
-    api<{ mcp_servers?: Array<{ url?: string }> }>(`/v1/agents/${watchedAgentId}`)
+    managedApi.agents.retrieve(watchedAgentId)
       .then((row) => {
         if (cancelled) return;
         const urls = (row.mcp_servers ?? [])
@@ -362,7 +363,7 @@ export function SessionsList() {
         if (!cancelled) setAgentMcpUrls([]);
       });
     return () => { cancelled = true; };
-  }, [watchedAgentId, api]);
+  }, [watchedAgentId, managedApi]);
 
   // Lazy-load credential hostnames for any newly-selected vault. Cache
   // forever within this modal lifetime — credential rotation mid-form is
@@ -374,12 +375,12 @@ export function SessionsList() {
     Promise.all(
       missing.map(async (vid) => {
         try {
-          const r = await api<{ data: Array<{ auth?: { mcp_server_url?: string } }> }>(
-            `/v1/vaults/${vid}/credentials`,
-          );
+          const r = await managedApi.vaults.credentials.list(vid, { limit: 100 });
           const hosts = new Set<string>();
           for (const cred of r.data) {
-            const u = cred.auth?.mcp_server_url;
+            const u = "mcp_server_url" in cred.auth
+              ? cred.auth.mcp_server_url
+              : undefined;
             if (!u) continue;
             try { hosts.add(new URL(u).hostname); } catch { /* ignore malformed */ }
           }
@@ -397,7 +398,7 @@ export function SessionsList() {
       });
     });
     return () => { cancelled = true; };
-  }, [watchedVaultIds, vaultCredHosts, api]);
+  }, [watchedVaultIds, vaultCredHosts, managedApi]);
 
   // Compute MCP servers the agent uses but no selected vault has credentials for.
   // Empty when: no agent picked, or agent has no MCP servers, or every server
@@ -428,10 +429,16 @@ export function SessionsList() {
   // back to the preloaded `agents` array, then to undefined while either
   // resolves.
   const selectedAgent = useMemo(() => {
+    const preloaded = agents.find((a) => a.id === watchedAgentId);
     if (selectedAgentDetail && selectedAgentDetail.id === watchedAgentId) {
-      return selectedAgentDetail;
+      return {
+        ...preloaded,
+        ...selectedAgentDetail,
+        runtime_binding:
+          selectedAgentDetail.runtime_binding ?? preloaded?.runtime_binding,
+      };
     }
-    return agents.find((a) => a.id === watchedAgentId);
+    return preloaded;
   }, [selectedAgentDetail, agents, watchedAgentId]);
   const isLocalRuntime = !!selectedAgent?.runtime_binding;
 
@@ -447,14 +454,26 @@ export function SessionsList() {
   const loadAux = async () => {
     setAuxLoading(true);
     try {
-      const [a, e, v, f, m] = await Promise.all([
-        api<{ data: AgentLite[] }>("/v1/agents?limit=200&status=any"),
-        api<{ data: Array<{ id: string; name: string }> }>("/v1/environments?limit=200"),
-        api<{ data: Vault[] }>("/v1/vaults?limit=200").catch(() => ({ data: [] })),
-        api<{ data: FilePick[] }>("/v1/files?limit=200").catch(() => ({ data: [] })),
-        api<{ data: MemoryStorePick[] }>("/v1/memory_stores").catch(() => ({ data: [] })),
+      const [a, omaAgents, e, v, f, m] = await Promise.all([
+        managedApi.agents.list({ limit: 200, include_archived: true }),
+        api<{ data: OmaAgentLite[] }>("/v1/oma/agents?limit=200&include_archived=true")
+          .catch(() => ({ data: [] })),
+        managedApi.environments.list({ limit: 200 }),
+        managedApi.vaults.list({ limit: 200 }).catch(() => ({ data: [], next_page: null })),
+        managedApi.files.list({ limit: 200 }).catch(() => ({
+          data: [], has_more: false, first_id: null, last_id: null,
+        })),
+        managedApi.memoryStores.list({ limit: 200 }).catch(() => ({ data: [], next_page: null })),
       ]);
-      setAgents(a.data);
+      const extensionById = new Map(omaAgents.data.map((agent) => [agent.id, agent]));
+      setAgents(
+        a.data.map((agent) => {
+          const extension = extensionById.get(agent.id);
+          const runtimeBinding =
+            extension?._oma?.runtime_binding ?? extension?.runtime_binding;
+          return runtimeBinding ? { ...agent, runtime_binding: runtimeBinding } : agent;
+        }),
+      );
       setEnvs(e.data);
       setVaults(v.data);
       setFiles(f.data);
@@ -495,14 +514,14 @@ export function SessionsList() {
 
   const onSubmit = async (data: FormValues) => {
     try {
-      const resources: Array<Record<string, unknown>> = [];
+      const resources: NonNullable<SessionCreateParams["resources"]> = [];
       for (const r of data.resources) {
         if (r.kind === "github") {
           // Token is required — schema gates the Create button on this,
           // but we double-check so a stale row from a previous validation
           // pass can't slip through.
           if (!r.url || !r.token) continue;
-          const res: Record<string, unknown> = {
+          const res: NonNullable<SessionCreateParams["resources"]>[number] = {
             type: "github_repository",
             url: r.url,
             authorization_token: r.token,
@@ -518,42 +537,40 @@ export function SessionsList() {
           resources.push(res);
         } else if (r.kind === "file") {
           if (!r.file_id) continue;
-          const res: Record<string, unknown> = { type: "file", file_id: r.file_id };
+          const res: NonNullable<SessionCreateParams["resources"]>[number] = {
+            type: "file",
+            file_id: r.file_id,
+          };
           if (r.mount_path) res.mount_path = r.mount_path;
           resources.push(res);
         } else if (r.kind === "memory_store") {
           if (!r.memory_store_id) continue;
-          const res: Record<string, unknown> = {
+          const res: NonNullable<SessionCreateParams["resources"]>[number] = {
             type: "memory_store",
             memory_store_id: r.memory_store_id,
             access: r.access,
           };
-          if (r.mount_path) res.mount_path = r.mount_path;
           resources.push(res);
-        } else if (r.kind === "env") {
-          if (!r.name || !r.value) continue;
-          // type=env (was env_secret pre-rename). Server still accepts the
-          // legacy alias so older console builds keep working — see
-          // sessions.ts:262.
-          resources.push({ type: "env", name: r.name, value: r.value });
         }
       }
 
-      const body: Record<string, unknown> = {
+      const body: SessionCreateParams = {
         agent: data.agent,
+        environment_id: data.environment_id,
         title: data.title || undefined,
       };
-      // Only send environment_id when the user actually picked one. For
-      // local-runtime agents the picker is hidden and the server picks a
-      // tenant fallback (sessions.ts requires a NOT NULL env_id today).
-      if (data.environment_id) body.environment_id = data.environment_id;
       if (data.vault_ids.length > 0) body.vault_ids = data.vault_ids;
       if (resources.length > 0) body.resources = resources;
 
-      const session = await api<Session>("/v1/sessions", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const session = isLocalRuntime
+        ? await api<Session>("/v1/oma/sessions", {
+            method: "POST",
+            body: JSON.stringify({
+              ...body,
+              environment_id: data.environment_id || undefined,
+            }),
+          })
+        : await managedApi.sessions.create(body);
       closeModal();
       nav(`/sessions/${session.id}`);
     } catch (err) {
@@ -595,7 +612,13 @@ export function SessionsList() {
     }
   };
 
-  const displayed = sessions;
+  const displayed = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    if (!needle) return sessions;
+    return sessions.filter((session) =>
+      `${session.title ?? ""}\n${session.id}`.toLocaleLowerCase().includes(needle),
+    );
+  }, [search, sessions]);
 
   // Active-filter chip displays — kept undefined when matching the
   // default so the chip reads "Status ▾" rather than "Status: All ▾".
@@ -763,50 +786,6 @@ export function SessionsList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const s = row.original;
-          const archived = !!s.archived_at;
-          const label = s.title?.trim() || s.id;
-          return (
-            <RowActionsMenu
-              label={`Actions for ${label}`}
-              actions={[
-                {
-                  label: archived ? "Unarchive" : "Archive",
-                  icon: <ArchiveIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    try {
-                      await api(`/v1/sessions/${s.id}/archive`, {
-                        method: "POST",
-                        body: "{}",
-                      });
-                      refreshSessions();
-                    } catch {}
-                  },
-                },
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`Delete session "${label}"? This can't be undone.`)) return;
-                    try {
-                      await api(`/v1/sessions/${s.id}`, { method: "DELETE" });
-                      refreshSessions();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
     [api, refreshSessions],
   );
@@ -825,6 +804,35 @@ export function SessionsList() {
       loading={loading}
       getRowId={(s) => s.id}
       onRowClick={(s) => nav(`/sessions/${s.id}`)}
+      rowActions={(session) => {
+        const archived = Boolean(session.archived_at);
+        const label = session.title?.trim() || session.id;
+        return [
+          {
+            label: archived ? "Unarchive" : "Archive",
+            icon: <ArchiveIcon className="size-4" />,
+            disabled: archived,
+            onSelect: async () => {
+              try {
+                await managedApi.sessions.archive(session.id);
+                refreshSessions();
+              } catch {}
+            },
+          },
+          {
+            label: "Delete",
+            icon: <TrashIcon className="size-4" />,
+            destructive: true,
+            onSelect: async () => {
+              if (!confirm(`Delete session "${label}"? This can't be undone.`)) return;
+              try {
+                await managedApi.sessions.delete(session.id);
+                refreshSessions();
+              } catch {}
+            },
+          },
+        ];
+      }}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
@@ -862,7 +870,7 @@ export function SessionsList() {
         <div className="space-y-4">
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-sm text-fg-muted">Agent</label>
+              <Label className="text-sm text-fg-muted">Agent</Label>
               <a href="/agents" className="text-xs text-brand hover:underline">Manage agents →</a>
             </div>
             <Controller
@@ -880,7 +888,7 @@ export function SessionsList() {
                     getValue={(a) => a.id}
                     getLabel={(a) => (
                       <span>
-                        {a.name} <span className="text-fg-subtle text-[12px]">({a.id})</span>
+                        {a.name} <span className="text-fg-subtle text-sm">({a.id})</span>
                       </span>
                     )}
                     getTextLabel={(a) => `${a.name} (${a.id})`}
@@ -901,7 +909,7 @@ export function SessionsList() {
           {!isLocalRuntime && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-sm text-fg-muted">Environment</label>
+                <Label className="text-sm text-fg-muted">Environment</Label>
                 <a href="/environments" className="text-xs text-brand hover:underline">Manage environments →</a>
               </div>
               <Controller
@@ -916,7 +924,7 @@ export function SessionsList() {
                       getValue={(e) => e.id}
                       getLabel={(e) => (
                         <span>
-                          {e.name} <span className="text-fg-subtle text-[12px]">({e.id})</span>
+                          {e.name} <span className="text-fg-subtle text-sm">({e.id})</span>
                         </span>
                       )}
                       getTextLabel={(e) => `${e.name} (${e.id})`}
@@ -936,14 +944,14 @@ export function SessionsList() {
             </p>
           )}
           <div>
-            <label htmlFor="session-title" className="text-sm text-fg-muted block mb-1">Title <span className="text-fg-subtle">(optional)</span></label>
+            <Label htmlFor="session-title" className="text-sm text-fg-muted block mb-1">Title <span className="text-fg-subtle">(optional)</span></Label>
             {/* autoComplete=off + an unrecognised name to defeat Chrome /
                 Safari email autofill — first text input in the dialog
                 got pre-filled with the user's saved email otherwise.
                 Spread register() first, then override name so the input
                 renders the autofill-defeating attribute while RHF still
                 tracks the field by its registered name internally. */}
-            <input
+            <Input
               id="session-title"
               {...register("title")}
               name="oma-session-title"
@@ -956,21 +964,19 @@ export function SessionsList() {
           {vaults.length > 0 && (
             <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-sm text-fg-muted">Credential Vaults <span className="text-fg-subtle">(optional)</span></label>
+              <Label className="text-sm text-fg-muted">Credential Vaults <span className="text-fg-subtle">(optional)</span></Label>
               <a href="/vaults" className="text-xs text-brand hover:underline">Manage vaults →</a>
             </div>
               <div className="space-y-1">
                 {vaults.map((v) => (
-                  <label key={v.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
+                  <Label key={v.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <Checkbox
                       checked={watchedVaultIds.includes(v.id)}
-                      onChange={() => toggleVault(v.id)}
-                      className="rounded accent-brand"
+                      onCheckedChange={() => toggleVault(v.id)}
                     />
-                    <span className="text-fg">{v.name}</span>
+                    <span className="text-fg">{v.display_name}</span>
                     <span className="text-fg-subtle font-mono text-xs">{v.id}</span>
-                  </label>
+                  </Label>
                 ))}
               </div>
               {unauthedMcpServers.length > 0 && (
@@ -995,7 +1001,7 @@ export function SessionsList() {
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-sm text-fg-muted">Resources <span className="text-fg-subtle">(optional)</span></label>
+              <Label className="text-sm text-fg-muted">Resources <span className="text-fg-subtle">(optional)</span></Label>
             </div>
             <p className="text-xs text-fg-subtle mb-2">
               Mount files, GitHub repositories, memory stores, or pass environment variables into the session.
@@ -1020,27 +1026,27 @@ export function SessionsList() {
                           {kindLabel(live.kind)}
                           {showPrimaryHint && live.kind === "github" && i === firstGithubIdx && (
                             <span
-                              className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-brand/10 border border-brand/30 text-brand"
+                              className="text-xs font-medium px-1.5 py-0.5 rounded bg-brand/10 border border-brand/30 text-brand"
                               title="This repo's token is used for GitHub API calls that don't target a specific repo (GraphQL, Search, /user, …)"
                             >
                               primary
                             </span>
                           )}
                         </span>
-                        <button
+                        <Button variant="ghost"
                           type="button"
                           onClick={() => removeResource(i)}
                           className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-fg-subtle hover:text-danger text-xs"
                           aria-label="Remove resource"
                         >
                           Remove
-                        </button>
+                        </Button>
                       </div>
                       {live.kind === "github" && (
                         <div className="space-y-2">
                           <div>
-                            <label htmlFor={`session-resource-${i}-url`} className="text-xs text-fg-muted block mb-0.5">Repository URL <span className="text-danger">*</span></label>
-                            <input
+                            <Label htmlFor={`session-resource-${i}-url`} className="text-xs text-fg-muted block mb-0.5">Repository URL <span className="text-danger">*</span></Label>
+                            <Input
                               id={`session-resource-${i}-url`}
                               {...register(`resources.${i}.url`)}
                               className={inputCls}
@@ -1056,11 +1062,11 @@ export function SessionsList() {
                             )}
                           </div>
                           <div>
-                            <label htmlFor={`session-resource-${i}-token`} className="text-xs text-fg-muted block mb-0.5">
+                            <Label htmlFor={`session-resource-${i}-token`} className="text-xs text-fg-muted block mb-0.5">
                               Authorization Token <span className="text-danger">*</span>
-                            </label>
+                            </Label>
                             <div className="relative">
-                              <input
+                              <Input
                                 id={`session-resource-${i}-token`}
                                 type={revealedSecrets.has(`${i}:token`) ? "text" : "password"}
                                 {...register(`resources.${i}.token`)}
@@ -1068,14 +1074,14 @@ export function SessionsList() {
                                 placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
                               />
                               {live.token && (
-                                <button
+                                <Button variant="ghost"
                                   type="button"
                                   onClick={() => toggleReveal(`${i}:token`)}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-1 text-xs text-fg-subtle hover:text-fg"
+                                  className="absolute inset-y-0 right-2 my-auto inline-flex h-fit items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-1 text-xs text-fg-subtle hover:text-fg"
                                   aria-label="Toggle token visibility"
                                 >
                                   {revealedSecrets.has(`${i}:token`) ? "hide" : "show"}
-                                </button>
+                                </Button>
                               )}
                             </div>
                             {showError(
@@ -1089,27 +1095,34 @@ export function SessionsList() {
                           </div>
                           <div className="grid grid-cols-2 gap-2">
                             <div>
-                              <label htmlFor={`session-resource-${i}-checkout-type`} className="text-xs text-fg-muted block mb-0.5">Checkout</label>
-                              <select
+                              <Label htmlFor={`session-resource-${i}-checkout-type`} className="text-xs text-fg-muted block mb-0.5">Checkout</Label>
+                              <Select
                                 id={`session-resource-${i}-checkout-type`}
-                                {...register(`resources.${i}.checkout_type`, {
+                                name={`resources.${i}.checkout_type`}
+                                value={live.checkout_type}
+                                onValueChange={(value) => {
+                                  setValue(
+                                    `resources.${i}.checkout_type`,
+                                    value as "none" | "branch" | "commit",
+                                    { shouldDirty: true, shouldTouch: true, shouldValidate: true },
+                                  );
                                   // Switching the checkout kind clears the
                                   // companion name so the placeholder hint
                                   // doesn't lie about commit-vs-branch.
-                                  onChange: () => setValue(`resources.${i}.checkout_name`, ""),
-                                })}
+                                  setValue(`resources.${i}.checkout_name`, "");
+                                }}
                                 className={inputCls}
                               >
-                                <option value="none">None</option>
-                                <option value="branch">Branch</option>
-                                <option value="commit">Commit</option>
-                              </select>
+                                <SelectOption value="none">None</SelectOption>
+                                <SelectOption value="branch">Branch</SelectOption>
+                                <SelectOption value="commit">Commit</SelectOption>
+                              </Select>
                             </div>
                             <div>
-                              <label htmlFor={`session-resource-${i}-checkout-name`} className="text-xs text-fg-muted block mb-0.5">
+                              <Label htmlFor={`session-resource-${i}-checkout-name`} className="text-xs text-fg-muted block mb-0.5">
                                 {live.checkout_type === "commit" ? "Commit SHA" : "Name"}
-                              </label>
-                              <input
+                              </Label>
+                              <Input
                                 id={`session-resource-${i}-checkout-name`}
                                 {...register(`resources.${i}.checkout_name`)}
                                 className={inputCls}
@@ -1119,8 +1132,8 @@ export function SessionsList() {
                             </div>
                           </div>
                           <div>
-                            <label htmlFor={`session-resource-${i}-mount`} className="text-xs text-fg-muted block mb-0.5">Mount Path <span className="text-fg-subtle">(optional)</span></label>
-                            <input
+                            <Label htmlFor={`session-resource-${i}-mount`} className="text-xs text-fg-muted block mb-0.5">Mount Path <span className="text-fg-subtle">(optional)</span></Label>
+                            <Input
                               id={`session-resource-${i}-mount`}
                               {...register(`resources.${i}.mount_path`)}
                               className={inputCls}
@@ -1133,28 +1146,36 @@ export function SessionsList() {
                         <div className="space-y-2">
                           <div>
                             <div className="flex items-center justify-between mb-0.5">
-                              <label htmlFor={`session-resource-${i}-file`} className="text-xs text-fg-muted">File <span className="text-danger">*</span></label>
+                              <Label htmlFor={`session-resource-${i}-file`} className="text-xs text-fg-muted">File <span className="text-danger">*</span></Label>
                               <a href="/files" className="inline-flex items-center min-h-11 sm:min-h-0 text-xs text-brand hover:underline">Manage files →</a>
                             </div>
-                            <select
+                            <Select
                               id={`session-resource-${i}-file`}
-                              {...register(`resources.${i}.file_id`)}
+                              name={`resources.${i}.file_id`}
+                              value={live.file_id}
+                              onValueChange={(value) =>
+                                setValue(`resources.${i}.file_id`, value, {
+                                  shouldDirty: true,
+                                  shouldTouch: true,
+                                  shouldValidate: true,
+                                })
+                              }
+                              placeholder="Select file..."
                               className={inputCls}
                             >
-                              <option value="">Select file...</option>
                               {files.map((f) => (
-                                <option key={f.id} value={f.id}>
+                                <SelectOption key={f.id} value={f.id}>
                                   {f.filename} ({f.id})
-                                </option>
+                                </SelectOption>
                               ))}
-                            </select>
+                            </Select>
                             {files.length === 0 && (
                               <p className="text-xs text-fg-subtle mt-1">No files yet — upload via the AMA SDK or POST /v1/files.</p>
                             )}
                           </div>
                           <div>
-                            <label htmlFor={`session-resource-${i}-file-mount`} className="text-xs text-fg-muted block mb-0.5">Mount Path <span className="text-fg-subtle">(optional)</span></label>
-                            <input
+                            <Label htmlFor={`session-resource-${i}-file-mount`} className="text-xs text-fg-muted block mb-0.5">Mount Path <span className="text-fg-subtle">(optional)</span></Label>
+                            <Input
                               id={`session-resource-${i}-file-mount`}
                               {...register(`resources.${i}.mount_path`)}
                               className={inputCls}
@@ -1167,78 +1188,48 @@ export function SessionsList() {
                         <div className="space-y-2">
                           <div>
                             <div className="flex items-center justify-between mb-0.5">
-                              <label htmlFor={`session-resource-${i}-store`} className="text-xs text-fg-muted">Store <span className="text-danger">*</span></label>
+                              <Label htmlFor={`session-resource-${i}-store`} className="text-xs text-fg-muted">Store <span className="text-danger">*</span></Label>
                               <a href="/memory" className="inline-flex items-center min-h-11 sm:min-h-0 text-xs text-brand hover:underline">Manage stores →</a>
                             </div>
-                            <select
+                            <Select
                               id={`session-resource-${i}-store`}
-                              {...register(`resources.${i}.memory_store_id`)}
+                              name={`resources.${i}.memory_store_id`}
+                              value={live.memory_store_id}
+                              onValueChange={(value) =>
+                                setValue(`resources.${i}.memory_store_id`, value, {
+                                  shouldDirty: true,
+                                  shouldTouch: true,
+                                  shouldValidate: true,
+                                })
+                              }
+                              placeholder="Select store..."
                               className={inputCls}
                             >
-                              <option value="">Select store...</option>
                               {memoryStores.map((m) => (
-                                <option key={m.id} value={m.id}>
+                                <SelectOption key={m.id} value={m.id}>
                                   {m.name} ({m.id})
-                                </option>
+                                </SelectOption>
                               ))}
-                            </select>
+                            </Select>
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label htmlFor={`session-resource-${i}-access`} className="text-xs text-fg-muted block mb-0.5">Access</label>
-                              <select
-                                id={`session-resource-${i}-access`}
-                                {...register(`resources.${i}.access`)}
-                                className={inputCls}
-                              >
-                                <option value="read_write">Read / Write</option>
-                                <option value="read_only">Read only</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label htmlFor={`session-resource-${i}-store-mount`} className="text-xs text-fg-muted block mb-0.5">Mount Path <span className="text-fg-subtle">(optional)</span></label>
-                              <input
-                                id={`session-resource-${i}-store-mount`}
-                                {...register(`resources.${i}.mount_path`)}
-                                className={inputCls}
-                                placeholder="/mnt/memory/<name>/ (default)"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      {live.kind === "env" && (
-                        <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label htmlFor={`session-resource-${i}-env-name`} className="text-xs text-fg-muted block mb-0.5">Name <span className="text-danger">*</span></label>
-                            <input
-                              id={`session-resource-${i}-env-name`}
-                              {...register(`resources.${i}.name`)}
+                            <Label htmlFor={`session-resource-${i}-access`} className="text-xs text-fg-muted block mb-0.5">Access</Label>
+                            <Select
+                              id={`session-resource-${i}-access`}
+                              name={`resources.${i}.access`}
+                              value={live.access}
+                              onValueChange={(value) =>
+                                setValue(
+                                  `resources.${i}.access`,
+                                  value as "read_write" | "read_only",
+                                  { shouldDirty: true, shouldTouch: true, shouldValidate: true },
+                                )
+                              }
                               className={inputCls}
-                              placeholder="ENV_VAR_NAME"
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor={`session-resource-${i}-env-value`} className="text-xs text-fg-muted block mb-0.5">Value <span className="text-danger">*</span></label>
-                            <div className="relative">
-                              <input
-                                id={`session-resource-${i}-env-value`}
-                                type={revealedSecrets.has(`${i}:value`) ? "text" : "password"}
-                                {...register(`resources.${i}.value`)}
-                                className={`${inputCls} pr-12`}
-                                placeholder="value"
-                              />
-                              {live.value && (
-                                <button
-                                  type="button"
-                                  onClick={() => toggleReveal(`${i}:value`)}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-1 text-xs text-fg-subtle hover:text-fg"
-                                  aria-label="Toggle value visibility"
-                                >
-                                  {revealedSecrets.has(`${i}:value`) ? "hide" : "show"}
-                                </button>
-                              )}
-                            </div>
+                            >
+                              <SelectOption value="read_write">Read / Write</SelectOption>
+                              <SelectOption value="read_only">Read only</SelectOption>
+                            </Select>
                           </div>
                         </div>
                       )}
@@ -1248,10 +1239,9 @@ export function SessionsList() {
               </div>
             )}
             <div className="flex flex-wrap gap-2 mt-2">
-              <button type="button" onClick={() => addResource("github")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ GitHub repo</button>
-              <button type="button" onClick={() => addResource("file")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ File</button>
-              <button type="button" onClick={() => addResource("memory_store")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ Memory store</button>
-              <button type="button" onClick={() => addResource("env")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ Env var</button>
+              <Button variant="ghost" type="button" onClick={() => addResource("github")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ GitHub repo</Button>
+              <Button variant="ghost" type="button" onClick={() => addResource("file")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ File</Button>
+              <Button variant="ghost" type="button" onClick={() => addResource("memory_store")} className="inline-flex items-center justify-center min-h-11 sm:min-h-0 text-xs px-2.5 py-1.5 border border-border rounded-md hover:bg-bg-surface text-fg-muted hover:text-fg">+ Memory store</Button>
             </div>
           </div>
         </div>

@@ -122,7 +122,7 @@ async function probeModelCard(opts: {
   }
 }
 
-// POST /v1/model_cards — create
+// POST /v1/oma/model_cards — create
 app.post("/", async (c) => {
   const t = c.get("tenant_id");
   const body = await c.req.json<{
@@ -172,7 +172,7 @@ app.post("/", async (c) => {
   }
 });
 
-// GET /v1/model_cards — list (cursor-paginated)
+// GET /v1/oma/model_cards — list (cursor-paginated)
 app.get("/", async (c) => {
   // provider: enum filter. Whitelist strictly — any unknown value is a
   // 400, NOT a silent fallback to "all". The enum mirrors what the
@@ -247,7 +247,7 @@ app.get("/", async (c) => {
   return jsonPage(c, { items: filteredItems, nextCursor: page.nextCursor }, toApiShape);
 });
 
-// GET /v1/model_cards/:id — get single
+// GET /v1/oma/model_cards/:id — get single
 app.get("/:id", async (c) => {
   const t = c.get("tenant_id");
   const card = await c.var.services.modelCards.get({
@@ -258,7 +258,7 @@ app.get("/:id", async (c) => {
   return c.json(toApiShape(card));
 });
 
-// POST /v1/model_cards/:id — update
+// POST /v1/oma/model_cards/:id — update
 app.post("/:id", async (c) => {
   const t = c.get("tenant_id");
   const id = c.req.param("id");
@@ -300,7 +300,7 @@ app.post("/:id", async (c) => {
   }
 });
 
-// DELETE /v1/model_cards/:id — delete
+// DELETE /v1/oma/model_cards/:id — delete
 app.delete("/:id", async (c) => {
   const t = c.get("tenant_id");
   const id = c.req.param("id");
@@ -315,7 +315,7 @@ app.delete("/:id", async (c) => {
   }
 });
 
-// GET /v1/model_cards/:id/key — internal: get actual API key (used by agent worker)
+// GET /v1/oma/model_cards/:id/key — internal: get actual API key (used by agent worker)
 app.get("/:id/key", async (c) => {
   const t = c.get("tenant_id");
   const id = c.req.param("id");

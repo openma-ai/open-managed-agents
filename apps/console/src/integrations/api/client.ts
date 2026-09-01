@@ -1,4 +1,4 @@
-// Typed wrapper around fetch for /v1/integrations/* endpoints.
+// Typed wrapper around fetch for /v1/oma/integrations/* endpoints.
 //
 // Credentials are sent via session cookie (better-auth). The base path is
 // configurable for tests; defaults to the Console's same-origin "".
@@ -47,7 +47,7 @@ class LinearClient {
   async listInstallations(): Promise<LinearInstallation[]> {
     const r = await request<{ data: LinearInstallation[] }>(
       this.basePath,
-      "/v1/integrations/linear/installations",
+      "/v1/oma/integrations/linear/installations",
     );
     return r.data;
   }
@@ -55,7 +55,7 @@ class LinearClient {
   async listPublications(installationId: string): Promise<LinearPublication[]> {
     const r = await request<{ data: LinearPublication[] }>(
       this.basePath,
-      `/v1/integrations/linear/installations/${encodeURIComponent(installationId)}/publications`,
+      `/v1/oma/integrations/linear/installations/${encodeURIComponent(installationId)}/publications`,
     );
     return r.data;
   }
@@ -63,7 +63,7 @@ class LinearClient {
   async listAgentPublications(agentId: string): Promise<LinearPublication[]> {
     const r = await request<{ data: LinearPublication[] }>(
       this.basePath,
-      `/v1/integrations/linear/agents/${encodeURIComponent(agentId)}/publications`,
+      `/v1/oma/integrations/linear/agents/${encodeURIComponent(agentId)}/publications`,
     );
     return r.data;
   }
@@ -77,7 +77,7 @@ class LinearClient {
   async listPendingPublications(): Promise<LinearPublication[]> {
     const r = await request<{ data: LinearPublication[] }>(
       this.basePath,
-      "/v1/integrations/linear/publications?status=pending",
+      "/v1/oma/integrations/linear/publications?status=pending",
     );
     return r.data;
   }
@@ -91,7 +91,7 @@ class LinearClient {
   async reissueFormToken(publicationId: string): Promise<LinearPublicationShell> {
     return request<LinearPublicationShell>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/form-token`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/form-token`,
       { method: "POST", body: JSON.stringify({}) },
     );
   }
@@ -99,7 +99,7 @@ class LinearClient {
   async getPublication(id: string): Promise<LinearPublication> {
     return request<LinearPublication>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(id)}`,
     );
   }
 
@@ -112,7 +112,7 @@ class LinearClient {
   ): Promise<LinearPublication> {
     return request<LinearPublication>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(id)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     );
   }
@@ -120,27 +120,27 @@ class LinearClient {
   async unpublish(id: string): Promise<void> {
     await request(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
   }
 
   async startA1(input: PublishWizardInput): Promise<A1FormStep> {
-    return request<A1FormStep>(this.basePath, "/v1/integrations/linear/start-a1", {
+    return request<A1FormStep>(this.basePath, "/v1/oma/integrations/linear/start-a1", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
   async submitCredentials(input: LinearSubmitCredentialsInput): Promise<A1InstallLink> {
-    return request<A1InstallLink>(this.basePath, "/v1/integrations/linear/credentials", {
+    return request<A1InstallLink>(this.basePath, "/v1/oma/integrations/linear/credentials", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
   async createHandoffLink(formToken: string): Promise<HandoffLink> {
-    return request<HandoffLink>(this.basePath, "/v1/integrations/linear/handoff-link", {
+    return request<HandoffLink>(this.basePath, "/v1/oma/integrations/linear/handoff-link", {
       method: "POST",
       body: JSON.stringify({ formToken }),
     });
@@ -155,7 +155,7 @@ class LinearClient {
   async createPublication(input: PublishWizardInput): Promise<LinearPublicationShell> {
     return request<LinearPublicationShell>(
       this.basePath,
-      "/v1/integrations/linear/publications",
+      "/v1/oma/integrations/linear/publications",
       { method: "POST", body: JSON.stringify(input) },
     );
   }
@@ -166,7 +166,7 @@ class LinearClient {
   ): Promise<LinearPublicationInstallLink> {
     return request<LinearPublicationInstallLink>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/credentials`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/credentials`,
       { method: "PATCH", body: JSON.stringify(input) },
     );
   }
@@ -175,7 +175,7 @@ class LinearClient {
   async installPersonalToken(input: LinearPersonalTokenInput): Promise<LinearPersonalTokenResult> {
     return request<LinearPersonalTokenResult>(
       this.basePath,
-      "/v1/integrations/linear/personal-token",
+      "/v1/oma/integrations/linear/personal-token",
       { method: "POST", body: JSON.stringify(input) },
     );
   }
@@ -185,7 +185,7 @@ class LinearClient {
   async listDispatchRules(publicationId: string): Promise<LinearDispatchRule[]> {
     const r = await request<{ rules: LinearDispatchRule[] }>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules`,
     );
     return r.rules;
   }
@@ -196,7 +196,7 @@ class LinearClient {
   ): Promise<LinearDispatchRule> {
     return request<LinearDispatchRule>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules`,
       { method: "POST", body: JSON.stringify(input) },
     );
   }
@@ -208,7 +208,7 @@ class LinearClient {
   ): Promise<LinearDispatchRule> {
     return request<LinearDispatchRule>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules/${encodeURIComponent(ruleId)}`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules/${encodeURIComponent(ruleId)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     );
   }
@@ -216,7 +216,7 @@ class LinearClient {
   async deleteDispatchRule(publicationId: string, ruleId: string): Promise<void> {
     await request<unknown>(
       this.basePath,
-      `/v1/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules/${encodeURIComponent(ruleId)}`,
+      `/v1/oma/integrations/linear/publications/${encodeURIComponent(publicationId)}/dispatch-rules/${encodeURIComponent(ruleId)}`,
       { method: "DELETE" },
     );
   }
@@ -230,7 +230,7 @@ class GitHubClient {
   async listInstallations(): Promise<GitHubInstallation[]> {
     const r = await request<{ data: GitHubInstallation[] }>(
       this.basePath,
-      "/v1/integrations/github/installations",
+      "/v1/oma/integrations/github/installations",
     );
     return r.data;
   }
@@ -238,7 +238,7 @@ class GitHubClient {
   async listPublications(installationId: string): Promise<GitHubPublication[]> {
     const r = await request<{ data: GitHubPublication[] }>(
       this.basePath,
-      `/v1/integrations/github/installations/${encodeURIComponent(installationId)}/publications`,
+      `/v1/oma/integrations/github/installations/${encodeURIComponent(installationId)}/publications`,
     );
     return r.data;
   }
@@ -251,7 +251,7 @@ class GitHubClient {
   async listPendingPublications(): Promise<GitHubPublication[]> {
     const r = await request<{ data: GitHubPublication[] }>(
       this.basePath,
-      "/v1/integrations/github/publications?status=pending",
+      "/v1/oma/integrations/github/publications?status=pending",
     );
     return r.data;
   }
@@ -260,7 +260,7 @@ class GitHubClient {
   async reissueFormToken(publicationId: string): Promise<GitHubA1FormStep> {
     return request<GitHubA1FormStep>(
       this.basePath,
-      `/v1/integrations/github/publications/${encodeURIComponent(publicationId)}/form-token`,
+      `/v1/oma/integrations/github/publications/${encodeURIComponent(publicationId)}/form-token`,
       { method: "POST", body: JSON.stringify({}) },
     );
   }
@@ -268,7 +268,7 @@ class GitHubClient {
   async getPublication(id: string): Promise<GitHubPublication> {
     return request<GitHubPublication>(
       this.basePath,
-      `/v1/integrations/github/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/github/publications/${encodeURIComponent(id)}`,
     );
   }
 
@@ -281,7 +281,7 @@ class GitHubClient {
   ): Promise<GitHubPublication> {
     return request<GitHubPublication>(
       this.basePath,
-      `/v1/integrations/github/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/github/publications/${encodeURIComponent(id)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     );
   }
@@ -289,7 +289,7 @@ class GitHubClient {
   async unpublish(id: string): Promise<void> {
     await request(
       this.basePath,
-      `/v1/integrations/github/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/github/publications/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
   }
@@ -297,7 +297,7 @@ class GitHubClient {
   // ─── Install initiation (proxied through main → integrations gateway) ───
 
   async startA1(input: PublishWizardInput): Promise<GitHubA1FormStep> {
-    return request<GitHubA1FormStep>(this.basePath, "/v1/integrations/github/start-a1", {
+    return request<GitHubA1FormStep>(this.basePath, "/v1/oma/integrations/github/start-a1", {
       method: "POST",
       body: JSON.stringify(input),
     });
@@ -311,14 +311,14 @@ class GitHubClient {
     clientId?: string;
     clientSecret?: string;
   }): Promise<GitHubA1InstallLink> {
-    return request<GitHubA1InstallLink>(this.basePath, "/v1/integrations/github/credentials", {
+    return request<GitHubA1InstallLink>(this.basePath, "/v1/oma/integrations/github/credentials", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
   async createHandoffLink(formToken: string): Promise<HandoffLink> {
-    return request<HandoffLink>(this.basePath, "/v1/integrations/github/handoff-link", {
+    return request<HandoffLink>(this.basePath, "/v1/oma/integrations/github/handoff-link", {
       method: "POST",
       body: JSON.stringify({ formToken }),
     });
@@ -333,7 +333,7 @@ class SlackClient {
   async listInstallations(): Promise<SlackInstallation[]> {
     const r = await request<{ data: SlackInstallation[] }>(
       this.basePath,
-      "/v1/integrations/slack/installations",
+      "/v1/oma/integrations/slack/installations",
     );
     return r.data;
   }
@@ -341,7 +341,7 @@ class SlackClient {
   async listPublications(installationId: string): Promise<SlackPublication[]> {
     const r = await request<{ data: SlackPublication[] }>(
       this.basePath,
-      `/v1/integrations/slack/installations/${encodeURIComponent(installationId)}/publications`,
+      `/v1/oma/integrations/slack/installations/${encodeURIComponent(installationId)}/publications`,
     );
     return r.data;
   }
@@ -349,7 +349,7 @@ class SlackClient {
   async listAgentPublications(agentId: string): Promise<SlackPublication[]> {
     const r = await request<{ data: SlackPublication[] }>(
       this.basePath,
-      `/v1/integrations/slack/agents/${encodeURIComponent(agentId)}/publications`,
+      `/v1/oma/integrations/slack/agents/${encodeURIComponent(agentId)}/publications`,
     );
     return r.data;
   }
@@ -362,7 +362,7 @@ class SlackClient {
   async listPendingPublications(): Promise<SlackPublication[]> {
     const r = await request<{ data: SlackPublication[] }>(
       this.basePath,
-      "/v1/integrations/slack/publications?status=pending",
+      "/v1/oma/integrations/slack/publications?status=pending",
     );
     return r.data;
   }
@@ -371,7 +371,7 @@ class SlackClient {
   async reissueFormToken(publicationId: string, returnUrl?: string): Promise<A1FormStep> {
     return request<A1FormStep>(
       this.basePath,
-      `/v1/integrations/slack/publications/${encodeURIComponent(publicationId)}/form-token`,
+      `/v1/oma/integrations/slack/publications/${encodeURIComponent(publicationId)}/form-token`,
       { method: "POST", body: JSON.stringify({ returnUrl: returnUrl ?? "" }) },
     );
   }
@@ -379,7 +379,7 @@ class SlackClient {
   async getPublication(id: string): Promise<SlackPublication> {
     return request<SlackPublication>(
       this.basePath,
-      `/v1/integrations/slack/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/slack/publications/${encodeURIComponent(id)}`,
     );
   }
 
@@ -392,7 +392,7 @@ class SlackClient {
   ): Promise<SlackPublication> {
     return request<SlackPublication>(
       this.basePath,
-      `/v1/integrations/slack/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/slack/publications/${encodeURIComponent(id)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
     );
   }
@@ -400,27 +400,27 @@ class SlackClient {
   async unpublish(id: string): Promise<void> {
     await request(
       this.basePath,
-      `/v1/integrations/slack/publications/${encodeURIComponent(id)}`,
+      `/v1/oma/integrations/slack/publications/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
   }
 
   async startA1(input: PublishWizardInput): Promise<A1FormStep> {
-    return request<A1FormStep>(this.basePath, "/v1/integrations/slack/start-a1", {
+    return request<A1FormStep>(this.basePath, "/v1/oma/integrations/slack/start-a1", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
   async submitCredentials(input: SlackSubmitCredentialsInput): Promise<A1InstallLink> {
-    return request<A1InstallLink>(this.basePath, "/v1/integrations/slack/credentials", {
+    return request<A1InstallLink>(this.basePath, "/v1/oma/integrations/slack/credentials", {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
   async createHandoffLink(formToken: string): Promise<HandoffLink> {
-    return request<HandoffLink>(this.basePath, "/v1/integrations/slack/handoff-link", {
+    return request<HandoffLink>(this.basePath, "/v1/oma/integrations/slack/handoff-link", {
       method: "POST",
       body: JSON.stringify({ formToken }),
     });
@@ -495,15 +495,17 @@ export class IntegrationsApi {
 
   // ─── Sessions (used by the integrations activity timeline) ────────────
   //
-  // /v1/sessions returns the user's full session set with metadata; we
-  // filter client-side. For active integrations this is fine — sessions are
-  // bounded per user — but a future paged endpoint with provider-side
-  // filtering would be cleaner. Lives on IntegrationsApi directly because
-  // it's not provider-scoped.
+  // Read one recent Managed page and filter it client-side in the activity
+  // view. The response is the SDK bidirectional page shape; no legacy
+  // cursor/agent_id projection is introduced here.
 
   async listSessions(opts: { limit?: number } = {}): Promise<SessionSummary[]> {
     const limit = opts.limit ?? 50;
-    const r = await request<{ data: SessionSummary[] }>(
+    const r = await request<{
+      data: SessionSummary[];
+      next_page: string | null;
+      prev_page: string | null;
+    }>(
       this.basePath,
       `/v1/sessions?limit=${limit}`,
     );

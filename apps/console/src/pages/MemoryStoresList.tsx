@@ -1,25 +1,19 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArchiveIcon, TrashIcon } from "lucide-react";
+import type { BetaManagedAgentsMemoryStore as MemoryStore } from "@anthropic-ai/sdk/resources/beta/memory-stores/memory-stores";
 
-import { useApi } from "../lib/api";
-import { useApiQuery } from "../lib/useApiQuery";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import { useI18n } from "../i18n";
-
-interface MemoryStore {
-  id: string;
-  name: string;
-  description?: string;
-  created_at: string;
-  archived_at?: string;
-}
 
 type StatusValue = "any" | "active" | "archived";
 
@@ -30,7 +24,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 ];
 
 export function MemoryStoresList() {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
 
@@ -39,13 +33,8 @@ export function MemoryStoresList() {
   // what the server returned (no client-side faking).
   const [status, setStatus] = useState<StatusValue>("active");
   const [created, setCreated] = useState<{ after?: number; before?: number }>({});
-  // Search box state is wired but not sent to the server: /v1/memory_stores
-  // has no `q` column yet (name lives only in the row itself, no JSON
-  // blob like /v1/agents). The input stays visible so the toolbar shape
-  // matches every other list page; the moment the backend gets a hot
-  // column, drop it into `storesParams` and this comment with it. No
-  // client-side filter() — that would lie about which rows the server
-  // actually returned.
+  // The Managed list contract has no text-search parameter. Search and the
+  // archived-only view are feed presentation filters over loaded pages.
   const [search, setSearch] = useState("");
 
   const [showCreate, setShowCreate] = useState(false);
@@ -55,35 +44,48 @@ export function MemoryStoresList() {
 
   const storesParams = useMemo(
     () => ({
-      status,
+      ...(status !== "active" ? { include_archived: "true" } : {}),
       ...(created.after !== undefined
-        ? { created_after: new Date(created.after).toISOString() }
+        ? { "created_at[gte]": new Date(created.after).toISOString() }
         : {}),
       ...(created.before !== undefined
-        ? { created_before: new Date(created.before).toISOString() }
+        ? { "created_at[lte]": new Date(created.before).toISOString() }
         : {}),
     }),
     [status, created.after, created.before],
   );
 
   const {
-    data: resp,
+    items: stores,
     isLoading: loading,
-    refetch,
-  } = useApiQuery<{ data: MemoryStore[] }>("/v1/memory_stores", storesParams);
-  const stores = resp?.data ?? [];
+    hasMore,
+    isLoadingMore,
+    loadMore,
+    refresh: refreshStores,
+  } = useInfiniteApiQuery<MemoryStore>("/v1/memory_stores", {
+    limit: 20,
+    params: storesParams,
+  });
+  const visibleStores = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return stores.filter((store) => {
+      if (status === "active" && store.archived_at) return false;
+      if (status === "archived" && !store.archived_at) return false;
+      return !needle || `${store.name}\n${store.id}`.toLocaleLowerCase().includes(needle);
+    });
+  }, [search, status, stores]);
 
   const createStore = async () => {
     setFormError(null);
     try {
-      await api("/v1/memory_stores", {
-        method: "POST",
-        body: JSON.stringify({ name: formName, description: formDesc || undefined }),
+      await managedApi.memoryStores.create({
+        name: formName,
+        description: formDesc || undefined,
       });
       setShowCreate(false);
       setFormName("");
       setFormDesc("");
-      void refetch();
+      refreshStores();
     } catch (e) {
       setFormError(errMsg(e));
     }
@@ -139,51 +141,8 @@ export function MemoryStoresList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const s = row.original;
-          const archived = !!s.archived_at;
-          return (
-            <RowActionsMenu
-              label={`Actions for ${s.name}`}
-              actions={[
-                {
-                  label: "Archive",
-                  icon: <ArchiveIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    try {
-                      await api(`/v1/memory_stores/${s.id}/archive`, {
-                        method: "POST",
-                        body: "{}",
-                      });
-                      void refetch();
-                    } catch {}
-                  },
-                },
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`Delete memory store ${s.name}? This can't be undone.`)) return;
-                    try {
-                      await api(`/v1/memory_stores/${s.id}`, { method: "DELETE" });
-                      void refetch();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
-    [api, refetch],
+    [refreshStores],
   );
 
   // Active-filter chip display — kept undefined when matching the default
@@ -232,10 +191,38 @@ export function MemoryStoresList() {
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
-      data={stores}
+      data={visibleStores}
       loading={loading}
       getRowId={(s) => s.id}
       onRowClick={(s) => nav(`/memory/${s.id}`)}
+      rowActions={(store) => [
+        {
+          label: "Archive",
+          icon: <ArchiveIcon className="size-4" />,
+          disabled: Boolean(store.archived_at),
+          onSelect: async () => {
+            try {
+              await managedApi.memoryStores.archive(store.id);
+              refreshStores();
+            } catch {}
+          },
+        },
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          onSelect: async () => {
+            if (!confirm(`Delete memory store ${store.name}? This can't be undone.`)) return;
+            try {
+              await managedApi.memoryStores.delete(store.id);
+              refreshStores();
+            } catch {}
+          },
+        },
+      ]}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       emptyTitle={t.memory.noMemoryStoresYet}
       emptyKind="memory"
       emptyAction={
@@ -282,13 +269,13 @@ export function MemoryStoresList() {
             </div>
           )}
           <div>
-            <label
+            <Label
               htmlFor="memory-store-name"
               className="text-sm text-fg-muted block mb-1"
             >
               Name
-            </label>
-            <input
+            </Label>
+            <Input
               id="memory-store-name"
               placeholder="e.g. User Preferences"
               value={formName}
@@ -297,13 +284,13 @@ export function MemoryStoresList() {
             />
           </div>
           <div>
-            <label
+            <Label
               htmlFor="memory-store-description"
               className="text-sm text-fg-muted block mb-1"
             >
               Description <span className="text-fg-subtle">(optional)</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="memory-store-description"
               placeholder="What's stored here?"
               value={formDesc}

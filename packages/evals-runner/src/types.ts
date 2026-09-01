@@ -1,5 +1,5 @@
 // EvalRunRecord / EvalTaskSpec / EvalTrialResult — the wire shape returned
-// by /v1/evals/runs. Stored opaquely inside EvalRunRow.results JSON.
+// by /v1/oma/evals/runs. Stored opaquely inside EvalRunRow.results JSON.
 
 import type { RewardSpec } from "@open-managed-agents/shared";
 import type { EvalRunStatus } from "@open-managed-agents/evals-store";

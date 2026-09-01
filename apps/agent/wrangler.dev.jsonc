@@ -43,7 +43,7 @@
   ],
 
   // MAIN service binding so AcpProxyHarness can call into the main worker's
-  // /v1/internal/runtime-attach-harness endpoint to reach RuntimeRoom DO.
+  // /v1/oma/internal/runtime-attach-harness endpoint to reach RuntimeRoom DO.
   "services": [
     { "binding": "MAIN", "service": "managed-agents" }
   ],

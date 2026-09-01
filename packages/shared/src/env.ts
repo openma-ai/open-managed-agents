@@ -86,11 +86,16 @@ export interface Env {
   AUTH_COOKIE_NAME?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Better Auth GitHub sign-in app credentials. These are intentionally
+   *  separate from GITHUB_OAUTH_* below, which belong to tenant-installed
+   *  GitHub integrations rather than console account sign-in. */
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
   // Pre-registered OAuth client_id/secret per provider, for MCP servers
   // whose authorization server doesn't expose a working DCR endpoint.
   // Operator workflow: register an OAuth App with the provider, set
-  // callback URL to ${baseUrl}/v1/oauth/callback, copy the credentials
-  // here. Without these, /v1/oauth/authorize returns 501 with a remediation.
+  // callback URL to ${baseUrl}/v1/oma/oauth/callback, copy the credentials
+  // here. Without these, /v1/oma/oauth/authorize returns 501 with a remediation.
   GITHUB_OAUTH_CLIENT_ID?: string;
   GITHUB_OAUTH_CLIENT_SECRET?: string;
   FEISHU_OAUTH_CLIENT_ID?: string;
@@ -124,11 +129,11 @@ export interface Env {
   KV_NAMESPACE_ID?: string;
   RATE_LIMIT_WRITE?: number;
   RATE_LIMIT_READ?: number;
-  // Shared with apps/integrations gateway. Gates /v1/internal/* endpoints.
+  // Shared with apps/integrations gateway. Gates /v1/oma/internal/* endpoints.
   // Must match INTEGRATIONS_INTERNAL_SECRET on the integrations worker.
   INTEGRATIONS_INTERNAL_SECRET?: string;
   // Shared with packages/billing/ in openma-hosted. Gates the
-  // /v1/internal/usage_events read+ack endpoints used by the hosted
+  // /v1/oma/internal/usage_events read+ack endpoints used by the hosted
   // billing reconcile cron. Self-host deployments leave it unset and
   // the endpoint returns 503; the OSS billing path is unreachable
   // without an out-of-band billing worker anyway.
@@ -148,6 +153,16 @@ export interface Env {
   // and routed through here for vault-credential injection by hostname
   // match. Same "credentials only ever live in main" property.
   MAIN_MCP?: {
+    managedSessionEventProduced(opts: {
+      workspaceId: string;
+      sessionId: string;
+      event: string;
+    }): Promise<
+      | { type: "recorded" }
+      | { type: "ignored" }
+      | { type: "not_found" }
+      | { type: "version_conflict" }
+    >;
     mcpForward(opts: {
       tenantId: string;
       sessionId: string;
@@ -191,13 +206,13 @@ export interface Env {
     }): Promise<{ scheme: "Basic" | "Bearer"; token: string; slug: string } | null>;
     /**
      * Transparent HTTP proxy for the cloud agent's MCP traffic. Agent
-     * worker hands AI SDK's MCP HTTP transport a custom fetch that calls
+     * worker hands the official MCP HTTP adapter a custom fetch that calls
      * `env.MAIN_MCP.fetch(req)` with three metadata headers
      * (`x-oma-tenant`, `x-oma-session`, `x-oma-mcp-server`); main worker
      * resolves the vault credential, replaces the Authorization header,
      * strips the metadata, and forwards to the upstream. Body / headers
      * / status / Mcp-Session-Id stream through both ways unchanged, so
-     * the SDK owns the protocol details (Streamable-HTTP session ids,
+     * the official SDK owns the protocol details (Streamable-HTTP session ids,
      * SSE responses, retries) and a server-side spec change can't break
      * us. Vault credentials still only live in main.
      */
@@ -231,7 +246,7 @@ export interface Env {
    *  on the user's machine. Bound only on apps/main. */
   RUNTIME_ROOM?: DurableObjectNamespace;
   /** Service binding from per-env sandbox workers back to the main worker.
-   *  AcpProxyHarness uses this to call /v1/internal/runtime-turn — going
+   *  AcpProxyHarness uses this to call /v1/oma/internal/runtime-turn — going
    *  through HTTP keeps the auth surface narrow (one internal-secret-gated
    *  endpoint) and avoids a cross-script DO binding. Bound on apps/agent. */
   MAIN?: Fetcher;

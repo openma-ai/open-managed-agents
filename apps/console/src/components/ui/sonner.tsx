@@ -29,6 +29,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
       // back to sonner defaults.
       position="bottom-right"
       duration={4000}
+      richColors
+      expand
+      gap={8}
+      visibleToasts={3}
+      offset={16}
+      mobileOffset={12}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,
@@ -38,15 +44,32 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }}
       style={
         {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
+          "--normal-bg": "var(--bg)",
+          "--normal-text": "var(--fg)",
           "--normal-border": "var(--border)",
-          "--border-radius": "var(--radius)",
+          "--success-bg": "var(--success-subtle)",
+          "--success-text": "var(--success)",
+          "--success-border":
+            "color-mix(in srgb, var(--success) 24%, var(--border))",
+          "--info-bg": "var(--info-subtle)",
+          "--info-text": "var(--info)",
+          "--info-border":
+            "color-mix(in srgb, var(--info) 24%, var(--border))",
+          "--warning-bg": "var(--warning-subtle)",
+          "--warning-text": "var(--warning)",
+          "--warning-border":
+            "color-mix(in srgb, var(--warning) 24%, var(--border))",
+          "--error-bg": "var(--danger-subtle)",
+          "--error-text": "var(--danger)",
+          "--error-border":
+            "color-mix(in srgb, var(--danger) 24%, var(--border))",
+          "--border-radius": "var(--radius-md)",
+          "--width": "min(22rem, calc(100vw - 2rem))",
         } as React.CSSProperties
       }
       toastOptions={{
         classNames: {
-          toast: "cn-toast",
+          toast: "cn-toast !gap-2 !p-3 !font-sans !text-sm !shadow-sm",
         },
       }}
       {...props}

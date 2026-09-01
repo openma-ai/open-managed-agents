@@ -6,7 +6,7 @@
  *
  * Server-side revoke is best-effort because:
  *   - The user may have already deleted the runtime via web UI (DELETE
- *     /api/v1/runtimes/:id), in which case our token is gone too and the
+ *     /api/v1/oma/runtimes/:id), in which case our token is gone too and the
  *     call returns 401.
  *   - The user may not have network when uninstalling (laptop in airplane
  *     mode).
@@ -46,7 +46,7 @@ export async function runUninstall(): Promise<void> {
   // Step 2: best-effort server-side revoke.
   const creds = await readCreds();
   if (creds) {
-    const url = `${creds.serverUrl.replace(/\/$/, "")}/api/v1/runtimes/${creds.runtimeId}`;
+    const url = `${creds.serverUrl.replace(/\/$/, "")}/api/v1/oma/runtimes/${creds.runtimeId}`;
     try {
       const res = await fetch(url, {
         method: "DELETE",
@@ -72,4 +72,3 @@ export async function runUninstall(): Promise<void> {
 
   process.stderr.write(`\n${c.bold("Done.")}\n\n`);
 }
-

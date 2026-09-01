@@ -1,4 +1,15 @@
-import type { SandboxExecutor, ProcessHandle } from "../harness/interface";
+import type {
+  SandboxCheckpointHandle,
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxExecutor,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
+  ProcessHandle,
+} from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
 import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
@@ -12,7 +23,8 @@ const parseShellCommand = parseShell as (command: string) => {
   commands?: Array<Record<string, any>>;
 };
 
-export class CloudflareSandbox implements SandboxExecutor {
+export class CloudflareSandbox
+  implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
   private sandboxPromise: Promise<any>;
   private env: Env;
   private sessionId: string;
@@ -33,6 +45,95 @@ export class CloudflareSandbox implements SandboxExecutor {
 
   private async getSandbox() {
     return this.sandboxPromise;
+  }
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: "cloudflare", runtimeId: this.sessionId };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return {
+      lease: true,
+      suspend: ["filesystem"],
+      checkpoint: ["filesystem"],
+    };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    // The Cloudflare Sandbox proxy deliberately has no read-only container
+    // status call. Probing with exec() would wake a sleeping container, so
+    // report the honest portable value instead of mutating it during status.
+    return "unknown";
+  }
+
+  async renewLease(input: { ttlMs: number }): Promise<void> {
+    if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
+      throw new Error("Cloudflare sandbox lease ttlMs must be positive");
+    }
+    await this.renewActivityTimeout();
+  }
+
+  async checkpoint(input: {
+    kind: "filesystem" | "memory";
+    name?: string;
+  }): Promise<SandboxCheckpointHandle> {
+    if (input.kind !== "filesystem") {
+      throw new Error("Cloudflare sandbox supports filesystem checkpoints only");
+    }
+    const backup = await this.createWorkspaceBackup({
+      ...(input.name ? { name: input.name } : {}),
+      ttlSec: 7 * 24 * 60 * 60,
+    });
+    if (backup === null) {
+      throw new Error("Cloudflare sandbox checkpoint creation returned no backup");
+    }
+    return {
+      provider: "cloudflare",
+      checkpointId: backup.id,
+      sourceRuntimeId: this.sessionId,
+      kind: "filesystem",
+      scope: "portable",
+      metadata: {
+        dir: backup.dir,
+        ...(backup.localBucket !== undefined && {
+          localBucket: backup.localBucket,
+        }),
+      },
+    };
+  }
+
+  async suspend(input: {
+    kind: "filesystem" | "memory";
+  }): Promise<SandboxCheckpointHandle> {
+    const checkpoint = await this.checkpoint(input);
+    await this.destroy();
+    return checkpoint;
+  }
+
+  async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
+    if (
+      checkpoint.provider !== "cloudflare" ||
+      checkpoint.kind !== "filesystem" ||
+      checkpoint.scope !== "portable"
+    ) {
+      throw new Error("Cloudflare sandbox cannot resume this checkpoint");
+    }
+    const dir = checkpoint.metadata?.dir;
+    const localBucket = checkpoint.metadata?.localBucket;
+    if (typeof dir !== "string" || dir.length === 0) {
+      throw new Error("Cloudflare sandbox checkpoint is missing its directory");
+    }
+    if (localBucket !== undefined && typeof localBucket !== "boolean") {
+      throw new Error("Cloudflare sandbox checkpoint localBucket is invalid");
+    }
+    const restored = await this.restoreWorkspaceBackup({
+      id: checkpoint.checkpointId,
+      dir,
+      ...(typeof localBucket === "boolean" && { localBucket }),
+    });
+    if (!restored.ok) {
+      throw new Error(restored.error ?? "Cloudflare sandbox checkpoint restore failed");
+    }
   }
 
   /**
@@ -334,6 +435,149 @@ export class CloudflareSandbox implements SandboxExecutor {
     } catch {
       return null; // fallback to exec
     }
+  }
+
+  async spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    const sandbox = await this.getSandbox();
+    if (typeof sandbox.startProcess !== "function") {
+      throw new Error("Cloudflare sandbox does not support background processes");
+    }
+
+    // The Cloudflare SDK streams process output but does not expose stdin.
+    // Keep a FIFO open read/write inside the process and send each ACP NDJSON
+    // frame through a short sandbox exec. The process-held writer prevents an
+    // EOF between frames, preserving one long-lived ACP stdio session.
+    const channelDir = `/tmp/openma-duplex-${crypto.randomUUID()}`;
+    const stdinPath = `${channelDir}/stdin`;
+    const setup = await sandbox.exec(
+      `mkdir -p ${shellQuote(channelDir)} && mkfifo ${shellQuote(stdinPath)}`,
+      { timeout: 10_000 },
+    );
+    assertSandboxCommandSucceeded(setup, "create duplex-process channel");
+
+    let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrController!: ReadableStreamDefaultController<Uint8Array>;
+    let streamsClosed = false;
+    let cleanupStarted = false;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) { stdoutController = controller; },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) { stderrController = controller; },
+    });
+    const encoder = new TextEncoder();
+    let settleExit!: (value: { code: number | null; signal: string | null }) => void;
+    let exitSettled = false;
+    let killSignal: string | null = null;
+    const exited = new Promise<{ code: number | null; signal: string | null }>(
+      (resolveExit) => { settleExit = resolveExit; },
+    );
+    const closeStreams = (error?: Error) => {
+      if (!streamsClosed) {
+        streamsClosed = true;
+        for (const controller of [stdoutController, stderrController]) {
+          try {
+            if (error) controller.error(error);
+            else controller.close();
+          } catch {
+            // A consumer may have cancelled its branch already.
+          }
+        }
+      }
+    };
+    const cleanup = () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      void sandbox.exec(
+        `rm -f ${shellQuote(stdinPath)} && rmdir ${shellQuote(channelDir)}`,
+        { timeout: 10_000 },
+      ).catch(() => undefined);
+    };
+    const finish = (code: number | null, signal: string | null) => {
+      closeStreams();
+      if (!exitSettled) {
+        exitSettled = true;
+        settleExit({ code, signal });
+      }
+      cleanup();
+    };
+    const fail = (error: Error) => {
+      closeStreams(error);
+      if (!exitSettled) {
+        exitSettled = true;
+        settleExit({ code: null, signal: killSignal });
+      }
+      cleanup();
+    };
+
+    const command = [spec.command, ...(spec.args ?? [])]
+      .map(shellQuote)
+      .join(" ");
+    let process: {
+      kill(signal?: string): Promise<void>;
+    };
+    try {
+      process = await sandbox.startProcess(
+        `exec 3<>${shellQuote(stdinPath)}; exec ${command} <&3 3>&-`,
+        {
+          cwd: spec.cwd,
+          env: {
+            ...this.getSecretsForCommand(spec.command),
+            ...spec.env,
+          },
+          onOutput: (stream: "stdout" | "stderr", data: string) => {
+            if (streamsClosed || data.length === 0) return;
+            try {
+              (stream === "stdout" ? stdoutController : stderrController)
+                .enqueue(encoder.encode(data));
+            } catch {
+              // The corresponding consumer already cancelled its stream.
+            }
+          },
+          onExit: (code: number | null) => finish(code, killSignal),
+          onError: (error: Error) => fail(error),
+        },
+      );
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+
+    const stdin = new WritableStream<Uint8Array>({
+      write: async (chunk) => {
+        if (exitSettled) throw new Error("cannot write to an exited sandbox process");
+        const encoded = bytesToBase64(chunk);
+        const result = await sandbox.exec(
+          `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(stdinPath)}`,
+          { timeout: 30_000 },
+        );
+        assertSandboxCommandSucceeded(result, "write duplex-process stdin");
+      },
+      // The FIFO is deliberately held O_RDWR by the child, so closing a host
+      // writer does not terminate a multi-turn ACP session. Session disposal
+      // uses kill(), which is the portable lifecycle primitive here.
+      close: async () => {},
+      abort: async () => {
+        killSignal = "SIGTERM";
+        await process.kill("SIGTERM");
+        finish(null, killSignal);
+      },
+    });
+
+    return {
+      stdin,
+      stdout,
+      stderr,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        if (exitSettled) return;
+        killSignal = signal;
+        await process.kill(signal);
+        finish(null, killSignal);
+      },
+    };
   }
 
   async readFile(path: string): Promise<string> {
@@ -643,6 +887,32 @@ export class TestSandbox implements SandboxExecutor {
   }
   async writeFileBytes(_path: string, _bytes: Uint8Array): Promise<string> {
     return "ok";
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 8_192;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(index, index + chunkSize),
+    );
+  }
+  return btoa(binary);
+}
+
+function assertSandboxCommandSucceeded(
+  result: { success?: boolean; exitCode?: number; stderr?: string },
+  operation: string,
+): void {
+  if (result.success === false || (result.exitCode ?? 0) !== 0) {
+    throw new Error(
+      `${operation} failed (exit ${result.exitCode ?? "unknown"}): ${result.stderr ?? ""}`,
+    );
   }
 }
 

@@ -18,10 +18,10 @@ import { cn } from "@/lib/utils";
  * rather than "person").
  */
 const SIZE: Record<"xs" | "sm" | "md" | "lg", string> = {
-  xs: "size-5 text-[10px]",
-  sm: "size-6 text-[11px]",
-  md: "size-7 text-[12px]",
-  lg: "size-8 text-[13px]",
+  xs: "size-5 text-xs",
+  sm: "size-6 text-xs",
+  md: "size-7 text-sm",
+  lg: "size-8 text-sm",
 };
 
 interface AvatarProps {

@@ -41,8 +41,8 @@ export interface AuthMiddlewareDeps {
   /** Self-heal: mint a tenant for a logged-in user with no memberships. */
   ensureTenantForUser(session: AuthSession): Promise<string>;
   /** Path-prefix predicate — request paths matching are allowed through
-   *  without auth. Default: /health and /auth/*.  Used for /v1/internal
-   *  (header-secret) and /v1/mcp-proxy (Bearer-on-every-request). */
+   *  without auth. Default: /health and /auth/*.  Used for /v1/oma/internal
+   *  (header-secret) and /v1/oma/mcp-proxy (Bearer-on-every-request). */
   bypassPath?(path: string): boolean;
 }
 
@@ -60,7 +60,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       c.set("tenant_id", "default");
       // AUTH_DISABLED is dev-only ("every request becomes tenant_id=default").
       // Also synthesize user_id=default so user-scoped endpoints
-      // (/v1/integrations/*, /v1/api_keys, etc.) work for local single-user
+      // (/v1/oma/integrations/*, /v1/oma/api_keys, etc.) work for local single-user
       // testing — without this, the integrations surface is unusable under
       // AUTH_DISABLED because every user-scoped route rejects with
       // "legacy keys lack user_id". Only main-node consumes this shared

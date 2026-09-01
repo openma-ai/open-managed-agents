@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 // Pick a known MCP server from the shared MCP_REGISTRY (same registry the
 // vault page's "Connect a service" flow uses). Keeps the agent-config
 // form, the vault-credential flow, and any future consumer (session
@@ -59,7 +61,7 @@ export function McpServerPickerModal({
       maxWidth="max-w-lg"
     >
       <div className="space-y-3">
-        <input
+        <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className={inputCls}
@@ -70,7 +72,7 @@ export function McpServerPickerModal({
           {filtered.map((entry) => {
             const alreadyAdded = addedSet.has(entry.url);
             return (
-              <button
+              <Button variant="ghost"
                 key={entry.id}
                 onClick={() => {
                   if (alreadyAdded) return;
@@ -106,7 +108,7 @@ export function McpServerPickerModal({
                 {alreadyAdded && (
                   <span className="text-xs text-fg-subtle shrink-0">Added</span>
                 )}
-              </button>
+              </Button>
             );
           })}
           {filtered.length === 0 && (

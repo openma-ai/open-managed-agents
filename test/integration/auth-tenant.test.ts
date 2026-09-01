@@ -45,17 +45,17 @@ afterEach(() => {
 
 describe("auth middleware", () => {
   it("rejects requests without auth", async () => {
-    const res = await api("/v1/agents");
+    const res = await api("/v1/oma/agents");
     expect(res.status).toBe(401);
   });
 
   it("accepts legacy static API_KEY", async () => {
-    const res = await api("/v1/agents", { headers: HEADERS });
+    const res = await api("/v1/oma/agents", { headers: HEADERS });
     expect(res.status).toBe(200);
   });
 
   it("rejects invalid API key", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       headers: { "x-api-key": "wrong-key" },
     });
     expect(res.status).toBe(401);
@@ -85,7 +85,7 @@ describe("API keys", () => {
   let createdKeyId: string;
 
   it("creates an API key", async () => {
-    const res = await api("/v1/api_keys", {
+    const res = await api("/v1/oma/api_keys", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Test CLI Key" }),
@@ -100,7 +100,7 @@ describe("API keys", () => {
   });
 
   it("lists API keys", async () => {
-    const res = await api("/v1/api_keys", { headers: HEADERS });
+    const res = await api("/v1/oma/api_keys", { headers: HEADERS });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.length).toBeGreaterThanOrEqual(1);
@@ -112,21 +112,21 @@ describe("API keys", () => {
   });
 
   it("authenticates with the created API key", async () => {
-    const res = await api("/v1/agents", {
+    const res = await api("/v1/oma/agents", {
       headers: { "x-api-key": createdKeyRaw },
     });
     expect(res.status).toBe(200);
   });
 
   it("revokes an API key", async () => {
-    const res = await api(`/v1/api_keys/${createdKeyId}`, {
+    const res = await api(`/v1/oma/api_keys/${createdKeyId}`, {
       method: "DELETE",
       headers: HEADERS,
     });
     expect(res.status).toBe(200);
 
     // Key should no longer work
-    const res2 = await api("/v1/agents", {
+    const res2 = await api("/v1/oma/agents", {
       headers: { "x-api-key": createdKeyRaw },
     });
     expect(res2.status).toBe(401);
@@ -140,7 +140,7 @@ describe("API keys", () => {
 describe("multi-tenant KV isolation", () => {
   it("agents are scoped to tenant via D1 column", async () => {
     // Create an agent under default tenant (via static API_KEY)
-    const createRes = await api("/v1/agents", {
+    const createRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -171,7 +171,7 @@ describe("model cards", () => {
   let cardId: string;
 
   it("creates a model card", async () => {
-    const res = await api("/v1/model_cards", {
+    const res = await api("/v1/oma/model_cards", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -193,7 +193,7 @@ describe("model cards", () => {
   });
 
   it("creates a model card with custom headers", async () => {
-    const res = await api("/v1/model_cards", {
+    const res = await api("/v1/oma/model_cards", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -210,7 +210,7 @@ describe("model cards", () => {
   });
 
   it("lists model cards without exposing keys", async () => {
-    const res = await api("/v1/model_cards", { headers: HEADERS });
+    const res = await api("/v1/oma/model_cards", { headers: HEADERS });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.length).toBeGreaterThanOrEqual(1);
@@ -220,7 +220,7 @@ describe("model cards", () => {
   });
 
   it("updates a model card", async () => {
-    const res = await api(`/v1/model_cards/${cardId}`, {
+    const res = await api(`/v1/oma/model_cards/${cardId}`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ model: "claude-opus-4-7", is_default: true }),
@@ -232,20 +232,20 @@ describe("model cards", () => {
   });
 
   it("gets model card key via internal endpoint", async () => {
-    const res = await api(`/v1/model_cards/${cardId}/key`, { headers: HEADERS });
+    const res = await api(`/v1/oma/model_cards/${cardId}/key`, { headers: HEADERS });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.api_key).toBe("sk-ant-test-1234567890");
   });
 
   it("deletes a model card", async () => {
-    const res = await api(`/v1/model_cards/${cardId}`, {
+    const res = await api(`/v1/oma/model_cards/${cardId}`, {
       method: "DELETE",
       headers: HEADERS,
     });
     expect(res.status).toBe(200);
 
-    const getRes = await api(`/v1/model_cards/${cardId}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/model_cards/${cardId}`, { headers: HEADERS });
     expect(getRes.status).toBe(404);
   });
 });
@@ -299,7 +299,7 @@ describe("provider resolution", () => {
 
 describe("models list endpoint", () => {
   it("rejects when no api_key provided", async () => {
-    const res = await api("/v1/models/list", {
+    const res = await api("/v1/oma/models/list", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ provider: "ant" }),
@@ -312,7 +312,7 @@ describe("models list endpoint", () => {
   it("returns 502 for invalid Anthropic key", async () => {
     mockInvalidProviderKey("https://api.anthropic.com/");
 
-    const res = await api("/v1/models/list", {
+    const res = await api("/v1/oma/models/list", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ provider: "ant", api_key: "sk-ant-invalid" }),
@@ -323,7 +323,7 @@ describe("models list endpoint", () => {
   it("returns 502 for invalid OpenAI key", async () => {
     mockInvalidProviderKey("https://api.openai.com/");
 
-    const res = await api("/v1/models/list", {
+    const res = await api("/v1/oma/models/list", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ provider: "oai", api_key: "sk-invalid" }),
@@ -332,7 +332,7 @@ describe("models list endpoint", () => {
   });
 
   it("returns empty array for unknown provider", async () => {
-    const res = await api("/v1/models/list", {
+    const res = await api("/v1/oma/models/list", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ provider: "unknown", api_key: "some-key" }),

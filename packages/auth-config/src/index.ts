@@ -13,6 +13,7 @@
 import { betterAuth } from "better-auth";
 import { emailOTP } from "better-auth/plugins";
 import type { EmailSender } from "@open-managed-agents/email";
+import { buildSocialProviders } from "@open-managed-agents/shared";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
 export interface BuildBetterAuthOpts {
@@ -33,6 +34,9 @@ export interface BuildBetterAuthOpts {
   /** Optional Google OAuth. */
   googleClientId?: string;
   googleClientSecret?: string;
+  /** Optional GitHub OAuth for console account sign-in. */
+  githubClientId?: string;
+  githubClientSecret?: string;
   /** When true, sign-up requires email verification before the user is
    *  signed in. Default: false on self-host (no SMTP path), true on CF prod. */
   requireEmailVerify?: boolean;
@@ -66,13 +70,7 @@ function otpEmailHtml(code: string, label: string): string {
 }
 
 export function buildBetterAuth(opts: BuildBetterAuthOpts) {
-  const socialProviders: Record<string, unknown> = {};
-  if (opts.googleClientId && opts.googleClientSecret) {
-    socialProviders.google = {
-      clientId: opts.googleClientId,
-      clientSecret: opts.googleClientSecret,
-    };
-  }
+  const socialProviders = buildSocialProviders(opts);
 
   const sender = opts.sender;
   const requireVerify = !!opts.requireEmailVerify;

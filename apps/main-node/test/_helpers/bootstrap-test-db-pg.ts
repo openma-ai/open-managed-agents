@@ -1,21 +1,14 @@
 // Shared PG test bootstrap: run the consolidated Drizzle baseline (same
-// `apps/main-node/migrations` the app applies via postgres-js) against the DB
-// at PG_TEST_URL, then return a SqlClient for assertions.
+// `apps/main-node/migrations` the app applies via postgres-js) against the
+// disposable DB owned by `test:integration:storage`, then return a SqlClient
+// for assertions.
 //
 // PG enforces FKs unconditionally (no off-switch), so — unlike the SQLite
 // harness — there is no foreignKeys option.
 //
-// Skipped (PG_ENABLED = false) unless PG_TEST_URL is set. Run locally with:
-//   docker run --rm -p 54329:5432 -e POSTGRES_USER=oma -e POSTGRES_PASSWORD=oma \
-//     -e POSTGRES_DB=oma postgres:16-alpine
-//   PG_TEST_URL=postgres://oma:oma@127.0.0.1:54329/oma pnpm --filter \
-//     @open-managed-agents/main-node test feishu-tables.schema.pg
-//
-// SAFETY (blocker 3): bootstrapTestDbPg refuses any non-loopback DSN unless
-// PG_TEST_ALLOW_REMOTE=1 is set, so a mis-pointed PG_TEST_URL can never reach a
-// shared / remote / prod DB. Tests scope every id with a per-run UUID prefix
-// (see feishu-tables-criteria.ts) and clean up only their own rows — no broad
-// `LIKE 'sess-%'`.
+// SAFETY: bootstrapTestDbPg refuses any non-loopback DSN. Tests scope every id
+// with a per-run UUID prefix (see feishu-tables-criteria.ts) and clean up only
+// their own rows — no broad `LIKE 'sess-%'`.
 
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -23,6 +16,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { PostgresSqlClient } from "@open-managed-agents/sql-client/adapters/postgres";
 import { fileURLToPath } from "node:url";
+import { getStorageIntegrationConfig } from "../../../../test/storage-integration.js";
 
 export interface PgTestDb {
   sql: SqlClient;
@@ -32,38 +26,28 @@ export interface PgTestDb {
   end: () => Promise<void>;
 }
 
-export const PG_URL = process.env.PG_TEST_URL ?? "";
-export const PG_ENABLED =
-  PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
+export const PG_URL = getStorageIntegrationConfig().postgres.feishuSchema;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 /**
- * Refuse anything but a loopback target unless explicitly overridden. This is
- * the structural guard behind blocker 3: even if PG_TEST_URL is mis-set to a
- * shared/remote DB, the bootstrap aborts before migrating or deleting.
+ * Refuse anything but the loopback target allocated by Testcontainers.
  */
 function assertTestDsn(url: string): void {
-  if (process.env.PG_TEST_ALLOW_REMOTE === "1") return;
   let host: string;
   try {
     host = new URL(url).hostname;
   } catch {
-    throw new Error(`PG_TEST_URL is not a valid URL: ${url}`);
+    throw new Error(`Storage integration PostgreSQL URL is invalid: ${url}`);
   }
   if (!LOOPBACK_HOSTS.has(host)) {
     throw new Error(
-      `Refusing PG migration tests against non-loopback host '${host}'. ` +
-        `PG_TEST_URL must point at a dedicated LOCAL test DB, or set ` +
-        `PG_TEST_ALLOW_REMOTE=1 to override this guard.`,
+      `Refusing PG migration tests against non-loopback host '${host}'.`,
     );
   }
 }
 
 export async function bootstrapTestDbPg(): Promise<PgTestDb> {
-  if (!PG_ENABLED) {
-    throw new Error("PG_TEST_URL is not set");
-  }
   assertTestDsn(PG_URL);
   const migrationsFolder = fileURLToPath(
     new URL("../../migrations", import.meta.url),

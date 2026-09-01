@@ -29,6 +29,8 @@ import {
  */
 
 interface SelectProps {
+  /** Id applied to the trigger so an external Label can target it. */
+  id?: string;
   value: string;
   onValueChange: (value: string) => void;
   placeholder?: string;
@@ -36,6 +38,8 @@ interface SelectProps {
   disabled?: boolean;
   /** Optional name; emitted as the underlying form input. */
   name?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
   /** Override the trigger className. Default uses shadcn's full-width
    *  trigger so it fills its container. */
   className?: string;
@@ -43,11 +47,14 @@ interface SelectProps {
 }
 
 export function Select({
+  id,
   value,
   onValueChange,
   placeholder,
   disabled,
   name,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
   className,
   children,
 }: SelectProps) {
@@ -59,7 +66,10 @@ export function Select({
       name={name}
     >
       <SelectTrigger
+        id={id}
         aria-label={placeholder}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
         // Override shadcn's default w-fit so the trigger fills the form
         // column it lives in (matches the previous TextInput look).
         className={className ?? "w-full"}

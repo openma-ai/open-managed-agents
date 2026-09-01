@@ -1,6 +1,8 @@
+import { Input } from "@/components/ui/input";
 import { startTransition, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link } from "react-router";
-import { useApi } from "../lib/api";
+import { ApiError, useApi } from "../lib/api";
+import { useManagedApi } from "../lib/useManagedApi";
 import { toast } from "sonner";
 import { Markdown } from "../components/Markdown";
 import { formatDuration, formatRelative, shortenId } from "../lib/format";
@@ -17,20 +19,17 @@ import {
 import { TimelineView } from "../components/timeline/TimelineView";
 import type { Event } from "../lib/events";
 import {
+  reduceManagedDeltaFrame,
+  type ManagedDeltaState,
+} from "../lib/managed-stream";
+import {
   projectCanonicalChatTurns,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
-import { CanonicalSessionTurn } from "../components/session/CanonicalSessionTurn";
+import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
-// ai-elements primitives — used to render the chat surface (messages,
-// reasoning blocks, tool calls, prompt input). The components/ai-elements/
-// directory is shadcn-style copy-paste so we own + customize them locally.
-import {
-  Conversation,
-  ConversationContent,
-  ConversationScrollButton,
-} from "../components/ai-elements/conversation";
+// Console-specific renderers used only inside OpenMA UI host slots.
 import { Message, MessageContent } from "../components/ai-elements/message";
 import {
   Reasoning,
@@ -44,16 +43,8 @@ import {
   ToolInput,
   ToolOutput,
 } from "../components/ai-elements/tool";
-import {
-  PromptInput,
-  PromptInputTextarea,
-  PromptInputFooter,
-  PromptInputTools,
-  PromptInputSubmit,
-  PromptInputButton,
-  usePromptInputAttachments,
-} from "../components/ai-elements/prompt-input";
 import { CodeBlock } from "../components/ai-elements/code-block";
+import { SessionComposer } from "../components/session/SessionComposer";
 import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
@@ -71,9 +62,28 @@ interface PendingEntry {
   event: Event;
 }
 
+function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export function SessionDetail() {
   const { id } = useParams();
-  const { api, streamEvents } = useApi();
+  const { api } = useApi();
+  const managedApi = useManagedApi();
   const { t } = useI18n();
   const [events, setEvents] = useState<Event[]>([]);
   /** In-flight assistant streams keyed by message_id. Each entry holds
@@ -83,13 +93,16 @@ export function SessionDetail() {
   /** In-flight reasoning streams keyed by thinking_id. Same lifecycle
    *  as messages — drained on matching agent.thinking. */
   const [thinkingStreams, setThinkingStreams] = useState<Map<string, string>>(new Map());
+  const managedDeltaState = useRef<ManagedDeltaState>({
+    kinds: new Map(),
+    text: new Map(),
+  });
   /** In-flight tool-input streams keyed by tool_use_id. Wiped when the
    *  canonical agent.tool_use / mcp_tool_use / custom_tool_use lands
    *  with the same id (toolCallId on the AI SDK side). The accumulated
    *  string is partial JSON — render as a code block, not Markdown. */
   const [toolInputStreams, setToolInputStreams] = useState<Map<string, { name?: string; partial: string }>>(new Map());
   const [view, setView] = useState<View>("chat");
-  const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // Optimistic outbox slot — what the user typed, between hitting Send
   // and the server-side pending broadcast (system.user_message_pending)
@@ -108,8 +121,8 @@ export function SessionDetail() {
     vaultIds?: string[];
     vaults?: Array<{ id: string; name?: string }>;
     createdAt?: string;
-    agentSnapshot?: { id?: string; name?: string; model?: string | { id: string }; description?: string; version?: number };
-    envSnapshot?: { id?: string; name?: string; description?: string };
+    agentSnapshot?: { id?: string; name?: string; model?: string | { id: string }; description?: string | null; version?: number };
+    envSnapshot?: { id?: string; name?: string; description?: string | null };
   }>({});
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -164,7 +177,6 @@ export function SessionDetail() {
   const [pendingByEventId, setPendingByEventId] = useState<Map<string, PendingEntry>>(new Map());
   const [showTrajectory, setShowTrajectory] = useState(false);
   const seenKeys = useRef(new Set<string>());
-  const abortRef = useRef<AbortController | null>(null);
 
   // Dedup key for SSE re-delivery + initial-fetch overlap. `id` is stamped
   // on every event by the server (sevt-* for tool_results / stream events;
@@ -180,6 +192,37 @@ export function SessionDetail() {
 
   const addEvent = (e: Record<string, unknown>) => {
     const ev = e as Event;
+
+    // Managed Agents v2 streaming uses an event_start/event_delta pair for
+    // both assistant text and thinking. Keep the correlation state outside
+    // React so back-to-back frames cannot race a render; mirror only the
+    // accumulated strings into component state.
+    const reducedDelta = reduceManagedDeltaFrame(managedDeltaState.current, e);
+    managedDeltaState.current = reducedDelta.state;
+    if (reducedDelta.action?.type === "open" || reducedDelta.action?.type === "append") {
+      const target = reducedDelta.action.stream === "agent.message"
+        ? setStreams
+        : setThinkingStreams;
+      const id = reducedDelta.action.id;
+      target((previous) => {
+        const next = new Map(previous);
+        next.set(id, reducedDelta.state.text.get(id) ?? "");
+        return next;
+      });
+      return;
+    }
+    if (reducedDelta.action?.type === "close") {
+      const target = reducedDelta.action.stream === "agent.message"
+        ? setStreams
+        : setThinkingStreams;
+      const id = reducedDelta.action.id;
+      target((previous) => {
+        if (!previous.has(id)) return previous;
+        const next = new Map(previous);
+        next.delete(id);
+        return next;
+      });
+    }
 
     // Streaming chunk lifecycle. None of these go into the events list
     // (would pollute history once the canonical agent.message lands);
@@ -465,6 +508,7 @@ export function SessionDetail() {
     // URL until the SSE refill catches up. Hard refresh works because
     // it re-mounts the whole tree from a fresh state. Reported 2026-05-13.
     seenKeys.current.clear();
+    managedDeltaState.current = { kinds: new Map(), text: new Map() };
     setEvents([]);
     setStreams(new Map());
     setThinkingStreams(new Map());
@@ -482,16 +526,10 @@ export function SessionDetail() {
     setLocalPending(null);
 
     // Load session info
-    api<{
-      title?: string | null;
-      environment_id?: string;
-      vault_ids?: string[];
-      created_at?: string;
-      agent?: { id?: string; name?: string; model?: string | { id: string }; description?: string; version?: number };
-      metadata?: Record<string, unknown>;
-    }>(`/v1/sessions/${id}`)
+    managedApi.sessions.retrieve(id)
       .then((s) => {
         setAgentId(s.agent?.id || "");
+        setStatus(s.status);
         setSessionMeta({
           title: s.title ?? null,
           environmentId: s.environment_id,
@@ -507,19 +545,26 @@ export function SessionDetail() {
         // tick later than the badge frame; until then the badge falls back
         // to the short-id label.
         if (s.environment_id) {
-          api<{ id: string; name?: string; description?: string }>(`/v1/environments/${s.environment_id}`)
+          managedApi.environments.retrieve(s.environment_id)
             .then((env) => setSessionMeta((prev) => ({ ...prev, envSnapshot: env })))
             .catch(() => {});
         }
         if (s.vault_ids?.length) {
           Promise.all(
             s.vault_ids.map((vid) =>
-              api<{ id: string; name?: string }>(`/v1/vaults/${vid}`)
-                .then((v) => ({ id: v.id, name: v.name }))
+              managedApi.vaults.retrieve(vid)
+                .then((v) => ({ id: v.id, name: v.display_name }))
                 .catch(() => ({ id: vid })),
             ),
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
         }
+      })
+      .catch(() => {});
+
+    // Integration metadata is an OpenMA product projection, not part of the
+    // Managed Session DTO. Fetch only that extension from the OMA namespace.
+    api<{ metadata?: Record<string, unknown> }>(`/v1/oma/sessions/${id}`)
+      .then((s) => {
         const linearMeta = s.metadata?.linear as
           | { issueId?: string; issueIdentifier?: string; workspaceId?: string }
           | undefined;
@@ -529,55 +574,76 @@ export function SessionDetail() {
         const slackMeta = s.metadata?.slack as
           | { channelId?: string; threadTs?: string; workspaceId?: string; eventKind?: string; publicationId?: string }
           | undefined;
-        if (slackMeta && (slackMeta.channelId || slackMeta.threadTs)) {
-          setSlack(slackMeta);
-        }
+        if (slackMeta && (slackMeta.channelId || slackMeta.threadTs)) setSlack(slackMeta);
       })
       .catch(() => {});
 
-    // Load history. The /events endpoint wraps each event as { seq, type, ts,
-    // data }; promote seq + ts onto the inner event so timeline has them.
-    // Paginate ASC from seq 0 in pages of 200 — long sessions stream older
-    // events progressively rather than blocking the UI on a single 1000-row
-    // payload (the legacy `limit=1000` would also silently truncate at the
-    // hard ceiling for ultra-long histories). Each page is added as it
-    // arrives, so the timeline starts populating after the first roundtrip.
+    // Load canonical Managed Agents history. `next_page` is an opaque cursor;
+    // do not parse it or depend on the old OMA `{seq, ts, data}` envelope.
+    // Each page is applied as it arrives so long sessions render progressively.
     void (async () => {
-      let afterSeq = 0;
-      const pageLimit = 200;
+      let page: string | undefined;
+      const seenPages = new Set<string>();
+      const pageLimit = 100;
       // Bound the loop so a malformed `next_page` never spins forever.
       // Even at 200/page this covers 100k events, well past anything the
       // sandbox SQL store retains in practice.
       for (let i = 0; i < 500; i++) {
         try {
-          const res = await api<{
-            data: Array<{ seq?: number; type: string; ts?: string; data: Event }>;
-            has_more?: boolean;
-            next_page?: string | null;
-          }>(`/v1/sessions/${id}/events?limit=${pageLimit}&order=asc&after_seq=${afterSeq}`);
-          for (const e of res.data) {
-            const inner = e.data || (e as unknown as Event);
-            if (e.ts && !inner.ts) inner.ts = e.ts;
-            if (e.seq !== undefined && inner.seq === undefined) inner.seq = e.seq;
-            addEvent(inner);
+          const res = await managedApi.sessions.events.list(id, {
+            limit: pageLimit,
+            order: "asc",
+            page,
+          });
+          for (const managedEvent of res.data) {
+            const e = managedEvent as unknown as Event;
+            if (!e.ts && typeof e.processed_at === "string") e.ts = e.processed_at;
+            addEvent(e);
           }
-          if (!res.has_more || !res.next_page) break;
-          // next_page is "seq_<n>" per session-do.ts:1568.
-          const m = /^seq_(\d+)$/.exec(res.next_page);
-          if (!m) break;
-          const nextAfter = parseInt(m[1], 10);
-          if (!Number.isFinite(nextAfter) || nextAfter <= afterSeq) break;
-          afterSeq = nextAfter;
+          if (!res.next_page || seenPages.has(res.next_page)) break;
+          seenPages.add(res.next_page);
+          page = res.next_page;
         } catch {
           break;
         }
       }
     })();
 
-    // Connect SSE
+    // Connect the official Managed Agents async event stream. Reconnect only
+    // transport/5xx failures; 4xx responses are terminal until navigation or
+    // auth state changes, so retrying them would only hammer the API.
     const abort = new AbortController();
-    abortRef.current = abort;
-    streamEvents(id, addEvent, abort.signal);
+    void (async () => {
+      const backoffMs = [1_000, 2_000, 4_000, 8_000];
+      let failures = 0;
+      while (!abort.signal.aborted) {
+        try {
+          const liveEvents = await managedApi.sessions.events.stream(
+            id,
+            { event_deltas: ["agent.message", "agent.thinking"] },
+            { signal: abort.signal },
+          );
+          failures = 0;
+          for await (const event of liveEvents) {
+            if (abort.signal.aborted) break;
+            addEvent(event as unknown as Record<string, unknown>);
+          }
+        } catch (error) {
+          if (abort.signal.aborted) break;
+          if (
+            error instanceof ApiError &&
+            error.status >= 400 &&
+            error.status < 500
+          ) {
+            break;
+          }
+        }
+        if (abort.signal.aborted) break;
+        const delay = backoffMs[Math.min(failures, backoffMs.length - 1)];
+        failures += 1;
+        await waitForStreamRetry(delay, abort.signal);
+      }
+    })();
 
     // Lazy-fetch the Trajectory envelope so the header chips have the
     // outcome + reward to show. Decoupled from session/events fetches —
@@ -587,7 +653,7 @@ export function SessionDetail() {
     // sessions intentionally don't poll: trajectory.outcome === "running"
     // is fine, the StatusPill already shows the live status.
     setTrajectory("loading");
-    api<Trajectory>(`/v1/sessions/${id}/trajectory`)
+    api<Trajectory>(`/v1/oma/sessions/${id}/trajectory`)
       .then((t) => setTrajectory(t))
       .catch(() => setTrajectory("error"));
 
@@ -595,11 +661,15 @@ export function SessionDetail() {
     // (seeded by SessionDO on /init). Filter to non-primary so the
     // selector only renders when there's something to switch between
     // — single-thread sessions get zero UI clutter.
-    api<{
-      data: Array<{ id: string; agent_name?: string; parent_thread_id?: string | null }>;
-    }>(`/v1/sessions/${id}/threads`)
+    managedApi.sessions.threads.list(id, { limit: 100 })
       .then((res) => {
-        const subThreads = (res.data ?? []).filter((t) => t.id !== "sthr_primary");
+        const subThreads = (res.data ?? [])
+          .filter((t) => t.id !== "sthr_primary")
+          .map((t) => ({
+            id: t.id,
+            parent_thread_id: t.parent_thread_id,
+            agent_name: "name" in t.agent ? t.agent.name : undefined,
+          }));
         setThreads(subThreads);
       })
       .catch(() => setThreads([]));
@@ -620,7 +690,7 @@ export function SessionDetail() {
         cancelled_at: number | null;
         data: Event;
       }>;
-    }>(`/v1/sessions/${id}/pending`)
+    }>(`/v1/oma/sessions/${id}/pending`)
       .then((res) => {
         const next = new Map<string, PendingEntry>();
         for (const r of res.data ?? []) {
@@ -640,49 +710,23 @@ export function SessionDetail() {
     return () => { abort.abort(); };
   }, [id]);
 
-  // Encode a File as base64 (no data: URL prefix) for inline content
-  // blocks. Used so OMA backend's userContentToParts can forward the
-  // bytes straight to the AI SDK (image vision / PDF parsing) without
-  // needing to async-resolve file_id sources.
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const r = reader.result as string;
-        const idx = r.indexOf(",");
-        resolve(idx >= 0 ? r.slice(idx + 1) : r);
-      };
-      reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
-      reader.readAsDataURL(file);
-    });
-
-  const send = async (overrideText?: string, files?: File[]) => {
-    const text = (overrideText ?? input).trim();
+  const send = async (messageText: string, files?: File[]) => {
+    const text = messageText.trim();
     if (!text && !files?.length) return;
     if (!id) return;
-    setInput("");
     setLocalPending(text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : ""));
     setSending(true);
     try {
       // Upload attachments first so the user.message can reference them
-      // by file_id. Each file is scoped to this session via scope_id so
-      // it appears in the session's Files panel + the agent's mount.
-      // We mark them downloadable so the operator can re-download from
-      // the panel. Per-file failures don't block the others — the text
+      // by file_id. File scope and downloadability are server-owned fields
+      // in the Managed Files API. Per-file failures don't block the others — the text
       // still goes out and the user can retry the failed upload.
       const uploaded: Array<{ id: string; filename: string; media_type: string }> = [];
       if (files?.length) {
         for (const file of files) {
           try {
-            const fd = new FormData();
-            fd.append("file", file);
-            fd.append("scope_id", id);
-            fd.append("downloadable", "true");
-            const r = await api<{ id: string; filename: string; media_type: string }>(
-              `/v1/files`,
-              { method: "POST", body: fd },
-            );
-            uploaded.push({ id: r.id, filename: r.filename, media_type: r.media_type });
+            const r = await managedApi.files.upload({ file });
+            uploaded.push({ id: r.id, filename: r.filename, media_type: r.mime_type });
           } catch (e) {
             console.error("file upload failed", file.name, e);
           }
@@ -717,11 +761,8 @@ export function SessionDetail() {
         });
       }
 
-      await api(`/v1/sessions/${id}/events`, {
-        method: "POST",
-        body: JSON.stringify({
-          events: [{ type: "user.message", content }],
-        }),
+      await managedApi.sessions.events.send(id, {
+        events: [{ type: "user.message", content }],
       });
       // POST resolved → server already inserted the row + broadcast
       // system.user_message_pending. The outbox map will pick it up
@@ -765,14 +806,11 @@ export function SessionDetail() {
     if (!id) return;
     setInterrupting(true);
     try {
-      await api(`/v1/sessions/${id}/events`, {
-        method: "POST",
-        body: JSON.stringify({
-          events: [{
+      await managedApi.sessions.events.send(id, {
+        events: [{
             type: "user.interrupt",
             ...(activeThreadId !== "sthr_primary" ? { session_thread_id: activeThreadId } : {}),
           }],
-        }),
       });
     } catch (e) {
       console.error("interrupt failed", e);
@@ -784,10 +822,7 @@ export function SessionDetail() {
     if (!id) return;
     setSavingTitle(true);
     try {
-      const updated = await api<{ title?: string | null }>(`/v1/sessions/${id}`, {
-        method: "POST",
-        body: JSON.stringify({ title: titleDraft.trim() }),
-      });
+      const updated = await managedApi.sessions.update(id, { title: titleDraft.trim() });
       setSessionMeta((prev) => ({
         ...prev,
         title: updated.title ?? (titleDraft.trim() || null),
@@ -799,6 +834,28 @@ export function SessionDetail() {
       setSavingTitle(false);
     }
   };
+
+  const activePendingEntries = Array.from(pendingByEventId.values())
+    .filter((entry) => entry.session_thread_id === activeThreadId)
+    .sort((a, b) => a.pending_seq - b.pending_seq);
+  const hasTransientActivity = (
+    (localPending !== null && activeThreadId === "sthr_primary")
+    || activePendingEntries.length > 0
+    || thinkingStreams.size > 0
+    || toolInputStreams.size > 0
+    || streams.size > 0
+    || status === "running"
+  );
+  const transientActivity = (
+    <SessionTransientActivity
+      localPending={activeThreadId === "sthr_primary" ? localPending : null}
+      pendingEntries={activePendingEntries}
+      running={status === "running"}
+      streams={streams}
+      thinkingStreams={thinkingStreams}
+      toolInputStreams={toolInputStreams}
+    />
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -814,7 +871,7 @@ export function SessionDetail() {
         <div className="flex items-center gap-2 min-h-8">
           {editingTitle ? (
             <>
-              <input
+              <Input
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 className="flex-1 min-w-0 border border-border rounded-md px-2.5 py-1.5 text-sm bg-bg text-fg outline-none focus:border-brand"
@@ -829,14 +886,14 @@ export function SessionDetail() {
                   }
                 }}
               />
-              <button
+              <Button variant="ghost"
                 onClick={() => void saveTitle()}
                 disabled={savingTitle}
                 className="inline-flex items-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium bg-brand text-brand-fg disabled:opacity-50"
               >
                 {savingTitle ? t.common.saving : t.common.save}
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost"
                 onClick={() => {
                   setEditingTitle(false);
                   setTitleDraft(sessionMeta.title ?? "");
@@ -845,7 +902,7 @@ export function SessionDetail() {
                 className="inline-flex items-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs text-fg-muted hover:text-fg"
               >
                 {t.common.cancel}
-              </button>
+              </Button>
             </>
           ) : (
             <>
@@ -854,7 +911,7 @@ export function SessionDetail() {
                   <span className="text-fg-subtle font-normal">{t.sessions.untitledSession}</span>
                 )}
               </h2>
-              <button
+              <Button variant="ghost"
                 onClick={() => {
                   setTitleDraft(sessionMeta.title ?? "");
                   setEditingTitle(true);
@@ -862,7 +919,7 @@ export function SessionDetail() {
                 className="inline-flex items-center px-2 py-0.5 min-h-11 sm:min-h-0 rounded text-xs text-fg-subtle hover:text-fg hover:bg-bg-surface shrink-0"
               >
                 {t.sessions.editTitle}
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -916,17 +973,17 @@ export function SessionDetail() {
                 status_idle. Recovery path for stuck-Running sessions where a
                 DO eviction killed the stream and no clean status_idle ever
                 landed. */}
-            {status === "running" && (
-              <button
+            {status === "running" && view !== "chat" && (
+              <Button variant="ghost"
                 onClick={() => void interrupt()}
                 disabled={interrupting}
                 className="inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium bg-bg-surface/60 text-fg-muted hover:bg-bg-surface hover:text-fg disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                 title="Interrupt the active turn on this thread"
               >
                 {interrupting ? "Stopping…" : "Stop"}
-              </button>
+              </Button>
             )}
-            <button
+            <Button variant="ghost"
               onClick={() => setShowFiles((v) => !v)}
               className={`inline-flex items-center justify-center px-2.5 py-1 min-h-11 sm:min-h-0 rounded-md text-xs font-medium transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
                 showFiles
@@ -936,7 +993,7 @@ export function SessionDetail() {
               title="Files the agent wrote to /mnt/session/outputs/"
             >
               Files
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -971,7 +1028,7 @@ export function SessionDetail() {
             row. Disabled until the lazy fetch resolves so the click never
             opens an empty modal. Errors keep the button enabled (the modal
             shows the error). */}
-        <button
+        <Button variant="ghost"
           onClick={() => setShowTrajectory(true)}
           disabled={trajectory === undefined || trajectory === "loading"}
           className={`${view === "timeline" ? "ml-3" : "ml-auto"} inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed bg-bg-surface/60 hover:bg-bg-surface rounded px-2 py-1 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] my-1.5`}
@@ -984,7 +1041,7 @@ export function SessionDetail() {
           }
         >
           Trajectory
-        </button>
+        </Button>
       </div>
 
       {/* Linear context (when triggered by a Linear webhook) */}
@@ -1042,7 +1099,7 @@ export function SessionDetail() {
             )}
           </span>
           {slack.eventKind && (
-            <span className="opacity-60 font-mono uppercase tracking-wider text-[10px]">
+            <span className="opacity-60 font-mono uppercase tracking-wider text-xs">
               {slack.eventKind}
             </span>
           )}
@@ -1068,172 +1125,25 @@ export function SessionDetail() {
       <div className="flex-1 flex min-h-0">
         <div className="flex-1 flex flex-col min-w-0">
       {view === "chat" ? (
-        <>
-          {/* Conversation surface. ai-elements <Conversation> wraps
-              StickToBottom, which auto-pins to the latest message while
-              the user is at the bottom and surfaces a "jump to latest"
-              affordance via <ConversationScrollButton> the moment they
-              scroll up — replaces the hand-rolled scrollTo effect.
-
-              Render order intentionally mirrors the pre-migration layout:
-                1) canonical events (filtered to the active thread)
-                2) optimistic outbox slot (instant feedback on Send)
-                3) server-mirrored pending outbox (queued user.* events)
-                4) in-flight thinking streams
-                5) in-flight tool-input streams
-                6) in-flight assistant text streams
-                7) typing dots when only the agent is "thinking" with
-                   nothing else streaming yet */}
-          <Conversation className="flex-1 min-h-0">
-            <ConversationContent className="pl-3 pr-4 py-6 gap-4">
-              {canonicalTurns.map((turn) => (
-                <CanonicalSessionTurn key={turn.id} turn={turn} />
-              ))}
-              {/* Optimistic outbox slot — what the user just typed before
-                  the server's system.user_message_pending broadcast lands.
-                  Rendered above the server-mirrored outbox so the typed
-                  text appears INSTANTLY (no 100-500ms void after Send).
-                  Cleared by the SSE handler the moment the server picks it
-                  up; rendered with the same hourglass treatment as the
-                  server-side rows so the UI is visually consistent. */}
-              {localPending && activeThreadId === "sthr_primary" && (
-                <EventRender
-                  key="local-pending"
-                  event={{ type: "user.message", content: [{ type: "text", text: localPending }] } as Event}
-                  livePending={true}
-                />
-              )}
-              {/* Pending outbox — server-mirrored queue rows that haven't
-                  been drained yet. Keyed by event_id; rendered below the
-                  timeline, never inline. The hourglass treatment is the
-                  visual tell ("queued, not yet ingested by the agent").
-                  Filtered to the active thread. */}
-              {(() => {
-                const outbox = Array.from(pendingByEventId.values())
-                  .filter((p) => p.session_thread_id === activeThreadId)
-                  .sort((a, b) => a.pending_seq - b.pending_seq);
-                return outbox.map((p) => (
-                  <EventRender
-                    key={`pending-${p.event_id}`}
-                    event={p.event}
-                    livePending={true}
-                  />
-                ));
-              })()}
-              {/* In-flight thinking streams. Render before message/tool
-                  streams so the visual order roughly matches what the
-                  LLM produced (Anthropic emits reasoning before text/tool).
-                  <Reasoning isStreaming> auto-opens, shows a shimmering
-                  "Thinking…" trigger, computes the duration when streaming
-                  ends, and auto-collapses on completion. */}
-              {Array.from(thinkingStreams.entries()).map(([tid, text]) => (
-                <Reasoning key={`think-${tid}`} isStreaming defaultOpen>
-                  <ReasoningTrigger />
-                  <ReasoningContent>{text}</ReasoningContent>
-                </Reasoning>
-              ))}
-              {/* In-flight tool inputs — partial JSON shown in a code box
-                  inside a Tool card with state="input-streaming" ("Pending"
-                  badge). Replaced by the canonical tool_use card the
-                  moment the matching agent.tool_use lands. */}
-              {Array.from(toolInputStreams.entries()).map(([tid, { name, partial }]) => (
-                <Tool key={`tin-${tid}`} defaultOpen>
-                  <ToolHeader
-                    type="dynamic-tool"
-                    toolName={name ?? "tool"}
-                    state="input-streaming"
-                  />
-                  <ToolContent>
-                    {partial && (
-                      <div className="space-y-2 overflow-hidden">
-                        <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                          Streaming input
-                        </h4>
-                        <div className="rounded-md bg-muted/50">
-                          <CodeBlock code={partial} language="json" />
-                        </div>
-                      </div>
-                    )}
-                  </ToolContent>
-                </Tool>
-              ))}
-              {/* In-flight assistant message text streams — rendered as a
-                  regular assistant Message whose body grows as chunks
-                  arrive. Cursor block keeps the "still writing" cue from
-                  the old StreamingBubble. */}
-              {Array.from(streams.entries()).map(([mid, text]) => (
-                <Message key={`stream-${mid}`} from="assistant">
-                  <MessageContent>
-                    <Markdown>{text}</Markdown>
-                    <span className="inline-block w-1.5 h-3.5 bg-fg-subtle/50 align-middle ml-0.5 animate-pulse" />
-                  </MessageContent>
-                </Message>
-              ))}
-              {/* Typing dots only when the agent is running and nothing
-                  else is streaming — avoids duplicate activity indicators. */}
-              {status === "running"
-                && streams.size === 0
-                && thinkingStreams.size === 0
-                && toolInputStreams.size === 0 && (
-                <div className="flex gap-1 py-2">
-                  <span className="w-1.5 h-1.5 bg-fg-subtle rounded-full animate-pulse" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-fg-subtle rounded-full animate-pulse" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-fg-subtle rounded-full animate-pulse" style={{ animationDelay: "300ms" }} />
-                </div>
-              )}
-            </ConversationContent>
-            <ConversationScrollButton />
-          </Conversation>
-
-          {/* Prompt input. ai-elements <PromptInput> wraps a <form> with
-              an InputGroup-based textarea + attachment lifecycle; we
-              hand it our own onSubmit so the existing send() (POST
-              /events) stays the source of truth. The + button only
-              accepts images — they go inline to the model as vision
-              inputs. Non-image attachments belong on the mount-based
-              session resources path, not this button.
-
-              Wireless treatment: composer sits flush against the
-              conversation above on a `bg-bg` (white) surface — no
-              line, no top padding, just `pb-4` for breathing room
-              below. */}
-          <div className="pl-3 pr-4 pb-4 bg-bg shrink-0">
-            <PromptInput
-              accept="image/*"
-              multiple
-              maxFiles={10}
-              maxFileSize={25 * 1024 * 1024}
-              onError={(err) => toast.error(err.message)}
-              globalDrop
-              onSubmit={async ({ text, files }) => {
-                // PromptInput captured the textarea's value into `text`
-                // and the picked/dropped files into `files`, then
-                // form.reset() before this handler runs. send() owns
-                // clearing the mirrored `input` state, the optimistic
-                // outbox slot, and the file uploads.
-                const rawFiles = files
-                  .map((f) => (f as { file?: File }).file)
-                  .filter((f): f is File => f instanceof File);
-                await send(text, rawFiles);
-              }}
-            >
-              <PromptInputTextarea
-                placeholder="Send a message…  (drag an image in or click ＋)"
-                disabled={sending}
-                onChange={(e) => setInput(e.currentTarget.value)}
-              />
-              <PromptInputFooter>
-                <PromptInputTools>
-                  <AttachButton />
-                </PromptInputTools>
-                <PromptInputSubmit
-                  status={sending ? "submitted" : undefined}
-                  disabled={sending}
-                />
-              </PromptInputFooter>
-            </PromptInput>
-          </div>
-        </>
+        <ManagedSessionConversation
+          afterTurns={transientActivity}
+          composer={<SessionComposer
+            interrupting={interrupting}
+            onError={(error) => toast.error(error.message)}
+            onStop={() => void interrupt()}
+            onSubmit={async ({ text, files }) => {
+              const rawFiles = files
+                .map((file) => file.file)
+                .filter((file): file is File => file instanceof File);
+              await send(text, rawFiles);
+            }}
+            running={status === "running"}
+            sending={sending}
+          />}
+          empty={hasTransientActivity ? transientActivity : undefined}
+          sessionId={id}
+          turns={canonicalTurns}
+        />
       ) : (
         <TimelineView key={`${id ?? "session"}:${activeThreadId}`} events={timelineEvents} />
       )}
@@ -1272,7 +1182,7 @@ function ViewTab({ label, active, onClick }: { label: string; active: boolean; o
   // surface fill keeps the active state clearly distinguishable without
   // any line at all.
   return (
-    <button
+    <Button variant="ghost"
       onClick={onClick}
       role="tab"
       aria-selected={active}
@@ -1284,7 +1194,7 @@ function ViewTab({ label, active, onClick }: { label: string; active: boolean; o
       }`}
     >
       {label}
-    </button>
+    </Button>
   );
 }
 
@@ -1303,7 +1213,7 @@ function ThreadTab({
   depth?: number;
 }) {
   return (
-    <button
+    <Button variant="ghost"
       onClick={onClick}
       role="tab"
       aria-selected={active}
@@ -1321,7 +1231,7 @@ function ThreadTab({
           dark and light themes without needing a separate icon. */}
       {depth > 0 && <span className="text-fg-subtle">└</span>}
       <span>{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -1424,6 +1334,85 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
   );
 }
 
+function SessionTransientActivity({
+  localPending,
+  pendingEntries,
+  running,
+  streams,
+  thinkingStreams,
+  toolInputStreams,
+}: {
+  localPending: string | null;
+  pendingEntries: PendingEntry[];
+  running: boolean;
+  streams: ReadonlyMap<string, string>;
+  thinkingStreams: ReadonlyMap<string, string>;
+  toolInputStreams: ReadonlyMap<string, { name?: string; partial: string }>;
+}) {
+  return (
+    <div className="chat-turn-frame mx-auto w-full max-w-3xl min-w-0 space-y-4">
+      {localPending ? (
+        <EventRender
+          event={{ type: "user.message", content: [{ type: "text", text: localPending }] } as Event}
+          livePending
+        />
+      ) : null}
+      {pendingEntries.map((entry) => (
+        <EventRender
+          event={entry.event}
+          key={`pending-${entry.event_id}`}
+          livePending
+        />
+      ))}
+      {Array.from(thinkingStreams.entries()).map(([id, text]) => (
+        <Reasoning defaultOpen isStreaming key={`think-${id}`}>
+          <ReasoningTrigger />
+          <ReasoningContent>{text}</ReasoningContent>
+        </Reasoning>
+      ))}
+      {Array.from(toolInputStreams.entries()).map(([id, { name, partial }]) => (
+        <Tool defaultOpen key={`tool-input-${id}`}>
+          <ToolHeader
+            state="input-streaming"
+            toolName={name ?? "tool"}
+            type="dynamic-tool"
+          />
+          <ToolContent>
+            {partial ? (
+              <div className="space-y-2 overflow-hidden">
+                <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Streaming input
+                </h4>
+                <div className="rounded-md bg-muted/50">
+                  <CodeBlock code={partial} language="json" />
+                </div>
+              </div>
+            ) : null}
+          </ToolContent>
+        </Tool>
+      ))}
+      {Array.from(streams.entries()).map(([id, text]) => (
+        <Message from="assistant" key={`stream-${id}`}>
+          <MessageContent>
+            <Markdown>{text}</Markdown>
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-fg-subtle/50 align-middle" />
+          </MessageContent>
+        </Message>
+      ))}
+      {running
+        && streams.size === 0
+        && thinkingStreams.size === 0
+        && toolInputStreams.size === 0 ? (
+        <div aria-label="Agent is working" className="flex gap-1 py-2" role="status">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-subtle" />
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:150ms]" />
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-fg-subtle [animation-delay:300ms]" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 
 /**
  * Renders a single canonical event using ai-elements primitives. Replaces
@@ -1444,30 +1433,6 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
  *   session.warning           → amber alert div  (same)
  *   anything else             → null  (timeline-only events that shouldn't appear in chat)
  */
-
-/**
- * Plain "+" button that opens the PromptInput file picker for images.
- * The stock `PromptInputActionAddAttachments` from ai-elements is a
- * DropdownMenuItem — meant to live inside an action-menu — so dropping
- * it directly into PromptInputTools threw "MenuItem must be used within
- * Menu" at render. This button reads the attachments controller from
- * context and calls `openFileDialog()` directly, no menu required.
- */
-function AttachButton() {
-  const attachments = usePromptInputAttachments();
-  return (
-    <PromptInputButton
-      type="button"
-      onClick={() => attachments.openFileDialog()}
-      aria-label="Add image"
-      title="Add image"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 5v14M5 12h14" />
-      </svg>
-    </PromptInputButton>
-  );
-}
 
 function EventRender({
   event,
@@ -1545,7 +1510,7 @@ function EventRender({
           <Message from="system">
             <div className="flex items-center gap-1.5 text-xs text-fg-subtle mb-1">
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-info-subtle text-info px-2 py-0.5 font-medium text-[11px]"
+                className="inline-flex items-center gap-1 rounded-full bg-info-subtle text-info px-2 py-0.5 font-medium text-xs"
                 title={scheduledAt ? `Scheduled at ${scheduledAt}` : undefined}
               >
                 <span aria-hidden>🕒</span>
@@ -1705,7 +1670,7 @@ function EventRender({
         <div className="max-w-2xl bg-danger-subtle rounded-lg px-4 py-2.5 text-sm text-danger">
           <div>Error: {event.error}</div>
           {modelErrorCause && (
-            <div className="mt-1.5 pt-1.5 text-[12px] opacity-90">
+            <div className="mt-1.5 pt-1.5 text-sm opacity-90">
               <span className="font-medium">Cause</span>
               {modelErrorCause.model && (
                 <span className="ml-1 font-mono opacity-75">({modelErrorCause.model})</span>

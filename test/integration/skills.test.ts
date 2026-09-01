@@ -64,7 +64,7 @@ function makeSkillBody(overrides?: Record<string, unknown>) {
 // ============================================================
 describe("Skills CRUD", () => {
   it("creates a skill with SKILL.md file", async () => {
-    const res = await post("/v1/skills", makeSkillBody());
+    const res = await post("/v1/oma/skills", makeSkillBody());
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     expect(skill.id).toMatch(/^skill_/);
@@ -73,7 +73,7 @@ describe("Skills CRUD", () => {
   });
 
   it("creates skill — extracts name/description from YAML frontmatter", async () => {
-    const res = await post("/v1/skills", makeSkillBody());
+    const res = await post("/v1/oma/skills", makeSkillBody());
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     expect(skill.name).toBe("my-skill");
@@ -81,12 +81,12 @@ describe("Skills CRUD", () => {
   });
 
   it("rejects skill without files", async () => {
-    const res = await post("/v1/skills", { display_title: "No Files" });
+    const res = await post("/v1/oma/skills", { display_title: "No Files" });
     expect(res.status).toBe(400);
   });
 
   it("creates skill without display_title (auto-extracts from name)", async () => {
-    const res = await post("/v1/skills", {
+    const res = await post("/v1/oma/skills", {
       files: [{ filename: "SKILL.md", content: SKILL_MD }],
     });
     expect(res.status).toBe(201);
@@ -96,12 +96,12 @@ describe("Skills CRUD", () => {
 
   it("lists skills (includes custom)", async () => {
     // Create a skill so at least one custom skill exists
-    const createRes = await post("/v1/skills", makeSkillBody({
+    const createRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Listable Skill",
     }));
     expect(createRes.status).toBe(201);
 
-    const res = await get("/v1/skills");
+    const res = await get("/v1/oma/skills");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -110,7 +110,7 @@ describe("Skills CRUD", () => {
   });
 
   it("lists skills includes anthropic pre-built skills", async () => {
-    const res = await get("/v1/skills");
+    const res = await get("/v1/oma/skills");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -122,12 +122,12 @@ describe("Skills CRUD", () => {
   });
 
   it("gets skill by id (no file content in response)", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody({
+    const createRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Get By ID Skill",
     }));
     const created = (await createRes.json()) as any;
 
-    const res = await get(`/v1/skills/${created.id}`);
+    const res = await get(`/v1/oma/skills/${created.id}`);
     expect(res.status).toBe(200);
     const skill = (await res.json()) as any;
     expect(skill.id).toBe(created.id);
@@ -141,29 +141,29 @@ describe("Skills CRUD", () => {
   });
 
   it("returns 404 for unknown skill", async () => {
-    const res = await get("/v1/skills/skill_nonexistent");
+    const res = await get("/v1/oma/skills/skill_nonexistent");
     expect(res.status).toBe(404);
   });
 
   it("deletes a skill", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody({
+    const createRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "To Delete",
     }));
     const skill = (await createRes.json()) as any;
 
-    const delRes = await del(`/v1/skills/${skill.id}`);
+    const delRes = await del(`/v1/oma/skills/${skill.id}`);
     expect(delRes.status).toBe(200);
     const body = (await delRes.json()) as any;
     expect(body.type).toBe("skill_deleted");
     expect(body.id).toBe(skill.id);
 
     // Verify it is gone
-    const getRes = await get(`/v1/skills/${skill.id}`);
+    const getRes = await get(`/v1/oma/skills/${skill.id}`);
     expect(getRes.status).toBe(404);
   });
 
   it("returns 404 when deleting nonexistent skill", async () => {
-    const res = await del("/v1/skills/skill_nonexistent");
+    const res = await del("/v1/oma/skills/skill_nonexistent");
     expect(res.status).toBe(404);
   });
 });
@@ -173,23 +173,23 @@ describe("Skills CRUD", () => {
 // ============================================================
 describe("Skill versions", () => {
   it("creates initial version on skill creation", async () => {
-    const res = await post("/v1/skills", makeSkillBody());
+    const res = await post("/v1/oma/skills", makeSkillBody());
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     expect(skill.latest_version).toBeTruthy();
 
     // List versions — should have exactly one
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     expect(versionsRes.status).toBe(200);
     const versions = (await versionsRes.json()) as any;
     expect(versions.data.length).toBe(1);
   });
 
   it("creates a new version via POST /versions", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
-    const versionRes = await post(`/v1/skills/${skill.id}/versions`, {
+    const versionRes = await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
     expect(versionRes.status).toBe(201);
@@ -198,14 +198,14 @@ describe("Skill versions", () => {
   });
 
   it("new version has different version ID", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
-    const initialVersions = await get(`/v1/skills/${skill.id}/versions`);
+    const initialVersions = await get(`/v1/oma/skills/${skill.id}/versions`);
     const initialData = (await initialVersions.json()) as any;
     const firstVersionId = initialData.data[0].version;
 
-    const newVersionRes = await post(`/v1/skills/${skill.id}/versions`, {
+    const newVersionRes = await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
     const newVersion = (await newVersionRes.json()) as any;
@@ -213,15 +213,15 @@ describe("Skill versions", () => {
   });
 
   it("lists versions (newest first)", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
     // Create a second version
-    await post(`/v1/skills/${skill.id}/versions`, {
+    await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
 
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     expect(versionsRes.status).toBe(200);
     const versions = (await versionsRes.json()) as any;
     expect(versions.data.length).toBe(2);
@@ -234,14 +234,14 @@ describe("Skill versions", () => {
   });
 
   it("gets specific version with file content", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     const versions = (await versionsRes.json()) as any;
     const versionId = versions.data[0].version;
 
-    const versionRes = await get(`/v1/skills/${skill.id}/versions/${versionId}`);
+    const versionRes = await get(`/v1/oma/skills/${skill.id}/versions/${versionId}`);
     expect(versionRes.status).toBe(200);
     const version = (await versionRes.json()) as any;
     expect(version.files).toBeInstanceOf(Array);
@@ -252,50 +252,50 @@ describe("Skill versions", () => {
   });
 
   it("returns 404 for unknown version", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
-    const res = await get(`/v1/skills/${skill.id}/versions/nonexistent_version`);
+    const res = await get(`/v1/oma/skills/${skill.id}/versions/nonexistent_version`);
     expect(res.status).toBe(404);
   });
 
   it("deletes specific version", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
 
     // Create a second version so there is something left after deletion
-    await post(`/v1/skills/${skill.id}/versions`, {
+    await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
 
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     const versions = (await versionsRes.json()) as any;
     const versionToDelete = versions.data[versions.data.length - 1].version;
 
-    const delRes = await del(`/v1/skills/${skill.id}/versions/${versionToDelete}`);
+    const delRes = await del(`/v1/oma/skills/${skill.id}/versions/${versionToDelete}`);
     expect(delRes.status).toBe(200);
 
     // Verify it is gone
-    const getRes = await get(`/v1/skills/${skill.id}/versions/${versionToDelete}`);
+    const getRes = await get(`/v1/oma/skills/${skill.id}/versions/${versionToDelete}`);
     expect(getRes.status).toBe(404);
   });
 
   it("latest_version updates when new version created", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody());
+    const createRes = await post("/v1/oma/skills", makeSkillBody());
     const skill = (await createRes.json()) as any;
     const originalLatest = skill.latest_version;
 
-    await post(`/v1/skills/${skill.id}/versions`, {
+    await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
 
-    const updatedRes = await get(`/v1/skills/${skill.id}`);
+    const updatedRes = await get(`/v1/oma/skills/${skill.id}`);
     const updated = (await updatedRes.json()) as any;
     expect(updated.latest_version).not.toBe(originalLatest);
   });
 
   it("skill with multiple files in version", async () => {
-    const res = await post("/v1/skills", {
+    const res = await post("/v1/oma/skills", {
       display_title: "Multi File Skill",
       files: [
         { filename: "SKILL.md", content: SKILL_MD },
@@ -307,11 +307,11 @@ describe("Skill versions", () => {
     const skill = (await res.json()) as any;
 
     // Get the version and verify all files are present
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     const versions = (await versionsRes.json()) as any;
     const versionId = versions.data[0].version;
 
-    const versionRes = await get(`/v1/skills/${skill.id}/versions/${versionId}`);
+    const versionRes = await get(`/v1/oma/skills/${skill.id}/versions/${versionId}`);
     const version = (await versionRes.json()) as any;
     expect(version.files.length).toBe(3);
     const filenames = version.files.map((f: any) => f.filename);
@@ -321,7 +321,7 @@ describe("Skill versions", () => {
   });
 
   it("version files include SKILL.md and additional resources", async () => {
-    const res = await post("/v1/skills", {
+    const res = await post("/v1/oma/skills", {
       display_title: "Resource Skill",
       files: [
         { filename: "SKILL.md", content: SKILL_MD },
@@ -330,11 +330,11 @@ describe("Skill versions", () => {
     });
     const skill = (await res.json()) as any;
 
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     const versions = (await versionsRes.json()) as any;
     const versionId = versions.data[0].version;
 
-    const versionRes = await get(`/v1/skills/${skill.id}/versions/${versionId}`);
+    const versionRes = await get(`/v1/oma/skills/${skill.id}/versions/${versionId}`);
     const version = (await versionRes.json()) as any;
 
     const skillFile = version.files.find((f: any) => f.filename === "SKILL.md");
@@ -353,7 +353,7 @@ describe("Skill versions", () => {
 describe("Skills integration", () => {
   it("full lifecycle: create -> new version -> list versions -> delete version -> delete skill", async () => {
     // Step 1: Create
-    const createRes = await post("/v1/skills", makeSkillBody({
+    const createRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Lifecycle Skill",
     }));
     expect(createRes.status).toBe(201);
@@ -361,33 +361,33 @@ describe("Skills integration", () => {
     const skillId = skill.id;
 
     // Step 2: New version
-    const v2Res = await post(`/v1/skills/${skillId}/versions`, {
+    const v2Res = await post(`/v1/oma/skills/${skillId}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
     expect(v2Res.status).toBe(201);
 
     // Step 3: List versions — should have 2
-    const listRes = await get(`/v1/skills/${skillId}/versions`);
+    const listRes = await get(`/v1/oma/skills/${skillId}/versions`);
     expect(listRes.status).toBe(200);
     const versions = (await listRes.json()) as any;
     expect(versions.data.length).toBe(2);
 
     // Step 4: Delete the older version
     const olderVersion = versions.data[versions.data.length - 1].version;
-    const delVersionRes = await del(`/v1/skills/${skillId}/versions/${olderVersion}`);
+    const delVersionRes = await del(`/v1/oma/skills/${skillId}/versions/${olderVersion}`);
     expect(delVersionRes.status).toBe(200);
 
     // Verify only 1 version remains
-    const afterDelRes = await get(`/v1/skills/${skillId}/versions`);
+    const afterDelRes = await get(`/v1/oma/skills/${skillId}/versions`);
     const afterDel = (await afterDelRes.json()) as any;
     expect(afterDel.data.length).toBe(1);
 
     // Step 5: Delete skill
-    const delSkillRes = await del(`/v1/skills/${skillId}`);
+    const delSkillRes = await del(`/v1/oma/skills/${skillId}`);
     expect(delSkillRes.status).toBe(200);
 
     // Verify skill is gone
-    const getRes = await get(`/v1/skills/${skillId}`);
+    const getRes = await get(`/v1/oma/skills/${skillId}`);
     expect(getRes.status).toBe(404);
   });
 
@@ -401,7 +401,7 @@ description: Runs data pipelines
 
 Run ETL jobs.
 `;
-    const res = await post("/v1/skills", {
+    const res = await post("/v1/oma/skills", {
       display_title: "Data Pipeline",
       files: [{ filename: "SKILL.md", content: customMd }],
     });
@@ -414,57 +414,57 @@ Run ETL jobs.
 
   it("two skills have independent versions", async () => {
     // Create skill A
-    const aRes = await post("/v1/skills", makeSkillBody({
+    const aRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Skill A",
     }));
     const skillA = (await aRes.json()) as any;
 
     // Create skill B
-    const bRes = await post("/v1/skills", makeSkillBody({
+    const bRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Skill B",
     }));
     const skillB = (await bRes.json()) as any;
 
     // Add a version to skill A only
-    await post(`/v1/skills/${skillA.id}/versions`, {
+    await post(`/v1/oma/skills/${skillA.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
 
     // Skill A should have 2 versions
-    const aVersionsRes = await get(`/v1/skills/${skillA.id}/versions`);
+    const aVersionsRes = await get(`/v1/oma/skills/${skillA.id}/versions`);
     const aVersions = (await aVersionsRes.json()) as any;
     expect(aVersions.data.length).toBe(2);
 
     // Skill B should still have 1 version
-    const bVersionsRes = await get(`/v1/skills/${skillB.id}/versions`);
+    const bVersionsRes = await get(`/v1/oma/skills/${skillB.id}/versions`);
     const bVersions = (await bVersionsRes.json()) as any;
     expect(bVersions.data.length).toBe(1);
   });
 
   it("delete skill cascades and removes all versions", async () => {
-    const createRes = await post("/v1/skills", makeSkillBody({
+    const createRes = await post("/v1/oma/skills", makeSkillBody({
       display_title: "Cascade Delete Skill",
     }));
     const skill = (await createRes.json()) as any;
 
     // Add extra versions
-    await post(`/v1/skills/${skill.id}/versions`, {
+    await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD_ALT }],
     });
-    await post(`/v1/skills/${skill.id}/versions`, {
+    await post(`/v1/oma/skills/${skill.id}/versions`, {
       files: [{ filename: "SKILL.md", content: SKILL_MD }],
     });
 
     // Delete the skill
-    const delRes = await del(`/v1/skills/${skill.id}`);
+    const delRes = await del(`/v1/oma/skills/${skill.id}`);
     expect(delRes.status).toBe(200);
 
     // Skill is gone
-    const getRes = await get(`/v1/skills/${skill.id}`);
+    const getRes = await get(`/v1/oma/skills/${skill.id}`);
     expect(getRes.status).toBe(404);
 
     // Versions endpoint should return 404 as well
-    const versionsRes = await get(`/v1/skills/${skill.id}/versions`);
+    const versionsRes = await get(`/v1/oma/skills/${skill.id}/versions`);
     expect(versionsRes.status).toBe(404);
   });
 
@@ -478,7 +478,7 @@ description: Summarizes long email threads into concise bullet points
 
 Summarize emails efficiently.
 `;
-    const res = await post("/v1/skills", {
+    const res = await post("/v1/oma/skills", {
       display_title: "Email Summarizer",
       files: [{ filename: "SKILL.md", content: customMd }],
     });
@@ -491,7 +491,7 @@ Summarize emails efficiently.
 });
 
 // ============================================================
-// 4. Zip upload — POST /v1/skills/upload + /:id/versions/upload
+// 4. Zip upload — POST /v1/oma/skills/upload + /:id/versions/upload
 // ============================================================
 describe("Skills zip upload", () => {
   // Tiny binary blob to verify base64 encoding round-trips through R2.
@@ -521,7 +521,7 @@ describe("Skills zip upload", () => {
 
   it("creates a skill from a zip with a nested top-level folder", async () => {
     const bytes = buildSkillZip({ nested: true, name: "from-zip-nested" });
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     expect(skill.name).toBe("from-zip-nested");
@@ -537,7 +537,7 @@ describe("Skills zip upload", () => {
 
   it("creates a skill from a flat zip (no top-level folder)", async () => {
     const bytes = buildSkillZip({ nested: false, name: "from-zip-flat" });
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     expect(skill.name).toBe("from-zip-flat");
@@ -545,7 +545,7 @@ describe("Skills zip upload", () => {
 
   it("encodes binary files as base64 in the response", async () => {
     const bytes = buildSkillZip({ nested: true, name: "binary-skill" });
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(201);
     const skill = (await res.json()) as any;
     const png = (skill.files as any[]).find((f) => f.filename === "assets/pixel.png");
@@ -560,7 +560,7 @@ describe("Skills zip upload", () => {
 
   it("uses display_title form field when provided", async () => {
     const bytes = buildSkillZip({ name: "title-override" });
-    const res = await postZip("/v1/skills/upload", bytes, {
+    const res = await postZip("/v1/oma/skills/upload", bytes, {
       displayTitle: "My Override Title",
     });
     expect(res.status).toBe(201);
@@ -573,7 +573,7 @@ describe("Skills zip upload", () => {
     const bytes = zipSync({
       "README.md": strToU8("not a skill"),
     });
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error?.message ?? body.error).toMatch(/SKILL\.md/);
@@ -582,7 +582,7 @@ describe("Skills zip upload", () => {
   it("rejects upload without file field", async () => {
     const fd = new FormData();
     fd.append("display_title", "no file");
-    const res = await api("/v1/skills/upload", {
+    const res = await api("/v1/oma/skills/upload", {
       method: "POST",
       headers: { "x-api-key": "test-key" },
       body: fd,
@@ -591,7 +591,7 @@ describe("Skills zip upload", () => {
   });
 
   it("rejects non-multipart body", async () => {
-    const res = await api("/v1/skills/upload", {
+    const res = await api("/v1/oma/skills/upload", {
       method: "POST",
       headers: H,
       body: JSON.stringify({ foo: "bar" }),
@@ -601,12 +601,12 @@ describe("Skills zip upload", () => {
 
   it("creates a new version from a zip via /versions/upload", async () => {
     // Seed a skill via the JSON path.
-    const createRes = await post("/v1/skills", makeSkillBody({ display_title: "Versioned" }));
+    const createRes = await post("/v1/oma/skills", makeSkillBody({ display_title: "Versioned" }));
     const skill = (await createRes.json()) as any;
     const before = skill.latest_version;
 
     const bytes = buildSkillZip({ nested: true, name: "my-skill", description: "v2 from zip" });
-    const verRes = await postZip(`/v1/skills/${skill.id}/versions/upload`, bytes);
+    const verRes = await postZip(`/v1/oma/skills/${skill.id}/versions/upload`, bytes);
     expect(verRes.status).toBe(201);
     const ver = (await verRes.json()) as any;
     expect(ver.version).toBeTruthy();
@@ -614,14 +614,14 @@ describe("Skills zip upload", () => {
 
     // Description should refresh from the zip's frontmatter (matches the JSON
     // version endpoint's existing behavior).
-    const refreshed = (await (await get(`/v1/skills/${skill.id}`)).json()) as any;
+    const refreshed = (await (await get(`/v1/oma/skills/${skill.id}`)).json()) as any;
     expect(refreshed.latest_version).toBe(ver.version);
     expect(refreshed.description).toBe("v2 from zip");
   });
 
   it("rejects /versions/upload for unknown skill", async () => {
     const bytes = buildSkillZip({ name: "unused" });
-    const res = await postZip("/v1/skills/skill_nonexistent/versions/upload", bytes);
+    const res = await postZip("/v1/oma/skills/skill_nonexistent/versions/upload", bytes);
     expect(res.status).toBe(404);
   });
 
@@ -635,7 +635,7 @@ describe("Skills zip upload", () => {
       "SKILL.md": strToU8("---\nname: bombed\ndescription: x\n---\n"),
       "huge.bin": huge,
     });
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error?.message ?? body.error).toMatch(/per-file limit/);
@@ -651,7 +651,7 @@ describe("Skills zip upload", () => {
     };
     for (let i = 0; i < 6; i++) files[`blob-${i}.bin`] = blob;
     const bytes = zipSync(files);
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error?.message ?? body.error).toMatch(/zip-bomb defense|aggregate|exceeds/i);
@@ -664,7 +664,7 @@ describe("Skills zip upload", () => {
     };
     for (let i = 0; i < 501; i++) files[`f-${i}.txt`] = strToU8("x");
     const bytes = zipSync(files);
-    const res = await postZip("/v1/skills/upload", bytes);
+    const res = await postZip("/v1/oma/skills/upload", bytes);
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error?.message ?? body.error).toMatch(/too many files/i);

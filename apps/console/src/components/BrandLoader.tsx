@@ -14,9 +14,9 @@
  * firing in unison. animate-pulse alone (uniform) feels artificial.
  */
 const SIZE: Record<"sm" | "md" | "lg", { text: string; gap: string; weight: string }> = {
-  sm: { text: "text-[12px]", gap: "gap-[1px]", weight: "font-medium" },
-  md: { text: "text-[14px]", gap: "gap-[2px]", weight: "font-medium" },
-  lg: { text: "text-[18px] leading-none", gap: "gap-[2px]", weight: "font-medium" },
+  sm: { text: "text-sm", gap: "gap-[1px]", weight: "font-medium" },
+  md: { text: "text-base", gap: "gap-[2px]", weight: "font-medium" },
+  lg: { text: "text-lg leading-none", gap: "gap-[2px]", weight: "font-medium" },
 };
 
 interface BrandLoaderProps {

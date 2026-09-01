@@ -1,37 +1,30 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { DownloadIcon, TrashIcon } from "lucide-react";
-import { useApi, getActiveTenantId } from "../lib/api";
 import { toast } from "sonner";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
-import { useApiQuery, useInfiniteApiQuery } from "../lib/useApiQuery";
+import {
+  useApiQuery,
+  useFilesInfiniteApiQuery,
+} from "../lib/useApiQuery";
 import { PopoverContent } from "@/components/ui/popover";
-import type { FileRecord } from "@open-managed-agents/api-types";
 import type { SessionRecord as Session } from "../types/session";
 import { useI18n } from "../i18n";
-
-interface ListResponse {
-  data: FileRecord[];
-  has_more?: boolean;
-  first_id?: string;
-  last_id?: string;
-}
+import type { BetaFileMetadata as FileRecord } from "@anthropic-ai/sdk/resources/beta/files";
+import { useManagedApi } from "../lib/useManagedApi";
 
 const ALL_SCOPE = "";
 
 export function FilesList() {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const [scopeId, setScopeId] = useState<string>(ALL_SCOPE);
   const [search, setSearch] = useState("");
   const { t } = useI18n();
 
-  // Files endpoint follows the Anthropic Files API shape — `before_id`
-  // for the cursor param and `last_id` (only when `has_more` is true) for
-  // the next-page cursor — instead of OMA's standard `cursor` /
-  // `next_cursor`. useInfiniteApiQuery accepts adapter overrides for both.
+  // Files has its own official SDK pagination shape (`before_id` plus
+  // `has_more/last_id`), isolated from Managed `page/next_page` feeds.
   const filesParams = useMemo(
     () => ({ scope_id: scopeId || undefined }),
     [scopeId],
@@ -43,14 +36,9 @@ export function FilesList() {
     isLoadingMore,
     loadMore,
     refresh: refreshFiles,
-  } = useInfiniteApiQuery<FileRecord>("/v1/files", {
+  } = useFilesInfiniteApiQuery<FileRecord>("/v1/files", {
     limit: 20,
     params: filesParams,
-    cursorParam: "before_id",
-    getNextCursor: (res) => {
-      const r = res as ListResponse;
-      return r.has_more ? r.data[r.data.length - 1]?.id : undefined;
-    },
   });
 
   // Sessions for the Scope chip's option list. One-shot fetch of the
@@ -88,22 +76,12 @@ export function FilesList() {
     return hit?.title?.trim() ? hit.title : scopeId;
   }, [scopeId, sessions]);
 
-  // Direct fetch for binary download — api() always parses JSON, and we need
-  // the raw blob. Mirror its tenant-pin header so downloads honor the active
-  // workspace, not the user's default tenant.
+  // Binary responses use the official Files.download shape. The Managed API
+  // transport supplies the same cookie, beta, and active-tenant negotiation
+  // as JSON requests.
   const download = async (f: FileRecord) => {
     try {
-      const activeTenant = getActiveTenantId();
-      const res = await fetch(`/v1/files/${f.id}/content`, {
-        credentials: "include",
-        headers: activeTenant ? { "x-active-tenant": activeTenant } : {},
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const message = (body as { error?: string }).error || `HTTP ${res.status}`;
-        toast.error(`Download failed: ${message}`);
-        return;
-      }
+      const res = await managedApi.files.download(f.id);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -119,7 +97,7 @@ export function FilesList() {
   const remove = async (f: FileRecord) => {
     if (!confirm(`Delete "${f.filename}"? The R2 object and metadata both go. This cannot be undone.`)) return;
     try {
-      await api(`/v1/files/${f.id}`, { method: "DELETE" });
+      await managedApi.files.delete(f.id);
       // Invalidate every /v1/files query (any scope filter) so the page
       // refetches — useInfiniteApiQuery exposes refresh() which bounces
       // back to page 0. Cheaper than maintaining a local optimistic
@@ -163,11 +141,11 @@ export function FilesList() {
         enableHiding: false,
       },
       {
-        id: "media_type",
-        accessorKey: "media_type",
+        id: "mime_type",
+        accessorKey: "mime_type",
         header: "Type",
         cell: ({ row }) => (
-          <span className="text-fg-muted text-xs">{row.original.media_type}</span>
+          <span className="text-fg-muted text-xs">{row.original.mime_type}</span>
         ),
       },
       {
@@ -182,16 +160,16 @@ export function FilesList() {
       },
       {
         id: "scope",
-        accessorFn: (f) => f.scope_id ?? "",
+        accessorFn: (f) => f.scope?.id ?? "",
         header: "Scope",
         cell: ({ row }) =>
-          row.original.scope_id ? (
+          row.original.scope?.id ? (
             <Link
-              to={`/sessions/${row.original.scope_id}`}
+              to={`/sessions/${row.original.scope.id}`}
               onClick={(e) => e.stopPropagation()}
               className="text-brand hover:underline text-xs font-mono"
             >
-              {row.original.scope_id}
+              {row.original.scope.id}
             </Link>
           ) : (
             <span className="text-fg-subtle text-xs">—</span>
@@ -207,46 +185,8 @@ export function FilesList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const f = row.original;
-          return (
-            <RowActionsMenu
-              label={`Actions for ${f.filename}`}
-              actions={[
-                ...(f.downloadable
-                  ? [
-                      {
-                        label: "Download",
-                        icon: <DownloadIcon className="size-4" />,
-                        onSelect: () => {
-                          void download(f);
-                        },
-                      },
-                    ]
-                  : []),
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: () => {
-                    void remove(f);
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
-    // `download` / `remove` close over `api` and `refreshFiles`, both
-    // stable identities (useCallback in api.ts + useApiQuery.ts) — so
-    // the first-render closures stay correct for the lifetime of the
-    // page, and an empty dep array is the right choice.
+    // Column renderers only consume row data; row actions own mutations.
     [],
   );
 
@@ -282,6 +222,23 @@ export function FilesList() {
       data={filtered}
       loading={loading}
       getRowId={(f) => f.id}
+      rowActions={(file) => [
+        ...(file.downloadable
+          ? [
+              {
+                label: "Download",
+                icon: <DownloadIcon className="size-4" />,
+                onSelect: () => void download(file),
+              },
+            ]
+          : []),
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          onSelect: () => void remove(file),
+        },
+      ]}
       hasMore={hasMore && !search}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}

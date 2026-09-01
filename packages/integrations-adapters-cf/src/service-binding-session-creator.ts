@@ -14,9 +14,9 @@ import type {
 } from "@open-managed-agents/integrations-core";
 
 export interface ServiceBindingSessionCreatorOptions {
-  /** Secret shared with apps/main for the /v1/internal/* path family. */
+  /** Secret shared with apps/main for the /v1/oma/internal/* path family. */
   internalSecret: string;
-  /** Path on the main worker. Defaults to "/v1/internal/sessions". */
+  /** Path on the main worker. Defaults to "/v1/oma/internal/sessions". */
   path?: string;
 }
 
@@ -31,7 +31,7 @@ export class ServiceBindingSessionCreator implements SessionCreator {
     if (!opts.internalSecret) {
       throw new Error("ServiceBindingSessionCreator: internalSecret required");
     }
-    this.path = opts.path ?? "/v1/internal/sessions";
+    this.path = opts.path ?? "/v1/oma/internal/sessions";
     this.secret = opts.internalSecret;
   }
 

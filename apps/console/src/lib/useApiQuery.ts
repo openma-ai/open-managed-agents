@@ -109,9 +109,21 @@ export function useApiQuery<T>(
 // (items, isLoading, hasMore, loadMore, isLoadingMore, refresh).
 // ────────────────────────────────────────────────────────────────────────
 
-interface PageResponse<T> {
+interface ManagedPageResponse<T> {
   data: T[];
-  next_cursor?: string;
+  next_page: string | null;
+}
+
+interface OmaPageResponse<T> {
+  data: T[];
+  next_cursor?: string | null;
+}
+
+interface FilesPageResponse<T> {
+  data: T[];
+  has_more: boolean;
+  first_id: string | null;
+  last_id: string | null;
 }
 
 export interface InfiniteApiQueryOpts<T = unknown> {
@@ -121,26 +133,18 @@ export interface InfiniteApiQueryOpts<T = unknown> {
   params?: Record<string, string | undefined>;
   /** When false, skip the initial fetch. Defaults to true. */
   enabled?: boolean;
-  /** Cursor query param name. Defaults to `cursor` (most OMA endpoints).
-   *  Override for endpoints that follow a different convention — e.g.
-   *  Anthropic Files uses `before_id`. */
-  cursorParam?: string;
-  /** Custom extractor for the next-cursor in the response body. Defaults
-   *  to `res.next_cursor`. Override for endpoints that return it under
-   *  a different key — e.g. Anthropic Files returns `last_id` only when
-   *  `has_more` is true. */
-  getNextCursor?: (res: unknown) => string | undefined;
 }
 
-export function useInfiniteApiQuery<T>(
+function useInfiniteFeedQuery<T, TPage extends { data: T[] }>(
   endpoint: string,
-  opts: InfiniteApiQueryOpts<T> = {},
+  opts: InfiniteApiQueryOpts<T>,
+  contract: {
+    kind: "managed" | "files" | "oma";
+    cursorParam: "page" | "before_id" | "cursor";
+    getNextCursor: (page: TPage) => string | undefined;
+  },
 ) {
   const { api } = useApi();
-  const cursorParam = opts.cursorParam ?? "cursor";
-  const getNextCursor =
-    opts.getNextCursor ??
-    ((res: unknown) => (res as PageResponse<T>).next_cursor);
 
   // JSON.stringify keeps the queryKey stable across inline-object renders.
   // Same trick `useCursorList` used internally for its effect deps; with
@@ -150,22 +154,29 @@ export function useInfiniteApiQuery<T>(
     [opts.params],
   );
 
-  const query = useInfiniteQuery<PageResponse<T>>({
-    queryKey: [endpoint, "infinite", opts.limit ?? null, paramsKey, cursorParam],
+  const query = useInfiniteQuery<TPage>({
+    queryKey: [
+      endpoint,
+      "infinite",
+      contract.kind,
+      opts.limit ?? null,
+      paramsKey,
+    ],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
-      api<PageResponse<T>>(
+      api<TPage>(
         buildUrl(
           endpoint,
           opts.params,
           {
             limit: opts.limit ? String(opts.limit) : undefined,
-            [cursorParam]: typeof pageParam === "string" ? pageParam : undefined,
+            [contract.cursorParam]:
+              typeof pageParam === "string" ? pageParam : undefined,
           },
         ),
         { signal },
       ),
-    getNextPageParam: (lastPage) => getNextCursor(lastPage),
+    getNextPageParam: contract.getNextCursor,
     enabled: opts.enabled ?? true,
     // Same stale-while-revalidate behavior as useApiQuery: when
     // filter chips change `params` (and therefore the queryKey), TQ
@@ -210,6 +221,49 @@ export function useInfiniteApiQuery<T>(
         : String(query.error)
       : null,
   };
+}
+
+/** Infinite feed backed by the Managed Agents SDK PageCursor wire contract:
+ *  request `page`, read `next_page`. OMA cursor aliases are intentionally not
+ *  accepted here, so a standard resource cannot silently drift back to the
+ *  legacy `{cursor,next_cursor}` protocol. */
+export function useInfiniteApiQuery<T>(
+  endpoint: string,
+  opts: InfiniteApiQueryOpts<T> = {},
+) {
+  return useInfiniteFeedQuery<T, ManagedPageResponse<T>>(endpoint, opts, {
+    kind: "managed",
+    cursorParam: "page",
+    getNextCursor: (page) => page.next_page ?? undefined,
+  });
+}
+
+/** Infinite feed for the official Files API, whose SDK contract uses
+ *  `before_id` plus `has_more/last_id` instead of Managed PageCursor. */
+export function useFilesInfiniteApiQuery<T>(
+  endpoint: string,
+  opts: InfiniteApiQueryOpts<T> = {},
+) {
+  return useInfiniteFeedQuery<T, FilesPageResponse<T>>(endpoint, opts, {
+    kind: "files",
+    cursorParam: "before_id",
+    getNextCursor: (page) =>
+      page.has_more ? page.last_id ?? undefined : undefined,
+  });
+}
+
+/** Product resources retain their own cursor transport, but consumers still
+ * receive the same flattened feed contract. Keep this explicit so an OMA
+ * cursor can never leak onto a standard Managed endpoint. */
+export function useOmaInfiniteApiQuery<T>(
+  endpoint: string,
+  opts: InfiniteApiQueryOpts<T> = {},
+) {
+  return useInfiniteFeedQuery<T, OmaPageResponse<T>>(endpoint, opts, {
+    kind: "oma",
+    cursorParam: "cursor",
+    getNextCursor: (page) => page.next_cursor ?? undefined,
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────────

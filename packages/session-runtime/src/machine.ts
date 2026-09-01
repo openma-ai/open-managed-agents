@@ -36,7 +36,7 @@ import type {
 import type { LanguageModel } from "ai";
 import { recoverInterruptedState } from "./recovery";
 import type { OrphanTurn, RuntimeAdapter, TurnId } from "./ports";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import type { SandboxPort } from "@open-managed-agents/sandbox";
 
 /**
  * Pluggable harness — both CF and Node want the same default-loop
@@ -44,11 +44,18 @@ import type { SandboxExecutor } from "@open-managed-agents/sandbox";
  * package's dep graph small (no `@open-managed-agents/agent` dep).
  *
  * The shell wires this with:
- *   buildHarness: () => new DefaultHarness()
+ *   buildHarness: (agent) => resolveHarness(agent.harness)
  *   buildContext: () => HarnessContext  // model + tools + system + ...
  */
 export interface HarnessRunFn {
   (ctx: unknown): Promise<void>;
+}
+
+export type SessionHarnessDisposeReason = "replace" | "shutdown" | "destroy";
+
+export interface SessionHarness {
+  run: HarnessRunFn;
+  dispose?(reason: SessionHarnessDisposeReason): Promise<void>;
 }
 
 export interface SessionMachineDeps {
@@ -61,7 +68,7 @@ export interface SessionMachineDeps {
   /** Per-session sandbox. Constructed by the shell so it can pick the
    *  backend (LocalSubprocess / E2B / Daytona / CloudflareSandbox) and
    *  inject sessionId-scoped paths.  */
-  sandbox: SandboxExecutor;
+  sandbox: SandboxPort;
 
   /** Look up the agent config. CF reads from a snapshot or the agents
    *  store; Node reads from agentsService. */
@@ -70,13 +77,13 @@ export interface SessionMachineDeps {
   /** Bind a memory store into the sandbox. Phase 2 keeps the loop in
    *  the shell to avoid pulling memory-store types into this package;
    *  the shell calls sandbox.mountMemoryStore directly via sandbox. */
-  mountMemoryStores?(opts: { sandbox: SandboxExecutor }): Promise<void>;
+  mountMemoryStores?(opts: { sandbox: SandboxPort }): Promise<void>;
 
   /** Mount /mnt/session/outputs/ into the sandbox. Per-session bound
    *  directory the agent uses to deliver final artefacts; the same path
    *  is exposed by the main worker via GET /v1/sessions/:id/outputs.
    *  Optional — sandboxes / hosts that don't support it skip silently. */
-  mountSessionOutputs?(opts: { sandbox: SandboxExecutor }): Promise<void>;
+  mountSessionOutputs?(opts: { sandbox: SandboxPort }): Promise<void>;
 
   /** Build the LanguageModel for this turn. CF reads env from
    *  bindings; Node from process.env (and optionally a model card).
@@ -86,7 +93,7 @@ export interface SessionMachineDeps {
   /** Build harness tools. The harness package owns the tool list; the
    *  machine doesn't know which tools exist, just hands the result to
    *  the harness. */
-  buildTools(agent: AgentConfig, sandbox: SandboxExecutor): Promise<unknown>;
+  buildTools(agent: AgentConfig, sandbox: SandboxPort): Promise<unknown>;
 
   /** Build the harness instance + context for one turn. The shell does
    *  this so the machine doesn't need a hard dep on
@@ -95,14 +102,18 @@ export interface SessionMachineDeps {
    *  Async because shells often need to warm up state (e.g. read the
    *  event log into the harness's history cache) before harness.run
    *  reads from it. */
-  buildHarness(): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): SessionHarness;
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
-    sandbox: SandboxExecutor;
+    sandbox: SandboxPort;
     tools: unknown;
     model: LanguageModel;
   }): Promise<unknown>;
+
+  /** Flush provider/filesystem state after harness children stop but before
+   * the sandbox resource is destroyed. Hosts wire their checkpoint Port. */
+  beforeSandboxDestroy?(): Promise<void>;
 
   /** Publish a synthetic event to the hub (e.g. session.error,
    *  session.status_idle on recovery). The shell wires this with the
@@ -115,6 +126,7 @@ export interface SessionMachineDeps {
 
 export class SessionStateMachine {
   private activeTurnId: TurnId | null = null;
+  private activeHarness: { key: string; harness: SessionHarness } | null = null;
   private logger: NonNullable<SessionMachineDeps["logger"]>;
 
   constructor(private deps: SessionMachineDeps) {
@@ -176,7 +188,7 @@ export class SessionStateMachine {
         model,
       });
 
-      const harness = this.deps.buildHarness();
+      const harness = await this.resolveHarness(agent);
       await harness.run(ctx);
     } finally {
       this.activeTurnId = null;
@@ -208,11 +220,7 @@ export class SessionStateMachine {
   async destroy(): Promise<void> {
     const turnId = this.activeTurnId;
     this.activeTurnId = null;
-    try {
-      if (this.deps.sandbox.destroy) await this.deps.sandbox.destroy();
-    } catch (err) {
-      this.logger.warn(`sandbox destroy failed: ${(err as Error).message}`);
-    }
+    await this.releaseSandbox("destroy");
     if (turnId) {
       await this.deps.adapter.endTurn(this.deps.sessionId, turnId, "destroyed");
     } else {
@@ -221,7 +229,47 @@ export class SessionStateMachine {
     }
   }
 
+  /** Process/isolate shutdown without changing the durable session state.
+   * Stateful harness children are released before the sandbox resource so
+   * protocol close/cancel can still use the live transport. */
+  async shutdown(): Promise<void> {
+    await this.releaseSandbox("shutdown");
+  }
+
   // ── helpers ─────────────────────────────────────────────────────────
+
+  private async resolveHarness(agent: AgentConfig): Promise<SessionHarness> {
+    const key = `${agent.id}:${agent.version}:${agent.harness ?? "default"}`;
+    if (this.activeHarness?.key === key) return this.activeHarness.harness;
+    await this.disposeHarness("replace");
+    const harness = this.deps.buildHarness(agent);
+    this.activeHarness = { key, harness };
+    return harness;
+  }
+
+  private async disposeHarness(reason: SessionHarnessDisposeReason): Promise<void> {
+    const active = this.activeHarness;
+    this.activeHarness = null;
+    try {
+      await active?.harness.dispose?.(reason);
+    } catch (err) {
+      this.logger.warn(`harness dispose failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async releaseSandbox(reason: "shutdown" | "destroy"): Promise<void> {
+    await this.disposeHarness(reason);
+    try {
+      await this.deps.beforeSandboxDestroy?.();
+    } catch (err) {
+      this.logger.warn(`sandbox checkpoint failed: ${(err as Error).message}`);
+    }
+    try {
+      if (this.deps.sandbox.destroy) await this.deps.sandbox.destroy();
+    } catch (err) {
+      this.logger.warn(`sandbox destroy failed: ${(err as Error).message}`);
+    }
+  }
 
   private async recoverOrphan(o: OrphanTurn): Promise<void> {
     this.logger.warn(

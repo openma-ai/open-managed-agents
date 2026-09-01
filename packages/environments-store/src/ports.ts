@@ -92,7 +92,7 @@ export interface EnvironmentRepo {
     },
   ): Promise<{ items: EnvironmentRow[]; hasMore: boolean }>;
 
-  /** Cheap COUNT(*) for /v1/stats. Index `idx_environments_tenant` covers it. */
+  /** Cheap COUNT(*) for /v1/oma/stats. Index `idx_environments_tenant` covers it. */
   count(tenantId: string, opts: { includeArchived: boolean }): Promise<number>;
 
   update(

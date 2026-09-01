@@ -1,0 +1,17 @@
+{
+  "name": "@open-managed-agents/environment-work-store-sql",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/domain": "workspace:*",
+    "@open-managed-agents/environment-work-store": "workspace:*",
+    "@open-managed-agents/sql-client": "workspace:*"
+  },
+  "devDependencies": { "vitest": "^4.1.3" }
+}

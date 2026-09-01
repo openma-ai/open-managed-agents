@@ -6,7 +6,7 @@ import { useCallback, useRef, useState } from "react";
  * Returns a `{ run, loading }` pair to wire into Button:
  *
  *   const create = useAsyncAction(async () => {
- *     await api("/v1/api_keys", { method: "POST", body: ... });
+ *     await api("/v1/oma/api_keys", { method: "POST", body: ... });
  *   });
  *   <Button onClick={create.run} loading={create.loading} loadingLabel="Creating…">
  *     Create

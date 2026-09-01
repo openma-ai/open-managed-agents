@@ -66,8 +66,8 @@
   // to CfSharedAuthDbProvider when AUTH_DB_01 isn't bound, so signup
   // and routing work without any shard tables.
   "d1_databases": [
-    { "binding": "MAIN_DB",         "database_name": "openma-auth",         "database_id": "<set-by-setup-cf-sh>" },
-    { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations", "database_id": "<set-by-setup-cf-sh>" }
+    { "binding": "MAIN_DB",         "database_name": "openma-auth",         "database_id": "<set-by-setup-cf-sh>", "migrations_dir": "migrations" },
+    { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations", "database_id": "<set-by-setup-cf-sh>", "migrations_dir": "migrations-integrations" }
   ],
 
   "durable_objects": {
@@ -210,13 +210,13 @@
       // buildCfTenantDbProvider() routes to MetaTableTenantDbProvider
       // when AUTH_DB_01 is present.
       "d1_databases": [
-        { "binding": "MAIN_DB",         "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-        { "binding": "ROUTER_DB",       "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6" },
-        { "binding": "AUTH_DB_00",      "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967" },
-        { "binding": "AUTH_DB_01",      "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175" },
-        { "binding": "AUTH_DB_02",      "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75" },
-        { "binding": "AUTH_DB_03",      "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f" },
-        { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations",  "database_id": "36f67512-b0d7-4300-9d57-f265cd9d3075" }
+        { "binding": "MAIN_DB",         "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967", "migrations_dir": "migrations" },
+        { "binding": "ROUTER_DB",       "database_name": "openma-router",        "database_id": "6ddad512-7976-4912-8003-7746ba1e4cb6", "migrations_dir": "migrations-router" },
+        { "binding": "AUTH_DB_00",      "database_name": "openma-auth",          "database_id": "dbb5f01c-7016-4157-945d-f8ff9fbda967", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_01",      "database_name": "openma-auth-shard-01", "database_id": "37a3138c-8d1e-4258-8a0d-e0da511b0175", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_02",      "database_name": "openma-auth-shard-02", "database_id": "254c56dc-2a99-4266-87ae-9ff46355eb75", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_03",      "database_name": "openma-auth-shard-03", "database_id": "a4f72551-7ce7-4da3-a33e-f4abb00bb86f", "migrations_dir": "migrations" },
+        { "binding": "INTEGRATIONS_DB", "database_name": "openma-integrations",  "database_id": "36f67512-b0d7-4300-9d57-f265cd9d3075", "migrations_dir": "migrations-integrations" }
       ],
       "durable_objects": {
         "bindings": [
@@ -280,12 +280,12 @@
         { "binding": "CONFIG_KV", "id": "f91ddab8abe64941bd3ef398b0c187a7" }
       ],
       "d1_databases": [
-        { "binding": "MAIN_DB",    "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6" },
-        { "binding": "ROUTER_DB",  "database_name": "openma-router-staging",        "database_id": "c238a338-9b6e-40c5-aaaa-48d4fe6dc63d" },
-        { "binding": "AUTH_DB_00", "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6" },
-        { "binding": "AUTH_DB_01", "database_name": "openma-auth-shard-01-staging", "database_id": "fe6a34d1-cd8a-48a1-bff1-29032026d006" },
-        { "binding": "AUTH_DB_02", "database_name": "openma-auth-shard-02-staging", "database_id": "8636a018-8ac6-48c2-ae95-2f70919c8aab" },
-        { "binding": "AUTH_DB_03", "database_name": "openma-auth-shard-03-staging", "database_id": "8ce8f17d-7527-4a5a-b097-ce73251be55a" }
+        { "binding": "MAIN_DB",    "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6", "migrations_dir": "migrations" },
+        { "binding": "ROUTER_DB",  "database_name": "openma-router-staging",        "database_id": "c238a338-9b6e-40c5-aaaa-48d4fe6dc63d", "migrations_dir": "migrations-router" },
+        { "binding": "AUTH_DB_00", "database_name": "openma-auth-staging",          "database_id": "aff5dbb7-36f9-46b7-b82f-4513e5603ac6", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_01", "database_name": "openma-auth-shard-01-staging", "database_id": "fe6a34d1-cd8a-48a1-bff1-29032026d006", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_02", "database_name": "openma-auth-shard-02-staging", "database_id": "8636a018-8ac6-48c2-ae95-2f70919c8aab", "migrations_dir": "migrations" },
+        { "binding": "AUTH_DB_03", "database_name": "openma-auth-shard-03-staging", "database_id": "8ce8f17d-7527-4a5a-b097-ce73251be55a", "migrations_dir": "migrations" }
       ],
       "r2_buckets": [
         { "binding": "FILES_BUCKET", "bucket_name": "managed-agents-files" },

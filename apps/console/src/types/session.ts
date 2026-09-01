@@ -1,19 +1,8 @@
+import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
+
 /**
- * Console-side Session list/detail row. Differs from
- * `@open-managed-agents/api-types`' `SessionMeta` (wire-format) — the
- * list endpoint returns `agent: {id, version}` rather than `agent_id`
- * + `agent_version`, and `title` may be null.
- *
- * Lifted out of SessionsList.tsx so SessionDetail and other consumers
- * can share the shape instead of redefining their own.
+ * The Console consumes the Managed Agents session resource verbatim. Product
+ * presentation concerns (for example, flattening paged results into a feed)
+ * belong in query/view adapters, not in a second wire-model definition.
  */
-export interface SessionRecord {
-  id: string;
-  title?: string | null;
-  agent: { id: string; version: number };
-  environment_id: string;
-  status?: string;
-  created_at: string;
-  archived_at?: string;
-  metadata?: Record<string, unknown>;
-}
+export type SessionRecord = BetaManagedAgentsSession;

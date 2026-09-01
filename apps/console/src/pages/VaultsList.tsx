@@ -1,18 +1,18 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArchiveIcon, TrashIcon } from "lucide-react";
-import { useApi } from "../lib/api";
+import type { BetaManagedAgentsVault as Vault } from "@anthropic-ai/sdk/resources/beta/vaults/vaults";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useI18n } from "../i18n";
-
-interface Vault { id: string; name: string; created_at: string; archived_at?: string; }
 
 type StatusValue = "any" | "active" | "archived";
 
@@ -23,7 +23,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 ];
 
 export function VaultsList() {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const [showCreateVault, setShowCreateVault] = useState(false);
@@ -37,15 +37,9 @@ export function VaultsList() {
 
   const vaultParams = useMemo(
     () => ({
-      status,
-      ...(created.after !== undefined
-        ? { created_after: new Date(created.after).toISOString() }
-        : {}),
-      ...(created.before !== undefined
-        ? { created_before: new Date(created.before).toISOString() }
-        : {}),
+      ...(status !== "active" ? { include_archived: "true" } : {}),
     }),
-    [status, created.after, created.before],
+    [status],
   );
 
   const {
@@ -56,9 +50,21 @@ export function VaultsList() {
     loadMore,
     refresh: load,
   } = useInfiniteApiQuery<Vault>("/v1/vaults", { limit: 20, params: vaultParams });
+  const visibleVaults = useMemo(
+    () =>
+      vaults.filter((vault) => {
+        if (status === "active" && vault.archived_at) return false;
+        if (status === "archived" && !vault.archived_at) return false;
+        const createdAt = Date.parse(vault.created_at);
+        if (created.after !== undefined && createdAt < created.after) return false;
+        if (created.before !== undefined && createdAt > created.before) return false;
+        return true;
+      }),
+    [created.after, created.before, status, vaults],
+  );
 
   const createVault = async () => {
-    await api("/v1/vaults", { method: "POST", body: JSON.stringify({ name: vaultName }) });
+    await managedApi.vaults.create({ display_name: vaultName });
     setShowCreateVault(false); setVaultName(""); load();
   };
 
@@ -72,9 +78,9 @@ export function VaultsList() {
     () => [
       {
         id: "name",
-        accessorKey: "name",
+        accessorKey: "display_name",
         header: "Name",
-        cell: ({ row }) => <span className="font-medium text-fg">{row.original.name}</span>,
+        cell: ({ row }) => <span className="font-medium text-fg">{row.original.display_name}</span>,
         enableHiding: false,
       },
       {
@@ -114,52 +120,8 @@ export function VaultsList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const v = row.original;
-          const archived = !!v.archived_at;
-          return (
-            <RowActionsMenu
-              label={`Actions for ${v.name}`}
-              actions={[
-                {
-                  label: "Archive",
-                  icon: <ArchiveIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    if (!confirm(`Archive vault ${v.name}? All its credentials will also be archived. Archive is one-way.`)) return;
-                    try {
-                      await api(`/v1/vaults/${v.id}/archive`, {
-                        method: "POST",
-                        body: "{}",
-                      });
-                      load();
-                    } catch {}
-                  },
-                },
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`Delete vault ${v.name}? This can't be undone.`)) return;
-                    try {
-                      await api(`/v1/vaults/${v.id}`, { method: "DELETE" });
-                      load();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
-    [api, load],
+    [load],
   );
 
   // Active-filter chip display — null at the default so the chip reads
@@ -199,10 +161,36 @@ export function VaultsList() {
       createLabel={t.vaults.newVault}
       onCreate={() => setShowCreateVault(true)}
       filters={filters}
-      data={vaults}
+      data={visibleVaults}
       loading={loading}
       getRowId={(v) => v.id}
       onRowClick={(v) => nav(`/vaults/${v.id}`)}
+      rowActions={(vault) => [
+        {
+          label: "Archive",
+          icon: <ArchiveIcon className="size-4" />,
+          disabled: Boolean(vault.archived_at),
+          onSelect: async () => {
+            if (!confirm(`Archive vault ${vault.display_name}? All its credentials will also be archived. Archive is one-way.`)) return;
+            try {
+              await managedApi.vaults.archive(vault.id);
+              load();
+            } catch {}
+          },
+        },
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          onSelect: async () => {
+            if (!confirm(`Delete vault ${vault.display_name}? This can't be undone.`)) return;
+            try {
+              await managedApi.vaults.delete(vault.id);
+              load();
+            } catch {}
+          },
+        },
+      ]}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
@@ -227,8 +215,8 @@ export function VaultsList() {
       >
         <div className="space-y-4">
           <div>
-            <label htmlFor="vault-name" className="text-sm text-fg-muted block mb-1">Name</label>
-            <input
+            <Label htmlFor="vault-name" className="text-sm text-fg-muted block mb-1">Name</Label>
+            <Input
               id="vault-name"
               value={vaultName}
               onChange={(e) => setVaultName(e.target.value.slice(0, 30))}

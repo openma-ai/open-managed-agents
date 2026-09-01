@@ -41,7 +41,7 @@ export interface ApiKeyStorage {
     prefix: string;
     record: ApiKeyRecord;
   }): Promise<void>;
-  /** List the tenant's keys for /v1/api_keys GET — never include the hash
+  /** List the tenant's keys for /v1/oma/api_keys GET — never include the hash
    *  itself, just the meta. */
   listByTenant(tenantId: string): Promise<ApiKeyMeta[]>;
   /** Find by hash — used by auth-middleware on every x-api-key request. */

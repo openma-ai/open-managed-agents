@@ -14,6 +14,8 @@ import { currentProfile } from "./bridge/lib/platform.js";
 
 // ─── Config ───
 
+const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
+
 interface Config {
   baseUrl: string;
   apiKey: string;
@@ -226,6 +228,7 @@ async function apiFetch<T = unknown>(config: Config, path: string, init?: Reques
     ...init,
     headers: {
       "x-api-key": config.apiKey,
+      "anthropic-beta": MANAGED_AGENTS_BETA,
       "content-type": "application/json",
       // Identify as a browser-compatible client. Node's default `node` UA
       // gets rejected by Cloudflare's bot fight rules on api.openma.dev with
@@ -265,6 +268,7 @@ async function rawStream(
     ...init,
     headers: {
       "x-api-key": config.apiKey,
+      "anthropic-beta": MANAGED_AGENTS_BETA,
       "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.dev)",
       ...init?.headers,
     },
@@ -553,14 +557,14 @@ async function authLogin(baseUrl: string, requestedTenant?: string): Promise<voi
 
   // Use the first minted token to fetch full identity, so the credentials
   // file carries useful display fields for `oma whoami`. All tokens share
-  // the same user; we only need one /v1/me call.
+  // the same user; we only need one /v1/oma/me call.
   const firstToken = result.tokens[0];
   const tempConfig: Config = { baseUrl, apiKey: firstToken.token, json: false, source: "stored" };
   const me = await apiFetch<{
     user: { id: string; email: string; name: string | null } | null;
     tenant: { id: string; name: string };
     tenants: Array<{ id: string; name: string; role: string }>;
-  }>(tempConfig, "/v1/me");
+  }>(tempConfig, "/v1/oma/me");
 
   // Merge with existing credentials so previously-authorized tenants
   // (different login session, different machine sync, etc.) keep their
@@ -572,7 +576,7 @@ async function authLogin(baseUrl: string, requestedTenant?: string): Promise<voi
   const now = new Date().toISOString();
   for (const t of result.tokens) {
     // Look up canonical name + role from the membership list returned by
-    // /v1/me — the callback's tenant_name was a snapshot at click time.
+    // /v1/oma/me — the callback's tenant_name was a snapshot at click time.
     const membership = me.tenants.find((m) => m.id === t.tenant_id);
     tenantsMap[t.tenant_id] = {
       name: membership?.name ?? t.tenant_name ?? "",
@@ -660,7 +664,7 @@ const commands: Cmd[] = [
   {
     group: "Auth", match: ["auth", "login"],
     usage: "oma auth login [--base-url <url>] [--tenant <id>]", desc: "Open browser to authenticate; --tenant pre-picks a workspace",
-    http: "POST   /v1/me/cli-tokens (browser handoff via /cli/login)",
+    http: "POST   /v1/oma/me/cli-tokens (browser handoff via /cli/login)",
     async run(_config, args) {
       const baseUrl = (flag(args, "--base-url") ?? process.env.OMA_BASE_URL ?? "https://openma.dev").replace(/\/+$/, "");
       const tenant = flag(args, "--tenant");
@@ -679,14 +683,14 @@ const commands: Cmd[] = [
   {
     group: "Auth", match: ["whoami"],
     usage: "oma whoami", desc: "Show current user, active tenant, and base URL",
-    http: "GET    /v1/me",
+    http: "GET    /v1/oma/me",
     async run(config) {
       try {
         const me = await apiFetch<{
           user: { id: string; email: string; name: string | null } | null;
           tenant: { id: string; name: string };
           tenants: Array<{ id: string; name: string; role: string }>;
-        }>(config, "/v1/me");
+        }>(config, "/v1/oma/me");
         if (config.json) { console.log(JSON.stringify({ ...me, base_url: config.baseUrl, source: config.source }, null, 2)); return; }
         console.log(`Base URL : ${config.baseUrl}`);
         console.log(`Source   : ${config.source === "env" ? "OMA_API_KEY env var" : "stored credentials"}`);
@@ -712,9 +716,9 @@ const commands: Cmd[] = [
   {
     group: "Auth", match: ["auth", "tenant", "ls"],
     usage: "oma auth tenant ls", desc: "List tenants the current user belongs to",
-    http: "GET    /v1/me/tenants",
+    http: "GET    /v1/oma/me/tenants",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; name: string; role: string }> }>(config, "/v1/me/tenants");
+      const { data } = await apiFetch<{ data: Array<{ id: string; name: string; role: string }> }>(config, "/v1/oma/me/tenants");
       if (!data.length) { console.log("No tenants on this account."); return; }
       const stored = readCredentials();
       const active = stored?.active_tenant_id;
@@ -735,7 +739,7 @@ const commands: Cmd[] = [
   {
     group: "Auth", match: ["auth", "tenant", "use"], needsArg: true,
     usage: "oma auth tenant use <tenant-id>", desc: "Switch active tenant; if not yet authenticated for it, opens browser to mint",
-    http: "(local file update — or POST /v1/me/cli-tokens via browser if no cached token)",
+    http: "(local file update — or POST /v1/oma/me/cli-tokens via browser if no cached token)",
     async run(_config, args) {
       const tenantId = args[0];
       if (!tenantId) { console.error("Usage: oma auth tenant use <tenant-id>"); process.exit(1); }
@@ -809,9 +813,12 @@ const commands: Cmd[] = [
   },
   {
     group: "Agents", match: ["agents", "delete"], needsArg: true,
-    usage: "oma agents delete <id>", desc: "Delete agent",
-    http: "DELETE /v1/agents/:id",
-    async run(config, args) { await apiFetch(config, `/v1/agents/${args[0]}`, { method: "DELETE" }); console.log(`Agent deleted: ${args[0]}`); },
+    usage: "oma agents delete <id>", desc: "Archive agent",
+    http: "POST   /v1/agents/:id/archive",
+    async run(config, args) {
+      await apiFetch(config, `/v1/agents/${args[0]}/archive`, { method: "POST" });
+      console.log(`Agent archived: ${args[0]}`);
+    },
   },
 
   // Runtimes — user-registered local machines running `oma bridge daemon`.
@@ -819,12 +826,12 @@ const commands: Cmd[] = [
   {
     group: "Runtimes", match: ["runtime", "list"],
     usage: "oma runtime list", desc: "List registered local runtimes",
-    http: "GET    /v1/runtimes",
+    http: "GET    /v1/oma/runtimes",
     async run(config) {
       const { runtimes } = await apiFetch<{ runtimes: Array<{
         id: string; hostname: string; os: string; status: string;
         version: string; agents: Array<{ id: string }>; last_heartbeat: number | null;
-      }> }>(config, "/v1/runtimes");
+      }> }>(config, "/v1/oma/runtimes");
       if (config.json) { console.log(JSON.stringify(runtimes, null, 2)); return; }
       if (!runtimes.length) {
         console.log("No runtimes. Register one with `oma bridge setup` on the target machine.");
@@ -847,9 +854,9 @@ const commands: Cmd[] = [
   {
     group: "Runtimes", match: ["runtime", "rm"], needsArg: true,
     usage: "oma runtime rm <id>", desc: "Revoke a runtime + all its tokens",
-    http: "DELETE /v1/runtimes/:id",
+    http: "DELETE /v1/oma/runtimes/:id",
     async run(config, args) {
-      await apiFetch(config, `/v1/runtimes/${args[0]}`, { method: "DELETE" });
+      await apiFetch(config, `/v1/oma/runtimes/${args[0]}`, { method: "DELETE" });
       console.log(`Runtime revoked: ${args[0]}`);
       console.log("The daemon will stop reconnecting after a few backoff cycles.");
     },
@@ -861,9 +868,15 @@ const commands: Cmd[] = [
     usage: "oma sessions list", desc: "List sessions",
     http: "GET    /v1/sessions?agent_id=X&limit=N",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; title: string; agent_id: string; status: string; created_at: string }> }>(config, "/v1/sessions?limit=20");
+      const { data } = await apiFetch<{ data: Array<{
+        id: string;
+        title: string;
+        agent: { type: "agent"; id: string; version: number };
+        status: string;
+        created_at: string;
+      }> }>(config, "/v1/sessions?limit=20");
       if (!data.length) { console.log("No sessions."); return; }
-      table([["TITLE", "ID", "STATUS", "AGENT", "CREATED"], ...data.map(s => [s.title || "Untitled", s.id, s.status || "idle", s.agent_id, new Date(s.created_at).toLocaleDateString()])]);
+      table([["TITLE", "ID", "STATUS", "AGENT", "CREATED"], ...data.map(s => [s.title || "Untitled", s.id, s.status || "idle", s.agent.id, new Date(s.created_at).toLocaleDateString()])]);
     },
   },
   {
@@ -873,7 +886,15 @@ const commands: Cmd[] = [
     async run(config, args) {
       const agentId = flag(args, "--agent"); const envId = flag(args, "--env"); const title = flag(args, "--title") || "";
       if (!agentId || !envId) { console.error("Usage: oma sessions create --agent <id> --env <id> [--title <text>]"); process.exit(1); }
-      const session = await apiFetch<{ id: string }>(config, "/v1/sessions", { method: "POST", body: JSON.stringify({ agent: agentId, environment_id: envId, title }) });
+      const agent = await apiFetch<{ id: string; version: number }>(config, `/v1/agents/${agentId}`);
+      const session = await apiFetch<{ id: string }>(config, "/v1/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          agent: { type: "agent", id: agent.id, version: agent.version },
+          environment_id: envId,
+          title,
+        }),
+      });
       console.log(`Session created: ${session.id}`);
     },
   },
@@ -943,9 +964,9 @@ const commands: Cmd[] = [
   {
     group: "Model Cards", match: ["models", "list"],
     usage: "oma models list", desc: "List model cards",
-    http: "GET    /v1/model_cards",
+    http: "GET    /v1/oma/model_cards",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; model_id: string; model: string; provider: string; api_key_preview: string; is_default: boolean }> }>(config, "/v1/model_cards");
+      const { data } = await apiFetch<{ data: Array<{ id: string; model_id: string; model: string; provider: string; api_key_preview: string; is_default: boolean }> }>(config, "/v1/oma/model_cards");
       if (!data.length) { console.log("No model cards. Create one with: oma models create"); return; }
       table([["MODEL_ID", "PROVIDER", "WIRE MODEL", "KEY", "DEFAULT"], ...data.map(c => [c.model_id, c.provider, c.model === c.model_id ? "(same)" : c.model, `****${c.api_key_preview || ""}`, c.is_default ? "yes" : ""])]);
     },
@@ -953,11 +974,11 @@ const commands: Cmd[] = [
   {
     group: "Model Cards", match: ["models", "create"],
     usage: "oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider <p>]", desc: "Create model card",
-    http: "POST   /v1/model_cards {model_id, provider, model?, api_key, base_url?, is_default?}",
+    http: "POST   /v1/oma/model_cards {model_id, provider, model?, api_key, base_url?, is_default?}",
     async run(config, args) {
       const modelId = flag(args, "--model-id"); const provider = flag(args, "--provider") || "ant"; const model = flag(args, "--model"); const apiKey = flag(args, "--api-key"); const baseUrl = flag(args, "--base-url");
       if (!modelId || !apiKey) { console.error("Usage: oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider ant|oai|ant-compatible|oai-compatible] [--base-url <url>]"); process.exit(1); }
-      const card = await apiFetch<{ id: string; model_id: string }>(config, "/v1/model_cards", { method: "POST", body: JSON.stringify({ model_id: modelId, provider, model, api_key: apiKey, base_url: baseUrl }) });
+      const card = await apiFetch<{ id: string; model_id: string }>(config, "/v1/oma/model_cards", { method: "POST", body: JSON.stringify({ model_id: modelId, provider, model, api_key: apiKey, base_url: baseUrl }) });
       console.log(`Model card created: ${card.model_id} (${card.id})`);
     },
   },
@@ -966,9 +987,9 @@ const commands: Cmd[] = [
   {
     group: "API Keys", match: ["keys", "list"],
     usage: "oma keys list", desc: "List API keys",
-    http: "GET    /v1/api_keys",
+    http: "GET    /v1/oma/api_keys",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; name: string; prefix: string; created_at: string }> }>(config, "/v1/api_keys");
+      const { data } = await apiFetch<{ data: Array<{ id: string; name: string; prefix: string; created_at: string }> }>(config, "/v1/oma/api_keys");
       if (!data.length) { console.log("No API keys. Create one with: oma keys create"); return; }
       table([["NAME", "ID", "PREFIX", "CREATED"], ...data.map(k => [k.name, k.id, k.prefix + "...", new Date(k.created_at).toLocaleDateString()])]);
     },
@@ -976,17 +997,17 @@ const commands: Cmd[] = [
   {
     group: "API Keys", match: ["keys", "create"],
     usage: "oma keys create [name]", desc: "Create API key",
-    http: "POST   /v1/api_keys {name?} — raw key returned once",
+    http: "POST   /v1/oma/api_keys {name?} — raw key returned once",
     async run(config, args) {
-      const key = await apiFetch<{ id: string; key: string; name: string }>(config, "/v1/api_keys", { method: "POST", body: JSON.stringify({ name: args.join(" ") || "CLI key" }) });
+      const key = await apiFetch<{ id: string; key: string; name: string }>(config, "/v1/oma/api_keys", { method: "POST", body: JSON.stringify({ name: args.join(" ") || "CLI key" }) });
       console.log(`API key created: ${key.name}\n\n  ${key.key}\n\nSave this key — it won't be shown again.`);
     },
   },
   {
     group: "API Keys", match: ["keys", "revoke"], needsArg: true,
     usage: "oma keys revoke <id>", desc: "Revoke API key",
-    http: "DELETE /v1/api_keys/:id",
-    async run(config, args) { await apiFetch(config, `/v1/api_keys/${args[0]}`, { method: "DELETE" }); console.log(`API key revoked: ${args[0]}`); },
+    http: "DELETE /v1/oma/api_keys/:id",
+    async run(config, args) { await apiFetch(config, `/v1/oma/api_keys/${args[0]}`, { method: "DELETE" }); console.log(`API key revoked: ${args[0]}`); },
   },
 
   // Vaults & Credentials
@@ -1045,10 +1066,10 @@ const commands: Cmd[] = [
   {
     group: "Skills", match: ["skills", "install"], needsArg: true,
     usage: "oma skills install <slug>", desc: "Install from ClawHub",
-    http: "POST   /v1/clawhub/install {slug}",
+    http: "POST   /v1/oma/clawhub/install {slug}",
     async run(config, args) {
       console.log(`Installing ${args[0]} from ClawHub...`);
-      const skill = await apiFetch<{ id: string; display_title: string }>(config, "/v1/clawhub/install", { method: "POST", body: JSON.stringify({ slug: args[0] }) });
+      const skill = await apiFetch<{ id: string; display_title: string }>(config, "/v1/oma/clawhub/install", { method: "POST", body: JSON.stringify({ slug: args[0] }) });
       console.log(`Installed: ${skill.display_title} (${skill.id})`);
     },
   },
@@ -1057,7 +1078,7 @@ const commands: Cmd[] = [
   {
     group: "MCP Servers", match: ["connect"], needsArg: true,
     usage: "oma connect <server|url> --vault <id>", desc: "Connect via OAuth",
-    http: "GET    /v1/oauth/authorize?mcp_server_url=X&vault_id=Y (redirect)",
+    http: "GET    /v1/oma/oauth/authorize?mcp_server_url=X&vault_id=Y (redirect)",
     async run(config, args) {
       const vaultId = flag(args, "--vault");
       if (!vaultId) { console.error("Usage: oma connect <server> --vault <vault-id>"); process.exit(1); }
@@ -1069,9 +1090,9 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "list"],
     usage: "oma linear list", desc: "List connected Linear workspaces",
-    http: "GET    /v1/integrations/linear/installations",
+    http: "GET    /v1/oma/integrations/linear/installations",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; install_kind: string; created_at: number }> }>(config, "/v1/integrations/linear/installations");
+      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; install_kind: string; created_at: number }> }>(config, "/v1/oma/integrations/linear/installations");
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No Linear workspaces connected. Publish an agent with: oma linear publish <agent-id> --env <env-id>"); return; }
       table([["WORKSPACE", "INSTALLATION ID", "KIND", "CREATED"], ...data.map(i => [i.workspace_name, i.id, i.install_kind, new Date(i.created_at).toLocaleDateString()])]);
@@ -1080,9 +1101,9 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "pubs"], needsArg: true,
     usage: "oma linear pubs <installation-id>", desc: "List agents published to a workspace",
-    http: "GET    /v1/integrations/linear/installations/:id/publications",
+    http: "GET    /v1/oma/integrations/linear/installations/:id/publications",
     async run(config, args) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/integrations/linear/installations/${args[0]}/publications`);
+      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/oma/integrations/linear/installations/${args[0]}/publications`);
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No publications. Publish with: oma linear publish <agent-id> --env <env-id>"); return; }
       table([["PERSONA", "PUBLICATION ID", "AGENT", "STATUS", "CAPS"], ...data.map(p => [p.persona.name, p.id, p.agent_id, p.status, capsPreview(p.capabilities)])]);
@@ -1091,9 +1112,9 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "get"], needsArg: true,
     usage: "oma linear get <publication-id>", desc: "Show one publication",
-    http: "GET    /v1/integrations/linear/publications/:id",
+    http: "GET    /v1/oma/integrations/linear/publications/:id",
     async run(config, args) {
-      const p = await apiFetch<any>(config, `/v1/integrations/linear/publications/${args[0]}`);
+      const p = await apiFetch<any>(config, `/v1/oma/integrations/linear/publications/${args[0]}`);
       if (config.json) { console.log(JSON.stringify(p, null, 2)); return; }
       console.log(`Persona:        ${p.persona.name}\nID:             ${p.id}\nAgent:          ${p.agent_id}\nEnvironment:    ${p.environment_id}\nInstallation:   ${p.installation_id}\nMode:           ${p.mode}\nStatus:         ${p.status}\nGranularity:    ${p.session_granularity}\nCapabilities:   ${p.capabilities.join(", ")}`);
     },
@@ -1101,7 +1122,7 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "publish"], needsArg: true,
     usage: "oma linear publish <agent-id> --env <env-id> [--persona <name>] [--avatar <url>]", desc: "Step 1: register agent → returns Linear App config",
-    http: "POST   /v1/integrations/linear/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
+    http: "POST   /v1/oma/integrations/linear/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
     async run(config, args) {
       const agentId = args[0];
       const envId = flag(args, "--env");
@@ -1116,7 +1137,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<{ formToken: string; suggestedAppName: string; callbackUrl: string; webhookUrl: string }>(
         config,
-        "/v1/integrations/linear/start-a1",
+        "/v1/oma/integrations/linear/start-a1",
         { method: "POST", body: JSON.stringify({ agentId, environmentId: envId, personaName, personaAvatarUrl: avatar, returnUrl: `${config.baseUrl}/integrations/linear` }) },
       );
       if (config.json) { console.log(JSON.stringify(r, null, 2)); return; }
@@ -1150,7 +1171,7 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "submit"], needsArg: true,
     usage: "oma linear submit <form-token> --client-id <id> --client-secret <secret> --webhook-secret <lin_wh_…>", desc: "Step 2: validate creds → returns OAuth install URL",
-    http: "POST   /v1/integrations/linear/credentials {formToken, clientId, clientSecret, webhookSecret}",
+    http: "POST   /v1/oma/integrations/linear/credentials {formToken, clientId, clientSecret, webhookSecret}",
     async run(config, args) {
       const formToken = args[0];
       const clientId = flag(args, "--client-id");
@@ -1165,7 +1186,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<{ url: string; appId: string; callbackUrl: string; webhookUrl: string }>(
         config,
-        "/v1/integrations/linear/credentials",
+        "/v1/oma/integrations/linear/credentials",
         { method: "POST", body: JSON.stringify({ formToken, clientId, clientSecret, webhookSecret }) },
       ).catch((err: Error) => {
         // Server now returns {"error":"form_token_invalid", details, remediation}
@@ -1187,11 +1208,11 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "handoff"], needsArg: true,
     usage: "oma linear handoff <form-token>", desc: "Step 2 alt: 7-day shareable URL for an admin",
-    http: "POST   /v1/integrations/linear/handoff-link {formToken}",
+    http: "POST   /v1/oma/integrations/linear/handoff-link {formToken}",
     async run(config, args) {
       const r = await apiFetch<{ url: string; expiresInDays: number }>(
         config,
-        "/v1/integrations/linear/handoff-link",
+        "/v1/oma/integrations/linear/handoff-link",
         { method: "POST", body: JSON.stringify({ formToken: args[0] }) },
       ).catch((err: Error) => {
         if (/form_token_invalid|JwtSigner\.verify/i.test(err.message)) {
@@ -1207,7 +1228,7 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "update"], needsArg: true,
     usage: "oma linear update <publication-id> [--persona <name>] [--avatar <url>] [--caps <a,b,c>]", desc: "Update persona / capabilities of a publication",
-    http: "PATCH  /v1/integrations/linear/publications/:id {persona?, capabilities?}",
+    http: "PATCH  /v1/oma/integrations/linear/publications/:id {persona?, capabilities?}",
     async run(config, args) {
       const id = args[0];
       const personaName = flag(args, "--persona");
@@ -1228,7 +1249,7 @@ const commands: Cmd[] = [
         console.error("Nothing to update. Pass at least --persona, --avatar, or --caps.");
         process.exit(1);
       }
-      const updated = await apiFetch<any>(config, `/v1/integrations/linear/publications/${id}`, {
+      const updated = await apiFetch<any>(config, `/v1/oma/integrations/linear/publications/${id}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
       });
@@ -1239,10 +1260,10 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "unpublish"], needsArg: true,
     usage: "oma linear unpublish <publication-id>", desc: "Mark a publication unpublished",
-    http: "DELETE /v1/integrations/linear/publications/:id",
+    http: "DELETE /v1/oma/integrations/linear/publications/:id",
     async run(config, args) {
       try {
-        await apiFetch(config, `/v1/integrations/linear/publications/${args[0]}`, { method: "DELETE" });
+        await apiFetch(config, `/v1/oma/integrations/linear/publications/${args[0]}`, { method: "DELETE" });
       } catch (err: any) {
         if (/^404 /.test(err.message)) {
           console.error(`No publication with id ${args[0]}.`);
@@ -1258,7 +1279,7 @@ const commands: Cmd[] = [
     group: "Linear", match: ["linear", "install-pat"], needsArg: false,
     usage: "oma linear install-pat --pat <token> --agent <id> --env <id> [--persona <name>]",
     desc: "Install Linear via Personal API Key (Symphony-equivalent — no OAuth dance)",
-    http: "POST   /v1/integrations/linear/personal-token {agentId, environmentId, personaName, patToken}",
+    http: "POST   /v1/oma/integrations/linear/personal-token {agentId, environmentId, personaName, patToken}",
     async run(config, args) {
       const pat = flag(args, "--pat") ?? process.env.LINEAR_API_KEY ?? "";
       const agentId = flag(args, "--agent") ?? "";
@@ -1271,7 +1292,7 @@ const commands: Cmd[] = [
       }
       const result = await apiFetch<{ publicationId: string }>(
         config,
-        "/v1/integrations/linear/personal-token",
+        "/v1/oma/integrations/linear/personal-token",
         {
           method: "POST",
           body: JSON.stringify({
@@ -1292,11 +1313,11 @@ const commands: Cmd[] = [
   {
     group: "Linear", match: ["linear", "rules", "list"], needsArg: true,
     usage: "oma linear rules list <publication-id>", desc: "List dispatch rules for a publication",
-    http: "GET    /v1/integrations/linear/publications/:id/dispatch-rules",
+    http: "GET    /v1/oma/integrations/linear/publications/:id/dispatch-rules",
     async run(config, args) {
       const { rules } = await apiFetch<{ rules: Array<any> }>(
         config,
-        `/v1/integrations/linear/publications/${args[0]}/dispatch-rules`,
+        `/v1/oma/integrations/linear/publications/${args[0]}/dispatch-rules`,
       );
       if (config.json) { console.log(JSON.stringify(rules, null, 2)); return; }
       if (!rules.length) { console.log("No rules. Create with: oma linear rules create <pub-id> --label <name>"); return; }
@@ -1317,7 +1338,7 @@ const commands: Cmd[] = [
     group: "Linear", match: ["linear", "rules", "create"], needsArg: true,
     usage: "oma linear rules create <publication-id> [--name <s>] [--label <s>] [--states <Todo,...>] [--project <id>] [--max <n>] [--poll <s>]",
     desc: "Create a dispatch rule. At least one of --label, --states, --project required.",
-    http: "POST   /v1/integrations/linear/publications/:id/dispatch-rules",
+    http: "POST   /v1/oma/integrations/linear/publications/:id/dispatch-rules",
     async run(config, args) {
       const pubId = args[0];
       const name = flag(args, "--name") || "Auto-pickup";
@@ -1333,7 +1354,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<any>(
         config,
-        `/v1/integrations/linear/publications/${pubId}/dispatch-rules`,
+        `/v1/oma/integrations/linear/publications/${pubId}/dispatch-rules`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -1350,7 +1371,7 @@ const commands: Cmd[] = [
     group: "Linear", match: ["linear", "rules", "patch"], needsArg: true,
     usage: "oma linear rules patch <publication-id> <rule-id> [--enabled true|false] [--label <s>] [--states <Todo,...>] [--max <n>] [--poll <s>]",
     desc: "Update a dispatch rule. Pass only fields to change.",
-    http: "PATCH  /v1/integrations/linear/publications/:id/dispatch-rules/:ruleId",
+    http: "PATCH  /v1/oma/integrations/linear/publications/:id/dispatch-rules/:ruleId",
     async run(config, args) {
       const pubId = args[0];
       const ruleId = args[1];
@@ -1366,7 +1387,7 @@ const commands: Cmd[] = [
       const poll = flag(args, "--poll"); if (poll !== undefined) patch.poll_interval_seconds = parseInt(poll, 10);
       const r = await apiFetch<any>(
         config,
-        `/v1/integrations/linear/publications/${pubId}/dispatch-rules/${ruleId}`,
+        `/v1/oma/integrations/linear/publications/${pubId}/dispatch-rules/${ruleId}`,
         { method: "PATCH", body: JSON.stringify(patch) },
       );
       if (config.json) { console.log(JSON.stringify(r, null, 2)); return; }
@@ -1377,14 +1398,14 @@ const commands: Cmd[] = [
     group: "Linear", match: ["linear", "rules", "delete"], needsArg: true,
     usage: "oma linear rules delete <publication-id> <rule-id>",
     desc: "Delete a dispatch rule",
-    http: "DELETE /v1/integrations/linear/publications/:id/dispatch-rules/:ruleId",
+    http: "DELETE /v1/oma/integrations/linear/publications/:id/dispatch-rules/:ruleId",
     async run(config, args) {
       const pubId = args[0];
       const ruleId = args[1];
       if (!pubId || !ruleId) { console.error("Usage: oma linear rules delete <publication-id> <rule-id>"); process.exit(1); }
       await apiFetch(
         config,
-        `/v1/integrations/linear/publications/${pubId}/dispatch-rules/${ruleId}`,
+        `/v1/oma/integrations/linear/publications/${pubId}/dispatch-rules/${ruleId}`,
         { method: "DELETE" },
       );
       console.log(`Deleted rule ${ruleId}.`);
@@ -1395,9 +1416,9 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "list"],
     usage: "oma github list", desc: "List connected GitHub installations",
-    http: "GET    /v1/integrations/github/installations",
+    http: "GET    /v1/oma/integrations/github/installations",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; bot_login: string; created_at: number }> }>(config, "/v1/integrations/github/installations");
+      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; bot_login: string; created_at: number }> }>(config, "/v1/oma/integrations/github/installations");
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No GitHub installations. Publish an agent with: oma github publish <agent-id> --env <env-id>"); return; }
       table([["ORG/USER", "INSTALLATION ID", "BOT LOGIN", "CREATED"], ...data.map(i => [i.workspace_name, i.id, i.bot_login, new Date(i.created_at).toLocaleDateString()])]);
@@ -1406,9 +1427,9 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "pubs"], needsArg: true,
     usage: "oma github pubs <installation-id>", desc: "List agents published to a GitHub install",
-    http: "GET    /v1/integrations/github/installations/:id/publications",
+    http: "GET    /v1/oma/integrations/github/installations/:id/publications",
     async run(config, args) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/integrations/github/installations/${args[0]}/publications`);
+      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/oma/integrations/github/installations/${args[0]}/publications`);
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No publications. Publish with: oma github publish <agent-id> --env <env-id>"); return; }
       table([["PERSONA", "PUBLICATION ID", "AGENT", "STATUS", "CAPS"], ...data.map(p => [p.persona.name, p.id, p.agent_id, p.status, capsPreview(p.capabilities)])]);
@@ -1417,9 +1438,9 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "get"], needsArg: true,
     usage: "oma github get <publication-id>", desc: "Show one GitHub publication",
-    http: "GET    /v1/integrations/github/publications/:id",
+    http: "GET    /v1/oma/integrations/github/publications/:id",
     async run(config, args) {
-      const p = await apiFetch<any>(config, `/v1/integrations/github/publications/${args[0]}`);
+      const p = await apiFetch<any>(config, `/v1/oma/integrations/github/publications/${args[0]}`);
       if (config.json) { console.log(JSON.stringify(p, null, 2)); return; }
       console.log(`Persona:        ${p.persona.name}\nID:             ${p.id}\nAgent:          ${p.agent_id}\nEnvironment:    ${p.environment_id}\nInstallation:   ${p.installation_id}\nMode:           ${p.mode}\nStatus:         ${p.status}\nGranularity:    ${p.session_granularity}\nCapabilities:   ${p.capabilities.join(", ")}`);
     },
@@ -1427,7 +1448,7 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "bind"], needsArg: true,
     usage: "oma github bind <agent-id> --env <env-id> [--persona <name>] [--avatar <url>]", desc: "Bind agent to GitHub via App Manifest (one-click)",
-    http: "POST   /v1/integrations/github/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
+    http: "POST   /v1/oma/integrations/github/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
     async run(config, args) {
       const agentId = args[0];
       const envId = flag(args, "--env");
@@ -1450,7 +1471,7 @@ const commands: Cmd[] = [
         recommendedSubscriptions: string[];
       }>(
         config,
-        "/v1/integrations/github/start-a1",
+        "/v1/oma/integrations/github/start-a1",
         { method: "POST", body: JSON.stringify({ agentId, environmentId: envId, personaName, personaAvatarUrl: avatar, returnUrl: `${config.baseUrl}/integrations/github` }) },
       );
       if (config.json) { console.log(JSON.stringify(r, null, 2)); return; }
@@ -1472,7 +1493,7 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "submit"], needsArg: true,
     usage: "oma github submit <form-token> --app-id <id> (--private-key <pem> | --private-key-file <path>) --webhook-secret <secret> [--client-id X] [--client-secret Y]", desc: "Step 2: validate App credentials → returns install URL",
-    http: "POST   /v1/integrations/github/credentials {formToken, appId, privateKey, webhookSecret, clientId?, clientSecret?}",
+    http: "POST   /v1/oma/integrations/github/credentials {formToken, appId, privateKey, webhookSecret, clientId?, clientSecret?}",
     async run(config, args) {
       const formToken = args[0];
       const appId = flag(args, "--app-id");
@@ -1497,7 +1518,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<{ url: string; appOmaId: string; appSlug: string; botLogin: string; setupUrl: string; webhookUrl: string }>(
         config,
-        "/v1/integrations/github/credentials",
+        "/v1/oma/integrations/github/credentials",
         { method: "POST", body: JSON.stringify({ formToken, appId, privateKey, webhookSecret, clientId, clientSecret }) },
       ).catch((err: Error) => {
         if (/form_token_invalid|JwtSigner\.verify/i.test(err.message)) {
@@ -1521,11 +1542,11 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "handoff"], needsArg: true,
     usage: "oma github handoff <form-token>", desc: "Step 2 alt: 7-day shareable URL for an org owner",
-    http: "POST   /v1/integrations/github/handoff-link {formToken}",
+    http: "POST   /v1/oma/integrations/github/handoff-link {formToken}",
     async run(config, args) {
       const r = await apiFetch<{ url: string; expiresInDays: number }>(
         config,
-        "/v1/integrations/github/handoff-link",
+        "/v1/oma/integrations/github/handoff-link",
         { method: "POST", body: JSON.stringify({ formToken: args[0] }) },
       ).catch((err: Error) => {
         if (/form_token_invalid|JwtSigner\.verify/i.test(err.message)) {
@@ -1541,7 +1562,7 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "update"], needsArg: true,
     usage: "oma github update <publication-id> [--persona <name>] [--avatar <url>] [--caps <a,b,c>]", desc: "Update persona / capabilities of a GitHub publication",
-    http: "PATCH  /v1/integrations/github/publications/:id {persona?, capabilities?}",
+    http: "PATCH  /v1/oma/integrations/github/publications/:id {persona?, capabilities?}",
     async run(config, args) {
       const id = args[0];
       const personaName = flag(args, "--persona");
@@ -1561,7 +1582,7 @@ const commands: Cmd[] = [
         console.error("Nothing to update. Pass at least --persona, --avatar, or --caps.");
         process.exit(1);
       }
-      const updated = await apiFetch<any>(config, `/v1/integrations/github/publications/${id}`, {
+      const updated = await apiFetch<any>(config, `/v1/oma/integrations/github/publications/${id}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
       });
@@ -1572,10 +1593,10 @@ const commands: Cmd[] = [
   {
     group: "GitHub", match: ["github", "unpublish"], needsArg: true,
     usage: "oma github unpublish <publication-id>", desc: "Mark a GitHub publication unpublished",
-    http: "DELETE /v1/integrations/github/publications/:id",
+    http: "DELETE /v1/oma/integrations/github/publications/:id",
     async run(config, args) {
       try {
-        await apiFetch(config, `/v1/integrations/github/publications/${args[0]}`, { method: "DELETE" });
+        await apiFetch(config, `/v1/oma/integrations/github/publications/${args[0]}`, { method: "DELETE" });
       } catch (err: any) {
         if (/^404 /.test(err.message)) {
           console.error(`No publication with id ${args[0]}.`);
@@ -1592,9 +1613,9 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "list"],
     usage: "oma slack list", desc: "List connected Slack workspaces",
-    http: "GET    /v1/integrations/slack/installations",
+    http: "GET    /v1/oma/integrations/slack/installations",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; install_kind: string; created_at: number }> }>(config, "/v1/integrations/slack/installations");
+      const { data } = await apiFetch<{ data: Array<{ id: string; workspace_name: string; install_kind: string; created_at: number }> }>(config, "/v1/oma/integrations/slack/installations");
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No Slack workspaces connected. Publish an agent with: oma slack publish <agent-id> --env <env-id>"); return; }
       table([["WORKSPACE", "INSTALLATION ID", "KIND", "CREATED"], ...data.map(i => [i.workspace_name, i.id, i.install_kind, new Date(i.created_at).toLocaleDateString()])]);
@@ -1603,9 +1624,9 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "pubs"], needsArg: true,
     usage: "oma slack pubs <installation-id>", desc: "List agents published to a workspace",
-    http: "GET    /v1/integrations/slack/installations/:id/publications",
+    http: "GET    /v1/oma/integrations/slack/installations/:id/publications",
     async run(config, args) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/integrations/slack/installations/${args[0]}/publications`);
+      const { data } = await apiFetch<{ data: Array<{ id: string; agent_id: string; persona: { name: string }; status: string; capabilities: string[] }> }>(config, `/v1/oma/integrations/slack/installations/${args[0]}/publications`);
       if (config.json) { console.log(JSON.stringify(data, null, 2)); return; }
       if (!data.length) { console.log("No publications. Publish with: oma slack publish <agent-id> --env <env-id>"); return; }
       table([["PERSONA", "PUBLICATION ID", "AGENT", "STATUS", "CAPS"], ...data.map(p => [p.persona.name, p.id, p.agent_id, p.status, capsPreview(p.capabilities)])]);
@@ -1614,9 +1635,9 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "get"], needsArg: true,
     usage: "oma slack get <publication-id>", desc: "Show one publication",
-    http: "GET    /v1/integrations/slack/publications/:id",
+    http: "GET    /v1/oma/integrations/slack/publications/:id",
     async run(config, args) {
-      const p = await apiFetch<any>(config, `/v1/integrations/slack/publications/${args[0]}`);
+      const p = await apiFetch<any>(config, `/v1/oma/integrations/slack/publications/${args[0]}`);
       if (config.json) { console.log(JSON.stringify(p, null, 2)); return; }
       console.log(`Persona:        ${p.persona.name}\nID:             ${p.id}\nAgent:          ${p.agent_id}\nEnvironment:    ${p.environment_id}\nInstallation:   ${p.installation_id}\nMode:           ${p.mode}\nStatus:         ${p.status}\nGranularity:    ${p.session_granularity}\nCapabilities:   ${p.capabilities.join(", ")}`);
     },
@@ -1624,7 +1645,7 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "publish"], needsArg: true,
     usage: "oma slack publish <agent-id> --env <env-id> [--persona <name>] [--avatar <url>]", desc: "Step 1: register agent → returns Slack App config",
-    http: "POST   /v1/integrations/slack/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
+    http: "POST   /v1/oma/integrations/slack/start-a1 {agentId, environmentId, personaName, personaAvatarUrl?, returnUrl}",
     async run(config, args) {
       const agentId = args[0];
       const envId = flag(args, "--env");
@@ -1638,7 +1659,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<{ formToken: string; suggestedAppName: string; callbackUrl: string; webhookUrl: string; manifestLaunchUrl?: string | null }>(
         config,
-        "/v1/integrations/slack/start-a1",
+        "/v1/oma/integrations/slack/start-a1",
         { method: "POST", body: JSON.stringify({ agentId, environmentId: envId, personaName, personaAvatarUrl: avatar, returnUrl: `${config.baseUrl}/integrations/slack` }) },
       );
       if (config.json) { console.log(JSON.stringify(r, null, 2)); return; }
@@ -1679,7 +1700,7 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "submit"], needsArg: true,
     usage: "oma slack submit <form-token> --client-id <id> --client-secret <secret> --signing-secret <secret>", desc: "Step 2: validate creds → returns OAuth install URL",
-    http: "POST   /v1/integrations/slack/credentials {formToken, clientId, clientSecret, signingSecret}",
+    http: "POST   /v1/oma/integrations/slack/credentials {formToken, clientId, clientSecret, signingSecret}",
     async run(config, args) {
       const formToken = args[0];
       const clientId = flag(args, "--client-id");
@@ -1694,7 +1715,7 @@ const commands: Cmd[] = [
       }
       const r = await apiFetch<{ url: string; appId: string; callbackUrl: string; webhookUrl: string }>(
         config,
-        "/v1/integrations/slack/credentials",
+        "/v1/oma/integrations/slack/credentials",
         { method: "POST", body: JSON.stringify({ formToken, clientId, clientSecret, signingSecret }) },
       ).catch((err: Error) => {
         if (/form_token_invalid|JwtSigner\.verify/i.test(err.message)) {
@@ -1713,11 +1734,11 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "handoff"], needsArg: true,
     usage: "oma slack handoff <form-token>", desc: "Step 2 alt: 7-day shareable URL for an admin",
-    http: "POST   /v1/integrations/slack/handoff-link {formToken}",
+    http: "POST   /v1/oma/integrations/slack/handoff-link {formToken}",
     async run(config, args) {
       const r = await apiFetch<{ url: string; expiresInDays: number }>(
         config,
-        "/v1/integrations/slack/handoff-link",
+        "/v1/oma/integrations/slack/handoff-link",
         { method: "POST", body: JSON.stringify({ formToken: args[0] }) },
       ).catch((err: Error) => {
         if (/form_token_invalid|JwtSigner\.verify/i.test(err.message)) {
@@ -1733,7 +1754,7 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "update"], needsArg: true,
     usage: "oma slack update <publication-id> [--persona <name>] [--avatar <url>] [--caps <a,b,c>]", desc: "Update persona / capabilities of a publication",
-    http: "PATCH  /v1/integrations/slack/publications/:id {persona?, capabilities?}",
+    http: "PATCH  /v1/oma/integrations/slack/publications/:id {persona?, capabilities?}",
     async run(config, args) {
       const id = args[0];
       const personaName = flag(args, "--persona");
@@ -1753,7 +1774,7 @@ const commands: Cmd[] = [
         console.error("Nothing to update. Pass at least --persona, --avatar, or --caps.");
         process.exit(1);
       }
-      const updated = await apiFetch<any>(config, `/v1/integrations/slack/publications/${id}`, {
+      const updated = await apiFetch<any>(config, `/v1/oma/integrations/slack/publications/${id}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
       });
@@ -1764,10 +1785,10 @@ const commands: Cmd[] = [
   {
     group: "Slack", match: ["slack", "unpublish"], needsArg: true,
     usage: "oma slack unpublish <publication-id>", desc: "Mark a publication unpublished",
-    http: "DELETE /v1/integrations/slack/publications/:id",
+    http: "DELETE /v1/oma/integrations/slack/publications/:id",
     async run(config, args) {
       try {
-        await apiFetch(config, `/v1/integrations/slack/publications/${args[0]}`, { method: "DELETE" });
+        await apiFetch(config, `/v1/oma/integrations/slack/publications/${args[0]}`, { method: "DELETE" });
       } catch (err: any) {
         if (/^404 /.test(err.message)) {
           console.error(`No publication with id ${args[0]}.`);
@@ -2077,16 +2098,16 @@ const extraEndpoints: { group: string; http: string }[] = [
   { group: "Environments", http: "GET    /v1/environments/:id                    Get environment" },
   { group: "Environments", http: "PUT    /v1/environments/:id                    Update environment" },
   { group: "Environments", http: "DELETE /v1/environments/:id                    Delete environment" },
-  { group: "Model Cards", http: "GET    /v1/model_cards/:id                     Get model card" },
-  { group: "Model Cards", http: "POST   /v1/model_cards/:id                     Update model card" },
-  { group: "Model Cards", http: "DELETE /v1/model_cards/:id                     Delete model card" },
-  { group: "Model Cards", http: "POST   /v1/models/list                         Fetch provider models {provider, api_key}" },
+  { group: "Model Cards", http: "GET    /v1/oma/model_cards/:id                     Get model card" },
+  { group: "Model Cards", http: "POST   /v1/oma/model_cards/:id                     Update model card" },
+  { group: "Model Cards", http: "DELETE /v1/oma/model_cards/:id                     Delete model card" },
+  { group: "Model Cards", http: "POST   /v1/oma/models/list                         Fetch provider models {provider, api_key}" },
   { group: "Vaults", http: "DELETE /v1/vaults/:id                          Delete vault" },
   { group: "Vaults", http: "DELETE /v1/vaults/:id/credentials/:cid         Delete credential" },
-  { group: "Linear", http: "PATCH  /v1/integrations/linear/publications/:id  Update persona / capabilities" },
-  { group: "GitHub", http: "PATCH  /v1/integrations/github/publications/:id  Update persona / capabilities" },
-  { group: "OAuth", http: "GET    /v1/oauth/callback                      OAuth callback (internal)" },
-  { group: "OAuth", http: "POST   /v1/oauth/refresh                       Refresh token {vault_id, credential_id}" },
+  { group: "Linear", http: "PATCH  /v1/oma/integrations/linear/publications/:id  Update persona / capabilities" },
+  { group: "GitHub", http: "PATCH  /v1/oma/integrations/github/publications/:id  Update persona / capabilities" },
+  { group: "OAuth", http: "GET    /v1/oma/oauth/callback                      OAuth callback (internal)" },
+  { group: "OAuth", http: "POST   /v1/oma/oauth/refresh                       Refresh token {vault_id, credential_id}" },
   { group: "Skills", http: "POST   /v1/skills                              Create skill {files:[{filename,content}]}" },
   { group: "Skills", http: "GET    /v1/skills/:id                          Get skill" },
   { group: "Skills", http: "DELETE /v1/skills/:id                          Delete skill" },
@@ -2097,10 +2118,10 @@ const extraEndpoints: { group: string; http: string }[] = [
   { group: "Files", http: "GET    /v1/files/:id                           Get file metadata" },
   { group: "Files", http: "GET    /v1/files/:id/content                   Download file content" },
   { group: "Files", http: "DELETE /v1/files/:id                           Delete file" },
-  { group: "Evals", http: "POST   /v1/evals/runs                          Create eval run {agent_id, environment_id, tasks:[...]}" },
-  { group: "Evals", http: "GET    /v1/evals/runs                          List eval runs" },
-  { group: "Evals", http: "GET    /v1/evals/runs/:id                      Get eval run results" },
-  { group: "ClawHub", http: "GET    /v1/clawhub/search?q=X                  Search ClawHub registry" },
+  { group: "Evals", http: "POST   /v1/oma/evals/runs                          Create eval run {agent_id, environment_id, tasks:[...]}" },
+  { group: "Evals", http: "GET    /v1/oma/evals/runs                          List eval runs" },
+  { group: "Evals", http: "GET    /v1/oma/evals/runs/:id                      Get eval run results" },
+  { group: "ClawHub", http: "GET    /v1/oma/clawhub/search?q=X                  Search ClawHub registry" },
 ];
 
 // ─── MCP Connect ───
@@ -2133,7 +2154,7 @@ function resolveServerUrl(nameOrUrl: string): string {
 async function connectMcp(config: Config, mcpServerUrl: string, vaultId: string) {
   const port = 19284 + Math.floor(Math.random() * 1000);
   const redirectUri = `http://localhost:${port}/callback`;
-  const authUrl = `${config.baseUrl}/v1/oauth/authorize?mcp_server_url=${encodeURIComponent(mcpServerUrl)}&vault_id=${encodeURIComponent(vaultId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const authUrl = `${config.baseUrl}/v1/oma/oauth/authorize?mcp_server_url=${encodeURIComponent(mcpServerUrl)}&vault_id=${encodeURIComponent(vaultId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
   console.log(`Opening browser...\n  ${authUrl}\n`);
   try {

@@ -1,7 +1,7 @@
 // Usage events (CF SQLite / D1).
 //
 // Raw resource-usage event log. OSS owns this table; the hosted billing
-// worker reads via /v1/internal/usage_events, applies its rate map,
+// worker reads via /v1/oma/internal/usage_events, applies its rate map,
 // debits credit_ledger, then POSTs ack to flip billed_at.
 //
 // Source: apps/main/migrations/_archive/0017_usage_events.sql.

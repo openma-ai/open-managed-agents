@@ -1,9 +1,19 @@
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
+import type {
+  BetaManagedAgentsCredential,
+  CredentialCreateParams,
+  CredentialUpdateParams,
+} from "@anthropic-ai/sdk/resources/beta/vaults/credentials";
+import type { BetaManagedAgentsVault } from "@anthropic-ai/sdk/resources/beta/vaults/vaults";
 
 import { useApi } from "../lib/api";
-import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
+import { useApiQuery, useInfiniteApiQuery, useQueryClient } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
@@ -11,6 +21,7 @@ import { PageHeader } from "../components/PageHeader";
 import { Disclosure } from "../components/Disclosure";
 import { LocalCombobox } from "../components/LocalCombobox";
 import { SecretInput, TextInput } from "../components/Input";
+import { Select, SelectOption } from "../components/Select";
 import { FilterChip } from "../components/FilterChip";
 import { FacetedFilter } from "../components/FacetedFilter";
 
@@ -25,21 +36,34 @@ import { useI18n } from "../i18n";
 // Types
 // =================================================================
 
-interface Vault {
-  id: string;
-  name: string;
-  created_at: string;
-  updated_at?: string | null;
-  archived_at?: string | null;
-}
-interface Credential {
-  id: string;
-  display_name: string;
-  vault_id: string;
-  auth: { type: string; mcp_server_url?: string; cli_id?: string };
-  created_at: string;
-  updated_at?: string | null;
-  archived_at?: string | null;
+type Vault = BetaManagedAgentsVault;
+type Credential = BetaManagedAgentsCredential;
+
+function credentialTypeView(credential: Credential): {
+  label: string;
+  className: string;
+  target: string;
+} {
+  switch (credential.auth.type) {
+    case "mcp_oauth":
+      return {
+        label: "OAuth",
+        className: "bg-info-subtle text-info",
+        target: credential.auth.mcp_server_url,
+      };
+    case "static_bearer":
+      return {
+        label: "Bearer",
+        className: "bg-success-subtle text-success",
+        target: credential.auth.mcp_server_url,
+      };
+    case "environment_variable":
+      return {
+        label: "Environment variable",
+        className: "bg-brand-subtle text-brand",
+        target: credential.auth.secret_name,
+      };
+  }
 }
 
 // First-wave cap CLI list. Mirrors @open-managed-agents/cap builtinSpecs.
@@ -80,25 +104,30 @@ const inputCls =
 export function VaultDetail() {
   const { id } = useParams<{ id: string }>();
   const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const queryClient = useQueryClient();
   const { t } = useI18n();
 
-  const { data: vault, error: vaultError } = useApiQuery<Vault>(
+  const { data: vault, error: vaultError } = useApiQuery<BetaManagedAgentsVault>(
     id ? `/v1/vaults/${id}` : null,
   );
   const {
-    data: credsRes,
+    items: credentials,
     isLoading: credsLoading,
-    refetch: refetchCreds,
-  } = useApiQuery<{ data: Credential[] }>(
-    id ? `/v1/vaults/${id}/credentials` : null,
+    refresh: refetchCreds,
+  } = useInfiniteApiQuery<Credential>(
+    `/v1/vaults/${id ?? "missing"}/credentials`,
+    {
+      enabled: !!id,
+      limit: 100,
+      params: { include_archived: "true" },
+    },
   );
-  const credentials = useMemo(() => credsRes?.data ?? [], [credsRes]);
 
   // Status filter applied client-side — the credentials list endpoint
-  // doesn't accept a status query param and the per-vault credential count
-  // is small enough that paging it server-side would be over-engineering.
+  // doesn't accept a status query param. Transport still follows the Managed
+  // `page`/`next_page` contract while the product remains a continuous feed.
   const [status, setStatus] = useState<StatusValue>("active");
   const filteredCreds = useMemo(() => {
     if (status === "any") return credentials;
@@ -136,7 +165,7 @@ export function VaultDetail() {
     )
       return;
     try {
-      await api(`/v1/vaults/${id}/archive`, { method: "POST" });
+      await managedApi.vaults.archive(id);
       nav("/vaults");
     } catch {
       // useApi already toasts the underlying error.
@@ -152,7 +181,7 @@ export function VaultDetail() {
     )
       return;
     try {
-      await api(`/v1/vaults/${id}`, { method: "DELETE" });
+      await managedApi.vaults.delete(id);
       nav("/vaults");
     } catch {
       // useApi already toasts the underlying error.
@@ -163,7 +192,7 @@ export function VaultDetail() {
     if (!id) return;
     if (!confirm("Delete this credential?")) return;
     try {
-      await api(`/v1/vaults/${id}/credentials/${credId}`, { method: "DELETE" });
+      await managedApi.vaults.credentials.delete(credId, { vault_id: id });
       reloadCredentials();
     } catch {
       // useApi already toasts the underlying error.
@@ -183,7 +212,7 @@ export function VaultDetail() {
   if (!vault) return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
 
   const archived = !!vault.archived_at;
-  const updatedAt = vault.updated_at ?? vault.created_at;
+  const updatedAt = vault.updated_at;
 
   // Active-filter chip display — null at the default so the chip reads
   // "Status ▾" rather than "Status: All ▾". Matches the list-page pattern.
@@ -192,30 +221,9 @@ export function VaultDetail() {
 
   return (
     <Page
+      layout="rail"
       header={
         <PageHeader
-          title={vault.name}
-          subtitle={
-            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-subtle">
-              <span
-                className={`inline-flex items-center text-[11px] px-2 py-0.5 rounded-full ${
-                  archived
-                    ? "bg-bg-surface text-fg-subtle"
-                    : "bg-success-subtle text-success"
-                }`}
-              >
-                {archived ? "archived" : "active"}
-              </span>
-              <span className="font-mono">{vault.id}</span>
-              <span>Created {new Date(vault.created_at).toLocaleString()}</span>
-              <span>Updated {new Date(updatedAt).toLocaleString()}</span>
-              {archived && (
-                <span>
-                  Archived {new Date(vault.archived_at!).toLocaleString()}
-                </span>
-              )}
-            </span>
-          }
           actions={
             <>
               {!archived && (
@@ -235,9 +243,33 @@ export function VaultDetail() {
           }
         />
       }
+      rail={
+        <section className="console-property-group" aria-label="Vault properties">
+          <h2 className="console-property-group-title">Properties</h2>
+          <dl className="console-property-list">
+            <PropertyRow label="ID"><span className="font-mono">{vault.id}</span></PropertyRow>
+            <PropertyRow label="Status">
+              <span className={archived ? "text-fg-muted" : "text-success"}>
+                {archived ? "Archived" : "Active"}
+              </span>
+            </PropertyRow>
+            <PropertyRow label="Created">{new Date(vault.created_at).toLocaleString()}</PropertyRow>
+            <PropertyRow label="Updated">{new Date(updatedAt).toLocaleString()}</PropertyRow>
+            {archived && (
+              <PropertyRow label="Archived">
+                {new Date(vault.archived_at!).toLocaleString()}
+              </PropertyRow>
+            )}
+          </dl>
+        </section>
+      }
     >
-      <div>
-        <section>
+      <div className="console-detail-stack">
+        <header className="console-detail-title-block">
+          <h1>{vault.display_name}</h1>
+          <p>Credentials and delegated access available to managed agents.</p>
+        </header>
+        <section className="console-detail-section">
           <header className="flex items-center gap-3 mb-3 flex-wrap">
             <h2 className="font-display text-base font-semibold text-fg mr-auto">
               Credentials
@@ -273,63 +305,52 @@ export function VaultDetail() {
             )}
           </header>
 
-          {credsLoading ? (
-            <div className="text-fg-subtle text-sm py-4">Loading...</div>
-          ) : filteredCreds.length === 0 ? (
-            <div className="border border-border rounded-lg px-4 py-8 text-center text-fg-subtle text-sm">
-              {credentials.length === 0
-                ? "No credentials yet. Connect an MCP server or add a CLI token."
-                : "No credentials match the current filter."}
-            </div>
-          ) : (
-            <div className="border border-border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-2.5">Name</th>
-                    <th className="text-left px-4 py-2.5">ID</th>
-                    <th className="text-left px-4 py-2.5">Type</th>
-                    <th className="text-left px-4 py-2.5">MCP server URL</th>
-                    <th className="text-left px-4 py-2.5">Status</th>
-                    <th className="text-left px-4 py-2.5">Updated</th>
-                    <th className="text-right px-4 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
+          <div className="console-detail-table-wrap" data-testid="credential-list-surface">
+            {credsLoading ? (
+              <div className="text-fg-subtle text-sm py-4">Loading...</div>
+            ) : filteredCreds.length === 0 ? (
+              <div className="rounded-[var(--console-radius-row)] bg-[var(--data-row-bg)] px-3 py-8 text-center text-fg-subtle text-sm">
+                {credentials.length === 0
+                  ? "No credentials yet. Connect an MCP server or add a CLI token."
+                  : "No credentials match the current filter."}
+              </div>
+            ) : (
+              <Table className="console-detail-table">
+                <TableHeader variant="wireless">
+                  <TableRow variant="wireless">
+                    <TableHead>Name</TableHead>
+                    <TableHead>ID</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>MCP server URL</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Updated</TableHead>
+                    <TableHead className="text-right"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {filteredCreds.map((c) => {
-                    const typeLabel =
-                      c.auth.type === "mcp_oauth"
-                        ? "OAuth"
-                        : c.auth.type === "cap_cli"
-                          ? "CLI"
-                          : "Bearer";
-                    const typeCls =
-                      c.auth.type === "mcp_oauth"
-                        ? "bg-info-subtle text-info"
-                        : c.auth.type === "cap_cli"
-                          ? "bg-brand-subtle text-brand"
-                          : "bg-success-subtle text-success";
+                    const typeView = credentialTypeView(c);
                     return (
-                      <tr key={c.id} className="border-t border-border">
-                        <td className="px-4 py-3 font-medium text-fg">
-                          {c.display_name}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-xs text-fg-muted">
+                      <TableRow variant="wireless" key={c.id}>
+                        <TableCell className="font-medium text-fg">
+                          {c.display_name || "Untitled credential"}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-fg-muted">
                           {c.id}
-                        </td>
-                        <td className="px-4 py-3">
+                        </TableCell>
+                        <TableCell>
                           <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full ${typeCls}`}
+                            className={`text-xs px-2 py-0.5 rounded-full ${typeView.className}`}
                           >
-                            {typeLabel}
+                            {typeView.label}
                           </span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-xs text-fg-muted truncate max-w-[260px]">
-                          {c.auth.mcp_server_url || c.auth.cli_id || "—"}
-                        </td>
-                        <td className="px-4 py-3">
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-fg-muted truncate max-w-[260px]">
+                          {typeView.target || "—"}
+                        </TableCell>
+                        <TableCell>
                           <span
-                            className={`inline-flex items-center text-[11px] px-2 py-0.5 rounded-full ${
+                            className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${
                               c.archived_at
                                 ? "bg-bg-surface text-fg-subtle"
                                 : "bg-success-subtle text-success"
@@ -337,33 +358,33 @@ export function VaultDetail() {
                           >
                             {c.archived_at ? "archived" : "active"}
                           </span>
-                        </td>
-                        <td className="px-4 py-3 text-fg-muted">
-                          {new Date(c.updated_at ?? c.created_at).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                        </TableCell>
+                        <TableCell className="text-fg-muted">
+                          {new Date(c.updated_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap">
                           {!c.archived_at && (
-                            <button
+                            <Button variant="ghost"
                               onClick={() => setEditingCred(c)}
                               className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                             >
                               {t.common.edit}
-                            </button>
+                            </Button>
                           )}
-                          <button
+                          <Button variant="ghost"
                             onClick={() => deleteCred(c.id)}
                             className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-xs text-fg-subtle hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                           >
                             {t.common.delete}
-                          </button>
-                        </td>
-                      </tr>
+                          </Button>
+                        </TableCell>
+                      </TableRow>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                </TableBody>
+              </Table>
+            )}
+          </div>
         </section>
       </div>
 
@@ -404,6 +425,15 @@ export function VaultDetail() {
   );
 }
 
+function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="console-property-row">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
 // =================================================================
 // Rename vault
 // =================================================================
@@ -417,9 +447,9 @@ function RenameVaultModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const { t } = useI18n();
-  const [name, setName] = useState(vault.name);
+  const [name, setName] = useState(vault.display_name);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -432,10 +462,7 @@ function RenameVaultModal({
     setSaving(true);
     setError("");
     try {
-      await api(`/v1/vaults/${vault.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ name: trimmed }),
-      });
+      await managedApi.vaults.update(vault.id, { display_name: trimmed });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to rename vault");
@@ -465,10 +492,10 @@ function RenameVaultModal({
           {error}
         </div>
       )}
-      <label htmlFor="vault-rename" className="text-sm text-fg-muted block mb-1">
+      <Label htmlFor="vault-rename" className="text-sm text-fg-muted block mb-1">
         {t.common.name}
-      </label>
-      <input
+      </Label>
+      <Input
         id="vault-rename"
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -497,15 +524,14 @@ function EditCredentialModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const { t } = useI18n();
-  const [displayName, setDisplayName] = useState(credential.display_name);
+  const [displayName, setDisplayName] = useState(credential.display_name ?? "");
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const canRotateToken =
-    credential.auth.type === "static_bearer" || credential.auth.type === "cap_cli";
+  const canRotateToken = credential.auth.type === "static_bearer";
 
   const save = async () => {
     const trimmed = displayName.trim();
@@ -516,16 +542,14 @@ function EditCredentialModal({
     setSaving(true);
     setError("");
     try {
-      const body: { display_name: string; auth?: Record<string, string> } = {
+      const body: Omit<CredentialUpdateParams, "betas"> = {
+        vault_id: vault.id,
         display_name: trimmed,
       };
-      if (canRotateToken && token.trim()) {
-        body.auth = { token: token.trim() };
+      if (credential.auth.type === "static_bearer" && token.trim()) {
+        body.auth = { type: "static_bearer", token: token.trim() };
       }
-      await api(`/v1/vaults/${vault.id}/credentials/${credential.id}`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      await managedApi.vaults.credentials.update(credential.id, body);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update credential");
@@ -560,10 +584,10 @@ function EditCredentialModal({
       )}
       <div className="space-y-3">
         <div>
-          <label htmlFor="cred-edit-name" className="text-sm text-fg-muted block mb-1">
+          <Label htmlFor="cred-edit-name" className="text-sm text-fg-muted block mb-1">
             {t.vaults.displayName}
-          </label>
-          <input
+          </Label>
+          <Input
             id="cred-edit-name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
@@ -573,20 +597,26 @@ function EditCredentialModal({
         </div>
         <div className="text-xs text-fg-subtle">
           Type: <span className="font-mono">{credential.auth.type}</span>
-          {(credential.auth.mcp_server_url || credential.auth.cli_id) && (
+          {credential.auth.type !== "environment_variable" && (
             <>
               {" · "}
               <span className="font-mono">
-                {credential.auth.mcp_server_url || credential.auth.cli_id}
+                {credential.auth.mcp_server_url}
               </span>
+            </>
+          )}
+          {credential.auth.type === "environment_variable" && (
+            <>
+              {" · "}
+              <span className="font-mono">{credential.auth.secret_name}</span>
             </>
           )}
         </div>
         {canRotateToken && (
           <div>
-            <label htmlFor="cred-edit-token" className="text-sm text-fg-muted block mb-1">
+            <Label htmlFor="cred-edit-token" className="text-sm text-fg-muted block mb-1">
               {t.vaults.newTokenOptional}
-            </label>
+            </Label>
             <SecretInput
               id="cred-edit-token"
               value={token}
@@ -615,6 +645,7 @@ function AddCredentialModal({
   onCreated: () => void;
 }) {
   const { api } = useApi();
+  const managedApi = useManagedApi();
 
   // Top-level tab inside the modal: MCP server vs CLI. Folds the two
   // previously separate entry points into one modal; matches Anthropic.
@@ -736,7 +767,7 @@ function AddCredentialModal({
     if (opts?.clientId) params.set("client_id", opts.clientId);
     if (opts?.clientSecret) params.set("client_secret", opts.clientSecret);
     window.open(
-      `/v1/oauth/authorize?${params.toString()}`,
+      `/v1/oma/oauth/authorize?${params.toString()}`,
       "oauth",
       "width=600,height=700,popup=yes",
     );
@@ -749,28 +780,37 @@ function AddCredentialModal({
       //   - access_token + refresh_token + token_endpoint → mcp_oauth
       //     (server can refresh on 401 via vault-forward.refreshMcpOAuth).
       //   - access_token only → static_bearer (no auto-refresh).
-      const hasRefresh = customForm.refreshToken && customForm.tokenEndpoint;
-      const auth: Record<string, unknown> = hasRefresh
+      const hasRefresh = !!(customForm.refreshToken && customForm.tokenEndpoint);
+      const tokenEndpointAuth: NonNullable<
+        Extract<CredentialCreateParams["auth"], { type: "mcp_oauth" }>["refresh"]
+      >["token_endpoint_auth"] =
+        customForm.authMethod === "none"
+          ? { type: "none" }
+          : {
+              type: customForm.authMethod,
+              client_secret: customForm.clientSecret,
+            };
+      const auth: CredentialCreateParams["auth"] = hasRefresh
         ? {
             type: "mcp_oauth",
             access_token: customForm.token,
-            refresh_token: customForm.refreshToken,
-            token_endpoint: customForm.tokenEndpoint,
-            token_endpoint_auth_method: customForm.authMethod,
             mcp_server_url: customForm.url,
+            refresh: {
+              client_id: customForm.clientId,
+              refresh_token: customForm.refreshToken,
+              token_endpoint: customForm.tokenEndpoint,
+              token_endpoint_auth: tokenEndpointAuth,
+            },
           }
         : {
             type: "static_bearer",
             token: customForm.token,
             mcp_server_url: customForm.url,
           };
-      await api(`/v1/vaults/${vault.id}/credentials`, {
-        method: "POST",
-        body: JSON.stringify({
-          display_name:
-            customForm.name || customForm.pickedName || "Custom MCP",
-          auth,
-        }),
+      await managedApi.vaults.credentials.create(vault.id, {
+        display_name:
+          customForm.name || customForm.pickedName || "Custom MCP",
+        auth,
       });
       onCreated();
     } finally {
@@ -783,7 +823,7 @@ function AddCredentialModal({
     //   - Bearer type or Access token filled → POST a credential
     //     immediately (mcp_oauth if refresh_token present, else
     //     static_bearer). Button reads "Add credential".
-    //   - Otherwise → start /v1/oauth/authorize popup. Button reads
+    //   - Otherwise → start /v1/oma/oauth/authorize popup. Button reads
     //     "Connect". Picking a registry row only fills the MCP Server
     //     field, never auto-connects.
     if (!customForm.url) return;
@@ -804,7 +844,7 @@ function AddCredentialModal({
   const createCapCliCred = async () => {
     const defaultName =
       CAP_CLIS.find((c) => c.cli_id === cliForm.cli_id)?.label ?? cliForm.cli_id;
-    await api(`/v1/vaults/${vault.id}/credentials`, {
+    await api(`/v1/oma/vaults/${vault.id}/credentials`, {
       method: "POST",
       body: JSON.stringify({
         display_name: cliForm.display_name || defaultName,
@@ -831,7 +871,7 @@ function AddCredentialModal({
         verification_uri_complete?: string;
         interval_seconds: number;
         expires_at_ms: number;
-      }>(`/v1/cap-cli/oauth/initiate`, {
+      }>(`/v1/oma/cap-cli/oauth/initiate`, {
         method: "POST",
         body: JSON.stringify({ vault_id: vault.id, cli_id: cliForm.cli_id }),
       });
@@ -873,7 +913,7 @@ function AddCredentialModal({
           oauth_error?: string;
           description?: string;
           credential_id?: string;
-        }>(`/v1/cap-cli/oauth/poll`, {
+        }>(`/v1/oma/cap-cli/oauth/poll`, {
           method: "POST",
           body: JSON.stringify({ session_id: flow.session_id }),
         });
@@ -974,7 +1014,7 @@ function AddCredentialModal({
           </div>
 
           <div>
-            <label
+            <Label
               htmlFor="vault-mcp-name"
               className="text-sm font-medium text-fg block mb-1"
             >
@@ -982,8 +1022,8 @@ function AddCredentialModal({
               <span className="text-xs text-fg-muted ml-1 px-1.5 py-0.5 rounded bg-bg-surface">
                 Optional
               </span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="vault-mcp-name"
               value={customForm.name}
               onChange={(e) => setCustomForm({ ...customForm, name: e.target.value })}
@@ -993,25 +1033,25 @@ function AddCredentialModal({
           </div>
 
           <div>
-            <label className="text-sm font-medium text-fg block mb-1">Type</label>
+            <Label className="text-sm font-medium text-fg block mb-1">Type</Label>
             <div className="inline-flex rounded-md border border-border p-0.5">
               {(["oauth", "bearer"] as const).map((t) => (
-                <button
+                <Button variant="ghost"
                   key={t}
                   type="button"
                   onClick={() => setCustomForm({ ...customForm, type: t })}
                   className={`inline-flex items-center justify-center px-3 py-1 min-h-11 sm:min-h-0 text-sm rounded ${customForm.type === t ? "bg-bg-surface text-fg font-medium" : "text-fg-muted"}`}
                 >
                   {t === "oauth" ? "OAuth" : "Bearer token"}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="text-sm font-medium text-fg block mb-1">
+            <Label className="text-sm font-medium text-fg block mb-1">
               MCP Server
-            </label>
+            </Label>
             {/* Combobox: input filters the registry as you type. Pick a
                 row to fill the URL + show the favicon as a left-side
                 prefix; type a custom URL to ignore the registry. The
@@ -1101,7 +1141,7 @@ function AddCredentialModal({
             open={tokenSectionOpen}
             onOpenChange={setTokenSectionOpen}
           >
-            <input
+            <Input
               value={customForm.token}
               onChange={(e) =>
                 setCustomForm({ ...customForm, token: e.target.value })
@@ -1133,7 +1173,7 @@ function AddCredentialModal({
             >
               <div className="space-y-3">
                 <div>
-                  <input
+                  <Input
                     value={customForm.refreshToken}
                     onChange={(e) =>
                       setCustomForm({
@@ -1147,13 +1187,13 @@ function AddCredentialModal({
                   />
                 </div>
                 <div>
-                  <label
+                  <Label
                     htmlFor="vault-token-endpoint"
                     className="text-sm font-medium text-fg block mb-1"
                   >
                     Token endpoint
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     id="vault-token-endpoint"
                     value={customForm.tokenEndpoint}
                     onChange={(e) =>
@@ -1167,28 +1207,27 @@ function AddCredentialModal({
                   />
                 </div>
                 <div>
-                  <label
+                  <Label
                     htmlFor="vault-auth-method"
                     className="text-sm font-medium text-fg block mb-1"
                   >
                     Auth method
-                  </label>
-                  <select
+                  </Label>
+                  <Select
                     id="vault-auth-method"
                     value={customForm.authMethod}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setCustomForm({
                         ...customForm,
-                        authMethod: e.target
-                          .value as typeof customForm.authMethod,
+                        authMethod: value as typeof customForm.authMethod,
                       })
                     }
                     className={inputCls}
                   >
-                    <option value="client_secret_post">client_secret_post</option>
-                    <option value="client_secret_basic">client_secret_basic</option>
-                    <option value="none">none</option>
-                  </select>
+                    <SelectOption value="client_secret_post">client_secret_post</SelectOption>
+                    <SelectOption value="client_secret_basic">client_secret_basic</SelectOption>
+                    <SelectOption value="none">none</SelectOption>
+                  </Select>
                 </div>
                 <div className="text-xs text-fg-subtle">
                   RFC 8414 token_endpoint_auth_methods_supported. Used when the
@@ -1213,7 +1252,7 @@ function AddCredentialModal({
               onOpenChange={setClientCredsSectionOpen}
             >
               <div className="space-y-2">
-                <input
+                <Input
                   value={customForm.clientId}
                   onChange={(e) =>
                     setCustomForm({ ...customForm, clientId: e.target.value })
@@ -1222,7 +1261,7 @@ function AddCredentialModal({
                   aria-label="OAuth client ID"
                   className={inputCls}
                 />
-                <input
+                <Input
                   value={customForm.clientSecret}
                   onChange={(e) =>
                     setCustomForm({
@@ -1247,29 +1286,29 @@ function AddCredentialModal({
 
         <TabsContent value="cli" className="space-y-3">
           <div>
-            <label
+            <Label
               htmlFor="vault-cli-id"
               className="text-sm text-fg-muted block mb-1"
             >
               CLI
-            </label>
-            <select
+            </Label>
+            <Select
               id="vault-cli-id"
               value={cliForm.cli_id}
-              onChange={(e) => {
-                setCliForm({ ...cliForm, cli_id: e.target.value });
+              onValueChange={(value) => {
+                setCliForm({ ...cliForm, cli_id: value });
                 setDeviceFlow(null);
               }}
               className={inputCls}
               disabled={deviceFlow?.status === "polling"}
             >
               {CAP_CLIS.map((c) => (
-                <option key={c.cli_id} value={c.cli_id}>
+                <SelectOption key={c.cli_id} value={c.cli_id}>
                   {c.label}
                   {c.oauth ? " (OAuth supported)" : ""}
-                </option>
+                </SelectOption>
               ))}
-            </select>
+            </Select>
             <div className="text-xs text-fg-subtle mt-1">
               {CAP_CLIS.find((c) => c.cli_id === cliForm.cli_id)?.helper}
             </div>
@@ -1300,7 +1339,7 @@ function AddCredentialModal({
                     </a>{" "}
                     and enter:
                   </div>
-                  <div className="font-mono text-2xl text-center tracking-widest text-fg py-2 select-all">
+                  <div className="font-mono text-xl text-center tracking-widest text-fg py-2 select-all">
                     {deviceFlow.user_code}
                   </div>
                   <div className="text-xs text-fg-subtle text-center">
@@ -1329,13 +1368,13 @@ function AddCredentialModal({
           )}
 
           <div>
-            <label
+            <Label
               htmlFor="vault-cli-display-name"
               className="text-sm text-fg-muted block mb-1"
             >
               Display Name{" "}
               <span className="text-fg-subtle">(optional)</span>
-            </label>
+            </Label>
             <TextInput
               id="vault-cli-display-name"
               value={cliForm.display_name}
@@ -1351,7 +1390,7 @@ function AddCredentialModal({
             />
           </div>
           <div>
-            <label
+            <Label
               htmlFor="vault-cli-token"
               className="text-sm text-fg-muted block mb-1"
             >
@@ -1359,7 +1398,7 @@ function AddCredentialModal({
               <span className="text-fg-subtle">
                 (write-only — leave blank to use OAuth above)
               </span>
-            </label>
+            </Label>
             <SecretInput
               id="vault-cli-token"
               value={cliForm.token}

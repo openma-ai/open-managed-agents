@@ -56,9 +56,20 @@ export interface PgQueueOptions {
 
 interface PgRow {
   id: string;
-  payload: unknown;
+  payload_json: string;
   attempts: number;
   enqueued_at_ms: number;
+}
+
+const consoleLogger = {
+  warn(message: string, error?: unknown): void {
+    if (error === undefined) console.warn(message);
+    else console.warn(message, error);
+  },
+};
+
+function messageBody<T>(row: PgRow): T {
+  return JSON.parse(row.payload_json) as T;
 }
 
 /**
@@ -97,7 +108,7 @@ export function createPgQueue<T>(opts: PgQueueOptions): Queue<T> {
   const batchSize = opts.batchSize ?? 10;
   const maxRetries = opts.maxRetries ?? 5;
   const visibilityTimeoutMs = opts.visibilityTimeoutMs ?? 60_000;
-  const log = opts.logger ?? { warn: (m, e) => console.warn(m, e) };
+  const log = opts.logger ?? consoleLogger;
 
   return {
     async enqueue(body, eOpts) {
@@ -147,7 +158,7 @@ export function createPgDlq<T>(opts: PgQueueOptions): DeadLetterQueue<T> {
   const pollIntervalMs = opts.pollIntervalMs ?? 5000;
   const batchSize = opts.batchSize ?? 10;
   const visibilityTimeoutMs = opts.visibilityTimeoutMs ?? 30_000;
-  const log = opts.logger ?? { warn: (m, e) => console.warn(m, e) };
+  const log = opts.logger ?? consoleLogger;
 
   return {
     subscribe(handler) {
@@ -162,7 +173,7 @@ export function createPgDlq<T>(opts: PgQueueOptions): DeadLetterQueue<T> {
           for (const row of claimed) {
             const msg: QueueMessage<T> = {
               id: row.id,
-              body: row.payload as T,
+              body: messageBody<T>(row),
               attempts: row.attempts,
               enqueuedAt: row.enqueued_at_ms,
             };
@@ -219,7 +230,7 @@ async function insertOne<T>(
     .prepare(
       `INSERT INTO queue_messages
          (id, queue_name, payload, attempts, next_visible_at, status, enqueued_at)
-        VALUES (?, ?, ?::jsonb, 0, ?, 'pending', ?)`,
+        VALUES (?, ?, ?::text::jsonb, 0, ?, 'pending', ?)`,
     )
     .bind(id, name, JSON.stringify(body), visibleAt, now)
     .run();
@@ -255,7 +266,8 @@ async function claimBatch<T>(
               attempts = attempts + 1
          FROM claimed
         WHERE q.id = claimed.id
-       RETURNING q.id, q.payload, q.attempts, q.enqueued_at AS enqueued_at_ms`,
+       RETURNING q.id, q.payload::text AS payload_json, q.attempts,
+                 q.enqueued_at AS enqueued_at_ms`,
     )
     .bind(name, Date.now(), batchSize, workerId, lockedUntil)
     .all<PgRow>();
@@ -286,7 +298,8 @@ async function claimDlqBatch<T>(
               locked_until = ?
          FROM claimed
         WHERE q.id = claimed.id
-       RETURNING q.id, q.payload, q.attempts, q.enqueued_at AS enqueued_at_ms`,
+       RETURNING q.id, q.payload::text AS payload_json, q.attempts,
+                 q.enqueued_at AS enqueued_at_ms`,
     )
     .bind(name, Date.now(), batchSize, workerId, lockedUntil)
     .all<PgRow>();
@@ -303,7 +316,7 @@ async function runOne<T>(
 ): Promise<void> {
   const msg: QueueMessage<T> = {
     id: row.id,
-    body: row.payload as T,
+    body: messageBody<T>(row),
     attempts: row.attempts,
     enqueuedAt: row.enqueued_at_ms,
   };

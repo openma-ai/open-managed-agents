@@ -19,6 +19,7 @@ export interface CreateAuthOpts {
   secret?: string;
   baseURL?: string;
   google?: { clientId: string; clientSecret: string };
+  github?: { clientId: string; clientSecret: string };
 }
 
 // Logger-backed sender that prints OTP codes to stdout. Used in
@@ -50,6 +51,8 @@ export function createAuth(opts: CreateAuthOpts): Auth {
     baseURL: opts.baseURL,
     googleClientId: opts.google?.clientId,
     googleClientSecret: opts.google?.clientSecret,
+    githubClientId: opts.github?.clientId,
+    githubClientSecret: opts.github?.clientSecret,
     requireEmailVerify: process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
     cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
     ensureTenant: (u) => ensureTenantSqlite(opts.mainSql, u.id, u.name, u.email),
@@ -64,4 +67,3 @@ function randomFallback(): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
-

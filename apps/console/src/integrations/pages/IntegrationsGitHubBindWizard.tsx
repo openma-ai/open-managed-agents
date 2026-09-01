@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -265,12 +267,12 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
   // ───────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[680px] mx-auto px-4 sm:px-8 lg:px-10 py-10 lg:py-12">
-        <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg mb-2">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--narrow">
+        <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg mb-2">
           Bind agent to GitHub
         </h1>
-        <p className="text-[14px] text-fg-muted mb-8">
+        <p className="text-base text-fg-muted mb-8">
           Make this agent a GitHub teammate — assignable, mentionable, request-as-reviewer.
           The agent gets its own bot identity (a GitHub App) and its own audit trail.
         </p>
@@ -312,12 +314,12 @@ export function IntegrationsGitHubBindWizard({ loadAgents, loadEnvironments }: P
         {phase === "error" && (
           <div className="rounded-md border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
             {error}
-            <button
+            <Button variant="ghost"
               onClick={() => { setPhase("config"); setError(null); }}
               className="ml-3 underline"
             >
               Try again
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -345,14 +347,14 @@ function Stepper({ phase }: { phase: Phase }) {
   ];
   const idx = steps.findIndex((s) => s.key === phase);
   return (
-    <ol className="flex items-stretch gap-1 mb-8 text-[12px]">
+    <ol className="flex items-stretch gap-1 mb-8 text-sm">
       {steps.map((s, i) => {
         const state = i < idx ? "done" : i === idx ? "active" : "pending";
         return (
           <li key={s.key} className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span
-                className={`w-5 h-5 shrink-0 rounded-full inline-flex items-center justify-center text-[11px] font-medium ${
+                className={`w-5 h-5 shrink-0 rounded-full inline-flex items-center justify-center text-xs font-medium ${
                   state === "done"
                     ? "bg-success text-bg"
                     : state === "active"
@@ -363,7 +365,7 @@ function Stepper({ phase }: { phase: Phase }) {
                 {state === "done" ? "✓" : i + 1}
               </span>
               <span
-                className={`text-[12px] truncate ${
+                className={`text-sm truncate ${
                   state === "active"
                     ? "text-fg font-medium"
                     : state === "done"
@@ -375,7 +377,7 @@ function Stepper({ phase }: { phase: Phase }) {
               </span>
             </div>
             <p
-              className={`mt-1 ml-7 text-[11px] truncate ${
+              className={`mt-1 ml-7 text-xs truncate ${
                 state === "active" ? "text-fg-muted" : "text-fg-subtle"
               }`}
             >
@@ -431,28 +433,28 @@ function ConfigForm({
         label="Bot name (visible in GitHub)"
         hint="GitHub will create a bot user @<slug>[bot] from this name. Defaults to the agent's name."
       >
-        <input
+        <Input
           type="text"
           value={persona}
           onChange={(e) => onPersona(e.target.value)}
           placeholder="e.g. Coder"
-          className="w-full px-3 py-2 border border-border rounded-md bg-bg text-[14px]"
+          className="w-full px-3 py-2 border border-border rounded-md bg-bg text-base"
           required
         />
       </Field>
 
-      <div className="rounded-md border border-border bg-bg-surface/30 p-3 text-[12px] leading-relaxed text-fg-muted">
+      <div className="rounded-md border border-border bg-bg-surface/30 p-3 text-sm leading-relaxed text-fg-muted">
         <p className="font-medium text-fg mb-1">How users will engage this bot</p>
         <ul className="list-disc pl-5 space-y-1">
           <li>
             <strong className="text-fg">Primary:</strong> add the{" "}
-            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">{(persona || "<bot>").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}</code>{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-xs">{(persona || "<bot>").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}</code>{" "}
             label to any issue or PR. The bot reacts to whitelisted activity on
             labeled items (open / edit / new comment / new commits / review).
           </li>
           <li>
             <strong className="text-fg">Fallback:</strong>{" "}
-            <code className="px-1 py-0.5 bg-bg rounded text-[11px]">@{(persona || "&lt;bot&gt;").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}[bot]</code>{" "}
+            <code className="px-1 py-0.5 bg-bg rounded text-xs">@{(persona || "&lt;bot&gt;").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._\-]/g, "")}[bot]</code>{" "}
             in any issue / PR / comment body. (GitHub doesn't autocomplete bot
             accounts — type the full string. Functionally equivalent to the
             label trigger.)
@@ -469,21 +471,21 @@ function ConfigForm({
       </div>
 
       {error && (
-        <p className="text-[13px] text-danger">{error}</p>
+        <p className="text-sm text-danger">{error}</p>
       )}
 
       <div className="flex items-center justify-between gap-4 pt-1">
-        <p className="text-[12px] text-fg-muted leading-snug">
+        <p className="text-sm text-fg-muted leading-snug">
           Opens a popup to GitHub. You'll click <strong>Create GitHub App</strong>
           {" "}and then <strong>Install</strong> on the org you want this bot to
           work in.
         </p>
-        <button
+        <Button variant="ghost"
           type="submit"
-          className="shrink-0 px-5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="shrink-0 px-5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Bind on GitHub
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -504,12 +506,12 @@ function InProgress({
 }) {
   return (
     <div className="border border-border rounded-lg p-6 bg-bg-surface/30 text-center">
-      <div className="text-[15px] font-medium text-fg mb-2">
+      <div className="text-base font-medium text-fg mb-2">
         {phase === "registering"
           ? `Creating "${personaName}" on GitHub…`
           : `Installing on your org…`}
       </div>
-      <p className="text-[13px] text-fg-muted mb-5">
+      <p className="text-sm text-fg-muted mb-5">
         Switch to the GitHub popup to confirm. We'll check every few seconds
         and pick up the new install automatically — no need to refresh.
       </p>
@@ -519,7 +521,7 @@ function InProgress({
           <a
             href={manifestUrl}
             target="github-bind"
-            className="text-[13px] text-brand hover:underline"
+            className="text-sm text-brand hover:underline"
           >
             Re-open GitHub registration popup →
           </a>
@@ -528,17 +530,17 @@ function InProgress({
           <a
             href={installUrl}
             target="github-bind"
-            className="text-[13px] text-brand hover:underline"
+            className="text-sm text-brand hover:underline"
           >
             Re-open GitHub install popup →
           </a>
         )}
-        <button
+        <Button variant="ghost"
           onClick={onRefresh}
-          className="text-[12px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] mt-3"
+          className="text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] mt-3"
         >
           Check now
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -547,19 +549,19 @@ function InProgress({
 function Done({ livePubId, onView }: { livePubId: string | null; onView: () => void }) {
   return (
     <div className="border border-success/30 bg-success-subtle rounded-lg p-6 text-center">
-      <div className="text-success text-[15px] font-medium mb-2">✓ Bot is live on GitHub</div>
-      <p className="text-[13px] text-fg-muted mb-4">
+      <div className="text-success text-base font-medium mb-2">✓ Bot is live on GitHub</div>
+      <p className="text-sm text-fg-muted mb-4">
         Try assigning a GitHub issue to the bot or @-mentioning it in a comment — should respond in seconds.
         First response after binding may take ~5 seconds (cold start).
       </p>
-      <button
+      <Button variant="ghost"
         onClick={onView}
-        className="px-4 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover"
+        className="px-4 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover"
       >
         View installation
-      </button>
+      </Button>
       {livePubId && (
-        <p className="mt-3 text-[11px] font-mono text-fg-subtle">publication: {livePubId}</p>
+        <p className="mt-3 text-xs font-mono text-fg-subtle">publication: {livePubId}</p>
       )}
     </div>
   );

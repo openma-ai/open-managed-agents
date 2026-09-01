@@ -1,0 +1,132 @@
+import type { SqlClient } from "@open-managed-agents/sql-client";
+import type {
+  FindRuntimeProjectionSession,
+  ProjectSessionRuntimeState,
+  ProjectSessionRuntimeStateResult,
+  SessionRuntimeProjectionPersistencePort,
+} from "@open-managed-agents/managed-agents-application";
+import type { StoredSession } from "@open-managed-agents/session-store";
+import { sessionFromSourceRow } from "./session-sql-source";
+
+interface ProjectionSessionRow {
+  id: string;
+  document: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null;
+}
+
+function timestamp(value: string): number {
+  const milliseconds = Date.parse(value);
+  if (Number.isNaN(milliseconds)) {
+    throw new Error(`Invalid runtime projection timestamp: ${value}`);
+  }
+  return milliseconds;
+}
+
+function storedSession(row: ProjectionSessionRow): StoredSession {
+  return {
+    revision: Number(row.revision),
+    session: sessionFromSourceRow(row),
+  };
+}
+
+export class SqlSessionRuntimeProjectionPersistence
+  implements SessionRuntimeProjectionPersistencePort
+{
+  constructor(private readonly client: SqlClient) {}
+
+  async findCurrent(
+    input: FindRuntimeProjectionSession,
+  ): Promise<StoredSession | null> {
+    const row = await this.client
+      .prepare(
+        `SELECT id, document, revision, created_at, updated_at, archived_at
+           FROM managed_sessions
+          WHERE workspace_id = ? AND id = ?`,
+      )
+      .bind(input.workspaceId, input.sessionId)
+      .first<ProjectionSessionRow>();
+    return row === null ? null : storedSession(row);
+  }
+
+  async project(
+    input: ProjectSessionRuntimeState,
+  ): Promise<ProjectSessionRuntimeStateResult> {
+    if (input.next.id !== input.sessionId) {
+      throw new Error("Projected session ID does not match the target session");
+    }
+    const eventStatements = input.events.map((event) =>
+      this.client
+        .prepare(
+          `INSERT INTO managed_session_events
+            (workspace_id, session_id, thread_id, id, type, document, processed_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+              SELECT 1 FROM managed_sessions
+               WHERE workspace_id = ? AND id = ? AND revision = ?
+            )
+           ON CONFLICT (workspace_id, session_id, id) DO NOTHING`,
+        )
+        .bind(
+          input.workspaceId,
+          input.sessionId,
+          "sessionThreadId" in event ? event.sessionThreadId ?? null : null,
+          event.id,
+          event.type,
+          JSON.stringify(event),
+          timestamp(event.processedAt),
+          input.workspaceId,
+          input.sessionId,
+          input.expectedRevision,
+        ),
+    );
+    const next = input.next;
+    const update = this.client
+      .prepare(
+        `UPDATE managed_sessions
+            SET document = ?, revision = revision + 1, agent_id = ?,
+                agent_version = ?, environment_id = ?, deployment_id = ?,
+                status = ?, updated_at = ?, archived_at = ?
+          WHERE workspace_id = ? AND id = ? AND revision = ?`,
+      )
+      .bind(
+        JSON.stringify(next),
+        next.agent.id,
+        next.agent.version,
+        next.environmentId,
+        next.deploymentId ?? null,
+        next.status,
+        timestamp(next.updatedAt),
+        next.archivedAt === null ? null : timestamp(next.archivedAt),
+        input.workspaceId,
+        input.sessionId,
+        input.expectedRevision,
+      );
+    const results = await this.client.batch([...eventStatements, update]);
+    const updateResult = results[results.length - 1];
+    if (updateResult === undefined) {
+      throw new Error("Runtime projection batch returned no update result");
+    }
+    if (updateResult.meta.changes === 0) {
+      const current = await this.findCurrent(input);
+      return current === null
+        ? { type: "not_found" }
+        : {
+            type: "revision_conflict",
+            actualRevision: current.revision,
+          };
+    }
+    if (updateResult.meta.changes !== 1) {
+      throw new Error(
+        `Runtime projection affected ${updateResult.meta.changes} session rows`,
+      );
+    }
+    const projected = await this.findCurrent(input);
+    if (projected === null) {
+      throw new Error("Session vanished after runtime projection");
+    }
+    return { type: "projected", record: projected };
+  }
+}

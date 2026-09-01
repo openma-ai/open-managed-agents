@@ -1,0 +1,428 @@
+{
+  "contract": "taste-saas/v1",
+  "version": 1,
+  "preset": "linear-like",
+  "taskModel": {
+    "primaryTask": "scan, operate, and diagnose managed-agent resources without losing workspace context",
+    "entity": "managed-agent resource",
+    "contentPriority": [
+      "status",
+      "name",
+      "environment",
+      "updatedAt",
+      "owner"
+    ],
+    "operationFrequency": "high",
+    "operationRisk": "mixed",
+    "preserveContext": true
+  },
+  "shell": {
+    "slots": [
+      "brand",
+      "tenant",
+      "navigation",
+      "breadcrumb",
+      "route-outlet",
+      "sidebar-restore",
+      "global-surfaces"
+    ],
+    "states": [
+      "desktop-full",
+      "desktop-hidden",
+      "desktop-preview",
+      "desktop-preview-overlay",
+      "mobile-hidden",
+      "mobile-drawer"
+    ],
+    "scrollOwner": "route-outlet"
+  },
+  "layouts": [
+    {
+      "id": "resource-list",
+      "route": "/agents|sessions|files|evals|environments|skills|vaults|memory|model-cards|api-keys|runtimes",
+      "kind": "list",
+      "slots": ["list-toolbar", "data-grid"],
+      "states": [
+        "loading",
+        "ready",
+        "empty",
+        "filtered-empty",
+        "error",
+        "mutation-pending"
+      ],
+      "scrollOwner": "data-grid"
+    },
+    {
+      "id": "resource-detail-rail",
+      "route": "/agents/:id|environments/:id|vaults/:id|memory/:id|evals/:id",
+      "kind": "detail-rail",
+      "slots": ["detail-actions", "detail-body", "meta-rail"],
+      "states": [
+        "loading",
+        "ready",
+        "not-found",
+        "error",
+        "editing",
+        "mutation-pending",
+        "read-only"
+      ],
+      "scrollOwner": "detail-body+meta-rail"
+    },
+    {
+      "id": "agent-session",
+      "route": "/sessions/:id",
+      "kind": "conversation",
+      "slots": [
+        "session-header",
+        "conversation",
+        "composer",
+        "activity-panel"
+      ],
+      "states": [
+        "loading",
+        "ready",
+        "empty",
+        "streaming",
+        "interrupted",
+        "error"
+      ],
+      "scrollOwner": "AgentChatView",
+      "componentOwner": "@openma/common/chat-ui",
+      "components": ["AgentChatView", "AgentUITurnView"]
+    },
+    {
+      "id": "operations-dashboard",
+      "route": "/",
+      "kind": "dashboard",
+      "slots": ["dashboard-intro", "kpi-row", "activity-grid"],
+      "states": ["loading", "ready", "empty", "error", "partial-data", "stale"],
+      "scrollOwner": "route-outlet"
+    },
+    {
+      "id": "integration-settings",
+      "route": "/integrations/:provider",
+      "kind": "settings",
+      "slots": ["settings-nav", "settings-body", "save-slot"],
+      "states": [
+        "loading",
+        "ready",
+        "dirty",
+        "saving",
+        "saved",
+        "validation-error",
+        "server-error"
+      ],
+      "scrollOwner": "settings-body"
+    }
+  ],
+  "slotStates": [
+    {
+      "slot": "list-toolbar",
+      "states": {
+        "loading": { "component": "ListToolbar", "geometry": "list-toolbar" },
+        "ready": { "component": "ListToolbar", "geometry": "list-toolbar" },
+        "empty": { "component": "ListToolbar", "geometry": "list-toolbar" },
+        "filtered-empty": { "component": "ListToolbar", "geometry": "list-toolbar" },
+        "error": { "component": "ListToolbar", "geometry": "list-toolbar" },
+        "mutation-pending": { "component": "ListToolbar", "geometry": "list-toolbar" }
+      },
+      "stableAnchors": ["left", "right", "top", "bottom"]
+    },
+    {
+      "slot": "data-grid",
+      "states": {
+        "loading": { "component": "DataGridSkeleton", "geometry": "list-grid" },
+        "ready": { "component": "DataGrid", "geometry": "list-grid" },
+        "empty": { "component": "ResourceZeroState", "geometry": "list-grid" },
+        "filtered-empty": { "component": "ResourceNoResults", "geometry": "list-grid" },
+        "error": { "component": "ResourceLoadAlert", "geometry": "list-grid" },
+        "mutation-pending": { "component": "DataGrid", "geometry": "list-grid" }
+      },
+      "stableAnchors": ["left", "top"]
+    },
+    {
+      "slot": "detail-body",
+      "states": {
+        "loading": { "component": "DetailSkeleton", "geometry": "detail-rail" },
+        "ready": { "component": "DetailBody", "geometry": "detail-rail" },
+        "not-found": { "component": "DetailNotFound", "geometry": "detail-rail" },
+        "error": { "component": "DetailAlert", "geometry": "detail-rail" },
+        "editing": { "component": "DetailBody", "geometry": "detail-rail" },
+        "mutation-pending": { "component": "DetailBody", "geometry": "detail-rail" },
+        "read-only": { "component": "DetailBody", "geometry": "detail-rail" }
+      },
+      "stableAnchors": ["left", "top"]
+    },
+    {
+      "slot": "conversation",
+      "states": {
+        "loading": { "component": "AgentChatView", "geometry": "agent-session" },
+        "ready": { "component": "AgentChatView", "geometry": "agent-session" },
+        "empty": { "component": "AgentChatView", "geometry": "agent-session" },
+        "streaming": { "component": "AgentChatView", "geometry": "agent-session" },
+        "interrupted": { "component": "AgentChatView", "geometry": "agent-session" },
+        "error": { "component": "AgentChatView", "geometry": "agent-session" }
+      },
+      "stableAnchors": ["left", "right", "top", "bottom"],
+      "componentOwner": "@openma/common/chat-ui"
+    },
+    {
+      "slot": "activity-grid",
+      "states": {
+        "loading": { "component": "DashboardSkeleton", "geometry": "dashboard-grid" },
+        "ready": { "component": "DashboardPanels", "geometry": "dashboard-grid" },
+        "empty": { "component": "DashboardZeroState", "geometry": "dashboard-grid" },
+        "error": { "component": "DashboardAlert", "geometry": "dashboard-grid" },
+        "partial-data": { "component": "DashboardPanels", "geometry": "dashboard-grid" },
+        "stale": { "component": "DashboardPanels", "geometry": "dashboard-grid" }
+      },
+      "stableAnchors": ["left", "right", "top"]
+    },
+    {
+      "slot": "settings-body",
+      "states": {
+        "loading": { "component": "SettingsSkeleton", "geometry": "settings-stack" },
+        "ready": { "component": "SettingsForm", "geometry": "settings-stack" },
+        "dirty": { "component": "SettingsForm", "geometry": "settings-stack" },
+        "saving": { "component": "SettingsForm", "geometry": "settings-stack" },
+        "saved": { "component": "SettingsForm", "geometry": "settings-stack" },
+        "validation-error": { "component": "SettingsForm", "geometry": "settings-stack" },
+        "server-error": { "component": "SettingsAlert", "geometry": "settings-stack" }
+      },
+      "stableAnchors": ["left", "top"]
+    }
+  ],
+  "globalSurfaces": [
+    {
+      "intent": "mutation.reversible",
+      "surface": "toast",
+      "semantic": "success",
+      "action": "undo"
+    },
+    {
+      "intent": "decision.destructive",
+      "surface": "alert-dialog",
+      "semantic": "danger",
+      "action": "confirm"
+    },
+    {
+      "intent": "context.preview",
+      "surface": "sheet",
+      "semantic": "neutral",
+      "action": "return-focus"
+    },
+    {
+      "intent": "task.commit",
+      "surface": "modal",
+      "semantic": "neutral",
+      "action": "submit"
+    },
+    {
+      "intent": "field.validation",
+      "surface": "inline",
+      "semantic": "danger",
+      "action": "focus-field"
+    },
+    {
+      "intent": "system.outage",
+      "surface": "system-alert",
+      "semantic": "danger",
+      "action": "retry-or-sign-in"
+    }
+  ],
+  "tokens": {
+    "--density-unit": {
+      "kind": "basis",
+      "value": "1px",
+      "rationale": "Linear compact-with-breathing measurement unit",
+      "consumers": ["--type-line", "--shell-top-h", "--list-toolbar-h", "--data-row-h"]
+    },
+    "--type-line": {
+      "kind": "derived",
+      "value": "calc(var(--density-unit) * 18)",
+      "consumers": ["body", ".console-sidebar-row", ".console-data-row"]
+    },
+    "--shell-top-h": {
+      "kind": "derived",
+      "value": "calc(var(--density-unit) * 39)",
+      "consumers": [".console-sidebar-tenant", ".console-topbar"]
+    },
+    "--sidebar-row-h": {
+      "kind": "derived",
+      "value": "calc(var(--type-line) + var(--density-unit) * 10)",
+      "consumers": [".console-sidebar-row", ".console-sidebar-row-skeleton"]
+    },
+    "--list-toolbar-h": {
+      "kind": "derived",
+      "value": "calc(var(--density-unit) * 42)",
+      "consumers": [".console-list-toolbar", ".console-selection-toolbar"]
+    },
+    "--table-head-h": {
+      "kind": "derived",
+      "value": "calc(var(--density-unit) * 28)",
+      "consumers": [".console-data-head", ".console-data-head-skeleton"]
+    },
+    "--data-row-h": {
+      "kind": "derived",
+      "value": "calc(var(--type-line) + var(--density-unit) * 14)",
+      "consumers": [".console-data-row", ".console-data-row-skeleton"]
+    },
+    "--control-h": {
+      "kind": "derived",
+      "value": "calc(var(--type-line) + var(--density-unit) * 10)",
+      "consumers": [".console-list-toolbar button", ".console-list-toolbar input", ".console-topbar button"]
+    },
+    "--shell-stage-gap": {
+      "kind": "basis",
+      "value": "8px",
+      "rationale": "Outer frame gap shared by the route surface and sidebar preview",
+      "consumers": [".console-route-surface", ".console-sidebar-preview", ".console-sidebar-restore"]
+    },
+    "--shell-route-radius": {
+      "kind": "basis",
+      "value": "10px",
+      "rationale": "Quiet route-surface and preview rounding",
+      "consumers": [".console-route-surface", ".console-sidebar-preview"]
+    },
+    "--shell-sidebar-w": {
+      "kind": "basis",
+      "value": "236px",
+      "rationale": "Readable navigation width shared by full and preview states",
+      "consumers": [".console-sidebar-rail", ".console-sidebar-preview"]
+    },
+    "--shell-slot-size": {
+      "kind": "basis",
+      "value": "19px",
+      "rationale": "Shared tenant, command, navigation, and user mark slot",
+      "consumers": [".console-sidebar-tenant [data-sidebar-track=icon]", ".console-sidebar-command [data-sidebar-track=icon]", ".console-sidebar-nav [data-sidebar-track=icon]", ".console-sidebar-footer [data-sidebar-track=icon]"]
+    },
+    "--sidebar-frame-inset": {
+      "kind": "basis",
+      "value": "8px",
+      "rationale": "Shared outer inset for every sidebar section",
+      "consumers": [".console-sidebar-tenant", ".console-sidebar-command", ".console-sidebar-nav", ".console-sidebar-footer"]
+    },
+    "--sidebar-row-inset": {
+      "kind": "basis",
+      "value": "8px",
+      "rationale": "Shared inner inset for sidebar rows and headings",
+      "consumers": [".console-sidebar-row", ".console-sidebar-group-label"]
+    },
+    "--sidebar-track-gap": {
+      "kind": "basis",
+      "value": "9px",
+      "rationale": "Stable gap between the sidebar icon, label, and trailing tracks",
+      "consumers": [".console-sidebar-row", ".console-sidebar-group-label"]
+    },
+    "--sidebar-label-offset": {
+      "kind": "derived",
+      "value": "calc(var(--sidebar-row-inset) + var(--shell-slot-size) + var(--sidebar-track-gap))",
+      "rationale": "First text axis shared by sidebar headings and row labels",
+      "consumers": [".console-sidebar-group-label", "[data-sidebar-track=label]"]
+    },
+    "--list-frame-inset": {
+      "kind": "basis",
+      "value": "12px",
+      "rationale": "Dense list frame calibrated to breadcrumb and first table text",
+      "consumers": [".console-list-toolbar", ".console-data-grid-cushion", ".console-list-empty"]
+    },
+    "--detail-frame-inset": {
+      "kind": "basis",
+      "value": "56px",
+      "rationale": "Linear reading inset for detail body and rail layouts",
+      "consumers": [".console-detail-layout--single", ".console-detail-layout--rail"]
+    },
+    "--detail-rail-w": {
+      "kind": "basis",
+      "value": "360px",
+      "rationale": "Metadata track shared by ready and loading detail layouts",
+      "consumers": [".console-detail-rail", ".console-detail-rail-skeleton"]
+    },
+    "--detail-layout-gap": {
+      "kind": "basis",
+      "value": "24px",
+      "rationale": "Stable separation between narrative body and metadata rail",
+      "consumers": [".console-detail-layout--rail", ".console-detail-layout-skeleton"]
+    },
+    "--dashboard-frame-inset": {
+      "kind": "basis",
+      "value": "24px",
+      "rationale": "Dashboard section inset independent from detail reading width",
+      "consumers": [".console-dashboard-layout", ".console-dashboard-skeleton"]
+    },
+    "--dashboard-kpi-h": {
+      "kind": "basis",
+      "value": "112px",
+      "rationale": "Four-up Linear KPI card height",
+      "consumers": [".console-kpi-card", ".console-kpi-card-skeleton"]
+    },
+    "--tenant-avatar-optical-x": {
+      "kind": "basis",
+      "value": "1px",
+      "rationale": "Optical correction inside the stable tenant avatar slot",
+      "consumers": [".console-sidebar-tenant [data-slot=avatar]", ".console-tenant-menu [data-slot=avatar]"]
+    },
+    "--surface-overlay": {
+      "kind": "semantic",
+      "value": "var(--bg)",
+      "rationale": "Brand-aware opaque material for global overlays",
+      "consumers": [".console-command-palette", ".console-modal", ".console-sheet", ".console-toast"]
+    }
+  },
+  "alignmentGroups": [
+    {
+      "id": "sidebar-slot-axis",
+      "mode": "centerX",
+      "token": "--shell-slot-size",
+      "members": ["shell.tenant.slot", "shell.command.slot", "shell.navigation.slot", "shell.footer.slot"]
+    },
+    {
+      "id": "sidebar-label-axis",
+      "mode": "firstTextX",
+      "token": "--sidebar-label-offset",
+      "members": ["shell.tenant.label", "shell.command.label", "shell.group.label", "shell.navigation.label", "shell.footer.label"]
+    },
+    {
+      "id": "shell-top-band",
+      "mode": "top",
+      "token": "--shell-top-h",
+      "members": ["shell.tenant", "shell.breadcrumb"]
+    },
+    {
+      "id": "shell-top-controls",
+      "mode": "centerY",
+      "token": "--shell-top-h",
+      "members": ["shell.tenant.controls", "shell.breadcrumb.controls"]
+    },
+    {
+      "id": "list-frame-start",
+      "mode": "left",
+      "token": "--list-frame-inset",
+      "members": ["resource-list.toolbar", "resource-list.thead", "resource-list.tbody", "resource-list.empty"]
+    },
+    {
+      "id": "list-readable-start",
+      "mode": "firstTextX",
+      "token": "--list-frame-inset",
+      "members": ["shell.breadcrumb.firstText", "resource-list.toolbar.firstText", "resource-list.thead.firstText", "resource-list.tbody.firstText"]
+    },
+    {
+      "id": "top-control-baseline",
+      "mode": "baseline",
+      "token": "--type-line",
+      "members": ["shell.breadcrumb.label", "resource-list.toolbar.label", "resource-list.filter.label"]
+    },
+    {
+      "id": "list-sticky-top",
+      "mode": "top",
+      "token": "--list-toolbar-h",
+      "members": ["resource-list.data-grid", "resource-list.thead"]
+    },
+    {
+      "id": "detail-rail-end",
+      "mode": "right",
+      "token": "--detail-rail-w",
+      "members": ["resource-detail.meta-rail", "resource-detail.meta-rail-skeleton"]
+    }
+  ]
+}

@@ -35,9 +35,8 @@ export interface TenantRoutesDeps {
    *  unix-second timestamps; Node returns ms — let the runtime decide. */
   listMemberships?: (userId: string) => Promise<MembershipRow[]>;
   /** Where to write the tenant + membership rows on create. CF wraps
-   *  D1.batch over the legacy `tenant`/`membership` tables (camelCase
-   *  columns); Node uses the snake_case tenant tables. Returning the
-   *  tenant_id confirms the insert. */
+   *  D1.batch over the `tenant`/`membership` tables; Node uses the same
+   *  tenant column shape. Returning the tenant_id confirms the insert. */
   createTenantAndMembership?: (input: {
     tenantId: string;
     name: string;
@@ -112,7 +111,7 @@ export interface MeRoutesDeps {
   } | null>;
   loadTenant?: (tenantId: string) => Promise<{ id: string; name: string } | null>;
   listMemberships?: (userId: string) => Promise<MembershipRow[]>;
-  /** Mint a long-lived API key. Used by POST /v1/me/cli-tokens; reuses
+  /** Mint a long-lived API key. Used by POST /v1/oma/me/cli-tokens; reuses
    *  the api-keys storage. */
   mintApiKey?: (input: {
     tenantId: string;

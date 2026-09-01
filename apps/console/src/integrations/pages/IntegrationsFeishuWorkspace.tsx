@@ -1,3 +1,8 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -76,11 +81,11 @@ export function IntegrationsFeishuWorkspace() {
   const installation = installations.find((i) => i.id === id);
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 lg:px-10 py-8 lg:py-10">
+    <div className="console-integration-route">
+      <div className="console-integration-page">
         <Link
           to="/integrations/feishu"
-          className="inline-flex items-center gap-1 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← Feishu integrations
         </Link>
@@ -88,16 +93,16 @@ export function IntegrationsFeishuWorkspace() {
         {installation && (
           <header className="mt-3 mb-7 flex items-end justify-between gap-6">
             <div className="min-w-0">
-              <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg truncate">
+              <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg truncate">
                 {installation.tenant_name}
               </h1>
-              <p className="mt-1.5 text-[14px] text-fg-muted">
+              <p className="mt-1.5 text-base text-fg-muted">
                 Dedicated bot · {installation.tenant_type === "internal" ? "internal tenant" : "external tenant"}
               </p>
             </div>
             <Link
               to={`/integrations/feishu/publish?installation=${id}`}
-              className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
+              className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
               Publish another
@@ -186,7 +191,7 @@ function PublicationCard({
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-bg">
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between gap-4 px-5 py-4 hover:bg-bg-surface/40 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] text-left"
@@ -195,40 +200,40 @@ function PublicationCard({
           {pub.persona.avatarUrl ? (
             <img src={pub.persona.avatarUrl} alt="" loading="lazy" decoding="async" className="w-7 h-7 rounded-full shrink-0" />
           ) : (
-            <div className="w-7 h-7 rounded-full bg-brand-subtle text-brand flex items-center justify-center text-[12px] font-medium shrink-0">
+            <div className="w-7 h-7 rounded-full bg-brand-subtle text-brand flex items-center justify-center text-sm font-medium shrink-0">
               {pub.persona.name.slice(0, 1).toUpperCase()}
             </div>
           )}
           <div className="min-w-0">
-            <div className="text-[15px] font-medium text-fg truncate">{pub.persona.name}</div>
-            <div className="text-[11px] text-fg-muted font-mono uppercase tracking-wider">
+            <div className="text-base font-medium text-fg truncate">{pub.persona.name}</div>
+            <div className="text-xs text-fg-muted font-mono uppercase tracking-wider">
               {pub.status}
             </div>
           </div>
         </div>
-        <span className="shrink-0 text-[12px] text-fg-muted">
+        <span className="shrink-0 text-sm text-fg-muted">
           {open ? "Hide" : "Edit"} {open ? "▲" : "▼"}
         </span>
-      </button>
+      </Button>
 
       {open && (
         <div className="border-t border-border p-5 space-y-5 text-sm bg-bg-surface/20">
           {error && (
-            <div className="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
+            <div className="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger">
               {error}
             </div>
           )}
 
           <div className="grid md:grid-cols-2 gap-4">
             <Field label="Persona name">
-              <input
+              <Input
                 value={personaName}
                 onChange={(e) => setPersonaName(e.target.value)}
                 className={inputCls}
               />
             </Field>
             <Field label="Avatar URL">
-              <input
+              <Input
                 value={personaAvatar}
                 onChange={(e) => setPersonaAvatar(e.target.value)}
                 placeholder="https://…"
@@ -239,34 +244,32 @@ function PublicationCard({
 
           <div>
             <div className="flex items-baseline justify-between mb-2">
-              <label className="text-[13px] font-medium text-fg">Capabilities</label>
-              <span className="text-[12px] text-fg-muted">
+              <Label className="text-sm font-medium text-fg">Capabilities</Label>
+              <span className="text-sm text-fg-muted">
                 {caps.size} of {ALL_FEISHU_CAPABILITIES.length} enabled
               </span>
             </div>
-            <p className="text-[12px] text-fg-muted mb-3">
+            <p className="text-sm text-fg-muted mb-3">
               What this agent may do in Feishu. Defaults to everything; uncheck to restrict.
             </p>
             <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4">
               {CAPABILITY_GROUPS.map((g) => (
                 <div key={g.label}>
-                  <div className="font-mono text-[10px] tracking-wider text-fg-subtle uppercase mb-1.5">
+                  <div className="font-mono text-xs tracking-wider text-fg-subtle uppercase mb-1.5">
                     {g.label}
                   </div>
                   <div className="space-y-1">
                     {g.caps.map((cap) => (
-                      <label
+                      <Label
                         key={cap}
-                        className="flex items-center gap-2 text-[12px] cursor-pointer hover:text-fg text-fg-muted"
+                        className="flex items-center gap-2 text-sm cursor-pointer hover:text-fg text-fg-muted"
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={caps.has(cap)}
-                          onChange={() => toggleCap(cap)}
-                          className="accent-brand"
+                          onCheckedChange={() => toggleCap(cap)}
                         />
                         <code className="font-mono">{cap}</code>
-                      </label>
+                      </Label>
                     ))}
                   </div>
                 </div>
@@ -275,52 +278,56 @@ function PublicationCard({
           </div>
 
           <div>
-            <label className="text-[13px] font-medium text-fg mb-2 block">
+            <Label className="text-sm font-medium text-fg mb-2 block">
               Session granularity
-            </label>
-            <p className="text-[12px] text-fg-muted mb-3">
+            </Label>
+            <p className="text-sm text-fg-muted mb-3">
               How incoming messages are routed into agent sessions.
             </p>
-            <div className="space-y-2">
+            <RadioGroup
+              value={granularity}
+              onValueChange={(value) =>
+                setGranularity(value as FeishuSessionGranularity)
+              }
+              className="space-y-2"
+            >
               {SESSION_GRANULARITY_OPTIONS.map((opt) => (
-                <label
+                <Label
                   key={opt.value}
+                  htmlFor={`granularity-${pub.id}-${opt.value}`}
                   className="flex items-start gap-2 cursor-pointer hover:text-fg text-fg-muted"
                 >
-                  <input
-                    type="radio"
-                    name={`granularity-${pub.id}`}
+                  <RadioGroupItem
+                    id={`granularity-${pub.id}-${opt.value}`}
                     value={opt.value}
-                    checked={granularity === opt.value}
-                    onChange={() => setGranularity(opt.value)}
-                    className="accent-brand mt-0.5"
+                    className="mt-0.5"
                   />
                   <span>
-                    <span className="text-[13px] font-medium text-fg">{opt.label}</span>
-                    <span className="block text-[12px] text-fg-muted leading-relaxed">
+                    <span className="text-sm font-medium text-fg">{opt.label}</span>
+                    <span className="block text-sm text-fg-muted leading-relaxed">
                       {opt.hint}
                     </span>
                   </span>
-                </label>
+                </Label>
               ))}
-            </div>
+            </RadioGroup>
           </div>
 
           <div className="pt-2 flex items-center justify-between border-t border-border -mx-5 px-5 -mb-5 pb-5 mt-5">
-            <button
+            <Button variant="ghost"
               onClick={save}
               disabled={working}
-              className="px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+              className="px-3.5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
             >
               {working ? "Saving…" : "Save changes"}
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               onClick={unpublish}
               disabled={working}
-              className="text-[12px] text-danger hover:underline disabled:opacity-50"
+              className="text-sm text-danger hover:underline disabled:opacity-50"
             >
               Unpublish agent
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -329,4 +336,4 @@ function PublicationCard({
 }
 
 const inputCls =
-  "w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
+  "w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";

@@ -28,7 +28,7 @@ function api(path: string, init?: RequestInit) {
 }
 
 async function createVault(name = "Test Vault") {
-  const res = await api("/v1/vaults", {
+  const res = await api("/v1/oma/vaults", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name }),
@@ -44,7 +44,7 @@ async function createCredential(
   vaultId: string,
   body: { display_name: string; auth: any },
 ) {
-  return api(`/v1/vaults/${vaultId}/credentials`, {
+  return api(`/v1/oma/vaults/${vaultId}/credentials`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify(body),
@@ -79,7 +79,7 @@ describe("OPE-7 e2e — credential routes via services container", () => {
     expect(created.auth.mcp_server_url).toBe("https://mcp.example.com/sse");
     expect(created.auth.client_id).toBe("cid");
 
-    const listRes = await api(`/v1/vaults/${vaultId}/credentials`, {
+    const listRes = await api(`/v1/oma/vaults/${vaultId}/credentials`, {
       headers: HEADERS,
     });
     const listed = (await listRes.json()) as any;
@@ -112,7 +112,7 @@ describe("OPE-7 e2e — credential routes via services container", () => {
     });
     const first = (await firstRes.json()) as any;
     const archiveRes = await api(
-      `/v1/vaults/${v.id}/credentials/${first.id}/archive`,
+      `/v1/oma/vaults/${v.id}/credentials/${first.id}/archive`,
       { method: "POST", headers: HEADERS },
     );
     expect(archiveRes.status).toBe(200);
@@ -145,7 +145,7 @@ describe("OPE-7 e2e — credential routes via services container", () => {
       auth: { type: "mcp_oauth", mcp_server_url: "https://imm.example.com/sse" },
     });
     const cred = (await credRes.json()) as any;
-    const updateRes = await api(`/v1/vaults/${v.id}/credentials/${cred.id}`, {
+    const updateRes = await api(`/v1/oma/vaults/${v.id}/credentials/${cred.id}`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -168,7 +168,7 @@ describe("OPE-7 e2e — credential routes via services container", () => {
       },
     });
     const cred = (await credRes.json()) as any;
-    const updateRes = await api(`/v1/vaults/${v.id}/credentials/${cred.id}`, {
+    const updateRes = await api(`/v1/oma/vaults/${v.id}/credentials/${cred.id}`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ auth: { access_token: "new" } }),
@@ -198,14 +198,14 @@ describe("OPE-7 e2e — cascade archive (no FK, app-layer UPDATE)", () => {
     }
 
     // Archive the vault — should cascade to all credentials
-    const archiveRes = await api(`/v1/vaults/${vault.id}/archive`, {
+    const archiveRes = await api(`/v1/oma/vaults/${vault.id}/archive`, {
       method: "POST",
       headers: HEADERS,
     });
     expect(archiveRes.status).toBe(200);
 
     // Verify every credential is now archived
-    const listRes = await api(`/v1/vaults/${vault.id}/credentials`, {
+    const listRes = await api(`/v1/oma/vaults/${vault.id}/credentials`, {
       headers: HEADERS,
     });
     const list = (await listRes.json()) as any;
@@ -228,10 +228,10 @@ describe("OPE-7 e2e — cascade archive (no FK, app-layer UPDATE)", () => {
       auth: { type: "static_bearer", token: "tb" },
     });
 
-    await api(`/v1/vaults/${va.id}/archive`, { method: "POST", headers: HEADERS });
+    await api(`/v1/oma/vaults/${va.id}/archive`, { method: "POST", headers: HEADERS });
 
     const listB = (await (
-      await api(`/v1/vaults/${vb.id}/credentials`, { headers: HEADERS })
+      await api(`/v1/oma/vaults/${vb.id}/credentials`, { headers: HEADERS })
     ).json()) as any;
     expect(listB.data[0].archived_at).toBeNull();
   });
@@ -240,7 +240,7 @@ describe("OPE-7 e2e — cascade archive (no FK, app-layer UPDATE)", () => {
 describe("OPE-6 e2e — memory_store delete cascades via D1.batch (FK removed)", () => {
   it("deleting a memory store deletes its memories + versions in one atomic batch", async () => {
     // Create store
-    const storeRes = await api("/v1/memory_stores", {
+    const storeRes = await api("/v1/oma/memory_stores", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "e2e-mem", description: "delete cascade test" }),
@@ -250,7 +250,7 @@ describe("OPE-6 e2e — memory_store delete cascades via D1.batch (FK removed)",
 
     // Write a few memories
     for (const path of ["/a", "/b", "/c"]) {
-      const res = await api(`/v1/memory_stores/${store.id}/memories`, {
+      const res = await api(`/v1/oma/memory_stores/${store.id}/memories`, {
         method: "POST",
         headers: HEADERS,
         body: JSON.stringify({ path, content: `content for ${path}` }),
@@ -260,7 +260,7 @@ describe("OPE-6 e2e — memory_store delete cascades via D1.batch (FK removed)",
 
     // Delete the store — should cascade to memories + memory_versions via
     // app-layer D1.batch (FK was removed in this PR).
-    const deleteRes = await api(`/v1/memory_stores/${store.id}`, {
+    const deleteRes = await api(`/v1/oma/memory_stores/${store.id}`, {
       method: "DELETE",
       headers: HEADERS,
     });
@@ -305,7 +305,7 @@ describe("services-container wiring sanity", () => {
   });
 
   it("internal routes also have services available", async () => {
-    // /v1/internal/* skips authMiddleware but is still under /v1/* so
+    // /v1/oma/internal/* skips authMiddleware but is still under /v1/* so
     // servicesMiddleware applies. Hit the simplest internal endpoint that
     // doesn't require an INTEGRATIONS_INTERNAL_SECRET to validate wiring.
     // Just create-credential via internal — needs the secret. We provide it
@@ -313,7 +313,7 @@ describe("services-container wiring sanity", () => {
     // gracefully if absent).
     const secret = (env as any).INTEGRATIONS_INTERNAL_SECRET;
     if (!secret) {
-      // Wiring is exercised by /v1/vaults/* tests above; this is a bonus check
+      // Wiring is exercised by /v1/oma/vaults/* tests above; this is a bonus check
       // only when the env binding is configured. Skip silently otherwise.
       return;
     }

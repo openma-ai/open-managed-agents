@@ -47,9 +47,9 @@ Both want: `spec → live process → typed conversation → clean shutdown`. Th
                              │ implementations
               ┌──────────────┴───────────────┐
               ▼                              ▼
-     NodeSpawner                    CfSandboxSpawner
-     (clash-bridge,                 (openma session DO,
-      desktop, dev)                  multi-tenant cloud)
+     NodeSpawner                    SandboxSpawner
+     (clash-bridge,                 (any sandbox exposing
+      desktop, dev)                  live duplex stdio)
 ```
 
 The `Spawner` boundary is the only host-specific contract. Everything above it
@@ -64,30 +64,35 @@ src/
   types.ts            Spawner / ChildHandle / AcpSession / SessionOptions / RestartPolicy
   runtime.ts          Thin re-export from @openma/common/acp-runtime
   session.ts          Thin re-export from @openma/common/acp-runtime
+  placement.ts        Composition helper for local vs sandbox placement
   registry.ts         KNOWN_ACP_AGENTS catalog + detect()
   spawners/
     node.ts           Thin re-export of the shared NodeSpawner
-    cf-sandbox.ts     CfSandboxSpawner — adapts openma's sandbox.exec
-    types.ts          (re-export of Spawner from ../types)
+    sandbox.ts        SandboxSpawner — adapts SandboxDuplexProcessPort
 ```
 
-The spawners are subpath exports so a host can pull only the implementation it needs without dragging the others' transitive deps (e.g. clash-bridge in pure Node never needs the cf-sandbox adapter).
+The spawners are subpath exports so a host can pull only the implementation it
+needs. A sandbox host must explicitly provide the live-stdio capability; a
+command/log-polling sandbox cannot be composed with ACP by accident.
 
 ## Status
 
-Active. Backchat and OpenManaged now instantiate the same `AcpRuntimeImpl`,
-`AcpSessionImpl`, and `NodeSpawner` classes.
+Active. Backchat and OpenManaged now instantiate the same `AcpRuntimeImpl` and
+`AcpSessionImpl`; placement only selects `NodeSpawner` or `SandboxSpawner`.
 
 ## Usage sketch
 
 ### clash-bridge (local)
 
 ```ts
-import { AcpRuntimeImpl } from "@open-managed-agents/acp-runtime";
+import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
 import { NodeSpawner } from "@open-managed-agents/acp-runtime/node-spawner";
 import { detect } from "@open-managed-agents/acp-runtime/registry";
 
-const runtime = new AcpRuntimeImpl(new NodeSpawner());
+const runtime = createAcpRuntime({
+  type: "local",
+  spawner: new NodeSpawner(),
+});
 
 // User picked "Claude Code" from clash chat dropdown
 const agent = await detect("claude-agent-acp");
@@ -107,17 +112,21 @@ for await (const event of session.prompt(userMessage)) {
 ### openma session DO (cloud)
 
 ```ts
-import { AcpRuntime } from "@open-managed-agents/acp-runtime";
-import { CfSandboxSpawner } from "@open-managed-agents/acp-runtime/cf-sandbox";
+import { createAcpRuntime } from "@open-managed-agents/acp-runtime/placement";
+import { supportsDuplexProcess } from "@open-managed-agents/sandbox";
 
 // Inside SessionDO, where `this.sandbox` is the existing openma sandbox handle.
-const runtime = new AcpRuntime(new CfSandboxSpawner(this.sandbox));
+if (!supportsDuplexProcess(this.sandbox)) {
+  throw new Error("selected sandbox cannot host an ACP process");
+}
+const runtime = createAcpRuntime({ type: "sandbox", sandbox: this.sandbox });
 
 const session = await runtime.start({
   agent: {
     command: "claude-code",
     args: ["--acp"],
-    env: { ANTHROPIC_API_KEY: await this.vault.resolve("anthropic") },
+    // Provider credentials stay on the host and are injected by the
+    // sandbox outbound proxy; do not copy raw vault values into env.
   },
   restart: { mode: "on-crash" },
   perTurnTimeoutMs: 5 * 60_000,
@@ -132,7 +141,9 @@ for await (const event of session.prompt(userMessage)) {
 ## Open questions
 
 - **Tool-result return path under restart**: if a child crashes between `tools/request` and `provideToolResult`, the new child has no memory of the request. ACP itself doesn't support "resume mid-tool" — caller will need to surface this as a turn failure. Considering an explicit `restartLost` event so the host can handle gracefully.
-- **stderr discipline**: `CfSandboxSpawner` currently merges stderr into the container log stream rather than exposing it. `NodeSpawner` exposes it directly. Sufficient for now but means downstream tooling that reads `stderr` for diagnostics behaves differently per host.
+- **Remote duplex support**: ACP composition deliberately requires
+  `SandboxDuplexProcessPort`. Remote adapters that only expose command/log
+  polling cannot be used until they implement live stdin/stdout/stderr.
 - **Multiple in-flight prompts**: ACP allows it; we currently serialize per session. Revisit once openma sub-agent multiplex needs it.
 
 ## Non-goals

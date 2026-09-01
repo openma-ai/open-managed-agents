@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -95,13 +97,13 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[720px] mx-auto px-4 sm:px-8 lg:px-10 py-10 lg:py-12">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--narrow">
         <header className="mb-8">
-          <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+          <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
             Install Linear via Personal API Key
           </h1>
-          <p className="mt-1.5 text-[14px] text-fg-muted max-w-xl">
+          <p className="mt-1.5 text-base text-fg-muted max-w-xl">
             Paste a Linear PAT, pick the agent + environment to bind. Bot
             actions in Linear will be attributed to the PAT owner. For full
             agent identity (panel UX, dedicated bot user), use{" "}
@@ -113,14 +115,14 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
         </header>
 
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
+          <div className="mb-4 px-4 py-3 rounded-md border border-danger/40 bg-danger-subtle text-sm text-danger">
             {error}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5" autoComplete="off">
           <div>
-            <label className="block text-[13px] font-medium text-fg mb-1.5">Agent</label>
+            <Label className="block text-sm font-medium text-fg mb-1.5">Agent</Label>
             <Combobox<{ id: string; name: string }>
               value={agentId}
               onValueChange={(v) => setAgentId(v)}
@@ -128,7 +130,7 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
               getValue={(a) => a.id}
               getLabel={(a) => (
                 <span>
-                  {a.name} <span className="text-fg-subtle text-[12px]">({a.id})</span>
+                  {a.name} <span className="text-fg-subtle text-sm">({a.id})</span>
                 </span>
               )}
               getTextLabel={(a) => `${a.name} (${a.id})`}
@@ -137,7 +139,7 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
           </div>
 
           <div>
-            <label className="block text-[13px] font-medium text-fg mb-1.5">Environment</label>
+            <Label className="block text-sm font-medium text-fg mb-1.5">Environment</Label>
             <Combobox<{ id: string; name: string }>
               value={envId}
               onValueChange={(v) => setEnvId(v)}
@@ -145,7 +147,7 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
               getValue={(e) => e.id}
               getLabel={(e) => (
                 <span>
-                  {e.name} <span className="text-fg-subtle text-[12px]">({e.id})</span>
+                  {e.name} <span className="text-fg-subtle text-sm">({e.id})</span>
                 </span>
               )}
               getTextLabel={(e) => `${e.name} (${e.id})`}
@@ -154,11 +156,11 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
           </div>
 
           <div>
-            <label className="block text-[13px] font-medium text-fg mb-1.5">
+            <Label className="block text-sm font-medium text-fg mb-1.5">
               Persona display name
-            </label>
+            </Label>
             <TextInput
-              className="w-full px-3 py-2 rounded-md border border-border bg-bg text-[14px]"
+              className="w-full px-3 py-2 rounded-md border border-border bg-bg text-base"
               placeholder="e.g. Coder"
               value={personaName}
               onChange={(e) => { personaEditedRef.current = true; setPersonaName(e.target.value); }}
@@ -166,32 +168,32 @@ export function IntegrationsLinearPatInstall({ loadAgents, loadEnvironments }: P
           </div>
 
           <div>
-            <label className="block text-[13px] font-medium text-fg mb-1.5">
+            <Label className="block text-sm font-medium text-fg mb-1.5">
               Linear Personal API Key
-            </label>
+            </Label>
             <SecretInput
-              className="w-full px-3 py-2 rounded-md border border-border bg-bg text-[14px] font-mono"
+              className="w-full px-3 py-2 rounded-md border border-border bg-bg text-base font-mono"
               placeholder="lin_api_…"
               value={pat}
               onChange={(e) => setPat(e.target.value)}
             />
-            <p className="mt-1 text-[12px] text-fg-muted">
+            <p className="mt-1 text-sm text-fg-muted">
               Generate at Linear → Settings → Security &amp; access → Personal API keys.
               Stored encrypted in your tenant vault; not shared with agents directly.
             </p>
           </div>
 
           <div className="flex items-center gap-3 pt-2">
-            <button
+            <Button variant="ghost"
               type="submit"
               disabled={working}
-              className="px-4 py-2 rounded-md bg-brand text-brand-fg text-[14px] font-medium disabled:opacity-50"
+              className="px-4 py-2 rounded-md bg-brand text-brand-fg text-base font-medium disabled:opacity-50"
             >
               {working ? "Installing…" : "Install"}
-            </button>
+            </Button>
             <a
               href="/integrations/linear"
-              className="px-4 py-2 text-[14px] text-fg-muted hover:text-fg"
+              className="px-4 py-2 text-base text-fg-muted hover:text-fg"
             >
               Cancel
             </a>

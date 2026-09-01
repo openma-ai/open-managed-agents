@@ -1,0 +1,20 @@
+{
+  "name": "@open-managed-agents/managed-agents-adapters-http",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@open-managed-agents/app": "workspace:*",
+    "@open-managed-agents/managed-agents-api": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/oma-api": "workspace:*",
+    "@open-managed-agents/oma-models": "workspace:*",
+    "hono": "4.12.12"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

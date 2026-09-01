@@ -21,9 +21,12 @@ peerDependencyRules:
 # by default) with ERR_PNPM_IGNORED_BUILDS.
 allowBuilds:
   '@anthropic-ai/tokenizer': true
+  '@google/genai': false
   better-sqlite3: true
+  cpu-features: false
   esbuild: true
   msw: false
   protobufjs: true
   sharp: true
+  ssh2: false
   workerd: true

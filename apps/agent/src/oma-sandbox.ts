@@ -444,7 +444,7 @@ export class OmaSandbox extends Sandbox {
 // Per-host bypass for R2 — createBackup / restoreBackup do raw S3-style
 // PUT/GET/HEAD against `*.r2.cloudflarestorage.com` from inside the
 // container, and so do agent-driven presigned PUTs from the
-// /v1/internal/sessions/:id/uploads/presign flow. Routing those through
+// /v1/oma/internal/sessions/:id/uploads/presign flow. Routing those through
 // inject_vault_creds (which materializes bodies + uses Workers fetch)
 // corrupts the squashfs blob — see cloudflare/sandbox-sdk#619 ("Failed
 // to mount squashfs: This doesn't look like a squashfs image" when

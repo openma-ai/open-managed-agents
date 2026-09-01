@@ -2,7 +2,10 @@ import { betterAuth } from "better-auth";
 import { drizzle } from "drizzle-orm/d1";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { emailOTP } from "better-auth/plugins";
-import type { Env } from "@open-managed-agents/shared";
+import {
+  buildSocialProviders,
+  type Env,
+} from "@open-managed-agents/shared";
 import {
   createCfShardPoolService,
   createCfTenantShardDirectoryService,
@@ -42,13 +45,12 @@ function otpEmailHtml(code: string, label: string): string {
 export function createAuth(env: Env) {
   const db = drizzle(env.MAIN_DB, { schema });
 
-  const socialProviders: Record<string, unknown> = {};
-  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
-    socialProviders.google = {
-      clientId: env.GOOGLE_CLIENT_ID,
-      clientSecret: env.GOOGLE_CLIENT_SECRET,
-    };
-  }
+  const socialProviders = buildSocialProviders({
+    googleClientId: env.GOOGLE_CLIENT_ID,
+    googleClientSecret: env.GOOGLE_CLIENT_SECRET,
+    githubClientId: env.GITHUB_CLIENT_ID,
+    githubClientSecret: env.GITHUB_CLIENT_SECRET,
+  });
 
   return betterAuth({
     basePath: "/auth",

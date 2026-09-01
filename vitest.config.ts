@@ -1,5 +1,41 @@
+import { readFile } from "node:fs/promises";
 import { defineConfig } from "vitest/config";
 import { cloudflarePool, cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import type { Plugin } from "vite";
+
+const packagesWithUnpublishedSourcemapSources = [
+  "/node_modules/.pnpm/@workflow+serde@",
+  "/node_modules/.pnpm/cron-schedule@",
+  "/node_modules/.pnpm/standardwebhooks@",
+  "/node_modules/.pnpm/@cloudflare+containers@",
+  "/node_modules/.pnpm/@openma+common@",
+  "/node_modules/.pnpm/@agentclientprotocol+sdk@",
+];
+
+/**
+ * These published packages reference source files that are absent from their
+ * npm tarballs. Strip only their unusable sourceMappingURL comments so Vite
+ * keeps validating first-party and all other dependency sourcemaps normally.
+ */
+function stripUnpublishedDependencySourcemaps(): Plugin {
+  return {
+    name: "strip-unpublished-dependency-sourcemaps",
+    enforce: "pre",
+    async load(id) {
+      const filePath = id.split("?", 1)[0];
+      const normalizedPath = filePath.replaceAll("\\", "/");
+      if (
+        !normalizedPath.endsWith(".js") ||
+        !packagesWithUnpublishedSourcemapSources.some((packagePath) => normalizedPath.includes(packagePath))
+      ) {
+        return null;
+      }
+
+      const code = await readFile(filePath, "utf8");
+      return code.replace(/^\/\/# sourceMappingURL=.*(?:\r?\n|$)/gm, "");
+    },
+  };
+}
 
 const cfWorkerOptions = {
   wrangler: { configPath: "./wrangler.test.jsonc" },
@@ -23,7 +59,7 @@ export default defineConfig({
   // cloudflareTest registers the `cloudflare:test` virtual module
   // (runInDurableObject, listDurableObjectIds, etc.) — the pool runner
   // alone doesn't expose it, only the plugin does.
-  plugins: [cloudflareTest(cfWorkerOptions)],
+  plugins: [stripUnpublishedDependencySourcemaps(), cloudflareTest(cfWorkerOptions)],
   resolve: {
     // vitest-pool-workers bridges these into the miniflare/workerd runtime
     // by string match — RegExp entries only work for the vitest module graph
@@ -45,6 +81,7 @@ export default defineConfig({
       { find: "@open-managed-agents/memory-store/adapters/local-fs-blob", replacement: "./packages/memory-store/src/adapters/local-fs-blob.ts" },
       { find: "@open-managed-agents/memory-store/adapters/s3-blob", replacement: "./packages/memory-store/src/adapters/s3-blob.ts" },
       { find: "@open-managed-agents/memory-store", replacement: "./packages/memory-store/src/index.ts" },
+      { find: "@open-managed-agents/mcp", replacement: "./packages/mcp/src/index.ts" },
       { find: "@open-managed-agents/dreams-store/test-fakes", replacement: "./packages/dreams-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/dreams-store", replacement: "./packages/dreams-store/src/index.ts" },
       { find: "@open-managed-agents/dreams-pipeline", replacement: "./packages/dreams-pipeline/src/index.ts" },
@@ -73,6 +110,94 @@ export default defineConfig({
       // ─── sql-client ───────────────────────────────────────────────────
       { find: "@open-managed-agents/sql-client/adapters/cf-d1", replacement: "./packages/sql-client/src/adapters/cf-d1.ts" },
       { find: "@open-managed-agents/sql-client", replacement: "./packages/sql-client/src/index.ts" },
+
+      // ─── v1 domain interfaces and OMA extension lane ────────────────
+      { find: "@open-managed-agents/domain/agents", replacement: "./packages/managed-agents-domain/src/agents/index.ts" },
+      { find: "@open-managed-agents/domain/credentials", replacement: "./packages/managed-agents-domain/src/credentials/index.ts" },
+      { find: "@open-managed-agents/domain/deployments", replacement: "./packages/managed-agents-domain/src/deployments/index.ts" },
+      { find: "@open-managed-agents/domain/dreams", replacement: "./packages/managed-agents-domain/src/dreams/index.ts" },
+      { find: "@open-managed-agents/domain/environments", replacement: "./packages/managed-agents-domain/src/environments/index.ts" },
+      { find: "@open-managed-agents/domain/environment-work", replacement: "./packages/managed-agents-domain/src/environment-work/index.ts" },
+      { find: "@open-managed-agents/domain/files", replacement: "./packages/managed-agents-domain/src/files/index.ts" },
+      { find: "@open-managed-agents/domain/memory-stores", replacement: "./packages/managed-agents-domain/src/memory-stores/index.ts" },
+      { find: "@open-managed-agents/domain/memories", replacement: "./packages/managed-agents-domain/src/memories/index.ts" },
+      { find: "@open-managed-agents/domain/sessions", replacement: "./packages/managed-agents-domain/src/sessions/index.ts" },
+      { find: "@open-managed-agents/domain/skills", replacement: "./packages/managed-agents-domain/src/skills/index.ts" },
+      { find: "@open-managed-agents/domain/tunnels", replacement: "./packages/managed-agents-domain/src/tunnels/index.ts" },
+      { find: "@open-managed-agents/domain/user-profiles", replacement: "./packages/managed-agents-domain/src/user-profiles/index.ts" },
+      { find: "@open-managed-agents/domain/vaults", replacement: "./packages/managed-agents-domain/src/vaults/index.ts" },
+      { find: "@open-managed-agents/domain", replacement: "./packages/managed-agents-domain/src/index.ts" },
+      { find: "@open-managed-agents/agent-store", replacement: "./packages/agent-store/src/index.ts" },
+      { find: "@open-managed-agents/credential-store-sql", replacement: "./packages/credential-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/credential-store-memory", replacement: "./packages/credential-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/credential-store", replacement: "./packages/credential-store/src/index.ts" },
+      { find: "@open-managed-agents/deployment-store-sql", replacement: "./packages/deployment-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/deployment-store-memory", replacement: "./packages/deployment-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/deployment-store", replacement: "./packages/deployment-store/src/index.ts" },
+      { find: "@open-managed-agents/deployment-run-store-sql", replacement: "./packages/deployment-run-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/deployment-run-store-memory", replacement: "./packages/deployment-run-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/deployment-run-store", replacement: "./packages/deployment-run-store/src/index.ts" },
+      { find: "@open-managed-agents/dream-store-sql", replacement: "./packages/dream-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/dream-store-memory", replacement: "./packages/dream-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/dream-store", replacement: "./packages/dream-store/src/index.ts" },
+      { find: "@open-managed-agents/environment-store-sql", replacement: "./packages/environment-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/environment-store-memory", replacement: "./packages/environment-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/environment-store", replacement: "./packages/environment-store/src/index.ts" },
+      { find: "@open-managed-agents/environment-work-store-memory", replacement: "./packages/environment-work-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/environment-work-store-sql", replacement: "./packages/environment-work-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/environment-work-store", replacement: "./packages/environment-work-store/src/index.ts" },
+      { find: "@open-managed-agents/file-content-store", replacement: "./packages/file-content-store/src/index.ts" },
+      { find: "@open-managed-agents/file-store-sql", replacement: "./packages/file-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/file-store-memory", replacement: "./packages/file-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/file-store", replacement: "./packages/file-store/src/index.ts" },
+      { find: "@open-managed-agents/memory-store-store-sql", replacement: "./packages/memory-store-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/memory-store-store-memory", replacement: "./packages/memory-store-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/memory-store-store", replacement: "./packages/memory-store-store/src/index.ts" },
+      { find: "@open-managed-agents/memory-document-store-sql", replacement: "./packages/memory-document-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/memory-document-store-memory", replacement: "./packages/memory-document-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/memory-document-store", replacement: "./packages/memory-document-store/src/index.ts" },
+      { find: "@open-managed-agents/session-store-sql", replacement: "./packages/session-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/session-store-memory", replacement: "./packages/session-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-store", replacement: "./packages/session-store/src/index.ts" },
+      { find: "@open-managed-agents/session-thread-store-sql", replacement: "./packages/session-thread-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/session-thread-store-memory", replacement: "./packages/session-thread-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-thread-store", replacement: "./packages/session-thread-store/src/index.ts" },
+      { find: "@open-managed-agents/session-resource-store-sql", replacement: "./packages/session-resource-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/session-resource-store-memory", replacement: "./packages/session-resource-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-resource-store", replacement: "./packages/session-resource-store/src/index.ts" },
+      { find: "@open-managed-agents/skill-store-sql", replacement: "./packages/skill-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/skill-store-memory", replacement: "./packages/skill-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/skill-store", replacement: "./packages/skill-store/src/index.ts" },
+      { find: "@open-managed-agents/tunnel-store-memory", replacement: "./packages/tunnel-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/tunnel-store-sql", replacement: "./packages/tunnel-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/tunnel-store", replacement: "./packages/tunnel-store/src/index.ts" },
+      { find: "@open-managed-agents/user-profile-store-memory", replacement: "./packages/user-profile-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/user-profile-store-sql", replacement: "./packages/user-profile-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/user-profile-store", replacement: "./packages/user-profile-store/src/index.ts" },
+      { find: "@open-managed-agents/session-event-store", replacement: "./packages/session-event-store/src/index.ts" },
+      { find: "@open-managed-agents/session-event-store-sql", replacement: "./packages/session-event-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/session-event-store-memory", replacement: "./packages/session-event-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/vault-store-sql", replacement: "./packages/vault-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/vault-store-memory", replacement: "./packages/vault-store-memory/src/index.ts" },
+      { find: "@open-managed-agents/vault-store", replacement: "./packages/vault-store/src/index.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/context", replacement: "./packages/session-runtime-contract/src/context.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/dispatch", replacement: "./packages/session-runtime-contract/src/dispatch.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/history", replacement: "./packages/session-runtime-contract/src/history.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/lifecycle", replacement: "./packages/session-runtime-contract/src/lifecycle.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/stream", replacement: "./packages/session-runtime-contract/src/stream.ts" },
+      { find: "@open-managed-agents/session-runtime-contract", replacement: "./packages/session-runtime-contract/src/index.ts" },
+      { find: "@open-managed-agents/session-runtime-sql/context", replacement: "./packages/session-runtime-sql/src/context.ts" },
+      { find: "@open-managed-agents/session-runtime-sql/history", replacement: "./packages/session-runtime-sql/src/history.ts" },
+      { find: "@open-managed-agents/session-runtime-sql", replacement: "./packages/session-runtime-sql/src/index.ts" },
+      { find: "@open-managed-agents/session-realtime", replacement: "./packages/session-realtime/src/index.ts" },
+      { find: "@open-managed-agents/session-realtime-memory", replacement: "./packages/session-realtime-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-wakeup", replacement: "./packages/session-wakeup/src/index.ts" },
+      { find: "@open-managed-agents/session-wakeup-memory", replacement: "./packages/session-wakeup-memory/src/index.ts" },
+      { find: "@open-managed-agents/session-wakeup-cloudflare", replacement: "./packages/session-wakeup-cloudflare/src/index.ts" },
+      { find: "@open-managed-agents/runtime", replacement: "./packages/managed-agents-runtime/src/index.ts" },
+      { find: "@open-managed-agents/runtime-relay", replacement: "./packages/runtime-relay/src/index.ts" },
+      { find: "@open-managed-agents/oma-models", replacement: "./packages/oma-models/src/index.ts" },
+      { find: "@open-managed-agents/oma-api", replacement: "./packages/oma-api/src/index.ts" },
 
       // ─── scheduler (subpaths matter) ──────────────────────────────────
       { find: "@open-managed-agents/scheduler/cf", replacement: "./packages/scheduler/src/adapters/cf.ts" },
@@ -164,9 +289,38 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/known-agents", replacement: "./packages/acp-runtime/src/known-agents.ts" },
+      { find: "@open-managed-agents/acp-runtime/placement", replacement: "./packages/acp-runtime/src/placement.ts" },
+      { find: "@open-managed-agents/acp-runtime/sandbox-spawner", replacement: "./packages/acp-runtime/src/spawners/sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/node-spawner", replacement: "./packages/acp-runtime/src/node-spawner.ts" },
       { find: "@open-managed-agents/acp-runtime/registry", replacement: "./packages/acp-runtime/src/registry.ts" },
       { find: "@open-managed-agents/acp-runtime", replacement: "./packages/acp-runtime/src/index.ts" },
+
+      // ─── v2 composition SDK (package name intentionally shorter than folder) ───
+      { find: "@open-managed-agents/app/capabilities", replacement: "./packages/managed-agents-app/src/capabilities.ts" },
+      { find: "@open-managed-agents/app/features", replacement: "./packages/managed-agents-app/src/features.ts" },
+      { find: "@open-managed-agents/app/managed-agents", replacement: "./packages/managed-agents-app/src/managed-agents.ts" },
+      { find: "@open-managed-agents/app/modules/agents", replacement: "./packages/managed-agents-app/src/modules/agents.ts" },
+      { find: "@open-managed-agents/app/modules/credentials", replacement: "./packages/managed-agents-app/src/modules/credentials.ts" },
+      { find: "@open-managed-agents/app/modules/deployment-runs", replacement: "./packages/managed-agents-app/src/modules/deployment-runs.ts" },
+      { find: "@open-managed-agents/app/modules/deployments", replacement: "./packages/managed-agents-app/src/modules/deployments.ts" },
+      { find: "@open-managed-agents/app/modules/dreams", replacement: "./packages/managed-agents-app/src/modules/dreams.ts" },
+      { find: "@open-managed-agents/app/modules/environments", replacement: "./packages/managed-agents-app/src/modules/environments.ts" },
+      { find: "@open-managed-agents/app/modules/environment-work", replacement: "./packages/managed-agents-app/src/modules/environment-work.ts" },
+      { find: "@open-managed-agents/app/modules/files", replacement: "./packages/managed-agents-app/src/modules/files.ts" },
+      { find: "@open-managed-agents/app/modules/memory-stores", replacement: "./packages/managed-agents-app/src/modules/memory-stores.ts" },
+      { find: "@open-managed-agents/app/modules/memories", replacement: "./packages/managed-agents-app/src/modules/memories.ts" },
+      { find: "@open-managed-agents/app/modules/models", replacement: "./packages/managed-agents-app/src/modules/models.ts" },
+      { find: "@open-managed-agents/app/modules/session-events", replacement: "./packages/managed-agents-app/src/modules/session-events.ts" },
+      { find: "@open-managed-agents/app/modules/session-resources", replacement: "./packages/managed-agents-app/src/modules/session-resources.ts" },
+      { find: "@open-managed-agents/app/modules/session-thread-events", replacement: "./packages/managed-agents-app/src/modules/session-thread-events.ts" },
+      { find: "@open-managed-agents/app/modules/session-threads", replacement: "./packages/managed-agents-app/src/modules/session-threads.ts" },
+      { find: "@open-managed-agents/app/modules/sessions", replacement: "./packages/managed-agents-app/src/modules/sessions.ts" },
+      { find: "@open-managed-agents/app/modules/skills", replacement: "./packages/managed-agents-app/src/modules/skills.ts" },
+      { find: "@open-managed-agents/app/modules/tunnels", replacement: "./packages/managed-agents-app/src/modules/tunnels.ts" },
+      { find: "@open-managed-agents/app/modules/user-profiles", replacement: "./packages/managed-agents-app/src/modules/user-profiles.ts" },
+      { find: "@open-managed-agents/app/modules/vaults", replacement: "./packages/managed-agents-app/src/modules/vaults.ts" },
+      { find: "@open-managed-agents/app/openma", replacement: "./packages/managed-agents-app/src/openma.ts" },
+      { find: "@open-managed-agents/app", replacement: "./packages/managed-agents-app/src/index.ts" },
 
       // Catch-all fallbacks for the vitest module graph (workerd needs the
       // explicit entries above; this helps node-side tests resolve any
@@ -178,6 +332,11 @@ export default defineConfig({
   test: {
     testTimeout: 30000,
     hookTimeout: 30000,
+    // Each file owns a workerd/miniflare runtime. Letting Vitest scale to all
+    // host CPUs exhausts the local runtime and turns trivial requests into
+    // exact 30s timeouts; two workers keeps the suite deterministic on local
+    // workerd while CI runners with fewer cores still use their natural limit.
+    maxWorkers: 2,
     exclude: [
       "**/node_modules/**",
       "**/.git/**",
@@ -188,10 +347,33 @@ export default defineConfig({
       "apps/console/**",
       "apps/main-node/**",
       "packages/acp-runtime/**",
+      "packages/cli/**",
       "packages/cap/test/**",
       "packages/integrations-adapters-node/**",
       "packages/integrations-adapters-cf/test/**",
+      "packages/managed-agents-adapters-blob/test/**",
+      "packages/managed-agents-adapters-sql/test/**",
+      "packages/managed-agents-adapters-runtime/test/**",
+      "packages/managed-agents-runtime/**",
+      "packages/sandbox/test/**",
+      "packages/agent-store-sql/test/**",
+      "packages/credential-store-sql/test/**",
+      "packages/deployment-store-sql/test/**",
+      "packages/deployment-run-store-sql/test/**",
+      "packages/dream-store-sql/test/**",
+      "packages/environment-store-sql/test/**",
+      "packages/environment-work-store-sql/test/**",
+      "packages/file-store-sql/test/**",
+      "packages/memory-store-store-sql/test/**",
+      "packages/memory-document-store-sql/test/**",
+      "packages/skill-store-sql/test/**",
+      "packages/tunnel-store-sql/test/**",
+      "packages/user-profile-store-sql/test/**",
+      "packages/session-event-store-sql/test/**",
+      "packages/session-resource-store-sql/test/**",
+      "packages/session-thread-store-sql/test/**",
       "packages/session-runtime/test/**",
+      "packages/vault-store-sql/test/**",
     ],
     pool: cloudflarePool(cfWorkerOptions),
   },

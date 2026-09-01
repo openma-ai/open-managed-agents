@@ -4,7 +4,7 @@
  */
 
 // --- Main worker routes ---
-import mainApp from "../apps/main/src/index";
+import mainApp, { McpProxyRpc as MainMcpProxyRpc } from "../apps/main/src/index";
 
 // --- Agent worker DO + harness registration ---
 import { registerHarness } from "../apps/agent/src/harness/registry";
@@ -211,7 +211,7 @@ export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 
 // --- Migration bootstrap ---
 // Apply D1 schema migrations on first request. Necessary because miniflare's
-// D1 starts empty and our routes (e.g. /v1/memory_stores) hit memory tables.
+// D1 starts empty and our routes (e.g. /v1/oma/memory_stores) hit memory tables.
 // Idempotent: every CREATE uses IF NOT EXISTS, drop is a no-op rerun.
 //
 // Mirrors what `wrangler d1 migrations apply` does in prod — applies the
@@ -224,6 +224,42 @@ export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 // @ts-expect-error vitest resolves SQL via ?raw
 import authSchema from "../apps/main/migrations/0000_consolidated.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
+import managedAgentsSchema from "../apps/main/migrations/0001_yummy_cobalt_man.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedSessionsSchema from "../apps/main/migrations/0002_spooky_captain_flint.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedSessionEventsSchema from "../apps/main/migrations/0003_heavy_daredevil.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedSessionResourceSecretsSchema from "../apps/main/migrations/0004_parched_terrax.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedFilesSchema from "../apps/main/migrations/0005_breezy_molecule_man.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedSessionThreadsSchema from "../apps/main/migrations/0006_sharp_fallen_one.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedMemoryStoresSchema from "../apps/main/migrations/0007_military_darkhawk.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedEnvironmentsSchema from "../apps/main/migrations/0008_melted_hobgoblin.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedVaultsSchema from "../apps/main/migrations/0009_dashing_lorna_dane.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedCredentialsSchema from "../apps/main/migrations/0010_complete_gorgon.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedUserProfilesSchema from "../apps/main/migrations/0011_third_spiral.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedMemoriesSchema from "../apps/main/migrations/0012_omniscient_maverick.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedSkillsSchema from "../apps/main/migrations/0013_fat_mastermind.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedDeploymentsSchema from "../apps/main/migrations/0014_nervous_hawkeye.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedEnvironmentWorkSchema from "../apps/main/migrations/0015_famous_captain_america.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedEnvironmentWorkSessionSchema from "../apps/main/migrations/0016_empty_umar.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedDreamsSchema from "../apps/main/migrations/0017_adorable_fenris.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import managedTunnelsSchema from "../apps/main/migrations/0018_vengeful_the_renegades.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
 import schema0017 from "../apps/main/migrations/0017_dreams.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import schema0018 from "../apps/main/migrations/0018_runtime_multi_tenant.sql?raw";
@@ -234,6 +270,24 @@ import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?r
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
+  managedAgentsSchema as string,
+  managedSessionsSchema as string,
+  managedSessionEventsSchema as string,
+  managedSessionResourceSecretsSchema as string,
+  managedFilesSchema as string,
+  managedSessionThreadsSchema as string,
+  managedMemoryStoresSchema as string,
+  managedEnvironmentsSchema as string,
+  managedVaultsSchema as string,
+  managedCredentialsSchema as string,
+  managedUserProfilesSchema as string,
+  managedMemoriesSchema as string,
+  managedSkillsSchema as string,
+  managedDeploymentsSchema as string,
+  managedEnvironmentWorkSchema as string,
+  managedEnvironmentWorkSessionSchema as string,
+  managedDreamsSchema as string,
+  managedTunnelsSchema as string,
   schema0017 as string,
   schema0018 as string,
 ];
@@ -298,9 +352,38 @@ async function applyMigrations(
   }
 }
 
-export default {
-  async fetch(req: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+// The vitest runner does not expose named WorkerEntrypoints, so the combined
+// test worker uses the production MCP entrypoint as its default export. This
+// preserves its RPC methods (including managedSessionEventProduced) while
+// routing ordinary HTTP requests into the real main app.
+export default class TestWorker extends MainMcpProxyRpc {
+  /**
+   * Keep direct module imports used by the D1 unit tests compatible with the
+   * previous module-worker default export. Wrangler ignores static handlers;
+   * they are only exercised when a test imports this class and calls
+   * `TestWorker.fetch(request, env, ctx)` directly.
+   */
+  static async fetch(req: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     await ensureMigrations(env);
     return mainApp.fetch(req, env, ctx);
-  },
-};
+  }
+
+  override async managedSessionEventProduced(
+    opts: Parameters<MainMcpProxyRpc["managedSessionEventProduced"]>[0],
+  ): ReturnType<MainMcpProxyRpc["managedSessionEventProduced"]> {
+    // SessionDO-only tests can produce events before any HTTP request reaches
+    // the combined worker. Production applies D1 migrations during deploy;
+    // the test entrypoint must provide the equivalent bootstrap before the
+    // real projection method touches MAIN_DB.
+    await ensureMigrations(this.env);
+    return super.managedSessionEventProduced(opts);
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    await ensureMigrations(this.env);
+    if (req.headers.has("x-oma-mcp-server")) {
+      return super.fetch(req);
+    }
+    return mainApp.fetch(req, this.env, this.ctx);
+  }
+}

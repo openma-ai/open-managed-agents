@@ -4,12 +4,12 @@ OMA uses [changesets](https://github.com/changesets/changesets) to manage
 versioning and publishing for the public npm packages:
 
 - `@openma/cli` (`packages/cli`)
+- `@openma/sdk` (`packages/sdk`)
 
-`@openma/sdk` is **deprecated**: the openma API is wire-compatible with
-Anthropic's Managed Agents API, so the recommended client is now
-`@anthropic-ai/sdk` pointed at `baseURL: 'https://openma.dev'`. The package
-remains in `packages/sdk` for reference; no new versions will be published.
-See `packages/sdk/README.md` for the migration note.
+`@openma/sdk` is a composition facade over `@anthropic-ai/sdk`: Managed Agents
+calls use the official SDK unchanged, while product-only routes are exposed
+under `client.oma`. It is released independently when that facade or the OMA
+extension surface changes.
 
 All `@open-managed-agents/*` internal packages are private and never
 published — changesets is configured to skip them entirely.

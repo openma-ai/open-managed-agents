@@ -32,7 +32,7 @@ Mirrors the [Claude Managed Agents](https://www.anthropic.com/engineering/manage
 
 | Caller | Knows | Asks |
 |---|---|---|
-| Local-runtime ACP child | `(sid, server, agent api key)` | HTTP `/v1/mcp-proxy/<sid>/<server>` with `Authorization: Bearer <apiKey>` |
+| Local-runtime ACP child | `(sid, server, agent api key)` | HTTP `/v1/oma/mcp-proxy/<sid>/<server>` with `Authorization: Bearer <apiKey>` |
 | Cloud agent DO | `(tenantId, sid, server)` | `env.MAIN_MCP.mcpForward(...)` via service-binding RPC (binding scope = auth) |
 | Sandbox container | full upstream URL | `env.MAIN_MCP.outboundForward(...)` via the agent worker's outbound interceptor |
 

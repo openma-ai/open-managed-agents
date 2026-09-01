@@ -1,0 +1,113 @@
+:root {
+  /* Linear template geometry, with OpenMA's existing coral brand and warm
+     neutral materials. Components consume these aliases instead of
+     reintroducing approximate spacing values. */
+  --console-pad-xs: 6px;
+  --console-pad-sm: 8px;
+  --console-pad-md: 10px;
+  --console-pad-lg: 12px;
+  --console-pad-xl: 18px;
+  --console-pad-2xl: 24px;
+  --console-gap-3xs: 3px;
+  --console-gap-2xs: 4px;
+  --console-gap-xs: 5px;
+  --console-gap-sm: 6px;
+  --console-gap-md: 7px;
+  --console-gap-lg: 8px;
+  --console-gap-xl: 9px;
+  --console-gap-2xl: 10px;
+  --console-radius-sm: 6px;
+  --console-radius-md: 7px;
+  --console-radius-row: 8px;
+  --console-radius-card: 10px;
+  --console-radius-popover: 14px;
+  --console-radius-pill: 999px;
+
+  /* One deliberate product type scale. Linear's 12.5px body is the
+     fulcrum; labels step down once and headings step up without the
+     1px-by-1px drift that previously accumulated across feature pages. */
+  --console-type-label: 11px;
+  --console-type-body: 12.5px;
+  --console-type-ui: 14px;
+  --console-type-section: 18px;
+  --console-type-title: 26px;
+  --console-type-kpi: 34px;
+
+  --density-unit: 1px;
+  --type-line: calc(var(--density-unit) * 18);
+  --shell-top-h: calc(var(--density-unit) * 44);
+  --sidebar-row-h: calc(var(--type-line) + var(--density-unit) * 10);
+  --sidebar-pill-gap: var(--density-unit);
+  --sidebar-section-gap: var(--console-pad-md);
+  --list-toolbar-h: calc(var(--density-unit) * 44);
+  --list-toolbar-pad-top: var(--console-pad-lg);
+  --list-toolbar-pad-bottom: var(--console-gap-2xs);
+  --table-head-h: calc(var(--density-unit) * 28);
+  --data-row-h: calc(var(--density-unit) * 36);
+  --data-row-gap: 4px;
+  --data-head-body-gap: var(--console-gap-lg);
+  --control-h: calc(var(--type-line) + var(--density-unit) * 10);
+  --chip-h: 26px;
+
+  --shell-stage-gap: var(--console-pad-sm);
+  --shell-route-radius: var(--console-radius-card);
+  --sidebar-preview-radius: var(--console-radius-sm);
+  --shell-header-bottom: calc(var(--shell-stage-gap) + var(--shell-top-h));
+  --sidebar-preview-top: calc(var(--shell-header-bottom) - var(--sidebar-preview-radius));
+  --sidebar-preview-left: calc(var(--shell-stage-gap) - var(--sidebar-preview-radius));
+  --sidebar-preview-bottom: max(0px, calc(var(--shell-stage-gap) - var(--sidebar-preview-radius)));
+  --sidebar-preview-dim: rgb(0 0 0 / 28%);
+  --shell-sidebar-w: 236px;
+  --shell-sidebar-min-w: 220px;
+  --shell-sidebar-max-w: 320px;
+  --shell-slot-size: 19px;
+  --sidebar-frame-inset: var(--console-pad-sm);
+  --sidebar-row-inset: var(--console-pad-sm);
+  --sidebar-track-gap: var(--console-gap-xl);
+  --list-frame-inset: var(--console-pad-lg);
+  --detail-frame-inset: 56px;
+  --detail-rail-w: 360px;
+  --detail-layout-gap: var(--console-pad-2xl);
+  --detail-action-strip-h: 44px;
+  --dashboard-frame-inset: var(--console-pad-2xl);
+  --dashboard-kpi-h: 112px;
+  --settings-frame-inset: var(--console-pad-2xl);
+  --settings-nav-w: 220px;
+  --menu-action-row-h: 36px;
+  --menu-picker-row-h: var(--control-h);
+  --tenant-avatar-optical-x: 0px;
+  --overlay-top: 15vh;
+
+  --surface-stage: var(--bg-sidebar);
+  --surface-route: var(--bg);
+  --surface-overlay: var(--bg);
+  --surface-row-hover: color-mix(in srgb, var(--fg) 3%, var(--surface-stage));
+  --surface-row-selected: color-mix(in srgb, var(--fg) 7%, var(--surface-stage));
+  --data-row-bg: color-mix(in srgb, var(--fg) 1.75%, var(--surface-route));
+  --border-chrome: color-mix(in srgb, var(--border) 76%, transparent);
+  --pill-bg: var(--surface-route);
+  --pill-border: color-mix(in srgb, var(--border) 92%, transparent);
+  --pill-hover-bg: color-mix(in srgb, var(--fg) 3%, var(--surface-route));
+  --pill-hover-border: color-mix(in srgb, var(--border) 100%, transparent);
+  --pill-active-bg: color-mix(in srgb, var(--fg) 7%, var(--surface-route));
+  --pill-active-border: color-mix(in srgb, var(--border) 100%, transparent);
+  --shadow-pill: inset 0 1px 0 rgb(255 255 255 / 0.7), 0 0.5px 0.75px rgb(0 0 0 / 0.03);
+  --shadow-pill-active: inset 0 1px 1px rgb(0 0 0 / 0.05), 0 1px 0 rgb(255 255 255 / 0.35);
+  --pill-shadow: var(--shadow-pill);
+  --pill-active-shadow: var(--shadow-pill-active);
+  --shadow-route: 0 1px 2px rgb(24 18 14 / 0.04), 0 10px 32px rgb(24 18 14 / 0.035);
+  --shadow-overlay: 0 22px 70px rgb(24 18 14 / 0.16), 0 2px 8px rgb(24 18 14 / 0.08);
+  --shadow-popover: 0 1px 2px rgb(0 0 0 / 0.08), 0 16px 44px rgb(0 0 0 / 0.12);
+}
+
+.dark {
+  --surface-row-hover: color-mix(in srgb, var(--fg) 7%, var(--surface-stage));
+  --surface-row-selected: color-mix(in srgb, var(--fg) 11%, var(--surface-stage));
+  --data-row-bg: color-mix(in srgb, var(--fg) 5%, var(--surface-route));
+  --border-chrome: color-mix(in srgb, var(--border) 84%, transparent);
+  --pill-bg: color-mix(in srgb, var(--fg) 4%, var(--surface-route));
+  --pill-hover-bg: color-mix(in srgb, var(--fg) 8%, var(--surface-route));
+  --pill-active-bg: color-mix(in srgb, var(--fg) 12%, var(--surface-route));
+  --shadow-route: 0 1px 2px rgb(0 0 0 / 0.2), 0 14px 38px rgb(0 0 0 / 0.12);
+  --shadow-overlay: 0 24px 76px rgb(0 0 0 / 0.48), 0 2px 10px rgb(0 0 0 / 0.25);
+}

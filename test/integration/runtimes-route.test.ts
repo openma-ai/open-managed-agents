@@ -21,7 +21,7 @@
 //        - harness-side outbound: x-harness-tenant header → forwarded
 //          tenant_id injected on session.start/.prompt.
 //   4. GET /agents/runtime/me — daemon-facing alternative to the absent
-//      /v1/runtimes/:id, used by daemon-side v1→v2 migration.
+//      /v1/oma/runtimes/:id, used by daemon-side v1→v2 migration.
 
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";

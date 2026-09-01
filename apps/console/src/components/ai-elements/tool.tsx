@@ -55,17 +55,17 @@ const statusLabels: Record<ToolPart["state"], string> = {
 };
 
 const statusIcons: Record<ToolPart["state"], ReactNode> = {
-  "approval-requested": <ClockIcon className="size-4 text-yellow-600" />,
-  "approval-responded": <CheckCircleIcon className="size-4 text-blue-600" />,
+  "approval-requested": <ClockIcon className="size-4 text-warning" />,
+  "approval-responded": <CheckCircleIcon className="size-4 text-info" />,
   "input-available": <ClockIcon className="size-4 animate-pulse" />,
   "input-streaming": <CircleIcon className="size-4" />,
-  "output-available": <CheckCircleIcon className="size-4 text-green-600" />,
-  "output-denied": <XCircleIcon className="size-4 text-orange-600" />,
-  "output-error": <XCircleIcon className="size-4 text-red-600" />,
+  "output-available": <CheckCircleIcon className="size-4 text-success" />,
+  "output-denied": <XCircleIcon className="size-4 text-warning" />,
+  "output-error": <XCircleIcon className="size-4 text-danger" />,
 };
 
 export const getStatusBadge = (status: ToolPart["state"]) => (
-  <Badge className="gap-1 rounded-full text-[10px] py-0 h-5 px-1.5 font-normal" variant="secondary">
+  <Badge className="gap-1 rounded-full text-xs py-0 h-5 px-1.5 font-normal" variant="secondary">
     {statusIcons[status]}
     {statusLabels[status]}
   </Badge>
@@ -92,7 +92,7 @@ export const ToolHeader = ({
     >
       <div className="flex items-center gap-2 min-w-0">
         <WrenchIcon className="size-3.5 text-fg-subtle shrink-0" />
-        <span className="font-medium text-[13px] text-fg truncate">{title ?? derivedName}</span>
+        <span className="font-medium text-sm text-fg truncate">{title ?? derivedName}</span>
         {getStatusBadge(state)}
       </div>
       <ChevronDownIcon className="size-3.5 text-fg-subtle transition-transform group-data-[state=open]:rotate-180 shrink-0" />
@@ -131,7 +131,7 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
     const v = (input as Record<string, unknown>)[k];
     if (typeof v === "string" && v.length < 200 && !v.includes("\n")) {
       return (
-        <div className={cn("font-mono text-[12.5px] text-fg", className)} {...props}>
+        <div className={cn("font-mono text-sm text-fg", className)} {...props}>
           <span className="text-fg-subtle select-none">{k}: </span>
           <span>{v}</span>
         </div>
@@ -171,7 +171,7 @@ export const ToolOutput = ({
       return (
         <div
           className={cn(
-            "rounded-md bg-muted/40 px-3 py-2 text-[12.5px] font-mono text-fg whitespace-pre-wrap break-words max-h-64 overflow-y-auto",
+            "rounded-md bg-muted/40 px-3 py-2 text-sm font-mono text-fg whitespace-pre-wrap break-words max-h-64 overflow-y-auto",
             className,
           )}
           {...props}

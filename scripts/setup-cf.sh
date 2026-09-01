@@ -242,14 +242,18 @@ patch_var apps/integrations/wrangler.jsonc GATEWAY_ORIGIN \
 say "3. Apply D1 migrations"
 
 apply_migrations() {
-  local db_name="$1" dir="$2"
-  echo "  → $db_name (from $dir)"
-  npx wrangler d1 migrations apply "$db_name" --remote --config apps/main/wrangler.jsonc \
-    --migrations-dir "$dir" 2>&1 | grep -E '(Applied|No migrations)' || true
+  local binding="$1" config="$2"
+  local migration_output
+  echo "  → $binding (from $config)"
+  if ! migration_output=$(npx wrangler d1 migrations apply "$binding" --remote --config "$config" 2>&1); then
+    printf '%s\n' "$migration_output" >&2
+    return 1
+  fi
+  printf '%s\n' "$migration_output" | grep -E '(Applied|No migrations)' || true
 }
 
-apply_migrations "openma-auth"         "apps/main/migrations"
-apply_migrations "openma-integrations" "apps/main/migrations-integrations"
+apply_migrations "MAIN_DB"         "apps/main/wrangler.jsonc"
+apply_migrations "INTEGRATIONS_DB" "apps/integrations/wrangler.jsonc"
 # ROUTER_DB is the same physical DB as AUTH_DB in single-D1 mode (the
 # code falls back via env.ROUTER_DB ?? env.AUTH_DB). The router tables
 # (tenant_shard, shard_pool, memory_store_tenant) are also in the AUTH_DB

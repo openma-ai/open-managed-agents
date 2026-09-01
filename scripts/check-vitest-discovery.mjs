@@ -1,11 +1,35 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("root Cloudflare runtime aliases stay inside the repository checkout", async () => {
+  const { default: config } = await import(join(repoRoot, "vitest.config.ts"));
+
+  const aliases = Array.isArray(config.resolve?.alias)
+    ? config.resolve.alias
+    : [];
+  const externalAliases = aliases.flatMap((alias) => {
+    if (typeof alias !== "object" || typeof alias.replacement !== "string") return [];
+    if (isAbsolute(alias.replacement) || !alias.replacement.startsWith(".")) return [];
+
+    const resolved = resolve(repoRoot, alias.replacement);
+    const relativePath = relative(repoRoot, resolved);
+    return relativePath === ".." || relativePath.startsWith(`..${sep}`)
+      ? [`${String(alias.find)} -> ${alias.replacement}`]
+      : [];
+  });
+
+  assert.deepEqual(
+    externalAliases,
+    [],
+    `runtime aliases escape the repository checkout: ${externalAliases.join(", ")}`,
+  );
+});
 
 test("root Cloudflare test discovery excludes generated and Node-only trees", () => {
   const buildDir = mkdtempSync(join(repoRoot, "apps/agent/build-vitest-discovery-"));
@@ -31,13 +55,18 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
       !collectedFiles.includes(relativeFixturePath),
       `generated test artifact was collected by the root Cloudflare test project: ${relativeFixturePath}`,
     );
-    const nodeOnlyAcpTests = collectedFiles.filter((path) =>
-      path.startsWith("packages/acp-runtime/"),
+    const nodeOnlyPackageTests = collectedFiles.filter((path) =>
+      [
+        "packages/acp-runtime/",
+        "packages/cli/",
+        "packages/managed-agents-runtime/",
+        "packages/sandbox/test/",
+      ].some((prefix) => path.startsWith(prefix)),
     );
     assert.deepEqual(
-      nodeOnlyAcpTests,
+      nodeOnlyPackageTests,
       [],
-      `Node-only ACP runtime tests were collected by the root Cloudflare test project: ${nodeOnlyAcpTests.join(", ")}`,
+      `Node-only package tests were collected by the root Cloudflare test project: ${nodeOnlyPackageTests.join(", ")}`,
     );
   } finally {
     rmSync(buildDir, { recursive: true, force: true });

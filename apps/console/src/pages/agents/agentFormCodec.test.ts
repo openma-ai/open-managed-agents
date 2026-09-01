@@ -7,6 +7,7 @@ import {
   mergeFormIntoConfig,
   mergeMcpServers,
   mergeToolsField,
+  requiresOmaAgentEndpoint,
 } from "./agentFormCodec";
 
 function sampleAgent(overrides: Partial<AgentRecord> = {}): AgentRecord {
@@ -177,5 +178,28 @@ describe("agentFormCodec lossless update", () => {
     ).toBe(true);
     expect((payload.mcp_servers as Array<{ stdio?: unknown }>)[0]?.stdio).toBeTruthy();
     expect(payload.metadata).toEqual({ team: "platform", owner: "alice" });
+  });
+});
+
+describe("agent endpoint boundary", () => {
+  it("keeps a strict Managed agent payload on /v1/agents", () => {
+    expect(
+      requiresOmaAgentEndpoint({
+        name: "Managed",
+        model: "claude-sonnet-4-6",
+        mcp_servers: [{ name: "github", type: "url", url: "https://mcp.example" }],
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    [{ _oma: { harness: "acp-proxy" } }],
+    [{ runtime_binding: { runtime_id: "rt_1", acp_agent_id: "codex" } }],
+    [{ enable_general_subagent: true }],
+    [{ mcp_servers: [{ name: "local", type: "stdio", stdio: { command: "mcp" } }] }],
+  ])("routes explicit OpenMA extensions through /v1/oma/agents", (extension) => {
+    expect(requiresOmaAgentEndpoint({ name: "Extended", model: "m", ...extension })).toBe(
+      true,
+    );
   });
 });

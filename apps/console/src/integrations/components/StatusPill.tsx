@@ -57,7 +57,7 @@ const MAP: Record<PublicationStatus, { label: string; cls: string; dot: string }
 
 export function StatusPill({ status, size = "sm" }: StatusPillProps) {
   const v = MAP[status];
-  const padding = size === "md" ? "px-2.5 py-1 text-[12px]" : "px-2 py-0.5 text-[11px]";
+  const padding = size === "md" ? "px-2.5 py-1 text-sm" : "px-2 py-0.5 text-xs";
   return (
     <span
       className={`inline-flex items-center gap-1.5 font-medium rounded-full ${padding} ${v.cls}`}

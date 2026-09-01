@@ -1,0 +1,20 @@
+{
+  "name": "@open-managed-agents/oma-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/oma-models": "workspace:*",
+    "hono": "4.12.12"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

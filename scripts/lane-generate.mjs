@@ -209,7 +209,7 @@ delete agent.routes;
 delete agent.triggers;
 agent.services = [
   { binding: "INTEGRATIONS", service: NAMES.integrations },
-  // MAIN binding so AcpProxyHarness can call /v1/internal/runtime-attach-harness
+  // MAIN binding so AcpProxyHarness can call /v1/oma/internal/runtime-attach-harness
   // on the lane's main worker (not prod's). Required for local-runtime sessions.
   { binding: "MAIN", service: NAMES.main },
 ];

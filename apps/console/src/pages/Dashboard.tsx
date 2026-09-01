@@ -1,12 +1,21 @@
-import { useState } from "react";
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { useState, type ReactNode } from "react";
+import { ArrowRightIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { useNavigate } from "react-router";
-import { useAuth } from "../lib/auth";
-import { useApiQuery } from "../lib/useApiQuery";
 import { toast } from "sonner";
+
 import { StatusPill } from "../components/Badge";
+import {
+  ConsolePanel,
+  DashboardLayout,
+  KpiCard,
+} from "../components/ConsoleSurface";
 import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
 import { useI18n } from "../i18n";
+import { useApiQuery } from "../lib/useApiQuery";
+import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 
 interface Stats {
   agents: number;
@@ -18,252 +27,219 @@ interface Stats {
   api_keys: number;
 }
 
-interface RecentSession {
-  id: string;
-  title: string;
-  agent_id: string;
-  status: string;
-  created_at: string;
+function QuickstartStep({
+  number,
+  title,
+  children,
+}: {
+  number: string;
+  title: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="console-quickstart-step">
+      <div>
+        <div className="console-step-index">STEP {number}</div>
+        <div className="console-step-title">{title}</div>
+      </div>
+      <div className="console-step-body">{children}</div>
+    </div>
+  );
 }
 
 export function Dashboard() {
-  const nav = useNavigate();
-  const { user: _user } = useAuth();
+  const navigate = useNavigate();
   const [copied, setCopied] = useState<string | null>(null);
   const { t } = useI18n();
-
-  // Headline cards + recent panel each ride their own TQ query so the
-  // dashboard renders the parts it has — a flaky /v1/stats no longer
-  // blocks the recent-sessions panel and vice versa. The previous
-  // hand-rolled `Promise.all` + single `loading` boolean made one failure
-  // hide both panels.
-  const statsQuery = useApiQuery<Stats>("/v1/stats");
-  const sessionsQuery = useApiQuery<{ data: RecentSession[] }>(
+  const statsQuery = useApiQuery<Stats>("/v1/oma/stats");
+  const sessionsQuery = useApiQuery<{
+    data: BetaManagedAgentsSession[];
+    next_page: string | null;
+    prev_page: string | null;
+  }>(
     "/v1/sessions",
     { limit: "5" },
   );
-  const stats = statsQuery.data ?? null;
+  const stats = statsQuery.data;
   const recentSessions = sessionsQuery.data?.data.slice(0, 5) ?? [];
 
-  const copy = (text: string, key: string) => {
-    navigator.clipboard.writeText(text);
+  const copy = async (text: string, key: string) => {
+    await navigator.clipboard.writeText(text);
     setCopied(key);
     toast.success(t.common.copied);
-    setTimeout(() => setCopied(null), 1600);
+    window.setTimeout(() => setCopied(null), 1600);
   };
 
-  const stat = (label: string, value: number | undefined, to: string) => (
-    <button
-      key={label}
-      onClick={() => nav(to)}
-      className="group relative text-left px-4 py-3.5 border border-border rounded-md bg-bg hover:border-border-strong hover:bg-bg-surface/40 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-    >
-      <div className="font-display text-[28px] leading-none font-semibold text-fg group-hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] tabular-nums">
-        {value ?? "–"}
-      </div>
-      <div className="mt-2 text-[11px] uppercase tracking-[0.08em] text-fg-muted font-medium">
-        {label}
-      </div>
-    </button>
-  );
-
-  const stats_ = [
+  const primaryKpis = [
     { label: t.nav.agents, value: stats?.agents, to: "/agents" },
     { label: t.nav.sessions, value: stats?.sessions, to: "/sessions" },
     { label: t.nav.environments, value: stats?.environments, to: "/environments" },
     { label: t.nav.credentialVaults, value: stats?.vaults, to: "/vaults" },
+  ];
+  const secondaryStats = [
     { label: t.nav.skills, value: stats?.skills, to: "/skills" },
     { label: t.nav.modelCards, value: stats?.model_cards, to: "/model-cards" },
   ];
 
-  const cmd = "npx -y -p @openma/cli oma";
-  const cmdGlobal = "npm i -g @openma/cli";
+  const command = "npx -y -p @openma/cli oma";
+  const globalCommand = "npm i -g @openma/cli";
   const examplePrompt =
     "Use oma to create a research agent that monitors arXiv for new ML papers daily";
 
+  const copyIcon = (key: string) =>
+    copied === key ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />;
+
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="pl-3 pr-4 py-6 space-y-10">
-        {/* Header */}
+    <DashboardLayout
+      intro={
         <header>
-          <h1 className="font-display text-[32px] leading-tight font-semibold tracking-tight text-fg">
-            Get started with openma
-          </h1>
-          <p className="mt-1.5 text-[15px] text-fg-muted">
-            {t.dashboard.handPlatformToAgent}
-          </p>
+          <h1>Get started with openma</h1>
+          <p>{t.dashboard.handPlatformToAgent}</p>
         </header>
-
-        {/* Quickstart — single panel with three rows, no per-step cards */}
-        <section className="border border-border rounded-lg overflow-hidden">
-          {/* Step 1 */}
-          <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6 border-b border-border">
-            <div>
-              <div className="font-mono text-[11px] tracking-wider text-brand">STEP 01</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.installCli}</div>
-            </div>
-            <div className="space-y-2.5 min-w-0">
-              <p className="text-sm text-fg-muted">
-                {t.dashboard.installCliDesc}
-              </p>
-              <button
-                onClick={() => copy(cmd, "cmd")}
-                className="group w-full sm:w-auto sm:inline-flex items-center gap-3 pl-3 pr-2 py-2 rounded-md border border-border bg-bg-surface/50 hover:border-border-strong transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] text-left"
-              >
-                <span className="text-fg-subtle select-none font-mono text-xs">›</span>
-                <span className="font-mono text-[13px] text-fg flex-1 truncate">{cmd}</span>
-                <span className="shrink-0 text-fg-subtle group-hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] p-1">
-                  {copied === "cmd" ? (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6 9 17l-5-5" /></svg>
-                  ) : (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
-                  )}
-                </span>
-              </button>
-              <p className="text-[12px] text-fg-subtle">
-                or globally:{" "}
-                <button
-                  onClick={() => copy(cmdGlobal, "cmd-global")}
-                  className="inline-flex items-center min-h-11 sm:min-h-0 font-mono text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                >
-                  {cmdGlobal}
-                </button>
-              </p>
-            </div>
-          </div>
-
-          {/* Step 2 */}
-          <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6 border-b border-border">
-            <div>
-              <div className="font-mono text-[11px] tracking-wider text-brand">STEP 02</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.mintApiKey}</div>
-            </div>
-            <div className="space-y-2.5">
-              <p className="text-sm text-fg-muted">
-                {t.dashboard.mintApiKeyDesc}
-              </p>
-              <button
-                onClick={() => nav("/api-keys")}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-              >
-                {t.dashboard.generateApiKey}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-              </button>
-            </div>
-          </div>
-
-          {/* Step 3 */}
-          <div className="grid md:grid-cols-[180px_1fr] gap-x-6 gap-y-2 p-5 md:p-6">
-            <div>
-              <div className="font-mono text-[11px] tracking-wider text-brand">STEP 03</div>
-              <div className="mt-1 font-medium text-fg text-[15px]">{t.dashboard.handItReins}</div>
-            </div>
-            <div className="space-y-2.5">
-              <p className="text-sm text-fg-muted">
-                {t.dashboard.handItReinsDesc}
-              </p>
-              <button
-                onClick={() => copy(examplePrompt, "prompt")}
-                className="group w-full text-left rounded-md border border-border bg-bg-surface/50 hover:border-border-strong transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] p-3 flex items-start gap-3"
-              >
-                <span className="shrink-0 mt-0.5 font-mono text-[10px] tracking-wider text-fg-subtle">
-                  PROMPT
-                </span>
-                <span className="flex-1 text-[13px] text-fg leading-snug">{examplePrompt}</span>
-                <span className="shrink-0 text-fg-subtle group-hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] mt-0.5">
-                  {copied === "prompt" ? (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6 9 17l-5-5" /></svg>
-                  ) : (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
-                  )}
-                </span>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* Stats — number-forward, no decorative icons */}
-        <section>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-            {stats_.map((s) => stat(s.label, s.value, s.to))}
-          </div>
-        </section>
-
-        {/* Recent sessions */}
-        <section>
-          <div className="flex items-baseline justify-between mb-3">
-            <h2 className="font-display text-lg font-semibold text-fg">{t.dashboard.recentSessions}</h2>
-            <button
-              onClick={() => nav("/sessions")}
-              className="inline-flex items-center min-h-11 sm:min-h-0 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+      }
+      kpis={primaryKpis.map((kpi) => (
+        <KpiCard
+          key={kpi.to}
+          label={kpi.label}
+          value={kpi.value}
+          onClick={() => navigate(kpi.to)}
+        />
+      ))}
+      secondary={
+        <div className="console-secondary-stats" data-testid="dashboard-secondary-stats">
+          {secondaryStats.map((stat) => (
+            <Button
+              key={stat.to}
+              variant="ghost"
+              type="button"
+              className="console-secondary-stat"
+              onClick={() => navigate(stat.to)}
             >
-              {t.common.viewAll}
-            </button>
-          </div>
+              <span>{stat.label}</span>
+              <strong>{stat.value ?? "–"}</strong>
+            </Button>
+          ))}
+        </div>
+      }
+    >
+      <ConsolePanel
+        title="Launch an agent"
+        description="A short path from an empty workspace to a managed run."
+      >
+        <QuickstartStep number="01" title={t.dashboard.installCli}>
+          <p>{t.dashboard.installCliDesc}</p>
+          <Button
+            variant="ghost"
+            type="button"
+            className="console-copy-control"
+            onClick={() => void copy(command, "command")}
+          >
+            <span>{command}</span>
+            {copyIcon("command")}
+          </Button>
+          <p className="mt-1.5 text-xs text-fg-subtle">
+            or globally:{" "}
+            <Button
+              variant="ghost"
+              type="button"
+              className="font-mono text-fg-muted hover:text-brand"
+              onClick={() => void copy(globalCommand, "global-command")}
+            >
+              {globalCommand}
+            </Button>
+          </p>
+        </QuickstartStep>
 
-          {sessionsQuery.isLoading ? (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4 px-4 py-3">
-                  <Skeleton className="h-3.5 w-[40%]" rounded="sm" />
-                  <Skeleton className="h-3.5 w-16" rounded="sm" />
-                  <Skeleton className="h-3.5 w-32" rounded="sm" />
-                  <Skeleton className="h-3.5 w-20 ml-auto" rounded="sm" />
-                </div>
-              ))}
-            </div>
-          ) : recentSessions.length === 0 ? (
+        <QuickstartStep number="02" title={t.dashboard.mintApiKey}>
+          <p>{t.dashboard.mintApiKeyDesc}</p>
+          <Button variant="ghost"
+            type="button"
+            className="mt-2 inline-flex h-[var(--control-h)] items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-brand-fg hover:bg-brand-hover"
+            onClick={() => navigate("/api-keys")}
+          >
+            {t.dashboard.generateApiKey}
+            <ArrowRightIcon className="size-3.5" />
+          </Button>
+        </QuickstartStep>
+
+        <QuickstartStep number="03" title={t.dashboard.handItReins}>
+          <p>{t.dashboard.handItReinsDesc}</p>
+          <Button variant="ghost"
+            type="button"
+            className="console-copy-control"
+            onClick={() => void copy(examplePrompt, "prompt")}
+          >
+            <span>{examplePrompt}</span>
+            {copyIcon("prompt")}
+          </Button>
+        </QuickstartStep>
+      </ConsolePanel>
+
+      <ConsolePanel
+        title={t.dashboard.recentSessions}
+        description="Latest activity across the current workspace."
+        action={
+          <Button variant="ghost"
+            type="button"
+            className="text-sm text-fg-muted hover:text-brand"
+            onClick={() => navigate("/sessions")}
+          >
+            {t.common.viewAll}
+          </Button>
+        }
+      >
+        {sessionsQuery.isLoading ? (
+          <div>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div
+                key={index}
+                className="flex h-[var(--data-row-h)] items-center gap-3 border-t border-border first:border-t-0 px-3"
+              >
+                <Skeleton className="h-3 w-[42%]" rounded="sm" />
+                <Skeleton className="ml-auto h-3 w-16" rounded="sm" />
+              </div>
+            ))}
+          </div>
+        ) : recentSessions.length === 0 ? (
+          <div className="p-3">
             <EmptyState
               title={t.dashboard.noSessionsYet}
-              body={
-                <>
-                  Tell your agent to start one, or visit the{" "}
-                  <button
-                    onClick={() => nav("/sessions")}
-                    className="inline-flex items-center min-h-11 sm:min-h-0 text-brand hover:underline"
-                  >
-                    {t.dashboard.visitSessionsPage}
-                  </button>
-                  .
-                </>
-              }
+              body={t.dashboard.visitSessionsPage}
             />
-          ) : (
-            <div className="border border-border rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-bg-surface/40 text-fg-subtle text-[11px] uppercase tracking-[0.08em]">
-                    <th className="text-left px-4 py-2.5 font-medium">{t.dashboard.title}</th>
-                    <th className="text-left px-4 py-2.5 font-medium">{t.common.status}</th>
-                    <th className="text-left px-4 py-2.5 font-medium">{t.dashboard.agent}</th>
-                    <th className="text-left px-4 py-2.5 font-medium">{t.common.created}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentSessions.map((s) => (
-                    <tr
-                      key={s.id}
-                      onClick={() => nav(`/sessions/${s.id}`)}
-                      className="border-t border-border hover:bg-bg-surface/40 cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-                    >
-                      <td className="px-4 py-2.5 text-fg">{s.title || t.dashboard.untitled}</td>
-                      <td className="px-4 py-2.5">
-                        <StatusPill status={s.status || "idle"} />
-                      </td>
-                      <td className="px-4 py-2.5 text-fg-muted font-mono text-[12px]">
-                        {s.agent_id}
-                      </td>
-                      <td className="px-4 py-2.5 text-fg-muted text-[12px]">
-                        {new Date(s.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
+          </div>
+        ) : (
+          <div className="console-dashboard-table-wrap">
+            <Table className="console-dashboard-table">
+              <colgroup>
+                <col style={{ width: "40%" }} />
+                <col style={{ width: "20%" }} />
+                <col style={{ width: "24%" }} />
+                <col style={{ width: "16%" }} />
+              </colgroup>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t.dashboard.title}</TableHead>
+                  <TableHead>{t.common.status}</TableHead>
+                  <TableHead>{t.dashboard.agent}</TableHead>
+                  <TableHead>{t.common.created}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {recentSessions.map((session) => (
+                  <TableRow key={session.id} onClick={() => navigate(`/sessions/${session.id}`)}>
+                    <TableCell className="text-fg">{session.title || t.dashboard.untitled}</TableCell>
+                    <TableCell><StatusPill status={session.status || "idle"} /></TableCell>
+                    <TableCell className="font-mono text-xs text-fg-muted">{session.agent.id}</TableCell>
+                    <TableCell className="text-xs text-fg-muted">
+                      {new Date(session.created_at).toLocaleDateString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </ConsolePanel>
+    </DashboardLayout>
   );
 }

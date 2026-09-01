@@ -1,4 +1,4 @@
-// Eval routes — POST/GET/DELETE for /v1/evals/runs.
+// Eval routes — POST/GET/DELETE for /v1/oma/evals/runs.
 //
 // Sourced from apps/main/src/routes/evals.ts pre-extract: same wire shape,
 // same status codes, same opaque `results` JSON column. The cron tick
@@ -46,7 +46,7 @@ export interface EvalRoutesDeps {
 export function buildEvalRoutes(deps: EvalRoutesDeps) {
   const app = new Hono<Vars>();
 
-  // POST /v1/evals/runs — create
+  // POST /v1/oma/evals/runs — create
   app.post("/runs", async (c) => {
     const t = c.var.tenant_id;
     const body = await c.req.json<{
@@ -100,7 +100,7 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     return c.json({ run_id: run.id, task_count: body.tasks.length });
   });
 
-  // GET /v1/evals/runs — paginated list
+  // GET /v1/oma/evals/runs — paginated list
   app.get("/runs", async (c) => {
     const t = c.var.tenant_id;
     const limitParam = c.req.query("limit");
@@ -147,7 +147,7 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     return c.json({ data: runs.map(rowToApi) });
   });
 
-  // GET /v1/evals/runs/:id — detail
+  // GET /v1/oma/evals/runs/:id — detail
   app.get("/runs/:id", async (c) => {
     const t = c.var.tenant_id;
     const run = await deps.evals.get({ tenantId: t, runId: c.req.param("id") });
@@ -155,7 +155,7 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     return c.json(rowToApi(run));
   });
 
-  // DELETE /v1/evals/runs/:id — cancel (mark failed) + delete
+  // DELETE /v1/oma/evals/runs/:id — cancel (mark failed) + delete
   app.delete("/runs/:id", async (c) => {
     const t = c.var.tenant_id;
     const id = c.req.param("id");

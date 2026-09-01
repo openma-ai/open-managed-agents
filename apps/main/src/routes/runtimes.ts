@@ -1,7 +1,7 @@
 /**
  * Local-runtime onboarding + management routes.
  *
- *   /v1/runtimes/*               — browser, requires user auth (authMiddleware)
+ *   /v1/oma/runtimes/*               — browser, requires user auth (authMiddleware)
  *     POST /connect-runtime        → mint one-time `code` (5-min TTL, single-use)
  *     GET  /                       → list my registered runtimes
  *     DELETE /:id                  → revoke runtime + all its tokens
@@ -12,7 +12,7 @@
  * Setup flow:
  *   1. CLI binds 127.0.0.1:<rand-port>, opens browser to
  *      `https://app.openma.dev/connect-runtime?cb=...&state=...`
- *   2. Browser (auth'd via Better Auth cookie) POSTs `/v1/runtimes/connect-runtime`
+ *   2. Browser (auth'd via Better Auth cookie) POSTs `/v1/oma/runtimes/connect-runtime`
  *      with the state echo → gets back a one-time `code`.
  *   3. Browser redirects to `http://127.0.0.1:<port>/cb?code=...&state=...`.
  *      Localhost server is the CLI; it grabs the code and closes.
@@ -31,7 +31,7 @@ import { resolveKnownAgent } from "@open-managed-agents/acp-runtime/known-agents
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 
-/** Browser-facing routes — mounted under /v1/runtimes. */
+/** Browser-facing routes — mounted under /v1/oma/runtimes. */
 export const runtimesRoutes = new Hono<{
   Bindings: Env;
   Variables: { tenant_id: string; user_id?: string };
@@ -79,7 +79,7 @@ async function sha256(input: string): Promise<string> {
 
 // ─── Browser-facing ───────────────────────────────────────────────────────
 
-// POST /v1/runtimes/connect-runtime — browser asks for a one-time exchange code.
+// POST /v1/oma/runtimes/connect-runtime — browser asks for a one-time exchange code.
 runtimesRoutes.post("/connect-runtime", async (c) => {
   const userId = c.get("user_id");
   const tenantId = c.get("tenant_id");
@@ -104,7 +104,7 @@ runtimesRoutes.post("/connect-runtime", async (c) => {
   return c.json({ code, expires_at: expiresAt });
 });
 
-// GET /v1/runtimes — list user's runtimes.
+// GET /v1/oma/runtimes — list user's runtimes.
 runtimesRoutes.get("/", async (c) => {
   const userId = c.get("user_id");
   if (!userId) return c.json({ error: "unauthorized" }, 401);
@@ -144,7 +144,7 @@ runtimesRoutes.get("/", async (c) => {
   });
 });
 
-// DELETE /v1/runtimes/:id — revoke runtime + all its tokens.
+// DELETE /v1/oma/runtimes/:id — revoke runtime + all its tokens.
 runtimesRoutes.delete("/:id", async (c) => {
   const userId = c.get("user_id");
   if (!userId) return c.json({ error: "unauthorized" }, 401);
@@ -347,9 +347,9 @@ runtimeDaemonRoutes.post("/exchange", async (c) => {
 // per-tenant `oma_*` plaintext keys come from /refresh — this endpoint
 // returns only `{id, name, role}` per tenant (no secret material).
 //
-// Lives at /agents/runtime/* (not /v1/runtimes/:id) because the daemon
+// Lives at /agents/runtime/* (not /v1/oma/runtimes/:id) because the daemon
 // auth is bearer sk_machine_*, not the user-auth-middleware that /v1/*
-// enforces. The plan's reference to "GET /v1/runtimes/${runtimeId}" was
+// enforces. The plan's reference to "GET /v1/oma/runtimes/${runtimeId}" was
 // imprecise — daemon path is mandatory.
 runtimeDaemonRoutes.get("/me", async (c) => {
   const ok = await authenticateRuntimeToken(c.env, c.req.header("authorization") ?? "");
@@ -690,7 +690,7 @@ runtimeDaemonRoutes.get("/sessions/:sid/bundle", async (c) => {
     .map((s) => ({
       type: "http" as const,
       name: s.name,
-      url: `${serverBase}/v1/mcp-proxy/${encodeURIComponent(sid)}/${encodeURIComponent(s.name)}`,
+      url: `${serverBase}/v1/oma/mcp-proxy/${encodeURIComponent(sid)}/${encodeURIComponent(s.name)}`,
     }));
 
   // Env vars — read session resources of type "env" (legacy "env_secret"

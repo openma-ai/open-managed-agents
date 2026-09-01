@@ -1,9 +1,9 @@
-// Smoke test for POST /v1/sessions/:id/files (sandbox path → file_id
+// Smoke test for POST /v1/oma/sessions/:id/files (sandbox path → file_id
 // promotion) on Node.
 //
 // Spawns main-node, creates a tenant + agent + session, writes a file
 // inside the sandbox via /exec, then calls /sessions/:id/files. Verifies
-// the response is 201 with a valid file_id, and that GET /v1/files/:id
+// the response is 201 with a valid file_id, and that GET /v1/oma/files/:id
 // returns the metadata.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -13,6 +13,10 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import {
+  detachedProcessOptions,
+  killProcessTree,
+} from "./helpers/process-tree";
 
 interface ProcessHandle {
   child: ChildProcess;
@@ -28,6 +32,7 @@ const TSX_BIN = join(REPO_ROOT, "apps/main-node/node_modules/.bin/tsx");
 async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> {
   const port = await pickPort();
   const child = spawn(TSX_BIN, [MAIN_NODE_ENTRY], {
+    ...detachedProcessOptions,
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -64,11 +69,7 @@ async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> 
 }
 
 function killHard(handle: ProcessHandle): Promise<void> {
-  return new Promise((res) => {
-    if (handle.child.exitCode !== null) return res();
-    handle.child.once("exit", () => res());
-    handle.child.kill("SIGKILL");
-  });
+  return killProcessTree(handle.child);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -90,7 +91,7 @@ function pickPort(): Promise<number> {
   });
 }
 
-describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
+describe("Node POST /v1/oma/sessions/:id/files (promoteSandboxFile)", () => {
   let dataDir: string;
   let h: ProcessHandle | null = null;
 
@@ -110,9 +111,10 @@ describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
   it("returns 201 with a valid file_id and GET round-trips", async () => {
     h = await startMainNode({ dataDir });
     const base = `http://localhost:${h.port}/v1`;
+    const omaBase = `${base}/oma`;
 
     // 1. Create an agent (so the session has something to bind to).
-    const aRes = await fetch(`${base}/agents`, {
+    const aRes = await fetch(`${omaBase}/agents`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "test-agent", model: "claude-haiku-4-5-20251001" }),
@@ -125,7 +127,7 @@ describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
     //    `env_local_runtime` when an agent has a runtime_binding (Node has
     //    no cloud env_id concept yet, so loadEnvironment is unset and the
     //    request falls through with environment=null).
-    const sRes = await fetch(`${base}/sessions`, {
+    const sRes = await fetch(`${omaBase}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ agent: agent.id, environment: "env_local_runtime" }),
@@ -140,7 +142,7 @@ describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
     //    has cwd = workdir, so a bare relative path lands in the workdir
     //    which `readSandboxFile("/workspace/greeting.txt")` then resolves
     //    via the harness's /workspace → workdir mapping.
-    const writeRes = await fetch(`${base}/sessions/${session.id}/exec`, {
+    const writeRes = await fetch(`${omaBase}/sessions/${session.id}/exec`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -151,7 +153,7 @@ describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
     expect(writeRes.status).toBe(200);
 
     // 4. Promote /workspace/greeting.txt to a file_id.
-    const promoteRes = await fetch(`${base}/sessions/${session.id}/files`, {
+    const promoteRes = await fetch(`${omaBase}/sessions/${session.id}/files`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -169,15 +171,15 @@ describe("Node POST /v1/sessions/:id/files (promoteSandboxFile)", () => {
     expect(fileRecord.type).toBe("file");
     expect(fileRecord.id).toMatch(/^file-/);
 
-    // 5. GET /v1/files/:id returns the same metadata.
-    const getRes = await fetch(`${base}/files/${fileRecord.id}`);
+    // 5. GET /v1/oma/files/:id returns the same metadata.
+    const getRes = await fetch(`${omaBase}/files/${fileRecord.id}`);
     expect(getRes.status).toBe(200);
     const fetched = (await getRes.json()) as { id: string; filename: string };
     expect(fetched.id).toBe(fileRecord.id);
     expect(fetched.filename).toBe("greeting.txt");
 
-    // 6. GET /v1/files/:id/content returns the bytes.
-    const contentRes = await fetch(`${base}/files/${fileRecord.id}/content`);
+    // 6. GET /v1/oma/files/:id/content returns the bytes.
+    const contentRes = await fetch(`${omaBase}/files/${fileRecord.id}/content`);
     expect(contentRes.status).toBe(200);
     expect(await contentRes.text()).toBe("hello-from-sandbox");
   }, 60_000);

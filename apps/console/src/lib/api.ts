@@ -1,8 +1,17 @@
 const BASE = "";
+const CONSOLE_API_BETAS = [
+  "managed-agents-2026-04-01",
+  "files-api-2025-04-14",
+  "skills-2025-10-02",
+  "agent-memory-2026-07-22",
+  "dreaming-2026-04-21",
+  "mcp-tunnels-2026-06-22",
+  "user-profiles-2026-08-18",
+].join(",");
 
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
-import { FatalSseError, streamSse } from "./sse";
+import { iterateJsonSseStream } from "./sse";
 
 /**
  * Server error envelope after the Anthropic-compatible migration:
@@ -46,13 +55,6 @@ export function readApiError(body: unknown, status: number): ApiErrorInfo {
     }
   }
   return { code: "", message: `HTTP ${status}` };
-}
-
-/** Back-compat wrapper for the older message-only callers (readApiErrorMessage
- *  was the single export before the `code` channel existed). New code should
- *  reach for `readApiError` and use `code` for dispatch. */
-export function readApiErrorMessage(body: unknown, status: number): string {
-  return readApiError(body, status).message;
 }
 
 /**
@@ -102,18 +104,24 @@ export function setActiveTenantId(id: string | null): void {
 /** Endpoints whose 401/403 are part of normal app flow and should NOT
  *  surface as a toast. /auth-info is checked on every page load to decide
  *  whether to show the login screen — a 401 means "not logged in", which
- *  the login screen already communicates. /v1/me 401 is handled the same
+ *  the login screen already communicates. /v1/oma/me 401 is handled the same
  *  way by the sidebar bootstrapping path. */
-const SILENT_AUTH_PATHS = ["/auth-info", "/v1/me"];
+const SILENT_AUTH_PATHS = ["/auth-info", "/v1/oma/me"];
 
 function shouldSilenceAuthError(path: string, status: number): boolean {
   if (status !== 401 && status !== 403) return false;
   return SILENT_AUTH_PATHS.some((p) => path === p || path.startsWith(`${p}?`));
 }
 
+function getApiToastMessage(info: ApiErrorInfo, status: number): string {
+  if (info.message !== `HTTP ${status}`) return info.message;
+  if (status >= 500) return "Server error. Please try again.";
+  return `Request failed (HTTP ${status}).`;
+}
+
 export function useApi() {
-  // `api` and `streamEvents` are wrapped in useCallback with an empty dep
-  // list so a render of any consumer doesn't produce a fresh closure.
+  // The request transports are wrapped in useCallback so a render of any
+  // consumer doesn't produce fresh closures.
   // Before this, every component calling `useApi()` got new function identities
   // each render — including them in a `useEffect` dep array would loop the
   // effect, so callers had to either omit `api` (eslint-disable) or stash it
@@ -121,11 +129,11 @@ export function useApi() {
   // `useEffect([id])` can include `api` cleanly without retriggering.
   // `toast` is imported from sonner at module scope; the module-level
   // function reference is stable across renders.
-  const api = useCallback(
-    async function api<T = unknown>(
+  const apiRaw = useCallback(
+    async function apiRaw(
       path: string,
       init?: RequestInit
-    ): Promise<T> {
+    ): Promise<Response> {
       const activeTenant = getActiveTenantId();
       // Don't auto-set JSON content-type for FormData — the browser must add
       // multipart boundaries itself, and a manually set content-type without
@@ -137,6 +145,7 @@ export function useApi() {
           ...init,
           credentials: "include",
           headers: {
+            "anthropic-beta": CONSOLE_API_BETAS,
             ...(init?.body && !isFormData ? { "content-type": "application/json" } : {}),
             // Pin the workspace for this request. Backend validates membership;
             // a stale value (deleted tenant, removed membership) yields 403 and
@@ -203,7 +212,9 @@ export function useApi() {
         // dev triage.
         if (!shouldSilenceAuthError(path, res.status)) {
           console.error(`[api] ${res.status} ${path}: ${info.message}`);
-          toast.error(info.message);
+          toast.error(getApiToastMessage(info, res.status), {
+            id: `api-error:${res.status}:${info.code || info.message}`,
+          });
         }
         throw new ApiError({
           ...info,
@@ -214,99 +225,45 @@ export function useApi() {
       // Successful response — clear the self-heal sentinel so a future stale
       // tenant can self-heal again later in the same browser session.
       sessionStorage.removeItem("oma_tenant_self_heal");
-      return res.json() as Promise<T>;
+      return res;
     },
     [],
   );
 
-  const streamEvents = useCallback(
-    (
-      sessionId: string,
-      onEvent: (event: Record<string, unknown>) => void,
-      signal?: AbortSignal,
-    ) => {
-      const activeTenant = getActiveTenantId();
-      // SSE endpoint goes through the same auth middleware so it needs the
-      // header too. The native fetch we use under the hood lets us set it;
-      // EventSource wouldn't.
-      //
-      // Console opts into both `chunks` (token-by-token rendering, pending
-      // queue events, session.warning, extra spans) and `replay=1` (full
-      // history on connect — Console renders the persistent timeline view
-      // and the dedup keyset at SessionDetail.tsx:108-121 already handles
-      // any seq-overlap from concurrent live broadcasts; replay-on-reconnect
-      // is therefore safe — duplicates get dropped before render).
-      //
-      // Default endpoint behavior is Anthropic-spec — third-party clients
-      // using @anthropic-ai/sdk against an OMA server get a clean stream
-      // without these flags. See SPEC_EVENT_TYPES in @open-managed-agents/api-types.
-      const path = `/v1/sessions/${sessionId}/events/stream?include=chunks&replay=1`;
+  const api = useCallback(
+    async function api<T = unknown>(
+      path: string,
+      init?: RequestInit,
+    ): Promise<T> {
+      const response = await apiRaw(path, init);
+      return response.json() as Promise<T>;
+    },
+    [apiRaw],
+  );
 
-      // Reconnect schedule for transient failures (network blip, 5xx, EOF).
-      // Resets to zero on a successful onOpen so a healthy session that
-      // briefly drops doesn't keep accumulating backoff. After 5 consecutive
-      // failures we surface a single "Reconnecting…" toast — silent before
-      // that so a 1-second blip doesn't pop UI noise.
-      const backoffMs = [1000, 2000, 4000, 8000];
-      let consecutiveFailures = 0;
-      let reconnectToastShown = false;
-
-      void streamSse(path, {
-        signal,
-        headers: activeTenant ? { "x-active-tenant": activeTenant } : {},
-        async onOpen(response) {
-          if (response.ok) {
-            // Connection (re)established — clear the failure counter so the
-            // next drop starts a fresh backoff schedule, and clear the toast
-            // sentinel so a future degraded period can re-notify the user.
-            consecutiveFailures = 0;
-            reconnectToastShown = false;
-            return;
-          }
-          if (response.status >= 400) {
-            // Surface stream open failures the same way as regular API calls —
-            // previously a 401 / 500 on the SSE handshake meant the timeline
-            // just never updated. 4xx and 5xx alike get the same toast format
-            // so the user sees a real error message instead of silence.
-            const body = await response.json().catch(() => ({}));
-            const message = readApiErrorMessage(body, response.status);
-            toast.error(`/v1/sessions/${sessionId}/events/stream: ${message}`);
-            // Non-retriable: 401/403/404 won't fix themselves on retry, and
-            // hammering a 5xx that's surfaced to the user is also pointless.
-            throw new FatalSseError(message);
-          }
-          // Anything non-ok that isn't ≥400 (3xx etc.) — fall through to
-          // onError for the retry decision.
-          throw new Error(`status ${response.status}`);
+  const apiStream = useCallback(
+    async function apiStream<T>(
+      path: string,
+      init?: RequestInit,
+    ): Promise<AsyncIterable<T>> {
+      const response = await apiRaw(path, {
+        ...init,
+        cache: "no-store",
+        headers: {
+          Accept: "text/event-stream",
+          ...init?.headers,
         },
-        onMessage(data) {
-          try {
-            onEvent(JSON.parse(data) as Record<string, unknown>);
-          } catch {
-            // Malformed payload — silently skip, matches prior behavior.
-          }
-        },
-        onError(err) {
-          // FatalSseError or caller abort never reach here — streamSse
-          // re-throws them directly. Everything else is a transient
-          // failure: stream closed cleanly, network blip, transient
-          // 5xx. Apply the backoff schedule and reconnect.
-          if (err instanceof FatalSseError) return null;
-          consecutiveFailures += 1;
-          if (consecutiveFailures === 5 && !reconnectToastShown) {
-            reconnectToastShown = true;
-            toast.info("Reconnecting…");
-          }
-          const idx = Math.min(consecutiveFailures - 1, backoffMs.length - 1);
-          return backoffMs[idx];
-        },
-      }).catch(() => {
-        // Promise rejects on FatalSseError (already toasted) or an abort
-        // we missed — both are expected terminal states. Nothing more to do.
       });
+      if (!response.body) {
+        throw new Error("Managed Agents event stream response has no body");
+      }
+      return iterateJsonSseStream<T>(response.body);
     },
-    [],
+    [apiRaw],
   );
 
-  return useMemo(() => ({ api, streamEvents }), [api, streamEvents]);
+  return useMemo(
+    () => ({ api, apiRaw, apiStream }),
+    [api, apiRaw, apiStream],
+  );
 }

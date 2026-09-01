@@ -27,6 +27,10 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import Database from "better-sqlite3";
+import {
+  detachedProcessOptions,
+  killProcessTree,
+} from "./helpers/process-tree";
 
 interface ProcessHandle {
   child: ChildProcess;
@@ -62,6 +66,7 @@ async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> 
     TSX_BIN,
     [MAIN_NODE_ENTRY],
     {
+      ...detachedProcessOptions,
       cwd: REPO_ROOT,
       env: {
         ...process.env,
@@ -122,11 +127,7 @@ async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> 
 }
 
 function killHard(handle: ProcessHandle): Promise<void> {
-  return new Promise((res) => {
-    if (handle.child.exitCode !== null) return res();
-    handle.child.once("exit", () => res());
-    handle.child.kill("SIGKILL");
-  });
+  return killProcessTree(handle.child);
 }
 
 function sleep(ms: number): Promise<void> {

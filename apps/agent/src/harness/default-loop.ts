@@ -24,10 +24,17 @@ export const isBuiltinTool = (name: string): boolean =>
   BUILTIN_TOOLS.has(name) || isMcpTool(name) || name.startsWith("call_agent_");
 
 
-/**
- * Extract the MCP server name from a tool name like "mcp_github_call" or "mcp_github_list_tools".
- */
+/** Extract the MCP server name from current and legacy projected tool names. */
 function extractMcpServerName(toolName: string): string {
+  // Current SDK shape: mcp__<server>__<tool>. The registered tool metadata
+  // is the authoritative source (see emitToolCallEvent); this parser is the
+  // fallback for custom harnesses that construct an MCP tool directly.
+  if (toolName.startsWith("mcp__")) {
+    const withoutPrefix = toolName.slice("mcp__".length);
+    const separator = withoutPrefix.indexOf("__");
+    return separator >= 0 ? withoutPrefix.slice(0, separator) : withoutPrefix;
+  }
+
   // mcp_{server_name}_{call|list_tools}
   const withoutPrefix = toolName.slice(4); // Remove "mcp_"
   const lastUnderscore = withoutPrefix.lastIndexOf("_");
@@ -74,10 +81,14 @@ function emitToolCallEvent(
   }
 
   if (isMcpTool(toolName)) {
+    const registeredServerName = tools[toolName]?.metadata?.serverName;
     runtime.broadcast({
       type: "agent.mcp_tool_use",
       id: toolCallId,
-      mcp_server_name: extractMcpServerName(toolName),
+      mcp_server_name:
+        typeof registeredServerName === "string" && registeredServerName.length > 0
+          ? registeredServerName
+          : extractMcpServerName(toolName),
       name: toolName,
       input: callInput,
     });
@@ -586,27 +597,37 @@ export class DefaultHarness implements HarnessInterface {
         // for this provider call. Computable from session_id + event_id
         // at read time; we surface it on the event so consumers don't
         // have to know the key layout. Absent when llm logging is off.
-        const bodyR2Key = llmLogCtx
-          ? llmLogKey(llmLogCtx.tenant_id, llmLogCtx.session_id, stepStartId ?? "")
-          : undefined;
-        runtime.broadcast({
-          type: "span.model_request_end",
-          model: modelId,
-          model_request_start_id: stepStartId ?? undefined,
-          provider_response_id: providerResponseId,
-          model_usage: step.usage ? {
-            input_tokens: step.usage.inputTokens ?? 0,
-            output_tokens: step.usage.outputTokens ?? 0,
-            cache_read_input_tokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
-            cache_creation_input_tokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
-          } : undefined,
-          finish_reason: step.finishReason,
-          final_text_length: stepText.length,
-          is_error: false,
-          ...(bodyR2Key ? { body_r2_key: bodyR2Key } : {}),
-        });
-        // Clear so onError / onAbort don't double-close.
-        stepStartId = null;
+        // A provider stream error can invoke onError first and onStepFinish
+        // afterwards. onError already closes the span and clears stepStartId;
+        // never emit a second, unpaired terminal event from this callback.
+        if (stepStartId !== null) {
+          const completedStepStartId = stepStartId;
+          const bodyR2Key = llmLogCtx
+            ? llmLogKey(
+                llmLogCtx.tenant_id,
+                llmLogCtx.session_id,
+                completedStepStartId,
+              )
+            : undefined;
+          runtime.broadcast({
+            type: "span.model_request_end",
+            model: modelId,
+            model_request_start_id: completedStepStartId,
+            provider_response_id: providerResponseId,
+            model_usage: step.usage ? {
+              input_tokens: step.usage.inputTokens ?? 0,
+              output_tokens: step.usage.outputTokens ?? 0,
+              cache_read_input_tokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+              cache_creation_input_tokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+            } : undefined,
+            finish_reason: step.finishReason,
+            final_text_length: stepText.length,
+            is_error: false,
+            ...(bodyR2Key ? { body_r2_key: bodyR2Key } : {}),
+          });
+          // Clear so onError / onAbort don't double-close.
+          stepStartId = null;
+        }
       },
 
       onError: ({ error }) => {

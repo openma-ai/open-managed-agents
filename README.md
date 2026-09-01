@@ -707,7 +707,7 @@ oma models create \
 oma models list
 ```
 
-REST: `POST /v1/model_cards`, `GET /v1/model_cards`, `POST /v1/model_cards/:id` (rotate), `DELETE /v1/model_cards/:id`. Create runs a 6-second probe so a bad key fails loudly, not at first turn.
+REST: `POST /v1/oma/model_cards`, `GET /v1/oma/model_cards`, `POST /v1/oma/model_cards/:id` (rotate), `DELETE /v1/oma/model_cards/:id`. Create runs a 6-second probe so a bad key fails loudly, not at first turn.
 
 Keys are AES-256-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` (label `model.cards.keys`); list responses surface only the last-4 preview. Rotate by POSTing a new `api_key` — no redeploy, no key versioning (re-run the backfill script if you rotate `PLATFORM_ROOT_SECRET` itself).
 

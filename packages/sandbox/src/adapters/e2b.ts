@@ -1,4 +1,4 @@
-// E2B (e2b.dev) implementation of SandboxExecutor.
+// E2B (e2b.dev) implementation of SandboxPort.
 //
 // Lazy-imports the `e2b` SDK so this package compiles without it. The
 // driver dep lives in your deployment's package.json:
@@ -8,7 +8,7 @@
 // spun up via E2B's API. Boot time ~250ms cold from a warm pool, sub-200MB
 // memory, full filesystem, network access controlled by the template image.
 //
-// Mapping to SandboxExecutor port:
+// Mapping to SandboxPort:
 //   exec(cmd)              → sandbox.commands.run(cmd) (sync mode, capture stdout/stderr/exitCode)
 //   startProcess(cmd)      → sandbox.commands.run(cmd, { background: true })
 //   readFile / writeFile   → sandbox.files.read / write
@@ -17,7 +17,22 @@
 // Auth: pass apiKey at construction. If unset, the SDK reads E2B_API_KEY
 // from process.env.
 
-import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "../ports";
+import type {
+  ProcessHandle,
+  SandboxDuplexProcess,
+  SandboxDuplexProcessPort,
+  SandboxDuplexProcessSpec,
+  SandboxCheckpointHandle,
+  SandboxFactory,
+  SandboxFactoryContext,
+  SandboxFactoryEnv,
+  SandboxPort,
+  SandboxProviderPort,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
+} from "../ports";
 import { readS3MemoryBucket } from "../ports";
 
 // Structural types so this file compiles without `e2b` installed. The
@@ -30,15 +45,26 @@ interface E2BCommandResult {
 }
 interface E2BCommandHandle {
   pid: number;
-  kill(signal?: string): Promise<void>;
+  kill(): Promise<boolean | void>;
   wait?(): Promise<E2BCommandResult>;
+  sendStdin?(data: string | Uint8Array): Promise<void>;
+  closeStdin?(): Promise<void>;
+}
+interface E2BCommandOptions {
+  timeoutMs?: number;
+  background?: boolean;
+  cwd?: string;
+  envs?: Record<string, string>;
+  onStdout?: (data: string) => void | Promise<void>;
+  onStderr?: (data: string) => void | Promise<void>;
+  stdin?: boolean;
 }
 interface E2BSandboxLike {
   sandboxId?: string;
   commands: {
     run(
       cmd: string,
-      opts?: { timeoutMs?: number; background?: boolean },
+      opts?: E2BCommandOptions,
     ): Promise<E2BCommandResult | E2BCommandHandle>;
   };
   files: {
@@ -47,11 +73,25 @@ interface E2BSandboxLike {
     makeDir?(path: string): Promise<void>;
   };
   kill(): Promise<void>;
+  getInfo?(): Promise<{ state?: string }>;
+  setTimeout?(timeoutMs: number): Promise<void>;
+  pause?(opts?: { keepMemory?: boolean }): Promise<boolean>;
+  connect?(): Promise<E2BSandboxLike>;
+  createSnapshot?(opts?: { name?: string }): Promise<{
+    snapshotId: string;
+    names: string[];
+  }>;
 }
 
 export interface E2BSandboxOptions {
   /** E2B API key. Falls back to process.env.E2B_API_KEY. */
   apiKey?: string;
+  /** E2B-compatible control-plane URL. Falls back to E2B_API_URL. */
+  apiUrl?: string;
+  /** Optional sandbox traffic URL. Falls back to E2B_SANDBOX_URL. */
+  sandboxUrl?: string;
+  /** Optional E2B-compatible base domain. Falls back to E2B_DOMAIN. */
+  domain?: string;
   /**
    * Template id (the `template` field in E2B's UI). Default "base" matches
    * the SDK's default — has python/node/git/curl etc preinstalled. Override
@@ -90,25 +130,16 @@ export interface E2BSandboxOptions {
 export async function createE2BSandbox(
   opts: E2BSandboxOptions = {},
 ): Promise<E2BSandboxExecutor> {
-  type E2BModule = {
-    Sandbox: {
-      create(args?: { apiKey?: string; template?: string }): Promise<E2BSandboxLike>;
-    };
-  };
-  const mod = (await import(/* @vite-ignore */ "e2b" as string).catch((err) => {
-    throw new Error(
-      `createE2BSandbox: failed to load 'e2b' SDK — ` +
-        `pnpm add e2b (cause: ${String(err)})`,
-    );
-  })) as E2BModule;
-  const sb = await mod.Sandbox.create({
-    apiKey: opts.apiKey,
-    template: opts.templateId,
-  });
+  const mod = await loadE2BModule();
+  const sb = await mod.Sandbox.create(
+    opts.templateId ?? "base",
+    connectionOptions(opts),
+  );
   return new E2BSandboxExecutor(sb, opts);
 }
 
-export class E2BSandboxExecutor implements SandboxExecutor {
+export class E2BSandboxExecutor
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -128,6 +159,91 @@ export class E2BSandboxExecutor implements SandboxExecutor {
       warn: (msg, ctx) => console.warn(`[e2b-sandbox] ${msg}`, ctx ?? ""),
     };
     this.memoryBucketConfig = opts.memoryBucket;
+  }
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: "e2b", runtimeId: this.requireRuntimeId() };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return {
+      lease: true,
+      suspend: ["filesystem", "memory"],
+      checkpoint: ["memory"],
+    };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    if (typeof this.sandbox.getInfo !== "function") return "unknown";
+    const info = await this.sandbox.getInfo();
+    if (info.state === "running") return "running";
+    if (info.state === "paused") return "suspended";
+    return "unknown";
+  }
+
+  async renewLease(input: { ttlMs: number }): Promise<void> {
+    if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
+      throw new Error("E2B lease ttlMs must be a positive integer");
+    }
+    if (typeof this.sandbox.setTimeout !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.setTimeout");
+    }
+    await this.sandbox.setTimeout(input.ttlMs);
+  }
+
+  async suspend(input: {
+    kind: "filesystem" | "memory";
+  }): Promise<SandboxCheckpointHandle> {
+    if (typeof this.sandbox.pause !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.pause");
+    }
+    const runtimeId = this.requireRuntimeId();
+    await this.sandbox.pause({ keepMemory: input.kind === "memory" });
+    return {
+      provider: "e2b",
+      checkpointId: runtimeId,
+      sourceRuntimeId: runtimeId,
+      kind: input.kind,
+      scope: "runtime",
+    };
+  }
+
+  async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
+    const runtimeId = this.requireRuntimeId();
+    if (
+      checkpoint.provider !== "e2b"
+      || checkpoint.scope !== "runtime"
+      || checkpoint.checkpointId !== runtimeId
+    ) {
+      throw new Error("E2B runtime can only resume its own runtime-scoped checkpoint");
+    }
+    if (typeof this.sandbox.connect !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.connect");
+    }
+    this.sandbox = await this.sandbox.connect();
+  }
+
+  async checkpoint(input: {
+    kind: "filesystem" | "memory";
+    name?: string;
+  }): Promise<SandboxCheckpointHandle> {
+    if (input.kind !== "memory") {
+      throw new Error("E2B durable checkpoints currently support memory state only");
+    }
+    if (typeof this.sandbox.createSnapshot !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.createSnapshot");
+    }
+    const runtimeId = this.requireRuntimeId();
+    const snapshot = await this.sandbox.createSnapshot(
+      input.name ? { name: input.name } : undefined,
+    );
+    return {
+      provider: "e2b",
+      checkpointId: snapshot.snapshotId,
+      sourceRuntimeId: runtimeId,
+      kind: "memory",
+      scope: "portable",
+    };
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -151,6 +267,132 @@ export class E2BSandboxExecutor implements SandboxExecutor {
     if (!handle.pid) return null;
     const id = `proc_${handle.pid}_${Date.now()}`;
     return new E2BProcessHandle(id, handle);
+  }
+
+  async spawnDuplexProcess(
+    spec: SandboxDuplexProcessSpec,
+  ): Promise<SandboxDuplexProcess> {
+    let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrController!: ReadableStreamDefaultController<Uint8Array>;
+    let streamsSettled = false;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) { stdoutController = controller; },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) { stderrController = controller; },
+    });
+    const encoder = new TextEncoder();
+    const settleStreams = (error?: Error) => {
+      if (streamsSettled) return;
+      streamsSettled = true;
+      for (const controller of [stdoutController, stderrController]) {
+        try {
+          if (error) controller.error(error);
+          else controller.close();
+        } catch {
+          // The corresponding consumer may already have cancelled its stream.
+        }
+      }
+    };
+    const enqueue = (
+      controller: ReadableStreamDefaultController<Uint8Array>,
+      data: string,
+    ) => {
+      if (streamsSettled || data.length === 0) return;
+      try {
+        controller.enqueue(encoder.encode(data));
+      } catch {
+        // The corresponding consumer may already have cancelled its stream.
+      }
+    };
+
+    const command = [spec.command, ...(spec.args ?? [])]
+      .map(shellEscape)
+      .join(" ");
+    const handle = (await this.sandbox.commands.run(command, {
+      background: true,
+      stdin: true,
+      // E2B otherwise closes the process event stream after 60 seconds.
+      // ConnectRPC treats a non-positive timeout as no deadline.
+      timeoutMs: 0,
+      cwd: spec.cwd,
+      envs: this.buildCommandEnv(spec.command, spec.env),
+      onStdout: (data) => enqueue(stdoutController, data),
+      onStderr: (data) => enqueue(stderrController, data),
+    })) as E2BCommandHandle;
+    if (
+      typeof handle.wait !== "function"
+      || typeof handle.sendStdin !== "function"
+      || typeof handle.closeStdin !== "function"
+    ) {
+      await handle.kill().catch(() => undefined);
+      settleStreams();
+      throw new Error(
+        "E2B SDK does not expose the live-stdin CommandHandle required by ACP",
+      );
+    }
+
+    let requestedSignal: "SIGTERM" | "SIGKILL" | null = null;
+    let exitedSettled = false;
+    let resolveExited!: (
+      value: { code: number | null; signal: string | null },
+    ) => void;
+    const exited = new Promise<{ code: number | null; signal: string | null }>(
+      (resolve) => { resolveExited = resolve; },
+    );
+    const finish = (code: number | null, signal: string | null, error?: Error) => {
+      settleStreams(error);
+      if (exitedSettled) return;
+      exitedSettled = true;
+      resolveExited({ code, signal });
+    };
+    void handle.wait().then(
+      (result) => finish(result.exitCode, requestedSignal),
+      (cause: unknown) => {
+        if (requestedSignal !== null) {
+          finish(null, requestedSignal);
+          return;
+        }
+        const exitCode = readExitCode(cause);
+        if (exitCode !== null) {
+          finish(exitCode, null);
+          return;
+        }
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        finish(null, null, error);
+      },
+    );
+
+    const stdin = new WritableStream<Uint8Array>({
+      write: async (chunk) => {
+        if (exitedSettled) throw new Error("cannot write to an exited E2B process");
+        await handle.sendStdin!(chunk);
+      },
+      close: async () => {
+        if (!exitedSettled) await handle.closeStdin!();
+      },
+      abort: async () => {
+        if (exitedSettled) return;
+        requestedSignal = "SIGKILL";
+        await handle.kill();
+        finish(null, requestedSignal);
+      },
+    });
+
+    return {
+      stdin,
+      stdout,
+      stderr,
+      exited,
+      kill: async (signal = "SIGTERM") => {
+        if (exitedSettled) return;
+        // E2B v2 currently exposes SIGKILL only. Preserve the caller's
+        // requested signal in the portable lifecycle result.
+        requestedSignal = signal;
+        await handle.kill();
+        finish(null, requestedSignal);
+      },
+    };
   }
 
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
@@ -360,24 +602,39 @@ export class E2BSandboxExecutor implements SandboxExecutor {
     }
   }
 
+  private requireRuntimeId(): string {
+    if (!this.sandbox.sandboxId) {
+      throw new Error("E2B SDK did not return a sandboxId");
+    }
+    return this.sandbox.sandboxId;
+  }
+
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  /**
-   * Prefix env-var assignments AND command-prefix secrets to the command.
-   * E2B's commands.run doesn't take an env option (the SDK's shape is bare
-   * cmd string), so we shell-prefix instead. Matches the LocalSubprocess
-   * adapter's behaviour from the model's perspective.
-   */
+  /** Prefix env-var assignments and command-prefix secrets for the legacy
+   * string-command paths. Duplex processes use E2B v2's native `envs` field. */
   private applyEnv(command: string): string {
-    const env: Record<string, string> = { ...this.envVars };
-    for (const { prefix, secrets } of this.commandSecrets) {
-      if (command.startsWith(prefix)) Object.assign(env, secrets);
-    }
+    const env = this.buildCommandEnv(command);
     if (Object.keys(env).length === 0) return command;
     const exports = Object.entries(env)
       .map(([k, v]) => `export ${k}=${shellEscape(v)};`)
       .join(" ");
     return `${exports} ${command}`;
+  }
+
+  private buildCommandEnv(
+    command: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string> {
+    const env: Record<string, string> = { ...this.envVars };
+    for (const { prefix, secrets } of this.commandSecrets) {
+      if (command.startsWith(prefix)) Object.assign(env, secrets);
+    }
+    for (const [name, value] of Object.entries(overrides)) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+    }
+    return env;
   }
 }
 
@@ -401,7 +658,10 @@ class E2BProcessHandle implements ProcessHandle {
   }
 
   async kill(signal: string): Promise<void> {
-    try { await this.handle.kill(signal); } catch (err) {
+    // The E2B v2 command API only exposes SIGKILL; retain ProcessHandle's
+    // portable signature while delegating to the supported primitive.
+    void signal;
+    try { await this.handle.kill(); } catch (err) {
       throw new Error(`kill failed: ${(err as Error).message}`);
     }
   }
@@ -423,12 +683,94 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function readExitCode(cause: unknown): number | null {
+  if (
+    typeof cause === "object"
+    && cause !== null
+    && "exitCode" in cause
+    && typeof cause.exitCode === "number"
+  ) {
+    return cause.exitCode;
+  }
+  return null;
+}
+
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (_ctx, env) => {
-  return await createE2BSandbox({
+type E2BConnectionOptions = Pick<
+  E2BSandboxOptions,
+  "apiKey" | "apiUrl" | "sandboxUrl" | "domain"
+>;
+
+interface E2BModule {
+  Sandbox: {
+    create(template: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+    connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+  };
+}
+
+async function loadE2BModule(): Promise<E2BModule> {
+  return (await import(/* @vite-ignore */ "e2b" as string).catch((err) => {
+    throw new Error(
+      `E2B sandbox provider failed to load 'e2b' SDK — ` +
+        `pnpm add e2b (cause: ${String(err)})`,
+    );
+  })) as E2BModule;
+}
+
+function connectionOptions(opts: E2BConnectionOptions): E2BConnectionOptions {
+  return {
+    apiKey: opts.apiKey,
+    apiUrl: opts.apiUrl,
+    sandboxUrl: opts.sandboxUrl,
+    domain: opts.domain,
+  };
+}
+
+function optionsFromFactory(env: SandboxFactoryEnv): E2BSandboxOptions {
+  return {
     apiKey: env.E2B_API_KEY,
+    apiUrl: env.E2B_API_URL,
+    sandboxUrl: env.E2B_SANDBOX_URL,
+    domain: env.E2B_DOMAIN,
     templateId: env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
-  });
+  };
+}
+
+export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
+  create: async (_ctx, env) => createE2BSandbox(optionsFromFactory(env)),
+  resume: async (handle, _ctx, env) => {
+    if (handle.provider !== "e2b" || !handle.runtimeId) {
+      throw new Error("E2B provider received an incompatible runtime handle");
+    }
+    const options = optionsFromFactory(env);
+    const mod = await loadE2BModule();
+    const sandbox = await mod.Sandbox.connect(
+      handle.runtimeId,
+      connectionOptions(options),
+    );
+    return new E2BSandboxExecutor(sandbox, options);
+  },
+  restore: async (checkpoint, _ctx, env) => {
+    if (
+      checkpoint.provider !== "e2b"
+      || checkpoint.scope !== "portable"
+      || !checkpoint.checkpointId
+    ) {
+      throw new Error("E2B provider received an incompatible portable checkpoint");
+    }
+    const options = optionsFromFactory(env);
+    const mod = await loadE2BModule();
+    const sandbox = await mod.Sandbox.create(
+      checkpoint.checkpointId,
+      connectionOptions(options),
+    );
+    return new E2BSandboxExecutor(sandbox, options);
+  },
 };
+
+export const sandboxFactory: SandboxFactory = (
+  ctx: SandboxFactoryContext,
+  env: SandboxFactoryEnv,
+) => sandboxProvider.create(ctx, env);

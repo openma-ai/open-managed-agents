@@ -1,3 +1,5 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useEffect, useMemo, useState } from "react";
 import { XCircleIcon } from "lucide-react";
 import { useApi } from "../lib/api";
@@ -5,7 +7,6 @@ import { useAsyncAction } from "../hooks/useAsyncAction";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "../components/DataTable";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useI18n } from "../i18n";
 
 interface ApiKey {
@@ -28,7 +29,7 @@ export function ApiKeysList() {
   const load = async () => {
     setLoading(true);
     try {
-      setKeys((await api<{ data: ApiKey[] }>("/v1/api_keys")).data);
+      setKeys((await api<{ data: ApiKey[] }>("/v1/oma/api_keys")).data);
     } catch {}
     setLoading(false);
   };
@@ -43,7 +44,7 @@ export function ApiKeysList() {
   const create = useAsyncAction(async () => {
     setError("");
     try {
-      const result = await api<{ key: string }>("/v1/api_keys", {
+      const result = await api<{ key: string }>("/v1/oma/api_keys", {
         method: "POST",
         body: JSON.stringify({ name: name || t.apiKeys.untitledKey }),
       });
@@ -58,7 +59,7 @@ export function ApiKeysList() {
   const remove = async (id: string) => {
     if (!confirm("Revoke this API key? This cannot be undone.")) return;
     try {
-      await api(`/v1/api_keys/${id}`, { method: "DELETE" });
+      await api(`/v1/oma/api_keys/${id}`, { method: "DELETE" });
       load();
     } catch {}
   };
@@ -110,27 +111,6 @@ export function ApiKeysList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => (
-          <RowActionsMenu
-            label={`Actions for ${row.original.name}`}
-            actions={[
-              {
-                label: "Revoke",
-                icon: <XCircleIcon className="size-4" />,
-                destructive: true,
-                onSelect: () => {
-                  void remove(row.original.id);
-                },
-              },
-            ]}
-          />
-        ),
-        enableHiding: false,
-        size: 56,
-      },
     ],
     [],
   );
@@ -142,6 +122,14 @@ export function ApiKeysList() {
       data={keys}
       loading={loading}
       getRowId={(k) => k.id}
+      rowActions={(key) => [
+        {
+          label: "Revoke",
+          icon: <XCircleIcon className="size-4" />,
+          destructive: true,
+          onSelect: () => void remove(key.id),
+        },
+      ]}
       emptyTitle={t.apiKeys.noApiKeysYet}
       emptyKind="api_key"
       emptySubtitle="Create an API key to access the platform from CLI or SDK."
@@ -176,12 +164,12 @@ export function ApiKeysList() {
                 {createdKey}
               </code>
             </div>
-            <button
+            <Button variant="ghost"
               onClick={() => navigator.clipboard.writeText(createdKey)}
               className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-brand hover:underline"
             >
               Copy to clipboard
-            </button>
+            </Button>
           </div>
         ) : (
           <div className="space-y-3">
@@ -191,10 +179,10 @@ export function ApiKeysList() {
               </div>
             )}
             <div>
-              <label htmlFor="api-key-name" className="text-sm text-fg-muted block mb-1">
+              <Label htmlFor="api-key-name" className="text-sm text-fg-muted block mb-1">
                 Name (optional)
-              </label>
-              <input
+              </Label>
+              <Input
                 id="api-key-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}

@@ -5,11 +5,8 @@
 //      from sign-up is accepted on a *second* better-auth instance
 //      sharing the same pg.Pool DSN (multi-replica analog).
 //
-// Skipped unless PG_TEST_URL is set. Run locally with:
-//   docker run --rm -p 54329:5432 -e POSTGRES_USER=oma -e POSTGRES_PASSWORD=oma \
-//     -e POSTGRES_DB=oma postgres:16-alpine
-//   PG_TEST_URL=postgres://oma:oma@127.0.0.1:54329/oma pnpm --filter \
-//     @open-managed-agents/main-node test pg-better-auth
+// Run locally with `pnpm test:integration:storage`; the suite owns a
+// disposable PostgreSQL container.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Hono } from "hono";
@@ -19,17 +16,14 @@ import {
 } from "@open-managed-agents/sql-client";
 import { createAuth } from "../src/auth/config.js";
 import { ensureTenantSchema } from "../src/auth/tenants.js";
+import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 
-const PG_URL = process.env.PG_TEST_URL ?? "";
-const enabled =
-  PG_URL.startsWith("postgres://") || PG_URL.startsWith("postgresql://");
-const d = enabled ? describe : describe.skip;
+const PG_URL = getStorageIntegrationConfig().postgres.betterAuth;
 
 let sql: SqlClient;
 let pool: import("pg").Pool;
 
 beforeAll(async () => {
-  if (!enabled) return;
   sql = await createPostgresSqlClient(PG_URL);
   await ensureTenantSchema(sql);
   await sql.exec(`
@@ -83,7 +77,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (!enabled) return;
   // Cleanup the smoke test rows so repeat runs stay green.
   await sql
     .prepare(`DELETE FROM "session" WHERE "userId" IN (SELECT id FROM "user" WHERE email LIKE 'pg-auth-smoke-%')`)
@@ -101,7 +94,7 @@ function mountApp(auth: ReturnType<typeof createAuth>): Hono {
   return app;
 }
 
-d("better-auth on PG (multi-replica friendly)", () => {
+describe("better-auth on PG (multi-replica friendly)", () => {
   it("sign-up on replica A → sign-in on replica B with shared PG pool", async () => {
     const secret = "test_secret_pg_better_auth_xxxxxxxxxxxxxxxxxxxx";
     const replicaA = createAuth({ database: pool, mainSql: sql, secret });

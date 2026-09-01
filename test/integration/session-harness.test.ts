@@ -119,7 +119,9 @@ async function collectReplayedEvents(sessionId: string, waitMs = 100): Promise<a
   ws.accept();
   const events: any[] = [];
   return new Promise((resolve) => {
-    ws.addEventListener("message", (e) => events.push(JSON.parse(e.data as string)));
+    ws.addEventListener("message", (e) => {
+      events.push(JSON.parse(e.data as string));
+    });
     setTimeout(() => {
       ws.close();
       resolve(events);
@@ -128,17 +130,17 @@ async function collectReplayedEvents(sessionId: string, waitMs = 100): Promise<a
 }
 
 async function createSessionWith(harnessName: string, extra?: Record<string, unknown>) {
-  const a = await post("/v1/agents", {
+  const a = await post("/v1/oma/agents", {
     name: `H-${harnessName}-${Date.now()}`,
     model: "claude-sonnet-4-6",
     harness: harnessName,
     ...extra,
   });
-  const e = await post("/v1/environments", {
+  const e = await post("/v1/oma/environments", {
     name: `env-${Date.now()}`,
     config: { type: "cloud" },
   });
-  const s = await post("/v1/sessions", {
+  const s = await post("/v1/oma/sessions", {
     agent: ((await a.json()) as any).id,
     environment_id: ((await e.json()) as any).id,
   });
@@ -146,7 +148,7 @@ async function createSessionWith(harnessName: string, extra?: Record<string, unk
 }
 
 async function postAndWait(sessionId: string, text: string, waitMs = 400) {
-  await post(`/v1/sessions/${sessionId}/events`, {
+  await post(`/v1/oma/sessions/${sessionId}/events`, {
     events: [{ type: "user.message", content: [{ type: "text", text }] }],
   });
   await new Promise((r) => setTimeout(r, waitMs));
@@ -270,7 +272,7 @@ describe("Harness execution flow", () => {
     expect(body.status).toBe("idle");
 
     // Post another event (session should accept it)
-    const res = await post(`/v1/sessions/${sessionId}/events`, {
+    const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "after crash" }] }],
     });
     expect(res.status).toBe(202);
@@ -426,11 +428,11 @@ describe("Status transitions", () => {
   });
 
   it("status includes agent_id from init", async () => {
-    const a = await post("/v1/agents", { name: "StatusAgent", model: "claude-sonnet-4-6", harness: "sh-noop" });
+    const a = await post("/v1/oma/agents", { name: "StatusAgent", model: "claude-sonnet-4-6", harness: "sh-noop" });
     const agent = (await a.json()) as any;
-    const e = await post("/v1/environments", { name: `status-env-${Date.now()}`, config: { type: "cloud" } });
+    const e = await post("/v1/oma/environments", { name: `status-env-${Date.now()}`, config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
-    const s = await post("/v1/sessions", { agent: agent.id, environment_id: envObj.id });
+    const s = await post("/v1/oma/sessions", { agent: agent.id, environment_id: envObj.id });
     const session = (await s.json()) as any;
     const res = await getDoStatus(session.id);
     const body = (await res.json()) as any;
@@ -590,7 +592,7 @@ describe("Harness integration — additional scenarios", () => {
       },
     }));
     const sessionId = await createSessionWith("content-reader-sh");
-    await post(`/v1/sessions/${sessionId}/events`, {
+    await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [
         { type: "text", text: "b1" },
         { type: "text", text: "b2" },
@@ -605,9 +607,9 @@ describe("Harness integration — additional scenarios", () => {
   });
 
   it("session title is preserved through harness execution", async () => {
-    const a = await post("/v1/agents", { name: "TitleKeep", model: "claude-sonnet-4-6", harness: "sh-noop" });
-    const e = await post("/v1/environments", { name: "titlekeep-env", config: { type: "cloud" } });
-    const s = await post("/v1/sessions", {
+    const a = await post("/v1/oma/agents", { name: "TitleKeep", model: "claude-sonnet-4-6", harness: "sh-noop" });
+    const e = await post("/v1/oma/environments", { name: "titlekeep-env", config: { type: "cloud" } });
+    const s = await post("/v1/oma/sessions", {
       agent: ((await a.json()) as any).id,
       environment_id: ((await e.json()) as any).id,
       title: "My Important Session",
@@ -615,7 +617,7 @@ describe("Harness integration — additional scenarios", () => {
     const session = (await s.json()) as any;
     await postAndWait(session.id, "keep title", 600);
 
-    const getRes = await get(`/v1/sessions/${session.id}`);
+    const getRes = await get(`/v1/oma/sessions/${session.id}`);
     const fetched = (await getRes.json()) as any;
     expect(fetched.title).toBe("My Important Session");
   });
@@ -623,7 +625,7 @@ describe("Harness integration — additional scenarios", () => {
   it("session events GET returns correct content-type for JSON", async () => {
     const sessionId = await createSessionWith("sh-noop");
     await postAndWait(sessionId, "content type", 600);
-    const res = await get(`/v1/sessions/${sessionId}/events`, { Accept: "application/json" });
+    const res = await get(`/v1/oma/sessions/${sessionId}/events`, { Accept: "application/json" });
     expect(res.status).toBe(200);
     const ct = res.headers.get("Content-Type");
     expect(ct).toContain("application/json");
@@ -690,13 +692,5 @@ describe("Harness integration — additional scenarios", () => {
     // Should have agent messages from second turn (partial-crash emits one before crashing)
     const agentMsgs = events.filter((e) => e.type === "agent.message");
     expect(agentMsgs.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it.skip("session events GET returns SSE for text/event-stream", async () => {
-    const sessionId = await createSessionWith("sh-noop");
-    await postAndWait(sessionId, "sse test", 600);
-    const res = await get(`/v1/sessions/${sessionId}/events`, { Accept: "text/event-stream" });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toBe("text/event-stream");
   });
 });

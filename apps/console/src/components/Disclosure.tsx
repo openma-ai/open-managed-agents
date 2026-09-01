@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useState, type ReactNode } from "react";
 
 import {
@@ -58,7 +59,7 @@ export function Disclosure({
       className={`${wrapperCls} ${className}`.trim()}
     >
       <CollapsibleTrigger asChild>
-        <button
+        <Button variant="ghost"
           type="button"
           className="w-full flex items-center gap-2 px-3 py-2.5 min-h-11 sm:min-h-0 text-left"
         >
@@ -70,7 +71,7 @@ export function Disclosure({
           />
           <span className="text-sm font-medium text-fg flex-1 min-w-0">{title}</span>
           {meta && <span className="text-xs text-fg-muted shrink-0">{meta}</span>}
-        </button>
+        </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="collapsible-content overflow-hidden">
         <div className="px-3 pb-3">{children}</div>

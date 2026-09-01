@@ -1,3 +1,7 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -251,20 +255,20 @@ export function IntegrationsFeishuPublishWizard({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[760px] mx-auto px-4 sm:px-8 lg:px-10 py-8 lg:py-10">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--narrow">
         <Link
           to="/integrations/feishu"
-          className="inline-flex items-center gap-1 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← Feishu integrations
         </Link>
 
         <header className="mt-3 mb-6">
-          <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+          <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
             Publish agent to Feishu
           </h1>
-          <p className="mt-1.5 text-[14px] text-fg-muted">
+          <p className="mt-1.5 text-base text-fg-muted">
             Connect an agent to a Feishu tenant — it joins chats, replies to messages,
             reacts, all from a single App.
           </p>
@@ -273,13 +277,13 @@ export function IntegrationsFeishuPublishWizard({
         <StepIndicator current={step} />
 
         {error && (
-          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
+          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
 
         {hydrating && (
-          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
             Resuming in-progress install…
           </div>
         )}
@@ -350,7 +354,7 @@ function StepIndicator({ current }: { current: Step }) {
           <li key={s.id} className="flex items-center gap-2 flex-1 last:flex-none">
             <div className="flex items-center gap-2 min-w-0">
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-mono font-medium shrink-0 ${
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-medium shrink-0 ${
                   state === "done"
                     ? "bg-brand text-brand-fg"
                     : state === "current"
@@ -365,7 +369,7 @@ function StepIndicator({ current }: { current: Step }) {
                 )}
               </div>
               <span
-                className={`text-[12px] font-medium uppercase tracking-wider truncate ${
+                className={`text-sm font-medium uppercase tracking-wider truncate ${
                   state === "current"
                     ? "text-fg"
                     : state === "done"
@@ -457,78 +461,84 @@ function PickStep(props: {
       </div>
 
       <div>
-        <label className="text-[13px] font-medium text-fg mb-2 block">
+        <Label className="text-sm font-medium text-fg mb-2 block">
           Tenant type
-        </label>
-        <div className="space-y-2">
+        </Label>
+        <RadioGroup
+          value={props.tenantType}
+          onValueChange={(value) => props.setTenantType(value as FeishuTenantType)}
+          className="space-y-2"
+        >
           {TENANT_TYPES.map((t) => (
-            <label
+            <Label
               key={t.value}
+              htmlFor={`tenant-type-${t.value}`}
               className="flex items-start gap-2 cursor-pointer hover:text-fg text-fg-muted"
             >
-              <input
-                type="radio"
-                name="tenant-type"
+              <RadioGroupItem
+                id={`tenant-type-${t.value}`}
                 value={t.value}
-                checked={props.tenantType === t.value}
-                onChange={() => props.setTenantType(t.value)}
-                className="accent-brand mt-0.5"
+                className="mt-0.5"
               />
               <span>
-                <span className="text-[13px] font-medium text-fg">{t.label}</span>
-                <span className="block text-[12px] text-fg-muted leading-relaxed">
+                <span className="text-sm font-medium text-fg">{t.label}</span>
+                <span className="block text-sm text-fg-muted leading-relaxed">
                   {t.hint}
                 </span>
               </span>
-            </label>
+            </Label>
           ))}
-        </div>
+        </RadioGroup>
       </div>
 
       <div>
-        <label className="text-[13px] font-medium text-fg mb-2 block">
+        <Label className="text-sm font-medium text-fg mb-2 block">
           Session granularity
-        </label>
-        <div className="space-y-2">
+        </Label>
+        <RadioGroup
+          value={props.granularity}
+          onValueChange={(value) =>
+            props.setGranularity(value as FeishuSessionGranularity)
+          }
+          className="space-y-2"
+        >
           {GRANULARITY_OPTIONS.map((g) => (
-            <label
+            <Label
               key={g.value}
+              htmlFor={`granularity-${g.value}`}
               className="flex items-start gap-2 cursor-pointer hover:text-fg text-fg-muted"
             >
-              <input
-                type="radio"
-                name="granularity"
+              <RadioGroupItem
+                id={`granularity-${g.value}`}
                 value={g.value}
-                checked={props.granularity === g.value}
-                onChange={() => props.setGranularity(g.value)}
-                className="accent-brand mt-0.5"
+                className="mt-0.5"
               />
               <span>
-                <span className="text-[13px] font-medium text-fg">{g.label}</span>
-                <span className="block text-[12px] text-fg-muted leading-relaxed">
+                <span className="text-sm font-medium text-fg">{g.label}</span>
+                <span className="block text-sm text-fg-muted leading-relaxed">
                   {g.hint}
                 </span>
               </span>
-            </label>
+            </Label>
           ))}
-        </div>
+        </RadioGroup>
       </div>
 
-      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
+      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
         No OAuth dance — Feishu uses App ID + App Secret (required), plus two
         optional signing keys, pasted in the next step. Setup ~3 min, requires
         Feishu admin access to the App console.
       </div>
 
       <div className="pt-1">
-        <button
+        <Button variant="ghost"
           onClick={props.onContinue}
           disabled={props.working}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           {props.working ? "Working…" : "Continue"}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -554,28 +564,28 @@ function CredentialsStep(props: {
   return (
     <div className="space-y-7">
       {/* Breadcrumb — current agent / env / persona, with Change link back to pick step. */}
-      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-[12px]">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-sm">
         <div className="text-fg-muted truncate">
           Publishing{" "}
           <span className="text-fg font-medium">{props.personaName || props.agentName}</span>
           {" "}({props.agentName}) →{" "}
           <span className="text-fg font-medium">{props.envName}</span>
         </div>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={props.onBack}
           disabled={props.working}
           className="text-brand hover:underline disabled:opacity-50 shrink-0"
         >
           Change ←
-        </button>
+        </Button>
       </div>
 
       <section>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Create a Feishu App
         </h2>
-        <p className="text-[13px] text-fg-muted mb-3">
+        <p className="text-sm text-fg-muted mb-3">
           Open the{" "}
           <a
             href="https://openplatform.feishu.cn/app"
@@ -593,7 +603,7 @@ function CredentialsStep(props: {
           <CopyRow label="Event URL" value={props.form.webhookUrl} />
           <CopyRow label="Verification token (we'll verify against yours)" value={props.form.callbackUrl} />
         </div>
-        <p className="text-[12px] text-fg-subtle mt-2">
+        <p className="text-sm text-fg-subtle mt-2">
           Add <code>im.message.receive_v1</code> as a subscribed event, grant
           the bot <code>im:message</code> / <code>im:chat</code> /
           <code>im:reaction</code> scopes (matches our capability toggles), and
@@ -602,10 +612,10 @@ function CredentialsStep(props: {
       </section>
 
       <section>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Paste credentials Feishu gave you
         </h2>
-        <p className="text-[13px] text-fg-muted mb-3">
+        <p className="text-sm text-fg-muted mb-3">
           From the App's <strong>Credentials &amp; Basic Info</strong> page
           (<strong>App ID</strong>, <strong>App Secret</strong>,
           <strong> Verification Token</strong>) and{" "}
@@ -648,32 +658,32 @@ function CredentialsStep(props: {
           </Field>
         </div>
 
-        <p className="text-[12px] text-fg-subtle mt-2">
+        <p className="text-sm text-fg-subtle mt-2">
           Verification Token &amp; Encrypt Key are optional — leave them blank
           for long-connection (WebSocket) Apps. Provide them only if your App
           uses the HTTP event-callback ingest path.
         </p>
 
         <div className="mt-4 flex items-center gap-3 flex-wrap">
-          <button
+          <Button variant="ghost"
             onClick={props.onBack}
             disabled={props.working}
-            className="text-[13px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
+            className="text-sm text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
           >
             ← Back
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={props.onSubmit}
             disabled={
               props.working ||
               !props.appId ||
               !props.appSecret
             }
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             {props.working ? "Activating…" : "Activate"}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-          </button>
+          </Button>
         </div>
       </section>
     </div>
@@ -691,25 +701,25 @@ function CompleteStep({
 }) {
   return (
     <div className="space-y-5">
-      <div className="rounded-md border border-success/30 bg-success-subtle px-4 py-3.5 text-[13px]">
+      <div className="rounded-md border border-success/30 bg-success-subtle px-4 py-3.5 text-sm">
         <div className="font-medium text-success mb-1">
           ✓ Feishu credentials accepted
         </div>
-        <p className="text-fg-muted text-[12px] leading-relaxed">
+        <p className="text-fg-muted text-sm leading-relaxed">
           Your agent is <code>live</code>. Feishu will deliver events from any
           chat the bot has been added to; the platform mints a tenant access
           token on demand and — when you provided one — decrypts inbound HTTP
           events with the Encrypt Key.
         </p>
         {publicationId && (
-          <p className="text-fg-muted text-[12px] mt-2">
+          <p className="text-fg-muted text-sm mt-2">
             Publication: <code className="text-fg">{publicationId}</code>
           </p>
         )}
       </div>
 
       {link && (
-        <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
+        <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
           <p className="mb-2">
             These URLs should already be configured in your Feishu App —
             confirm them as a sanity check:
@@ -722,13 +732,13 @@ function CompleteStep({
       )}
 
       <div className="pt-1">
-        <button
+        <Button variant="ghost"
           onClick={onDone}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Back to Feishu integrations
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -745,36 +755,36 @@ function CopyRow({ label, value, secret = false }: { label: string; value: strin
   const display = secret && !reveal ? "•".repeat(Math.min(value.length, 28)) : value;
   return (
     <div className="flex items-center gap-3 px-3 py-2">
-      <span className="text-[11px] text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
+      <span className="text-xs text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
         {label}
       </span>
-      <code className="flex-1 text-[12px] font-mono text-fg truncate select-all">
+      <code className="flex-1 text-sm font-mono text-fg truncate select-all">
         {display}
       </code>
       <div className="flex items-center gap-1 shrink-0">
         {secret && (
-          <button
+          <Button variant="ghost"
             onClick={() => setReveal((r) => !r)}
-            className="text-[11px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
+            className="text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
             title={reveal ? "Hide" : "Reveal"}
           >
             {reveal ? "Hide" : "Show"}
-          </button>
+          </Button>
         )}
-        <button
+        <Button variant="ghost"
           onClick={copy}
-          className={`text-[11px] px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+          className={`text-xs px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
             copied
               ? "text-success bg-success-subtle"
               : "text-fg-muted hover:text-fg hover:bg-bg-surface"
           }`}
         >
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </div>
     </div>
   );
 }
 
 const inputCls =
-  "w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
+  "w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";

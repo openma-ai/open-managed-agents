@@ -4,7 +4,7 @@ import type { CanonicalChatTurn } from "@openma/common/session-events/managed";
 import { CanonicalSessionTurn } from "./CanonicalSessionTurn";
 
 describe("CanonicalSessionTurn", () => {
-  it("renders Managed events through the shared session-turn frame", () => {
+  it("projects Managed events through the OpenMA Agent UI turn", () => {
     const turn: CanonicalChatTurn = {
       id: "turn-1",
       status: "completed",
@@ -27,6 +27,7 @@ describe("CanonicalSessionTurn", () => {
     const html = renderToStaticMarkup(<CanonicalSessionTurn turn={turn} />);
 
     expect(html).toContain('data-session-turn-status="completed"');
+    expect(html).toContain('data-session-process-state="complete"');
     expect(html).toContain("Inspect the repository");
     expect(html).toContain("Reading files");
     expect(html).toContain("Everything looks good.");

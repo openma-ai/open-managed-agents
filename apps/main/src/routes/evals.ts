@@ -27,7 +27,7 @@ async function dispatch(c: import("hono").Context<{
     agents: services.agents,
     environments: services.environments,
   });
-  // Strip the /v1/evals (or /v1/oma/evals) mount prefix so the package's
+  // Strip the /v1/oma/evals (or /v1/oma/evals) mount prefix so the package's
   // routes (declared as `/runs`, `/runs/:id`) match.
   const url = new URL(c.req.url);
   const stripped = url.pathname.replace(/^\/v1\/(?:oma\/)?evals/, "") || "/";

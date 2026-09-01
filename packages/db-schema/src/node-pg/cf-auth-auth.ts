@@ -4,9 +4,8 @@
 //   - better-auth tables (user / session / account / verification) use
 //     TIMESTAMPTZ columns and a real BOOLEAN for emailVerified —
 //     mirrors what `npx @better-auth/cli generate` emits.
-//   - tenant.created_at is BIGINT (snake_case). The CF / SQLite side
-//     uses camelCase `createdAt` mode:"timestamp". Drift is intentional
-//     and called out in the schema rules.
+//   - tenant.createdAt / updatedAt are BIGINT, matching CF / SQLite and
+//     the runtime bootstrap schema.
 //   - membership.created_at is BIGINT (no _at field shape change).
 
 import {
@@ -19,10 +18,8 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
-// tenant.createdAt/updatedAt: camelCase BIGINT, matching CF / SQLite. The
-// pre-Drizzle PG branch had snake_case; we aligned to camelCase so the same
-// runtime code (packages/auth-config ensureTenantSqlite) writes one shape
-// across both dialects.
+// tenant.createdAt/updatedAt: camelCase BIGINT, matching CF / SQLite so the
+// same runtime code writes one shape across both dialects.
 export const tenant = pgTable("tenant", {
   id: text("id").primaryKey().notNull(),
   name: text("name").notNull(),

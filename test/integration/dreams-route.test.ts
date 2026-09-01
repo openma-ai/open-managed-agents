@@ -1,4 +1,4 @@
-// Integration tests for /v1/dreams.
+// Integration tests for /v1/oma/dreams.
 //
 // Covers the public REST contract end-to-end against the test worker
 // (test-worker.ts), wiring through real D1 + R2 (miniflare). The pipeline
@@ -23,7 +23,7 @@ function api(path: string, init?: RequestInit) {
 }
 
 async function createMemoryStore(name: string): Promise<string> {
-  const res = await api("/v1/memory_stores", {
+  const res = await api("/v1/oma/memory_stores", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name }),
@@ -34,7 +34,7 @@ async function createMemoryStore(name: string): Promise<string> {
 }
 
 async function writeMemory(storeId: string, path: string, content: string) {
-  const res = await api(`/v1/memory_stores/${storeId}/memories`, {
+  const res = await api(`/v1/oma/memory_stores/${storeId}/memories`, {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ path, content }),
@@ -43,7 +43,7 @@ async function writeMemory(storeId: string, path: string, content: string) {
 }
 
 async function listMemories(storeId: string): Promise<Array<{ path: string }>> {
-  const res = await api(`/v1/memory_stores/${storeId}/memories`, { headers: HEADERS });
+  const res = await api(`/v1/oma/memory_stores/${storeId}/memories`, { headers: HEADERS });
   expect(res.status).toBe(200);
   const body = await res.json();
   return body.data;
@@ -67,9 +67,9 @@ async function poll<T>(
   }
 }
 
-describe("/v1/dreams — beta header gate", () => {
+describe("/v1/oma/dreams — beta header gate", () => {
   it("rejects POST without the required beta flags", async () => {
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: {
         "x-api-key": "test-key",
@@ -85,7 +85,7 @@ describe("/v1/dreams — beta header gate", () => {
   });
 
   it("rejects when only one of the two flags is present", async () => {
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: {
         "x-api-key": "test-key",
@@ -98,9 +98,9 @@ describe("/v1/dreams — beta header gate", () => {
   });
 });
 
-describe("/v1/dreams — input validation", () => {
+describe("/v1/oma/dreams — input validation", () => {
   it("rejects when inputs[] is missing", async () => {
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ model: "claude-opus-4-7" }),
@@ -112,7 +112,7 @@ describe("/v1/dreams — input validation", () => {
 
   it("rejects an unsupported model", async () => {
     const storeId = await createMemoryStore("dreams-validation-1");
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -124,7 +124,7 @@ describe("/v1/dreams — input validation", () => {
   });
 
   it("rejects a missing input memory store", async () => {
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -138,14 +138,14 @@ describe("/v1/dreams — input validation", () => {
   });
 });
 
-describe("/v1/dreams — happy path", () => {
+describe("/v1/oma/dreams — happy path", () => {
   it("creates a dream, runs the pipeline, and writes deduped output", async () => {
     const inputId = await createMemoryStore("dreams-happy-input");
     await writeMemory(inputId, "/topic/a.md", "alpha-v1");
     await writeMemory(inputId, "/topic/b.md", "beta-v1");
 
     // POST returns immediately with status=pending
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -168,7 +168,7 @@ describe("/v1/dreams — happy path", () => {
     // Pipeline runs via ctx.waitUntil; poll until terminal.
     const final = await poll(
       async () => {
-        const r = await api(`/v1/dreams/${created.id}`, { headers: HEADERS });
+        const r = await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS });
         return r.json();
       },
       (d) => d.status === "completed" || d.status === "failed",
@@ -194,7 +194,7 @@ describe("/v1/dreams — happy path", () => {
     const inputId = await createMemoryStore("dreams-immutability-input");
     await writeMemory(inputId, "/pref.md", "original");
 
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -205,7 +205,7 @@ describe("/v1/dreams — happy path", () => {
     expect(res.status).toBe(201);
     const created = await res.json();
     await poll(
-      async () => (await api(`/v1/dreams/${created.id}`, { headers: HEADERS })).json(),
+      async () => (await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS })).json(),
       (d) => d.status === "completed" || d.status === "failed",
     );
 
@@ -215,9 +215,9 @@ describe("/v1/dreams — happy path", () => {
   });
 });
 
-describe("/v1/dreams — lifecycle operations", () => {
+describe("/v1/oma/dreams — lifecycle operations", () => {
   it("GET returns 404 for an unknown id", async () => {
-    const res = await api("/v1/dreams/drm-does-not-exist", { headers: HEADERS });
+    const res = await api("/v1/oma/dreams/drm-does-not-exist", { headers: HEADERS });
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error.type).toBe("not_found_error");
@@ -227,7 +227,7 @@ describe("/v1/dreams — lifecycle operations", () => {
     const storeId = await createMemoryStore("dreams-list-store");
     const created: string[] = [];
     for (let i = 0; i < 3; i++) {
-      const res = await api("/v1/dreams", {
+      const res = await api("/v1/oma/dreams", {
         method: "POST",
         headers: HEADERS,
         body: JSON.stringify({
@@ -238,7 +238,7 @@ describe("/v1/dreams — lifecycle operations", () => {
       const body = await res.json();
       created.push(body.id);
     }
-    const res = await api("/v1/dreams?limit=10", { headers: HEADERS });
+    const res = await api("/v1/oma/dreams?limit=10", { headers: HEADERS });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.length).toBeGreaterThanOrEqual(3);
@@ -249,7 +249,7 @@ describe("/v1/dreams — lifecycle operations", () => {
 
   it("archive on terminal dreams succeeds; archive on running rejects", async () => {
     const storeId = await createMemoryStore("dreams-archive-store");
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -259,12 +259,12 @@ describe("/v1/dreams — lifecycle operations", () => {
     });
     const created = await res.json();
     const completed = await poll(
-      async () => (await api(`/v1/dreams/${created.id}`, { headers: HEADERS })).json(),
+      async () => (await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS })).json(),
       (d) => d.status === "completed" || d.status === "failed",
     );
     expect(completed.status).toBe("completed");
 
-    const archived = await api(`/v1/dreams/${created.id}/archive`, {
+    const archived = await api(`/v1/oma/dreams/${created.id}/archive`, {
       method: "POST",
       headers: HEADERS,
     });
@@ -273,12 +273,12 @@ describe("/v1/dreams — lifecycle operations", () => {
     expect(archivedBody.archived_at).toBeTruthy();
 
     // Default list omits archived; with include_archived=true it appears.
-    const visible = await api("/v1/dreams", { headers: HEADERS });
+    const visible = await api("/v1/oma/dreams", { headers: HEADERS });
     const visibleBody = await visible.json();
     expect(
       visibleBody.data.some((d: { id: string }) => d.id === created.id),
     ).toBe(false);
-    const all = await api("/v1/dreams?include_archived=true", { headers: HEADERS });
+    const all = await api("/v1/oma/dreams?include_archived=true", { headers: HEADERS });
     const allBody = await all.json();
     expect(
       allBody.data.some((d: { id: string }) => d.id === created.id),
@@ -287,7 +287,7 @@ describe("/v1/dreams — lifecycle operations", () => {
 
   it("cancel is idempotent on already-canceled; rejects on completed", async () => {
     const storeId = await createMemoryStore("dreams-cancel-store");
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -298,10 +298,10 @@ describe("/v1/dreams — lifecycle operations", () => {
     const created = await res.json();
     // Wait for completion (pipeline finishes synchronously with dedup curator).
     await poll(
-      async () => (await api(`/v1/dreams/${created.id}`, { headers: HEADERS })).json(),
+      async () => (await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS })).json(),
       (d) => d.status === "completed" || d.status === "failed",
     );
-    const tooLate = await api(`/v1/dreams/${created.id}/cancel`, {
+    const tooLate = await api(`/v1/oma/dreams/${created.id}/cancel`, {
       method: "POST",
       headers: HEADERS,
     });
@@ -309,10 +309,10 @@ describe("/v1/dreams — lifecycle operations", () => {
   });
 });
 
-describe("/v1/dreams — pipeline durability", () => {
+describe("/v1/oma/dreams — pipeline durability", () => {
   it("preflight fails the dream with input_memory_store_unavailable when input was archived", async () => {
     const storeId = await createMemoryStore("dreams-prereq-archive");
-    const archived = await api(`/v1/memory_stores/${storeId}/archive`, {
+    const archived = await api(`/v1/oma/memory_stores/${storeId}/archive`, {
       method: "POST",
       headers: HEADERS,
     });
@@ -320,7 +320,7 @@ describe("/v1/dreams — pipeline durability", () => {
     // DreamService.create only verifies existence, not archive state, so
     // POST succeeds. The runner's preflight catches the archived input
     // and marks the dream failed with the documented error type.
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -331,7 +331,7 @@ describe("/v1/dreams — pipeline durability", () => {
     expect(res.status).toBe(201);
     const created = await res.json();
     const final = await poll(
-      async () => (await api(`/v1/dreams/${created.id}`, { headers: HEADERS })).json(),
+      async () => (await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS })).json(),
       (d) => d.status === "completed" || d.status === "failed",
     );
     expect(final.status).toBe("failed");
@@ -339,7 +339,7 @@ describe("/v1/dreams — pipeline durability", () => {
   });
 });
 
-describe("/v1/dreams — output store delete/archive guard", () => {
+describe("/v1/oma/dreams — output store delete/archive guard", () => {
   it("refuses to delete the output store while the dream is still active", async () => {
     // Force a long-running dream: a fresh input store with many memories
     // gives the dedup curator a few writes — and because the runner uses
@@ -349,7 +349,7 @@ describe("/v1/dreams — output store delete/archive guard", () => {
     // status, so once completed the delete should succeed).
     const inputId = await createMemoryStore("dreams-guard-input");
     await writeMemory(inputId, "/a.md", "x");
-    const res = await api("/v1/dreams", {
+    const res = await api("/v1/oma/dreams", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -359,14 +359,14 @@ describe("/v1/dreams — output store delete/archive guard", () => {
     });
     const created = await res.json();
     const final = await poll(
-      async () => (await api(`/v1/dreams/${created.id}`, { headers: HEADERS })).json(),
+      async () => (await api(`/v1/oma/dreams/${created.id}`, { headers: HEADERS })).json(),
       (d) => d.status === "completed" || d.status === "failed",
     );
     expect(final.status).toBe("completed");
     const outputStoreId = final.outputs[0].memory_store_id;
 
     // The dream is completed — guard should allow deletion now.
-    const del = await api(`/v1/memory_stores/${outputStoreId}`, {
+    const del = await api(`/v1/oma/memory_stores/${outputStoreId}`, {
       method: "DELETE",
       headers: HEADERS,
     });

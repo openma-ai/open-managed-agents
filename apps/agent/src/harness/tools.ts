@@ -1,11 +1,14 @@
-import { tool, generateText } from "ai";
-import { experimental_createMCPClient } from "@ai-sdk/mcp";
+import { dynamicTool, generateText, jsonSchema, tool } from "ai";
 import { z } from "zod";
 import { anthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
+import {
+  connectHttpMcpClient,
+  type McpClientPort,
+} from "@open-managed-agents/mcp";
 import type { AgentConfig, ToolsetConfig, CustomToolConfig, SessionEvent } from "@open-managed-agents/shared";
 import type { ToMarkdownProvider } from "@open-managed-agents/markdown";
-import type { SandboxExecutor, ProcessHandle } from "./interface";
+import type { SandboxPort, ProcessHandle } from "./interface";
 import { nanoid } from "nanoid";
 // Browser tools depend on the runtime-agnostic BrowserHarness interface.
 // Concrete adapters (CF / Node / CDP / Disabled) live in the package and
@@ -46,6 +49,62 @@ const MAX_BASH_TIMEOUT = 600000;      // 10 minutes (CC max)
 // with `flushed 0 tool_uses` and no error log — opaque to debug.
 // 15s is generous: a healthy server replies in <1s.
 const MCP_SETUP_TIMEOUT_MS = 15_000;
+const MCP_TOOL_TIMEOUT_MS = 60_000;
+
+// A ToolSet is the harness-facing value, so keep protocol resources out of
+// its enumerable shape and own their lifecycle alongside it.
+const mcpClientsByToolSet = new WeakMap<Record<string, unknown>, McpClientPort[]>();
+
+/** Close platform resources opened while building this harness ToolSet. */
+export async function disposeTools(tools: Record<string, unknown>): Promise<void> {
+  const clients = mcpClientsByToolSet.get(tools);
+  if (!clients) return;
+  mcpClientsByToolSet.delete(tools);
+  await Promise.allSettled(clients.map((client) => client.close()));
+}
+
+// Re-exported for harness adapters and kept implementation-free here: the
+// protocol client itself lives in the runtime-neutral MCP package.
+export { connectHttpMcpClient };
+
+function mcpToModelOutput({ output }: { output: unknown }) {
+  if (!output || typeof output !== "object" || !("content" in output)) {
+    return {
+      type: "content" as const,
+      value: [{ type: "text" as const, text: JSON.stringify(output) ?? String(output) }],
+    };
+  }
+  const content = (output as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    return {
+      type: "content" as const,
+      value: [{ type: "text" as const, text: JSON.stringify(output) ?? String(output) }],
+    };
+  }
+  return {
+    type: "content" as const,
+    value: content.map((part: unknown) => {
+      if (part && typeof part === "object") {
+        const block = part as Record<string, unknown>;
+        if (block.type === "text" && typeof block.text === "string") {
+          return { type: "text" as const, text: block.text };
+        }
+        if (
+          block.type === "image" &&
+          typeof block.data === "string" &&
+          typeof block.mimeType === "string"
+        ) {
+          return {
+            type: "file" as const,
+            mediaType: block.mimeType,
+            data: { type: "data" as const, data: block.data },
+          };
+        }
+      }
+      return { type: "text" as const, text: JSON.stringify(part) };
+    }),
+  };
+}
 
 // System prompt for the auxiliary model when summarizing web pages fetched
 // by web_fetch. Designed for the OMA agent loop: the summary lands directly
@@ -343,7 +402,7 @@ function getEnabledTools(tools: AgentConfig["tools"]): Set<string> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function buildTools(
   agentConfig: AgentConfig,
-  sandbox: SandboxExecutor,
+  sandbox: SandboxPort,
   env?: {
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_BASE_URL?: string;
@@ -355,14 +414,14 @@ export async function buildTools(
     toMarkdown?: ToMarkdownProvider;
     delegateToAgent?: (agentId: string, message: string) => Promise<string>;
     environmentConfig?: { networking?: { type: string; allowed_hosts?: string[] } };
-    /** MCP routing context — wired from SessionDO. AI SDK's MCP HTTP
-     *  transport gets a custom `fetch` that calls
+    /** MCP routing context — wired from SessionDO. The official MCP HTTP
+     *  client gets a custom `fetch` that calls
      *  `env.mcpBinding.fetch(req)` with three metadata headers stamped
      *  (`x-oma-tenant`, `x-oma-session`, `x-oma-mcp-server`); main worker
      *  resolves the vault credential, swaps Authorization, and forwards
      *  to the upstream URL the SDK already knew. Body, response status,
      *  response headers (incl. rotated `Mcp-Session-Id`) all stream
-     *  through unchanged so the SDK owns the protocol details. Vault
+     *  through unchanged so the MCP SDK owns the protocol details. Vault
      *  credentials remain main-only — agent worker sees only the
      *  Response. Omitting any of the three (binding, tenantId, sessionId)
      *  silently disables MCP tool registration — the loop below logs
@@ -1090,14 +1149,15 @@ export async function buildTools(
     }
   }
 
-  // MCP tools — first-class via AI SDK MCP client. The agent worker hands
-  // the SDK's built-in HTTP transport a custom `fetch` that calls
+  // MCP tools — first-class via the OpenMA MCP Port backed by the official
+  // MCP v2 client. The agent worker hands the Streamable HTTP adapter a
+  // custom `fetch` that calls
   // `env.mcpBinding.fetch(req)` after stamping three metadata headers
   // (`x-oma-tenant`, `x-oma-session`, `x-oma-mcp-server`). Main worker
   // resolves the vault credential by serverName, swaps in the upstream
   // bearer, and forwards to the URL the SDK already targeted. Body /
   // status / response headers (incl. rotated `Mcp-Session-Id`) stream
-  // through both ways unchanged, so the SDK owns the Streamable-HTTP
+  // through both ways unchanged, so the official SDK owns Streamable HTTP
   // protocol — session ids, SSE response framing, retries — and a
   // server-side spec change can't silently break us the way the prior
   // hand-rolled BindingMCPTransport did (Notion's tools/list never
@@ -1135,14 +1195,7 @@ export async function buildTools(
           continue;
         }
         const serverName = server.name;
-        let timeoutHandle!: ReturnType<typeof setTimeout>;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(new Error(`MCP setup timed out after ${MCP_SETUP_TIMEOUT_MS}ms`)),
-            MCP_SETUP_TIMEOUT_MS,
-          );
-        });
-        // Custom fetch the SDK calls for every MCP request. We stamp
+        // Custom fetch the protocol client calls for every MCP request. We stamp
         // routing metadata and hand the Request to main; main does the
         // credential injection + upstream fetch and returns the Response
         // verbatim (streaming).
@@ -1153,26 +1206,49 @@ export async function buildTools(
           req.headers.set("x-oma-mcp-server", serverName);
           return mcpBinding.fetch(req);
         };
+        let mcpClient: McpClientPort | undefined;
         try {
-          const mcpClient = await Promise.race([
-            experimental_createMCPClient({
-              transport: {
-                type: "http",
-                url: server.url,
-                fetch: proxyFetch,
+          mcpClient = await connectHttpMcpClient({
+            url: server.url,
+            clientInfo: { name: "oma-cloud-agent", version: "0.1.0" },
+            fetch: proxyFetch,
+            versionNegotiation: "auto",
+            timeoutMs: MCP_SETUP_TIMEOUT_MS,
+            cachePartition: `${tenantId}:${sessionId}`,
+          });
+          const remoteTools = await mcpClient.listTools({ timeoutMs: MCP_SETUP_TIMEOUT_MS });
+          for (const definition of remoteTools) {
+            const toolName = definition.name;
+            tools[`mcp__${server.name}__${toolName}`] = dynamicTool({
+              title: definition.title,
+              description: definition.description,
+              inputSchema: jsonSchema(definition.inputSchema),
+              metadata: {
+                clientName: "oma-cloud-agent",
+                serverName,
+                toolName,
               },
-              name: "oma-cloud-agent",
-            }),
-            timeoutPromise,
-          ]);
-          const remoteTools = await Promise.race([
-            mcpClient.tools(),
-            timeoutPromise,
-          ]);
-          for (const [toolName, t] of Object.entries(remoteTools)) {
-            tools[`mcp__${server.name}__${toolName}`] = t;
+              execute: async (args, options) => {
+                options?.abortSignal?.throwIfAborted();
+                return mcpClient!.callTool({
+                  name: toolName,
+                  arguments:
+                    args && typeof args === "object"
+                      ? args as Record<string, unknown>
+                      : {},
+                }, {
+                  signal: options?.abortSignal,
+                  timeoutMs: MCP_TOOL_TIMEOUT_MS,
+                });
+              },
+              toModelOutput: mcpToModelOutput,
+            });
           }
+          const clients = mcpClientsByToolSet.get(tools) ?? [];
+          clients.push(mcpClient);
+          mcpClientsByToolSet.set(tools, clients);
         } catch (err) {
+          if (mcpClient) await mcpClient.close().catch(() => undefined);
           // Connection / handshake / tools/list failure for one server
           // (e.g. main worker unreachable, vault credential missing,
           // upstream MCP server down, our timeout fired). Log + skip so
@@ -1181,8 +1257,6 @@ export async function buildTools(
           console.error(
             `[mcp] cloud MCP setup failed for "${server.name}" (${server.url}): ${msg}`,
           );
-        } finally {
-          clearTimeout(timeoutHandle);
         }
       }
     }

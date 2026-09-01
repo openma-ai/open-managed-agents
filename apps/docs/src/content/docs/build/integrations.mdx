@@ -67,7 +67,7 @@ Webhook entry mounting lives in `packages/http-routes/src/integrations/gateway.t
 
 3. **Register it.** `apps/integrations/src/index.ts` has a registry; add your provider to the list. The gateway exposes `/install/<id>` and `/webhook/<id>` automatically.
 
-4. **Add UI install flow** (optional but recommended). The Console has an `Integrations` page that picks up registered providers from `/v1/integrations`.
+4. **Add UI install flow** (optional but recommended). The Console has an `Integrations` page that picks up registered providers from `/v1/oma/integrations`.
 
 5. **Test locally.** `pnpm dev:integrations` runs the gateway against your local main worker. Use a tunneling tool (`cloudflared tunnel`) to receive webhooks from the third-party service.
 

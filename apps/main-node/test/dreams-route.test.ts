@@ -5,6 +5,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  detachedProcessOptions,
+  killProcessTree,
+} from "./helpers/process-tree";
 
 interface ProcessHandle {
   child: ChildProcess;
@@ -22,7 +26,7 @@ const DREAM_HEADERS = {
   "anthropic-beta": "managed-agents-2026-04-01,dreaming-2026-04-21",
 };
 
-describe("main-node /v1/dreams", () => {
+describe("main-node /v1/oma/dreams", () => {
   let dataDir: string;
   let h: ProcessHandle | null = null;
 
@@ -45,7 +49,7 @@ describe("main-node /v1/dreams", () => {
 
   it("runs a dream through the local Node API without an LLM key when dedup curator is enabled", async () => {
     h = await startMainNode({ dataDir });
-    const base = `http://localhost:${h.port}/v1`;
+    const base = `http://localhost:${h.port}/v1/oma`;
 
     const inputStore = await createMemoryStore(base, "node-dream-input");
     await writeMemory(base, inputStore, "/notes/a.md", "alpha");
@@ -99,6 +103,7 @@ describe("main-node /v1/dreams", () => {
 async function startMainNode(opts: { dataDir: string }): Promise<ProcessHandle> {
   const port = await pickPort();
   const child = spawn(TSX_BIN, [MAIN_NODE_ENTRY], {
+    ...detachedProcessOptions,
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -165,11 +170,7 @@ async function listMemories(base: string, storeId: string): Promise<Array<{ path
 }
 
 function killHard(handle: ProcessHandle): Promise<void> {
-  return new Promise((res) => {
-    if (handle.child.exitCode !== null) return res();
-    handle.child.once("exit", () => res());
-    handle.child.kill("SIGKILL");
-  });
+  return killProcessTree(handle.child);
 }
 
 function pickPort(): Promise<number> {

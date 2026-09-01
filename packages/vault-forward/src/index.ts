@@ -2,7 +2,7 @@
 //
 // Three call sites today:
 //   - apps/main/src/routes/mcp-proxy.ts (CF MCP proxy + outbound RPC)
-//   - apps/main-node /v1/mcp-proxy/* if it ever grows one
+//   - apps/main-node /v1/oma/mcp-proxy/* if it ever grows one
 //   - apps/oma-vault MITM proxy (self-host outbound for sandbox)
 //
 // All three share: hostname-match a credential, build the right header,

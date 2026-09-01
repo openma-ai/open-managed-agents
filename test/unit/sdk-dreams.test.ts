@@ -40,7 +40,7 @@ describe("OpenMA SDK dreams resource", () => {
       fetch: fetcher,
     });
 
-    const dream = await oma.dreams.create({
+    const dream = await oma.beta.dreams.create({
       inputs: [{ type: "memory_store", memory_store_id: "memstore-1" }],
       model: "claude-sonnet-4-6",
     });
@@ -48,9 +48,9 @@ describe("OpenMA SDK dreams resource", () => {
     expect(dream.id).toBe("drm-1");
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("POST");
-    expect(calls[0].url).toBe("https://api.example/v1/dreams");
+    expect(calls[0].url).toBe("https://api.example/v1/dreams?beta=true");
     expect(calls[0].headers.get("anthropic-beta")).toBe(
-      "managed-agents-2026-04-01,dreaming-2026-04-21",
+      "dreaming-2026-04-21",
     );
     expect(calls[0].body).toEqual({
       inputs: [{ type: "memory_store", memory_store_id: "memstore-1" }],

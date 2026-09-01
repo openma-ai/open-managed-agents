@@ -1,4 +1,4 @@
-import type { HarnessInterface } from "./interface";
+import type { HarnessDisposeReason, HarnessInterface } from "./interface";
 
 type HarnessFactory = () => HarnessInterface;
 
@@ -15,4 +15,25 @@ export function resolveHarness(name?: string): HarnessInterface {
     throw new Error(`Unknown harness: "${key}". Registered: ${[...registry.keys()].join(", ")}`);
   }
   return factory();
+}
+
+/** Session-scoped harness owner. Stateful harnesses (notably ACP) retain one
+ * process across turns, while agent version/harness changes dispose the old
+ * instance before activating the replacement. */
+export class HarnessLease {
+  #active: { key: string; harness: HarnessInterface } | null = null;
+
+  async resolve(key: string, name?: string): Promise<HarnessInterface> {
+    if (this.#active?.key === key) return this.#active.harness;
+    await this.dispose("replace");
+    const harness = resolveHarness(name);
+    this.#active = { key, harness };
+    return harness;
+  }
+
+  async dispose(reason: HarnessDisposeReason = "destroy"): Promise<void> {
+    const active = this.#active;
+    this.#active = null;
+    await active?.harness.dispose?.(reason);
+  }
 }

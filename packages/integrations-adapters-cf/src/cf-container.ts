@@ -70,7 +70,7 @@ export interface CfReposEnv {
 export interface CfContainerEnv extends CfReposEnv {
   /** Service binding back to apps/main, used by SessionCreator + VaultManager. */
   MAIN: Fetcher;
-  /** Shared secret gating apps/main's /v1/internal/* endpoints. */
+  /** Shared secret gating apps/main's /v1/oma/internal/* endpoints. */
   INTEGRATIONS_INTERNAL_SECRET: string;
 }
 
@@ -167,7 +167,7 @@ export function buildCfRepos(env: CfReposEnv) {
 /**
  * Returns the full integrations Container, ready for an IntegrationProvider.
  * Requires the MAIN service binding so SessionCreator/VaultManager can call
- * apps/main's /v1/internal/* endpoints.
+ * apps/main's /v1/oma/internal/* endpoints.
  *
  * The default Container's `installations`/`publications`/`webhookEvents`
  * slots are bound to the LINEAR repos. GitHub callers should swap them

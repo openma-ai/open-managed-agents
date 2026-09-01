@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
@@ -12,10 +13,10 @@ import { Logo } from "../components/Logo";
 // Flow:
 //   1. Read query params (callback, state, hostname, tenant?).
 //   2. If no cookie session → bounce through /login with `next=` set to here.
-//   3. Fetch /v1/me to learn user + memberships.
+//   3. Fetch /v1/oma/me to learn user + memberships.
 //   4. Show approval UI: when N==1, just an Approve button; when N>1, a
 //      checkbox list (defaults: ?tenant pre-selected, otherwise all).
-//   5. POST /v1/me/cli-tokens N times — one token per selected tenant.
+//   5. POST /v1/oma/me/cli-tokens N times — one token per selected tenant.
 //   6. window.location = `${callback}?tokens=<base64-json>&user=...&state=...`
 //      — the array form so the CLI can populate every selected tenant's
 //      profile in one round trip.
@@ -88,17 +89,17 @@ export function CliLogin() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string>("");
 
-  // /v1/me lookup via TQ. `enabled: callbackOk` defers the fetch until
+  // /v1/oma/me lookup via TQ. `enabled: callbackOk` defers the fetch until
   // we've validated the callback URL — an invalid callback short-circuits
-  // straight to the error banner with no API roundtrip. /v1/me's 401 is
+  // straight to the error banner with no API roundtrip. /v1/oma/me's 401 is
   // already on useApi's silent-auth list so a pre-auth visit doesn't
   // produce a stray toast.
   const meQuery = useApiQuery<MeResponse>(
-    callbackOk ? "/v1/me" : null,
+    callbackOk ? "/v1/oma/me" : null,
   );
   const loading = callbackOk ? meQuery.isLoading : false;
 
-  // Apply the side effects of a successful /v1/me — seed the default
+  // Apply the side effects of a successful /v1/oma/me — seed the default
   // workspace selection and stash the response for the render path.
   // Kept in an effect so a TQ refetch (tab focus, etc.) re-applies the
   // same defaults if data changes shape.
@@ -121,7 +122,7 @@ export function CliLogin() {
     }
   }, [callbackOk, meQuery.data, requestedTenant]);
 
-  // /v1/me failure handling: 401 → bounce to /login; anything else → show
+  // /v1/oma/me failure handling: 401 → bounce to /login; anything else → show
   // the message inline. Matches the prior .catch() branch.
   useEffect(() => {
     const err = meQuery.error;
@@ -165,7 +166,7 @@ export function CliLogin() {
       const minted = await Promise.all(
         orderedSelection.map(async (t) => {
           const res = await api<{ token: string; tenant_id: string; user_id: string; key_id: string }>(
-            "/v1/me/cli-tokens",
+            "/v1/oma/me/cli-tokens",
             {
               method: "POST",
               body: JSON.stringify({
@@ -268,7 +269,7 @@ export function CliLogin() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-fg">{tenantDisplayName(me.tenants[0])}</div>
-                    <div className="text-[10px] text-fg-subtle font-mono uppercase tracking-wider">
+                    <div className="text-xs text-fg-subtle font-mono uppercase tracking-wider">
                       {me.tenants[0].role}
                     </div>
                   </div>
@@ -281,21 +282,21 @@ export function CliLogin() {
                     Workspaces ({selected.size}/{me.tenants.length})
                   </div>
                   <div className="flex items-center gap-2 text-xs">
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={selectAll}
                       className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
                     >
                       All
-                    </button>
+                    </Button>
                     <span className="text-fg-subtle">·</span>
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={selectNone}
                       className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
                     >
                       None
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="border border-border rounded-lg divide-y divide-border max-h-64 overflow-y-auto">
@@ -303,7 +304,7 @@ export function CliLogin() {
                     const isSelected = selected.has(t.id);
                     const display = tenantDisplayName(t);
                     return (
-                      <button
+                      <Button variant="ghost"
                         key={t.id}
                         type="button"
                         onClick={() => toggle(t.id)}
@@ -315,11 +316,11 @@ export function CliLogin() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-sm truncate text-fg">{display}</div>
-                          <div className="text-[10px] text-fg-subtle font-mono">
+                          <div className="text-xs text-fg-subtle font-mono">
                             {t.id} · {t.role}
                           </div>
                         </div>
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -338,13 +339,13 @@ export function CliLogin() {
                     ? "Approve"
                     : `Approve ${selected.size} workspace${selected.size === 1 ? "" : "s"}`}
               </Button>
-              <button
+              <Button variant="ghost"
                 onClick={cancel}
                 disabled={working}
                 className="inline-flex items-center justify-center px-4 py-2.5 min-h-11 sm:min-h-0 rounded-lg border border-border text-sm text-fg-muted hover:bg-bg disabled:opacity-40"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -354,7 +355,7 @@ export function CliLogin() {
 }
 
 /** Custom checkbox styled to match the rest of the app's surfaces — using
- *  a real <input type=checkbox> would inherit the OS-native chrome that
+ *  a real <Input type=checkbox> would inherit the OS-native chrome that
  *  looks out of place on the auth card. */
 function Checkbox({ checked }: { checked: boolean }) {
   return (

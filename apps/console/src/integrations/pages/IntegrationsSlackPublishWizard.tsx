@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -202,20 +203,20 @@ export function IntegrationsSlackPublishWizard({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[760px] mx-auto px-4 sm:px-8 lg:px-10 py-8 lg:py-10">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--narrow">
         <Link
           to="/integrations/slack"
-          className="inline-flex items-center gap-1 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← Slack integrations
         </Link>
 
         <header className="mt-3 mb-6">
-          <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+          <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
             Publish agent to Slack
           </h1>
-          <p className="mt-1.5 text-[14px] text-fg-muted">
+          <p className="mt-1.5 text-base text-fg-muted">
             Make this agent a teammate in your Slack workspace.
           </p>
         </header>
@@ -228,13 +229,13 @@ export function IntegrationsSlackPublishWizard({
             to flip the MCP toggle the user almost certainly missed. */}
         {search.get("install") === "ok" && (
           <div className="mb-4 space-y-2">
-            <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[13px] text-success font-medium">
+            <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-sm text-success font-medium">
               ✓ Installed in Slack. Publication: <code>{search.get("publication_id")}</code>
             </div>
             {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "0" && (
-              <div className="rounded-md border border-warning/30 bg-warning-subtle px-3.5 py-3 text-[13px]">
+              <div className="rounded-md border border-warning/30 bg-warning-subtle px-3.5 py-3 text-sm">
                 <div className="font-medium text-fg mb-1">⚠ Slack MCP server access is OFF</div>
-                <p className="text-fg-muted text-[12px] leading-relaxed mb-2">
+                <p className="text-fg-muted text-sm leading-relaxed mb-2">
                   {search.get("probe_message") ??
                     "The agent is installed but Slack's MCP server is rejecting our token. Flip the toggle to enable typed mcp__slack__* tools."}
                 </p>
@@ -243,7 +244,7 @@ export function IntegrationsSlackPublishWizard({
                     href={search.get("probe_fix_url")!}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-warning/40 text-fg hover:bg-warning-subtle/70 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-warning/40 text-fg hover:bg-warning-subtle/70 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                   >
                     Open Agents &amp; AI Apps page ↗
                   </a>
@@ -251,7 +252,7 @@ export function IntegrationsSlackPublishWizard({
               </div>
             )}
             {search.get("probe_kind") === "slack_mcp" && search.get("probe_ok") === "1" && (
-              <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success">
+              <div className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-sm text-success">
                 ✓ Slack MCP server access verified — agent can use typed slack tools.
               </div>
             )}
@@ -259,13 +260,13 @@ export function IntegrationsSlackPublishWizard({
         )}
 
         {error && (
-          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
+          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
 
         {hydrating && (
-          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
             Resuming in-progress install…
           </div>
         )}
@@ -324,7 +325,7 @@ function StepIndicator({ current }: { current: Step }) {
           <li key={s.id} className="flex items-center gap-2 flex-1 last:flex-none">
             <div className="flex items-center gap-2 min-w-0">
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-mono font-medium shrink-0 ${
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-medium shrink-0 ${
                   state === "done"
                     ? "bg-brand text-brand-fg"
                     : state === "current"
@@ -339,7 +340,7 @@ function StepIndicator({ current }: { current: Step }) {
                 )}
               </div>
               <span
-                className={`text-[12px] font-medium uppercase tracking-wider truncate ${
+                className={`text-sm font-medium uppercase tracking-wider truncate ${
                   state === "current"
                     ? "text-fg"
                     : state === "done"
@@ -444,20 +445,20 @@ function PickStep(props: {
         </Field>
       </div>
 
-      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
+      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
         Your agent becomes a real Slack teammate — @-mentionable, replies in threads,
         joins DMs. Setup ~3 min, requires Slack admin.
       </div>
 
       <div className="pt-1">
-        <button
+        <Button variant="ghost"
           onClick={props.onContinue}
           disabled={props.working}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           {props.working ? "Working…" : "Continue"}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -482,28 +483,28 @@ function A1CredentialsStep(props: {
   return (
     <div className="space-y-7">
       {/* Breadcrumb — current agent / env / persona, with Change link back to pick step. */}
-      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-[12px]">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-surface/30 px-3.5 py-2 text-sm">
         <div className="text-fg-muted truncate">
           Publishing{" "}
           <span className="text-fg font-medium">{props.personaName || props.agentName}</span>
           {" "}({props.agentName}) →{" "}
           <span className="text-fg font-medium">{props.envName}</span>
         </div>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={props.onBack}
           disabled={props.working}
           className="text-brand hover:underline disabled:opacity-50 shrink-0"
         >
           Change ←
-        </button>
+        </Button>
       </div>
       {manifestUrl && (
         <section className="rounded-md border border-brand/30 bg-brand-subtle/30 p-4">
-          <h2 className="text-[15px] font-medium text-fg mb-1">
+          <h2 className="text-base font-medium text-fg mb-1">
             One-click setup
           </h2>
-          <p className="text-[13px] text-fg-muted mb-3">
+          <p className="text-sm text-fg-muted mb-3">
             Let Slack pre-configure the App for you — name, scopes, events, and
             redirect URLs come from a manifest we ship. You'll just confirm in
             Slack, then come back here to paste 3 secrets.
@@ -512,12 +513,12 @@ function A1CredentialsStep(props: {
             href={manifestUrl}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             Create Slack App
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M7 7h10v10" /></svg>
           </a>
-          <p className="text-[12px] text-fg-subtle mt-2">
+          <p className="text-sm text-fg-subtle mt-2">
             Opens api.slack.com in a new tab. After Slack creates the App, copy
             <strong> Client ID</strong>, <strong>Client Secret</strong>, and
             <strong> Signing Secret</strong> from the App's <em>Basic Information</em>
@@ -527,11 +528,11 @@ function A1CredentialsStep(props: {
       )}
 
       <details className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-2" open={!manifestUrl}>
-        <summary className="text-[13px] font-medium text-fg cursor-pointer py-1.5">
+        <summary className="text-sm font-medium text-fg cursor-pointer py-1.5">
           {manifestUrl ? "Or set up the App manually" : "Create a Slack App manually"}
         </summary>
         <div className="pt-3 pb-1.5">
-          <p className="text-[13px] text-fg-muted mb-3">
+          <p className="text-sm text-fg-muted mb-3">
             Open{" "}
             <a
               href="https://api.slack.com/apps"
@@ -549,7 +550,7 @@ function A1CredentialsStep(props: {
             <CopyRow label="Redirect URL" value={props.form.callbackUrl} />
             <CopyRow label="Events Request URL" value={props.form.webhookUrl} />
           </div>
-          <p className="text-[12px] text-fg-subtle mt-2">
+          <p className="text-sm text-fg-subtle mt-2">
             Paste the Redirect URL under <strong>OAuth &amp; Permissions</strong>; the
             Events Request URL above ends in <code>/__pending__</code> as a placeholder —
             after install completes, the success screen surfaces the real URL keyed on
@@ -560,7 +561,7 @@ function A1CredentialsStep(props: {
             <code>message.groups</code>, <code>message.mpim</code>,{" "}
             <code>tokens_revoked</code>, <code>app_uninstalled</code>.
           </p>
-          <p className="text-[12px] text-fg-subtle mt-2">
+          <p className="text-sm text-fg-subtle mt-2">
             <strong>Required for MCP tools:</strong> open the App's{" "}
             <strong>Agents &amp; AI Apps</strong> (or <em>app-assistant</em>) page and
             enable <strong>Slack MCP server access</strong>. Without this, the
@@ -572,10 +573,10 @@ function A1CredentialsStep(props: {
       </details>
 
       <section>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Paste credentials Slack gave you
         </h2>
-        <p className="text-[13px] text-fg-muted mb-3">
+        <p className="text-sm text-fg-muted mb-3">
           From your Slack App's <strong>Basic Information</strong> page. The Signing
           Secret signs all incoming webhooks; we verify every event with it.
         </p>
@@ -584,11 +585,11 @@ function A1CredentialsStep(props: {
             href="https://api.slack.com/apps"
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md border border-border text-fg-muted hover:text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-border text-fg-muted hover:text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             Open Slack App settings ↗
           </a>
-          <p className="text-[12px] text-fg-subtle mt-1.5">
+          <p className="text-sm text-fg-subtle mt-1.5">
             Click <strong>Show</strong> next to <strong>Client Secret</strong> /
             <strong> Signing Secret</strong> on Slack's page to reveal them.
             Both are 32-char hex strings (look like <code>c83b3cf17e1dee5cdc5f55fdcb6a2f23</code>) —
@@ -621,21 +622,21 @@ function A1CredentialsStep(props: {
         </div>
 
         <div className="mt-4 flex items-center gap-3 flex-wrap">
-          <button
+          <Button variant="ghost"
             onClick={props.onBack}
             disabled={props.working}
-            className="text-[13px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
+            className="text-sm text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] disabled:opacity-50"
           >
             ← Back
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={props.onSubmit}
             disabled={props.working || !props.clientId || !props.clientSecret || !props.signingSecret}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             {props.working ? "Validating…" : "Continue"}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-          </button>
+          </Button>
         </div>
       </section>
     </div>
@@ -646,10 +647,10 @@ function A1InstallStep({ link, onBack }: { link: A1InstallLink; onBack: () => vo
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Install the app in your workspace
         </h2>
-        <p className="text-[13px] text-fg-muted">
+        <p className="text-sm text-fg-muted">
           We've validated your credentials. Click below to authorize the install in
           Slack — you'll be redirected back here automatically.
         </p>
@@ -663,22 +664,22 @@ function A1InstallStep({ link, onBack }: { link: A1InstallLink; onBack: () => vo
           who flip it back off manually. */}
 
       <div className="flex items-center gap-3 flex-wrap">
-        <button
+        <Button variant="ghost"
           onClick={onBack}
-          className="text-[13px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="text-sm text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← Back
-        </button>
+        </Button>
         <a
           href={link.url}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Install in Slack
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M7 7h10v10" /></svg>
         </a>
       </div>
 
-      <details className="text-[12px] text-fg-muted mt-3">
+      <details className="text-sm text-fg-muted mt-3">
         <summary className="cursor-pointer hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]">
           Verify the URLs Slack should now show
         </summary>
@@ -702,38 +703,38 @@ function CopyRow({ label, value, secret = false }: { label: string; value: strin
   const display = secret && !reveal ? "•".repeat(Math.min(value.length, 28)) : value;
   return (
     <div className="flex items-center gap-3 px-3 py-2">
-      <span className="text-[11px] text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
+      <span className="text-xs text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
         {label}
       </span>
-      <code className="flex-1 text-[12px] font-mono text-fg truncate select-all">
+      <code className="flex-1 text-sm font-mono text-fg truncate select-all">
         {display}
       </code>
       <div className="flex items-center gap-1 shrink-0">
         {secret && (
-          <button
+          <Button variant="ghost"
             onClick={() => setReveal((r) => !r)}
-            className="text-[11px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
+            className="text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
             title={reveal ? "Hide" : "Reveal"}
           >
             {reveal ? "Hide" : "Show"}
-          </button>
+          </Button>
         )}
-        <button
+        <Button variant="ghost"
           onClick={copy}
-          className={`text-[11px] px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+          className={`text-xs px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
             copied
               ? "text-success bg-success-subtle"
               : "text-fg-muted hover:text-fg hover:bg-bg-surface"
           }`}
         >
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </div>
     </div>
   );
 }
 
 const inputCls =
-  "w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
+  "w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
 
 const selectCls = inputCls;

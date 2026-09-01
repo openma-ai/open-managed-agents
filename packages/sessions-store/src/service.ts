@@ -302,7 +302,7 @@ export class SessionService {
     return this.repo.hasActiveByEnvironment(opts.tenantId, opts.environmentId);
   }
 
-  /** Cheap COUNT for /v1/stats. Default counts only non-archived rows. */
+  /** Cheap COUNT for /v1/oma/stats. Default counts only non-archived rows. */
   async count(opts: {
     tenantId: string;
     includeArchived?: boolean;

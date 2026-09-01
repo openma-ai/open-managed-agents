@@ -24,7 +24,7 @@ function api(path: string, init?: RequestInit) {
 }
 
 async function setupAgentAndEnv() {
-  const agentRes = await api("/v1/agents", {
+  const agentRes = await api("/v1/oma/agents", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -36,7 +36,7 @@ async function setupAgentAndEnv() {
     }),
   });
   const agent = (await agentRes.json()) as any;
-  const envRes = await api("/v1/environments", {
+  const envRes = await api("/v1/oma/environments", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ name: "eval-test-env", config: { type: "cloud" } }),
@@ -45,14 +45,14 @@ async function setupAgentAndEnv() {
   return { agent, environment };
 }
 
-describe("POST /v1/evals/runs", () => {
+describe("POST /v1/oma/evals/runs", () => {
   it("requires auth", async () => {
-    const res = await api("/v1/evals/runs", { method: "POST", body: "{}" });
+    const res = await api("/v1/oma/evals/runs", { method: "POST", body: "{}" });
     expect(res.status).toBe(401);
   });
 
   it("rejects missing agent_id", async () => {
-    const res = await api("/v1/evals/runs", {
+    const res = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ environment_id: "env-x", tasks: [] }),
@@ -62,7 +62,7 @@ describe("POST /v1/evals/runs", () => {
 
   it("rejects empty tasks array", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const res = await api("/v1/evals/runs", {
+    const res = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ agent_id: agent.id, environment_id: environment.id, tasks: [] }),
@@ -72,7 +72,7 @@ describe("POST /v1/evals/runs", () => {
 
   it("rejects task missing messages", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const res = await api("/v1/evals/runs", {
+    const res = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -86,7 +86,7 @@ describe("POST /v1/evals/runs", () => {
 
   it("rejects unknown agent", async () => {
     const { environment } = await setupAgentAndEnv();
-    const res = await api("/v1/evals/runs", {
+    const res = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -100,7 +100,7 @@ describe("POST /v1/evals/runs", () => {
 
   it("creates a pending run and returns run_id", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const res = await api("/v1/evals/runs", {
+    const res = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -118,7 +118,7 @@ describe("POST /v1/evals/runs", () => {
     expect(body.task_count).toBe(2);
 
     // Fetch via GET — record should exist with status pending
-    const getRes = await api(`/v1/evals/runs/${body.run_id}`, { headers: HEADERS });
+    const getRes = await api(`/v1/oma/evals/runs/${body.run_id}`, { headers: HEADERS });
     expect(getRes.status).toBe(200);
     const run = (await getRes.json()) as any;
     expect(run.status).toBe("pending");
@@ -132,10 +132,10 @@ describe("POST /v1/evals/runs", () => {
   });
 });
 
-describe("GET /v1/evals/runs", () => {
+describe("GET /v1/oma/evals/runs", () => {
   it("lists runs for tenant in reverse chronological order", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const r1 = await api("/v1/evals/runs", {
+    const r1 = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -146,7 +146,7 @@ describe("GET /v1/evals/runs", () => {
     });
     const run1 = (await r1.json()) as any;
     await new Promise((r) => setTimeout(r, 10));
-    const r2 = await api("/v1/evals/runs", {
+    const r2 = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -157,7 +157,7 @@ describe("GET /v1/evals/runs", () => {
     });
     const run2 = (await r2.json()) as any;
 
-    const listRes = await api("/v1/evals/runs", { headers: HEADERS });
+    const listRes = await api("/v1/oma/evals/runs", { headers: HEADERS });
     const list = (await listRes.json()) as any;
     expect(list.data.length).toBeGreaterThanOrEqual(2);
     const ids = list.data.map((r: any) => r.id);
@@ -168,7 +168,7 @@ describe("GET /v1/evals/runs", () => {
 describe("tickEvalRuns advances state", () => {
   it("advances pending → running → completed for a single-message task", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const createRes = await api("/v1/evals/runs", {
+    const createRes = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -180,13 +180,13 @@ describe("tickEvalRuns advances state", () => {
     const { run_id } = (await createRes.json()) as any;
 
     // Initially pending
-    let runRes = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+    let runRes = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
     let run = (await runRes.json()) as any;
     expect(run.status).toBe("pending");
 
     // Tick 1: pending → running, creates session, sends first message
     await tickEvalRuns(env);
-    runRes = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+    runRes = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
     run = (await runRes.json()) as any;
     expect(run.status).toBe("running");
     expect(run.tasks[0].status).toBe("running");
@@ -198,7 +198,7 @@ describe("tickEvalRuns advances state", () => {
 
     // Tick 2: session is idle, only one message → build trajectory + finalize
     await tickEvalRuns(env);
-    runRes = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+    runRes = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
     run = (await runRes.json()) as any;
     expect(run.status).toBe("completed");
     expect(run.tasks[0].status).toBe("completed");
@@ -211,7 +211,7 @@ describe("tickEvalRuns advances state", () => {
 
   it("multi-task run completes all tasks across multiple ticks", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const createRes = await api("/v1/evals/runs", {
+    const createRes = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -230,12 +230,12 @@ describe("tickEvalRuns advances state", () => {
     for (let i = 0; i < 6; i++) {
       await tickEvalRuns(env);
       await new Promise((r) => setTimeout(r, 400));
-      const r = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+      const r = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
       const body = (await r.json()) as any;
       if (body.status === "completed" || body.status === "failed") break;
     }
 
-    const finalRes = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+    const finalRes = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
     const final = (await finalRes.json()) as any;
     expect(final.status).toBe("completed");
     expect(final.completed_count).toBe(3);
@@ -247,7 +247,7 @@ describe("tickEvalRuns advances state", () => {
 
   it("multi-message task sends each message in turn", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const createRes = await api("/v1/evals/runs", {
+    const createRes = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -261,12 +261,12 @@ describe("tickEvalRuns advances state", () => {
     for (let i = 0; i < 8; i++) {
       await tickEvalRuns(env);
       await new Promise((r) => setTimeout(r, 400));
-      const r = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+      const r = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
       const body = (await r.json()) as any;
       if (body.status === "completed" || body.status === "failed") break;
     }
 
-    const finalRes = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+    const finalRes = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
     const final = (await finalRes.json()) as any;
     expect(final.status).toBe("completed");
     expect(final.tasks[0].trials[0].trajectory_id).toMatch(/^tr-/);
@@ -274,7 +274,7 @@ describe("tickEvalRuns advances state", () => {
     // The trajectory should record exactly 3 user messages (one per spec.messages)
     // Fetch trajectory via session GET
     const sessionId = final.tasks[0].trials[0].session_id;
-    const trajRes = await api(`/v1/sessions/${sessionId}/trajectory`, { headers: HEADERS });
+    const trajRes = await api(`/v1/oma/sessions/${sessionId}/trajectory`, { headers: HEADERS });
     const traj = (await trajRes.json()) as any;
     const userMsgs = traj.events.filter((e: any) => e.type === "user.message");
     expect(userMsgs.length).toBe(3);
@@ -282,7 +282,7 @@ describe("tickEvalRuns advances state", () => {
 
   it("removes run from active index on completion", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const createRes = await api("/v1/evals/runs", {
+    const createRes = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -303,7 +303,7 @@ describe("tickEvalRuns advances state", () => {
     for (let i = 0; i < 5; i++) {
       await tickEvalRuns(env);
       await new Promise((r) => setTimeout(r, 400));
-      const r = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+      const r = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
       const body = (await r.json()) as any;
       if (body.status === "completed" || body.status === "failed") break;
     }
@@ -315,7 +315,7 @@ describe("tickEvalRuns advances state", () => {
 
   it("trials > 1: spawns N independent sessions per task and stores N trajectories", async () => {
     const { agent, environment } = await setupAgentAndEnv();
-    const createRes = await api("/v1/evals/runs", {
+    const createRes = await api("/v1/oma/evals/runs", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -327,7 +327,7 @@ describe("tickEvalRuns advances state", () => {
     const { run_id } = (await createRes.json()) as any;
 
     // Initial state: 3 pending trials, no session_ids yet
-    let initial = (await (await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS })).json()) as any;
+    let initial = (await (await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS })).json()) as any;
     expect(initial.tasks[0].trials).toHaveLength(3);
     expect(initial.tasks[0].trial_total).toBe(3);
     expect(initial.tasks[0].trials.every((t: any) => t.status === "pending")).toBe(true);
@@ -336,12 +336,12 @@ describe("tickEvalRuns advances state", () => {
     for (let i = 0; i < 8; i++) {
       await tickEvalRuns(env);
       await new Promise((r) => setTimeout(r, 400));
-      const r = await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS });
+      const r = await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS });
       const body = (await r.json()) as any;
       if (body.status === "completed" || body.status === "failed") break;
     }
 
-    const final = (await (await api(`/v1/evals/runs/${run_id}`, { headers: HEADERS })).json()) as any;
+    const final = (await (await api(`/v1/oma/evals/runs/${run_id}`, { headers: HEADERS })).json()) as any;
     expect(final.status).toBe("completed");
     expect(final.tasks[0].status).toBe("completed");
     expect(final.tasks[0].trials).toHaveLength(3);

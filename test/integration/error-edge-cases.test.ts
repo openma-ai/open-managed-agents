@@ -26,7 +26,7 @@ function del(path: string) {
 }
 
 async function createAgent(overrides?: Record<string, unknown>) {
-  const res = await post("/v1/agents", {
+  const res = await post("/v1/oma/agents", {
     name: "EdgeAgent",
     model: "claude-sonnet-4-6",
     harness: "edge-noop",
@@ -36,7 +36,7 @@ async function createAgent(overrides?: Record<string, unknown>) {
 }
 
 async function createEnv(overrides?: Record<string, unknown>) {
-  const res = await post("/v1/environments", {
+  const res = await post("/v1/oma/environments", {
     name: `edge-env-${Date.now()}`,
     config: { type: "cloud" },
     ...overrides,
@@ -45,7 +45,7 @@ async function createEnv(overrides?: Record<string, unknown>) {
 }
 
 async function createSession(agentId: string, envId: string, extra?: Record<string, unknown>) {
-  const res = await post("/v1/sessions", {
+  const res = await post("/v1/oma/sessions", {
     agent: agentId,
     environment_id: envId,
     ...extra,
@@ -58,7 +58,7 @@ async function createSession(agentId: string, envId: string, extra?: Record<stri
 // ============================================================
 describe("API validation", () => {
   it("agent with extra unknown fields is accepted (201)", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "ExtraFields",
       model: "claude-sonnet-4-6",
       harness: "edge-noop",
@@ -83,7 +83,7 @@ describe("API validation", () => {
   it("session with empty metadata object is created", async () => {
     const agent = await createAgent();
     const envObj = await createEnv();
-    const res = await post("/v1/sessions", {
+    const res = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: envObj.id,
       metadata: {},
@@ -95,7 +95,7 @@ describe("API validation", () => {
     const agent = await createAgent({ system: "stable" });
     const v1 = agent.version;
 
-    const updateRes = await put(`/v1/agents/${agent.id}`, {});
+    const updateRes = await put(`/v1/oma/agents/${agent.id}`, {});
     expect(updateRes.status).toBe(200);
     const updated = (await updateRes.json()) as any;
     // Version should not bump for a no-op update
@@ -106,7 +106,7 @@ describe("API validation", () => {
     const envObj = await createEnv();
     const origConfig = envObj.config;
 
-    const updateRes = await put(`/v1/environments/${envObj.id}`, { name: "edge-renamed" });
+    const updateRes = await put(`/v1/oma/environments/${envObj.id}`, { name: "edge-renamed" });
     expect(updateRes.status).toBe(200);
     const updated = (await updateRes.json()) as any;
     expect(updated.name).toBe("edge-renamed");
@@ -119,14 +119,14 @@ describe("API validation", () => {
 // ============================================================
 describe("Concurrent operations", () => {
   it("create and immediately GET returns created agent", async () => {
-    const createRes = await post("/v1/agents", {
+    const createRes = await post("/v1/oma/agents", {
       name: "ImmediateGet",
       model: "claude-sonnet-4-6",
       harness: "edge-noop",
     });
     const agent = (await createRes.json()) as any;
 
-    const getRes = await get(`/v1/agents/${agent.id}`);
+    const getRes = await get(`/v1/oma/agents/${agent.id}`);
     expect(getRes.status).toBe(200);
     const fetched = (await getRes.json()) as any;
     expect(fetched.id).toBe(agent.id);
@@ -134,17 +134,17 @@ describe("Concurrent operations", () => {
   });
 
   it("create and immediately DELETE succeeds", async () => {
-    const createRes = await post("/v1/agents", {
+    const createRes = await post("/v1/oma/agents", {
       name: "ImmediateDel",
       model: "claude-sonnet-4-6",
       harness: "edge-noop",
     });
     const agent = (await createRes.json()) as any;
 
-    const delRes = await del(`/v1/agents/${agent.id}`);
+    const delRes = await del(`/v1/oma/agents/${agent.id}`);
     expect(delRes.status).toBe(200);
 
-    const getRes = await get(`/v1/agents/${agent.id}`);
+    const getRes = await get(`/v1/oma/agents/${agent.id}`);
     expect(getRes.status).toBe(404);
   });
 
@@ -152,15 +152,15 @@ describe("Concurrent operations", () => {
     const agent = await createAgent({ system: "concurrent-v0" });
 
     const [res1, res2] = await Promise.all([
-      put(`/v1/agents/${agent.id}`, { system: "concurrent-v1" }),
-      put(`/v1/agents/${agent.id}`, { system: "concurrent-v2" }),
+      put(`/v1/oma/agents/${agent.id}`, { system: "concurrent-v1" }),
+      put(`/v1/oma/agents/${agent.id}`, { system: "concurrent-v2" }),
     ]);
 
     expect(res1.status).toBe(200);
     expect(res2.status).toBe(200);
 
     // The final state should be one of the two updates
-    const getRes = await get(`/v1/agents/${agent.id}`);
+    const getRes = await get(`/v1/oma/agents/${agent.id}`);
     const final = (await getRes.json()) as any;
     expect(["concurrent-v1", "concurrent-v2"]).toContain(final.system);
   });
@@ -171,7 +171,7 @@ describe("Concurrent operations", () => {
     const session = await createSession(agent.id, envObj.id);
 
     // Immediately post an event
-    const evtRes = await post(`/v1/sessions/${session.id}/events`, {
+    const evtRes = await post(`/v1/oma/sessions/${session.id}/events`, {
       events: [{ type: "user.message", content: [{ type: "text", text: "rapid event" }] }],
     });
     expect(evtRes.status).toBe(202);
@@ -181,11 +181,11 @@ describe("Concurrent operations", () => {
     const agent = await createAgent();
 
     // Archive first
-    const archRes = await post(`/v1/agents/${agent.id}/archive`, {});
+    const archRes = await post(`/v1/oma/agents/${agent.id}/archive`, {});
     expect(archRes.status).toBe(200);
 
     // Then delete
-    const delRes = await del(`/v1/agents/${agent.id}`);
+    const delRes = await del(`/v1/oma/agents/${agent.id}`);
     // Should succeed (delete archived agent) or return 404 if implementation differs
     expect([200, 404]).toContain(delRes.status);
   });
@@ -196,7 +196,7 @@ describe("Concurrent operations", () => {
 // ============================================================
 describe("Boundary conditions", () => {
   it("agent list with limit=0 returns empty data or error", async () => {
-    const res = await get("/v1/agents?limit=0");
+    const res = await get("/v1/oma/agents?limit=0");
     // Either returns empty array or treats 0 as no-limit or errors
     if (res.status === 200) {
       const body = (await res.json()) as any;
@@ -209,10 +209,10 @@ describe("Boundary conditions", () => {
 
   it("agent list with very large limit returns all available", async () => {
     // Create a few agents to be sure
-    await post("/v1/agents", { name: "Limit-1", model: "claude-sonnet-4-6", harness: "edge-noop" });
-    await post("/v1/agents", { name: "Limit-2", model: "claude-sonnet-4-6", harness: "edge-noop" });
+    await post("/v1/oma/agents", { name: "Limit-1", model: "claude-sonnet-4-6", harness: "edge-noop" });
+    await post("/v1/oma/agents", { name: "Limit-2", model: "claude-sonnet-4-6", harness: "edge-noop" });
 
-    const res = await get("/v1/agents?limit=9999");
+    const res = await get("/v1/oma/agents?limit=9999");
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -226,13 +226,13 @@ describe("Boundary conditions", () => {
 
     // Post a few events
     for (let i = 0; i < 3; i++) {
-      await post(`/v1/sessions/${session.id}/events`, {
+      await post(`/v1/oma/sessions/${session.id}/events`, {
         events: [{ type: "user.message", content: [{ type: "text", text: `limit-msg-${i}` }] }],
       });
     }
     await new Promise((r) => setTimeout(r, 200));
 
-    const res = await get(`/v1/sessions/${session.id}/events?limit=1000`, { Accept: "application/json" });
+    const res = await get(`/v1/oma/sessions/${session.id}/events?limit=1000`, { Accept: "application/json" });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data).toBeInstanceOf(Array);
@@ -240,10 +240,10 @@ describe("Boundary conditions", () => {
   });
 
   it("memory with path containing slashes and dots", async () => {
-    const storeRes = await post("/v1/memory_stores", { name: "path-test-store" });
+    const storeRes = await post("/v1/oma/memory_stores", { name: "path-test-store" });
     const store = (await storeRes.json()) as any;
 
-    const res = await post(`/v1/memory_stores/${store.id}/memories`, {
+    const res = await post(`/v1/oma/memory_stores/${store.id}/memories`, {
       path: "deep/nested/path/with.dots/and-dashes/file.v2.txt",
       content: "path test content",
     });
@@ -253,11 +253,11 @@ describe("Boundary conditions", () => {
   });
 
   it("memory with unicode path", async () => {
-    const storeRes = await post("/v1/memory_stores", { name: "unicode-path-store" });
+    const storeRes = await post("/v1/oma/memory_stores", { name: "unicode-path-store" });
     const store = (await storeRes.json()) as any;
 
     const unicodePath = "\u6587\u4EF6/\u30C6\u30B9\u30C8/\u00E9\u00E0\u00FC.txt";
-    const res = await post(`/v1/memory_stores/${store.id}/memories`, {
+    const res = await post(`/v1/oma/memory_stores/${store.id}/memories`, {
       path: unicodePath,
       content: "unicode path content",
     });
@@ -268,7 +268,7 @@ describe("Boundary conditions", () => {
 
   it("file with long filename (200 chars)", async () => {
     const longName = "a".repeat(196) + ".txt"; // 200 chars total
-    const res = await post("/v1/files", {
+    const res = await post("/v1/oma/files", {
       filename: longName,
       content: "long filename content",
       media_type: "text/plain",
@@ -281,7 +281,7 @@ describe("Boundary conditions", () => {
 
   it("file with special chars in filename", async () => {
     const specialName = "test file (1) [copy] {v2} @special #tag.txt";
-    const res = await post("/v1/files", {
+    const res = await post("/v1/oma/files", {
       filename: specialName,
       content: "special filename content",
       media_type: "text/plain",
@@ -295,7 +295,7 @@ describe("Boundary conditions", () => {
     const agent = await createAgent();
     const envObj = await createEnv();
 
-    const res = await post("/v1/sessions", {
+    const res = await post("/v1/oma/sessions", {
       agent: agent.id,
       environment_id: envObj.id,
       resources: [],
@@ -310,7 +310,7 @@ describe("Boundary conditions", () => {
   });
 
   it("agent with empty string system prompt is accepted", async () => {
-    const res = await post("/v1/agents", {
+    const res = await post("/v1/oma/agents", {
       name: "EmptySystem",
       model: "claude-sonnet-4-6",
       system: "",
@@ -323,7 +323,7 @@ describe("Boundary conditions", () => {
 
   it("multiple rapid creates (20 agents) all produce unique IDs", async () => {
     const promises = Array.from({ length: 20 }, (_, i) =>
-      post("/v1/agents", {
+      post("/v1/oma/agents", {
         name: `Rapid-${i}`,
         model: "claude-sonnet-4-6",
         harness: "edge-noop",
