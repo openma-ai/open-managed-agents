@@ -71,7 +71,6 @@ export default defineConfig({
       // @cloudflare/containers which has workerd-native code that miniflare
       // can't load. Production builds use wrangler bundling which handles this.
       { find: "@cloudflare/sandbox", replacement: "./test/sandbox-stub.ts" },
-      { find: "@openma/common/session-kernel", replacement: "../openma-common/src/session-kernel/index.ts" },
 
       // ─── Stores: package + test-fakes subpath ─────────────────────────
       { find: "@open-managed-agents/api-types", replacement: "./packages/api-types/src/index.ts" },
