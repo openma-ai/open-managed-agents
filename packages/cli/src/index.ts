@@ -14,6 +14,8 @@ import { currentProfile } from "./bridge/lib/platform.js";
 
 // ─── Config ───
 
+const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
+
 interface Config {
   baseUrl: string;
   apiKey: string;
@@ -226,6 +228,7 @@ async function apiFetch<T = unknown>(config: Config, path: string, init?: Reques
     ...init,
     headers: {
       "x-api-key": config.apiKey,
+      "anthropic-beta": MANAGED_AGENTS_BETA,
       "content-type": "application/json",
       // Identify as a browser-compatible client. Node's default `node` UA
       // gets rejected by Cloudflare's bot fight rules on api.openma.dev with
@@ -265,6 +268,7 @@ async function rawStream(
     ...init,
     headers: {
       "x-api-key": config.apiKey,
+      "anthropic-beta": MANAGED_AGENTS_BETA,
       "user-agent": "Mozilla/5.0 (compatible; OpenManagedAgents-CLI/0.1; +https://openma.dev)",
       ...init?.headers,
     },
@@ -809,9 +813,12 @@ const commands: Cmd[] = [
   },
   {
     group: "Agents", match: ["agents", "delete"], needsArg: true,
-    usage: "oma agents delete <id>", desc: "Delete agent",
-    http: "DELETE /v1/agents/:id",
-    async run(config, args) { await apiFetch(config, `/v1/agents/${args[0]}`, { method: "DELETE" }); console.log(`Agent deleted: ${args[0]}`); },
+    usage: "oma agents delete <id>", desc: "Archive agent",
+    http: "POST   /v1/agents/:id/archive",
+    async run(config, args) {
+      await apiFetch(config, `/v1/agents/${args[0]}/archive`, { method: "POST" });
+      console.log(`Agent archived: ${args[0]}`);
+    },
   },
 
   // Runtimes — user-registered local machines running `oma bridge daemon`.
@@ -861,9 +868,15 @@ const commands: Cmd[] = [
     usage: "oma sessions list", desc: "List sessions",
     http: "GET    /v1/sessions?agent_id=X&limit=N",
     async run(config) {
-      const { data } = await apiFetch<{ data: Array<{ id: string; title: string; agent_id: string; status: string; created_at: string }> }>(config, "/v1/sessions?limit=20");
+      const { data } = await apiFetch<{ data: Array<{
+        id: string;
+        title: string;
+        agent: { type: "agent"; id: string; version: number };
+        status: string;
+        created_at: string;
+      }> }>(config, "/v1/sessions?limit=20");
       if (!data.length) { console.log("No sessions."); return; }
-      table([["TITLE", "ID", "STATUS", "AGENT", "CREATED"], ...data.map(s => [s.title || "Untitled", s.id, s.status || "idle", s.agent_id, new Date(s.created_at).toLocaleDateString()])]);
+      table([["TITLE", "ID", "STATUS", "AGENT", "CREATED"], ...data.map(s => [s.title || "Untitled", s.id, s.status || "idle", s.agent.id, new Date(s.created_at).toLocaleDateString()])]);
     },
   },
   {
@@ -873,7 +886,15 @@ const commands: Cmd[] = [
     async run(config, args) {
       const agentId = flag(args, "--agent"); const envId = flag(args, "--env"); const title = flag(args, "--title") || "";
       if (!agentId || !envId) { console.error("Usage: oma sessions create --agent <id> --env <id> [--title <text>]"); process.exit(1); }
-      const session = await apiFetch<{ id: string }>(config, "/v1/sessions", { method: "POST", body: JSON.stringify({ agent: agentId, environment_id: envId, title }) });
+      const agent = await apiFetch<{ id: string; version: number }>(config, `/v1/agents/${agentId}`);
+      const session = await apiFetch<{ id: string }>(config, "/v1/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          agent: { type: "agent", id: agent.id, version: agent.version },
+          environment_id: envId,
+          title,
+        }),
+      });
       console.log(`Session created: ${session.id}`);
     },
   },

@@ -19,9 +19,9 @@ import type {
   SubscribeSessionEvents,
 } from "@open-managed-agents/session-runtime-contract/stream";
 import {
-  decodeRuntimeEvent,
   encodeRuntimeSessionEvent,
   encodeRuntimeSessionStart,
+  RuntimeEventStreamDecoder,
 } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 interface RuntimeFetcher {
@@ -144,6 +144,7 @@ export class CfManagedSessionRuntimeAdapter
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
   ): AsyncIterable<StreamSessionEvent> {
     const deltaTypes = new Set(input.deltaEventTypes ?? []);
+    const decoder = new RuntimeEventStreamDecoder(deltaTypes);
     const seenCanonicalEventIds = new Set<string>();
     let replay = false;
     for (;;) {
@@ -201,7 +202,7 @@ export class CfManagedSessionRuntimeAdapter
         if (canonicalEventId !== undefined) {
           seenCanonicalEventIds.add(canonicalEventId);
         }
-        for (const event of decodeRuntimeEvent(raw, deltaTypes)) yield event;
+        for (const event of decoder.decode(raw)) yield event;
         if (
           rawEvent.type === "session.status_idle" ||
           rawEvent.type === "session.status_terminated" ||

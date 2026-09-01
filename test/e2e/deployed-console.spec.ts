@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 const deployedBaseURL = process.env.OMA_E2E_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.OMA_E2E_API_KEY;
 const turnModel = process.env.OMA_E2E_MODEL;
+const mockModelBaseURL = process.env.OMA_E2E_MOCK_MODEL_BASE_URL?.replace(/\/$/, "");
 const managedAgentsBeta = "managed-agents-2026-04-01";
 
 test.describe("deployed Console smoke", () => {
@@ -18,6 +19,7 @@ test.describe("deployed Console smoke", () => {
     });
     expect(response?.status()).toBe(200);
     await expect(page.locator("#root")).not.toBeEmpty();
+    await page.getByRole("button", { name: "Continue with email" }).click();
     await expect(page.locator('input[type="email"]')).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
     expect(pageErrors).toEqual([]);
@@ -30,7 +32,10 @@ test.describe("deployed Console smoke", () => {
   });
 
   test("sends and renders a real Managed Agents turn", async ({ page }) => {
-    test.skip(!apiKey || !turnModel, "OMA_E2E_API_KEY and OMA_E2E_MODEL are required");
+    test.skip(
+      !apiKey || (!turnModel && !mockModelBaseURL),
+      "OMA_E2E_API_KEY plus OMA_E2E_MODEL or OMA_E2E_MOCK_MODEL_BASE_URL are required",
+    );
     test.setTimeout(120_000);
 
     const client = new Anthropic({
@@ -43,8 +48,26 @@ test.describe("deployed Console smoke", () => {
     let environment: { id: string } | undefined;
     let agent: { id: string; version: number } | undefined;
     let session: { id: string } | undefined;
+    let modelCard: { id: string; model_id: string } | undefined;
 
     try {
+      if (mockModelBaseURL) {
+        const response = await fetch(`${deployedBaseURL}/v1/oma/model_cards`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": apiKey! },
+          body: JSON.stringify({
+            model_id: `console-e2e-mock-${suffix}`,
+            model: "openma-e2e-mock",
+            provider: "ant-compatible",
+            api_key: "openma-e2e-mock-key",
+            base_url: mockModelBaseURL,
+          }),
+        });
+        const responseBody = await response.text();
+        expect(response.status, responseBody).toBe(201);
+        modelCard = JSON.parse(responseBody) as { id: string; model_id: string; probe?: unknown };
+        expect(modelCard).toMatchObject({ probe: { ok: true } });
+      }
       environment = await client.beta.environments.create({
         name: `console-e2e-environment-${suffix}`,
         scope: "organization",
@@ -56,7 +79,7 @@ test.describe("deployed Console smoke", () => {
       });
       agent = await client.beta.agents.create({
         name: `console-e2e-agent-${suffix}`,
-        model: turnModel!,
+        model: modelCard?.model_id ?? turnModel!,
         system: "Follow the user's exact response-format instruction.",
       });
       session = await client.beta.sessions.create({
@@ -107,15 +130,25 @@ test.describe("deployed Console smoke", () => {
       });
       const composer = page.getByRole("textbox", { name: "Message" });
       await expect(composer).toBeVisible({ timeout: 30_000 });
-      await composer.fill("Reply exactly E2E_UI_OK.");
-      await page.getByRole("button", { name: "Send message" }).click();
-      await expect(page.getByText("E2E_UI_OK", { exact: true })).toBeVisible({
+      const expectedReply = mockModelBaseURL ? "E2E_OK" : "E2E_UI_OK";
+      await composer.fill(`Reply exactly ${expectedReply}.`);
+      // A freshly-created Managed Session may still be `running` while its
+      // environment boots. The same composer intentionally labels the action
+      // "Queue message" in that state and "Send message" once idle.
+      await page.getByRole("button", { name: /^(Send|Queue) message$/ }).click();
+      await expect(page.getByText(expectedReply, { exact: true })).toBeVisible({
         timeout: 90_000,
       });
     } finally {
       if (session) await client.beta.sessions.delete(session.id).catch(() => undefined);
       if (agent) await client.beta.agents.archive(agent.id).catch(() => undefined);
       if (environment) await client.beta.environments.delete(environment.id).catch(() => undefined);
+      if (modelCard) {
+        await fetch(`${deployedBaseURL}/v1/oma/model_cards/${encodeURIComponent(modelCard.id)}`, {
+          method: "DELETE",
+          headers: { "x-api-key": apiKey! },
+        }).catch(() => undefined);
+      }
     }
   });
 });

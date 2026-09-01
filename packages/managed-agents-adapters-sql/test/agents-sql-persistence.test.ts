@@ -4,6 +4,7 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { AgentRecord } from "@open-managed-agents/managed-agents-application/agents-persistence-port";
 import { AgentsApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlAgentPersistence } from "../src";
+import { agentStorePortContract } from "./contracts/store-port-contracts";
 
 const SCHEMA_SQL = `
 CREATE TABLE agents (
@@ -91,14 +92,14 @@ function agentAt(id: string, createdAt: string): AgentRecord {
   };
 }
 
+let client: SqlClient;
+
+beforeEach(async () => {
+  client = await createBetterSqlite3SqlClient(":memory:");
+  await client.exec(SCHEMA_SQL);
+});
+
 describe("SqlAgentPersistence", () => {
-  let client: SqlClient;
-
-  beforeEach(async () => {
-    client = await createBetterSqlite3SqlClient(":memory:");
-    await client.exec(SCHEMA_SQL);
-  });
-
   it("inserts and retrieves an agent inside its workspace boundary", async () => {
     const persistence = new SqlAgentPersistence(client);
 
@@ -369,3 +370,5 @@ describe("SqlAgentPersistence", () => {
     ).resolves.toMatchObject({ version: 1 });
   });
 });
+
+agentStorePortContract("SQLite", () => new SqlAgentPersistence(client));

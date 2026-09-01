@@ -4,6 +4,7 @@ import {
   decodeRuntimeProducedSessionEvent,
   encodeRuntimeSessionEvent,
   encodeRuntimeSessionStart,
+  RuntimeEventStreamDecoder,
 } from "../src";
 import type {
   SessionEventView,
@@ -88,6 +89,46 @@ describe("Managed session runtime codec", () => {
           inputTokens: 0,
           outputTokens: 0,
         },
+      },
+    ]);
+  });
+
+  it("keeps live model span pairs valid when a runtime end frame omits its correlation id", () => {
+    const decoder = new RuntimeEventStreamDecoder(new Set());
+
+    expect(
+      decoder.decode({
+        id: "event_model_start_01",
+        type: "span.model_request_start",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toEqual([
+      {
+        id: "event_model_start_01",
+        type: "span.model_request_start",
+        processedAt: "2026-08-26T00:00:01.000Z",
+      },
+    ]);
+    expect(
+      decoder.decode({
+        id: "event_model_end_01",
+        type: "span.model_request_end",
+        is_error: true,
+        processed_at: "2026-08-26T00:00:02.000Z",
+      }),
+    ).toEqual([
+      {
+        id: "event_model_end_01",
+        type: "span.model_request_end",
+        isError: true,
+        modelRequestStartId: "event_model_start_01",
+        modelUsage: {
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        },
+        processedAt: "2026-08-26T00:00:02.000Z",
       },
     ]);
   });

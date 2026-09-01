@@ -5,6 +5,10 @@
  * Endpoints
  * ─────────
  *
+ *   POST /v1/messages
+ *     → deterministic Anthropic-compatible message or SSE stream. Used by
+ *       deployment E2E so D1/DO/harness/API stay real while the LLM is mocked.
+ *
  *   POST /oauth/authorize?client_id=...&redirect_uri=...&state=...
  *     → 302 to {redirect_uri}?code=mock_code_<random>&state=<state>
  *     The OAuth callback flow used by publication-first install.
@@ -65,6 +69,72 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
+
+    // ─── Anthropic-compatible LLM: /v1/messages ──────────────────────
+    if (p === "/v1/messages" && req.method === "POST") {
+      if (!req.headers.get("x-api-key")) {
+        return json({ type: "error", error: { type: "authentication_error", message: "missing mock key" } }, 401);
+      }
+      const body = await req.json<Record<string, unknown>>().catch(() => ({}));
+      const model = typeof body.model === "string" ? body.model : "openma-e2e-mock";
+      const messageId = `msg_mock_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+      if (body.stream === true) {
+        const events = [
+          ["message_start", {
+            type: "message_start",
+            message: {
+              id: messageId,
+              type: "message",
+              role: "assistant",
+              content: [],
+              model,
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: 4, output_tokens: 0 },
+            },
+          }],
+          ["content_block_start", {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          }],
+          ["content_block_delta", {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "E2E_OK" },
+          }],
+          ["content_block_stop", { type: "content_block_stop", index: 0 }],
+          ["message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: 2 },
+          }],
+          ["message_stop", { type: "message_stop" }],
+        ] as const;
+        return new Response(
+          events.map(([event, data]) =>
+            `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+          ).join(""),
+          {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-cache",
+            },
+          },
+        );
+      }
+      return json({
+        id: messageId,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "E2E_OK" }],
+        model,
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 2 },
+      });
+    }
 
     // ─── OAuth: /oauth/authorize ──────────────────────────────────────
     if (p === "/oauth/authorize" || p === "/oauth/authorize/") {
@@ -163,6 +233,7 @@ export default {
       return json({
         service: "oma-mock-services",
         endpoints: {
+          llm: ["POST /v1/messages"],
           oauth: ["GET /oauth/authorize", "POST /oauth/token"],
           mcp: [
             "ALL /mcp/ok/...",

@@ -10,6 +10,7 @@ import {
   SqlSessionRuntimeProjectionPersistence,
   SqlSessionSource,
 } from "../src";
+import { sessionStorePortContract } from "./contracts/store-port-contracts";
 
 const SCHEMA_SQL = `
 CREATE TABLE managed_sessions (
@@ -154,14 +155,14 @@ function sessionAt(
   };
 }
 
+let client: SqlClient;
+
+beforeEach(async () => {
+  client = await createBetterSqlite3SqlClient(":memory:");
+  await client.exec(SCHEMA_SQL);
+});
+
 describe("SqlSessionPersistence", () => {
-  let client: SqlClient;
-
-  beforeEach(async () => {
-    client = await createBetterSqlite3SqlClient(":memory:");
-    await client.exec(SCHEMA_SQL);
-  });
-
   it("atomically inserts the session, initial events, and memory-store index", async () => {
     const persistence = new SqlSessionPersistence(client, testSealer);
 
@@ -545,3 +546,8 @@ describe("SqlSessionPersistence", () => {
     ).resolves.toEqual([{ session: newest, revision: 1 }]);
   });
 });
+
+sessionStorePortContract(
+  "SQLite",
+  () => new SqlSessionPersistence(client, testSealer),
+);

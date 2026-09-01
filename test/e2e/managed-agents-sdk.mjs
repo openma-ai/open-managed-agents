@@ -5,6 +5,8 @@ const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 const baseURL = requiredEnv("OMA_E2E_BASE_URL").replace(/\/$/, "");
 const apiKey = requiredEnv("OMA_E2E_API_KEY");
 const runTurn = process.env.OMA_E2E_RUN_TURN === "1";
+const authDisabled = process.env.OMA_E2E_AUTH_DISABLED === "1";
+const mockModelBaseURL = process.env.OMA_E2E_MOCK_MODEL_BASE_URL?.replace(/\/$/, "");
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const client = new Anthropic({
@@ -17,6 +19,7 @@ const client = new Anthropic({
 let environment;
 let agent;
 let session;
+let modelCard;
 const cleanupErrors = [];
 
 try {
@@ -34,22 +37,51 @@ try {
     assertAnthropicError(await response.json(), "invalid_request_error");
   });
 
-  await step("authentication is mandatory", async () => {
-    const response = await fetch(`${baseURL}/v1/agents`, {
-      headers: { "anthropic-beta": MANAGED_AGENTS_BETA },
+  if (!authDisabled) {
+    await step("authentication is mandatory", async () => {
+      const response = await fetch(`${baseURL}/v1/agents`, {
+        headers: { "anthropic-beta": MANAGED_AGENTS_BETA },
+      });
+      assert.equal(response.status, 401);
+      assertAnthropicError(await response.json(), "authentication_error");
     });
-    assert.equal(response.status, 401);
-    assertAnthropicError(await response.json(), "authentication_error");
-  });
+  }
+
+  if (mockModelBaseURL) {
+    modelCard = await step("install deterministic external LLM fixture", async () => {
+      const response = await omaFetch("/v1/oma/model_cards", {
+        method: "POST",
+        body: JSON.stringify({
+          model_id: `e2e-mock-${suffix}`,
+          model: "openma-e2e-mock",
+          provider: "ant-compatible",
+          api_key: "openma-e2e-mock-key",
+          base_url: mockModelBaseURL,
+        }),
+      });
+      const responseBody = await response.text();
+      assert.equal(response.status, 201, responseBody);
+      const created = JSON.parse(responseBody);
+      // Assign before assertions so finally can remove a server-created fixture
+      // even when a later contract assertion fails.
+      modelCard = created;
+      assert.match(created.id, /^mdl-/);
+      assert.deepEqual(created.probe, { ok: true });
+      return created;
+    });
+  }
 
   const models = await step("official SDK lists models", async () => {
     const page = await client.beta.models.list({ limit: 10 });
     assert.ok(Array.isArray(page.data));
     assert.ok(page.data.length > 0, "the deployment must expose at least one model");
     assert.equal(page.data[0].type, "model");
+    if (modelCard) {
+      assert.ok(page.data.some(({ id }) => id === modelCard.model_id));
+    }
     return page;
   });
-  const model = process.env.OMA_E2E_MODEL ?? models.data[0].id;
+  const model = modelCard?.model_id ?? process.env.OMA_E2E_MODEL ?? models.data[0].id;
 
   environment = await step("official SDK creates and retrieves an environment", async () => {
     const created = await client.beta.environments.create({
@@ -129,7 +161,17 @@ try {
             limit: 100,
             order: "asc",
           });
-          persistedTypes = persisted.data.map(({ type }) => type).join(", ") || "<none>";
+          persistedTypes = JSON.stringify(
+            persisted.data.map((event) => ({
+              type: event.type,
+              ...(event.type === "span.model_request_start" && { id: event.id }),
+              ...(event.type === "span.model_request_end" && {
+                id: event.id,
+                model_request_start_id: event.model_request_start_id,
+                is_error: event.is_error,
+              }),
+            })),
+          );
         } catch (error) {
           const diagnostic = await fetch(
             `${baseURL}/v1/sessions/${encodeURIComponent(session.id)}/events?limit=100&order=asc`,
@@ -166,6 +208,15 @@ try {
   if (environment) {
     await cleanup("delete environment", () => client.beta.environments.delete(environment.id));
   }
+  if (modelCard) {
+    await cleanup("delete deterministic LLM fixture", async () => {
+      const response = await omaFetch(`/v1/oma/model_cards/${encodeURIComponent(modelCard.id)}`, {
+        method: "DELETE",
+      });
+      const responseBody = await response.text();
+      assert.equal(response.status, 200, responseBody);
+    });
+  }
 }
 
 if (cleanupErrors.length > 0) {
@@ -184,12 +235,19 @@ async function collectTurnEvents(sessionID) {
       {},
       { signal: controller.signal },
     );
-    for await (const event of stream) {
-      events.push(event);
-      if (event.type === "session.error") {
-        throw new Error(`session.error: ${JSON.stringify(event)}`);
+    try {
+      for await (const event of stream) {
+        events.push(event);
+        if (event.type === "session.error") {
+          throw new Error(`session.error: ${JSON.stringify(event)}`);
+        }
+        if (event.type === "session.status_idle") return events;
       }
-      if (event.type === "session.status_idle") return events;
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; streamed before failure: ${JSON.stringify(events)}`,
+        { cause: error },
+      );
     }
     throw new Error(
       `SSE ended before session.status_idle; received: ${events
@@ -226,6 +284,17 @@ async function cleanup(name, operation) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function omaFetch(path, init = {}) {
+  return fetch(`${baseURL}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      ...init.headers,
+    },
+  });
 }
 
 function requiredEnv(name) {

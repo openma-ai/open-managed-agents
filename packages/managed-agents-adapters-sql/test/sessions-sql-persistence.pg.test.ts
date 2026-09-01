@@ -16,6 +16,7 @@ import {
   SqlSessionThreadPersistence,
 } from "../src";
 import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
+import { sessionStorePortContract } from "./contracts/store-port-contracts";
 
 const PG_URL = getStorageIntegrationConfig().postgres.sessionsSql;
 const WORKSPACE_ID = "managed_sessions_adapter_pg_contract";
@@ -299,3 +300,8 @@ describe("Managed Sessions SQL adapters on PostgreSQL", () => {
     ).resolves.toEqual({ type: "deleted" });
   });
 });
+
+sessionStorePortContract(
+  "Docker PostgreSQL",
+  () => new SqlSessionPersistence(client, { seal: async (value) => `sealed:${value}` }),
+);

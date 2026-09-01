@@ -24,6 +24,7 @@ import type {
 import {
   decodeRuntimeEvent,
   decodeRuntimeProducedSessionEvent,
+  RuntimeEventStreamDecoder,
 } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type {
   SessionRuntimeProjectionApplicationPort,
@@ -373,6 +374,7 @@ export class NodeManagedSessionRuntimeAdapter
     input: SubscribeSessionEvents | SubscribeSessionThreadEvents,
   ): AsyncIterable<StreamSessionEvent> {
     const deltaTypes = new Set(input.deltaEventTypes ?? []);
+    const decoder = new RuntimeEventStreamDecoder(deltaTypes);
     const deltaEventIds = new Set<string>();
     for await (const raw of this.driver.subscribe(input)) {
       if (
@@ -406,7 +408,7 @@ export class NodeManagedSessionRuntimeAdapter
         if (deltaEventIds.has(raw.eventId)) yield raw as StreamSessionEvent;
         continue;
       }
-      for (const event of decodeRuntimeEvent(raw, deltaTypes)) yield event;
+      for (const event of decoder.decode(raw)) yield event;
     }
   }
 }

@@ -5,6 +5,7 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { AgentRecord } from "@open-managed-agents/managed-agents-application/agents-persistence-port";
 import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 import { SqlAgentPersistence } from "../src";
+import { agentStorePortContract } from "./contracts/store-port-contracts";
 
 const PG_URL = getStorageIntegrationConfig().postgres.agentsSql;
 const WORKSPACE_ID = "managed_agents_adapter_pg_contract";
@@ -136,3 +137,5 @@ describe("SqlAgentPersistence on PostgreSQL", () => {
     ).resolves.toEqual([next]);
   });
 });
+
+agentStorePortContract("Docker PostgreSQL", () => new SqlAgentPersistence(client));

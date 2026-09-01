@@ -226,13 +226,83 @@ export function decodeRuntimeEvent(
     decoded.error = normalizeRuntimeError(raw.error);
   }
   if (raw.type === "span.model_request_end") {
-    decoded.modelUsage = normalizeModelUsage(raw.model_usage);
-    decoded.isError = typeof raw.is_error === "boolean" ? raw.is_error : null;
+    decoded.modelUsage = normalizeModelUsage(raw.model_usage ?? raw.modelUsage);
+    decoded.isError =
+      typeof raw.is_error === "boolean"
+        ? raw.is_error
+        : typeof raw.isError === "boolean"
+          ? raw.isError
+          : null;
   }
   if (raw.type === "span.outcome_evaluation_end") {
     decoded.usage = normalizeModelUsage(raw.usage);
   }
   return [decoded as unknown as StreamSessionEvent];
+}
+
+/**
+ * Stateful decoder for a single live session stream.
+ *
+ * Some runtime transports can publish the terminal model span before the
+ * persistence projection has attached `model_request_start_id`. The official
+ * Managed Agents event requires that correlation id, so repair the live frame
+ * from the preceding start event instead of weakening the public API schema.
+ * The queue is scoped by session thread so concurrent sub-agent streams do not
+ * steal each other's spans.
+ */
+export class RuntimeEventStreamDecoder {
+  private readonly pendingModelStarts = new Map<string, string[]>();
+
+  constructor(private readonly deltaTypes: ReadonlySet<SessionEventDeltaType>) {}
+
+  decode(value: unknown): StreamSessionEvent[] {
+    if (value === null || typeof value !== "object") {
+      return decodeRuntimeEvent(value, this.deltaTypes);
+    }
+    const raw = value as Record<string, unknown>;
+    const threadKey =
+      typeof raw.session_thread_id === "string"
+        ? raw.session_thread_id
+        : typeof raw.sessionThreadId === "string"
+          ? raw.sessionThreadId
+          : "";
+    let projected: unknown = raw;
+
+    if (raw.type === "span.model_request_start" && typeof raw.id === "string") {
+      const pending = this.pendingModelStarts.get(threadKey) ?? [];
+      pending.push(raw.id);
+      this.pendingModelStarts.set(threadKey, pending);
+    } else if (raw.type === "span.model_request_end") {
+      const explicitStartId =
+        typeof raw.model_request_start_id === "string"
+          ? raw.model_request_start_id
+          : typeof raw.modelRequestStartId === "string"
+            ? raw.modelRequestStartId
+            : undefined;
+      const pending = this.pendingModelStarts.get(threadKey) ?? [];
+      const startId = explicitStartId ?? pending[0];
+      if (startId !== undefined) {
+        const matchedIndex = pending.indexOf(startId);
+        if (matchedIndex >= 0) pending.splice(matchedIndex, 1);
+        if (pending.length === 0) this.pendingModelStarts.delete(threadKey);
+        else this.pendingModelStarts.set(threadKey, pending);
+        if (explicitStartId === undefined) {
+          projected = "modelRequestStartId" in raw
+            ? { ...raw, modelRequestStartId: startId }
+            : { ...raw, model_request_start_id: startId };
+        }
+      }
+    }
+
+    if (
+      raw.type === "session.status_idle" ||
+      raw.type === "session.status_terminated" ||
+      raw.type === "session.deleted"
+    ) {
+      this.pendingModelStarts.clear();
+    }
+    return decodeRuntimeEvent(projected, this.deltaTypes);
+  }
 }
 
 const ACCEPTED_INPUT_EVENT_TYPES = new Set([

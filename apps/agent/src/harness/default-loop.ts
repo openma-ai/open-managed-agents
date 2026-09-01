@@ -597,27 +597,37 @@ export class DefaultHarness implements HarnessInterface {
         // for this provider call. Computable from session_id + event_id
         // at read time; we surface it on the event so consumers don't
         // have to know the key layout. Absent when llm logging is off.
-        const bodyR2Key = llmLogCtx
-          ? llmLogKey(llmLogCtx.tenant_id, llmLogCtx.session_id, stepStartId ?? "")
-          : undefined;
-        runtime.broadcast({
-          type: "span.model_request_end",
-          model: modelId,
-          model_request_start_id: stepStartId ?? undefined,
-          provider_response_id: providerResponseId,
-          model_usage: step.usage ? {
-            input_tokens: step.usage.inputTokens ?? 0,
-            output_tokens: step.usage.outputTokens ?? 0,
-            cache_read_input_tokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
-            cache_creation_input_tokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
-          } : undefined,
-          finish_reason: step.finishReason,
-          final_text_length: stepText.length,
-          is_error: false,
-          ...(bodyR2Key ? { body_r2_key: bodyR2Key } : {}),
-        });
-        // Clear so onError / onAbort don't double-close.
-        stepStartId = null;
+        // A provider stream error can invoke onError first and onStepFinish
+        // afterwards. onError already closes the span and clears stepStartId;
+        // never emit a second, unpaired terminal event from this callback.
+        if (stepStartId !== null) {
+          const completedStepStartId = stepStartId;
+          const bodyR2Key = llmLogCtx
+            ? llmLogKey(
+                llmLogCtx.tenant_id,
+                llmLogCtx.session_id,
+                completedStepStartId,
+              )
+            : undefined;
+          runtime.broadcast({
+            type: "span.model_request_end",
+            model: modelId,
+            model_request_start_id: completedStepStartId,
+            provider_response_id: providerResponseId,
+            model_usage: step.usage ? {
+              input_tokens: step.usage.inputTokens ?? 0,
+              output_tokens: step.usage.outputTokens ?? 0,
+              cache_read_input_tokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+              cache_creation_input_tokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+            } : undefined,
+            finish_reason: step.finishReason,
+            final_text_length: stepText.length,
+            is_error: false,
+            ...(bodyR2Key ? { body_r2_key: bodyR2Key } : {}),
+          });
+          // Clear so onError / onAbort don't double-close.
+          stepStartId = null;
+        }
       },
 
       onError: ({ error }) => {
