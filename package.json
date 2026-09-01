@@ -77,7 +77,7 @@
     "db:check": "pnpm db:check:cf-auth && pnpm db:check:cf-integrations && pnpm db:check:cf-router && pnpm db:check:node-pg && pnpm db:check:node-sqlite",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "pnpm -r --filter='@openma/*' build && changeset publish"
+    "release": "pnpm -r --filter='@openma/*' build && node scripts/publish-changesets.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.120.0",
