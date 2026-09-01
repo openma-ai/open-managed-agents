@@ -298,6 +298,7 @@ export default defineConfig({
 
       // ─── v2 composition SDK (package name intentionally shorter than folder) ───
       { find: "@open-managed-agents/app/capabilities", replacement: "./packages/managed-agents-app/src/capabilities.ts" },
+      { find: "@open-managed-agents/app/features", replacement: "./packages/managed-agents-app/src/features.ts" },
       { find: "@open-managed-agents/app/managed-agents", replacement: "./packages/managed-agents-app/src/managed-agents.ts" },
       { find: "@open-managed-agents/app/modules/agents", replacement: "./packages/managed-agents-app/src/modules/agents.ts" },
       { find: "@open-managed-agents/app/modules/credentials", replacement: "./packages/managed-agents-app/src/modules/credentials.ts" },
@@ -334,9 +335,9 @@ export default defineConfig({
     hookTimeout: 30000,
     // Each file owns a workerd/miniflare runtime. Letting Vitest scale to all
     // host CPUs exhausts the local runtime and turns trivial requests into
-    // exact 30s timeouts; four workers keeps the suite deterministic while CI
-    // runners with fewer cores still use their natural lower limit.
-    maxWorkers: 4,
+    // exact 30s timeouts; two workers keeps the suite deterministic on local
+    // workerd while CI runners with fewer cores still use their natural limit.
+    maxWorkers: 2,
     exclude: [
       "**/node_modules/**",
       "**/.git/**",

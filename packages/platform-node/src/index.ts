@@ -7,6 +7,10 @@ import {
   type AppModule,
 } from "@open-managed-agents/app";
 import {
+  managedAgentsFeatureModules,
+  type ManagedAgentsFeatures,
+} from "@open-managed-agents/app/features";
+import {
   clockPort,
   httpClientPort,
   idGeneratorPort,
@@ -112,6 +116,8 @@ export interface NodePlatformStores {
 }
 
 export interface CreateNodePlatformOptions {
+  /** Official application modules preinstalled for every workspace app. */
+  features?: ManagedAgentsFeatures | false;
   stores?: WorkspaceValue<Partial<NodePlatformStores>>;
   credentialVaults?: WorkspaceValue<CredentialVaultSourcePort>;
   credentialValidation?: WorkspaceValue<CredentialValidationProbePort>;
@@ -196,11 +202,25 @@ export function createNodePlatform(
           providePort(sessionThreadEventStorePort, stores.sessionEvents),
           providePort(vaultStorePort, stores.vaults),
           ...(options.modules?.(scope) ?? []),
+          ...managedAgentsFeatureModules(options.features),
         ],
       });
     },
   });
   return expose(apps);
+}
+
+export interface CreateNodeManagedAgentsAppOptions
+  extends CreateNodePlatformOptions {
+  workspaceId: string;
+}
+
+/** Creates one preconfigured app graph without exposing the workspace registry. */
+export function createNodeManagedAgentsApp(
+  options: CreateNodeManagedAgentsAppOptions,
+): App {
+  const { workspaceId, ...platformOptions } = options;
+  return createNodePlatform(platformOptions).app({ workspaceId });
 }
 
 function nodeStores(overrides: Partial<NodePlatformStores>): NodePlatformStores {

@@ -37,7 +37,7 @@ import {
 const router = createV0MigrationRouter({
   plan,
   v0: legacyApplicationSource,
-  v1: createNodePlatform({ modules: () => [agentsModule()] }),
+  v1: createNodePlatform({ features: { preset: "none", agents: true } }),
 });
 
 const { lane, app } = router.resolve({ workspaceId });
@@ -124,7 +124,7 @@ import { agentStoreFromV0 } from "@open-managed-agents/compat-v0/agents";
 
 const platform = createNodePlatform({
   stores: { agents: agentStoreFromV0(existingAgentPersistence) },
-  modules: () => [agentsModule()],
+  features: { preset: "none", agents: true },
 });
 
 const app = platform.app({ workspaceId });

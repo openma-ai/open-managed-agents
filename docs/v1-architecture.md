@@ -324,20 +324,47 @@ workspace/tenant key, then requests a scoped app instance. The platform SDK
 must support an app registry/factory so one process or Worker cannot leak a
 workspace-bound Port into another tenant.
 
-Both built-in factories provide workspace context, clock, IDs, HTTP, and the
-currently extracted Store Ports. They do not expose concrete Stores on the
-returned SDK object; callers reach dependencies only through `app.port(...)`.
-The `modules(scope)` extension callback runs once per workspace, so a module
-cannot accidentally capture another tenant's context.
+Both built-in factories provide workspace context, clock, IDs, HTTP, the
+currently extracted Store Ports, and a configurable Managed Agents feature
+preset. The default `core` preset installs Agents, Deployment Runs,
+Environments, Memory Stores, and Vaults because those features require no
+runtime adapter beyond the platform Stores. Adapter-backed features are
+enabled explicitly. `false` disables a default feature, and an `AppModule`
+value replaces its official implementation only when it provides the same
+application Port. They do not expose concrete Stores on the returned SDK
+object; callers reach dependencies only through `app.port(...)`.
+
+The `modules(scope)` extension callback remains the advanced escape hatch for
+narrow runtime Ports. It runs once per cached workspace graph. Request-only
+capabilities such as an authenticated actor or Cloudflare `waitUntil` use the
+uncached `createCloudflareManagedAgentsApp(...)` entrypoint instead.
 
 ```ts
 const platform = createNodePlatform({
-  modules: () => [agentsModule()],
+  features: {
+    files: true,
+    agents: customAgentsModule,
+  },
+  fileContent: blobFileContentStore,
 });
 
 const app = platform.app({ workspaceId });
 await app.start();
 const agents = app.port(managedAgentsPortTokens.agents);
+```
+
+For a single workspace, the convenience factories remove the registry step:
+
+```ts
+const nodeApp = createNodeManagedAgentsApp({ workspaceId, stores });
+
+const requestApp = createCloudflareManagedAgentsApp({
+  workspaceId,
+  sql: new CfD1SqlClient(env.DB),
+  modules: requestScopedModules,
+}, {
+  features: { preset: "none", dreams: true },
+});
 ```
 
 Cloudflare uses the same registry contract with SQL implementations. During
@@ -360,10 +387,11 @@ application service remains the owner of upload and cleanup behavior. OMA
 Models remains a separate `/v1/oma/models/list` lane.
 
 Node composes official Vaults and Credentials over one `SqlVaultStore`.
-Cloudflare keeps independently cached Vault and Credential app graphs so a
-Vault-only request cannot capture a request-specific Credential cipher; both
-graphs use the same tenant SQL rows. In both cases Credential lookup is derived
-from the Vault Store through the narrow application Port.
+Cloudflare creates its official application graphs at the request boundary so
+a workspace cannot retain a request-specific D1 shard, actor, cipher, or
+execution context. Vault and Credential graphs still use the same tenant SQL
+rows, and Credential lookup is derived from the Vault Store through the narrow
+application Port.
 
 Deployments need several cross-domain reads and runtime launch capabilities.
 Those are supplied as narrow request/workspace-resolved modules, not by giving
@@ -444,6 +472,8 @@ The primary user entrypoints remain small:
 
 ```ts
 createManagedAgentsApp({ modules: [...] })
+createNodeManagedAgentsApp({ workspaceId, ... })
+createCloudflareManagedAgentsApp(scope, { ... })
 createNodePlatform({ ... }).app({ workspaceId })
 createCloudflarePlatform({ ... }).app({ workspaceId })
 ```

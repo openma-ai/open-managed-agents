@@ -116,16 +116,12 @@ import {
   buildManagedSessionsApi,
 } from "@open-managed-agents/managed-agents-api";
 import {
-  ModelsApplicationService,
   SessionRuntimeHistoryApplicationService,
   SessionRuntimeProjectionApplicationService,
   type SessionEnvironmentSourcePort,
 } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
-import { agentsModule } from "@open-managed-agents/app/modules/agents";
-import { credentialsModule } from "@open-managed-agents/app/modules/credentials";
-import { deploymentRunsModule } from "@open-managed-agents/app/modules/deployment-runs";
 import {
   deploymentAgentSourcePort,
   deploymentEnvironmentSourcePort,
@@ -134,7 +130,6 @@ import {
   deploymentSchedulePlannerPort,
   deploymentSessionLauncherPort,
   deploymentVaultSourcePort,
-  deploymentsModule,
 } from "@open-managed-agents/app/modules/deployments";
 import {
   dreamCuratorPort,
@@ -142,44 +137,35 @@ import {
   dreamMemoryStoreSourcePort,
   dreamMemoryWorkspacePort,
   dreamSessionSourcePort,
-  dreamsModule,
 } from "@open-managed-agents/app/modules/dreams";
-import { environmentsModule } from "@open-managed-agents/app/modules/environments";
 import {
   environmentSessionWorkEnqueuerPort,
   environmentWorkAvailabilityWaiterPort,
   environmentWorkEnqueuerModule,
   environmentWorkEnvironmentSourcePort,
-  environmentWorkModule,
   environmentWorkSessionCredentialIssuerPort,
 } from "@open-managed-agents/app/modules/environment-work";
-import { filesModule } from "@open-managed-agents/app/modules/files";
-import { memoryStoresModule } from "@open-managed-agents/app/modules/memory-stores";
 import {
-  memoriesModule,
   memoryContentDescriptorPort,
   memoryStoreForMemorySourcePort,
   memoryVersionActorPort,
-  memoryVersionsModule,
 } from "@open-managed-agents/app/modules/memories";
+import { modelCatalogSourcePort } from "@open-managed-agents/app/modules/models";
 import {
   skillPackageCompilerPort,
-  skillsModule,
-  skillVersionsModule,
 } from "@open-managed-agents/app/modules/skills";
 import {
   tunnelCertificateAuthorityPort,
-  tunnelCertificatesModule,
   tunnelProvisionerPort,
   tunnelTokenManagerPort,
-  tunnelsModule,
 } from "@open-managed-agents/app/modules/tunnels";
 import {
   userProfileEnrollmentIssuerPort,
-  userProfilesModule,
 } from "@open-managed-agents/app/modules/user-profiles";
-import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
-import { createNodePlatform } from "@open-managed-agents/platform-node";
+import {
+  createNodeManagedAgentsApp,
+  createNodePlatform,
+} from "@open-managed-agents/platform-node";
 import { SqlFileStore } from "@open-managed-agents/file-store-sql";
 import {
   SqlCredentialStore,
@@ -382,6 +368,14 @@ if (usePostgres) {
 await ensureEventLogSchema(sql, dialect);
 const managedAgentsPersistence = new SqlAgentPersistence(sql);
 const managedAgentsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    agents: true,
+    environments: true,
+    files: true,
+    memoryStores: true,
+    userProfiles: true,
+  },
   stores: {
     agents: managedAgentsPersistence,
     environments: new SqlEnvironmentPersistence(sql),
@@ -396,17 +390,12 @@ const managedAgentsPlatform = createNodePlatform({
       `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${nanoid()}`,
   },
   modules: () => [
-    agentsModule(),
-    environmentsModule(),
-    filesModule(),
-    memoryStoresModule(),
     providePort(userProfileEnrollmentIssuerPort, {
       issue: async () => ({
         type: "conflict" as const,
         message: "User Profile enrollment is unavailable in self-hosted mode",
       }),
     }),
-    userProfilesModule(),
   ],
 });
 
@@ -1044,6 +1033,7 @@ const managedEnvironmentWorkCredentials =
     }),
   });
 const managedEnvironmentWorkPlatform = createNodePlatform({
+  features: { preset: "none", environmentWork: true },
   stores: {
     environmentWork: new SqlEnvironmentWorkStore(
       sql,
@@ -1065,7 +1055,6 @@ const managedEnvironmentWorkPlatform = createNodePlatform({
       environmentWorkSessionCredentialIssuerPort,
       managedEnvironmentWorkCredentials,
     ),
-    environmentWorkModule(),
     environmentWorkEnqueuerModule(),
   ],
 });
@@ -1077,6 +1066,11 @@ function managedEnvironmentWorkEnqueuerFor(
     .port(environmentSessionWorkEnqueuerPort);
 }
 const managedDeploymentsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    deploymentRuns: true,
+    deployments: true,
+  },
   stores: {
     deployments: new SqlDeploymentStore(sql, managedDeploymentCipher),
     deploymentRuns: new SqlDeploymentRunStore(sql),
@@ -1098,8 +1092,6 @@ const managedDeploymentsPlatform = createNodePlatform({
         .deploymentSessionLauncher,
     ),
     providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(sql)),
-    deploymentRunsModule(),
-    deploymentsModule(),
   ],
 });
 const managedDeploymentsRoutes = buildManagedDeploymentRoutes((context) => {
@@ -1141,6 +1133,12 @@ const managedDreamCurator =
       }),
     });
 const managedDreamsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    dreams: true,
+    memories: true,
+    memoryStores: true,
+  },
   stores: {
     dreams: new SqlDreamStore(sql),
     memoryStores: new SqlMemoryStoreStore(sql),
@@ -1188,15 +1186,12 @@ const managedDreamsPlatform = createNodePlatform({
           )],
         }),
       }),
-      memoryStoresModule(),
-      memoriesModule(),
       dreamExecutionModule(),
       inProcessDreamExecutionSchedulerModule({
         defer: (task) => {
           void task;
         },
       }),
-      dreamsModule(),
     ];
   },
 });
@@ -1209,10 +1204,14 @@ const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
 );
 
 const managedModelsRoutes = buildManagedModelRoutes((context) =>
-  new ModelsApplicationService({
+  createNodeManagedAgentsApp({
     workspaceId: (context.var as { tenant_id: string }).tenant_id,
-    catalog: new ModelCardCatalogSource(modelCardsService),
-  })
+    features: { preset: "none", models: true },
+    modules: () => [providePort(
+      modelCatalogSourcePort,
+      new ModelCardCatalogSource(modelCardsService),
+    )],
+  }).port(managedAgentsPortTokens.models)
 );
 
 const managedTunnelProvisioner = new LocalTunnelProvisioner({
@@ -1225,6 +1224,11 @@ const managedTunnelTokens = new WebCryptoTunnelTokenManager({
 });
 const managedTunnelCertificates = new WebCryptoTunnelCertificateAuthority();
 const managedTunnelsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    tunnelCertificates: true,
+    tunnels: true,
+  },
   stores: { tunnels: new SqlTunnelStore(sql) },
   clock: { now: () => new Date() },
   ids: {
@@ -1235,8 +1239,6 @@ const managedTunnelsPlatform = createNodePlatform({
     providePort(tunnelProvisionerPort, managedTunnelProvisioner),
     providePort(tunnelTokenManagerPort, managedTunnelTokens),
     providePort(tunnelCertificateAuthorityPort, managedTunnelCertificates),
-    tunnelsModule(),
-    tunnelCertificatesModule(),
   ],
 });
 const managedTunnelsRoutes = buildManagedTunnelRoutes((context) =>
@@ -1277,7 +1279,13 @@ function managedMemoriesApplicationFor(context: unknown) {
   const request = (context as {
     var: { tenant_id: string; user_id?: string };
   }).var;
-  const platform = createNodePlatform({
+  return createNodeManagedAgentsApp({
+    workspaceId: request.tenant_id,
+    features: {
+      preset: "none",
+      memories: true,
+      memoryVersions: true,
+    },
     stores: {
       memoryStores: new SqlMemoryStoreStore(sql),
       memories: managedMemoryDocuments,
@@ -1302,11 +1310,8 @@ function managedMemoriesApplicationFor(context: unknown) {
         memoryVersionActorPort,
         managedMemoryActor(request.user_id),
       ),
-      memoriesModule(),
-      memoryVersionsModule(),
     ],
   });
-  return platform.app({ workspaceId: request.tenant_id });
 }
 const managedMemoriesRoutes = buildManagedMemoryRoutes((context) =>
   managedMemoriesApplicationFor(context)
@@ -1327,6 +1332,11 @@ function nextManagedSkillVersion(): string {
   return lastManagedSkillVersion.toString();
 }
 const managedSkillsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    skills: true,
+    skillVersions: true,
+  },
   stores: { skills: new SqlSkillStore(sql) },
   clock: { now: () => new Date() },
   ids: {
@@ -1337,8 +1347,6 @@ const managedSkillsPlatform = createNodePlatform({
   },
   modules: () => [
     providePort(skillPackageCompilerPort, managedSkillCompiler),
-    skillsModule(),
-    skillVersionsModule(),
   ],
 });
 const managedSkillsRoutes = buildManagedSkillRoutes((context) =>
@@ -1375,6 +1383,11 @@ const managedCredentialCipher: CredentialDocumentCipher = {
 };
 const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
 const managedCredentialsPlatform = createNodePlatform({
+  features: {
+    preset: "none",
+    credentials: true,
+    vaults: true,
+  },
   stores: {
     credentials: new SqlCredentialStore(sql, managedCredentialCipher),
     vaults: new SqlVaultStore(sql),
@@ -1385,7 +1398,6 @@ const managedCredentialsPlatform = createNodePlatform({
     next: (namespace) =>
       `${namespace === "credential" ? "vcrd" : namespace === "vault" ? "vlt" : namespace}_${nanoid()}`,
   },
-  modules: () => [vaultsModule(), credentialsModule()],
 });
 const managedVaultsRoutes = buildManagedVaultRoutes((context) =>
   managedCredentialsPlatform

@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./capabilities": "./src/capabilities.ts",
+    "./features": "./src/features.ts",
     "./managed-agents": "./src/managed-agents.ts",
     "./modules/agents": "./src/modules/agents.ts",
     "./modules/credentials": "./src/modules/credentials.ts",

@@ -3,8 +3,10 @@ import {
   bindPort,
   createPortToken,
   defineAppModule,
+  providePort,
 } from "@open-managed-agents/app";
 import { workspaceContextPort } from "@open-managed-agents/app/capabilities";
+import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { agentStorePort } from "@open-managed-agents/app/modules/agents";
 import { deploymentStorePort } from "@open-managed-agents/app/modules/deployments";
 import { deploymentRunStorePort } from "@open-managed-agents/app/modules/deployment-runs";
@@ -32,9 +34,86 @@ import { sessionThreadStorePort } from "@open-managed-agents/app/modules/session
 import { sessionStorePort } from "@open-managed-agents/app/modules/sessions";
 import { vaultStorePort } from "@open-managed-agents/app/modules/vaults";
 import type { SqlClient } from "@open-managed-agents/sql-client";
-import { createCloudflarePlatform } from "../src/index";
+import {
+  createCloudflareManagedAgentsApp,
+  createCloudflarePlatform,
+} from "../src/index";
 
 describe("createCloudflarePlatform", () => {
+  it("preinstalls the core Managed Agents features", async () => {
+    const agents = {
+      insert: async (input: { agent: unknown }) => structuredClone(input.agent),
+      findCurrent: async () => null,
+      findVersion: async () => null,
+      replaceCurrent: async () => ({ type: "not_found" as const }),
+      archiveCurrent: async () => ({ type: "not_found" as const }),
+      listCurrent: async () => [],
+      listVersions: async () => [],
+    };
+    const platform = createCloudflarePlatform({
+      sql: {} as SqlClient,
+      stores: { agents: agents as never },
+    });
+
+    const result = await platform
+      .app({ workspaceId: "workspace_preset" })
+      .port(managedAgentsPortTokens.agents)
+      .createAgent({ name: "Preset Agent", model: "claude-opus-5" });
+
+    expect(result).toMatchObject({
+      type: "created",
+      agent: { name: "Preset Agent", model: { id: "claude-opus-5" } },
+    });
+  });
+
+  it("can disable a preinstalled feature", () => {
+    const platform = createCloudflarePlatform({
+      features: { agents: false },
+      sql: {} as SqlClient,
+    });
+
+    expect(() => platform
+      .app({ workspaceId: "workspace_without_agents" })
+      .port(managedAgentsPortTokens.agents)).toThrowError(
+        expect.objectContaining({ code: "missing_port" }),
+      );
+  });
+
+  it("replaces a preinstalled feature with a compatible module", () => {
+    const replacement = { implementation: "custom" };
+    const platform = createCloudflarePlatform({
+      sql: {} as SqlClient,
+      features: {
+        agents: providePort(
+          managedAgentsPortTokens.agents,
+          replacement as never,
+          { name: "custom:agents" },
+        ),
+      },
+    });
+
+    expect(platform
+      .app({ workspaceId: "workspace_custom_agents" })
+      .port(managedAgentsPortTokens.agents)).toBe(replacement);
+  });
+
+  it("creates fresh one-shot apps for request-resolved dependencies", () => {
+    const requestPort = createPortToken<{ request: string }>("test.one-shot-request");
+    const first = createCloudflareManagedAgentsApp({
+      workspaceId: "workspace_request",
+      sql: {} as SqlClient,
+      modules: [providePort(requestPort, { request: "first" })],
+    });
+    const second = createCloudflareManagedAgentsApp({
+      workspaceId: "workspace_request",
+      sql: {} as SqlClient,
+      modules: [providePort(requestPort, { request: "second" })],
+    });
+
+    expect(first.port(requestPort)).toEqual({ request: "first" });
+    expect(second.port(requestPort)).toEqual({ request: "second" });
+  });
+
   it("aggregates SQL implementations without exposing D1 as an app Port", () => {
     const sql = {} as SqlClient;
     const platform = createCloudflarePlatform({

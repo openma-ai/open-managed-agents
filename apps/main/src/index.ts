@@ -38,15 +38,11 @@ import {
   buildManagedSessionsApi,
 } from "@open-managed-agents/managed-agents-api";
 import {
-  ModelsApplicationService,
   SessionRuntimeProjectionApplicationService,
   type SessionEnvironmentSourcePort,
 } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
-import { agentsModule } from "@open-managed-agents/app/modules/agents";
-import { credentialsModule } from "@open-managed-agents/app/modules/credentials";
-import { deploymentRunsModule } from "@open-managed-agents/app/modules/deployment-runs";
 import {
   deploymentAgentSourcePort,
   deploymentEnvironmentSourcePort,
@@ -55,7 +51,6 @@ import {
   deploymentSchedulePlannerPort,
   deploymentSessionLauncherPort,
   deploymentVaultSourcePort,
-  deploymentsModule,
 } from "@open-managed-agents/app/modules/deployments";
 import {
   dreamCuratorPort,
@@ -63,44 +58,34 @@ import {
   dreamMemoryStoreSourcePort,
   dreamMemoryWorkspacePort,
   dreamSessionSourcePort,
-  dreamsModule,
 } from "@open-managed-agents/app/modules/dreams";
-import { environmentsModule } from "@open-managed-agents/app/modules/environments";
 import {
   environmentSessionWorkEnqueuerPort,
   environmentWorkAvailabilityWaiterPort,
   environmentWorkEnqueuerModule,
   environmentWorkEnvironmentSourcePort,
-  environmentWorkModule,
   environmentWorkSessionCredentialIssuerPort,
 } from "@open-managed-agents/app/modules/environment-work";
-import { filesModule } from "@open-managed-agents/app/modules/files";
-import { memoryStoresModule } from "@open-managed-agents/app/modules/memory-stores";
 import {
-  memoriesModule,
   memoryContentDescriptorPort,
   memoryStoreForMemorySourcePort,
   memoryVersionActorPort,
-  memoryVersionsModule,
 } from "@open-managed-agents/app/modules/memories";
+import { modelCatalogSourcePort } from "@open-managed-agents/app/modules/models";
 import {
   skillPackageCompilerPort,
-  skillsModule,
-  skillVersionsModule,
 } from "@open-managed-agents/app/modules/skills";
 import {
   tunnelCertificateAuthorityPort,
-  tunnelCertificatesModule,
   tunnelProvisionerPort,
   tunnelTokenManagerPort,
-  tunnelsModule,
 } from "@open-managed-agents/app/modules/tunnels";
 import {
   userProfileEnrollmentIssuerPort,
-  userProfilesModule,
 } from "@open-managed-agents/app/modules/user-profiles";
-import { vaultsModule } from "@open-managed-agents/app/modules/vaults";
-import { createCloudflarePlatform } from "@open-managed-agents/platform-cloudflare";
+import {
+  createCloudflareManagedAgentsApp,
+} from "@open-managed-agents/platform-cloudflare";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
 import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
@@ -333,58 +318,45 @@ const legacyAgentsRoutes = new Hono<{
   return invokePackage(c, app);
 });
 
-const managedAgentsPlatform = createCloudflarePlatform({
-  clock: { now: () => new Date() },
-  ids: {
-    next: (namespace) =>
-      `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
-  },
-  modules: () => [
-    agentsModule(),
-    environmentsModule(),
-    memoryStoresModule(),
-    providePort(userProfileEnrollmentIssuerPort, {
-      issue: async () => ({
-        type: "conflict" as const,
-        message: "User Profile enrollment is unavailable in self-hosted mode",
-      }),
-    }),
-    userProfilesModule(),
-  ],
-});
-
-const managedFilesPlatform = createCloudflarePlatform({
-  clock: { now: () => new Date() },
-  ids: {
-    next: (namespace) =>
-      `${namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
-  },
-  modules: () => [filesModule()],
-});
-
-const managedAgentsRoutes = buildManagedAgentRoutes((context) => {
+function managedCoreApplicationFor(context: { var: unknown }) {
   const request = context.var as {
     tenant_id: string;
     tenantDb: D1Database;
   };
-  return managedAgentsPlatform
-    .app({
-      workspaceId: request.tenant_id,
-      sql: new CfD1SqlClient(request.tenantDb),
-    })
+  return createCloudflareManagedAgentsApp({
+    workspaceId: request.tenant_id,
+    sql: new CfD1SqlClient(request.tenantDb),
+  }, {
+    features: {
+      preset: "none",
+      agents: true,
+      environments: true,
+      memoryStores: true,
+      userProfiles: true,
+    },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
+    modules: () => [
+      providePort(userProfileEnrollmentIssuerPort, {
+        issue: async () => ({
+          type: "conflict" as const,
+          message: "User Profile enrollment is unavailable in self-hosted mode",
+        }),
+      }),
+    ],
+  });
+}
+
+const managedAgentsRoutes = buildManagedAgentRoutes((context) => {
+  return managedCoreApplicationFor(context)
     .port(managedAgentsPortTokens.agents);
 });
 
 const managedEnvironmentsRoutes = buildManagedEnvironmentRoutes((context) => {
-  const request = context.var as {
-    tenant_id: string;
-    tenantDb: D1Database;
-  };
-  return managedAgentsPlatform
-    .app({
-      workspaceId: request.tenant_id,
-      sql: new CfD1SqlClient(request.tenantDb),
-    })
+  return managedCoreApplicationFor(context)
     .port(managedAgentsPortTokens.environments);
 });
 
@@ -398,23 +370,22 @@ const managedFilesRoutes = buildManagedFileRoutes((context) => {
   if (blobs === null) {
     throw new Error("FILES_BUCKET binding is required for managed Files");
   }
-  return managedFilesPlatform.app({
+  return createCloudflareManagedAgentsApp({
     workspaceId: request.tenant_id,
     sql: new CfD1SqlClient(request.tenantDb),
     fileContent: new BlobFileContentStore(blobs),
+  }, {
+    features: { preset: "none", files: true },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
   }).port(managedAgentsPortTokens.files);
 });
 
 const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) => {
-  const request = context.var as {
-    tenant_id: string;
-    tenantDb: D1Database;
-  };
-  return managedAgentsPlatform
-    .app({
-      workspaceId: request.tenant_id,
-      sql: new CfD1SqlClient(request.tenantDb),
-    })
+  return managedCoreApplicationFor(context)
     .port(managedAgentsPortTokens.memoryStores);
 });
 
@@ -435,7 +406,15 @@ const managedMemoryVersionsRoutes = buildManagedMemoryVersionRoutes((context) =>
 
 function managedMemoriesApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
-  const platform = createCloudflarePlatform({
+  return createCloudflareManagedAgentsApp({
+    workspaceId: ctx.var.tenant_id,
+    sql: client,
+  }, {
+    features: {
+      preset: "none",
+      memories: true,
+      memoryVersions: true,
+    },
     clock: { now: () => new Date() },
     ids: {
       next: (namespace) => `${
@@ -456,11 +435,8 @@ function managedMemoriesApplicationFor(ctx: AppCtx) {
         memoryVersionActorPort,
         managedMemoryActor(ctx.var.user_id),
       ),
-      memoriesModule(),
-      memoryVersionsModule(),
     ],
   });
-  return platform.app({ workspaceId: ctx.var.tenant_id, sql: client });
 }
 
 const managedSkillCompiler = new ZipSkillPackageCompiler();
@@ -474,7 +450,15 @@ function nextManagedSkillVersion(): string {
 }
 function managedSkillsApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
-  const platform = createCloudflarePlatform({
+  return createCloudflareManagedAgentsApp({
+    workspaceId: ctx.var.tenant_id,
+    sql: client,
+  }, {
+    features: {
+      preset: "none",
+      skills: true,
+      skillVersions: true,
+    },
     clock: { now: () => new Date() },
     ids: {
       next: (namespace) =>
@@ -484,11 +468,8 @@ function managedSkillsApplicationFor(ctx: AppCtx) {
     },
     modules: () => [
       providePort(skillPackageCompilerPort, managedSkillCompiler),
-      skillsModule(),
-      skillVersionsModule(),
     ],
   });
-  return platform.app({ workspaceId: ctx.var.tenant_id, sql: client });
 }
 const managedSkillsRoutes = buildManagedSkillRoutes((context) =>
   managedSkillsApplicationFor(context as unknown as AppCtx)
@@ -505,34 +486,25 @@ const legacyVaultsRoutes = new Hono<{ Bindings: Env; Variables: { tenant_id: str
   return invokePackage(c, app);
 });
 
-const managedVaultsPlatform = createCloudflarePlatform({
-  clock: { now: () => new Date() },
-  ids: {
-    next: (namespace) =>
-      `${namespace === "vault" ? "vlt" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
-  },
-  modules: () => [vaultsModule()],
-});
 const managedVaultsRoutes = buildManagedVaultRoutes((context) => {
   const request = context.var as {
     tenant_id: string;
     tenantDb: D1Database;
   };
-  return managedVaultsPlatform.app({
+  return createCloudflareManagedAgentsApp({
     workspaceId: request.tenant_id,
     sql: new CfD1SqlClient(request.tenantDb),
+  }, {
+    features: { preset: "none", vaults: true },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "vault" ? "vlt" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
   }).port(managedAgentsPortTokens.vaults);
 });
 
 const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
-const managedCredentialsPlatform = createCloudflarePlatform({
-  clock: { now: () => new Date() },
-  ids: {
-    next: (namespace) =>
-      `${namespace === "credential" ? "vcrd" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
-  },
-  modules: () => [credentialsModule()],
-});
 const managedCredentialsRoutes = buildManagedCredentialRoutes((context) => {
   const request = context.var as {
     tenant_id: string;
@@ -562,23 +534,24 @@ const managedCredentialsRoutes = buildManagedCredentialRoutes((context) => {
       return { plaintext: await credentialCrypto.decrypt(ciphertext) };
     },
   };
-  return managedCredentialsPlatform.app({
+  return createCloudflareManagedAgentsApp({
     workspaceId: request.tenant_id,
     sql: new CfD1SqlClient(request.tenantDb),
     credentialCipher: cipher,
     credentialValidation: managedCredentialValidation,
+  }, {
+    features: { preset: "none", credentials: true },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "credential" ? "vcrd" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
   }).port(managedAgentsPortTokens.credentials);
 });
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
-  const request = context.var as {
-    tenant_id: string;
-    tenantDb: D1Database;
-  };
-  return managedAgentsPlatform.app({
-    workspaceId: request.tenant_id,
-    sql: new CfD1SqlClient(request.tenantDb),
-  }).port(managedAgentsPortTokens.userProfiles);
+  return managedCoreApplicationFor(context)
+    .port(managedAgentsPortTokens.userProfiles);
 });
 
 const apiKeysRoutes = new Hono<{
@@ -766,13 +739,6 @@ const managedSessionsRoutes = new Hono<{
 });
 
 const managedDeploymentSchedulePlanner = new CronDeploymentSchedulePlanner();
-const managedDeploymentsPlatform = createCloudflarePlatform({
-  clock: { now: () => new Date() },
-  ids: {
-    next: (namespace) =>
-      `${namespace === "deployment" ? "depl" : namespace === "deployment-run" ? "drun" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
-  },
-});
 const managedEnvironmentWorkAvailability =
   new TimerEnvironmentWorkAvailabilityWaiter();
 
@@ -834,7 +800,12 @@ function managedEnvironmentWorkCipherFor(
 
 function managedEnvironmentWorkApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
-  const platform = createCloudflarePlatform({
+  return createCloudflareManagedAgentsApp({
+    workspaceId: ctx.var.tenant_id,
+    sql: client,
+    environmentWorkCipher: managedEnvironmentWorkCipherFor(ctx),
+  }, {
+    features: { preset: "none", environmentWork: true },
     clock: { now: () => new Date() },
     ids: {
       next: (namespace) =>
@@ -856,14 +827,8 @@ function managedEnvironmentWorkApplicationFor(ctx: AppCtx) {
           apiBaseUrl: new URL(ctx.req.url).origin,
         }),
       ),
-      environmentWorkModule(),
       environmentWorkEnqueuerModule(),
     ],
-  });
-  return platform.app({
-    workspaceId: ctx.var.tenant_id,
-    sql: client,
-    environmentWorkCipher: managedEnvironmentWorkCipherFor(ctx),
   });
 }
 
@@ -871,7 +836,7 @@ function managedDeploymentsApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
   const workspaceId = ctx.var.tenant_id;
   const sessions = managedSessionsCompositionFor(ctx).portsFor(workspaceId);
-  return managedDeploymentsPlatform.app({
+  return createCloudflareManagedAgentsApp({
     workspaceId,
     sql: client,
     deploymentCipher: managedDeploymentCipherFor(ctx),
@@ -886,9 +851,18 @@ function managedDeploymentsApplicationFor(ctx: AppCtx) {
       providePort(deploymentSchedulePlannerPort, managedDeploymentSchedulePlanner),
       providePort(deploymentSessionLauncherPort, sessions.deploymentSessionLauncher),
       providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(client)),
-      deploymentRunsModule(),
-      deploymentsModule(),
     ],
+  }, {
+    features: {
+      preset: "none",
+      deploymentRuns: true,
+      deployments: true,
+    },
+    clock: { now: () => new Date() },
+    ids: {
+      next: (namespace) =>
+        `${namespace === "deployment" ? "depl" : namespace === "deployment-run" ? "drun" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
+    },
   });
 }
 
@@ -942,7 +916,16 @@ function managedDreamsApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
   const workspaceId = ctx.var.tenant_id;
   const memoryStoreSource = new SqlMemoryStoreSource(client);
-  const platform = createCloudflarePlatform({
+  return createCloudflareManagedAgentsApp({
+    workspaceId,
+    sql: client,
+  }, {
+    features: {
+      preset: "none",
+      dreams: true,
+      memories: true,
+      memoryStores: true,
+    },
     clock: { now: () => new Date() },
     ids: {
       next: (namespace) => `${
@@ -983,16 +966,12 @@ function managedDreamsApplicationFor(ctx: AppCtx) {
           )],
         }),
       }),
-      memoryStoresModule(),
-      memoriesModule(),
       dreamExecutionModule(),
       inProcessDreamExecutionSchedulerModule({
         defer: (task) => ctx.executionCtx.waitUntil(task),
       }),
-      dreamsModule(),
     ],
   });
-  return platform.app({ workspaceId, sql: client });
 }
 
 const managedDreamsRoutes = new Hono<{
@@ -1007,10 +986,16 @@ const managedDreamsRoutes = new Hono<{
 
 const managedModelsRoutes = buildManagedModelRoutes((context) => {
   const request = context.var as AppCtx["var"];
-  return new ModelsApplicationService({
+  return createCloudflareManagedAgentsApp({
     workspaceId: request.tenant_id,
-    catalog: new ModelCardCatalogSource(request.services.modelCards),
-  });
+    sql: new CfD1SqlClient(request.tenantDb),
+  }, {
+    features: { preset: "none", models: true },
+    modules: () => [providePort(
+      modelCatalogSourcePort,
+      new ModelCardCatalogSource(request.services.modelCards),
+    )],
+  }).port(managedAgentsPortTokens.models);
 });
 
 function managedTunnelsApplicationFor(ctx: AppCtx) {
@@ -1027,7 +1012,14 @@ function managedTunnelsApplicationFor(ctx: AppCtx) {
         `ttok_${crypto.randomUUID().replaceAll("-", "")}`,
     });
   const certificateAuthority = new WebCryptoTunnelCertificateAuthority();
-  const platform = createCloudflarePlatform({
+  return createCloudflareManagedAgentsApp({
+    workspaceId: ctx.var.tenant_id,
+  }, {
+    features: {
+      preset: "none",
+      tunnelCertificates: true,
+      tunnels: true,
+    },
     sql: new CfD1SqlClient(ctx.var.tenantDb),
     clock: { now: () => new Date() },
     ids: {
@@ -1038,11 +1030,8 @@ function managedTunnelsApplicationFor(ctx: AppCtx) {
       providePort(tunnelProvisionerPort, provisioner),
       providePort(tunnelTokenManagerPort, tokens),
       providePort(tunnelCertificateAuthorityPort, certificateAuthority),
-      tunnelsModule(),
-      tunnelCertificatesModule(),
     ],
   });
-  return platform.app({ workspaceId: ctx.var.tenant_id });
 }
 
 const managedTunnelsRoutes = new Hono<{

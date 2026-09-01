@@ -7,6 +7,10 @@ import {
   type AppModule,
 } from "@open-managed-agents/app";
 import {
+  managedAgentsFeatureModules,
+  type ManagedAgentsFeatures,
+} from "@open-managed-agents/app/features";
+import {
   clockPort,
   httpClientPort,
   idGeneratorPort,
@@ -104,6 +108,8 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 
 export interface CreateCloudflarePlatformOptions {
+  /** Official application modules preinstalled for every workspace app. */
+  features?: ManagedAgentsFeatures | false;
   /** Usually CfD1SqlClient; kept as SqlClient so the app graph never sees D1. */
   sql?: WorkspaceValue<SqlClient>;
   credentialCipher?: WorkspaceValue<CredentialDocumentCipher>;
@@ -290,6 +296,7 @@ export function createCloudflarePlatform(
           providePort(vaultStorePort, stores.vaults),
           ...(scope.modules ?? []),
           ...(options.modules?.(scope) ?? []),
+          ...managedAgentsFeatureModules(options.features),
         ],
       });
     },
@@ -301,6 +308,17 @@ export function createCloudflarePlatform(
     stop: apps.stop.bind(apps),
     stopAll: apps.stopAll.bind(apps),
   };
+}
+
+/**
+ * Creates one uncached app graph. Use this at request boundaries when Ports
+ * capture request-only capabilities such as waitUntil or an authenticated actor.
+ */
+export function createCloudflareManagedAgentsApp(
+  scope: CloudflareWorkspaceScope,
+  options: CreateCloudflarePlatformOptions = {},
+): App {
+  return createCloudflarePlatform(options).app(scope);
 }
 
 const unavailableCredentialCipher: CredentialDocumentCipher = {
