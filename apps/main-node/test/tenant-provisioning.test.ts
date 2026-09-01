@@ -1,25 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ensureTenantSqlite } from "@open-managed-agents/auth-config";
+import { applyTenantSchema } from "@open-managed-agents/schema";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 
 describe("main-node tenant provisioning", () => {
   it("provisions a workspace against the canonical camelCase tenant schema", async () => {
     const sql = await createBetterSqlite3SqlClient(":memory:");
-    await sql.exec(`
-      CREATE TABLE tenant (
-        id TEXT PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL,
-        createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
-      );
-      CREATE TABLE membership (
-        user_id TEXT NOT NULL,
-        tenant_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (user_id, tenant_id)
-      );
-    `);
+    await applyTenantSchema(sql);
 
     const tenantId = await ensureTenantSqlite(
       sql,
