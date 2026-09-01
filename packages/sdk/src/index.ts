@@ -1,109 +1,104 @@
-import { Client, type ClientOptions } from "./client.js";
-import { AgentsResource } from "./resources/agents.js";
-import { EnvironmentsResource } from "./resources/environments.js";
-import { SessionsResource } from "./resources/sessions.js";
-import { MemoryStoresResource } from "./resources/memory-stores.js";
-import { DreamsResource } from "./resources/dreams.js";
+import Anthropic, {
+  type ClientOptions as AnthropicClientOptions,
+} from "@anthropic-ai/sdk";
+import { OmaResources } from "./oma.js";
 
-export { OpenMAError } from "./errors.js";
-export { parseSSE } from "./sse.js";
-export type { ClientOptions } from "./client.js";
-export type * from "./types.js";
-export type {
-  CreateAgentInput,
-  UpdateAgentInput,
-  ListAgentsOptions,
-} from "./resources/agents.js";
-export type {
-  CreateSessionInput,
-  ListSessionsOptions,
-  ListEventsOptions,
-  ChatOptions,
-  ChatCompleteOptions,
-  ChatCompleteResult,
-  TailOptions,
-} from "./resources/sessions.js";
-export type { CreateEnvironmentInput } from "./resources/environments.js";
-export type {
-  MemoryStore,
-  Memory,
-  MemoryListItem,
-  MemoryVersion,
-  MemoryVersionListItem,
-  WritePrecondition,
-  CreateMemoryStoreInput,
-  ListMemoryStoresOptions,
-  CreateMemoryInput,
-  ListMemoriesOptions,
-  UpdateMemoryInput,
-  ListMemoryVersionsOptions,
-} from "./resources/memory-stores.js";
-export type {
-  CreateDreamInput,
-  Dream,
-  DreamError,
-  DreamInput,
-  DreamModel,
-  DreamOutput,
-  DreamStatus,
-  DreamUsage,
-  ListDreamsOptions,
-  ListDreamsResponse,
-} from "./resources/dreams.js";
+export {
+  OmaModelsResource,
+  OmaResources,
+  type OmaModelListParams,
+  type OmaModelListResponse,
+  type OmaModelProvider,
+  type OmaProviderModel,
+  type OmaHTTPMethod,
+  type OmaPath,
+  type OmaRequestParams,
+} from "./oma.js";
+export { Anthropic };
 
-/**
- * Official TypeScript SDK for openma — typed REST + SSE streaming.
- *
- * ```ts
- * import { OpenMA } from "@openma/sdk";
- *
- * const oma = new OpenMA({ apiKey: process.env.OMA_API_KEY! });
- *
- * // Streaming chat — async iterator over typed events
- * for await (const ev of oma.sessions.chat(sessionId, "Hello")) {
- *   if (ev.type === "agent.message_chunk") process.stdout.write(ev.delta);
- * }
- *
- * // Or the high-level helper that returns assembled text + tool history
- * const reply = await oma.sessions.chatComplete(sessionId, "Hello");
- * console.log(reply.text);
- *
- * // Long-lived tail — never closes; replays history on connect
- * for await (const ev of oma.sessions.tail(sessionId)) { ... }
- *
- * // Memory store CRUD (Anthropic Managed Agents Memory contract)
- * const store = await oma.memoryStores.create({ name: "User Preferences" });
- * await oma.memoryStores.memories.create(store.id, {
- *   path: "/preferences/formatting.md",
- *   content: "Always use tabs.",
- * });
- *
- * // Dreams (memory curation)
- * const dream = await oma.dreams.create({
- *   inputs: [{ type: "memory_store", memory_store_id: store.id }],
- *   model: "claude-sonnet-4-6",
- * });
- * ```
- *
- * Runs anywhere `fetch` exists: Node ≥ 20, Bun, Deno, browsers,
- * Cloudflare Workers. Auth is `x-api-key` (or cookie `bearer` when
- * embedded in the Console). Errors throw `OpenMAError` with
- * `{ status, body, raw }` for switching on.
- */
+export type { AnthropicClientOptions };
+export interface OpenMAOptions extends AnthropicClientOptions {
+  /** @deprecated Use the official SDK spelling, `baseURL`. */
+  baseUrl?: string;
+  /** @deprecated Use the official SDK spelling, `authToken`. */
+  bearer?: string;
+  /** Active OpenMA workspace. Sent as `x-active-tenant`. */
+  activeTenantId?: string;
+  /** Optional legacy User-Agent override. */
+  userAgent?: string;
+}
+
+/** @deprecated Use `OpenMAOptions`. */
+export type ClientOptions = OpenMAOptions;
+
+type HeaderValue = string | readonly string[] | null | undefined;
+
+function mergeDefaultHeaders(
+  defaultHeaders: AnthropicClientOptions["defaultHeaders"],
+  additions: Record<string, string>,
+): Record<string, HeaderValue> {
+  const merged: Record<string, HeaderValue> = {};
+  const set = (name: string, value: HeaderValue) => {
+    merged[name.toLowerCase()] = value;
+  };
+
+  for (const [name, value] of Object.entries(additions)) set(name, value);
+
+  if (defaultHeaders instanceof Headers) {
+    defaultHeaders.forEach((value, name) => set(name, value));
+    return merged;
+  }
+
+  if (Array.isArray(defaultHeaders)) {
+    for (const entry of defaultHeaders) {
+      if (entry.length >= 2) set(String(entry[0]), entry[1] as HeaderValue);
+    }
+    return merged;
+  }
+
+  if (defaultHeaders && typeof defaultHeaders === "object") {
+    const nullable = defaultHeaders as {
+      values?: unknown;
+      nulls?: unknown;
+    };
+    if (nullable.values instanceof Headers && nullable.nulls instanceof Set) {
+      nullable.values.forEach((value, name) => set(name, value));
+      for (const name of nullable.nulls) set(String(name), null);
+      return merged;
+    }
+    for (const [name, value] of Object.entries(defaultHeaders)) {
+      set(name, value as HeaderValue);
+    }
+  }
+
+  return merged;
+}
+
 export class OpenMA {
-  readonly client: Client;
-  readonly agents: AgentsResource;
-  readonly sessions: SessionsResource;
-  readonly environments: EnvironmentsResource;
-  readonly memoryStores: MemoryStoresResource;
-  readonly dreams: DreamsResource;
+  readonly anthropic: Anthropic;
+  readonly beta: Anthropic["beta"];
+  readonly oma: OmaResources;
 
-  constructor(opts: ClientOptions) {
-    this.client = new Client(opts);
-    this.agents = new AgentsResource(this.client);
-    this.sessions = new SessionsResource(this.client);
-    this.environments = new EnvironmentsResource(this.client);
-    this.memoryStores = new MemoryStoresResource(this.client);
-    this.dreams = new DreamsResource(this.client);
+  constructor(options: OpenMAOptions = {}) {
+    const {
+      activeTenantId,
+      baseUrl,
+      bearer,
+      defaultHeaders,
+      userAgent,
+      ...anthropicOptions
+    } = options;
+
+    this.anthropic = new Anthropic({
+      ...anthropicOptions,
+      baseURL: options.baseURL ?? baseUrl ?? "https://openma.dev",
+      authToken: options.authToken ?? bearer,
+      defaultHeaders: mergeDefaultHeaders(defaultHeaders, {
+        ...(activeTenantId ? { "x-active-tenant": activeTenantId } : {}),
+        ...(userAgent ? { "user-agent": userAgent } : {}),
+      }),
+    });
+    this.beta = this.anthropic.beta;
+    this.oma = new OmaResources(this.anthropic);
   }
 }

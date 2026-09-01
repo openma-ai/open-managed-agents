@@ -1,176 +1,91 @@
 # @openma/sdk
 
-> ## ⚠️ Deprecated — use `@anthropic-ai/sdk` instead
->
-> This package is no longer the recommended way to call the openma platform.
-> The openma API is **wire-compatible with Anthropic's Managed Agents API**, so
-> you can use the official Anthropic SDK directly:
->
-> ```bash
-> npm i @anthropic-ai/sdk
-> ```
->
-> ```ts
-> import Anthropic from "@anthropic-ai/sdk";
->
-> const client = new Anthropic({
->   baseURL: "https://openma.dev",
->   apiKey: process.env.OMA_API_KEY!,
-> });
->
-> const env = await client.beta.environments.create({
->   name: "my-env",
->   config: {
->     type: "cloud",
->     networking: { type: "unrestricted" },
->     packages: { type: "packages" },
->   },
-> });
-> ```
->
-> The same SDK works against Anthropic's hosted API and any other compatible
-> server — moving between providers is a `baseURL` change. OMA-specific
-> endpoints (tenants, OAuth, evals, cost reports, …) live under `/v1/oma/*` and
-> can be invoked via `client._client.post('/v1/oma/...', ...)`.
->
-> No new versions of `@openma/sdk` will be published. The source remains in the
-> repo for reference. Existing users continue to work; please migrate at your
-> convenience.
-
----
-
-Official TypeScript SDK for the [openma](https://openma.dev) managed agents platform — typed REST + SSE streaming, runs anywhere `fetch` exists (Node ≥ 20, Bun, Deno, browsers, Cloudflare Workers).
-
-## Install
+`@openma/sdk` composes the official Anthropic TypeScript SDK with OpenMA-only
+extensions. It does not reimplement Managed Agents resources, pagination,
+streaming, errors, or request behavior.
 
 ```bash
-npm i @openma/sdk
-# or
 pnpm add @openma/sdk
-# or
-bun add @openma/sdk
 ```
-
-## Quick start
 
 ```ts
 import { OpenMA } from "@openma/sdk";
 
-const oma = new OpenMA({ apiKey: process.env.OMA_API_KEY! });
-
-// Streaming chat — async iterator over typed events.
-for await (const ev of oma.sessions.chat(sessionId, "Hello")) {
-  if (ev.type === "agent.message_chunk") process.stdout.write(ev.delta);
-}
-```
-
-## Why streaming is first-class
-
-Three kinds of stream — text, thinking, tool input — flow over the same SSE channel. Each carries a correlation id (`message_id`, `thinking_id`, `tool_use_id`) that matches the eventually-committed canonical event. The discriminated-union narrowing handles the rest:
-
-```ts
-for await (const ev of oma.sessions.chat(sessionId, "Use bash to print uptime")) {
-  switch (ev.type) {
-    case "agent.message_chunk":
-      // Live text delta — incremental render.
-      process.stdout.write(ev.delta);
-      break;
-    case "agent.message":
-      // Canonical message — same message_id as the chunks above. Drop
-      // your in-flight buffer; this content is the source of truth.
-      break;
-    case "agent.thinking_chunk":
-      // Live extended-thinking delta.
-      process.stderr.write(`💭 ${ev.delta}`);
-      break;
-    case "agent.tool_use":
-      // Tool call committed — `id` matches any prior tool_use_input_chunk events.
-      console.log(`→ ${ev.name}`, ev.input);
-      break;
-    case "agent.tool_result":
-      console.log(`← ${ev.content}`);
-      break;
-    case "session.warning":
-      // The recovery scan reconciled an interrupted stream after a
-      // runtime restart — surface to the user as "stream dropped".
-      console.warn(`⚠ ${ev.source}: ${ev.message}`);
-      break;
-    case "session.status_idle":
-      return; // turn done; the server closes the stream too
-  }
-}
-```
-
-## High-level chatComplete
-
-When you don't need token-by-token rendering, `chatComplete` accumulates the stream into a structured summary:
-
-```ts
-const reply = await oma.sessions.chatComplete(sessionId, "Hello", {
-  onText: (delta) => process.stdout.write(delta), // optional incremental hook
+const client = new OpenMA({
+  apiKey: process.env.OMA_API_KEY,
 });
 
-console.log(reply.text);           // assembled assistant text
-console.log(reply.thinking);       // string[] — one per reasoning block
-console.log(reply.toolCalls);      // {id, name, input}[] for every tool call
-console.log(reply.toolResults);    // results paired by tool_use_id
+// The exact @anthropic-ai/sdk Managed Agents resource tree.
+const agents = await client.beta.agents.list({ limit: 20 });
+
+// OpenMA product extensions stay in their own namespace.
+const available = await client.oma.models.list({
+  provider: "ant",
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+});
 ```
 
-## Long-lived tail
-
-For monitoring / dashboards / agent-to-agent observability:
+## Object model
 
 ```ts
-// Replays history on connect, then streams every future event.
-// Never closes; pass an AbortSignal or break out of the loop to stop.
-for await (const ev of oma.sessions.tail(sessionId, { signal: ac.signal })) {
-  console.log(ev.type, ev);
-}
+client.anthropic // the real @anthropic-ai/sdk client
+client.beta      // the same object as client.anthropic.beta
+client.oma       // only /v1/oma/* extensions
 ```
 
-## Resources covered
+`client.beta` is an identity alias, not a wrapper. Official SDK types, cursor
+pages, SSE streams, retries, request options, and error classes therefore pass
+through unchanged.
 
-| Resource | Methods |
+The provider-discovery endpoint intentionally remains separate from the
+official models endpoint:
+
+```ts
+await client.beta.models.list();
+await client.oma.models.list({ provider: "oai", apiKey: "sk-..." });
+```
+
+Extensions without a typed resource yet can use the guarded escape hatch. It
+accepts only `/v1/oma/*` paths and still runs through the official transport:
+
+```ts
+const stats = await client.oma.request<{ agents: number }>({
+  method: "get",
+  path: "/v1/oma/stats",
+});
+```
+
+## Configuration
+
+All official `@anthropic-ai/sdk` client options are accepted. OpenMA defaults
+`baseURL` to `https://openma.dev` and adds one optional workspace header:
+
+```ts
+new OpenMA({
+  apiKey: "oma_...",
+  baseURL: "https://openma.example",
+  activeTenantId: "tn_...",
+});
+```
+
+`baseUrl` and `bearer` remain deprecated migration aliases for `baseURL` and
+`authToken`. Browser callers must explicitly use the official
+`dangerouslyAllowBrowser` option and should only do so with an appropriate
+cookie/token security model.
+
+## Migrating from 0.x
+
+| 0.x | 1.x |
 |---|---|
-| `oma.agents` | `list`, `get`, `create`, `update`, `delete` |
-| `oma.sessions` | `list`, `get`, `create`, `chat`, `chatComplete`, `tail`, `events`, `message`, `interrupt`, `archive`, `delete` |
-| `oma.environments` | `list`, `get`, `create`, `delete` |
+| `client.agents` | `client.beta.agents` |
+| `client.sessions` | `client.beta.sessions` |
+| `client.environments` | `client.beta.environments` |
+| `client.memoryStores` | `client.beta.memoryStores` |
+| `client.dreams` | `client.beta.dreams` |
+| `baseUrl` | `baseURL` |
+| `bearer` | `authToken` |
+| `OpenMAError` | official `APIError` subclasses from `@anthropic-ai/sdk` |
 
-More resources land per release — file an issue if something you need is missing.
-
-## Errors
-
-Every non-2xx throws an `OpenMAError`:
-
-```ts
-import { OpenMAError } from "@openma/sdk";
-
-try {
-  await oma.sessions.get("sess-bogus");
-} catch (err) {
-  if (err instanceof OpenMAError) {
-    console.error(err.status, err.body);
-    if (err.status === 404) { /* handle missing */ }
-  }
-}
-```
-
-## Auth
-
-```ts
-// API key — server-to-server, CLI scripts. Sent as `x-api-key`.
-new OpenMA({ apiKey: "oma_..." });
-
-// Cookie auth — for embedding in the Console UI. Sent as `Authorization: Bearer ...`.
-new OpenMA({ bearer: cookieToken });
-
-// Self-host
-new OpenMA({ apiKey: "oma_...", baseUrl: "https://your.openma.example" });
-
-// Multi-tenant (cookie-auth users in workspaces with multiple memberships)
-new OpenMA({ bearer: cookieToken, activeTenantId: "tn_..." });
-```
-
-## License
-
-MIT — see [LICENSE](https://github.com/openma-ai/open-managed-agents/blob/main/LICENSE).
+The 1.x methods use the official SDK parameter and return shapes. There are no
+top-level Managed resource aliases because keeping the old names with different
+method semantics would create silent migration bugs.
