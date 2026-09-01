@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -56,21 +57,21 @@ export function IntegrationsFeishuList() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 lg:px-10 py-10 lg:py-12">
+    <div className="console-integration-route">
+      <div className="console-integration-page">
         <header className="flex items-start justify-between gap-6 mb-8">
           <div className="min-w-0">
-            <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+            <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
               Feishu integrations
             </h1>
-            <p className="mt-1.5 text-[14px] text-fg-muted max-w-xl">
+            <p className="mt-1.5 text-base text-fg-muted max-w-xl">
               Connect your agents to Feishu — they can join chats, reply to messages,
               and react across your tenant.
             </p>
           </div>
           <Link
             to="/integrations/feishu/publish"
-            className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
             Publish agent
@@ -86,7 +87,7 @@ export function IntegrationsFeishuList() {
 
         {pending.length > 0 && (
           <section className="mb-6">
-            <h2 className="text-[12px] font-medium text-fg-muted uppercase tracking-wider mb-2">
+            <h2 className="text-sm font-medium text-fg-muted uppercase tracking-wider mb-2">
               In-progress installs
             </h2>
             <ul className="space-y-2">
@@ -107,7 +108,7 @@ export function IntegrationsFeishuList() {
             action={
               <Link
                 to="/integrations/feishu/publish"
-                className="text-brand hover:underline text-[13px]"
+                className="text-brand hover:underline text-sm"
               >
                 Connect your first tenant →
               </Link>
@@ -152,31 +153,31 @@ function PendingRow({
       <Avatar src={pub.persona.avatarUrl} name={pub.persona.name} size="sm" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="font-medium text-fg text-[14px] truncate">
+          <span className="font-medium text-fg text-base truncate">
             {pub.persona.name}
           </span>
-          <span className="text-[11px] text-warning">
+          <span className="text-xs text-warning">
             ● Step {stepNum} of 2 ({statusLabel})
           </span>
         </div>
-        <p className="text-[12px] text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Started {new Date(pub.created_at).toLocaleString()}
         </p>
       </div>
       <Link
         to={`/integrations/feishu/publish?pub=${encodeURIComponent(pub.id)}`}
-        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
       >
         Resume install ↗
       </Link>
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={onDiscard}
-        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium text-fg-muted hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium text-fg-muted hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         title="Discard this in-progress install"
       >
         Discard ✕
-      </button>
+      </Button>
     </li>
   );
 }
@@ -195,14 +196,14 @@ function TenantCard({
       <div className="flex items-center justify-between gap-4 px-5 py-4">
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <h2 className="text-[15px] font-medium text-fg truncate">
+            <h2 className="text-base font-medium text-fg truncate">
               {installation.tenant_name}
             </h2>
-            <span className="text-[11px] text-fg-subtle font-mono uppercase tracking-wider">
+            <span className="text-xs text-fg-subtle font-mono uppercase tracking-wider">
               {tenantLabel}
             </span>
           </div>
-          <p className="mt-0.5 text-[12px] text-fg-muted">
+          <p className="mt-0.5 text-sm text-fg-muted">
             Dedicated bot · full identity ·{" "}
             <span className="text-fg">
               {publications.length} agent{publications.length === 1 ? "" : "s"}
@@ -211,7 +212,7 @@ function TenantCard({
         </div>
         <Link
           to={`/integrations/feishu/installations/${installation.id}`}
-          className="shrink-0 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="shrink-0 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Manage →
         </Link>

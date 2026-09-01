@@ -44,6 +44,7 @@ import type {
 import {
   createManagedAgentsRuntime,
   type ManagedAgentsRuntime,
+  type ManagedAgentsRuntimeScheduler,
 } from "@open-managed-agents/runtime";
 import {
   encodeSessionHostEvent,
@@ -119,6 +120,11 @@ export interface SessionManagerRuntimeDependencies {
   acpRuntime: AcpRuntime;
   prepareSession(input: SessionManagerPreparationInput): Promise<SessionOptions>;
   releaseSession?(sessionId: string): Promise<void>;
+  /** Test/platform clock for bounded cancel and drain waits. */
+  runtimeScheduler?: ManagedAgentsRuntimeScheduler;
+  /** Grace before an ACP child that ignores session/cancel is disposed.
+   * Production defaults to 2s; platforms may tune it explicitly. */
+  cancelGraceMs?: number;
 }
 
 interface BundleFile { path: string; content: string }
@@ -176,6 +182,8 @@ export class SessionManager {
       this.#runtimeDependencies = runtimeDependencies;
       this.#managedRuntime = createManagedAgentsRuntime({
         acpRuntime: runtimeDependencies.acpRuntime,
+        cancelGraceMs: runtimeDependencies.cancelGraceMs ?? 2_000,
+        scheduler: runtimeDependencies.runtimeScheduler,
         sessionPreparation: {
           prepare: (command) => {
             const scope = this.#runtimeScopes.get(command.sessionId);

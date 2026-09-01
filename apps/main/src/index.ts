@@ -120,7 +120,10 @@ import {
   createCfShardPoolService,
   createCfTenantShardDirectoryService,
 } from "@open-managed-agents/tenant-dbs-store";
-import { LOCAL_RUNTIME_ENV_ID } from "@open-managed-agents/shared";
+import {
+  LOCAL_RUNTIME_ENV_ID,
+  listAuthProviders,
+} from "@open-managed-agents/shared";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { authMiddleware } from "./auth";
 import { rateLimitMiddleware, authRateLimitMiddleware } from "./rate-limit";
@@ -241,10 +244,13 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 // Auth info endpoint (public — tells the frontend which providers are enabled
 // and surfaces the Turnstile site key so the Login page can render the widget).
 app.get("/auth-info", (c) => {
-  const providers: string[] = ["email", "email-otp"];
-  if (c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET) {
-    providers.push("google");
-  }
+  const providers = listAuthProviders({
+    emailOtp: true,
+    googleClientId: c.env.GOOGLE_CLIENT_ID,
+    googleClientSecret: c.env.GOOGLE_CLIENT_SECRET,
+    githubClientId: c.env.GITHUB_CLIENT_ID,
+    githubClientSecret: c.env.GITHUB_CLIENT_SECRET,
+  });
   return c.json({
     providers,
     turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null,

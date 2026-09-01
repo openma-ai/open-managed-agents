@@ -46,6 +46,321 @@ describe("ManagedAgentsSessionHost", () => {
     expect(kernel.sessionCount()).toBe(1);
   });
 
+  it("restarts a dead ACP child from its latest native session instead of re-announcing it", async () => {
+    const starts: Array<{ resumeAcpSessionId?: string }> = [];
+    const events: unknown[] = [];
+    let firstChildAlive = true;
+    const host = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          starts.push(options);
+          const sequence = starts.length;
+          return acpSessionFixture({
+            acpSessionId: `acp-recovery-${sequence}`,
+            options,
+            isAlive: () => sequence !== 1 || firstChildAlive,
+          });
+        },
+      },
+      emit: (event: unknown) => events.push(event),
+    });
+    const options = { agent: { command: "recoverable-acp" } };
+    await host.start({ sessionId: "session-recovery", options });
+    events.length = 0;
+
+    firstChildAlive = false;
+    expect(host.announce("session-recovery")).toBe(false);
+    await host.start({ sessionId: "session-recovery", options });
+
+    expect(starts).toEqual([
+      { agent: { command: "recoverable-acp" } },
+      {
+        agent: { command: "recoverable-acp" },
+        resumeAcpSessionId: "acp-recovery-1",
+      },
+    ]);
+    expect(events).toEqual([{
+      type: "session.ready",
+      sessionId: "session-recovery",
+      acpSessionId: "acp-recovery-2",
+    }]);
+  });
+
+  it("escalates an ignored cancel by disposing the stuck ACP session after the grace period", async () => {
+    const sleeps: number[] = [];
+    let releasePrompt: (() => void) | undefined;
+    let disposeCount = 0;
+    const host = new ManagedAgentsSessionHost({
+      runtime: {
+        async start() {
+          return acpSessionFixture({
+            acpSessionId: "acp-stuck-cancel",
+            async *prompt() {
+              await new Promise<void>((resolve) => {
+                releasePrompt = resolve;
+              });
+            },
+            async dispose() {
+              disposeCount += 1;
+              releasePrompt?.();
+            },
+          });
+        },
+      },
+      emit() {},
+      scheduler: {
+        now: () => 0,
+        async sleep(ms) {
+          sleeps.push(ms);
+        },
+      },
+      cancelGraceMs: 75,
+    });
+    await host.start({
+      sessionId: "session-stuck-cancel",
+      options: { agent: { command: "stuck-acp" } },
+    });
+    const prompt = host.prompt({
+      sessionId: "session-stuck-cancel",
+      turnId: "turn-stuck-cancel",
+      text: "never return",
+    });
+    await Promise.resolve();
+
+    await host.cancel("session-stuck-cancel", "turn-stuck-cancel");
+    await prompt;
+
+    expect(sleeps).toEqual([75]);
+    expect(disposeCount).toBe(1);
+    expect(host.has("session-stuck-cancel")).toBe(false);
+  });
+
+  it("recovers the latest ACP session from a durable checkpoint after the host process restarts", async () => {
+    type Checkpoint = {
+      sessionId: string;
+      generation: number;
+      ownerId: string;
+      acpSessionId: string;
+      phase: "ready" | "recovering";
+      updatedAt: number;
+    };
+    let saved: Checkpoint | null = null;
+    const checkpointStore = {
+      async load() { return saved; },
+      async compareAndSet(input: {
+        expectedGeneration: number | null;
+        checkpoint: Checkpoint;
+      }) {
+        if ((saved?.generation ?? null) !== input.expectedGeneration) return false;
+        saved = structuredClone(input.checkpoint);
+        return true;
+      },
+      async delete() { saved = null; },
+    };
+    const firstHost = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          return acpSessionFixture({ acpSessionId: "acp-durable-1", options });
+        },
+      },
+      emit() {},
+      checkpointStore,
+      hostInstanceId: "host-instance-1",
+      scheduler: { now: () => 1_000, async sleep() {} },
+    });
+    await firstHost.start({
+      sessionId: "session-durable",
+      options: { agent: { command: "durable-acp" } },
+    });
+
+    const secondStarts: unknown[] = [];
+    const secondHost = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          secondStarts.push(options);
+          return acpSessionFixture({ acpSessionId: "acp-durable-2", options });
+        },
+      },
+      emit() {},
+      checkpointStore,
+      hostInstanceId: "host-instance-2",
+      scheduler: { now: () => 2_000, async sleep() {} },
+    });
+    await secondHost.start({
+      sessionId: "session-durable",
+      options: { agent: { command: "durable-acp" } },
+    });
+
+    expect(secondStarts).toEqual([{
+      agent: { command: "durable-acp" },
+      resumeAcpSessionId: "acp-durable-1",
+    }]);
+    expect(saved).toEqual({
+      sessionId: "session-durable",
+      generation: 2,
+      ownerId: "host-instance-2",
+      acpSessionId: "acp-durable-2",
+      phase: "ready",
+      updatedAt: 2_000,
+    });
+  });
+
+  it("does not spawn an ACP child when checkpoint CAS fences the host claim", async () => {
+    const events: unknown[] = [];
+    let starts = 0;
+    const host = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          starts += 1;
+          return acpSessionFixture({
+            acpSessionId: "acp-fenced",
+            options,
+          });
+        },
+      },
+      emit: (event: unknown) => events.push(event),
+      checkpointStore: {
+        async load() {
+          return {
+            sessionId: "session-fenced",
+            generation: 4,
+            ownerId: "winning-host",
+            acpSessionId: "acp-previous",
+            phase: "ready" as const,
+            updatedAt: 1,
+          };
+        },
+        async compareAndSet() { return false; },
+        async delete() {},
+      },
+      hostInstanceId: "losing-host",
+      scheduler: { now: () => 3_000, async sleep() {} },
+    });
+
+    await host.start({
+      sessionId: "session-fenced",
+      options: { agent: { command: "fenced-acp" } },
+    });
+
+    expect(starts).toBe(0);
+    expect(host.has("session-fenced")).toBe(false);
+    expect(events).toEqual([{
+      type: "session.error",
+      sessionId: "session-fenced",
+      message: "runtime lost the session generation lease",
+    }]);
+  });
+
+  it("disposes a child that finishes starting after another host steals its generation", async () => {
+    const events: unknown[] = [];
+    let compareAndSets = 0;
+    let disposeCount = 0;
+    const host = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          return acpSessionFixture({
+            acpSessionId: "acp-fenced-during-start",
+            options,
+            async dispose() { disposeCount += 1; },
+          });
+        },
+      },
+      emit: (event: unknown) => events.push(event),
+      checkpointStore: {
+        async load() { return null; },
+        async compareAndSet() {
+          compareAndSets += 1;
+          return compareAndSets === 1;
+        },
+        async delete() {},
+      },
+      hostInstanceId: "slow-host",
+      scheduler: { now: () => 4_000, async sleep() {} },
+    });
+
+    await host.start({
+      sessionId: "session-fenced-during-start",
+      options: { agent: { command: "slow-acp" } },
+    });
+
+    expect(compareAndSets).toBe(2);
+    expect(disposeCount).toBe(1);
+    expect(host.has("session-fenced-during-start")).toBe(false);
+    expect(events).toEqual([{
+      type: "session.error",
+      sessionId: "session-fenced-during-start",
+      message: "runtime lost the session generation lease",
+    }]);
+  });
+
+  it("checks the durable generation before dispatching a prompt", async () => {
+    type Checkpoint = {
+      sessionId: string;
+      generation: number;
+      ownerId: string;
+      acpSessionId: string;
+      phase: "ready" | "recovering";
+      updatedAt: number;
+    };
+    let saved: Checkpoint | null = null;
+    let prompts = 0;
+    let disposals = 0;
+    const events: unknown[] = [];
+    const host = new ManagedAgentsSessionHost({
+      runtime: {
+        async start(options) {
+          return acpSessionFixture({
+            acpSessionId: "acp-owned-before-fence",
+            options,
+            async *prompt() { prompts += 1; },
+            async dispose() { disposals += 1; },
+          });
+        },
+      },
+      emit: (event: unknown) => events.push(event),
+      checkpointStore: {
+        async load() { return saved; },
+        async compareAndSet(input: {
+          expectedGeneration: number | null;
+          checkpoint: Checkpoint;
+        }) {
+          if ((saved?.generation ?? null) !== input.expectedGeneration) return false;
+          saved = structuredClone(input.checkpoint);
+          return true;
+        },
+        async delete() {},
+      },
+      hostInstanceId: "host-before-fence",
+      scheduler: { now: () => 10, async sleep() {} },
+    });
+    await host.start({
+      sessionId: "session-fenced-before-prompt",
+      options: { agent: { command: "fenced-before-prompt" } },
+    });
+    saved = {
+      ...saved!,
+      generation: 2,
+      ownerId: "new-owner",
+      updatedAt: 20,
+    };
+    events.length = 0;
+
+    await host.prompt({
+      sessionId: "session-fenced-before-prompt",
+      turnId: "turn-must-not-run",
+      text: "do not dispatch",
+    });
+
+    expect(prompts).toBe(0);
+    expect(disposals).toBe(1);
+    expect(host.has("session-fenced-before-prompt")).toBe(false);
+    expect(events).toEqual([{
+      type: "session.error",
+      sessionId: "session-fenced-before-prompt",
+      message: "runtime lost the session generation lease",
+    }]);
+  });
+
   it("reports an ACP start failure without retaining a dead session", async () => {
     const events: unknown[] = [];
     const host = new ManagedAgentsSessionHost({

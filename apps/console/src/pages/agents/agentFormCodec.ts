@@ -422,3 +422,36 @@ export function mergeFormIntoConfig(
 
   return payload;
 }
+
+/**
+ * Keep the standard Managed Agents endpoint strict. OpenMA-only runtime,
+ * harness and local-process fields are routed through the explicit product
+ * namespace instead of being smuggled into `/v1/agents`.
+ */
+export function requiresOmaAgentEndpoint(payload: Record<string, unknown>): boolean {
+  const omaOnlyKeys = [
+    "_oma",
+    "runtime_binding",
+    "harness",
+    "acp",
+    "aux_model",
+    "appendable_prompts",
+    "enable_general_subagent",
+    "callable_agents",
+  ];
+  if (omaOnlyKeys.some((key) => Object.prototype.hasOwnProperty.call(payload, key))) {
+    return true;
+  }
+
+  const servers = payload.mcp_servers;
+  return (
+    Array.isArray(servers) &&
+    servers.some(
+      (server) =>
+        !!server &&
+        typeof server === "object" &&
+        ((server as { type?: unknown }).type !== "url" ||
+          Object.prototype.hasOwnProperty.call(server, "stdio")),
+    )
+  );
+}

@@ -495,15 +495,17 @@ export class IntegrationsApi {
 
   // ─── Sessions (used by the integrations activity timeline) ────────────
   //
-  // /v1/sessions returns the user's full session set with metadata; we
-  // filter client-side. For active integrations this is fine — sessions are
-  // bounded per user — but a future paged endpoint with provider-side
-  // filtering would be cleaner. Lives on IntegrationsApi directly because
-  // it's not provider-scoped.
+  // Read one recent Managed page and filter it client-side in the activity
+  // view. The response is the SDK bidirectional page shape; no legacy
+  // cursor/agent_id projection is introduced here.
 
   async listSessions(opts: { limit?: number } = {}): Promise<SessionSummary[]> {
     const limit = opts.limit ?? 50;
-    const r = await request<{ data: SessionSummary[] }>(
+    const r = await request<{
+      data: SessionSummary[];
+      next_page: string | null;
+      prev_page: string | null;
+    }>(
       this.basePath,
       `/v1/sessions?limit=${limit}`,
     );

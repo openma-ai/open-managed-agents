@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
 
 /**
@@ -22,7 +23,7 @@ export function StatusPill({ status, label }: { status: StatusTone | string; lab
   const tone: StatusTone = (TONE_CLASS as Record<string, unknown>)[status] ? (status as StatusTone) : "neutral";
   const text = label ?? (status[0]?.toUpperCase() + status.slice(1));
   return (
-    <span className={`text-[11px] px-2 py-0.5 rounded font-medium ${TONE_CLASS[tone]}`}>
+    <span className={`text-xs px-2 py-0.5 rounded font-medium ${TONE_CLASS[tone]}`}>
       {tone === "running" && (
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-info animate-pulse mr-1.5 align-middle" />
       )}
@@ -58,18 +59,18 @@ export function Badge({
   );
   if (onClick) {
     return (
-      <button
+      <Button variant="ghost"
         onClick={onClick}
-        className="text-[11px] px-2 py-0.5 min-h-11 sm:min-h-0 rounded border border-border hover:border-border-strong hover:bg-bg-surface text-fg-muted flex items-center gap-1.5 font-mono max-w-xs"
+        className="text-xs px-2 py-0.5 min-h-11 sm:min-h-0 rounded border border-border hover:border-border-strong hover:bg-bg-surface text-fg-muted flex items-center gap-1.5 font-mono max-w-xs"
         title={title ?? (typeof label === "string" ? label : undefined)}
       >
         {inner}
-      </button>
+      </Button>
     );
   }
   return (
     <span
-      className="text-[11px] px-2 py-0.5 text-fg-subtle font-mono flex items-center gap-1.5"
+      className="text-xs px-2 py-0.5 text-fg-subtle font-mono flex items-center gap-1.5"
       title={title}
     >
       {inner}

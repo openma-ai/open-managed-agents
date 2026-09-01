@@ -19,7 +19,9 @@ export {
   SandboxAcpUnsupportedError,
 } from "./spawners/sandbox.js";
 export {
+  AcpPromptCancellationTimeoutError,
   createAcpRuntime,
+  type AcpRuntimeLifecycleOptions,
   type AcpRuntimePlacement,
 } from "./placement.js";
 

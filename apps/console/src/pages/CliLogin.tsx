@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
@@ -268,7 +269,7 @@ export function CliLogin() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-fg">{tenantDisplayName(me.tenants[0])}</div>
-                    <div className="text-[10px] text-fg-subtle font-mono uppercase tracking-wider">
+                    <div className="text-xs text-fg-subtle font-mono uppercase tracking-wider">
                       {me.tenants[0].role}
                     </div>
                   </div>
@@ -281,21 +282,21 @@ export function CliLogin() {
                     Workspaces ({selected.size}/{me.tenants.length})
                   </div>
                   <div className="flex items-center gap-2 text-xs">
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={selectAll}
                       className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
                     >
                       All
-                    </button>
+                    </Button>
                     <span className="text-fg-subtle">·</span>
-                    <button
+                    <Button variant="ghost"
                       type="button"
                       onClick={selectNone}
                       className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
                     >
                       None
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="border border-border rounded-lg divide-y divide-border max-h-64 overflow-y-auto">
@@ -303,7 +304,7 @@ export function CliLogin() {
                     const isSelected = selected.has(t.id);
                     const display = tenantDisplayName(t);
                     return (
-                      <button
+                      <Button variant="ghost"
                         key={t.id}
                         type="button"
                         onClick={() => toggle(t.id)}
@@ -315,11 +316,11 @@ export function CliLogin() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-sm truncate text-fg">{display}</div>
-                          <div className="text-[10px] text-fg-subtle font-mono">
+                          <div className="text-xs text-fg-subtle font-mono">
                             {t.id} · {t.role}
                           </div>
                         </div>
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -338,13 +339,13 @@ export function CliLogin() {
                     ? "Approve"
                     : `Approve ${selected.size} workspace${selected.size === 1 ? "" : "s"}`}
               </Button>
-              <button
+              <Button variant="ghost"
                 onClick={cancel}
                 disabled={working}
                 className="inline-flex items-center justify-center px-4 py-2.5 min-h-11 sm:min-h-0 rounded-lg border border-border text-sm text-fg-muted hover:bg-bg disabled:opacity-40"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -354,7 +355,7 @@ export function CliLogin() {
 }
 
 /** Custom checkbox styled to match the rest of the app's surfaces — using
- *  a real <input type=checkbox> would inherit the OS-native chrome that
+ *  a real <Input type=checkbox> would inherit the OS-native chrome that
  *  looks out of place on the auth card. */
 function Checkbox({ checked }: { checked: boolean }) {
   return (

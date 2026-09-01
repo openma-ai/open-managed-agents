@@ -6,6 +6,7 @@ import type {
 interface AcpSessionFixtureOptions {
   acpSessionId: string;
   options?: SessionOptions;
+  isAlive?(): boolean;
   prompt?(
     input: string,
     options?: { abortSignal?: AbortSignal },
@@ -76,7 +77,7 @@ export function acpSessionFixture(
     async didFocusDocument() {},
     async acceptNes() {},
     async rejectNes() {},
-    isAlive() { return true; },
+    isAlive: fixture.isAlive ?? (() => true),
     dispose: fixture.dispose ?? (async () => {}),
   };
 }

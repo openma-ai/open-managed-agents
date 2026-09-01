@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
 
@@ -41,20 +43,14 @@ export function FilterChip({
   return (
     <Popover>
       <div
-        className={cn(
-          "inline-flex items-center gap-1 h-8 text-sm shrink-0 transition-colors",
-          active
-            ? "rounded-full border border-brand text-brand bg-brand-subtle"
-            : "text-fg-muted hover:text-fg",
-        )}
+        className="console-filter-chip"
+        data-testid="filter-chip"
+        data-active={active || undefined}
       >
         <PopoverTrigger asChild>
-          <button
+          <Button variant="ghost"
             type="button"
-            className={cn(
-              "inline-flex items-center gap-1 h-full outline-none",
-              active ? "pl-3 pr-2" : "px-2",
-            )}
+            className="console-filter-chip-trigger"
           >
             <span className="font-medium">{label}</span>
             {display && (
@@ -64,20 +60,20 @@ export function FilterChip({
               </>
             )}
             {!active && <ChevronDownIcon className="size-3.5 opacity-60" />}
-          </button>
+          </Button>
         </PopoverTrigger>
         {active && onClear && (
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               onClear();
             }}
-            className="inline-flex items-center justify-center size-5 mr-1.5 rounded-full hover:bg-brand/10"
+            className="console-filter-chip-clear"
             aria-label={`Clear ${label} filter`}
           >
             <XIcon className="size-3" />
-          </button>
+          </Button>
         )}
       </div>
       {children}
@@ -131,7 +127,7 @@ function computePresetRange(
   }
 }
 
-/** Format epoch ms → YYYY-MM-DD for the native `<input type="date">`
+/** Format epoch ms → YYYY-MM-DD for the native `<Input type="date">`
  *  value attribute. Date pickers store local-tz dates as strings; we
  *  convert back to ms via `new Date(str).getTime()` (also local). The
  *  precision mismatch (day vs ms) is fine because the chip presets
@@ -203,7 +199,7 @@ export function CreatedFilterChip({
         className="w-60 p-1"
       >
         {(Object.keys(CREATED_PRESET_LABELS) as CreatedPreset[]).map((p) => (
-          <button
+          <Button variant="ghost"
             key={p}
             type="button"
             onClick={() => apply(p)}
@@ -215,11 +211,11 @@ export function CreatedFilterChip({
           >
             {CREATED_PRESET_LABELS[p]}
             {preset === p && <CheckIcon className="size-3.5 text-brand" />}
-          </button>
+          </Button>
         ))}
         {preset === "custom" && (
           <div className="mt-1 pt-2 border-t border-border space-y-2 px-1 pb-1">
-            <label className="block">
+            <Label className="block">
               <span className="text-xs text-fg-muted mb-1 block">From</span>
               <Input
                 type="date"
@@ -231,8 +227,8 @@ export function CreatedFilterChip({
                   apply("custom", { after: next, before: customBefore });
                 }}
               />
-            </label>
-            <label className="block">
+            </Label>
+            <Label className="block">
               <span className="text-xs text-fg-muted mb-1 block">To</span>
               <Input
                 type="date"
@@ -252,7 +248,7 @@ export function CreatedFilterChip({
                   apply("custom", { after: customAfter, before: next });
                 }}
               />
-            </label>
+            </Label>
           </div>
         )}
       </PopoverContent>

@@ -43,6 +43,7 @@ async function signup(page: Page) {
 
 async function login(page: Page) {
   await page.goto("/login");
+  await page.getByRole("button", { name: "Continue with email" }).click();
   await page.getByPlaceholder("you@example.com").fill(TEST_EMAIL);
   await page.getByPlaceholder("Min 8 characters").fill(TEST_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -57,7 +58,7 @@ test.describe.serial("Console E2E", () => {
   test("1. unauthenticated user is redirected to /login", async ({ page }) => {
     await page.goto("/");
     await page.waitForURL("**/login");
-    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Log in to openma" })).toBeVisible();
   });
 
   test("2. signup creates account and redirects to dashboard", async ({ page }) => {
@@ -72,7 +73,7 @@ test.describe.serial("Console E2E", () => {
     await signup(page);
     await page.getByRole("button", { name: "Sign out" }).click();
     await page.waitForURL("**/login", { timeout: 5_000 });
-    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Log in to openma" })).toBeVisible();
   });
 
   test("4. login with existing account", async ({ page }) => {
@@ -88,13 +89,16 @@ test.describe.serial("Console E2E", () => {
 
   test("5. forgot password flow shows confirmation", async ({ page }) => {
     await page.goto("/login");
+    await page.getByRole("button", { name: "Continue with email" }).click();
     await page.getByRole("button", { name: "Forgot password?" }).click();
     await expect(page.getByRole("heading", { name: "Reset password" })).toBeVisible();
 
     await page.getByPlaceholder("you@example.com").fill("nobody@test.com");
-    await page.getByRole("button", { name: "Send reset link" }).click();
+    await page.getByRole("button", { name: "Send reset code" }).click();
 
-    await expect(page.getByText("Check your email")).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.getByRole("heading", { name: "Reset your password" }),
+    ).toBeVisible({ timeout: 5_000 });
   });
 
   test("6. API Keys page — create and revoke", async ({ page }) => {

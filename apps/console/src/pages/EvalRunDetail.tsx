@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { useApi } from "../lib/api";
@@ -5,6 +6,7 @@ import { useApiQuery } from "../lib/useApiQuery";
 import { shortenId } from "../lib/format";
 import type { Trajectory } from "../lib/trajectory";
 import { rewardHeadline } from "../lib/trajectory";
+import { Page } from "../components/Page";
 
 interface EvalTrial {
   trial_index: number;
@@ -135,7 +137,7 @@ export function EvalRunDetail() {
       return next;
     });
     try {
-      const traj = await api<Trajectory>(`/v1/sessions/${sessionId}/trajectory`);
+      const traj = await api<Trajectory>(`/v1/oma/sessions/${sessionId}/trajectory`);
       setTrajectories(prev => {
         const next = new Map(prev);
         next.set(sessionId, traj);
@@ -171,7 +173,8 @@ export function EvalRunDetail() {
   }
 
   return (
-    <div className="pl-3 pr-4 pt-3 pb-4 space-y-6">
+    <Page>
+      <div className="console-detail-stack">
       {/* Page header — AppBreadcrumb above renders `Eval Runs > <run.id>`,
           so the previous `← All runs` back-link + duplicated `<h1>{run.id}</h1>`
           have been removed.
@@ -255,81 +258,82 @@ export function EvalRunDetail() {
       {/* Task list — pill-row recipe lifted from DataTable: border-separate
           + border-spacing-y-1.5, body rows tinted bg-bg-surface/60 with
           rounded first/last cells, no row borders, no table outline.
-          Header row is plain <thead> with small muted text — no border-b. */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm border-separate border-spacing-y-1.5">
-          <thead>
-            <tr className="text-fg-muted text-xs font-medium">
-              <th className="w-8 px-3 text-left" />
-              <th className="text-left px-3">Task</th>
-              <th className="text-left px-3">Status</th>
-              <th className="text-left px-3">Pass</th>
-              <th className="text-left px-3">Trials</th>
-            </tr>
-          </thead>
-          <tbody>
+          Header row is plain <TableHeader> with small muted text — no border-b. */}
+      <div className="console-detail-table-wrap" data-testid="eval-results-table">
+        <Table className="console-detail-table">
+          <TableHeader variant="wireless">
+            <TableRow variant="wireless">
+              <TableHead className="w-8 px-3 text-left" />
+              <TableHead className="text-left px-3">Task</TableHead>
+              <TableHead className="text-left px-3">Status</TableHead>
+              <TableHead className="text-left px-3">Pass</TableHead>
+              <TableHead className="text-left px-3">Trials</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {run.tasks.map(t => {
               const isOpen = expanded.has(t.id);
               return [
-                <tr
+                <TableRow
+                  variant="wireless"
                   key={t.id}
                   className="bg-bg-surface/60 hover:bg-bg-surface cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                   onClick={() => toggleExpand(t.id)}
                 >
-                  <td className="text-fg-subtle px-3 py-2 text-center rounded-l-lg">{isOpen ? "▾" : "▸"}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-fg">{t.id}</td>
-                  <td className="px-3 py-2">
+                  <TableCell className="text-fg-subtle px-3 py-2 text-center rounded-l-lg">{isOpen ? "▾" : "▸"}</TableCell>
+                  <TableCell className="px-3 py-2 font-mono text-xs text-fg">{t.id}</TableCell>
+                  <TableCell className="px-3 py-2">
                     <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(t.status)}`}>
                       {t.status}
                     </span>
-                  </td>
-                  <td className="px-3 py-2 text-fg font-medium">
+                  </TableCell>
+                  <TableCell className="px-3 py-2 text-fg font-medium">
                     {(t.trial_pass_count ?? 0)}/{t.trial_total ?? t.trials.length}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-fg-muted rounded-r-lg">
+                  </TableCell>
+                  <TableCell className="px-3 py-2 text-xs text-fg-muted rounded-r-lg">
                     {t.trials.map(tr => tr.status).join(", ")}
-                  </td>
-                </tr>,
+                  </TableCell>
+                </TableRow>,
                 isOpen && (
                   // Expansion sits as its own subtle pill directly below the
                   // task pill — 6 px row gap (from border-spacing-y-1.5) is
                   // enough proximity to read as "detail of the row above"
                   // without needing a connecting border.
-                  <tr key={`${t.id}-trials`} className="bg-bg-surface/30">
-                    <td className="rounded-l-lg" />
-                    <td colSpan={4} className="px-3 py-3 space-y-3 rounded-r-lg">
+                  <TableRow key={`${t.id}-trials`} className="bg-bg-surface/30">
+                    <TableCell className="rounded-l-lg" />
+                    <TableCell colSpan={4} className="px-3 py-3 space-y-3 rounded-r-lg">
                       <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                        <thead>
-                          <tr className="text-fg-subtle">
-                            <th className="text-left py-1 pr-3 font-medium">#</th>
-                            <th className="text-left py-1 pr-3 font-medium">Status</th>
-                            <th className="text-left py-1 pr-3 font-medium">Reward</th>
-                            <th className="text-left py-1 pr-3 font-medium">Exit</th>
-                            <th className="text-left py-1 pr-3 font-medium">Dur</th>
-                            <th className="text-left py-1 pr-3 font-medium">Turns</th>
-                            <th className="text-left py-1 font-medium">Session</th>
-                          </tr>
-                        </thead>
-                        <tbody>
+                        <Table className="w-full text-xs">
+                        <TableHeader>
+                          <TableRow className="text-fg-subtle">
+                            <TableHead className="text-left py-1 pr-3 font-medium">#</TableHead>
+                            <TableHead className="text-left py-1 pr-3 font-medium">Status</TableHead>
+                            <TableHead className="text-left py-1 pr-3 font-medium">Reward</TableHead>
+                            <TableHead className="text-left py-1 pr-3 font-medium">Exit</TableHead>
+                            <TableHead className="text-left py-1 pr-3 font-medium">Dur</TableHead>
+                            <TableHead className="text-left py-1 pr-3 font-medium">Turns</TableHead>
+                            <TableHead className="text-left py-1 font-medium">Session</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
                           {t.trials.map(tr => (
-                            <tr key={tr.trial_index}>
-                              <td className="py-1 pr-3 text-fg-subtle">{tr.trial_index}</td>
-                              <td className="py-1 pr-3">
+                            <TableRow key={tr.trial_index}>
+                              <TableCell className="py-1 pr-3 text-fg-subtle">{tr.trial_index}</TableCell>
+                              <TableCell className="py-1 pr-3">
                                 <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${statusCls(tr.status)}`}>
                                   {tr.status}
                                 </span>
-                              </td>
-                              <td className="py-1 pr-3">
+                              </TableCell>
+                              <TableCell className="py-1 pr-3">
                                 <TrialReward
                                   fallback={tr.reward}
                                   trajectory={tr.session_id ? trajectories.get(tr.session_id) : undefined}
                                 />
-                              </td>
-                              <td className="py-1 pr-3 font-mono text-fg-muted">{tr.exit_code ?? "—"}</td>
-                              <td className="py-1 pr-3 text-fg-muted">{durationStr(tr.started_at, tr.ended_at)}</td>
-                              <td className="py-1 pr-3 text-fg-muted">{tr.turns ?? "—"}</td>
-                              <td className="py-1">
+                              </TableCell>
+                              <TableCell className="py-1 pr-3 font-mono text-fg-muted">{tr.exit_code ?? "—"}</TableCell>
+                              <TableCell className="py-1 pr-3 text-fg-muted">{durationStr(tr.started_at, tr.ended_at)}</TableCell>
+                              <TableCell className="py-1 pr-3 text-fg-muted">{tr.turns ?? "—"}</TableCell>
+                              <TableCell className="py-1">
                                 {tr.session_id ? (
                                   <Link
                                     to={`/sessions/${tr.session_id}`}
@@ -340,11 +344,11 @@ export function EvalRunDetail() {
                                 ) : (
                                   <span className="text-fg-subtle">—</span>
                                 )}
-                              </td>
-                            </tr>
+                              </TableCell>
+                            </TableRow>
                           ))}
-                        </tbody>
-                      </table>
+                        </TableBody>
+                      </Table>
                       </div>
 
                       {t.trials.some(tr => tr.session_id && trajectories.get(tr.session_id) && trajectories.get(tr.session_id) !== "loading" && trajectories.get(tr.session_id) !== "error") && (
@@ -390,7 +394,7 @@ export function EvalRunDetail() {
                             .map(tr => (
                               <pre
                                 key={tr.trial_index}
-                                className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-64 text-fg"
+                                className="mt-1 p-2 bg-bg-surface/60 rounded text-xs overflow-auto max-h-64 text-fg"
                               >
                                 trial {tr.trial_index}:{"\n"}
                                 {tr.output_tail}
@@ -404,7 +408,7 @@ export function EvalRunDetail() {
                           <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg">
                             setup_script
                           </summary>
-                          <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-48 text-fg">
+                          <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-xs overflow-auto max-h-48 text-fg">
                             {t.spec.setup_script}
                           </pre>
                         </details>
@@ -414,19 +418,20 @@ export function EvalRunDetail() {
                         <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg">
                           first message
                         </summary>
-                        <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-[11px] overflow-auto max-h-48 whitespace-pre-wrap text-fg">
+                        <pre className="mt-1 p-2 bg-bg-surface/60 rounded text-xs overflow-auto max-h-48 whitespace-pre-wrap text-fg">
                           {t.spec.messages[0]}
                         </pre>
                       </details>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ),
               ];
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
-    </div>
+      </div>
+    </Page>
   );
 }
 
@@ -463,13 +468,13 @@ function TrialReward({
       <div className="leading-tight">
         <div className={cls}>{headline}</div>
         {r.verifier_id && (
-          <div className="text-[10px] text-fg-subtle font-mono">graded by {r.verifier_id}</div>
+          <div className="text-xs text-fg-subtle font-mono">graded by {r.verifier_id}</div>
         )}
       </div>
     );
   }
   if (trajectory === "loading") {
-    return <span className="text-fg-subtle text-[10px]">loading…</span>;
+    return <span className="text-fg-subtle text-xs">loading…</span>;
   }
   if (fallback != null) {
     const tooltip = trajectory === "error" ? "trajectory unavailable; using legacy reward" : undefined;
@@ -483,7 +488,7 @@ function TrialReward({
     );
   }
   if (trajectory === "error") {
-    return <span className="text-fg-subtle text-[10px]" title="trajectory fetch failed">trajectory unavailable</span>;
+    return <span className="text-fg-subtle text-xs" title="trajectory fetch failed">trajectory unavailable</span>;
   }
   return <span className="text-fg-subtle">—</span>;
 }
@@ -501,7 +506,7 @@ function RewardBreakdown({
   const entries = Object.entries(reward.raw_rewards);
   return (
     <div className="rounded p-2 bg-bg-surface/60">
-      <div className="text-[11px] text-fg-subtle mb-1 flex items-baseline gap-2">
+      <div className="text-xs text-fg-subtle mb-1 flex items-baseline gap-2">
         <span>trial {trialIndex}</span>
         {reward.verifier_id && (
           <span className="font-mono">{reward.verifier_id}</span>
@@ -511,19 +516,19 @@ function RewardBreakdown({
         </span>
       </div>
       {entries.length === 0 ? (
-        <div className="text-[11px] text-fg-subtle italic">no raw_rewards recorded</div>
+        <div className="text-xs text-fg-subtle italic">no raw_rewards recorded</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px]">
-            <tbody>
+          <Table className="w-full text-xs">
+            <TableBody>
               {entries.map(([k, v]) => (
-                <tr key={k}>
-                  <td className="py-0.5 pr-2 font-mono text-fg-muted">{k}</td>
-                  <td className="py-0.5 text-right text-fg">{Number.isFinite(v) ? v.toFixed(2) : String(v)}</td>
-                </tr>
+                <TableRow key={k}>
+                  <TableCell className="py-0.5 pr-2 font-mono text-fg-muted">{k}</TableCell>
+                  <TableCell className="py-0.5 text-right text-fg">{Number.isFinite(v) ? v.toFixed(2) : String(v)}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>

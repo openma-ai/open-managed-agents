@@ -7,6 +7,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  detachedProcessOptions,
+  killProcessTree,
+} from "./helpers/process-tree";
 
 interface ProcessHandle {
   child: ChildProcess;
@@ -662,6 +666,22 @@ describe("main-node official Managed Agents route", () => {
       status: "running",
     });
     expect(retrievedSession).toEqual(createdSession);
+
+    const statsResponse = await fetch(
+      `http://127.0.0.1:${handle.port}/v1/oma/stats`,
+      { headers: { "x-api-key": "test-key" } },
+    );
+    expect(statsResponse.status).toBe(200);
+    expect(await statsResponse.json()).toEqual({
+      agents: 1,
+      sessions: 2,
+      environments: 1,
+      vaults: 1,
+      skills: 1,
+      model_cards: 1,
+      api_keys: 0,
+    });
+
     expect(await client.beta.sessions.delete(createdSession.id)).toEqual({
       id: createdSession.id,
       type: "session_deleted",
@@ -698,6 +718,7 @@ function testCertificatePem(): string {
 async function startMainNode(dataDirectory: string): Promise<ProcessHandle> {
   const port = await pickPort();
   const child = spawn(TSX_BIN, [MAIN_NODE_ENTRY], {
+    ...detachedProcessOptions,
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -735,11 +756,7 @@ async function startMainNode(dataDirectory: string): Promise<ProcessHandle> {
 }
 
 function killHard(handle: ProcessHandle): Promise<void> {
-  return new Promise((resolveExit) => {
-    if (handle.child.exitCode !== null) return resolveExit();
-    handle.child.once("exit", () => resolveExit());
-    handle.child.kill("SIGKILL");
-  });
+  return killProcessTree(handle.child);
 }
 
 function pickPort(): Promise<number> {

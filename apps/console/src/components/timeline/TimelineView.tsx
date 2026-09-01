@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { formatDuration, pickTickStep } from "../../lib/format";
@@ -141,25 +142,25 @@ function DetailPanel({
     >
       <div className="px-4 py-3 border-b border-border flex items-center gap-3 shrink-0">
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] uppercase tracking-wide text-fg-subtle font-mono">
+          <div className="text-xs uppercase tracking-wide text-fg-subtle font-mono">
             {selection.events.length === 1
               ? "source event"
               : `source events (${selection.events.length})`}
           </div>
           <div className="text-sm font-mono text-fg-muted truncate">{selection.spanLabel}</div>
         </div>
-        <button
+        <Button variant="ghost"
           onClick={onClose}
           className="text-fg-subtle hover:text-fg-muted text-lg leading-none px-2"
           title="Close"
         >
           ×
-        </button>
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {selection.events.map((ev, idx) => (
           <div key={idx} className="border border-border/60 rounded">
-            <div className="px-3 py-1.5 border-b border-border/60 bg-bg-surface/40 flex items-center gap-2 text-[11px] font-mono">
+            <div className="px-3 py-1.5 border-b border-border/60 bg-bg-surface/40 flex items-center gap-2 text-xs font-mono">
               <span className="text-fg-muted">{ev.type}</span>
               {typeof ev.processed_at === "string" && (
                 <span className="text-fg-subtle ml-auto">
@@ -167,7 +168,7 @@ function DetailPanel({
                 </span>
               )}
             </div>
-            <pre className="text-[11px] font-mono text-fg-muted px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
+            <pre className="text-xs font-mono text-fg-muted px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
               {stringifyEventCapped(ev)}
             </pre>
           </div>
@@ -395,13 +396,13 @@ const TurnCard = memo(function TurnCard({
     >
       {/* Header */}
       <div className="px-4 py-2.5 flex items-center gap-3 text-xs">
-        <button
+        <Button variant="ghost"
           onClick={onToggleExpanded}
           className="text-fg-subtle hover:text-fg-muted font-mono w-4 text-center"
           title={collapsed ? "Expand" : "Collapse"}
         >
           {collapsed ? "▸" : "▾"}
-        </button>
+        </Button>
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TRIGGER_DOT[turn.triggerKind]}`} />
         <span className="font-mono text-fg-muted">{TRIGGER_LABEL[turn.triggerKind]}</span>
         {triggerTitleText && (
@@ -442,7 +443,7 @@ const TurnCard = memo(function TurnCard({
                   {ticks.map((t) => (
                     <div
                       key={t}
-                      className="absolute top-0 h-full flex flex-col items-start text-[10px] text-fg-subtle font-mono"
+                      className="absolute top-0 h-full flex flex-col items-start text-xs text-fg-subtle font-mono"
                       style={{ left: `${t * effectivePxPerMs}px` }}
                     >
                       <span className="-translate-x-1/2 px-1">{formatDuration(t)}</span>
@@ -475,7 +476,7 @@ const TurnCard = memo(function TurnCard({
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-fg-muted font-mono">{s.label}</div>
                         {s.detail && (
-                          <div className="truncate text-fg-subtle font-mono text-[10px]">{s.detail}</div>
+                          <div className="truncate text-fg-subtle font-mono text-xs">{s.detail}</div>
                         )}
                       </div>
                     </>
@@ -534,23 +535,23 @@ function ZoomToolbar({
   const btn = "px-2 py-0.5 rounded border hover:bg-bg-surface";
   return (
     <div className="px-4 pb-2 flex items-center gap-1 text-xs">
-      <button onClick={() => onZoomBy(0.5)} aria-label="Zoom out" className={`${btn} border-border text-fg-muted`} title="Zoom out">
+      <Button variant="ghost" onClick={() => onZoomBy(0.5)} aria-label="Zoom out" className={`${btn} border-border text-fg-muted`} title="Zoom out">
         −
-      </button>
-      <button
+      </Button>
+      <Button variant="ghost"
         onClick={onAuto}
         aria-label="Auto-pick scale by event density"
         className={`${btn} ${mode === "auto" ? "border-info text-info" : "border-border text-fg-muted"}`}
         title="Auto-pick scale by event density"
       >
         auto
-      </button>
-      <button onClick={onFit} aria-label="Fit turn duration to viewport" className={`${btn} border-border text-fg-muted`} title="Fit turn duration to viewport">
+      </Button>
+      <Button variant="ghost" onClick={onFit} aria-label="Fit turn duration to viewport" className={`${btn} border-border text-fg-muted`} title="Fit turn duration to viewport">
         fit
-      </button>
-      <button onClick={() => onZoomBy(2)} aria-label="Zoom in" className={`${btn} border-border text-fg-muted`} title="Zoom in">
+      </Button>
+      <Button variant="ghost" onClick={() => onZoomBy(2)} aria-label="Zoom in" className={`${btn} border-border text-fg-muted`} title="Zoom in">
         +
-      </button>
+      </Button>
       <span className="ml-2 font-mono text-fg-subtle">{fmtRate(pxPerMs)}</span>
     </div>
   );

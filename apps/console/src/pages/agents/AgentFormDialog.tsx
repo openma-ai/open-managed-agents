@@ -1,8 +1,17 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import yaml from "js-yaml";
+import type {
+  AgentCreateParams,
+  AgentUpdateParams,
+} from "@anthropic-ai/sdk/resources/beta/agents/agents";
 
 import { useApi } from "../../lib/api";
+import { useManagedApi } from "../../lib/useManagedApi";
 import { Button } from "@/components/ui/button";
 import { Select, SelectGroup, SelectGroupLabel, SelectOption } from "../../components/Select";
 import { Combobox } from "../../components/Combobox";
@@ -21,6 +30,7 @@ import {
   agentToPreservedConfig,
   configToForm,
   mergeFormIntoConfig,
+  requiresOmaAgentEndpoint,
   type FormState,
   type McpEntry,
   type SkillEntry,
@@ -63,7 +73,7 @@ interface AgentFormDialogProps {
    *  current route. */
   onUpdated?: (agent: Agent) => void;
   /** When set, the dialog opens in edit mode: skips the template step,
-   *  prefills from this agent, and PUTs `/v1/agents/:id` on save. */
+   *  prefills from this agent, and POSTs `/v1/agents/:id` on save. */
   agent?: Agent | null;
   /** Data sets the form's pickers pull from. The parent fetches these
    *  on mount (loadAux) and passes them down so the dialog doesn't have
@@ -107,6 +117,7 @@ export function AgentFormDialog({
   runtimes,
 }: AgentFormDialogProps) {
   const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const isEdit = !!editingAgent;
@@ -223,23 +234,46 @@ export function AgentFormDialog({
     };
   }, [open]);
 
+  const persistAgent = async (payload: Record<string, unknown>): Promise<Agent> => {
+    if (requiresOmaAgentEndpoint(payload)) {
+      const path = isEdit && editingAgent
+        ? `/v1/oma/agents/${editingAgent.id}`
+        : "/v1/oma/agents";
+      return api<Agent>(path, {
+        method: "POST",
+        body: JSON.stringify(
+          isEdit && editingAgent
+            ? { ...payload, version: editingAgent.version }
+            : payload,
+        ),
+      });
+    }
+
+    if (isEdit && editingAgent) {
+      const updated = await managedApi.agents.update(editingAgent.id, {
+        ...payload,
+        version: editingAgent.version,
+      } as AgentUpdateParams);
+      return updated as unknown as Agent;
+    }
+
+    const created = await managedApi.agents.create(
+      payload as unknown as AgentCreateParams,
+    );
+    return created as unknown as Agent;
+  };
+
   const create = async () => {
     setCreateError("");
     setSaving(true);
     try {
       const payload = mergeFormIntoConfig(form, preservedConfig, { forUpdate: isEdit });
       if (isEdit && editingAgent) {
-        const updated = await api<Agent>(`/v1/agents/${editingAgent.id}`, {
-          method: "PUT",
-          body: JSON.stringify({ ...payload, version: editingAgent.version }),
-        });
+        const updated = await persistAgent(payload);
         closeCreate();
         onUpdated?.(updated);
       } else {
-        const agent = await api<Agent>("/v1/agents", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
+        const agent = await persistAgent(payload);
         closeCreate();
         onCreated?.();
         nav(`/agents/${agent.id}`);
@@ -376,17 +410,11 @@ export function AgentFormDialog({
       }
       if (!parsed.tools) parsed.tools = [{ type: "agent_toolset_20260401" }];
       if (isEdit && editingAgent) {
-        const updated = await api<Agent>(`/v1/agents/${editingAgent.id}`, {
-          method: "PUT",
-          body: JSON.stringify({ ...parsed, version: editingAgent.version }),
-        });
+        const updated = await persistAgent(parsed);
         closeCreate();
         onUpdated?.(updated);
       } else {
-        const agent = await api<Agent>("/v1/agents", {
-          method: "POST",
-          body: JSON.stringify(parsed),
-        });
+        const agent = await persistAgent(parsed);
         closeCreate();
         onCreated?.();
         nav(`/agents/${agent.id}`);
@@ -449,7 +477,7 @@ export function AgentFormDialog({
                 <p className="text-sm text-fg-muted mt-1">
                   Start from a template or build from scratch.
                 </p>
-                <input
+                <Input
                   value={templateSearch}
                   onChange={(e) => setTemplateSearch(e.target.value)}
                   className={`${inputCls} mt-3`}
@@ -460,7 +488,7 @@ export function AgentFormDialog({
               <div className="flex-1 overflow-y-auto px-6 py-4">
                 <div className="grid grid-cols-2 gap-3">
                   {filteredTemplates.map((tmpl) => (
-                    <button
+                    <Button variant="ghost"
                       key={tmpl.id}
                       onClick={() => selectTemplate(tmpl)}
                       className="text-left border border-border rounded-lg p-4 hover:border-brand hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
@@ -474,14 +502,14 @@ export function AgentFormDialog({
                           {tmpl.tags.map((tag) => (
                             <span
                               key={tag}
-                              className="px-1.5 py-0.5 bg-bg-surface text-fg-muted rounded text-[10px]"
+                              className="px-1.5 py-0.5 bg-bg-surface text-fg-muted rounded text-xs"
                             >
                               {tag}
                             </span>
                           ))}
                         </div>
                       )}
-                    </button>
+                    </Button>
                   ))}
                 </div>
                 {filteredTemplates.length === 0 && (
@@ -491,12 +519,12 @@ export function AgentFormDialog({
                 )}
               </div>
               <div className="px-6 py-4 border-t border-border flex justify-end">
-                <button
+                <Button variant="ghost"
                   onClick={closeCreate}
                   className="inline-flex items-center min-h-11 sm:min-h-0 px-4 py-2 text-sm text-fg-muted hover:text-fg"
                 >
                   {t.common.cancel}
-                </button>
+                </Button>
               </div>
             </>
           )}
@@ -514,7 +542,7 @@ export function AgentFormDialog({
                       )}
                     </span>
                   ) : (
-                    <button
+                    <Button variant="ghost"
                       onClick={() => {
                         setCreateStep("template");
                         setTemplateSearch("");
@@ -523,11 +551,11 @@ export function AgentFormDialog({
                       className="inline-flex items-center min-h-11 sm:min-h-0 text-sm text-fg-subtle hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                     >
                       &larr; Templates
-                    </button>
+                    </Button>
                   )}
                   <div className="flex items-center gap-0.5 bg-bg-surface rounded-md p-0.5">
                     {(["form", "yaml", "json"] as const).map((m) => (
-                      <button
+                      <Button variant="ghost"
                         key={m}
                         onClick={() => switchMode(m)}
                         className={`inline-flex items-center justify-center px-2 py-1 min-h-11 sm:min-h-0 text-xs rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
@@ -537,7 +565,7 @@ export function AgentFormDialog({
                         }`}
                       >
                         {m === "form" ? "Form" : m.toUpperCase()}
-                      </button>
+                      </Button>
                     ))}
                   </div>
                 </div>
@@ -550,7 +578,7 @@ export function AgentFormDialog({
                     aria-label="Agent configuration sections"
                     className="flex gap-1 mt-3"
                   >
-                    <button
+                    <Button variant="ghost"
                       role="tab"
                       aria-selected={tab === "basic"}
                       tabIndex={tab === "basic" ? 0 : -1}
@@ -558,8 +586,8 @@ export function AgentFormDialog({
                       className={tabCls("basic")}
                     >
                       Basic
-                    </button>
-                    <button
+                    </Button>
+                    <Button variant="ghost"
                       role="tab"
                       aria-selected={tab === "tools"}
                       tabIndex={tab === "tools" ? 0 : -1}
@@ -572,8 +600,8 @@ export function AgentFormDialog({
                           ({Object.keys(form.toolOverrides).length})
                         </span>
                       )}
-                    </button>
-                    <button
+                    </Button>
+                    <Button variant="ghost"
                       role="tab"
                       aria-selected={tab === "skills"}
                       tabIndex={tab === "skills" ? 0 : -1}
@@ -584,8 +612,8 @@ export function AgentFormDialog({
                       {form.skills.length > 0 && (
                         <span className="ml-1 text-xs opacity-60">({form.skills.length})</span>
                       )}
-                    </button>
-                    <button
+                    </Button>
+                    <Button variant="ghost"
                       role="tab"
                       aria-selected={tab === "mcp"}
                       tabIndex={tab === "mcp" ? 0 : -1}
@@ -598,8 +626,8 @@ export function AgentFormDialog({
                           ({form.mcpServers.length})
                         </span>
                       )}
-                    </button>
-                    <button
+                    </Button>
+                    <Button variant="ghost"
                       role="tab"
                       aria-selected={tab === "agents"}
                       tabIndex={tab === "agents" ? 0 : -1}
@@ -612,7 +640,7 @@ export function AgentFormDialog({
                           ({form.callableAgents.length})
                         </span>
                       )}
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
@@ -626,7 +654,7 @@ export function AgentFormDialog({
                         {createError}
                       </div>
                     )}
-                    <textarea
+                    <Textarea
                       value={codeValue}
                       onChange={(e) => setCodeValue(e.target.value)}
                       className={`${inputCls} flex-1 resize-none font-mono text-xs leading-relaxed min-h-[300px]`}
@@ -771,10 +799,10 @@ function BasicTab({
         </div>
       )}
       <div>
-        <label htmlFor="agent-name" className="text-sm text-fg-muted block mb-1">
+        <Label htmlFor="agent-name" className="text-sm text-fg-muted block mb-1">
           Name *
-        </label>
-        <input
+        </Label>
+        <Input
           id="agent-name"
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -795,20 +823,22 @@ function BasicTab({
           </p>
         ) : (
           <div>
-            <label className="text-sm text-fg-muted block mb-1">Model</label>
+            <Label className="text-sm text-fg-muted block mb-1">Model</Label>
             <Combobox<ModelCard>
               value={selectedCardId}
               onValueChange={(v, item) => {
                 setForm({ ...form, modelCardId: v, model: item?.model_id ?? v });
               }}
               endpoint="/v1/oma/model_cards"
+              searchParam="q"
+              pagination="oma"
               getValue={(mc) => mc.id}
               getLabel={(mc) => (
                 <span>
                   {mc.is_default ? "★ " : ""}
                   {mc.model_id}
                   {mc.model !== mc.model_id && (
-                    <span className="text-fg-subtle text-[12px]"> ({mc.model})</span>
+                    <span className="text-fg-subtle text-sm"> ({mc.model})</span>
                   )}
                 </span>
               )}
@@ -832,10 +862,10 @@ function BasicTab({
         </p>
       )}
       <div>
-        <label htmlFor="agent-description" className="text-sm text-fg-muted block mb-1">
+        <Label htmlFor="agent-description" className="text-sm text-fg-muted block mb-1">
           Description
-        </label>
-        <input
+        </Label>
+        <Input
           id="agent-description"
           value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })}
@@ -844,10 +874,10 @@ function BasicTab({
         />
       </div>
       <div>
-        <label htmlFor="agent-system" className="text-sm text-fg-muted block mb-1">
+        <Label htmlFor="agent-system" className="text-sm text-fg-muted block mb-1">
           System Prompt
-        </label>
-        <textarea
+        </Label>
+        <Textarea
           id="agent-system"
           value={form.system}
           onChange={(e) => setForm({ ...form, system: e.target.value })}
@@ -860,10 +890,10 @@ function BasicTab({
           instead of OMA's cloud SessionDO. The "no runtime" option is the
           default cloud agent. */}
       <div>
-        <label className="text-sm text-fg-muted block mb-1">
+        <Label className="text-sm text-fg-muted block mb-1">
           Local Runtime
           <span className="ml-1 text-xs text-fg-subtle">(optional)</span>
-        </label>
+        </Label>
         {runtimes.length === 0 ? (
           <p className="text-xs text-fg-subtle bg-bg-surface px-3 py-2 rounded-lg">
             No runtimes registered.{" "}
@@ -938,7 +968,7 @@ function AcpAgentPicker({
 
   return (
     <div className="mt-2">
-      <label className="text-xs text-fg-subtle block mb-1">ACP agent on this machine</label>
+      <Label className="text-xs text-fg-subtle block mb-1">ACP agent on this machine</Label>
       <Select
         value={form.acpAgentId}
         onValueChange={(v) =>
@@ -1003,32 +1033,31 @@ function LocalSkillBlocklist({
         <span className="text-xs text-fg-muted">
           Local skills ({allowed.size}/{localSkills.length} visible)
         </span>
-        <button
+        <Button variant="ghost"
           type="button"
           onClick={() => setForm({ ...form, localSkillBlocklist: [] })}
-          className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-[10px] text-fg-subtle hover:text-fg underline"
+          className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-xs text-fg-subtle hover:text-fg underline"
         >
           reset
-        </button>
+        </Button>
       </div>
       <div className="space-y-0.5 max-h-40 overflow-y-auto">
         {localSkills.map((s) => {
           const blocked = form.localSkillBlocklist.includes(s.id);
           return (
-            <label
+            <Label
               key={s.id}
               className="flex items-start gap-2 text-xs cursor-pointer hover:bg-bg rounded px-1.5 py-0.5"
             >
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={!blocked}
-                onChange={(e) => {
+                onCheckedChange={(checked) => {
                   const next = new Set(form.localSkillBlocklist);
-                  if (e.target.checked) next.delete(s.id);
+                  if (checked === true) next.delete(s.id);
                   else next.add(s.id);
                   setForm({ ...form, localSkillBlocklist: [...next] });
                 }}
-                className="mt-0.5 accent-brand"
+                className="mt-0.5"
               />
               <span className="font-mono text-fg flex-shrink-0">{s.id}</span>
               <span className="text-fg-subtle">
@@ -1038,11 +1067,11 @@ function LocalSkillBlocklist({
               {s.name && s.name !== s.id && (
                 <span className="text-fg-muted truncate">— {s.name}</span>
               )}
-            </label>
+            </Label>
           );
         })}
       </div>
-      <p className="text-[10px] text-fg-subtle mt-1.5">
+      <p className="text-xs text-fg-subtle mt-1.5">
         Unchecked = hidden from the ACP child (daemon won't symlink the dir into the spawn
         cwd).
       </p>
@@ -1081,37 +1110,37 @@ function ToolsTab({
           <span className="font-mono">default</span>.
         </p>
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          <Label className="flex items-center gap-2 text-sm">
+            <Checkbox
               checked={form.toolDefaultEnabled}
-              onChange={(e) => setForm({ ...form, toolDefaultEnabled: e.target.checked })}
-              className="accent-brand"
+              onCheckedChange={(checked) =>
+                setForm({ ...form, toolDefaultEnabled: checked === true })
+              }
             />
             Enable tools
-          </label>
+          </Label>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-fg-muted">Permission:</span>
-            <select
+            <Select
               value={form.toolDefaultPermission}
               disabled={!form.toolDefaultEnabled}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 setForm({
                   ...form,
-                  toolDefaultPermission: e.target.value as "always_allow" | "always_ask",
+                  toolDefaultPermission: value as "always_allow" | "always_ask",
                 })
               }
               className="border border-border rounded-md px-2 py-1 text-sm bg-bg text-fg outline-none focus:border-brand disabled:opacity-40"
             >
-              <option value="always_allow">always_allow</option>
-              <option value="always_ask">always_ask</option>
-            </select>
+              <SelectOption value="always_allow">always_allow</SelectOption>
+              <SelectOption value="always_ask">always_ask</SelectOption>
+            </Select>
           </div>
         </div>
       </div>
 
       <div>
-        <label className="text-sm font-medium text-fg block mb-2">Per-tool overrides</label>
+        <Label className="text-sm font-medium text-fg block mb-2">Per-tool overrides</Label>
         <p className="text-xs text-fg-subtle mb-3">
           Each row's effective state is shown in the dropdown. Pick{" "}
           <span className="font-mono">default</span> to inherit the policy above; pick a
@@ -1138,10 +1167,10 @@ function ToolsTab({
                   <div className="text-sm font-mono text-fg">{bt.label}</div>
                   <div className="text-xs text-fg-subtle truncate">{bt.description}</div>
                 </div>
-                <select
+                <Select
                   value={current}
-                  onChange={(e) => {
-                    const v = e.target.value as ToolOverride;
+                  onValueChange={(value) => {
+                    const v = value as ToolOverride;
                     const next = { ...form.toolOverrides };
                     if (v === "default") delete next[bt.name];
                     else next[bt.name] = v;
@@ -1149,11 +1178,11 @@ function ToolsTab({
                   }}
                   className="border border-border rounded-md px-2 py-1 min-h-11 sm:min-h-0 text-xs bg-bg text-fg outline-none focus:border-brand shrink-0"
                 >
-                  <option value="default">default ({effectiveLabel})</option>
-                  <option value="always_allow">always_allow</option>
-                  <option value="always_ask">always_ask</option>
-                  <option value="disabled">disabled</option>
-                </select>
+                  <SelectOption value="default">default ({effectiveLabel})</SelectOption>
+                  <SelectOption value="always_allow">always_allow</SelectOption>
+                  <SelectOption value="always_ask">always_ask</SelectOption>
+                  <SelectOption value="disabled">disabled</SelectOption>
+                </Select>
               </div>
             );
           })}
@@ -1183,14 +1212,14 @@ function SkillsTab({
   return (
     <div className="space-y-4">
       <div>
-        <label className="text-sm font-medium text-fg block mb-2">Anthropic Skills</label>
+        <Label className="text-sm font-medium text-fg block mb-2">Anthropic Skills</Label>
         <div className="grid grid-cols-2 gap-2">
           {ANTHROPIC_SKILLS.map((s) => {
             const active = form.skills.some(
               (sk) => sk.type === "anthropic" && sk.skill_id === s.id,
             );
             return (
-              <button
+              <Button variant="ghost"
                 key={s.id}
                 onClick={() => toggleAnthropicSkill(s.id)}
                 className={`flex items-center gap-2 px-3 py-2.5 rounded-md border text-sm text-left transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
@@ -1209,14 +1238,14 @@ function SkillsTab({
                   {active && "✓"}
                 </span>
                 {s.label}
-              </button>
+              </Button>
             );
           })}
         </div>
       </div>
 
       <div>
-        <label className="text-sm font-medium text-fg block mb-2">Custom Skills</label>
+        <Label className="text-sm font-medium text-fg block mb-2">Custom Skills</Label>
         {filtered.length > 0 ? (
           <div className="space-y-2">
             {filtered.map((cs) => {
@@ -1224,7 +1253,7 @@ function SkillsTab({
                 (sk) => sk.type === "custom" && sk.skill_id === cs.id,
               );
               return (
-                <button
+                <Button variant="ghost"
                   key={cs.id}
                   onClick={() => {
                     if (active) {
@@ -1276,7 +1305,7 @@ function SkillsTab({
                   >
                     {cs.id}
                   </span>
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -1312,30 +1341,30 @@ function McpTab({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between mb-1">
-        <label className="text-sm font-medium text-fg">MCP Servers</label>
+        <Label className="text-sm font-medium text-fg">MCP Servers</Label>
         <div className="flex items-center gap-3">
-          <button
+          <Button variant="ghost"
             onClick={onPickFromRegistry}
             className="inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             + Pick known
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={addMcp}
             className="inline-flex items-center min-h-11 sm:min-h-0 text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             + Custom URL
-          </button>
+          </Button>
         </div>
       </div>
       {form.mcpServers.map((mcp, i) => (
         <div key={i} className="border border-border rounded-lg p-3 space-y-2">
           <div className="flex gap-2">
             <div className="flex-1">
-              <label htmlFor={`mcp-name-${i}`} className="text-xs text-fg-muted block mb-0.5">
+              <Label htmlFor={`mcp-name-${i}`} className="text-xs text-fg-muted block mb-0.5">
                 Name
-              </label>
-              <input
+              </Label>
+              <Input
                 id={`mcp-name-${i}`}
                 value={mcp.name}
                 onChange={(e) => updateMcp(i, "name", e.target.value)}
@@ -1344,25 +1373,25 @@ function McpTab({
               />
             </div>
             <div className="w-24">
-              <label className="text-xs text-fg-muted block mb-0.5">Type</label>
+              <Label className="text-xs text-fg-muted block mb-0.5">Type</Label>
               <Select value={mcp.type} onValueChange={(v) => updateMcp(i, "type", v)}>
                 <SelectOption value="sse">sse</SelectOption>
                 <SelectOption value="stdio">stdio</SelectOption>
               </Select>
             </div>
-            <button
+            <Button variant="ghost"
               onClick={() => removeMcp(i)}
               aria-label={`Remove MCP server ${mcp.name || i + 1}`}
               className="self-end inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 py-2 text-fg-subtle hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
             >
               ×
-            </button>
+            </Button>
           </div>
           <div>
-            <label htmlFor={`mcp-url-${i}`} className="text-xs text-fg-muted block mb-0.5">
+            <Label htmlFor={`mcp-url-${i}`} className="text-xs text-fg-muted block mb-0.5">
               URL
-            </label>
-            <input
+            </Label>
+            <Input
               id={`mcp-url-${i}`}
               value={mcp.url}
               onChange={(e) => updateMcp(i, "url", e.target.value)}
@@ -1401,12 +1430,13 @@ function AgentsTab({
     <div className="space-y-5">
       {/* Built-in general sub-agent — opt-in. */}
       <div className="rounded-md border border-border bg-bg-surface px-3 py-3">
-        <label className="flex items-start gap-2 text-sm cursor-pointer">
-          <input
-            type="checkbox"
+        <Label className="flex items-start gap-2 text-sm cursor-pointer">
+          <Checkbox
             checked={form.enableGeneralSubagent}
-            onChange={(e) => setForm({ ...form, enableGeneralSubagent: e.target.checked })}
-            className="accent-brand mt-0.5"
+            onCheckedChange={(checked) =>
+              setForm({ ...form, enableGeneralSubagent: checked === true })
+            }
+            className="mt-0.5"
           />
           <div>
             <div className="font-medium text-fg">Enable general sub-agent</div>
@@ -1419,11 +1449,11 @@ function AgentsTab({
               (bash/read/write/edit/grep/glob). No roster setup needed.
             </p>
           </div>
-        </label>
+        </Label>
       </div>
 
       <div>
-        <label className="text-sm font-medium text-fg block">Callable Agents</label>
+        <Label className="text-sm font-medium text-fg block">Callable Agents</Label>
         <p className="text-xs text-fg-subtle mb-2">
           Specific agents this agent can delegate to via{" "}
           <span className="font-mono">call_agent_&lt;id&gt;</span> tools.
@@ -1441,18 +1471,18 @@ function AgentsTab({
               <div className="text-sm font-medium text-fg">{agentInfo?.name || ca.id}</div>
               <div className="text-xs text-fg-subtle font-mono">{ca.id}</div>
             </div>
-            <button
+            <Button variant="ghost"
               onClick={() => removeCallable(i)}
               className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-fg-subtle hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
             >
               ×
-            </button>
+            </Button>
           </div>
         );
       })}
 
       <div>
-        <label className="text-xs text-fg-muted block mb-1">Add agent</label>
+        <Label className="text-xs text-fg-muted block mb-1">Add agent</Label>
         <Combobox<Agent>
           value=""
           onValueChange={(v) => {
@@ -1462,7 +1492,7 @@ function AgentsTab({
           getValue={(a) => a.id}
           getLabel={(a) => (
             <span>
-              {a.name} <span className="text-fg-subtle text-[12px]">({a.id})</span>
+              {a.name} <span className="text-fg-subtle text-sm">({a.id})</span>
             </span>
           )}
           getTextLabel={(a) => `${a.name} (${a.id})`}

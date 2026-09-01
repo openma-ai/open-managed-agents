@@ -54,6 +54,58 @@ export interface SandboxDuplexProcessPort {
   ): Promise<SandboxDuplexProcess>;
 }
 
+/** Stable identity for a provider-owned sandbox resource. The host persists
+ * this value; adapters must never require callers to serialize SDK objects. */
+export interface SandboxRuntimeHandle {
+  provider: string;
+  runtimeId: string;
+}
+
+export type SandboxCheckpointKind = "filesystem" | "memory";
+export type SandboxCheckpointScope = "runtime" | "portable";
+export type SandboxRuntimeStatus =
+  | "running"
+  | "suspended"
+  | "stopped"
+  | "unknown";
+
+/** Serializable checkpoint reference. `runtime` scope resumes the same
+ * resource; `portable` scope may create a replacement resource. */
+export interface SandboxCheckpointHandle {
+  provider: string;
+  checkpointId: string;
+  sourceRuntimeId: string;
+  kind: SandboxCheckpointKind;
+  scope: SandboxCheckpointScope;
+  /** Serializable provider data needed to reopen the checkpoint. Hosts
+   * persist it opaquely and must not branch on adapter-specific keys. */
+  metadata?: Readonly<Record<string, string | number | boolean | null>>;
+}
+
+export interface SandboxRuntimeCapabilities {
+  lease: boolean;
+  suspend: readonly SandboxCheckpointKind[];
+  checkpoint: readonly SandboxCheckpointKind[];
+}
+
+/** Narrow resource-lifecycle Port. It is deliberately separate from file and
+ * process execution so a host cannot infer pause/checkpoint support from an
+ * optional method on the broad SandboxPort. */
+export interface SandboxRuntimePort {
+  runtimeHandle(): SandboxRuntimeHandle;
+  runtimeCapabilities(): SandboxRuntimeCapabilities;
+  status(): Promise<SandboxRuntimeStatus>;
+  renewLease(input: { ttlMs: number }): Promise<void>;
+  suspend(input: {
+    kind: SandboxCheckpointKind;
+  }): Promise<SandboxCheckpointHandle>;
+  resume(checkpoint: SandboxCheckpointHandle): Promise<void>;
+  checkpoint(input: {
+    kind: SandboxCheckpointKind;
+    name?: string;
+  }): Promise<SandboxCheckpointHandle>;
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
@@ -204,6 +256,41 @@ export type SandboxFactory = (
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
 ) => Promise<SandboxPort>;
+
+/** SDK-style provider composition. `SandboxFactory` remains the v0 create
+ * adapter; new runtime hosts use this Port when resources must survive the
+ * current process and be attached or restored later. */
+export interface SandboxProviderPort<
+  Runtime extends SandboxPort & SandboxRuntimePort = SandboxPort & SandboxRuntimePort,
+> {
+  create(
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ): Promise<Runtime>;
+  resume(
+    handle: SandboxRuntimeHandle,
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ): Promise<Runtime>;
+  restore(
+    checkpoint: SandboxCheckpointHandle,
+    ctx: SandboxFactoryContext,
+    env: SandboxFactoryEnv,
+  ): Promise<Runtime>;
+}
+
+export function supportsSandboxRuntime(
+  sandbox: SandboxPort,
+): sandbox is SandboxPort & SandboxRuntimePort {
+  const candidate = sandbox as Partial<SandboxRuntimePort>;
+  return typeof candidate.runtimeHandle === "function"
+    && typeof candidate.runtimeCapabilities === "function"
+    && typeof candidate.status === "function"
+    && typeof candidate.renewLease === "function"
+    && typeof candidate.suspend === "function"
+    && typeof candidate.resume === "function"
+    && typeof candidate.checkpoint === "function";
+}
 
 // ─── Shared adapter helpers ─────────────────────────────────────────
 //

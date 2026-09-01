@@ -105,6 +105,7 @@ export class LocalSubprocessSandbox
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private processes = new Map<string, BackgroundProcess>();
+  private duplexProcesses = new Set<SandboxDuplexProcess>();
   private mounts = new Map<string, MemoryMount>();
   private outputsMount: OutputsMount | null = null;
   private memoryRoot: string | null;
@@ -207,7 +208,7 @@ export class LocalSubprocessSandbox
       },
     );
     const exited = childExit(child);
-    return {
+    const process: SandboxDuplexProcess = {
       stdin: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
       stdout: Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
       stderr: Readable.toWeb(child.stderr) as unknown as ReadableStream<Uint8Array>,
@@ -222,6 +223,9 @@ export class LocalSubprocessSandbox
         }
       },
     };
+    this.duplexProcesses.add(process);
+    void exited.then(() => this.duplexProcesses.delete(process));
+    return process;
   }
 
   async setEnvVars(envVars: Record<string, string>): Promise<void> {
@@ -438,6 +442,12 @@ export class LocalSubprocessSandbox
   }
 
   async destroy(): Promise<void> {
+    await Promise.all(
+      [...this.duplexProcesses].map((proc) =>
+        proc.kill("SIGKILL").catch(() => undefined)
+      ),
+    );
+    this.duplexProcesses.clear();
     for (const proc of this.processes.values()) {
       try { await proc.kill("SIGKILL"); } catch { /* best-effort */ }
     }

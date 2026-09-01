@@ -1,3 +1,5 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useEffect, useState } from "react";
 import { ChevronsUpDownIcon, PlusIcon, CheckIcon } from "lucide-react";
 
@@ -96,34 +98,38 @@ export function TenantSwitcher() {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button
+          <Button
+            variant="ghost"
             type="button"
             aria-label={t.profile.switchWorkspace}
+            data-sidebar-overlay-trigger
             disabled={!ready}
-            className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left disabled:cursor-default disabled:hover:bg-transparent outline-none focus-visible:bg-sidebar-accent"
+            className="console-sidebar-row console-sidebar-tenant-trigger disabled:cursor-default disabled:hover:bg-transparent"
           >
-            {ready ? (
-              <Avatar name={current.name} size="sm" squared />
-            ) : (
-              <div className="size-6 rounded-md bg-brand-subtle shrink-0" aria-hidden="true" />
-            )}
-            <div className="min-w-0 flex-1 leading-tight group-data-[collapsible=icon]:hidden">
+            <span data-sidebar-slot data-sidebar-track="icon">
+              {ready ? (
+                <Avatar name={current.name} size="sm" squared />
+              ) : (
+                <span className="size-5 rounded-md bg-brand-subtle" aria-hidden="true" />
+              )}
+            </span>
+            <div className="min-w-0 leading-tight" data-sidebar-track="label">
               <div className="text-sm font-medium truncate text-fg">
                 {ready ? displayName(current) : " "}
               </div>
               {ready && tenants.length > 1 && (
-                <div className="text-[10px] text-fg-subtle uppercase tracking-wider">
+                <div className="text-xs text-fg-subtle uppercase tracking-wider">
                   {current.role}
                 </div>
               )}
             </div>
             {ready && (
               <ChevronsUpDownIcon
-                className="w-3.5 h-3.5 text-fg-subtle shrink-0 group-data-[collapsible=icon]:hidden"
+                className="w-3.5 h-3.5 text-fg-subtle shrink-0"
                 aria-hidden="true"
               />
             )}
-          </button>
+          </Button>
         </DropdownMenuTrigger>
 
         {/* `side="bottom"` is the preferred placement; Radix auto-flips
@@ -137,19 +143,16 @@ export function TenantSwitcher() {
           align="start"
           sideOffset={4}
           collisionPadding={8}
-          className="w-(--radix-dropdown-menu-trigger-width) min-w-56 max-h-72 overflow-y-auto"
+          className="console-tenant-menu"
         >
           {tenants.map((t) => (
             <DropdownMenuItem
               key={t.id}
               onSelect={() => switchTo(t.id)}
-              className="flex items-center gap-2"
+              className="console-tenant-menu-item"
             >
               <Avatar name={displayName(t)} size="xs" squared />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm">{displayName(t)}</div>
-                <div className="text-[10px] text-fg-subtle font-mono">{t.id}</div>
-              </div>
+              <span className="min-w-0 truncate">{displayName(t)}</span>
               {t.id === active && (
                 <CheckIcon className="size-3.5 text-success shrink-0" />
               )}
@@ -158,10 +161,11 @@ export function TenantSwitcher() {
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={() => setCreateOpen(true)}
-            className="text-fg-muted"
+            className="console-tenant-menu-item"
+            data-create-workspace
           >
             <PlusIcon className="size-4 shrink-0" />
-            {t.profile.createWorkspace}
+            <span className="min-w-0 truncate">{t.profile.createWorkspace}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -219,10 +223,10 @@ function CreateTenantModal({
           {t.profile.createWorkspaceDesc}
         </p>
         <div>
-          <label htmlFor="tenant-create-name" className="block text-xs uppercase tracking-wider text-fg-subtle mb-1">
+          <Label htmlFor="tenant-create-name" className="block text-xs uppercase tracking-wider text-fg-subtle mb-1">
             {t.profile.workspaceName}
-          </label>
-          <input
+          </Label>
+          <Input
             id="tenant-create-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -239,13 +243,13 @@ function CreateTenantModal({
           </div>
         )}
         <div className="flex gap-2 justify-end">
-          <button
+          <Button variant="ghost"
             onClick={onClose}
             disabled={working}
             className="inline-flex items-center justify-center px-4 py-2 min-h-11 sm:min-h-0 rounded-lg border border-border text-sm text-fg-muted hover:bg-bg-surface disabled:opacity-40"
           >
             {t.common.cancel}
-          </button>
+          </Button>
           <Button onClick={submit} disabled={working || !name.trim()}>
             {working ? t.profile.creating : t.profile.createWorkspace.replace("…", "")}
           </Button>

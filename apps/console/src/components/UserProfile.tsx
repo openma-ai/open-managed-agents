@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import {
   BookOpenIcon,
   CheckIcon,
@@ -61,23 +62,25 @@ export function UserProfile() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
+        <Button variant="ghost"
           type="button"
           aria-label={t.profile.accountMenu}
-          className="w-full h-11 px-3 flex items-center gap-2 hover:bg-sidebar-accent transition-colors text-left"
+          className="console-sidebar-row"
         >
-          <Avatar name={label} size="sm" />
-          <div className="flex-1 min-w-0 text-left leading-tight group-data-[collapsible=icon]:hidden">
+          <span data-sidebar-slot data-sidebar-track="icon">
+            <Avatar name={label} size="sm" />
+          </span>
+          <div className="min-w-0 text-left leading-tight" data-sidebar-track="label">
             <div className="text-sm text-sidebar-foreground truncate">
               {user.name || user.email}
             </div>
             {user.email && user.name && (
-              <div className="text-[11px] text-fg-subtle truncate">
+              <div className="text-xs text-fg-subtle truncate">
                 {user.email}
               </div>
             )}
           </div>
-        </button>
+        </Button>
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
@@ -92,7 +95,7 @@ export function UserProfile() {
               {user.name || user.email}
             </div>
             {user.email && user.name && (
-              <div className="text-[11px] text-fg-subtle truncate">
+              <div className="text-xs text-fg-subtle truncate">
                 {user.email}
               </div>
             )}
@@ -116,7 +119,7 @@ export function UserProfile() {
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium">
+        <DropdownMenuLabel className="text-xs uppercase tracking-wider text-fg-subtle font-medium">
           Language
         </DropdownMenuLabel>
         <DropdownMenuGroup>
@@ -140,7 +143,7 @@ export function UserProfile() {
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-fg-subtle font-medium">
+        <DropdownMenuLabel className="text-xs uppercase tracking-wider text-fg-subtle font-medium">
           {t.profile.theme}
         </DropdownMenuLabel>
         <DropdownMenuGroup>

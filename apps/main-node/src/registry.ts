@@ -81,7 +81,10 @@ export interface SessionRegistryDeps {
 
   /** Build harness instance + context. Each is platform-neutral so the
    *  machine just calls .run(ctx). */
-  buildHarness(agent: AgentConfig): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): {
+    run: (ctx: unknown) => Promise<void>;
+    dispose?: (reason: "replace" | "shutdown" | "destroy") => Promise<void>;
+  };
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
@@ -170,7 +173,7 @@ export class SessionRegistry {
     for (const p of this.map.values()) {
       try {
         const entry = await p;
-        if (entry.sandbox.destroy) await entry.sandbox.destroy();
+        await entry.machine.shutdown();
       } catch {
         /* best-effort */
       }
@@ -273,6 +276,12 @@ export class SessionRegistry {
           tenantId,
           eventLog,
         }),
+      beforeSandboxDestroy: async () => {
+        await this.deps.sandboxOrchestrator.snapshotWorkspaceNow(sandbox, {
+          sessionId,
+          tenantId,
+        });
+      },
       publish: (event: SessionEvent) => this.deps.hub.publish(sessionId, event),
     });
 

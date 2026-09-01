@@ -24,13 +24,15 @@ export type {
 } from "@open-managed-agents/sandbox";
 export type { FileResolver, ResolvedFile } from "../runtime/history";
 
+export type HarnessDisposeReason = "replace" | "shutdown" | "destroy";
+
 export interface HarnessInterface {
   /** Main agent loop. Required. Drives generateText and emits events. */
   run(ctx: HarnessContext): Promise<void>;
 
   /** Release harness-owned processes. Session hosts call this before the
    * underlying Sandbox is destroyed. */
-  dispose?(): Promise<void>;
+  dispose?(reason?: HarnessDisposeReason): Promise<void>;
 
   /**
    * Called once per session, after sandbox warmup, before the first user

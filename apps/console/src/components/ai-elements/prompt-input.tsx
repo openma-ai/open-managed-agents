@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 "use client";
 
 import {
@@ -914,7 +915,7 @@ export const PromptInput = ({
   // Render with or without local provider
   const inner = (
     <>
-      <input
+      <Input
         accept={accept}
         aria-label="Upload files"
         className="hidden"

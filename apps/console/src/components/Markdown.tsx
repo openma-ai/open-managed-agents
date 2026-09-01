@@ -1,3 +1,4 @@
+import { Table, TableHead, TableCell } from "@/components/ui/table";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { createLowlight } from "lowlight";
@@ -48,7 +49,7 @@ export function Markdown({ children }: { children: string }) {
       remarkPlugins={[remarkGfm]}
       components={{
         pre: ({ children }) => (
-          <pre className="bg-bg-surface border border-border rounded-md p-3 overflow-x-auto my-2 text-[13px]">
+          <pre className="bg-bg-surface border border-border rounded-md p-3 overflow-x-auto my-2 text-sm">
             {children}
           </pre>
         ),
@@ -56,7 +57,7 @@ export function Markdown({ children }: { children: string }) {
           const isInline = !className;
           if (isInline) {
             return (
-              <code className="bg-bg-surface px-1 py-0.5 rounded text-[0.85em] font-mono" {...props}>
+              <code className="bg-bg-surface px-1 py-0.5 rounded text-sm font-mono" {...props}>
                 {children}
               </code>
             );
@@ -93,13 +94,13 @@ export function Markdown({ children }: { children: string }) {
           <blockquote className="border-l-2 border-border-strong pl-3 my-2 text-fg-muted">{children}</blockquote>
         ),
         table: ({ children }) => (
-          <table className="border-collapse my-2 text-sm w-full">{children}</table>
+          <Table className="border-collapse my-2 text-sm w-full">{children}</Table>
         ),
         th: ({ children }) => (
-          <th className="border border-border px-2 py-1 bg-bg-surface text-left text-fg">{children}</th>
+          <TableHead className="border border-border px-2 py-1 bg-bg-surface text-left text-fg">{children}</TableHead>
         ),
         td: ({ children }) => (
-          <td className="border border-border px-2 py-1 text-fg">{children}</td>
+          <TableCell className="border border-border px-2 py-1 text-fg">{children}</TableCell>
         ),
       }}
     >

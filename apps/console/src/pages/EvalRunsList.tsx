@@ -7,7 +7,6 @@ import { useApiQuery } from "../lib/useApiQuery";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import { PopoverContent } from "@/components/ui/popover";
 import { useI18n } from "../i18n";
 
@@ -196,51 +195,6 @@ export function EvalRunsList() {
           <span className="font-mono text-xs text-fg-muted">{row.original.agent_id}</span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const r = row.original;
-          const isActive = r.status === "pending" || r.status === "running";
-          return (
-            <RowActionsMenu
-              label={`Actions for ${r.id}`}
-              actions={[
-                {
-                  label: "Cancel",
-                  icon: <XCircleIcon className="size-4" />,
-                  // Cancel and Delete both hit the same DELETE endpoint
-                  // (it cancels in-flight runs by flipping status to
-                  // failed, then deletes the row). The two menu items
-                  // give the user the right verb for the row's state.
-                  disabled: !isActive,
-                  onSelect: async () => {
-                    if (!confirm(`Cancel eval run ${r.id}? In-flight tasks will be marked failed.`)) return;
-                    try {
-                      await api(`/v1/oma/evals/runs/${r.id}`, { method: "DELETE" });
-                      void refetch();
-                    } catch {}
-                  },
-                },
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`Delete eval run ${r.id}? This can't be undone.`)) return;
-                    try {
-                      await api(`/v1/oma/evals/runs/${r.id}`, { method: "DELETE" });
-                      void refetch();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
     [api, refetch],
   );
@@ -281,6 +235,32 @@ export function EvalRunsList() {
       loading={loading}
       getRowId={(r) => r.id}
       onRowClick={(r) => nav(`/evals/${r.id}`)}
+      rowActions={(run) => [
+        {
+          label: "Cancel",
+          icon: <XCircleIcon className="size-4" />,
+          disabled: run.status !== "pending" && run.status !== "running",
+          onSelect: async () => {
+            if (!confirm(`Cancel eval run ${run.id}? In-flight tasks will be marked failed.`)) return;
+            try {
+              await api(`/v1/oma/evals/runs/${run.id}`, { method: "DELETE" });
+              void refetch();
+            } catch {}
+          },
+        },
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          onSelect: async () => {
+            if (!confirm(`Delete eval run ${run.id}? This can't be undone.`)) return;
+            try {
+              await api(`/v1/oma/evals/runs/${run.id}`, { method: "DELETE" });
+              void refetch();
+            } catch {}
+          },
+        },
+      ]}
       columns={columns}
       emptyTitle={status === "any" ? "No eval runs yet" : "No matching eval runs"}
       emptyKind="eval"

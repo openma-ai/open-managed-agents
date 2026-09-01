@@ -1,3 +1,4 @@
+import { TableHeader } from "@/components/ui/table";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useOutletContext } from "react-router";
@@ -19,7 +20,7 @@ import type { AppOutletContext } from "./AppShell";
  *   - `actions`      → right-side button row (filters, CTAs)
  *   - `toolbar`      → second row below the title for search / chips
  *   - `tableHeader`  → bottom row for a frozen list-table header
- *                      (Excel-style). DataTable renders its `<thead>`
+ *                      (Excel-style). DataTable renders its `<TableHeader>`
  *                      table here so column labels physically live
  *                      outside the scroll container and CAN'T move.
  *
@@ -57,17 +58,17 @@ export function PageHeader({
   if (!hasTopRow && !toolbar && !tableHeader) return null;
 
   return createPortal(
-    <div className={cn("bg-bg", className)}>
+    <div className={cn("console-page-header", className)}>
       {hasTopRow && (
-        <div className="flex items-start gap-4 pl-3 pr-4 pt-3">
+        <div className="console-page-header-primary">
           <div className="min-w-0 flex-1">
             {title && (
-              <h1 className="text-xl font-semibold tracking-tight truncate">
+              <h1 className="font-display text-base font-semibold tracking-tight truncate">
                 {title}
               </h1>
             )}
             {subtitle && (
-              <p className="text-sm text-fg-muted mt-0.5">{subtitle}</p>
+              <p className="text-sm leading-[var(--type-line)] text-fg-muted">{subtitle}</p>
             )}
           </div>
           {actions && (
@@ -76,12 +77,12 @@ export function PageHeader({
         </div>
       )}
       {toolbar && (
-        <div className="flex items-center gap-2 pl-3 pr-4 py-3 overflow-x-auto">
+        <div className="console-page-header-toolbar">
           {toolbar}
         </div>
       )}
       {tableHeader && (
-        <div className="pl-3 pr-4">
+        <div className="px-[var(--list-frame-inset)]">
           {tableHeader}
         </div>
       )}

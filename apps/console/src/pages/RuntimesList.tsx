@@ -8,7 +8,6 @@ import { Modal } from "../components/Modal";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 
 interface LocalSkill {
   id: string;
@@ -113,7 +112,7 @@ export function RuntimesList() {
                     {Object.entries(r.local_skills ?? {}).map(([acpId, skills]) =>
                       !skills?.length ? null : (
                         <div key={acpId}>
-                          <div className="text-fg-subtle text-[10px] uppercase tracking-wider mb-0.5">
+                          <div className="text-fg-subtle text-xs uppercase tracking-wider mb-0.5">
                             for {acpId}
                           </div>
                           <ul className="space-y-0.5">
@@ -189,27 +188,6 @@ export function RuntimesList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => (
-          <RowActionsMenu
-            label={`Actions for ${row.original.hostname}`}
-            actions={[
-              {
-                label: "Revoke",
-                icon: <XCircleIcon className="size-4" />,
-                destructive: true,
-                onSelect: () => {
-                  void remove(row.original.id);
-                },
-              },
-            ]}
-          />
-        ),
-        enableHiding: false,
-        size: 56,
-      },
     ],
     // `remove` is closed over from this scope; it captures `api` + `refetch`
     // which are stable enough not to thrash the memo. Re-derive on mount.
@@ -253,6 +231,14 @@ export function RuntimesList() {
       data={filtered}
       loading={loading}
       getRowId={(r) => r.id}
+      rowActions={(runtime) => [
+        {
+          label: "Revoke",
+          icon: <XCircleIcon className="size-4" />,
+          destructive: true,
+          onSelect: () => void remove(runtime.id),
+        },
+      ]}
       emptyTitle={status === "any" ? "No runtimes connected" : "No matching runtimes"}
       emptyKind="runtime"
       emptySubtitle={

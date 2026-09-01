@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.79",
+    "@anthropic-ai/sdk": "0.120.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@hookform/resolvers": "^5.2.2",
@@ -36,6 +37,7 @@
     "@tanstack/react-table": "^8.21.3",
     "ai": "^7.0.76",
     "better-auth": "^1.6.3",
+    "fflate": "^0.8.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

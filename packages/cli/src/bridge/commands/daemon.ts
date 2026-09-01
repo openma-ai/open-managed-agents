@@ -20,6 +20,7 @@ import { osTag, currentProfile, paths } from "../lib/platform.js";
 import { detectAll, loadRegistry } from "@open-managed-agents/acp-runtime/registry";
 import { SessionManager } from "../lib/session-manager.js";
 import { createNodeSessionManagerRuntimeDependencies } from "../lib/node-session-runtime.js";
+import { RuntimeHeartbeatLease } from "../lib/runtime-heartbeat.js";
 import { detectLocalSkills } from "../lib/local-skills.js";
 import { printBanner, log, c } from "../lib/style.js";
 import { PKG_VERSION } from "../lib/version.js";
@@ -34,6 +35,7 @@ import {
 // domains drop within minutes of silence. Send a small ping every 25s so the
 // connection stays warm without burning much bandwidth or DO CPU.
 const HEARTBEAT_INTERVAL_MS = 25 * 1000;
+const PONG_DEADLINE_MS = HEARTBEAT_INTERVAL_MS * 3;
 const RECONNECT_BACKOFF_MIN_MS = 1000;
 const RECONNECT_BACKOFF_MAX_MS = 60 * 1000;
 
@@ -218,6 +220,10 @@ export async function runDaemon(): Promise<void> {
       currentWs = ws;
 
       await waitOpen(ws);
+      const heartbeatLease = new RuntimeHeartbeatLease({
+        connectedAt: Date.now(),
+        pongDeadlineMs: PONG_DEADLINE_MS,
+      });
       backoffMs = RECONNECT_BACKOFF_MIN_MS;
       log.ok(`attached to ${c.cyan(wsBase)}`);
 
@@ -250,6 +256,11 @@ export async function runDaemon(): Promise<void> {
 
       const heartbeat = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
+          if (heartbeatLease.tick(Date.now()) === "expired") {
+            log.warn("runtime heartbeat lease expired — fencing stale socket");
+            ws.terminate();
+            return;
+          }
           ws.send(JSON.stringify({ type: "ping" }));
         }
       }, HEARTBEAT_INTERVAL_MS);
@@ -266,7 +277,11 @@ export async function runDaemon(): Promise<void> {
         let msg: SessionWireMessage;
         try { msg = JSON.parse(data.toString()); } catch { return; }
         process.stderr.write(`← server: ${msg.type ?? "?"}\n`);
-        if (msg.type === "welcome" || msg.type === "pong") return;
+        if (msg.type === "pong") {
+          heartbeatLease.observePong(Date.now());
+          return;
+        }
+        if (msg.type === "welcome") return;
         const command = decodeSessionCommand(msg);
         if (!command) {
           process.stderr.write(`! unhandled server message: ${msg.type ?? "?"}\n`);

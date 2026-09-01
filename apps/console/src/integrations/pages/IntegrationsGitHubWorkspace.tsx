@@ -1,3 +1,7 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -9,6 +13,7 @@ import type {
 } from "../api/types";
 import { StatusPill } from "../components/StatusPill";
 import { relativeTime } from "../components/relativeTime";
+import { readManagedMetadataObject } from "../../lib/managed-metadata";
 
 const api = new IntegrationsApi();
 
@@ -76,11 +81,11 @@ export function IntegrationsGitHubWorkspace() {
   const headerStatus = computeWorkspaceStatus(publications);
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[900px] mx-auto px-4 sm:px-8 lg:px-10 py-10 lg:py-12">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--medium">
         <Link
           to="/integrations/github"
-          className="inline-block mb-6 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-block mb-6 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← All GitHub installations
         </Link>
@@ -115,7 +120,7 @@ export function IntegrationsGitHubWorkspace() {
                     <div className="border border-border rounded-lg px-6 py-10 text-center bg-bg-surface/30">
                       <div className="font-mono text-fg-subtle text-sm select-none mb-3">[ &nbsp;&nbsp; ]</div>
                       <p className="text-sm text-fg">No agents bound to this org.</p>
-                      <p className="text-[13px] text-fg-muted mt-1.5">
+                      <p className="text-sm text-fg-muted mt-1.5">
                         <Link to="/integrations/github/bind" className="text-brand hover:underline">
                           Bind one →
                         </Link>
@@ -149,14 +154,14 @@ function NotFound({ id }: { id: string }) {
     <div className="border border-border rounded-lg px-6 py-10 text-center bg-bg-surface/30">
       <div className="font-mono text-fg-subtle text-sm select-none mb-3">[ ?  ]</div>
       <p className="text-sm text-fg">Installation not found.</p>
-      <p className="text-[13px] text-fg-muted mt-1.5">
+      <p className="text-sm text-fg-muted mt-1.5">
         <code className="font-mono text-fg-muted">{id}</code> doesn't match any
         GitHub installation on this account. It may have been removed, or you
         may be signed in as a different user.
       </p>
       <Link
         to="/integrations/github"
-        className="mt-4 inline-block text-[13px] text-brand hover:underline"
+        className="mt-4 inline-block text-sm text-brand hover:underline"
       >
         ← Back to GitHub integrations
       </Link>
@@ -184,10 +189,10 @@ function BotIdentityCard({
         <div className="flex items-start gap-4 min-w-0">
           <BotAvatar login={installation.bot_login} />
           <div className="min-w-0">
-            <h1 className="font-display text-[26px] leading-tight font-semibold tracking-tight text-fg truncate">
+            <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg truncate">
               {installation.workspace_name}
             </h1>
-            <p className="mt-1 text-[13px] text-fg-muted">
+            <p className="mt-1 text-sm text-fg-muted">
               acting as{" "}
               <code className="font-mono text-fg">
                 @{slug}
@@ -200,7 +205,7 @@ function BotIdentityCard({
         </div>
         <StatusPill status={status} size="md" />
       </div>
-      <div className="mt-4 pt-4 border-t border-border flex items-center gap-4 text-[12px] text-fg-muted">
+      <div className="mt-4 pt-4 border-t border-border flex items-center gap-4 text-sm text-fg-muted">
         <span>
           Installed{" "}
           <span className="text-fg">{relativeTime(installation.created_at)}</span>
@@ -227,7 +232,7 @@ function BotAvatar({ login }: { login: string }) {
   const slug = login.endsWith("[bot]") ? login.slice(0, -"[bot]".length) : login;
   const initial = slug.slice(0, 1).toUpperCase() || "B";
   return (
-    <div className="w-12 h-12 rounded-lg bg-brand-subtle text-brand flex items-center justify-center font-display text-[20px] font-semibold shrink-0">
+    <div className="w-12 h-12 rounded-lg bg-brand-subtle text-brand flex items-center justify-center font-display text-lg font-semibold shrink-0">
       {initial}
     </div>
   );
@@ -261,10 +266,10 @@ function computeWorkspaceStatus(
 function SectionHeading({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="flex items-baseline justify-between mb-3">
-      <h2 className="font-display text-[18px] font-semibold text-fg tracking-tight">
+      <h2 className="font-display text-lg font-semibold text-fg tracking-tight">
         {title}
       </h2>
-      {hint && <span className="text-[12px] text-fg-muted">{hint}</span>}
+      {hint && <span className="text-sm text-fg-muted">{hint}</span>}
     </div>
   );
 }
@@ -272,20 +277,20 @@ function SectionHeading({ title, hint }: { title: string; hint?: string }) {
 function WakesUpOn() {
   return (
     <section>
-      <h2 className="font-display text-[18px] font-semibold text-fg tracking-tight mb-3">
+      <h2 className="font-display text-lg font-semibold text-fg tracking-tight mb-3">
         Wakes up on
       </h2>
       <ul className="space-y-3">
         {WAKEUP_EVENTS.map((e) => (
-          <li key={e.kind} className="flex items-start gap-2.5 text-[12px]">
-            <code className="bg-bg-surface text-fg-muted px-2 py-0.5 rounded text-[11px] font-mono shrink-0 mt-0.5">
+          <li key={e.kind} className="flex items-start gap-2.5 text-sm">
+            <code className="bg-bg-surface text-fg-muted px-2 py-0.5 rounded text-xs font-mono shrink-0 mt-0.5">
               {e.kind}
             </code>
             <span className="text-fg-muted leading-snug">{e.description}</span>
           </li>
         ))}
       </ul>
-      <p className="mt-4 text-[11px] text-fg-subtle leading-relaxed">
+      <p className="mt-4 text-xs text-fg-subtle leading-relaxed">
         Default matrix. Self-mentions, sender-is-bot, and unmentioned comments
         never wake the bot.
       </p>
@@ -311,7 +316,10 @@ function ActivitySection({ installation }: { installation: GitHubInstallation })
       .then((data) => {
         if (!alive) return;
         const matching = data.filter((s) => {
-          const meta = (s.metadata?.github as GitHubSessionMetadata | undefined) ?? null;
+          const meta = readManagedMetadataObject(
+            s.metadata,
+            "github",
+          ) as GitHubSessionMetadata | null;
           return meta?.installationId === installation.workspace_id;
         });
         setSessions(matching);
@@ -334,9 +342,9 @@ function ActivitySection({ installation }: { installation: GitHubInstallation })
         title="Recent activity"
         hint={sessions ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}` : undefined}
       />
-      {loading && <p className="text-[13px] text-fg-muted">Loading…</p>}
+      {loading && <p className="text-sm text-fg-muted">Loading…</p>}
       {err && (
-        <p className="text-[13px] text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Couldn't load activity: <span className="text-danger">{err}</span>
         </p>
       )}
@@ -344,7 +352,7 @@ function ActivitySection({ installation }: { installation: GitHubInstallation })
         <div className="border border-border rounded-lg px-6 py-10 text-center bg-bg-surface/30">
           <div className="font-mono text-fg-subtle text-sm select-none mb-3">[ &nbsp;&nbsp; ]</div>
           <p className="text-sm text-fg">No webhook deliveries yet.</p>
-          <p className="text-[13px] text-fg-muted mt-1.5">
+          <p className="text-sm text-fg-muted mt-1.5">
             Try assigning a GitHub issue to{" "}
             <code className="font-mono text-fg">@{installation.bot_login}</code> or
             mentioning the bot in a comment.
@@ -363,19 +371,22 @@ function ActivitySection({ installation }: { installation: GitHubInstallation })
 }
 
 function ActivityRow({ session }: { session: SessionSummary }) {
-  const meta = (session.metadata?.github as GitHubSessionMetadata | undefined) ?? null;
+  const meta = readManagedMetadataObject(
+    session.metadata,
+    "github",
+  ) as GitHubSessionMetadata | null;
   const eventKind = meta?.eventKind ?? meta?.eventType ?? "event";
   const where = meta?.repository
     ? `${meta.repository}${meta.itemNumber != null ? `#${meta.itemNumber}` : ""}`
     : "—";
   return (
-    <li className="px-5 py-3 text-[13px] flex items-center gap-3">
-      <code className="bg-bg-surface text-fg-muted px-2 py-0.5 rounded text-[11px] font-mono shrink-0">
+    <li className="px-5 py-3 text-sm flex items-center gap-3">
+      <code className="bg-bg-surface text-fg-muted px-2 py-0.5 rounded text-xs font-mono shrink-0">
         {eventKind}
       </code>
       <div className="min-w-0 flex-1">
-        <div className="font-mono text-fg truncate text-[12px]">{where}</div>
-        <div className="text-[11px] text-fg-muted">
+        <div className="font-mono text-fg truncate text-sm">{where}</div>
+        <div className="text-xs text-fg-muted">
           {relativeTime(session.created_at)}
           {meta?.actorLogin && (
             <>
@@ -390,12 +401,12 @@ function ActivityRow({ session }: { session: SessionSummary }) {
           href={meta.htmlUrl}
           target="_blank"
           rel="noreferrer"
-          className="shrink-0 text-[12px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="shrink-0 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           View on GitHub →
         </a>
       ) : (
-        <span className="shrink-0 text-[11px] font-mono text-fg-subtle truncate max-w-[160px]">
+        <span className="shrink-0 text-xs font-mono text-fg-subtle truncate max-w-[160px]">
           {session.id}
         </span>
       )}
@@ -446,13 +457,13 @@ function PublicationCard({
           {pub.persona.avatarUrl ? (
             <img src={pub.persona.avatarUrl} alt="" loading="lazy" decoding="async" className="w-8 h-8 rounded-full shrink-0" />
           ) : (
-            <div className="w-8 h-8 rounded-full bg-brand-subtle text-brand flex items-center justify-center text-[12px] font-medium shrink-0">
+            <div className="w-8 h-8 rounded-full bg-brand-subtle text-brand flex items-center justify-center text-sm font-medium shrink-0">
               {pub.persona.name.slice(0, 1).toUpperCase()}
             </div>
           )}
           <div className="min-w-0">
-            <div className="text-[15px] font-medium text-fg truncate">{pub.persona.name}</div>
-            <div className="text-[12px] text-fg-muted flex items-center gap-1.5 flex-wrap">
+            <div className="text-base font-medium text-fg truncate">{pub.persona.name}</div>
+            <div className="text-sm text-fg-muted flex items-center gap-1.5 flex-wrap">
               <StatusPill status={pub.status} />
               <span className="text-fg-subtle">·</span>
               <span>
@@ -466,18 +477,18 @@ function PublicationCard({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button variant="ghost"
             onClick={() => setEditing(!editing)}
-            className="text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-3 py-1.5"
+            className="text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-3 py-1.5"
           >
             {editing ? "Cancel" : "Edit caps"}
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={unbind}
-            className="text-[13px] text-danger hover:underline px-3 py-1.5"
+            className="text-sm text-danger hover:underline px-3 py-1.5"
           >
             Unbind
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -490,46 +501,45 @@ function PublicationCard({
             if (g.caps.length === 0) return null;
             return (
               <div key={g.label}>
-                <h3 className="text-[10px] uppercase tracking-wider text-fg-subtle font-mono mb-2">
+                <h3 className="text-xs uppercase tracking-wider text-fg-subtle font-mono mb-2">
                   {g.label}
                 </h3>
                 <div className="flex flex-wrap gap-1">
                   {g.caps.map((c) => (
-                    <label
+                    <Label
                       key={c}
-                      className={`inline-flex items-center gap-1.5 text-[12px] px-2 py-1 border rounded cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+                      className={`inline-flex items-center gap-1.5 text-sm px-2 py-1 border rounded cursor-pointer transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
                         caps.has(c)
                           ? "border-brand bg-brand-subtle text-brand"
                           : "border-border text-fg-muted hover:border-fg-muted"
                       }`}
                     >
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={caps.has(c)}
-                        onChange={(e) => {
+                        onCheckedChange={(checked) => {
                           const next = new Set(caps);
-                          if (e.target.checked) next.add(c);
+                          if (checked === true) next.add(c);
                           else next.delete(c);
                           setCaps(next);
                         }}
                         className="hidden"
                       />
                       <code className="font-mono">{c}</code>
-                    </label>
+                    </Label>
                   ))}
                 </div>
               </div>
             );
           })}
-          {err && <p className="text-[13px] text-danger">{err}</p>}
+          {err && <p className="text-sm text-danger">{err}</p>}
           <div className="flex justify-end pt-2 border-t border-border -mx-5 px-5 -mb-5 pb-5 mt-2">
-            <button
+            <Button variant="ghost"
               onClick={save}
               disabled={saving}
-              className="px-5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover disabled:opacity-50"
+              className="px-5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover disabled:opacity-50"
             >
               {saving ? "Saving…" : "Save capabilities"}
-            </button>
+            </Button>
           </div>
         </div>
       )}

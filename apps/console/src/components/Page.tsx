@@ -22,13 +22,34 @@ interface PageProps {
    *  scroll context. */
   header?: ReactNode;
   className?: string;
+  layout?: "single" | "rail";
+  rail?: ReactNode;
 }
 
-export function Page({ header, children, className = "" }: PageProps) {
+export function Page({
+  header,
+  children,
+  className = "",
+  layout = "single",
+  rail,
+}: PageProps) {
   return (
     <>
       {header}
-      <div className={`pl-3 pr-4 pb-4 ${className}`.trim()}>{children}</div>
+      <div
+        className={`console-detail-layout console-detail-layout--${layout} ${className}`.trim()}
+        data-detail-layout={layout}
+        data-testid="detail-layout"
+      >
+        <div className="console-detail-body" data-detail-slot="body" data-testid="detail-body">
+          {children}
+        </div>
+        {layout === "rail" && (
+          <aside className="console-detail-rail" data-detail-slot="rail" data-testid="detail-rail">
+            {rail}
+          </aside>
+        )}
+      </div>
     </>
   );
 }

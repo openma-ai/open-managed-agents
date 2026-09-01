@@ -213,6 +213,60 @@ describe("SessionManager runtime adapter", () => {
     expect(promptSignal?.aborted).toBe(true);
   });
 
+  it("escalates a cancellation ignored by an ACP child after the PC grace", async () => {
+    let releasePrompt: (() => void) | undefined;
+    let disposeCount = 0;
+    const sleeps: number[] = [];
+    const manager = new SessionManager(
+      () => {},
+      {
+        acpRuntime: {
+          async start() {
+            return acpSessionFixture({
+              acpSessionId: "acp-cli-stuck-cancel",
+              async *prompt() {
+                await new Promise<void>((resolve) => { releasePrompt = resolve; });
+              },
+              async dispose() {
+                disposeCount += 1;
+                releasePrompt?.();
+              },
+            });
+          },
+        },
+        async prepareSession() {
+          return { agent: { command: "fixture-agent" } };
+        },
+        runtimeScheduler: {
+          now: () => 0,
+          async sleep(ms: number) { sleeps.push(ms); },
+        },
+        cancelGraceMs: 25,
+      },
+    );
+    manager.setTenantKeys([{
+      id: "workspace-stuck-cancel",
+      agentApiKey: "oma_stuck_cancel_key",
+    }]);
+    await manager.start({
+      session_id: "session-cli-stuck-cancel",
+      agent_id: "fixture-agent",
+      tenant_id: "workspace-stuck-cancel",
+    });
+    void manager.prompt({
+      session_id: "session-cli-stuck-cancel",
+      turn_id: "turn-cli-stuck-cancel",
+      text: "wait forever",
+    });
+    await Promise.resolve();
+
+    manager.cancel("session-cli-stuck-cancel", "turn-cli-stuck-cancel");
+    await expect.poll(() => disposeCount).toBe(1);
+
+    expect(sleeps).toEqual([25]);
+    expect(manager.has("session-cli-stuck-cancel")).toBe(false);
+  });
+
   it("disposes the shared runtime session and releases Node resources", async () => {
     const messages: unknown[] = [];
     const released: string[] = [];

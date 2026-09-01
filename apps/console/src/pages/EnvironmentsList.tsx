@@ -1,8 +1,12 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ArchiveIcon, TrashIcon } from "lucide-react";
-import { useApi } from "../lib/api";
+import type { BetaEnvironment as Env } from "@anthropic-ai/sdk/resources/beta/environments/environments";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
@@ -10,17 +14,7 @@ import { Select, SelectOption } from "../components/Select";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useI18n } from "../i18n";
-
-interface Env {
-  id: string;
-  name: string;
-  config: Record<string, unknown>;
-  created_at: string;
-  archived_at?: string;
-  status?: string;
-}
 
 type StatusValue = "any" | "active" | "archived";
 
@@ -31,7 +25,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 ];
 
 export function EnvironmentsList() {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const [showCreate, setShowCreate] = useState(false);
@@ -46,16 +40,9 @@ export function EnvironmentsList() {
 
   const envsParams = useMemo(
     () => ({
-      status,
-      ...(created.after !== undefined
-        ? { created_after: new Date(created.after).toISOString() }
-        : {}),
-      ...(created.before !== undefined
-        ? { created_before: new Date(created.before).toISOString() }
-        : {}),
-      ...(search ? { q: search } : {}),
+      ...(status !== "active" ? { include_archived: "true" } : {}),
     }),
-    [status, created.after, created.before, search],
+    [status],
   );
 
   const {
@@ -66,11 +53,23 @@ export function EnvironmentsList() {
     loadMore,
     refresh: load,
   } = useInfiniteApiQuery<Env>("/v1/environments", { limit: 20, params: envsParams });
+  const visibleEnvs = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return envs.filter((environment) => {
+      if (status === "active" && environment.archived_at) return false;
+      if (status === "archived" && !environment.archived_at) return false;
+      const createdAt = Date.parse(environment.created_at);
+      if (created.after !== undefined && createdAt < created.after) return false;
+      if (created.before !== undefined && createdAt > created.before) return false;
+      return !needle || `${environment.name}\n${environment.id}`.toLocaleLowerCase().includes(needle);
+    });
+  }, [created.after, created.before, envs, search, status]);
 
   const create = async () => {
-    await api("/v1/environments", {
-      method: "POST",
-      body: JSON.stringify({ name: form.name, config: { type: "cloud" }, description: form.description || undefined }),
+    await managedApi.environments.create({
+      name: form.name,
+      config: { type: "cloud" },
+      description: form.description || undefined,
     });
     setShowCreate(false); setForm({ name: "", description: "" }); load();
   };
@@ -134,51 +133,8 @@ export function EnvironmentsList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const e = row.original;
-          const archived = !!e.archived_at;
-          return (
-            <RowActionsMenu
-              label={`Actions for ${e.name}`}
-              actions={[
-                {
-                  label: "Archive",
-                  icon: <ArchiveIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    try {
-                      await api(`/v1/environments/${e.id}/archive`, {
-                        method: "POST",
-                        body: "{}",
-                      });
-                      load();
-                    } catch {}
-                  },
-                },
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`Delete environment ${e.name}? This can't be undone.`)) return;
-                    try {
-                      await api(`/v1/environments/${e.id}`, { method: "DELETE" });
-                      load();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
-    [api, load],
+    [load],
   );
 
   // Active-filter chip displays — kept null when matching the default so
@@ -221,10 +177,35 @@ export function EnvironmentsList() {
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
-      data={envs}
+      data={visibleEnvs}
       loading={loading}
       getRowId={(e) => e.id}
       onRowClick={(e) => nav(`/environments/${e.id}`)}
+      rowActions={(environment) => [
+        {
+          label: "Archive",
+          icon: <ArchiveIcon className="size-4" />,
+          disabled: Boolean(environment.archived_at),
+          onSelect: async () => {
+            try {
+              await managedApi.environments.archive(environment.id);
+              load();
+            } catch {}
+          },
+        },
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          onSelect: async () => {
+            if (!confirm(`Delete environment ${environment.name}? This can't be undone.`)) return;
+            try {
+              await managedApi.environments.delete(environment.id);
+              load();
+            } catch {}
+          },
+        },
+      ]}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
@@ -254,8 +235,8 @@ export function EnvironmentsList() {
       >
         <div className="space-y-4">
           <div>
-            <label htmlFor="env-create-name" className="text-sm text-fg-muted block mb-1">Name</label>
-            <input
+            <Label htmlFor="env-create-name" className="text-sm text-fg-muted block mb-1">Name</Label>
+            <Input
               id="env-create-name"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value.slice(0, 50) })}
@@ -272,8 +253,8 @@ export function EnvironmentsList() {
             <p className="text-xs text-fg-subtle mt-1">This cannot be changed after creation.</p>
           </div>
           <div>
-            <label htmlFor="env-create-description" className="text-sm text-fg-muted block mb-1">Description <span className="text-fg-subtle">(optional)</span></label>
-            <textarea
+            <Label htmlFor="env-create-description" className="text-sm text-fg-muted block mb-1">Description <span className="text-fg-subtle">(optional)</span></Label>
+            <Textarea
               id="env-create-description"
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}

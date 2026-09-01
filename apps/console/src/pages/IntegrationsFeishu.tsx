@@ -3,26 +3,22 @@ import {
   IntegrationsFeishuPublishWizard,
   IntegrationsFeishuWorkspace,
 } from "../integrations";
-import { useApi } from "../lib/api";
+import { useManagedApi } from "../lib/useManagedApi";
 
 // Thin Console-side wrapper for the publish wizard. The wizard needs to know
 // the user's agents and environments — those endpoints are owned by main, so
 // we inject loaders here rather than baking endpoints into the UI package.
 
 export function IntegrationsFeishuPublishPage() {
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   return (
     <IntegrationsFeishuPublishWizard
       loadAgents={async () => {
-        const r = await api<{ data: Array<{ id: string; name: string }> }>(
-          "/v1/agents?limit=200",
-        );
+        const r = await managedApi.agents.list({ limit: 200 });
         return r.data;
       }}
       loadEnvironments={async () => {
-        const r = await api<{ data: Array<{ id: string; name: string }> }>(
-          "/v1/environments?limit=200",
-        );
+        const r = await managedApi.environments.list({ limit: 200 });
         return r.data;
       }}
     />

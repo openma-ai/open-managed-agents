@@ -14,6 +14,7 @@ import {
   type ManagedAgentsDrainReport,
   type ManagedAgentsRuntimeScheduler,
 } from "./session-host.js";
+import type { ManagedAgentsSessionCheckpointStore } from "./checkpoint.js";
 
 export interface ManagedAgentsSessionPreparationPort {
   prepare(command: SessionStartCommand): Promise<SessionOptions>;
@@ -27,6 +28,9 @@ export interface ManagedAgentsRuntimeDependencies {
   acpRuntime: AcpRuntime;
   sessionPreparation: ManagedAgentsSessionPreparationPort;
   scheduler?: ManagedAgentsRuntimeScheduler;
+  cancelGraceMs?: number;
+  checkpointStore?: ManagedAgentsSessionCheckpointStore;
+  hostInstanceId?: string;
 }
 
 export interface ManagedAgentsRuntime {
@@ -50,6 +54,9 @@ class ManagedAgentsRuntimeLoop implements ManagedAgentsRuntime {
       runtime: dependencies.acpRuntime,
       emit: (event) => this.#sink?.publish(event),
       scheduler: dependencies.scheduler,
+      cancelGraceMs: dependencies.cancelGraceMs,
+      checkpointStore: dependencies.checkpointStore,
+      hostInstanceId: dependencies.hostInstanceId,
     });
   }
 
@@ -84,7 +91,7 @@ class ManagedAgentsRuntimeLoop implements ManagedAgentsRuntime {
         });
         return;
       case "session.cancel":
-        this.#sessionHost.cancel(command.sessionId, command.turnId);
+        await this.#sessionHost.cancel(command.sessionId, command.turnId);
         return;
       case "session.dispose":
         await this.#sessionHost.dispose(command.sessionId);

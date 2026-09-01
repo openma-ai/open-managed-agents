@@ -72,13 +72,14 @@ export function Modal({
       }}
     >
       <DialogContent
+        aria-describedby={subtitle ? undefined : undefined}
         className={cn(
-          "max-h-[85vh] flex flex-col gap-0 p-0",
+          "console-modal max-h-[calc(85vh-var(--overlay-top))] flex flex-col gap-0 p-0",
           widthClass,
         )}
       >
-        <DialogHeader className="px-6 py-4 border-b border-border gap-1">
-          <DialogTitle className="text-lg font-semibold font-display truncate">
+        <DialogHeader className="gap-1 px-6 py-4">
+          <DialogTitle className="truncate font-display text-sm font-semibold leading-5">
             {title}
           </DialogTitle>
           {subtitle && (
@@ -88,10 +89,12 @@ export function Modal({
           )}
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4">{children}</div>
+        <div data-console-modal-body className="flex-1 overflow-y-auto px-6 py-4">
+          {children}
+        </div>
 
         {footer && (
-          <DialogFooter className="m-0 px-6 py-4 border-t border-border bg-transparent rounded-none sm:justify-end gap-3">
+          <DialogFooter className="m-0 gap-2 rounded-none bg-transparent px-6 py-4 sm:justify-end">
             {footer}
           </DialogFooter>
         )}

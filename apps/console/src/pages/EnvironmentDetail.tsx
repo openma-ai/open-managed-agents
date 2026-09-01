@@ -1,7 +1,18 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { useApi } from "../lib/api";
+import type {
+  BetaEnvironment,
+  BetaLimitedNetworkParams,
+  BetaPackages,
+  BetaPackagesParams,
+  BetaUnrestrictedNetwork,
+  EnvironmentUpdateParams,
+} from "@anthropic-ai/sdk/resources/beta/environments/environments";
 import { useApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { Button } from "@/components/ui/button";
 import { Select, SelectOption } from "../components/Select";
 import { toast } from "sonner";
@@ -29,26 +40,7 @@ interface NetworkingConfig {
   allow_package_managers?: boolean;
 }
 
-interface EnvConfigBlock {
-  type: string;
-  packages?: Partial<Record<AnyManager, string[]>>;
-  networking?: NetworkingConfig;
-  dockerfile?: string;
-}
-
-interface Env {
-  id: string;
-  name: string;
-  description?: string;
-  config: EnvConfigBlock;
-  status?: "building" | "ready" | "error";
-  build_error?: string;
-  metadata?: Record<string, unknown>;
-  image_strategy?: "base_snapshot" | "dockerfile";
-  created_at: string;
-  updated_at?: string;
-  archived_at?: string;
-}
+type Env = BetaEnvironment;
 
 // Local editor row shapes — packages and metadata both use ordered
 // row arrays so the UI keeps a stable visual position while editing,
@@ -70,7 +62,7 @@ interface MetadataRow {
 
 export function EnvironmentDetail() {
   const { id } = useParams<{ id: string }>();
-  const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
 
   const [env, setEnv] = useState<Env | null>(null);
@@ -91,10 +83,6 @@ export function EnvironmentDetail() {
   const [allowedHostsText, setAllowedHostsText] = useState("");
   const [packageRows, setPackageRows] = useState<PackageRow[]>([]);
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
-  // `gem` packages aren't editable (no UI row) — preserved verbatim
-  // so save doesn't silently strip them.
-  const [preservedGem, setPreservedGem] = useState<string[] | undefined>(undefined);
-
   // Initial load via TQ. Re-renders when the cache is populated; the
   // applyEnv side-effect below seeds the editable form state once per
   // fetched payload (id changes between renders → form re-seeds).
@@ -120,17 +108,21 @@ export function EnvironmentDetail() {
     setName(e.name);
     setDescription(e.description ?? "");
 
-    const net: NetworkingConfig = e.config.networking ?? { type: "unrestricted" };
+    const cloud = e.config.type === "cloud" ? e.config : null;
+    const net = cloud?.networking ?? { type: "unrestricted" as const };
     setNetworking({
-      type: net.type ?? "unrestricted",
-      allow_mcp_servers: !!net.allow_mcp_servers,
-      allow_package_managers: !!net.allow_package_managers,
-      allowed_hosts: net.allowed_hosts ?? [],
+      type: net.type,
+      allow_mcp_servers:
+        net.type === "limited" ? net.allow_mcp_servers : false,
+      allow_package_managers:
+        net.type === "limited" ? net.allow_package_managers : false,
+      allowed_hosts: net.type === "limited" ? net.allowed_hosts : [],
     });
-    setAllowedHostsText((net.allowed_hosts ?? []).join(", "));
+    setAllowedHostsText(
+      net.type === "limited" ? net.allowed_hosts.join(", ") : "",
+    );
 
-    setPackageRows(packagesToRows(e.config.packages));
-    setPreservedGem(e.config.packages?.gem);
+    setPackageRows(packagesToRows(cloud?.packages));
 
     setMetadataRows(metadataToRows(e.metadata));
   }
@@ -139,28 +131,23 @@ export function EnvironmentDetail() {
     if (!id || !env) return;
     setSaving(true);
     try {
-      const config: EnvConfigBlock = {
-        // Preserve type ("cloud") and any dockerfile field — we don't expose
-        // dockerfile in MVP UI, so it must round-trip untouched.
-        type: env.config.type,
-        ...(env.config.dockerfile !== undefined ? { dockerfile: env.config.dockerfile } : {}),
-        packages: rowsToPackages(packageRows, preservedGem),
-        networking: buildNetworking(networking, allowedHostsText),
-      };
+      const config: EnvironmentUpdateParams["config"] =
+        env.config.type === "cloud"
+          ? {
+              type: "cloud",
+              packages: rowsToPackagesPatch(env.config.packages, packageRows),
+              networking: buildNetworking(networking, allowedHostsText),
+            }
+          : { type: "self_hosted" };
 
-      const body = {
+      const body: EnvironmentUpdateParams = {
         name: name.trim(),
-        description: description.trim() || undefined,
+        description: description.trim() || null,
         config,
-        // metadata isn't currently parsed by the PUT route — sent here so
-        // the field is present once the backend wires it up. No-op today.
-        metadata: rowsToMetadata(metadataRows),
+        metadata: rowsToMetadataPatch(env.metadata, metadataRows),
       };
 
-      const updated = await api<Env>(`/v1/environments/${id}`, {
-        method: "PUT",
-        body: JSON.stringify(body),
-      });
+      const updated = await managedApi.environments.update(id, body);
       applyEnv(updated);
       toast.success("Environment saved");
     } catch (err) {
@@ -189,22 +176,22 @@ export function EnvironmentDetail() {
   }
 
   return (
-    <Page>
-      <div className="max-w-3xl space-y-6">
+    <Page className="console-settings-page">
+      <div className="console-settings-layout" data-testid="settings-layout">
         {/* Header: name input + Cloud badge + status */}
-        <section className="space-y-3">
-          <h1 className="sr-only">{env.name || "Environment"}</h1>
+        <section className="console-settings-intro">
+          <h1>{env.name || "Environment"}</h1>
           <div className="flex items-center gap-3 flex-wrap">
-            <label className="sr-only" htmlFor="env-name">Environment name</label>
-            <input
+            <Label className="sr-only" htmlFor="env-name">Environment name</Label>
+            <Input
               id="env-name"
               value={name}
               onChange={(e) => setName(e.target.value.slice(0, 50))}
               className="border border-border rounded-md px-3 py-2 min-h-11 sm:min-h-0 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] w-full sm:w-72"
               placeholder="environment name"
             />
-            <span className="text-[11px] px-2 py-0.5 rounded border border-border bg-bg-surface text-fg-muted font-medium uppercase tracking-wider">
-              Cloud
+            <span className="text-xs px-2 py-0.5 rounded border border-border bg-bg-surface text-fg-muted font-medium uppercase tracking-wider">
+              {env.config.type === "cloud" ? "Cloud" : "Self hosted"}
             </span>
             <span className="text-fg-subtle" aria-hidden="true">
               <GlobeIcon />
@@ -217,15 +204,15 @@ export function EnvironmentDetail() {
           </div>
 
           <div>
-            <label className="block text-[13px] font-medium text-fg mb-1.5" htmlFor="env-description">
+            <Label className="block text-sm font-medium text-fg mb-1.5" htmlFor="env-description">
               Description
-            </label>
-            <textarea
+            </Label>
+            <Textarea
               id="env-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
-              className="w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle resize-y"
+              className="w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle resize-y"
               placeholder="What is this environment for?"
             />
           </div>
@@ -274,11 +261,11 @@ export function EnvironmentDetail() {
                 label="Allowed Hosts"
                 hint="Comma-separated hostnames (e.g. www.example1.com, api.example2.com)"
               >
-                <textarea
+                <Textarea
                   value={allowedHostsText}
                   onChange={(e) => setAllowedHostsText(e.target.value)}
                   rows={2}
-                  className="w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle resize-y"
+                  className="w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle resize-y"
                   placeholder="www.example1.com, www.example2.com"
                 />
               </Field>
@@ -302,7 +289,7 @@ export function EnvironmentDetail() {
           }
         >
           {packageRows.length === 0 ? (
-            <p className="text-[13px] text-fg-subtle italic">
+            <p className="text-sm text-fg-subtle italic">
               No packages configured.
             </p>
           ) : (
@@ -325,7 +312,7 @@ export function EnvironmentDetail() {
                       ))}
                     </Select>
                   </div>
-                  <input
+                  <Input
                     value={row.packages}
                     onChange={(e) =>
                       setPackageRows((rows) =>
@@ -335,7 +322,7 @@ export function EnvironmentDetail() {
                       )
                     }
                     placeholder="package package==1.0.0"
-                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle font-mono"
+                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle font-mono"
                   />
                   <IconButton
                     label="Remove package row"
@@ -349,9 +336,9 @@ export function EnvironmentDetail() {
               ))}
             </div>
           )}
-          {preservedGem && preservedGem.length > 0 && (
-            <p className="text-[12px] text-fg-subtle mt-3 pt-3 border-t border-border">
-              {preservedGem.length} legacy gem package(s) preserved (not editable
+          {env.config.type === "cloud" && env.config.packages.gem.length > 0 && (
+            <p className="text-sm text-fg-subtle mt-3 pt-3 border-t border-border">
+              {env.config.packages.gem.length} legacy gem package(s) preserved (not editable
               — Ruby is not in sandbox-base yet).
             </p>
           )}
@@ -373,12 +360,12 @@ export function EnvironmentDetail() {
           }
         >
           {metadataRows.length === 0 ? (
-            <p className="text-[13px] text-fg-subtle italic">No metadata.</p>
+            <p className="text-sm text-fg-subtle italic">No metadata.</p>
           ) : (
             <div className="space-y-2">
               {metadataRows.map((row, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input
+                  <Input
                     value={row.key}
                     onChange={(e) =>
                       setMetadataRows((rows) =>
@@ -388,9 +375,9 @@ export function EnvironmentDetail() {
                       )
                     }
                     placeholder="client_key"
-                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle font-mono"
+                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle font-mono"
                   />
-                  <input
+                  <Input
                     value={row.value}
                     onChange={(e) =>
                       setMetadataRows((rows) =>
@@ -400,7 +387,7 @@ export function EnvironmentDetail() {
                       )
                     }
                     placeholder="Value"
-                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle"
+                    className="flex-1 min-w-0 border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle"
                   />
                   <IconButton
                     label="Remove metadata row"
@@ -417,7 +404,7 @@ export function EnvironmentDetail() {
         </SectionCard>
 
         {/* Footer actions */}
-        <div className="flex items-center gap-3 pt-2">
+        <div className="console-settings-actions" data-testid="settings-actions">
           <Button onClick={save} loading={saving} disabled={!name.trim()}>
             Save changes
           </Button>
@@ -449,17 +436,17 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border border-border rounded-lg bg-bg-surface/30">
-      <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
+    <section className="console-settings-section" data-testid="settings-section">
+      <header className="console-settings-section-header">
         <div className="min-w-0">
           <h2 className="font-display text-base font-semibold text-fg">{title}</h2>
           {subtitle && (
-            <p className="text-[12px] text-fg-muted mt-0.5">{subtitle}</p>
+            <p className="text-sm text-fg-muted mt-0.5">{subtitle}</p>
           )}
         </div>
         {action && <div className="shrink-0">{action}</div>}
       </header>
-      <div className="px-4 py-4">{children}</div>
+      <div className="console-settings-section-body">{children}</div>
     </section>
   );
 }
@@ -474,14 +461,14 @@ function Toggle({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-4 min-h-11 sm:min-h-0 cursor-pointer">
-      <span className="text-[13px] text-fg">{label}</span>
-      <button
+    <Label className="flex items-center justify-between gap-4 min-h-11 sm:min-h-0 cursor-pointer">
+      <span className="text-sm text-fg">{label}</span>
+      <Button variant="ghost"
         type="button"
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] focus-visible:ring-2 focus-visible:ring-brand focus-visible:outline-none ${
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
           checked ? "bg-brand" : "bg-bg-surface border border-border"
         }`}
       >
@@ -490,8 +477,8 @@ function Toggle({
             checked ? "translate-x-5" : "translate-x-0.5"
           }`}
         />
-      </button>
-    </label>
+      </Button>
+    </Label>
   );
 }
 
@@ -505,14 +492,14 @@ function IconButton({
   label: string;
 }) {
   return (
-    <button
+    <Button variant="ghost"
       type="button"
       onClick={onClick}
       aria-label={label}
       className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 p-1.5 rounded-md text-fg-subtle hover:text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -555,9 +542,7 @@ function GlobeIcon() {
 // packages and metadata.
 // =================================================================
 
-function packagesToRows(
-  packages: Partial<Record<AnyManager, string[]>> | undefined,
-): PackageRow[] {
+function packagesToRows(packages: BetaPackages | undefined): PackageRow[] {
   if (!packages) return [];
   const rows: PackageRow[] = [];
   for (const m of MANAGERS) {
@@ -569,11 +554,11 @@ function packagesToRows(
   return rows;
 }
 
-function rowsToPackages(
+function rowsToPackagesPatch(
+  original: BetaPackages,
   rows: PackageRow[],
-  preservedGem?: string[],
-): Partial<Record<AnyManager, string[]>> {
-  const out: Partial<Record<AnyManager, string[]>> = {};
+): BetaPackagesParams {
+  const out: BetaPackagesParams = { type: "packages" };
   for (const row of rows) {
     const specs = row.packages
       .split(/\s+/)
@@ -585,28 +570,36 @@ function rowsToPackages(
     const existing = out[row.manager] ?? [];
     out[row.manager] = [...existing, ...specs];
   }
-  if (preservedGem && preservedGem.length > 0) {
-    out.gem = preservedGem;
+  for (const manager of MANAGERS) {
+    if (original[manager].length > 0 && out[manager] === undefined) {
+      out[manager] = null;
+    }
   }
   return out;
 }
 
 function metadataToRows(
-  metadata: Record<string, unknown> | undefined,
+  metadata: Record<string, string> | undefined,
 ): MetadataRow[] {
   if (!metadata) return [];
   return Object.entries(metadata).map(([key, value]) => ({
     key,
-    value: typeof value === "string" ? value : JSON.stringify(value),
+    value,
   }));
 }
 
-function rowsToMetadata(rows: MetadataRow[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+function rowsToMetadataPatch(
+  original: Record<string, string>,
+  rows: MetadataRow[],
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
   for (const row of rows) {
     const k = row.key.trim();
     if (!k) continue;
     out[k] = row.value;
+  }
+  for (const key of Object.keys(original)) {
+    if (!(key in out)) out[key] = null;
   }
   return out;
 }
@@ -614,19 +607,13 @@ function rowsToMetadata(rows: MetadataRow[]): Record<string, unknown> {
 function buildNetworking(
   net: NetworkingConfig,
   allowedHostsText: string,
-): NetworkingConfig {
+): BetaUnrestrictedNetwork | BetaLimitedNetworkParams {
   const hosts = allowedHostsText
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   if (net.type === "unrestricted") {
-    return {
-      type: "unrestricted",
-      allow_mcp_servers: !!net.allow_mcp_servers,
-      allow_package_managers: !!net.allow_package_managers,
-      // Drop allowed_hosts when unrestricted — it's meaningless and the
-      // backend may complain about stale entries.
-    };
+    return { type: "unrestricted" };
   }
   return {
     type: "limited",

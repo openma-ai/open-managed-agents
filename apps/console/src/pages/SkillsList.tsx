@@ -1,26 +1,27 @@
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useMemo, useRef, useState } from "react";
 import { TrashIcon } from "lucide-react";
+import type { SkillListResponse } from "@anthropic-ai/sdk/resources/beta/skills/skills";
+import type {
+  VersionListResponse,
+  VersionRetrieveResponse,
+} from "@anthropic-ai/sdk/resources/beta/skills/versions";
 import { useApi } from "../lib/api";
-import { useApiQuery } from "../lib/useApiQuery";
+import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
+import { extractManagedSkillFiles } from "../lib/skill-upload";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 
 /* ---------- types ---------- */
 
-interface Skill {
-  id: string;
-  display_title: string;
-  name: string;
-  description: string;
-  source: "anthropic" | "custom";
-  latest_version: number;
-  created_at: string;
-}
+type Skill = SkillListResponse & { name?: string; description?: string };
 
 interface SkillFile {
   filename: string;
@@ -28,16 +29,11 @@ interface SkillFile {
   encoding?: "utf8" | "base64";
 }
 
-interface VersionSummary {
-  version: number;
-  created_at: string;
-}
+type VersionSummary = VersionListResponse;
 
-interface VersionDetail {
-  version: number;
-  created_at: string;
+type VersionDetail = VersionRetrieveResponse & {
   files: SkillFile[];
-}
+};
 
 type SourceValue = "any" | "anthropic" | "custom";
 
@@ -54,7 +50,8 @@ const SOURCE_OPTIONS: { value: SourceValue; label: string }[] = [
 // pre-rejection but the server will still enforce; that's an acceptable
 // degradation for an unusual config.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const SKILLS_API = "/v1/oma/skills";
+const SKILLS_API = "/v1/skills";
+const SKILLS_PREVIEW_API = "/v1/oma/skills";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -75,6 +72,7 @@ function isZipFile(file: File): boolean {
 
 export function SkillsList() {
   const { api } = useApi();
+  const managedApi = useManagedApi();
 
   /* Server-driven filter state. `source` flows into skillsParams below
    * → useApiQuery reruns when params change → list reflects exactly
@@ -89,11 +87,13 @@ export function SkillsList() {
    * `refetch`, which kicks off a background refetch that leaves
    * the prior items on screen until the new payload lands. */
   const {
-    data: skillsRes,
+    items: skills,
     isLoading: loading,
-    refetch: refetchSkills,
-  } = useApiQuery<{ data: Skill[] }>(SKILLS_API, skillsParams);
-  const skills = skillsRes?.data ?? [];
+    isLoadingMore,
+    hasMore,
+    loadMore,
+    refresh: refetchSkills,
+  } = useInfiniteApiQuery<Skill>(SKILLS_API, { limit: 20, params: skillsParams });
   const load = () => {
     void refetchSkills();
   };
@@ -156,13 +156,11 @@ export function SkillsList() {
     setCreateError("");
     setCreateUploading(true);
     try {
-      const fd = new FormData();
-      fd.append("file", createZip);
-      // Empty string here would override the server-side fallback to the
-      // SKILL.md frontmatter name; only send when the user actually typed
-      // something.
-      if (createTitle.trim()) fd.append("display_title", createTitle.trim());
-      await api(`${SKILLS_API}/upload`, { method: "POST", body: fd });
+      const files = await extractManagedSkillFiles(createZip);
+      await managedApi.skills.create({
+        files,
+        ...(createTitle.trim() ? { display_title: createTitle.trim() } : {}),
+      });
       setShowCreate(false);
       resetCreate();
       load();
@@ -182,13 +180,22 @@ export function SkillsList() {
     setNvError("");
     setNvZip(null);
     try {
-      const [versionDetail, versionsRes] = await Promise.all([
-        api<VersionDetail>(
-          `${SKILLS_API}/${skill.id}/versions/${skill.latest_version}`
-        ),
-        api<{ data: VersionSummary[] }>(`${SKILLS_API}/${skill.id}/versions`),
+      if (!skill.latest_version) throw new Error("Skill has no versions");
+      const [versionDetail, versionsRes, preview] = await Promise.all([
+        managedApi.skills.versions.retrieve(skill.latest_version, {
+          skill_id: skill.id,
+        }),
+        managedApi.skills.versions.list(skill.id, { limit: 100 }),
+        api<Pick<VersionDetail, "files">>(
+          `${SKILLS_PREVIEW_API}/${skill.id}/versions/${skill.latest_version}`,
+        ).catch(() => ({ files: [] })),
       ]);
-      setDetailFiles(versionDetail.files || []);
+      setDetail({
+        ...skill,
+        name: versionDetail.name,
+        description: versionDetail.description,
+      });
+      setDetailFiles(preview.files || []);
       setDetailVersions(versionsRes.data || []);
     } catch {
       setDetailFiles([]);
@@ -237,17 +244,13 @@ export function SkillsList() {
     setNvError("");
     setNvUploading(true);
     try {
-      const fd = new FormData();
-      fd.append("file", nvZip);
-      await api(`${SKILLS_API}/${detail.id}/versions/upload`, {
-        method: "POST",
-        body: fd,
-      });
+      const files = await extractManagedSkillFiles(nvZip);
+      await managedApi.skills.versions.create(detail.id, { files });
       setShowNewVersion(false);
       setNvZip(null);
       /* refresh both the list and this detail */
       load();
-      const refreshed = await api<Skill>(`${SKILLS_API}/${detail.id}`);
+      const refreshed = await managedApi.skills.retrieve(detail.id);
       openDetail(refreshed);
     } catch (e: any) {
       setNvError(e?.message || "Upload failed");
@@ -262,7 +265,7 @@ export function SkillsList() {
     if (!detail) return;
     if (!confirm("Delete this skill? This cannot be undone.")) return;
     try {
-      await api(`${SKILLS_API}/${detail.id}`, { method: "DELETE" });
+      await managedApi.skills.delete(detail.id);
       closeDetail();
       load();
     } catch {}
@@ -275,7 +278,7 @@ export function SkillsList() {
     const name = skill.display_title || skill.name;
     if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
     try {
-      await api(`${SKILLS_API}/${skill.id}`, { method: "DELETE" });
+      await managedApi.skills.delete(skill.id);
       load();
     } catch {}
   };
@@ -298,10 +301,12 @@ export function SkillsList() {
         cell: ({ row }) => (
           <div className="min-w-0">
             <div className="font-medium text-fg truncate">
-              {row.original.display_title || row.original.name}
+              {row.original.display_title || row.original.name || row.original.id}
             </div>
             <div className="text-xs text-fg-subtle font-mono truncate">
-              {row.original.source === "anthropic" ? row.original.name : row.original.id}
+              {row.original.source === "anthropic"
+                ? row.original.name || row.original.id
+                : row.original.id}
             </div>
           </div>
         ),
@@ -312,7 +317,7 @@ export function SkillsList() {
         accessorKey: "description",
         header: "Description",
         cell: ({ row }) => (
-          <span className="text-fg-muted">{row.original.description}</span>
+          <span className="text-fg-muted">{row.original.description || "—"}</span>
         ),
       },
       {
@@ -335,7 +340,9 @@ export function SkillsList() {
         accessorFn: (s) => s.latest_version,
         header: "Version",
         cell: ({ row }) => (
-          <span className="text-fg-muted">v{row.original.latest_version}</span>
+          <span className="text-fg-muted">
+            {row.original.latest_version ? `v${row.original.latest_version}` : "—"}
+          </span>
         ),
       },
       {
@@ -347,35 +354,6 @@ export function SkillsList() {
             {new Date(row.original.created_at).toLocaleDateString()}
           </span>
         ),
-      },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const s = row.original;
-          // Anthropic built-in skills aren't user-editable; render the
-          // item as disabled so the menu layout stays uniform across
-          // rows but the user can't trigger a 4xx.
-          const isBuiltIn = s.source === "anthropic";
-          return (
-            <RowActionsMenu
-              label={`Actions for ${s.display_title || s.name}`}
-              actions={[
-                {
-                  label: "Delete",
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  disabled: isBuiltIn,
-                  onSelect: () => {
-                    void deleteSkillById(s);
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
       },
     ],
     [],
@@ -410,11 +388,8 @@ export function SkillsList() {
     </FilterChip>
   );
 
-  // Built-in (anthropic) skills aren't user-editable; click on those rows
-  // is a no-op so we don't open a half-empty detail dialog that would 404
-  // on its version fetches.
   const handleRowClick = (s: Skill) => {
-    if (s.source === "custom") openDetail(s);
+    void openDetail(s);
   };
 
   /* ---- render ---- */
@@ -427,8 +402,20 @@ export function SkillsList() {
       filters={filters}
       data={skills}
       loading={loading}
+      hasMore={hasMore}
+      loadingMore={isLoadingMore}
+      onLoadMore={loadMore}
       getRowId={(s) => s.id}
       onRowClick={handleRowClick}
+      rowActions={(skill) => [
+        {
+          label: "Delete",
+          icon: <TrashIcon className="size-4" />,
+          destructive: true,
+          disabled: skill.source === "anthropic",
+          onSelect: () => void deleteSkillById(skill),
+        },
+      ]}
       columns={columns}
       emptyTitle="No skills yet"
       emptyKind="skill"
@@ -492,13 +479,13 @@ export function SkillsList() {
 
           {/* Display Title (optional override) */}
           <div>
-            <label className="text-sm text-fg-muted block mb-1">
+            <Label className="text-sm text-fg-muted block mb-1">
               Display Title{" "}
               <span className="text-fg-subtle">
                 (optional — falls back to SKILL.md <code>name</code>)
               </span>
-            </label>
-            <input
+            </Label>
+            <Input
               value={createTitle}
               onChange={(e) => setCreateTitle(e.target.value)}
               className={inputCls}
@@ -519,7 +506,7 @@ export function SkillsList() {
       <Modal
         open={!!detail}
         onClose={closeDetail}
-        title={detail?.display_title || detail?.name || ""}
+        title={detail?.display_title || detail?.name || detail?.id || ""}
         subtitle={detail ? `${detail.id} · v${detail.latest_version}` : ""}
         maxWidth="max-w-2xl"
         footer={
@@ -544,33 +531,33 @@ export function SkillsList() {
             {/* Metadata */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-xs text-fg-muted block mb-0.5">
+                <Label className="text-xs text-fg-muted block mb-0.5">
                   Display Title
-                </label>
+                </Label>
                 <p className="text-sm font-medium">
-                  {detail.display_title}
+                  {detail.display_title || "—"}
                 </p>
               </div>
               <div>
-                <label className="text-xs text-fg-muted block mb-0.5">
+                <Label className="text-xs text-fg-muted block mb-0.5">
                   Name
-                </label>
+                </Label>
                 <p className="text-sm font-mono">
-                  {detail.name}
+                  {detail.name || "—"}
                 </p>
               </div>
               <div>
-                <label className="text-xs text-fg-muted block mb-0.5">
+                <Label className="text-xs text-fg-muted block mb-0.5">
                   Description
-                </label>
+                </Label>
                 <p className="text-sm text-fg-muted">
-                  {detail.description}
+                  {detail.description || "—"}
                 </p>
               </div>
               <div>
-                <label className="text-xs text-fg-muted block mb-0.5">
+                <Label className="text-xs text-fg-muted block mb-0.5">
                   Created
-                </label>
+                </Label>
                 <p className="text-sm text-fg-muted">
                   {new Date(detail.created_at).toLocaleString()}
                 </p>
@@ -579,9 +566,9 @@ export function SkillsList() {
 
             {/* Usage hint */}
             <div>
-              <label className="text-xs text-fg-muted block mb-1">
+              <Label className="text-xs text-fg-muted block mb-1">
                 Usage in Agent Config
-              </label>
+              </Label>
               <pre className="bg-bg-surface border border-border rounded-lg p-3 text-xs font-mono text-fg-muted">
 {`"skills": [{ "type": "custom", "skill_id": "${detail.id}", "version": "latest" }]`}
               </pre>
@@ -590,15 +577,15 @@ export function SkillsList() {
             {/* Files */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-fg-muted">
+                <Label className="text-xs text-fg-muted">
                   Files (v{detail.latest_version})
-                </label>
-                <button
+                </Label>
+                <Button variant="ghost"
                   onClick={startNewVersion}
                   className="inline-flex items-center min-h-11 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                 >
                   + New version
-                </button>
+                </Button>
               </div>
               {detailFiles.length === 0 ? (
                 <p className="text-xs text-fg-subtle">
@@ -614,7 +601,7 @@ export function SkillsList() {
                       <div className="bg-bg-surface px-3 py-1.5 border-b border-border text-xs font-mono text-fg-muted flex items-center justify-between">
                         <span className="truncate">{f.filename}</span>
                         {f.encoding === "base64" && (
-                          <span className="ml-2 text-[10px] uppercase tracking-wider text-fg-subtle">
+                          <span className="ml-2 text-xs uppercase tracking-wider text-fg-subtle">
                             binary
                           </span>
                         )}
@@ -683,43 +670,43 @@ export function SkillsList() {
 
             {/* Versions list */}
             <div>
-              <label className="text-xs text-fg-muted block mb-2">
+              <Label className="text-xs text-fg-muted block mb-2">
                 Version History
-              </label>
+              </Label>
               {detailVersions.length === 0 ? (
                 <p className="text-xs text-fg-subtle">
                   No version history available.
                 </p>
               ) : (
                 <div className="border border-border rounded-lg overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
-                        <th className="text-left px-4 py-2">Version</th>
-                        <th className="text-left px-4 py-2">Created</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table className="w-full text-sm">
+                    <TableHeader>
+                      <TableRow className="bg-bg-surface/60 text-fg-muted text-xs uppercase tracking-wider">
+                        <TableHead className="text-left px-4 py-2">Version</TableHead>
+                        <TableHead className="text-left px-4 py-2">Created</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {detailVersions.map((v) => (
-                        <tr
+                        <TableRow
                           key={v.version}
                           className="border-t border-border"
                         >
-                          <td className="px-4 py-2 font-mono text-xs">
+                          <TableCell className="px-4 py-2 font-mono text-xs">
                             v{v.version}
                             {v.version === detail.latest_version && (
-                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-success-subtle text-success">
+                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-success-subtle text-success">
                                 latest
                               </span>
                             )}
-                          </td>
-                          <td className="px-4 py-2 text-fg-muted text-xs">
+                          </TableCell>
+                          <TableCell className="px-4 py-2 text-fg-muted text-xs">
                             {new Date(v.created_at).toLocaleString()}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               )}
             </div>
@@ -778,7 +765,7 @@ function DropZone({
         disabled ? "opacity-60 pointer-events-none" : "",
       ].join(" ")}
     >
-      <input
+      <Input
         ref={inputRef}
         type="file"
         accept=".zip,application/zip,application/x-zip-compressed"

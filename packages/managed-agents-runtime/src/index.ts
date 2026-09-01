@@ -15,3 +15,8 @@ export {
   type ManagedAgentsRuntimeEventSink,
   type ManagedAgentsSessionPreparationPort,
 } from "./runtime.js";
+export type {
+  ManagedAgentsSessionCheckpoint,
+  ManagedAgentsSessionCheckpointPhase,
+  ManagedAgentsSessionCheckpointStore,
+} from "./checkpoint.js";

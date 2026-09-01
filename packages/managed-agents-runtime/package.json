@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./session-host": "./src/session-host.ts"
+    "./session-host": "./src/session-host.ts",
+    "./checkpoint": "./src/checkpoint.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
@@ -13,7 +14,7 @@
   },
   "dependencies": {
     "@open-managed-agents/acp-runtime": "workspace:*",
-    "@openma/common": "link:../../../openma-common"
+    "@openma/common": "github:openma-ai/openma-common#00358ff9c1e4a694171f5617a4715602c61433e7"
   },
   "devDependencies": {
     "vitest": "^4.1.3"

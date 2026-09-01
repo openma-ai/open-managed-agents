@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface Props {
@@ -59,18 +60,18 @@ function DefaultFallback({ error, reset }: { error: Error; reset: () => void }) 
         {error.message || "An unexpected error occurred."}
       </p>
       <div className="flex gap-2">
-        <button
+        <Button variant="ghost"
           onClick={reset}
           className="px-4 py-2 text-sm rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Try again
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           onClick={() => window.location.reload()}
           className="px-4 py-2 text-sm rounded-md border border-border text-fg hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Reload
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 import {
   useEffect,
   useRef,
@@ -103,7 +104,7 @@ export function LocalCombobox<T>({
           onClick={() => inputRef.current?.focus()}
         >
           {prefix}
-          <input
+          <Input
             ref={inputRef}
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -162,7 +163,7 @@ export function LocalCombobox<T>({
           </div>
         ) : (
           matches.map((item) => (
-            <button
+            <Button variant="ghost"
               key={getKey(item)}
               type="button"
               // mousedown picks before the input loses focus.
@@ -174,7 +175,7 @@ export function LocalCombobox<T>({
               className="w-full text-left min-h-11 sm:min-h-0 hover:bg-bg-surface cursor-pointer"
             >
               {renderItem(item)}
-            </button>
+            </Button>
           ))
         )}
       </PopoverContent>

@@ -54,7 +54,10 @@ import { createSqliteModelCardService } from "@open-managed-agents/model-cards-s
 import { toFileRecord } from "@open-managed-agents/files-store";
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import { generateEventId } from "@open-managed-agents/shared";
+import {
+  generateEventId,
+  listAuthProviders,
+} from "@open-managed-agents/shared";
 import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
 import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
@@ -434,6 +437,8 @@ if (!authDisabled) {
       baseURL: process.env.PUBLIC_BASE_URL,
       googleClientId: process.env.GOOGLE_CLIENT_ID,
       googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      githubClientId: process.env.GITHUB_CLIENT_ID,
+      githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
       requireEmailVerify: process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
       cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
       ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
@@ -458,6 +463,8 @@ if (!authDisabled) {
       baseURL: process.env.PUBLIC_BASE_URL,
       googleClientId: process.env.GOOGLE_CLIENT_ID,
       googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      githubClientId: process.env.GITHUB_CLIENT_ID,
+      githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
       requireEmailVerify: process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
       cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
       ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
@@ -766,7 +773,12 @@ const sessionRegistry = new SessionRegistry({
   },
   buildHarness: (agent) => {
     const h = resolveHarness(agent.harness);
-    return { run: (ctx: unknown) => h.run(ctx as HarnessContext) };
+    return {
+      run: (ctx: unknown) => h.run(ctx as HarnessContext),
+      ...(h.dispose ? {
+        dispose: (reason: "replace" | "shutdown" | "destroy") => h.dispose!(reason),
+      } : {}),
+    };
   },
   buildHarnessContext: async (input) => {
     const creds = await resolveNodeModelCreds(input.tenantId, input.agent.model);
@@ -1569,13 +1581,13 @@ app.get("/auth-info", (c) =>
   c.json({
     providers: authDisabled
       ? []
-      : [
-          "email",
-          ...(process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1" ? ["email-otp"] : []),
-          ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
-            ? ["google"]
-            : []),
-        ],
+      : listAuthProviders({
+          emailOtp: process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
+          googleClientId: process.env.GOOGLE_CLIENT_ID,
+          googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          githubClientId: process.env.GITHUB_CLIENT_ID,
+          githubClientSecret: process.env.GITHUB_CLIENT_SECRET,
+        }),
     turnstile_site_key: null,
   }),
 );
@@ -1769,23 +1781,92 @@ v1.route("/oma/evals", buildEvalRoutes({
   environments: environmentsService,
 }));
 
+async function countManagedPages(
+  load: (cursor?: string) => Promise<{
+    items: readonly unknown[];
+    nextCursor: string | null;
+  }>,
+): Promise<number> {
+  let total = 0;
+  let cursor: string | undefined;
+  const visited = new Set<string>();
+
+  for (;;) {
+    const page = await load(cursor);
+    total += page.items.length;
+    if (page.nextCursor === null) return total;
+    if (visited.has(page.nextCursor)) {
+      throw new Error(`Managed stats pagination repeated cursor ${page.nextCursor}`);
+    }
+    visited.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+}
+
 // OMA-only stubs used by the self-hosted console.
 v1.route("/oma/skills", buildNodeSkillsRoutes({ db: drizzleDb, blobs: filesBlob }));
 v1.get("/oma/runtimes", (c) => c.json({ data: [] }));
 v1.get("/oma/stats", async (c) => {
   const tenantId = c.get("tenant_id");
+  const managedApp = managedAgentsPlatform.app({ workspaceId: tenantId });
+  const managedAgents = managedApp.port(managedAgentsPortTokens.agents);
+  const managedEnvironments = managedApp.port(managedAgentsPortTokens.environments);
+  const managedSessions = managedSessionsComposition.portsFor(tenantId).sessions;
+  const managedSkills = managedSkillsPlatform
+    .app({ workspaceId: tenantId })
+    .port(managedAgentsPortTokens.skills);
+  const managedVaults = managedCredentialsPlatform
+    .app({ workspaceId: tenantId })
+    .port(managedAgentsPortTokens.vaults);
   const [
     agents,
     sessions,
     environments,
     vaults,
+    skills,
     modelCards,
     apiKeys,
   ] = await Promise.all([
-    agentsService.count({ tenantId }),
-    sessionsService.count({ tenantId }),
-    environmentsService.count({ tenantId }),
-    vaultService.count({ tenantId }),
+    countManagedPages(async (cursor) => {
+      const result = await managedAgents.listAgents({
+        pageSize: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (result.type !== "page") throw new Error(result.message);
+      return { items: result.page.agents, nextCursor: result.page.nextCursor };
+    }),
+    countManagedPages(async (cursor) => {
+      const result = await managedSessions.listSessions({
+        pageSize: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (result.type !== "page") throw new Error(result.message);
+      return { items: result.page.sessions, nextCursor: result.page.nextCursor };
+    }),
+    countManagedPages(async (cursor) => {
+      const result = await managedEnvironments.listEnvironments({
+        pageSize: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (result.type !== "page") throw new Error(result.message);
+      return { items: result.page.environments, nextCursor: result.page.nextCursor };
+    }),
+    countManagedPages(async (cursor) => {
+      const result = await managedVaults.listVaults({
+        pageSize: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (result.type !== "page") throw new Error(result.message);
+      return { items: result.page.vaults, nextCursor: result.page.nextCursor };
+    }),
+    countManagedPages(async (cursor) => {
+      const result = await managedSkills.listSkills({
+        pageSize: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (result.type !== "page") throw new Error(result.message);
+      return { items: result.page.skills, nextCursor: result.page.nextCursor };
+    }),
     modelCardsService.list({ tenantId }),
     apiKeyStorage.listByTenant(tenantId),
   ]);
@@ -1795,7 +1876,7 @@ v1.get("/oma/stats", async (c) => {
     sessions,
     environments,
     vaults,
-    skills: 0,
+    skills,
     model_cards: modelCards.filter((card) => card.archived_at === null).length,
     api_keys: apiKeys.length,
   });
@@ -2211,6 +2292,7 @@ const shutdown = async (signal: string) => {
   if (authShutdown) {
     try { await authShutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.auth_failed" }, "auth shutdown failed"); }
   }
+  try { await sessionRegistry.shutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.session_registry_failed" }, "session registry shutdown failed"); }
   try { await tracer.shutdown(); } catch { /* tracer shutdown is best-effort */ }
   process.exit(0);
 };

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionComposer } from "./SessionComposer";
 
 describe("<SessionComposer />", () => {
-  it("mounts in the shared chat shell composer column", () => {
+  it("leaves the shared chat shell in charge of composer geometry", () => {
     render(
       <SessionComposer
         interrupting={false}
@@ -17,7 +17,7 @@ describe("<SessionComposer />", () => {
     );
 
     expect(screen.getByRole("textbox", { name: "Message" }).closest("[data-chat-column]"))
-      .toHaveAttribute("data-chat-column", "composer");
+      .toBeNull();
   });
 
   it("submits an idle draft from the single primary action", async () => {

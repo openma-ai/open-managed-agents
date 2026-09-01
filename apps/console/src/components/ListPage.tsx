@@ -1,3 +1,4 @@
+import { Label } from "@/components/ui/label";
 import { useEffect, useRef, type ReactNode } from "react";
 import { SearchIcon } from "lucide-react";
 
@@ -26,7 +27,7 @@ interface Column<T> {
   key: string;
   label: string;
   render?: (item: T) => ReactNode;
-  /** Class merged into both the <th> and the <td> for this column. */
+  /** Class merged into both the <TableHead> and the <TableCell> for this column. */
   className?: string;
 }
 
@@ -105,9 +106,9 @@ interface ListPageProps<T> {
  *
  *   - Sticky `PageHeader` with title + primary CTA + a `toolbar` row
  *     hosting search, archived toggle, and per-page filter chips.
- *   - shadcn `Table` shell with a sticky `<thead>` (top-0 of <main>,
+ *   - shadcn `Table` shell with a sticky `<TableHeader>` (top-0 of <main>,
  *     pinned directly under the PageHeader).
- *   - IntersectionObserver-driven "load more" — sentinel `<tr>` below
+ *   - IntersectionObserver-driven "load more" — sentinel `<TableRow>` below
  *     the last row asks `onLoadMore` to fetch the next cursor page as
  *     it scrolls into view. Loading spinner row keeps the layout
  *     stable across fetches.
@@ -156,13 +157,13 @@ export function ListPage<T>({
       {showCreate && <Button onClick={onCreate}>{createLabel}</Button>}
       {filters}
       {onShowArchivedChange && (
-        <label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer select-none shrink-0">
+        <Label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer select-none shrink-0">
           <Checkbox
             checked={showArchived ?? false}
             onCheckedChange={(c) => onShowArchivedChange(c === true)}
           />
           Show archived
-        </label>
+        </Label>
       )}
       <div className="flex-1" />
       {onSearchChange && (

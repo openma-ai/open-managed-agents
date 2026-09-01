@@ -1,6 +1,9 @@
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useState, useMemo, useCallback } from "react";
 import { useApi } from "../lib/api";
-import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useOmaInfiniteApiQuery } from "../lib/useApiQuery";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
@@ -81,7 +84,7 @@ export function ModelCardsList() {
     isLoadingMore,
     loadMore,
     refresh: load,
-  } = useInfiniteApiQuery<ModelCard>("/v1/oma/model_cards", { limit: 20, params: cardsParams });
+  } = useOmaInfiniteApiQuery<ModelCard>("/v1/oma/model_cards", { limit: 20, params: cardsParams });
 
   // Fetch models from official API using the user's key
   const fetchModels = useCallback(async (provider: string, apiKey: string) => {
@@ -376,10 +379,10 @@ export function ModelCardsList() {
         <form autoComplete="off" onSubmit={(e) => e.preventDefault()} className="space-y-3">
           {error && <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">{error}</div>}
           <div>
-            <label htmlFor="modelcard-id" className="text-sm text-fg-muted block mb-1">
+            <Label htmlFor="modelcard-id" className="text-sm text-fg-muted block mb-1">
               Model ID *
               <span className="ml-1 text-xs text-fg-subtle">(tenant-unique handle agents reference)</span>
-            </label>
+            </Label>
             <TextInput id="modelcard-id" value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} className={inputCls}
               placeholder="claude-prod, claude-sonnet-4-6, bedrock-sonnet, ..." />
           </div>
@@ -387,7 +390,7 @@ export function ModelCardsList() {
             <span id="modelcard-provider-label" className="text-sm text-fg-muted block mb-1">API Format *</span>
             <div className="grid grid-cols-2 gap-2">
               {PROVIDERS.map((p) => (
-                <button
+                <Button variant="ghost"
                   key={p.value}
                   type="button"
                   aria-pressed={form.provider === p.value}
@@ -400,12 +403,12 @@ export function ModelCardsList() {
                 >
                   <div className="font-medium">{p.label}</div>
                   <div className="text-xs text-fg-subtle mt-0.5">{p.desc}</div>
-                </button>
+                </Button>
               ))}
             </div>
           </div>
           <div>
-            <label htmlFor="modelcard-api-key" className="text-sm text-fg-muted block mb-1">API Key {editingId ? "" : "*"}</label>
+            <Label htmlFor="modelcard-api-key" className="text-sm text-fg-muted block mb-1">API Key {editingId ? "" : "*"}</Label>
             <SecretInput id="modelcard-api-key" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} className={inputCls}
               placeholder={editingId ? "Leave blank to keep current key" : "sk-..."}
               name="model-api-key-field"
@@ -415,11 +418,11 @@ export function ModelCardsList() {
             )}
           </div>
           <div className="relative">
-            <label htmlFor="modelcard-wire-model" className="text-sm text-fg-muted block mb-1">
+            <Label htmlFor="modelcard-wire-model" className="text-sm text-fg-muted block mb-1">
               Wire Model
               <span className="ml-1 text-xs text-fg-subtle">(sent to provider; defaults to Model ID)</span>
-            </label>
-            <input id="modelcard-wire-model" value={form.model}
+            </Label>
+            <Input id="modelcard-wire-model" value={form.model}
               onChange={(e) => { setForm({ ...form, model: e.target.value }); setShowModelSuggestions(true); }}
               onFocus={() => setShowModelSuggestions(true)}
               onBlur={() => setTimeout(() => setShowModelSuggestions(false), 150)}
@@ -433,12 +436,12 @@ export function ModelCardsList() {
                 {availableModels
                   .filter((m) => !form.model || m.id.includes(form.model) || m.name.toLowerCase().includes(form.model.toLowerCase()))
                   .map((m) => (
-                    <button key={m.id} type="button"
+                    <Button variant="ghost" key={m.id} type="button"
                       onMouseDown={() => { setForm({ ...form, model: m.id }); setShowModelSuggestions(false); }}
                       className="w-full text-left px-3 py-1.5 min-h-11 sm:min-h-0 text-sm hover:bg-bg-surface">
                       <span className="text-fg">{m.name !== m.id ? m.name : m.id}</span>
                       {m.name !== m.id && <span className="text-fg-subtle text-xs ml-2">{m.id}</span>}
-                    </button>
+                    </Button>
                   ))}
               </div>
             )}
@@ -448,42 +451,47 @@ export function ModelCardsList() {
           </div>
           {!OFFICIAL_PROVIDERS.has(form.provider) && (
             <div>
-              <label htmlFor="modelcard-base-url" className="text-sm text-fg-muted block mb-1">Base URL *</label>
-              <input id="modelcard-base-url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={inputCls}
+              <Label htmlFor="modelcard-base-url" className="text-sm text-fg-muted block mb-1">Base URL *</Label>
+              <Input id="modelcard-base-url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={inputCls}
                 placeholder={form.provider === "ant-compatible" ? "https://your-proxy.com/v1" : "https://api.deepseek.com/v1"} autoComplete="off" />
             </div>
           )}
           {!OFFICIAL_PROVIDERS.has(form.provider) && (
             <div>
-              <label className="text-sm text-fg-muted block mb-1">Custom Headers <span className="text-fg-subtle">(optional)</span></label>
+              <Label className="text-sm text-fg-muted block mb-1">Custom Headers <span className="text-fg-subtle">(optional)</span></Label>
               <div className="space-y-1.5">
                 {form.custom_headers.map((h, i) => (
                   <div key={i} className="flex gap-2 items-center">
-                    <input value={h.key} onChange={(e) => {
+                    <Input value={h.key} onChange={(e) => {
                       const hdrs = [...form.custom_headers];
                       hdrs[i] = { ...hdrs[i], key: e.target.value };
                       setForm({ ...form, custom_headers: hdrs });
                     }} className={inputCls} placeholder="Header-Name" aria-label={`Custom header ${i + 1} name`} autoComplete="off" />
-                    <input value={h.value} onChange={(e) => {
+                    <Input value={h.value} onChange={(e) => {
                       const hdrs = [...form.custom_headers];
                       hdrs[i] = { ...hdrs[i], value: e.target.value };
                       setForm({ ...form, custom_headers: hdrs });
                     }} className={inputCls} placeholder="value" aria-label={`Custom header ${i + 1} value`} autoComplete="off" />
                     {form.custom_headers.length > 1 && (
-                      <button type="button" onClick={() => setForm({ ...form, custom_headers: form.custom_headers.filter((_, j) => j !== i) })}
-                        className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-fg-subtle hover:text-danger text-xs shrink-0">Remove</button>
+                      <Button variant="ghost" type="button" onClick={() => setForm({ ...form, custom_headers: form.custom_headers.filter((_, j) => j !== i) })}
+                        className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-fg-subtle hover:text-danger text-xs shrink-0">Remove</Button>
                     )}
                   </div>
                 ))}
-                <button type="button" onClick={() => setForm({ ...form, custom_headers: [...form.custom_headers, { key: "", value: "" }] })}
-                  className="inline-flex items-center justify-center min-h-11 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg">+ Add header</button>
+                <Button variant="ghost" type="button" onClick={() => setForm({ ...form, custom_headers: [...form.custom_headers, { key: "", value: "" }] })}
+                  className="inline-flex items-center justify-center min-h-11 sm:min-h-0 px-2 text-xs text-fg-muted hover:text-fg">+ Add header</Button>
               </div>
             </div>
           )}
-          <label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer">
-            <input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} className="rounded accent-brand" />
+          <Label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer">
+            <Checkbox
+              checked={form.is_default}
+              onCheckedChange={(checked) =>
+                setForm({ ...form, is_default: checked === true })
+              }
+            />
             Set as default model card
-          </label>
+          </Label>
         </form>
       </Modal>
     </DataTable>

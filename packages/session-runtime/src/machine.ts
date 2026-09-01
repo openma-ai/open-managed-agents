@@ -51,6 +51,13 @@ export interface HarnessRunFn {
   (ctx: unknown): Promise<void>;
 }
 
+export type SessionHarnessDisposeReason = "replace" | "shutdown" | "destroy";
+
+export interface SessionHarness {
+  run: HarnessRunFn;
+  dispose?(reason: SessionHarnessDisposeReason): Promise<void>;
+}
+
 export interface SessionMachineDeps {
   sessionId: string;
   tenantId: string;
@@ -95,7 +102,7 @@ export interface SessionMachineDeps {
    *  Async because shells often need to warm up state (e.g. read the
    *  event log into the harness's history cache) before harness.run
    *  reads from it. */
-  buildHarness(agent: AgentConfig): { run: (ctx: unknown) => Promise<void> };
+  buildHarness(agent: AgentConfig): SessionHarness;
   buildHarnessContext(input: {
     agent: AgentConfig;
     userMessage: UserMessageEvent;
@@ -103,6 +110,10 @@ export interface SessionMachineDeps {
     tools: unknown;
     model: LanguageModel;
   }): Promise<unknown>;
+
+  /** Flush provider/filesystem state after harness children stop but before
+   * the sandbox resource is destroyed. Hosts wire their checkpoint Port. */
+  beforeSandboxDestroy?(): Promise<void>;
 
   /** Publish a synthetic event to the hub (e.g. session.error,
    *  session.status_idle on recovery). The shell wires this with the
@@ -115,6 +126,7 @@ export interface SessionMachineDeps {
 
 export class SessionStateMachine {
   private activeTurnId: TurnId | null = null;
+  private activeHarness: { key: string; harness: SessionHarness } | null = null;
   private logger: NonNullable<SessionMachineDeps["logger"]>;
 
   constructor(private deps: SessionMachineDeps) {
@@ -176,7 +188,7 @@ export class SessionStateMachine {
         model,
       });
 
-      const harness = this.deps.buildHarness(agent);
+      const harness = await this.resolveHarness(agent);
       await harness.run(ctx);
     } finally {
       this.activeTurnId = null;
@@ -208,11 +220,7 @@ export class SessionStateMachine {
   async destroy(): Promise<void> {
     const turnId = this.activeTurnId;
     this.activeTurnId = null;
-    try {
-      if (this.deps.sandbox.destroy) await this.deps.sandbox.destroy();
-    } catch (err) {
-      this.logger.warn(`sandbox destroy failed: ${(err as Error).message}`);
-    }
+    await this.releaseSandbox("destroy");
     if (turnId) {
       await this.deps.adapter.endTurn(this.deps.sessionId, turnId, "destroyed");
     } else {
@@ -221,7 +229,47 @@ export class SessionStateMachine {
     }
   }
 
+  /** Process/isolate shutdown without changing the durable session state.
+   * Stateful harness children are released before the sandbox resource so
+   * protocol close/cancel can still use the live transport. */
+  async shutdown(): Promise<void> {
+    await this.releaseSandbox("shutdown");
+  }
+
   // ── helpers ─────────────────────────────────────────────────────────
+
+  private async resolveHarness(agent: AgentConfig): Promise<SessionHarness> {
+    const key = `${agent.id}:${agent.version}:${agent.harness ?? "default"}`;
+    if (this.activeHarness?.key === key) return this.activeHarness.harness;
+    await this.disposeHarness("replace");
+    const harness = this.deps.buildHarness(agent);
+    this.activeHarness = { key, harness };
+    return harness;
+  }
+
+  private async disposeHarness(reason: SessionHarnessDisposeReason): Promise<void> {
+    const active = this.activeHarness;
+    this.activeHarness = null;
+    try {
+      await active?.harness.dispose?.(reason);
+    } catch (err) {
+      this.logger.warn(`harness dispose failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async releaseSandbox(reason: "shutdown" | "destroy"): Promise<void> {
+    await this.disposeHarness(reason);
+    try {
+      await this.deps.beforeSandboxDestroy?.();
+    } catch (err) {
+      this.logger.warn(`sandbox checkpoint failed: ${(err as Error).message}`);
+    }
+    try {
+      if (this.deps.sandbox.destroy) await this.deps.sandbox.destroy();
+    } catch (err) {
+      this.logger.warn(`sandbox destroy failed: ${(err as Error).message}`);
+    }
+  }
 
   private async recoverOrphan(o: OrphanTurn): Promise<void> {
     this.logger.warn(

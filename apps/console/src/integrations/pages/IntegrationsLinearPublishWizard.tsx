@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -208,20 +209,20 @@ export function IntegrationsLinearPublishWizard({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[760px] mx-auto px-4 sm:px-8 lg:px-10 py-8 lg:py-10">
+    <div className="console-integration-route">
+      <div className="console-integration-page console-integration-page--narrow">
         <Link
           to="/integrations/linear"
-          className="inline-flex items-center gap-1 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           ← Linear integrations
         </Link>
 
         <header className="mt-3 mb-6">
-          <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+          <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
             Publish agent to Linear
           </h1>
-          <p className="mt-1.5 text-[14px] text-fg-muted">
+          <p className="mt-1.5 text-base text-fg-muted">
             Make this agent a teammate in your Linear workspace.
           </p>
         </header>
@@ -229,13 +230,13 @@ export function IntegrationsLinearPublishWizard({
         <StepIndicator current={step} />
 
         {error && (
-          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger">
+          <div className="mb-4 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
 
         {hydrating && (
-          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[13px] text-fg-muted">
+          <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
             Resuming in-progress install…
           </div>
         )}
@@ -288,7 +289,7 @@ function StepIndicator({ current }: { current: Step }) {
           <li key={s.id} className="flex items-center gap-2 flex-1 last:flex-none">
             <div className="flex items-center gap-2 min-w-0">
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-mono font-medium shrink-0 ${
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-medium shrink-0 ${
                   state === "done"
                     ? "bg-brand text-brand-fg"
                     : state === "current"
@@ -303,7 +304,7 @@ function StepIndicator({ current }: { current: Step }) {
                 )}
               </div>
               <span
-                className={`text-[12px] font-medium uppercase tracking-wider truncate ${
+                className={`text-sm font-medium uppercase tracking-wider truncate ${
                   state === "current"
                     ? "text-fg"
                     : state === "done"
@@ -390,20 +391,20 @@ function PickStep(props: {
         </Field>
       </div>
 
-      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-[12px] text-fg-muted">
+      <div className="rounded-md border border-border bg-bg-surface/30 px-3.5 py-3 text-sm text-fg-muted">
         Your agent becomes a real Linear teammate with @autocomplete and a slot in the
         assignee dropdown. Setup ~3 min, requires Linear admin (or send a setup link).
       </div>
 
       <div className="pt-1">
-        <button
+        <Button variant="ghost"
           onClick={props.onContinue}
           disabled={props.working}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           {props.working ? "Working…" : "Continue"}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -423,10 +424,10 @@ function CredentialsStep(props: {
   return (
     <div className="space-y-7">
       <section>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Create a Linear OAuth app
         </h2>
-        <p className="text-[13px] text-fg-muted mb-3">
+        <p className="text-sm text-fg-muted mb-3">
           Open{" "}
           <a
             href="https://linear.app/settings/api/applications/new"
@@ -449,7 +450,7 @@ function CredentialsStep(props: {
           <CopyRow label="Callback URLs" value={props.shell.callback_url} />
           <CopyRow label="Webhook URL" value={props.shell.webhook_url} />
         </div>
-        <ul className="text-[12px] text-fg-muted mt-3 space-y-1.5 list-disc pl-5">
+        <ul className="text-sm text-fg-muted mt-3 space-y-1.5 list-disc pl-5">
           <li>
             <strong className="text-fg">GitHub username</strong> — leave empty.
             Only relevant if you also bind this OAuth app to a GitHub App with
@@ -475,10 +476,10 @@ function CredentialsStep(props: {
       </section>
 
       <section>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Paste credentials Linear gave you
         </h2>
-        <p className="text-[13px] text-fg-muted mb-3">
+        <p className="text-sm text-fg-muted mb-3">
           From the OAuth app you just created. The webhook signing secret is on
           the same page (Webhooks → Signing secret).
         </p>
@@ -508,14 +509,14 @@ function CredentialsStep(props: {
         </div>
 
         <div className="mt-4 flex items-center gap-3 flex-wrap">
-          <button
+          <Button variant="ghost"
             onClick={props.onSubmit}
             disabled={props.working || !props.clientId || !props.clientSecret || !props.webhookSecret}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover disabled:opacity-50 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
           >
             {props.working ? "Validating…" : "Continue"}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-          </button>
+          </Button>
         </div>
       </section>
     </div>
@@ -526,10 +527,10 @@ function InstallStep({ link }: { link: LinearPublicationInstallLink }) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-[15px] font-medium text-fg mb-1.5">
+        <h2 className="text-base font-medium text-fg mb-1.5">
           Install the app in your workspace
         </h2>
-        <p className="text-[13px] text-fg-muted">
+        <p className="text-sm text-fg-muted">
           We've stored your credentials. Click below to authorize the install in
           Linear — you'll be redirected back here automatically.
         </p>
@@ -537,13 +538,13 @@ function InstallStep({ link }: { link: LinearPublicationInstallLink }) {
 
       <a
         href={link.install_url}
-        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-[13px] bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm bg-brand text-brand-fg rounded-md font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
       >
         Install in Linear
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17 17 7M7 7h10v10" /></svg>
       </a>
 
-      <details className="text-[12px] text-fg-muted mt-3">
+      <details className="text-sm text-fg-muted mt-3">
         <summary className="cursor-pointer hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]">
           Verify the URLs Linear should now show
         </summary>
@@ -567,36 +568,36 @@ function CopyRow({ label, value, secret = false }: { label: string; value: strin
   const display = secret && !reveal ? "•".repeat(Math.min(value.length, 28)) : value;
   return (
     <div className="flex items-center gap-3 px-3 py-2">
-      <span className="text-[11px] text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
+      <span className="text-xs text-fg-muted font-mono uppercase tracking-wider w-28 shrink-0">
         {label}
       </span>
-      <code className="flex-1 text-[12px] font-mono text-fg truncate select-all">
+      <code className="flex-1 text-sm font-mono text-fg truncate select-all">
         {display}
       </code>
       <div className="flex items-center gap-1 shrink-0">
         {secret && (
-          <button
+          <Button variant="ghost"
             onClick={() => setReveal((r) => !r)}
-            className="text-[11px] text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
+            className="text-xs text-fg-muted hover:text-fg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] px-1.5 py-0.5 rounded"
             title={reveal ? "Hide" : "Reveal"}
           >
             {reveal ? "Hide" : "Show"}
-          </button>
+          </Button>
         )}
-        <button
+        <Button variant="ghost"
           onClick={copy}
-          className={`text-[11px] px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
+          className={`text-xs px-2 py-0.5 rounded transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
             copied
               ? "text-success bg-success-subtle"
               : "text-fg-muted hover:text-fg hover:bg-bg-surface"
           }`}
         >
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </div>
     </div>
   );
 }
 
 const inputCls =
-  "w-full border border-border rounded-md px-3 py-2 text-[13px] bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";
+  "w-full border border-border rounded-md px-3 py-2 text-sm bg-bg text-fg outline-none focus:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] placeholder:text-fg-subtle";

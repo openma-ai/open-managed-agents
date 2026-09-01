@@ -1,3 +1,4 @@
+import { Input } from "@/components/ui/input";
 import {
   Children,
   cloneElement,
@@ -10,7 +11,7 @@ import {
 import { Label } from "@/components/ui/label";
 
 interface FieldProps {
-  /** Visible label text. Rendered as `<label htmlFor>`. */
+  /** Visible label text. Rendered as `<Label htmlFor>`. */
   label?: ReactNode;
   /** Helper text below the input. Wired up via `aria-describedby` on the
    *  child so screen readers announce it after the input's name. */
@@ -35,7 +36,7 @@ interface FieldProps {
  *
  * Usage:
  *   <Field label="Workspace name" hint="Letters, numbers, dashes only.">
- *     <input value={name} onChange={...} className={inputCls} />
+ *     <Input value={name} onChange={...} className={inputCls} />
  *   </Field>
  *
  * The cloning approach lets callsites use any form-control element
@@ -72,18 +73,18 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
       {label && (
         <Label
           htmlFor={inputId}
-          className="block text-[13px] font-medium text-fg mb-1.5"
+          className="block text-sm font-medium text-fg mb-1.5"
         >
           {label}
         </Label>
       )}
       {childWithProps}
       {error ? (
-        <p id={hintId} className="mt-1 text-[12px] text-danger">
+        <p id={hintId} className="mt-1 text-sm text-danger">
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="mt-1 text-[12px] text-fg-muted">
+        <p id={hintId} className="mt-1 text-sm text-fg-muted">
           {hint}
         </p>
       ) : null}

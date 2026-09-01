@@ -17,13 +17,13 @@ describe("production harness composition", () => {
   });
 
   it("reuses a session harness and disposes it when the binding changes", async () => {
-    const disposed: number[] = [];
+    const disposed: string[] = [];
     let instance = 0;
     registerHarness("lease-test", () => {
       const id = ++instance;
       return {
         run: async () => {},
-        dispose: async () => { disposed.push(id); },
+        dispose: async (reason) => { disposed.push(`${id}:${reason}`); },
       };
     });
     const lease = new HarnessLease();
@@ -34,9 +34,9 @@ describe("production harness composition", () => {
 
     expect(second).toBe(first);
     expect(replacement).not.toBe(first);
-    expect(disposed).toEqual([1]);
+    expect(disposed).toEqual(["1:replace"]);
 
-    await lease.dispose();
-    expect(disposed).toEqual([1, 2]);
+    await lease.dispose("shutdown");
+    expect(disposed).toEqual(["1:replace", "2:shutdown"]);
   });
 });

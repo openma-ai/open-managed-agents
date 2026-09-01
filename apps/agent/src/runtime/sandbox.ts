@@ -1,10 +1,15 @@
 import type {
+  SandboxCheckpointHandle,
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
   SandboxExecutor,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
   ProcessHandle,
-} from "../harness/interface";
+} from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
 import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
@@ -19,7 +24,7 @@ const parseShellCommand = parseShell as (command: string) => {
 };
 
 export class CloudflareSandbox
-  implements SandboxExecutor, SandboxDuplexProcessPort {
+  implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
   private sandboxPromise: Promise<any>;
   private env: Env;
   private sessionId: string;
@@ -40,6 +45,95 @@ export class CloudflareSandbox
 
   private async getSandbox() {
     return this.sandboxPromise;
+  }
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: "cloudflare", runtimeId: this.sessionId };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return {
+      lease: true,
+      suspend: ["filesystem"],
+      checkpoint: ["filesystem"],
+    };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    // The Cloudflare Sandbox proxy deliberately has no read-only container
+    // status call. Probing with exec() would wake a sleeping container, so
+    // report the honest portable value instead of mutating it during status.
+    return "unknown";
+  }
+
+  async renewLease(input: { ttlMs: number }): Promise<void> {
+    if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
+      throw new Error("Cloudflare sandbox lease ttlMs must be positive");
+    }
+    await this.renewActivityTimeout();
+  }
+
+  async checkpoint(input: {
+    kind: "filesystem" | "memory";
+    name?: string;
+  }): Promise<SandboxCheckpointHandle> {
+    if (input.kind !== "filesystem") {
+      throw new Error("Cloudflare sandbox supports filesystem checkpoints only");
+    }
+    const backup = await this.createWorkspaceBackup({
+      ...(input.name ? { name: input.name } : {}),
+      ttlSec: 7 * 24 * 60 * 60,
+    });
+    if (backup === null) {
+      throw new Error("Cloudflare sandbox checkpoint creation returned no backup");
+    }
+    return {
+      provider: "cloudflare",
+      checkpointId: backup.id,
+      sourceRuntimeId: this.sessionId,
+      kind: "filesystem",
+      scope: "portable",
+      metadata: {
+        dir: backup.dir,
+        ...(backup.localBucket !== undefined && {
+          localBucket: backup.localBucket,
+        }),
+      },
+    };
+  }
+
+  async suspend(input: {
+    kind: "filesystem" | "memory";
+  }): Promise<SandboxCheckpointHandle> {
+    const checkpoint = await this.checkpoint(input);
+    await this.destroy();
+    return checkpoint;
+  }
+
+  async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
+    if (
+      checkpoint.provider !== "cloudflare" ||
+      checkpoint.kind !== "filesystem" ||
+      checkpoint.scope !== "portable"
+    ) {
+      throw new Error("Cloudflare sandbox cannot resume this checkpoint");
+    }
+    const dir = checkpoint.metadata?.dir;
+    const localBucket = checkpoint.metadata?.localBucket;
+    if (typeof dir !== "string" || dir.length === 0) {
+      throw new Error("Cloudflare sandbox checkpoint is missing its directory");
+    }
+    if (localBucket !== undefined && typeof localBucket !== "boolean") {
+      throw new Error("Cloudflare sandbox checkpoint localBucket is invalid");
+    }
+    const restored = await this.restoreWorkspaceBackup({
+      id: checkpoint.checkpointId,
+      dir,
+      ...(typeof localBucket === "boolean" && { localBucket }),
+    });
+    if (!restored.ok) {
+      throw new Error(restored.error ?? "Cloudflare sandbox checkpoint restore failed");
+    }
   }
 
   /**

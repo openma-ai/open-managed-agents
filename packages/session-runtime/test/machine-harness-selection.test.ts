@@ -65,4 +65,60 @@ describe("SessionStateMachine harness selection", () => {
     expect(contextAgent).toBe(agent);
     expect(ran).toBe(true);
   });
+
+  it("owns one stateful harness across turns and disposes it on agent revision", async () => {
+    let currentAgent = agent;
+    let builds = 0;
+    const runs: number[] = [];
+    const disposed: string[] = [];
+    const shutdownOrder: string[] = [];
+    const adapter = {
+      beginTurn: async () => {},
+      endTurn: async () => {},
+      listOrphanTurns: async () => [],
+    } as unknown as RuntimeAdapter;
+    const sandbox = {
+      exec: async () => "",
+      readFile: async () => "",
+      writeFile: async (path: string) => path,
+      destroy: async () => { shutdownOrder.push("sandbox.destroy"); },
+    } satisfies SandboxPort;
+    const machine = new SessionStateMachine({
+      sessionId: "session_stateful_harness",
+      tenantId: "tenant_pi",
+      adapter,
+      sandbox,
+      loadAgent: async () => currentAgent,
+      buildModel: () => ({}) as LanguageModel,
+      buildTools: async () => ({}),
+      buildHarness: () => {
+        const id = ++builds;
+        return {
+          run: async () => { runs.push(id); },
+          dispose: async (reason) => { disposed.push(`${id}:${reason}`); },
+        };
+      },
+      buildHarnessContext: async (input) => input,
+      beforeSandboxDestroy: async () => {
+        shutdownOrder.push("sandbox.checkpoint");
+      },
+      publish: () => {},
+    });
+
+    await machine.runHarnessTurn(agent.id, userMessage);
+    await machine.runHarnessTurn(agent.id, userMessage);
+    currentAgent = { ...agent, version: 2 };
+    await machine.runHarnessTurn(agent.id, userMessage);
+
+    expect(builds).toBe(2);
+    expect(runs).toEqual([1, 1, 2]);
+    expect(disposed).toEqual(["1:replace"]);
+
+    await machine.shutdown();
+    expect(disposed).toEqual(["1:replace", "2:shutdown"]);
+    expect(shutdownOrder).toEqual([
+      "sandbox.checkpoint",
+      "sandbox.destroy",
+    ]);
+  });
 });

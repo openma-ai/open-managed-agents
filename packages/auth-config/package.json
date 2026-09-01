@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@open-managed-agents/email": "workspace:*",
+    "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
     "better-auth": "^1.6.3"
   }

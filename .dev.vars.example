@@ -5,3 +5,10 @@ ANTHROPIC_API_KEY=sk-ant-xxx
 # model_cards.api_key_cipher. Workers throw at first request if missing.
 # Generate with:  openssl rand -base64 32
 PLATFORM_ROOT_SECRET=
+
+# Optional console account sign-in providers. Keep these distinct from
+# GITHUB_OAUTH_* (tenant-installed GitHub integration credentials).
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=

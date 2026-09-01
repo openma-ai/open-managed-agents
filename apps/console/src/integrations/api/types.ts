@@ -272,29 +272,9 @@ export interface GitHubA1InstallLink {
   webhookUrl: string;
 }
 
-// ─── Sessions (subset, used by activity timeline) ────────────────────────
-//
-// Mirrors a slice of @open-managed-agents/shared SessionMeta. Kept inline
-// here so the console UI stays decoupled from the host server's type
-// package — snake-case shapes match the wire format.
+// ─── Sessions (used by activity timeline) ───────────────────────────────
 
-export interface SessionSummary {
-  id: string;
-  agent_id: string;
-  environment_id: string;
-  title: string;
-  status: string;
-  created_at: string;
-  updated_at?: string;
-  archived_at?: string;
-  /**
-   * Free-form metadata stamped at session create time. The github provider
-   * writes `{ github: { installationId, repository, eventKind, ... } }`;
-   * the linear provider writes its own shape. Activity-feed consumers
-   * narrow this themselves rather than us pretending one shape fits all.
-   */
-  metadata?: Record<string, unknown>;
-}
+export type SessionSummary = import("@anthropic-ai/sdk/resources/beta/sessions/sessions").BetaManagedAgentsSession;
 
 /**
  * Fields the github provider stamps onto session.metadata.github at create

@@ -1,5 +1,5 @@
+import { Button } from "@/components/ui/button";
 import { useCallback, useState, type FormEvent } from "react";
-import { CHAT_COMPOSER_FRAME_CLASS } from "@openma/common/chat-ui";
 import {
   CornerDownLeftIcon,
   LoaderCircleIcon,
@@ -55,43 +55,38 @@ export function SessionComposer({
   );
 
   return (
-    <div
-      className={`${CHAT_COMPOSER_FRAME_CLASS} session-composer-frame`}
-      data-chat-column="composer"
+    <PromptInput
+      accept="image/*"
+      className="session-composer"
+      globalDrop
+      maxFiles={10}
+      maxFileSize={25 * 1024 * 1024}
+      multiple
+      onError={onError}
+      onSubmit={handleSubmit}
     >
-      <PromptInput
-        accept="image/*"
-        className="session-composer"
-        globalDrop
-        maxFiles={10}
-        maxFileSize={25 * 1024 * 1024}
-        multiple
-        onError={onError}
-        onSubmit={handleSubmit}
-      >
-        <ComposerAttachmentStrip disabled={sending || interrupting} />
-        <PromptInputTextarea
-          aria-label="Message"
-          className="session-composer-textarea"
-          disabled={sending || interrupting}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          placeholder="Send a message…"
-          rows={1}
+      <ComposerAttachmentStrip disabled={sending || interrupting} />
+      <PromptInputTextarea
+        aria-label="Message"
+        className="session-composer-textarea"
+        disabled={sending || interrupting}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        placeholder="Send a message…"
+        rows={1}
+      />
+      <PromptInputFooter className="session-composer-footer">
+        <PromptInputTools>
+          <ComposerAttachButton disabled={sending || interrupting} />
+        </PromptInputTools>
+        <ComposerPrimaryAction
+          draft={draft}
+          interrupting={interrupting}
+          onStop={onStop}
+          running={running}
+          sending={sending}
         />
-        <PromptInputFooter className="session-composer-footer">
-          <PromptInputTools>
-            <ComposerAttachButton disabled={sending || interrupting} />
-          </PromptInputTools>
-          <ComposerPrimaryAction
-            draft={draft}
-            interrupting={interrupting}
-            onStop={onStop}
-            running={running}
-            sending={sending}
-          />
-        </PromptInputFooter>
-      </PromptInput>
-    </div>
+      </PromptInputFooter>
+    </PromptInput>
   );
 }
 
@@ -126,14 +121,14 @@ function ComposerAttachmentStrip({ disabled }: { disabled: boolean }) {
             <img alt="" aria-hidden="true" src={file.url} />
           ) : null}
           <span title={file.filename}>{file.filename ?? "Image"}</span>
-          <button
+          <Button variant="ghost"
             aria-label={`Remove ${file.filename ?? "image"}`}
             disabled={disabled}
             onClick={() => attachments.remove(file.id)}
             type="button"
           >
             <XIcon aria-hidden="true" className="size-3" />
-          </button>
+          </Button>
         </div>
       ))}
     </div>

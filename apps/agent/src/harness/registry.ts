@@ -1,4 +1,4 @@
-import type { HarnessInterface } from "./interface";
+import type { HarnessDisposeReason, HarnessInterface } from "./interface";
 
 type HarnessFactory = () => HarnessInterface;
 
@@ -25,15 +25,15 @@ export class HarnessLease {
 
   async resolve(key: string, name?: string): Promise<HarnessInterface> {
     if (this.#active?.key === key) return this.#active.harness;
-    await this.dispose();
+    await this.dispose("replace");
     const harness = resolveHarness(name);
     this.#active = { key, harness };
     return harness;
   }
 
-  async dispose(): Promise<void> {
+  async dispose(reason: HarnessDisposeReason = "destroy"): Promise<void> {
     const active = this.#active;
     this.#active = null;
-    await active?.harness.dispose?.();
+    await active?.harness.dispose?.(reason);
   }
 }

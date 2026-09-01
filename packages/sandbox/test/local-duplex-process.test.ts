@@ -63,4 +63,28 @@ describe("LocalSubprocessSandbox duplex process", () => {
     );
     await expect(stderr).resolves.toBe("diagnostic");
   });
+
+  it("kills every live duplex child before destroying the sandbox", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "oma-sandbox-duplex-destroy-"));
+    temporaryDirectories.push(workdir);
+    const sandbox = new LocalSubprocessSandbox({ workdir });
+    const child = await sandbox.spawnDuplexProcess({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: "/workspace",
+    });
+
+    try {
+      await sandbox.destroy();
+      const exit = await Promise.race([
+        child.exited,
+        new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), 150)
+        ),
+      ]);
+      expect(exit).not.toBe("timeout");
+    } finally {
+      await child.kill("SIGKILL").catch(() => undefined);
+    }
+  });
 });

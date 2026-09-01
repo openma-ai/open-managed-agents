@@ -160,13 +160,13 @@ export function ConnectRuntime() {
               <Button onClick={approve} disabled={working} className="flex-1">
                 {working ? "Authorizing…" : "Allow"}
               </Button>
-              <button
+              <Button variant="ghost"
                 onClick={cancel}
                 disabled={working}
                 className="inline-flex items-center justify-center px-4 py-2.5 min-h-11 sm:min-h-0 rounded-lg border border-border text-sm text-fg-muted hover:bg-bg disabled:opacity-40"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </>
         )}

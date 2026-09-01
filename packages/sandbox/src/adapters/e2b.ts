@@ -22,8 +22,16 @@ import type {
   SandboxDuplexProcess,
   SandboxDuplexProcessPort,
   SandboxDuplexProcessSpec,
+  SandboxCheckpointHandle,
   SandboxFactory,
+  SandboxFactoryContext,
+  SandboxFactoryEnv,
   SandboxPort,
+  SandboxProviderPort,
+  SandboxRuntimeCapabilities,
+  SandboxRuntimeHandle,
+  SandboxRuntimePort,
+  SandboxRuntimeStatus,
 } from "../ports";
 import { readS3MemoryBucket } from "../ports";
 
@@ -65,6 +73,14 @@ interface E2BSandboxLike {
     makeDir?(path: string): Promise<void>;
   };
   kill(): Promise<void>;
+  getInfo?(): Promise<{ state?: string }>;
+  setTimeout?(timeoutMs: number): Promise<void>;
+  pause?(opts?: { keepMemory?: boolean }): Promise<boolean>;
+  connect?(): Promise<E2BSandboxLike>;
+  createSnapshot?(opts?: { name?: string }): Promise<{
+    snapshotId: string;
+    names: string[];
+  }>;
 }
 
 export interface E2BSandboxOptions {
@@ -114,36 +130,16 @@ export interface E2BSandboxOptions {
 export async function createE2BSandbox(
   opts: E2BSandboxOptions = {},
 ): Promise<E2BSandboxExecutor> {
-  type E2BModule = {
-    Sandbox: {
-      create(
-        template: string,
-        args?: {
-          apiKey?: string;
-          apiUrl?: string;
-          sandboxUrl?: string;
-          domain?: string;
-        },
-      ): Promise<E2BSandboxLike>;
-    };
-  };
-  const mod = (await import(/* @vite-ignore */ "e2b" as string).catch((err) => {
-    throw new Error(
-      `createE2BSandbox: failed to load 'e2b' SDK — ` +
-        `pnpm add e2b (cause: ${String(err)})`,
-    );
-  })) as E2BModule;
-  const sb = await mod.Sandbox.create(opts.templateId ?? "base", {
-    apiKey: opts.apiKey,
-    apiUrl: opts.apiUrl,
-    sandboxUrl: opts.sandboxUrl,
-    domain: opts.domain,
-  });
+  const mod = await loadE2BModule();
+  const sb = await mod.Sandbox.create(
+    opts.templateId ?? "base",
+    connectionOptions(opts),
+  );
   return new E2BSandboxExecutor(sb, opts);
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -163,6 +159,91 @@ export class E2BSandboxExecutor
       warn: (msg, ctx) => console.warn(`[e2b-sandbox] ${msg}`, ctx ?? ""),
     };
     this.memoryBucketConfig = opts.memoryBucket;
+  }
+
+  runtimeHandle(): SandboxRuntimeHandle {
+    return { provider: "e2b", runtimeId: this.requireRuntimeId() };
+  }
+
+  runtimeCapabilities(): SandboxRuntimeCapabilities {
+    return {
+      lease: true,
+      suspend: ["filesystem", "memory"],
+      checkpoint: ["memory"],
+    };
+  }
+
+  async status(): Promise<SandboxRuntimeStatus> {
+    if (typeof this.sandbox.getInfo !== "function") return "unknown";
+    const info = await this.sandbox.getInfo();
+    if (info.state === "running") return "running";
+    if (info.state === "paused") return "suspended";
+    return "unknown";
+  }
+
+  async renewLease(input: { ttlMs: number }): Promise<void> {
+    if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
+      throw new Error("E2B lease ttlMs must be a positive integer");
+    }
+    if (typeof this.sandbox.setTimeout !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.setTimeout");
+    }
+    await this.sandbox.setTimeout(input.ttlMs);
+  }
+
+  async suspend(input: {
+    kind: "filesystem" | "memory";
+  }): Promise<SandboxCheckpointHandle> {
+    if (typeof this.sandbox.pause !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.pause");
+    }
+    const runtimeId = this.requireRuntimeId();
+    await this.sandbox.pause({ keepMemory: input.kind === "memory" });
+    return {
+      provider: "e2b",
+      checkpointId: runtimeId,
+      sourceRuntimeId: runtimeId,
+      kind: input.kind,
+      scope: "runtime",
+    };
+  }
+
+  async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
+    const runtimeId = this.requireRuntimeId();
+    if (
+      checkpoint.provider !== "e2b"
+      || checkpoint.scope !== "runtime"
+      || checkpoint.checkpointId !== runtimeId
+    ) {
+      throw new Error("E2B runtime can only resume its own runtime-scoped checkpoint");
+    }
+    if (typeof this.sandbox.connect !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.connect");
+    }
+    this.sandbox = await this.sandbox.connect();
+  }
+
+  async checkpoint(input: {
+    kind: "filesystem" | "memory";
+    name?: string;
+  }): Promise<SandboxCheckpointHandle> {
+    if (input.kind !== "memory") {
+      throw new Error("E2B durable checkpoints currently support memory state only");
+    }
+    if (typeof this.sandbox.createSnapshot !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.createSnapshot");
+    }
+    const runtimeId = this.requireRuntimeId();
+    const snapshot = await this.sandbox.createSnapshot(
+      input.name ? { name: input.name } : undefined,
+    );
+    return {
+      provider: "e2b",
+      checkpointId: snapshot.snapshotId,
+      sourceRuntimeId: runtimeId,
+      kind: "memory",
+      scope: "portable",
+    };
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -521,6 +602,13 @@ export class E2BSandboxExecutor
     }
   }
 
+  private requireRuntimeId(): string {
+    if (!this.sandbox.sandboxId) {
+      throw new Error("E2B SDK did not return a sandboxId");
+    }
+    return this.sandbox.sandboxId;
+  }
+
   // ── helpers ──────────────────────────────────────────────────────────────
 
   /** Prefix env-var assignments and command-prefix secrets for the legacy
@@ -609,13 +697,80 @@ function readExitCode(cause: unknown): number | null {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (_ctx, env) => {
-  return await createE2BSandbox({
+type E2BConnectionOptions = Pick<
+  E2BSandboxOptions,
+  "apiKey" | "apiUrl" | "sandboxUrl" | "domain"
+>;
+
+interface E2BModule {
+  Sandbox: {
+    create(template: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+    connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+  };
+}
+
+async function loadE2BModule(): Promise<E2BModule> {
+  return (await import(/* @vite-ignore */ "e2b" as string).catch((err) => {
+    throw new Error(
+      `E2B sandbox provider failed to load 'e2b' SDK — ` +
+        `pnpm add e2b (cause: ${String(err)})`,
+    );
+  })) as E2BModule;
+}
+
+function connectionOptions(opts: E2BConnectionOptions): E2BConnectionOptions {
+  return {
+    apiKey: opts.apiKey,
+    apiUrl: opts.apiUrl,
+    sandboxUrl: opts.sandboxUrl,
+    domain: opts.domain,
+  };
+}
+
+function optionsFromFactory(env: SandboxFactoryEnv): E2BSandboxOptions {
+  return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
     sandboxUrl: env.E2B_SANDBOX_URL,
     domain: env.E2B_DOMAIN,
     templateId: env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
-  });
+  };
+}
+
+export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
+  create: async (_ctx, env) => createE2BSandbox(optionsFromFactory(env)),
+  resume: async (handle, _ctx, env) => {
+    if (handle.provider !== "e2b" || !handle.runtimeId) {
+      throw new Error("E2B provider received an incompatible runtime handle");
+    }
+    const options = optionsFromFactory(env);
+    const mod = await loadE2BModule();
+    const sandbox = await mod.Sandbox.connect(
+      handle.runtimeId,
+      connectionOptions(options),
+    );
+    return new E2BSandboxExecutor(sandbox, options);
+  },
+  restore: async (checkpoint, _ctx, env) => {
+    if (
+      checkpoint.provider !== "e2b"
+      || checkpoint.scope !== "portable"
+      || !checkpoint.checkpointId
+    ) {
+      throw new Error("E2B provider received an incompatible portable checkpoint");
+    }
+    const options = optionsFromFactory(env);
+    const mod = await loadE2BModule();
+    const sandbox = await mod.Sandbox.create(
+      checkpoint.checkpointId,
+      connectionOptions(options),
+    );
+    return new E2BSandboxExecutor(sandbox, options);
+  },
 };
+
+export const sandboxFactory: SandboxFactory = (
+  ctx: SandboxFactoryContext,
+  env: SandboxFactoryEnv,
+) => sandboxProvider.create(ctx, env);

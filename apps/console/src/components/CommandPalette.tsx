@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
-import type { ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
+import { useLocation, useNavigate } from "react-router";
 
 import {
   CommandDialog,
@@ -9,10 +8,8 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandShortcut,
 } from "@/components/ui/command";
 
-import { ROUTE_CHORDS } from "../lib/route-chords";
 import {
   AgentIcon,
   ApiKeysIcon,
@@ -34,113 +31,159 @@ import { useI18n } from "../i18n";
 interface NavCommand {
   label: string;
   to: string;
-  group: string;
   icon: ComponentType<{ className?: string }>;
-  // Aliases helps fuzzy match — typing "envs" matches "Environments".
   aliases?: string;
 }
 
-// Mirrors the sidebar nav in Layout.tsx — kept inline so the palette is
-// self-contained. If the sidebar gains an item, add it here too. (We
-// intentionally don't auto-derive from Layout's navGroups because the
-// palette wants slightly different ordering and aliases.)
+const RECENT_STORAGE_KEY = "oma-command-recent";
+export const COMMAND_PALETTE_OPEN_EVENT = "openma:command-palette";
+
+export function openCommandPalette() {
+  window.dispatchEvent(new Event(COMMAND_PALETTE_OPEN_EVENT));
+}
+
 function useCommands(): NavCommand[] {
   const { t } = useI18n();
   return [
-    { label: t.nav.dashboard,          to: "/",                          group: t.nav.overview,       icon: DashboardIcon },
-    { label: t.nav.agents,             to: "/agents",                    group: t.nav.managedAgents, icon: AgentIcon },
-    { label: t.nav.sessions,           to: "/sessions",                  group: t.nav.managedAgents, icon: SessionsIcon },
-    { label: t.nav.files,              to: "/files",                     group: t.nav.managedAgents, icon: FilesIcon },
-    { label: t.nav.evalRuns,           to: "/evals",                     group: t.nav.managedAgents, icon: SessionsIcon, aliases: "evaluations evals" },
-    { label: t.nav.environments,       to: "/environments",              group: t.nav.infrastructure, icon: EnvIcon, aliases: "envs sandboxes" },
-    { label: t.nav.credentialVaults,   to: "/vaults",                    group: t.nav.infrastructure, icon: VaultIcon, aliases: "secrets credentials" },
-    { label: t.nav.skills,             to: "/skills",                    group: t.nav.configuration,  icon: SkillsIcon },
-    { label: t.nav.memoryStores,       to: "/memory",                    group: t.nav.configuration,  icon: MemoryIcon },
-    { label: t.nav.modelCards,         to: "/model-cards",               group: t.nav.configuration,  icon: ModelCardsIcon },
-    { label: t.nav.apiKeys,            to: "/api-keys",                  group: t.nav.configuration,  icon: ApiKeysIcon, aliases: "tokens" },
-    { label: t.nav.localRuntimes,      to: "/runtimes",                  group: t.nav.configuration,  icon: RuntimesIcon },
-    { label: "Linear",                 to: "/integrations/linear",       group: t.nav.integrations,   icon: LinearIcon },
-    { label: "GitHub",                 to: "/integrations/github",       group: t.nav.integrations,   icon: GitHubIcon },
-    { label: "Slack",                  to: "/integrations/slack",        group: t.nav.integrations,   icon: SlackIcon },
+    { label: t.nav.dashboard, to: "/", icon: DashboardIcon },
+    { label: t.nav.agents, to: "/agents", icon: AgentIcon },
+    { label: t.nav.sessions, to: "/sessions", icon: SessionsIcon },
+    { label: t.nav.files, to: "/files", icon: FilesIcon },
+    { label: t.nav.evalRuns, to: "/evals", icon: SessionsIcon, aliases: "evaluations evals" },
+    { label: t.nav.environments, to: "/environments", icon: EnvIcon, aliases: "envs sandboxes" },
+    { label: t.nav.credentialVaults, to: "/vaults", icon: VaultIcon, aliases: "secrets credentials" },
+    { label: t.nav.skills, to: "/skills", icon: SkillsIcon },
+    { label: t.nav.memoryStores, to: "/memory", icon: MemoryIcon },
+    { label: t.nav.modelCards, to: "/model-cards", icon: ModelCardsIcon },
+    { label: t.nav.apiKeys, to: "/api-keys", icon: ApiKeysIcon, aliases: "tokens" },
+    { label: t.nav.localRuntimes, to: "/runtimes", icon: RuntimesIcon },
+    { label: "Linear", to: "/integrations/linear", icon: LinearIcon },
+    { label: "GitHub", to: "/integrations/github", icon: GitHubIcon },
+    { label: "Slack", to: "/integrations/slack", icon: SlackIcon },
   ];
 }
 
-/**
- * Global Cmd+K (⌘K / Ctrl+K) command palette. Quick-jump anywhere in the
- * console without going through the sidebar. Mounts once at the layout
- * level; listens on `window` for the keybinding.
- *
- * Built on shadcn `CommandDialog` (Dialog + cmdk Command). Replaces the
- * hand-rolled Radix Dialog + raw cmdk pairing — the shadcn primitive
- * already wires title/description for a11y, top-1/3 placement, and
- * appropriate sizing.
- */
+function readRecentPaths(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(RECENT_STORAGE_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** One global command surface. Intent groups stay in a stable order while the
+ * recent ring buffer reflects routes the user has actually visited. */
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
-  const nav = useNavigate();
+  const [query, setQuery] = useState("");
+  const [recentPaths, setRecentPaths] = useState<string[]>(readRecentPaths);
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { t } = useI18n();
-  const COMMANDS = useCommands();
+  const commands = useCommands();
+
+  const remember = (path: string) => {
+    setRecentPaths((current) => {
+      const next = [path, ...current.filter((item) => item !== path)].slice(0, 4);
+      try {
+        localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // The in-memory ring buffer remains useful when storage is unavailable.
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // ⌘K on mac, Ctrl+K everywhere else. Same combo as Linear, Raycast,
-      // Slack — universal "open command palette".
-      const cmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
-      if (cmdK) {
-        e.preventDefault();
-        setOpen((v) => !v);
+    const command = commands.find((item) =>
+      item.to === "/" ? pathname === "/" : pathname === item.to || pathname.startsWith(`${item.to}/`),
+    );
+    if (command) remember(command.to);
+    // Route changes are the event; translated labels do not change the stored path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setOpen((current) => !current);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onOpen = () => setOpen(true);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener(COMMAND_PALETTE_OPEN_EVENT, onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(COMMAND_PALETTE_OPEN_EVENT, onOpen);
+    };
   }, []);
 
   const go = (to: string) => {
+    remember(to);
     setOpen(false);
-    nav(to);
+    setQuery("");
+    navigate(to);
   };
 
-  // Group commands by their `group` field for cmdk's grouped rendering.
-  const grouped = COMMANDS.reduce<Record<string, NavCommand[]>>((acc, cmd) => {
-    (acc[cmd.group] ??= []).push(cmd);
-    return acc;
-  }, {});
+  const recentCommands = recentPaths
+    .map((path) => commands.find((command) => command.to === path))
+    .filter((command): command is NavCommand => Boolean(command));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const searchResults = normalizedQuery.length >= 2
+    ? commands.filter((command) =>
+        `${command.label} ${command.aliases ?? ""}`.toLocaleLowerCase().includes(normalizedQuery),
+      ).slice(0, 6)
+    : [];
+
+  const renderCommand = (command: NavCommand, valuePrefix: string) => {
+    const Icon = command.icon;
+    return (
+      <CommandItem
+        key={`${valuePrefix}:${command.to}`}
+        value={`${valuePrefix} ${command.label} ${command.aliases ?? ""}`}
+        onSelect={() => go(command.to)}
+        className="cursor-pointer"
+      >
+        <Icon className="size-4 opacity-60" />
+        <span className="min-w-0 flex-1 truncate">{command.label}</span>
+      </CommandItem>
+    );
+  };
 
   return (
     <CommandDialog
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
       title={t.command.title}
       description={t.command.description}
     >
-      <CommandInput placeholder={t.command.jumpTo} />
+      <CommandInput
+        value={query}
+        onValueChange={setQuery}
+        placeholder={t.command.jumpTo}
+      />
       <CommandList>
         <CommandEmpty>{t.command.noMatches}</CommandEmpty>
-        {Object.entries(grouped).map(([group, items]) => (
-          <CommandGroup key={group} heading={group}>
-            {items.map((cmd) => {
-              const Icon = cmd.icon;
-              const chord = ROUTE_CHORDS[cmd.to];
-              return (
-                <CommandItem
-                  key={cmd.to}
-                  value={`${cmd.label} ${cmd.aliases ?? ""}`}
-                  onSelect={() => go(cmd.to)}
-                  className="cursor-pointer"
-                >
-                  <Icon className="size-4 opacity-60 shrink-0" />
-                  <span className="flex-1 min-w-0 truncate">{cmd.label}</span>
-                  <span className="text-[11px] text-fg-subtle">{cmd.group}</span>
-                  {chord && (
-                    <CommandShortcut className="font-mono text-[10px] border border-border rounded px-1.5 py-0.5">
-                      g {chord}
-                    </CommandShortcut>
-                  )}
-                </CommandItem>
-              );
-            })}
+        <CommandGroup heading="Recent">
+          {recentCommands.map((command) => renderCommand(command, "recent"))}
+        </CommandGroup>
+        <CommandGroup heading="Actions">
+          {renderCommand(commands.find((command) => command.to === "/agents")!, "view")}
+          {renderCommand(commands.find((command) => command.to === "/sessions")!, "review")}
+        </CommandGroup>
+        <CommandGroup heading="Navigate">
+          {commands.map((command) => renderCommand(command, "navigate"))}
+        </CommandGroup>
+        {searchResults.length > 0 && (
+          <CommandGroup heading="Search">
+            {searchResults.map((command) => renderCommand(command, "search"))}
           </CommandGroup>
-        ))}
+        )}
       </CommandList>
     </CommandDialog>
   );

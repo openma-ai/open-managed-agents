@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { ArchiveIcon, PencilIcon, TrashIcon } from "lucide-react";
+import { ArchiveIcon, PencilIcon } from "lucide-react";
 
 import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
+import { useManagedApi } from "../lib/useManagedApi";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
-import { RowActionsMenu } from "../components/RowActionsMenu";
+import type { RowAction } from "../components/RowContextMenu";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
 import type { ModelCard } from "@open-managed-agents/api-types";
-import type { AgentRecord as Agent } from "../types/agent";
+import type { AgentRecord as Agent, OmaAgentExtension } from "../types/agent";
 import { AgentFormDialog } from "./agents/AgentFormDialog";
 import { useI18n } from "../i18n";
 
@@ -45,6 +46,7 @@ const STATUS_OPTIONS: { value: StatusValue; label: string }[] = [
 
 export function AgentsList() {
   const { api } = useApi();
+  const managedApi = useManagedApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
@@ -57,7 +59,9 @@ export function AgentsList() {
   const [showCreate, setShowCreate] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
-  // Server-driven filter state. Each piece flows into agentsParams below
+  // Managed Agents exposes include_archived plus RFC3339 created-at bounds.
+  // Archived-only and text search remain feed presentation filters; they do
+  // not leak the legacy OMA `status/q/created_after` query dialect.
   // → useInfiniteApiQuery resets to page 1 on params change → the list
   // reflects exactly what the server returned (no client-side faking).
   const [status, setStatus] = useState<StatusValue>("active");
@@ -68,16 +72,15 @@ export function AgentsList() {
   // page 0 automatically (paramsKey is part of the query key).
   const agentsParams = useMemo(
     () => ({
-      status,
+      ...(status !== "active" ? { include_archived: "true" } : {}),
       ...(created.after !== undefined
-        ? { created_after: new Date(created.after).toISOString() }
+        ? { "created_at[gte]": new Date(created.after).toISOString() }
         : {}),
       ...(created.before !== undefined
-        ? { created_before: new Date(created.before).toISOString() }
+        ? { "created_at[lte]": new Date(created.before).toISOString() }
         : {}),
-      ...(search ? { q: search } : {}),
     }),
-    [status, created.after, created.before, search],
+    [status, created.after, created.before],
   );
   const {
     items: agents,
@@ -87,6 +90,15 @@ export function AgentsList() {
     loadMore,
     refresh: refreshAgents,
   } = useInfiniteApiQuery<Agent>("/v1/agents", { limit: 20, params: agentsParams });
+  const visibleAgents = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase();
+    return agents.filter((agent) => {
+      if (status === "archived" && !agent.archived_at) return false;
+      if (status === "active" && agent.archived_at) return false;
+      if (!needle) return true;
+      return `${agent.name}\n${agent.id}`.toLocaleLowerCase().includes(needle);
+    });
+  }, [agents, search, status]);
 
   // Aux fetches that aren't paginated UI surfaces — refreshed on mount and
   // after agent CRUD. Pull all agents (for the callable-agents dropdown)
@@ -100,14 +112,21 @@ export function AgentsList() {
   const loadAux = async () => {
     setAuxLoading(true);
     try {
-      const all = await api<{ data: Agent[] }>("/v1/agents?limit=200&status=any");
+      const all = await managedApi.agents.list({
+        limit: 200,
+        include_archived: true,
+      });
       setAllAgents(all.data ?? []);
       await Promise.allSettled([
         (async () => {
-          const sk = await api<{
-            data: Array<{ id: string; name: string; description: string }>;
-          }>("/v1/skills");
-          setCustomSkills(sk.data ?? []);
+          const sk = await managedApi.skills.list({ limit: 200 });
+          setCustomSkills(
+            (sk.data ?? []).map((skill) => ({
+              id: skill.id,
+              name: skill.display_title || skill.id,
+              description: "",
+            })),
+          );
         })().catch((e) => console.warn("[AgentsList] /v1/skills aux fetch failed", e)),
         (async () => {
           const mc = await api<{ data: ModelCard[] }>("/v1/oma/model_cards?limit=200");
@@ -128,6 +147,46 @@ export function AgentsList() {
   }, []);
 
   const modelStr = (m: Agent["model"]) => (typeof m === "string" ? m : m?.id || "");
+
+  const getAgentActions = (agent: Agent): RowAction[] => {
+    const archived = Boolean(agent.archived_at);
+    return [
+      {
+        label: t.agents.editAgent,
+        icon: <PencilIcon className="size-4" />,
+        disabled: archived,
+        onSelect: async () => {
+          try {
+            // Editing can expose OpenMA-only local runtime fields. Fetch that
+            // extension explicitly; the list itself remains the strict Managed feed.
+            const extension = await api<OmaAgentExtension>(
+              `/v1/oma/agents/${agent.id}`,
+            );
+            setEditingAgent({
+              ...agent,
+              ...(extension._oma ? { _oma: extension._oma } : {}),
+              ...(extension.enable_general_subagent !== undefined
+                ? { enable_general_subagent: extension.enable_general_subagent }
+                : {}),
+            });
+          } catch {
+            setEditingAgent(agent);
+          }
+        },
+      },
+      {
+        label: archived ? t.common.unarchive : t.common.archive,
+        icon: <ArchiveIcon className="size-4" />,
+        disabled: archived,
+        onSelect: async () => {
+          try {
+            await managedApi.agents.archive(agent.id);
+            refreshAgents();
+          } catch {}
+        },
+      },
+    ];
+  };
 
   // TanStack column defs. Order, filtering, and search all flow through
   // server params now — no per-column sort/filter UI. Required columns
@@ -187,64 +246,6 @@ export function AgentsList() {
           </span>
         ),
       },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => {
-          const a = row.original;
-          const archived = !!a.archived_at;
-          return (
-            <RowActionsMenu
-              label={`${t.common.actions} for ${a.name}`}
-              actions={[
-                {
-                  label: t.agents.editAgent,
-                  icon: <PencilIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    try {
-                      // Fetch fresh so the form has full config + current
-                      // version (list rows can be stale within TQ staleTime).
-                      const fresh = await api<Agent>(`/v1/agents/${a.id}`);
-                      setEditingAgent(fresh);
-                    } catch {
-                      setEditingAgent(a);
-                    }
-                  },
-                },
-                {
-                  label: archived ? t.common.unarchive : t.common.archive,
-                  icon: <ArchiveIcon className="size-4" />,
-                  disabled: archived,
-                  onSelect: async () => {
-                    try {
-                      await api(`/v1/agents/${a.id}/archive`, {
-                        method: "POST",
-                        body: "{}",
-                      });
-                      refreshAgents();
-                    } catch {}
-                  },
-                },
-                {
-                  label: t.common.delete,
-                  icon: <TrashIcon className="size-4" />,
-                  destructive: true,
-                  onSelect: async () => {
-                    if (!confirm(`${t.agents.deleteAgent} ${a.name}? ${t.agents.confirmDelete}`)) return;
-                    try {
-                      await api(`/v1/agents/${a.id}`, { method: "DELETE" });
-                      refreshAgents();
-                    } catch {}
-                  },
-                },
-              ]}
-            />
-          );
-        },
-        enableHiding: false,
-        size: 56,
-      },
     ],
     [api, refreshAgents],
   );
@@ -294,10 +295,11 @@ export function AgentsList() {
       searchValue={search}
       onSearchChange={setSearch}
       filters={filters}
-      data={agents}
+      data={visibleAgents}
       loading={loading}
       getRowId={(a) => a.id}
       onRowClick={(a) => nav(`/agents/${a.id}`)}
+      rowActions={getAgentActions}
       hasMore={hasMore}
       loadingMore={isLoadingMore}
       onLoadMore={loadMore}
@@ -312,12 +314,12 @@ export function AgentsList() {
         ) : (
           <>
             <p>{t.agents.createFirstAgent}</p>
-            <button
+            <Button variant="ghost"
               onClick={() => nav("/")}
               className="inline-flex items-center min-h-11 sm:min-h-0 mt-3 text-sm text-brand hover:underline"
             >
               {t.agents.getStartedGuide}
-            </button>
+            </Button>
           </>
         )
       }

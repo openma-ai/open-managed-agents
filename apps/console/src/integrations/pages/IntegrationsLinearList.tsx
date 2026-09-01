@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { IntegrationsApi } from "../api/client";
@@ -56,14 +57,14 @@ export function IntegrationsLinearList() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1100px] mx-auto px-4 sm:px-8 lg:px-10 py-10 lg:py-12">
+    <div className="console-integration-route" data-testid="integration-route">
+      <div className="console-integration-page" data-testid="integration-page">
         <header className="flex items-start justify-between gap-6 mb-8">
           <div className="min-w-0">
-            <h1 className="font-display text-[28px] leading-tight font-semibold tracking-tight text-fg">
+            <h1 className="font-display text-xl leading-tight font-semibold tracking-tight text-fg">
               Linear integrations
             </h1>
-            <p className="mt-1.5 text-[14px] text-fg-muted max-w-xl">
+            <p className="mt-1.5 text-base text-fg-muted max-w-xl">
               Make your agents teammates in Linear — assign them issues, mention them
               in comments, watch them push status.
             </p>
@@ -71,14 +72,14 @@ export function IntegrationsLinearList() {
           <div className="shrink-0 flex items-center gap-2">
             <Link
               to="/integrations/linear/install-pat"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 border border-border rounded-md text-[13px] font-medium hover:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 border border-border rounded-md text-sm font-medium hover:border-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
               title="Symphony-equivalent: paste a Linear PAT, no OAuth dance"
             >
               Install via PAT
             </Link>
             <Link
               to="/integrations/linear/publish"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-[13px] font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-brand-fg rounded-md text-sm font-medium hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] whitespace-nowrap"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
               Publish agent
@@ -95,7 +96,7 @@ export function IntegrationsLinearList() {
 
         {pending.length > 0 && (
           <section className="mb-6">
-            <h2 className="text-[12px] font-medium text-fg-muted uppercase tracking-wider mb-2">
+            <h2 className="text-sm font-medium text-fg-muted uppercase tracking-wider mb-2">
               In-progress installs
             </h2>
             <ul className="space-y-2">
@@ -112,7 +113,7 @@ export function IntegrationsLinearList() {
             action={
               <Link
                 to="/integrations/linear/publish"
-                className="text-brand hover:underline text-[13px]"
+                className="text-brand hover:underline text-sm"
               >
                 Publish your first agent →
               </Link>
@@ -151,31 +152,31 @@ function PendingRow({
       <Avatar src={pub.persona.avatarUrl} name={pub.persona.name} size="sm" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="font-medium text-fg text-[14px] truncate">
+          <span className="font-medium text-fg text-base truncate">
             {pub.persona.name}
           </span>
-          <span className="text-[11px] text-warning">
+          <span className="text-xs text-warning">
             ● Step {stepNum} of 3 ({statusLabel})
           </span>
         </div>
-        <p className="text-[12px] text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Started {formatRelative(Date.now() - pub.created_at)} ago
         </p>
       </div>
       <Link
         to={`/integrations/linear/publish?pub=${encodeURIComponent(pub.id)}`}
-        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium rounded-md bg-brand text-brand-fg hover:bg-brand-hover transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
       >
         Resume install ↗
       </Link>
-      <button
+      <Button variant="ghost"
         type="button"
         onClick={onDiscard}
-        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-[12px] font-medium text-fg-muted hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+        className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 text-sm font-medium text-fg-muted hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         title="Discard this in-progress install"
       >
         Discard ✕
-      </button>
+      </Button>
     </li>
   );
 }
@@ -192,14 +193,14 @@ function WorkspaceCard({
       <div className="flex items-center justify-between gap-4 px-5 py-4">
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <h2 className="text-[15px] font-medium text-fg truncate">
+            <h2 className="text-base font-medium text-fg truncate">
               {installation.workspace_name}
             </h2>
-            <span className="text-[11px] text-fg-subtle font-mono uppercase tracking-wider">
+            <span className="text-xs text-fg-subtle font-mono uppercase tracking-wider">
               workspace
             </span>
           </div>
-          <p className="mt-0.5 text-[12px] text-fg-muted">
+          <p className="mt-0.5 text-sm text-fg-muted">
             Dedicated app · full identity ·{" "}
             <span className="text-fg">
               {publications.length} agent{publications.length === 1 ? "" : "s"}
@@ -208,7 +209,7 @@ function WorkspaceCard({
         </div>
         <Link
           to={`/integrations/linear/installations/${installation.id}`}
-          className="shrink-0 text-[13px] text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+          className="shrink-0 text-sm text-fg-muted hover:text-brand transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
         >
           Manage →
         </Link>
@@ -269,7 +270,7 @@ function StatusPill({ status }: { status: LinearPublication["status"] }) {
   const v = map[status];
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full ${v.cls}`}
+      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${v.cls}`}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${v.dot}`} />
       {v.label}
