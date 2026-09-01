@@ -11,6 +11,7 @@ import {
   detachedProcessOptions,
   killProcessTree,
 } from "./helpers/process-tree";
+import { verifyManagedAgentsClientStateModel } from "../../../test/model/managed-agents-client-state-model";
 
 interface ProcessHandle {
   child: ChildProcess;
@@ -685,6 +686,39 @@ describe("main-node official Managed Agents route", () => {
     expect(await client.beta.sessions.delete(createdSession.id)).toEqual({
       id: createdSession.id,
       type: "session_deleted",
+    });
+  }, 60_000);
+
+  it("refines the official SDK client state model under conflicts", async () => {
+    handle = await startMainNode(dataDirectory);
+    const client = new Anthropic({
+      apiKey: "test-key",
+      baseURL: `http://127.0.0.1:${handle.port}`,
+      maxRetries: 0,
+    });
+    const suffix = randomBytes(8).toString("hex");
+    const modelId = `state-model-${suffix}`;
+    const modelCard = await fetch(
+      `http://127.0.0.1:${handle.port}/v1/oma/model_cards`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": "test-key",
+        },
+        body: JSON.stringify({
+          provider: "ant",
+          model_id: modelId,
+          api_key: "sk-ant-state-model-key",
+        }),
+      },
+    );
+    expect(modelCard.status).toBe(201);
+
+    await verifyManagedAgentsClientStateModel({
+      client,
+      model: modelId,
+      prefix: `node-${suffix}`,
     });
   }, 60_000);
 });

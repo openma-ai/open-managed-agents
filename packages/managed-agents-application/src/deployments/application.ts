@@ -360,6 +360,12 @@ export class DeploymentsApplicationService
       deploymentId: command.deploymentId,
     });
     if (current === null) return { type: "not_found" };
+    if (current.deployment.archivedAt !== null) {
+      return {
+        type: "version_conflict",
+        message: `Deployment ${command.deploymentId} is archived and read-only`,
+      };
+    }
 
     const invalid = validateDeploymentDefinition({
       name: command.name ?? current.deployment.name,

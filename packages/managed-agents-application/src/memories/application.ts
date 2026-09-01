@@ -285,6 +285,28 @@ export class MemoriesApplicationService implements MemoriesApplicationPort {
     });
     if (replaced.type === "not_found") return { type: "not_found" };
     if (replaced.type === "revision_conflict") {
+      if (expectedSha256 !== undefined) {
+        const latest = await this.dependencies.store.findCurrent({
+          workspaceId: this.dependencies.workspaceId,
+          memoryStoreId: command.memoryStoreId,
+          memoryId: command.memoryId,
+        });
+        if (latest === null) return { type: "not_found" };
+        if (latest.memory.contentSha256 !== expectedSha256) {
+          return latest.memory.content === content && latest.memory.path === path
+            ? {
+                type: "updated",
+                memory: toView(
+                  latest.memory,
+                  command.projection ?? "basic",
+                ),
+              }
+            : {
+                type: "precondition_failed",
+                message: "Memory content SHA-256 precondition failed",
+              };
+        }
+      }
       return {
         type: "conflict",
         message: `Memory changed concurrently at revision ${replaced.actualRevision}`,

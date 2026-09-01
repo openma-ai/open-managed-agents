@@ -369,6 +369,24 @@ describe("AgentsApplicationService", () => {
     });
   });
 
+  it("keeps an archived agent read-only", async () => {
+    const service = new AgentsApplicationService({
+      workspaceId: "workspace_01",
+      store: new MemoryAgentStore(),
+      clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+      ids: { nextAgentId: () => "agent_01" },
+    });
+    await service.createAgent({ name: "Coding Assistant", model: "claude-opus-5" });
+    await service.archiveAgent({ agentId: "agent_01" });
+
+    await expect(
+      service.updateAgent({ agentId: "agent_01", name: "forbidden", expectedVersion: 1 }),
+    ).resolves.toEqual({
+      type: "version_conflict",
+      message: "Agent agent_01 is archived and read-only",
+    });
+  });
+
   it("paginates active agents by creation time with an application-owned cursor", async () => {
     let now = new Date("2026-08-26T00:00:00.000Z");
     let nextId = 0;

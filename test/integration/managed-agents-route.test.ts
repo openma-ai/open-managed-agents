@@ -3,6 +3,7 @@ import { exports } from "cloudflare:workers";
 import { unzipSync } from "fflate";
 import { beforeAll, describe, expect, it } from "vitest";
 import { withAnthropicFormDataSupport } from "../anthropic-sdk-fetch";
+import { verifyManagedAgentsClientStateModel } from "../model/managed-agents-client-state-model";
 
 const SKILL_MARKDOWN = `---
 name: repository-guide
@@ -653,6 +654,36 @@ describe("Cloudflare official Managed Agents route", () => {
       type: "session_deleted",
     });
   });
+
+  it("refines the official SDK client state model under conflicts", async () => {
+    const client = new Anthropic({
+      apiKey: "test-key",
+      baseURL: "http://localhost",
+      fetch: workerFetch,
+      maxRetries: 0,
+    });
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const modelId = `state-model-${suffix}`;
+    const modelCard = await workerFetch("http://localhost/v1/oma/model_cards", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "test-key",
+      },
+      body: JSON.stringify({
+        provider: "ant",
+        model_id: modelId,
+        api_key: "sk-ant-state-model-key",
+      }),
+    });
+    expect(modelCard.status).toBe(201);
+
+    await verifyManagedAgentsClientStateModel({
+      client,
+      model: modelId,
+      prefix: `cf-${suffix}`,
+    });
+  }, 60_000);
 });
 
 function decodeWorkSecret(secret: string): Record<string, unknown> {

@@ -72,6 +72,32 @@ describe("MemoryAgentStore", () => {
     })).resolves.toEqual({ type: "version_conflict", actualVersion: 2 });
   });
 
+  it("does not let a replacement resurrect an archived current Agent", async () => {
+    const store = new MemoryAgentStore();
+    const current = agent("agent-1", "2026-08-26T00:00:00.000Z");
+    await store.insert({ workspaceId: "workspace-a", agent: current });
+    await store.archiveCurrent({
+      workspaceId: "workspace-a",
+      agentId: current.id,
+      archivedAt: "2026-08-26T01:00:00.000Z",
+    });
+
+    await expect(store.replaceCurrent({
+      workspaceId: "workspace-a",
+      agentId: current.id,
+      expectedVersion: 1,
+      next: { ...current, name: "resurrected", version: 2 },
+    })).resolves.toEqual({ type: "version_conflict", actualVersion: 1 });
+    await expect(store.findCurrent({
+      workspaceId: "workspace-a",
+      agentId: current.id,
+    })).resolves.toMatchObject({
+      archivedAt: "2026-08-26T01:00:00.000Z",
+      name: "agent-1",
+      version: 1,
+    });
+  });
+
   it("implements the Agent list ordering, cursor and archive contract", async () => {
     const store = new MemoryAgentStore();
     await store.insert({

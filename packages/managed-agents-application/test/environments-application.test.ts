@@ -202,4 +202,23 @@ describe("EnvironmentsApplicationService", () => {
       environmentId: "env_01",
     });
   });
+
+  it("keeps an archived environment read-only", async () => {
+    const persistence = new InMemoryEnvironmentPersistence();
+    const service = new EnvironmentsApplicationService({
+      workspaceId: "workspace_01",
+      store: persistence,
+      clock: { now: () => new Date("2026-08-26T22:00:00.000Z") },
+      ids: { nextEnvironmentId: () => "env_01" },
+    });
+    await service.createEnvironment({ name: "Archived environment" });
+    await service.archiveEnvironment({ environmentId: "env_01" });
+
+    await expect(
+      service.updateEnvironment({ environmentId: "env_01", name: "forbidden" }),
+    ).resolves.toEqual({
+      type: "version_conflict",
+      message: "Environment env_01 is archived and read-only",
+    });
+  });
 });

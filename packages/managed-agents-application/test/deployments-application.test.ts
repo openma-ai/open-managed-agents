@@ -644,6 +644,33 @@ describe("Deployments application", () => {
     });
   });
 
+  it("keeps an archived deployment read-only", async () => {
+    const archived = {
+      ...deployment,
+      archivedAt: "2026-08-26T16:00:00.000Z",
+      pausedReason: { kind: "manual" as const },
+      status: "paused" as const,
+    };
+    const service = new DeploymentsApplicationService(
+      makeDependencies({
+        store: {
+          find: async () => ({
+            deployment: archived,
+            resourceSecrets,
+            revision: 5,
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      service.updateDeployment({ deploymentId: "depl_01", name: "forbidden" }),
+    ).resolves.toEqual({
+      type: "version_conflict",
+      message: "Deployment depl_01 is archived and read-only",
+    });
+  });
+
   it("uses CAS for pause, readiness-checked unpause, and archive transitions", async () => {
     const transitions: object[] = [];
     const makeTransitionService = (currentDeployment: Deployment) =>

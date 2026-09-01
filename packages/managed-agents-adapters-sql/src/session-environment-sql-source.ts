@@ -7,6 +7,8 @@ import type {
 
 interface EnvironmentDocumentRow {
   document: string;
+  updated_at: number;
+  archived_at: number | null;
 }
 
 export class SqlSessionEnvironmentSource
@@ -17,12 +19,19 @@ export class SqlSessionEnvironmentSource
   async find(input: FindSessionEnvironment): Promise<Environment | null> {
     const row = await this.client
       .prepare(
-        `SELECT document
+        `SELECT document, updated_at, archived_at
            FROM managed_environments
-          WHERE workspace_id = ? AND id = ? AND archived_at IS NULL`,
+          WHERE workspace_id = ? AND id = ?`,
       )
       .bind(input.workspaceId, input.environmentId)
       .first<EnvironmentDocumentRow>();
-    return row === null ? null : JSON.parse(row.document) as Environment;
+    if (row === null) return null;
+    return {
+      ...(JSON.parse(row.document) as Environment),
+      updatedAt: new Date(Number(row.updated_at)).toISOString(),
+      archivedAt: row.archived_at === null
+        ? null
+        : new Date(Number(row.archived_at)).toISOString(),
+    };
   }
 }

@@ -247,6 +247,12 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       agentId: command.agentId,
     });
     if (current === null) return { type: "not_found" };
+    if (current.archivedAt !== null) {
+      return {
+        type: "version_conflict",
+        message: `Agent ${command.agentId} is archived and read-only`,
+      };
+    }
     if (
       command.expectedVersion !== undefined &&
       command.expectedVersion !== current.version

@@ -232,6 +232,79 @@ describe("SessionsApplicationService", () => {
     expect(store.lastInsert).toBeNull();
   });
 
+  it("rejects an archived Environment entity before persisting a session", async () => {
+    const store = new MemorySessionStore();
+    const service = new SessionsApplicationService({
+      workspaceId: "workspace_01",
+      store,
+      agents: {
+        findCurrent: async () => structuredClone(agent),
+        findVersion: async () => null,
+      },
+      environments: {
+        find: async () => ({
+          ...structuredClone(environment),
+          archivedAt: "2026-08-26T02:00:00.000Z",
+        }),
+      },
+      resources: emptySessionResources,
+      lifecycle: silentSessionLifecycle,
+      clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+      ids: { nextSessionId: () => "session_archived_environment" },
+    });
+
+    await expect(
+      service.createSession({
+        agent: { type: "latest", agentId: agent.id },
+        environmentId: environment.id,
+      }),
+    ).resolves.toEqual({
+      type: "dependency_not_found",
+      message: `Environment ${environment.id} was not found`,
+    });
+    expect(store.lastInsert).toBeNull();
+  });
+
+  it("rejects latest and pinned selections when the current Agent is archived", async () => {
+    const store = new MemorySessionStore();
+    const service = new SessionsApplicationService({
+      workspaceId: "workspace_01",
+      store,
+      agents: {
+        findCurrent: async () => ({
+          ...structuredClone(agent),
+          archivedAt: "2026-08-26T02:00:00.000Z",
+        }),
+        findVersion: async () => ({
+          ...structuredClone(agent),
+          archivedAt: null,
+          version: 2,
+        }),
+      },
+      environments: availableSessionEnvironment,
+      resources: emptySessionResources,
+      lifecycle: silentSessionLifecycle,
+      clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+      ids: { nextSessionId: () => "session_forbidden" },
+    });
+
+    for (const selector of [
+      { type: "latest" as const, agentId: agent.id },
+      { type: "versioned" as const, agentId: agent.id, version: 2 },
+    ]) {
+      await expect(
+        service.createSession({
+          agent: selector,
+          environmentId: environment.id,
+        }),
+      ).resolves.toEqual({
+        type: "dependency_not_found",
+        message: `Agent ${agent.id} was not found`,
+      });
+    }
+    expect(store.lastInsert).toBeNull();
+  });
+
   it("creates a session with an immutable versioned agent snapshot", async () => {
     const store = new MemorySessionStore();
     const lifecycleSignals: object[] = [];

@@ -128,6 +128,7 @@ async function findPinnedAgent(
   version: number,
 ): Promise<Agent | null> {
   const current = await source.findCurrent({ workspaceId, agentId });
+  if (current !== null && current.archivedAt !== null) return null;
   if (current?.version === version) return current;
   return source.findVersion({ workspaceId, agentId, version });
 }
@@ -263,7 +264,7 @@ export class SessionsApplicationService
             workspaceId: this.dependencies.workspaceId,
             agentId: command.agent.agentId,
           });
-    if (agent === null) {
+    if (agent === null || agent.archivedAt !== null) {
       return {
         type: "dependency_not_found",
         message: `Agent ${command.agent.agentId} was not found`,
@@ -286,7 +287,7 @@ export class SessionsApplicationService
       workspaceId: this.dependencies.workspaceId,
       environmentId: command.environmentId,
     });
-    if (environment === null) {
+    if (environment === null || environment.archivedAt !== null) {
       return {
         type: "dependency_not_found",
         message: `Environment ${command.environmentId} was not found`,

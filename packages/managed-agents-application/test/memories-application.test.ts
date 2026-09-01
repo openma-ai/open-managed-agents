@@ -336,6 +336,50 @@ describe("MemoriesApplicationService", () => {
     expect(persistence.versions.size).toBe(2);
   });
 
+  it("projects a raced content CAS as a SHA precondition failure", async () => {
+    const persistence = new InMemoryMemoryPersistence();
+    const { memories } = buildServices(persistence);
+    await memories.createMemory({
+      memoryStoreId: "memstore_01",
+      content: "hello",
+      path: "/notes/one.md",
+    });
+
+    const replace = persistence.replace.bind(persistence);
+    let injectedWinner = false;
+    persistence.replace = async (input) => {
+      if (!injectedWinner) {
+        injectedWinner = true;
+        const key = "workspace_01:mem_01";
+        const current = persistence.memories.get(key);
+        if (current === undefined) throw new Error("missing race fixture");
+        persistence.memories.set(key, {
+          revision: current.revision + 1,
+          memory: {
+            ...current.memory,
+            content: "winner",
+            contentSha256: "b".repeat(64),
+            contentSizeBytes: 6,
+            memoryVersionId: "memver_winner",
+          },
+        });
+      }
+      return replace(input);
+    };
+
+    await expect(
+      memories.updateMemory({
+        memoryStoreId: "memstore_01",
+        memoryId: "mem_01",
+        content: "loser",
+        contentPrecondition: { expectedSha256: "a".repeat(64) },
+      }),
+    ).resolves.toEqual({
+      type: "precondition_failed",
+      message: "Memory content SHA-256 precondition failed",
+    });
+  });
+
   it("rejects malformed paths and cursors before persistence", async () => {
     const persistence = new InMemoryMemoryPersistence();
     const { memories } = buildServices(persistence);

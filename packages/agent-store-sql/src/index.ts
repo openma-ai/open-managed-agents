@@ -122,14 +122,14 @@ export class SqlAgentStore implements AgentStore {
           (agent_id, workspace_id, version, document, created_at)
          SELECT id, workspace_id, version, document, updated_at
            FROM managed_agents
-          WHERE workspace_id = ? AND id = ? AND version = ?`,
+          WHERE workspace_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
       )
       .bind(input.workspaceId, input.agentId, input.expectedVersion);
     const update = this.client
       .prepare(
         `UPDATE managed_agents
             SET document = ?, version = ?, updated_at = ?, archived_at = ?
-          WHERE workspace_id = ? AND id = ? AND version = ?`,
+          WHERE workspace_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
       )
       .bind(
         JSON.stringify(input.next),

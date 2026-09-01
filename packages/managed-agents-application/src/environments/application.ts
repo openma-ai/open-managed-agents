@@ -176,6 +176,12 @@ export class EnvironmentsApplicationService
       environmentId: command.environmentId,
     });
     if (current === null) return { type: "not_found" };
+    if (current.environment.archivedAt !== null) {
+      return {
+        type: "version_conflict",
+        message: `Environment ${command.environmentId} is archived and read-only`,
+      };
+    }
     if (command.name !== undefined && command.name !== null && command.name.trim().length === 0) {
       return { type: "invalid_request", message: "Environment name must not be empty" };
     }

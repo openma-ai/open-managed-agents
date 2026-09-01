@@ -83,7 +83,7 @@ describe("SqlEnvironmentPersistence", () => {
     ).resolves.toEqual({ type: "revision_conflict", actualRevision: 2 });
   });
 
-  it("pages, archives, hides archived dependencies, and deletes by tenant", async () => {
+  it("pages, archives, exposes archived lifecycle dependencies, and deletes by tenant", async () => {
     const persistence = new SqlEnvironmentPersistence(client);
     const source = new SqlSessionEnvironmentSource(client);
     const first = environment("env_01", "2026-08-26T20:00:00.000Z", "First");
@@ -106,7 +106,11 @@ describe("SqlEnvironmentPersistence", () => {
     });
     await expect(
       source.find({ workspaceId: "workspace_01", environmentId: first.id }),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({
+      ...first,
+      archivedAt: "2026-08-26T22:00:00.000Z",
+      updatedAt: "2026-08-26T22:00:00.000Z",
+    });
     await expect(
       persistence.delete({ workspaceId: "workspace_01", environmentId: first.id }),
     ).resolves.toEqual({ type: "deleted" });

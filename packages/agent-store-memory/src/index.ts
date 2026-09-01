@@ -71,7 +71,7 @@ export class MemoryAgentStore implements AgentStore {
     const key = currentKey(input.workspaceId, input.agentId);
     const current = this.current.get(key);
     if (current === undefined) return { type: "not_found" };
-    if (current.version !== input.expectedVersion) {
+    if (current.archivedAt !== null || current.version !== input.expectedVersion) {
       return { type: "version_conflict", actualVersion: current.version };
     }
     const previous = clone(current);
