@@ -1,5 +1,11 @@
 # @openma/cli
 
+## 0.6.0-beta.0
+
+### Minor Changes
+
+- 68d2772: Align CLI requests with the Managed Agents and OMA API namespaces, and run daemon sessions through the shared managed runtime.
+
 ## 0.5.1
 
 ### Patch Changes
