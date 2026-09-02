@@ -316,15 +316,22 @@ describe("provider resolution", () => {
 // ============================================================
 
 describe("models list endpoint", () => {
-  it("rejects when no api_key provided", async () => {
+  it("lists the Pi catalog when no api_key is provided", async () => {
     const res = await api("/v1/oma/models/list", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ provider: "ant" }),
     });
-    expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error?.message ?? body.error).toContain("api_key");
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      data?: Array<{ id?: string; provider?: string }>;
+    };
+    expect(body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: expect.any(String),
+        provider: "anthropic",
+      }),
+    ]));
   });
 
   it("returns 502 for invalid Anthropic key", async () => {

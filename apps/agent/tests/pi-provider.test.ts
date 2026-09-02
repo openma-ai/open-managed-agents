@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import * as piProviderModule from "../src/harness/pi-provider";
 
-const { createPiModelRuntime } = piProviderModule;
+const { createPiModelRuntime, withPiRuntimeRequestOptions } = piProviderModule;
 
 describe("createPiModelRuntime", () => {
   it("binds an Anthropic model card to Pi without exposing its credential", async () => {
@@ -105,6 +105,85 @@ describe("createPiModelRuntime", () => {
     } as Parameters<typeof createPiModelRuntime>[0] & { thinkingLevel: "high" });
 
     expect(Reflect.get(runtime, "thinkingLevel")).toBe("high");
+  });
+
+  it("projects Managed Agents fast speed through Pi into the Anthropic request", async () => {
+    let captured: Request | undefined;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured = input instanceof Request
+        ? new Request(input, init)
+        : new Request(input.toString(), init);
+      const events = [
+        ["message_start", {
+          type: "message_start",
+          message: {
+            id: "msg_fast",
+            type: "message",
+            role: "assistant",
+            content: [],
+            model: "claude-opus-5",
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        }],
+        ["content_block_start", {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        }],
+        ["content_block_delta", {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "fast" },
+        }],
+        ["content_block_stop", { type: "content_block_stop", index: 0 }],
+        ["message_delta", {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 1, speed: "fast" },
+        }],
+        ["message_stop", { type: "message_stop" }],
+      ] as const;
+      return new Response(
+        events.map(([event, data]) =>
+          `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+        ).join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+
+    try {
+      const runtime = createPiModelRuntime({
+        model: "claude-opus-5",
+        apiKey: "tenant-secret",
+        provider: "anthropic",
+        speed: "fast",
+      } as Parameters<typeof createPiModelRuntime>[0] & { speed: "fast" });
+      const model = piProviderModule.toAiSdkLanguageModel(runtime) as LanguageModel;
+
+      await expect(streamText({ model, prompt: "hello" }).text).resolves.toBe("fast");
+      expect(captured).toBeDefined();
+      expect(await captured!.clone().json()).toMatchObject({ speed: "fast" });
+      expect(captured!.headers.get("anthropic-beta")).toContain(
+        "fast-mode-2026-02-01",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects fast speed when Pi has no equivalent request control", () => {
+    const runtime = createPiModelRuntime({
+      provider: "google",
+      model: "gemini-flash-latest",
+      apiKey: "google-test-key",
+      speed: "fast",
+    });
+
+    expect(() => withPiRuntimeRequestOptions(runtime)).toThrow(
+      /speed.*not supported.*google-generative-ai/i,
+    );
   });
 
   it("accepts every provider registered by Pi without an OpenMA provider switch", async () => {

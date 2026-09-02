@@ -3589,6 +3589,7 @@ export class SessionDO extends DurableObject<Env> {
       baseURL: creds.baseURL,
       customHeaders: creds.customHeaders,
       piConfig: creds.piConfig,
+      speed: typeof agent.aux_model === "string" ? undefined : agent.aux_model.speed,
     }));
     return { model, modelInfo: { model_id: handle } };
   }
@@ -4082,6 +4083,7 @@ export class SessionDO extends DurableObject<Env> {
       customHeaders: subCreds.customHeaders,
       piConfig: subCreds.piConfig,
       thinkingLevel: typeof subAgent.model === "string" ? undefined : subAgent.model.effort,
+      speed: typeof subAgent.model === "string" ? undefined : subAgent.model.speed,
     });
     const subModel = toAiSdkLanguageModel(subPiRuntime);
 
@@ -4371,6 +4373,7 @@ export class SessionDO extends DurableObject<Env> {
       customHeaders: creds.customHeaders,
       piConfig: creds.piConfig,
       thinkingLevel: typeof agent.model === "string" ? undefined : agent.model.effort,
+      speed: typeof agent.model === "string" ? undefined : agent.model.speed,
     });
     const model = toAiSdkLanguageModel(piRuntime);
 

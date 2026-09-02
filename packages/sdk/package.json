@@ -49,6 +49,7 @@
     "url": "https://github.com/openma-ai/open-managed-agents/issues"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
     "@anthropic-ai/sdk": "0.120.0"
   },
   "devDependencies": {

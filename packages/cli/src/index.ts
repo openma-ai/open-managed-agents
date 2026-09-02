@@ -1028,11 +1028,11 @@ const commands: Cmd[] = [
   },
   {
     group: "Model Cards", match: ["models", "create"],
-    usage: "oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider <p>]", desc: "Create model card",
+    usage: "oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider <pi-id>]", desc: "Create model card",
     http: "POST   /v1/oma/model_cards {model_id, provider, model?, api_key, base_url?, is_default?}",
     async run(config, args) {
       const modelId = flag(args, "--model-id"); const provider = flag(args, "--provider") || "ant"; const model = flag(args, "--model"); const apiKey = flag(args, "--api-key"); const baseUrl = flag(args, "--base-url");
-      if (!modelId || !apiKey) { console.error("Usage: oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider ant|oai|ant-compatible|oai-compatible] [--base-url <url>]"); process.exit(1); }
+      if (!modelId || !apiKey) { console.error("Usage: oma models create --model-id <id> --api-key <key> [--model <wire>] [--provider <pi-provider-id>] [--base-url <url>]"); process.exit(1); }
       const card = await apiFetch<{ id: string; model_id: string }>(config, "/v1/oma/model_cards", { method: "POST", body: JSON.stringify({ model_id: modelId, provider, model, api_key: apiKey, base_url: baseUrl }) });
       console.log(`Model card created: ${card.model_id} (${card.id})`);
     },
@@ -2156,7 +2156,7 @@ const extraEndpoints: { group: string; http: string }[] = [
   { group: "Model Cards", http: "GET    /v1/oma/model_cards/:id                     Get model card" },
   { group: "Model Cards", http: "POST   /v1/oma/model_cards/:id                     Update model card" },
   { group: "Model Cards", http: "DELETE /v1/oma/model_cards/:id                     Delete model card" },
-  { group: "Model Cards", http: "POST   /v1/oma/models/list                         Fetch provider models {provider, api_key}" },
+  { group: "Model Cards", http: "POST   /v1/oma/models/list                         List Pi provider models {provider}; api_key is legacy-only" },
   { group: "Vaults", http: "DELETE /v1/vaults/:id                          Delete vault" },
   { group: "Vaults", http: "DELETE /v1/vaults/:id/credentials/:cid         Delete credential" },
   { group: "Linear", http: "PATCH  /v1/oma/integrations/linear/publications/:id  Update persona / capabilities" },

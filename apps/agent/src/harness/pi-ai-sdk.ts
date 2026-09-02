@@ -24,7 +24,10 @@ import type {
 } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
-import type { PiModelRuntime } from "./pi-provider";
+import {
+  withPiRuntimeRequestOptions,
+  type PiModelRuntime,
+} from "./pi-provider";
 
 /**
  * Present a Pi provider/model pair as the AI SDK model consumed by
@@ -272,8 +275,7 @@ function toPiStreamOptions(
     ...(options.stopSequences ? { stop: options.stopSequences } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
   };
-  return {
-    fetch: piProviderFetch,
+  return withPiRuntimeRequestOptions(runtime, {
     ...piOptions,
     ...(piOptions.reasoning === undefined && runtime.thinkingLevel !== "off"
       ? { reasoning: runtime.thinkingLevel }
@@ -283,31 +285,7 @@ function toPiStreamOptions(
     ...(options.maxOutputTokens !== undefined ? { maxTokens: options.maxOutputTokens } : {}),
     ...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
     toolChoice: options.toolChoice?.type === "none" ? "none" : "auto",
-  };
-}
-
-/**
- * Keep provider transport observable without taking ownership of provider
- * semantics from Pi. Query strings and headers are intentionally omitted so
- * tenant credentials can never enter Worker logs.
- */
-async function piProviderFetch(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  const response = await globalThis.fetch(input, init);
-  if (!response.ok) {
-    const rawUrl = input instanceof Request ? input.url : String(input);
-    let safeUrl = rawUrl;
-    try {
-      const url = new URL(rawUrl);
-      safeUrl = `${url.origin}${url.pathname}`;
-    } catch {
-      safeUrl = "<invalid-provider-url>";
-    }
-    console.warn(`[pi-provider] upstream=${safeUrl} status=${response.status}`);
-  }
-  return response;
+  });
 }
 
 function toAiSdkStreamParts(event: AssistantMessageEvent): LanguageModelV3StreamPart[] {

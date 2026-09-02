@@ -8,6 +8,7 @@ import {
   type ProviderHeaders,
   type ProviderStreams,
   type ModelThinkingLevel,
+  type SimpleStreamOptions,
   clampThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
@@ -21,6 +22,8 @@ export interface PiModelRuntime {
   model: Model<Api>;
   /** Pi-native per-agent default. `off` is Pi's own default. */
   thinkingLevel: ModelThinkingLevel;
+  /** Managed Agents request priority. Model cards do not own this setting. */
+  speed: "standard" | "fast";
 }
 
 /**
@@ -57,6 +60,8 @@ export interface PiModelCardBinding {
   piConfig?: PiModelConfig;
   /** Pi-native agent setting. Managed Agents `model.effort` maps here. */
   thinkingLevel?: ModelThinkingLevel;
+  /** Managed Agents `model.speed`; inherited by sessions pinned to this agent version. */
+  speed?: "standard" | "fast";
 }
 
 interface ProviderPlan {
@@ -150,7 +155,97 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
     models,
     model,
     thinkingLevel: clampThinkingLevel(model, input.thinkingLevel ?? "off"),
+    speed: input.speed ?? "standard",
   };
+}
+
+/**
+ * Project Managed Agents request controls onto Pi's provider request Port.
+ * Pi still owns provider auth, protocol encoding, streaming, and validation.
+ */
+export function withPiRuntimeRequestOptions(
+  runtime: PiModelRuntime,
+  options: SimpleStreamOptions = {},
+): SimpleStreamOptions {
+  const baseFetch = options.fetch ?? observablePiFetch;
+  if (runtime.speed !== "fast") return { ...options, fetch: baseFetch };
+
+  const originalPayload = options.onPayload;
+  const api = runtime.model.api;
+  const onPayload: NonNullable<SimpleStreamOptions["onPayload"]> = async (
+    payload,
+    model,
+  ) => {
+    const projected = originalPayload
+      ? (await originalPayload(payload, model)) ?? payload
+      : payload;
+    if (typeof projected !== "object" || projected === null || Array.isArray(projected)) {
+      throw new TypeError("Pi provider payload must be an object to apply Managed Agents speed");
+    }
+    if (api === "anthropic-messages") return { ...projected, speed: "fast" };
+    if (api === "openai-completions") {
+      return { ...projected, service_tier: "priority" };
+    }
+    return projected;
+  };
+
+  if (api === "anthropic-messages") {
+    return {
+      ...options,
+      fetch: (input, init) => fastAnthropicFetch(baseFetch, input, init),
+      onPayload,
+    };
+  }
+  if (api === "openai-responses" || api === "openai-codex-responses") {
+    return {
+      ...options,
+      fetch: baseFetch,
+      onPayload,
+      serviceTier: "priority",
+    } as SimpleStreamOptions;
+  }
+  if (api === "openai-completions") {
+    return { ...options, fetch: baseFetch, onPayload };
+  }
+  throw new Error(
+    `Managed Agents speed "fast" is not supported by Pi API "${api}"`,
+  );
+}
+
+async function fastAnthropicFetch(
+  fetcher: typeof globalThis.fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(input instanceof Request ? input.headers : undefined);
+  new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+  const beta = headers.get("anthropic-beta")
+    ?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean) ?? [];
+  if (!beta.includes("fast-mode-2026-02-01")) beta.push("fast-mode-2026-02-01");
+  headers.set("anthropic-beta", beta.join(","));
+  return fetcher(input, { ...init, headers });
+}
+
+/** Observable transport that never logs query strings, headers, or secrets. */
+async function observablePiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const response = await globalThis.fetch(input, init);
+  if (!response.ok) {
+    const rawUrl = input instanceof Request ? input.url : String(input);
+    let safeUrl = rawUrl;
+    try {
+      const url = new URL(rawUrl);
+      safeUrl = `${url.origin}${url.pathname}`;
+    } catch {
+      safeUrl = "<invalid-provider-url>";
+    }
+    console.warn(`[pi-provider] upstream=${safeUrl} status=${response.status}`);
+  }
+  return response;
 }
 
 function resolveProviderPlan(
