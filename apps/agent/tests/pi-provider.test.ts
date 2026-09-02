@@ -71,6 +71,31 @@ describe("createPiModelRuntime", () => {
     expect(runtime.model.contextWindow).toBeGreaterThan(0);
   });
 
+  it("reports the sanitized Pi upstream URL when the provider rejects a request", async () => {
+    const upstream = vi.fn(async () => new Response("404 page not found", { status: 404 }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", upstream);
+
+    try {
+      const runtime = createPiModelRuntime({
+        model: "deepseek-v4-flash",
+        apiKey: "tenant-secret",
+        provider: "deepseek",
+      });
+      const model = piProviderModule.toAiSdkLanguageModel(runtime) as LanguageModel;
+      await streamText({ model, prompt: "hello" }).text;
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("https://api.deepseek.com/chat/completions"),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("status=404"));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("tenant-secret");
+    } finally {
+      vi.unstubAllGlobals();
+      warn.mockRestore();
+    }
+  });
+
   it("keeps the Pi thinking level on the tenant-scoped runtime", () => {
     const runtime = createPiModelRuntime({
       model: "deepseek-v4-flash",

@@ -273,6 +273,7 @@ function toPiStreamOptions(
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
   };
   return {
+    fetch: piProviderFetch,
     ...piOptions,
     ...(piOptions.reasoning === undefined && runtime.thinkingLevel !== "off"
       ? { reasoning: runtime.thinkingLevel }
@@ -283,6 +284,30 @@ function toPiStreamOptions(
     ...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
     toolChoice: options.toolChoice?.type === "none" ? "none" : "auto",
   };
+}
+
+/**
+ * Keep provider transport observable without taking ownership of provider
+ * semantics from Pi. Query strings and headers are intentionally omitted so
+ * tenant credentials can never enter Worker logs.
+ */
+async function piProviderFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const response = await globalThis.fetch(input, init);
+  if (!response.ok) {
+    const rawUrl = input instanceof Request ? input.url : String(input);
+    let safeUrl = rawUrl;
+    try {
+      const url = new URL(rawUrl);
+      safeUrl = `${url.origin}${url.pathname}`;
+    } catch {
+      safeUrl = "<invalid-provider-url>";
+    }
+    console.warn(`[pi-provider] upstream=${safeUrl} status=${response.status}`);
+  }
+  return response;
 }
 
 function toAiSdkStreamParts(event: AssistantMessageEvent): LanguageModelV3StreamPart[] {
