@@ -67,7 +67,10 @@ import {
   createPiModelRuntime,
   toAiSdkLanguageModel,
 } from "../harness/pi-provider";
-import type { PiModelConfig } from "../harness/pi-provider";
+import {
+  bindStoredModelCardCredentials,
+  type ResolvedModelCardCredentials,
+} from "../harness/model-card-credentials";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
 import { extractTextFromContent } from "@open-managed-agents/shared";
@@ -3539,20 +3542,12 @@ export class SessionDO extends DurableObject<Env> {
    */
   private async resolveModelCardCredentials(
     handle: string,
-  ): Promise<{
-    model: string;
-    apiKey: string;
-    baseURL?: string;
-    provider?: string;
-    customHeaders?: Record<string, string>;
-    piConfig?: PiModelConfig;
-  }> {
-    let apiKey = this.env.ANTHROPIC_API_KEY;
-    let baseURL = this.env.ANTHROPIC_BASE_URL;
-    let provider: string | undefined;
-    let customHeaders: Record<string, string> | undefined;
-    let piConfig: PiModelConfig | undefined;
-    let wireModel = handle;
+  ): Promise<ResolvedModelCardCredentials> {
+    const fallback: ResolvedModelCardCredentials = {
+      model: handle,
+      apiKey: this.env.ANTHROPIC_API_KEY,
+      baseURL: this.env.ANTHROPIC_BASE_URL,
+    };
 
     if (this.env.MAIN_DB) {
       try {
@@ -3562,13 +3557,8 @@ export class SessionDO extends DurableObject<Env> {
         if (card && !card.archived_at) {
           const key = await services.modelCards.getApiKey({ tenantId, cardId: card.id });
           if (key) {
-            apiKey = key;
-            provider = card.provider;
-            wireModel = card.model;
-            if (card.base_url) baseURL = card.base_url;
-            if (card.custom_headers) customHeaders = card.custom_headers;
-            if (card.pi_config) piConfig = card.pi_config as PiModelConfig;
             console.log(`[model-card] resolved from D1: id=${card.id} model_id=${card.model_id} model=${card.model} baseURL=${card.base_url ?? "(default)"} provider=${card.provider}`);
+            return bindStoredModelCardCredentials(fallback, card, key);
           }
         }
       } catch (err) {
@@ -3576,7 +3566,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    return { model: wireModel, apiKey, baseURL, provider, customHeaders, piConfig };
+    return fallback;
   }
 
   /**
