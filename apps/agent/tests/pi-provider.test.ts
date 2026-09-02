@@ -252,4 +252,29 @@ describe("createPiModelRuntime", () => {
       expect.objectContaining({ toolCallId: "tool-1" }),
     );
   });
+
+  it("keeps Pi stream errors serializable across the AI SDK projection", async () => {
+    const faux = fauxProvider({ tokensPerSecond: 100_000 });
+    faux.setResponses([
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "pi provider exploded",
+      }),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const model = piProviderModule.toAiSdkLanguageModel({
+      models,
+      model: faux.getModel(),
+      thinkingLevel: "off",
+    });
+    const result = streamText({ model, prompt: "trigger the error" });
+    const errors: unknown[] = [];
+
+    for await (const part of result.fullStream) {
+      if (part.type === "error") errors.push(part.error);
+    }
+
+    expect(errors).toEqual(["pi provider exploded"]);
+  });
 });

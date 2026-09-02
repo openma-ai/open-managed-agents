@@ -341,11 +341,16 @@ function toAiSdkStreamParts(event: AssistantMessageEvent): LanguageModelV3Stream
         finishReason: toFinishReason(event.reason, event.message.rawStopReason),
         providerMetadata: piMessageMetadata(event.message),
       }];
-    case "error":
+    case "error": {
+      const message = event.error.errorMessage ?? `Pi model stopped with ${event.reason}`;
       return [{
         type: "error",
-        error: new Error(event.error.errorMessage ?? `Pi model stopped with ${event.reason}`),
+        // LanguageModelV3 accepts `unknown` here. Preserve Pi's string rather
+        // than wrapping it in Error: Errors serialize as `{}` in our R2/event
+        // diagnostics and erase the upstream provider message.
+        error: message,
       }];
+    }
   }
 }
 
