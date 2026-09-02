@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("release planning pins prerelease packages to their prerelease npm tag", async () => {
+test("release planning lets Changesets derive the prerelease npm tag", async () => {
   const releaseModule = await import("./publish-changesets.mjs").catch(() => ({}));
   assert.equal(
     typeof releaseModule.changesetPublishArgs,
@@ -15,15 +15,7 @@ test("release planning pins prerelease packages to their prerelease npm tag", as
     "publish-changesets.mjs must export changesetPublishArgs",
   );
 
-  assert.deepEqual(
-    releaseModule.changesetPublishArgs({ mode: "pre", tag: "beta" }),
-    ["publish", "--tag", "beta"],
-  );
-  assert.deepEqual(
-    releaseModule.changesetPublishArgs({ mode: "exit", tag: "beta" }),
-    ["publish"],
-  );
-  assert.deepEqual(releaseModule.changesetPublishArgs(undefined), ["publish"]);
+  assert.deepEqual(releaseModule.changesetPublishArgs(), ["publish"]);
 });
 
 test("root Cloudflare runtime aliases stay inside the repository checkout", async () => {

@@ -1,32 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const preStatePath = new URL("../.changeset/pre.json", import.meta.url);
 
-export function changesetPublishArgs(preState) {
-  if (
-    preState?.mode === "pre" &&
-    typeof preState.tag === "string" &&
-    preState.tag.length > 0
-  ) {
-    return ["publish", "--tag", preState.tag];
-  }
+export function changesetPublishArgs() {
+  // Changesets reads .changeset/pre.json itself. In pre mode it derives the
+  // npm dist-tag from that file and rejects an explicit --tag argument.
   return ["publish"];
 }
 
-async function readPreState() {
-  try {
-    return JSON.parse(await readFile(preStatePath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 async function main() {
-  const args = changesetPublishArgs(await readPreState());
+  const args = changesetPublishArgs();
   if (process.argv.includes("--plan")) {
     console.log(JSON.stringify({ command: "changeset", args }));
     return;
