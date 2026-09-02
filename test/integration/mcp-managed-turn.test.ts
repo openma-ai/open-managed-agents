@@ -152,6 +152,14 @@ function installExternalMocks() {
       return new Response("missing managed bearer", { status: 401 });
     }
 
+    // Keep remote session termination observably asynchronous. The turn is
+    // only lifecycle-complete once the runtime publishes status_idle after
+    // awaiting MCP cleanup; waiting merely for the final agent.message is a
+    // race that fast local machines can hide.
+    if (request.method === "DELETE") {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
     return mcp.fetch(request);
   };
 
@@ -166,7 +174,7 @@ function installExternalMocks() {
 
 async function waitForCompletedTurn(sessionId: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await api(`/v1/oma/sessions/${sessionId}/events?limit=100`, {
+    const response = await api(`/v1/oma/sessions/${sessionId}/events?limit=100&order=asc`, {
       headers: HEADERS,
     });
     expect(response.status).toBe(200);
@@ -175,9 +183,13 @@ async function waitForCompletedTurn(sessionId: string) {
       row.data && typeof row.data === "object"
         ? row.data as Record<string, unknown>
         : row);
-    if (events.some((event) =>
+    const completedMessageIndex = events.findIndex((event) =>
       event.type === "agent.message"
-      && JSON.stringify(event.content ?? "").includes("MCP echo completed."))) {
+      && JSON.stringify(event.content ?? "").includes("MCP echo completed."));
+    const settledAfterMessage = completedMessageIndex >= 0
+      && events.slice(completedMessageIndex + 1).some((event) =>
+        event.type === "session.status_idle");
+    if (settledAfterMessage) {
       return events;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));

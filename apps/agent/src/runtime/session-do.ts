@@ -4244,6 +4244,12 @@ export class SessionDO extends DurableObject<Env> {
     // polling). Tracked via this flag — finally emits if no earlier
     // path did.
     let idleEmitted = false;
+    // A successful turn knows its precise stop reason before tool disposal,
+    // but `status_idle` is the externally visible lifecycle boundary. Hold
+    // the event until every turn-scoped tool (including remote MCP sessions)
+    // has finished closing so clients cannot observe idle while resources are
+    // still live.
+    let completedIdleEvent: SessionEvent | undefined;
 
     // Reuse session-level sandbox (singleton) — files persist across turns.
     // Returned object is a lazy proxy: the underlying container is warmed up
@@ -4814,9 +4820,7 @@ export class SessionDO extends DurableObject<Env> {
         type: "session.status_idle",
         stop_reason: stopReason,
       };
-      history.append(idleEvent);
-      this.broadcastEvent(idleEvent);
-      idleEmitted = true;
+      completedIdleEvent = idleEvent;
     } catch (err) {
       const errorMessage = this.describeError(err);
 
@@ -4901,16 +4905,14 @@ export class SessionDO extends DurableObject<Env> {
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }
-      // Catch-all status_idle emit. Pairs with the status_running emit
-      // at the start of this function so Console's status pill never
-      // hangs at "Running" after the turn dies in any non-AbortError
-      // way (model crash, transient retries exhausted, anything that
-      // hits the catch block above without already setting idleEmitted).
-      // No stop_reason — error paths don't have a meaningful one and
-      // the field is optional in SessionStatusEvent.
+      // Emit status_idle only after turn-scoped resources have settled. On a
+      // successful turn this preserves its precise stop_reason; error paths
+      // use the generic event because they have no meaningful stop reason.
+      // This also pairs with status_running so Console never remains stuck at
+      // "Running" after a model/tool failure.
       if (!idleEmitted) {
         try {
-          const idleEvent: SessionEvent = { type: "session.status_idle" };
+          const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle" };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
         } catch (err) {
