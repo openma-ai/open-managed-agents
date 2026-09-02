@@ -264,6 +264,8 @@ import schema0017 from "../apps/main/migrations/0017_dreams.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import schema0018 from "../apps/main/migrations/0018_runtime_multi_tenant.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
+import piModelConfigSchema from "../apps/main/migrations/0019_shallow_spiral.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
 import integrationsSchema from "../apps/main/migrations-integrations/0001_consolidated.sql?raw";
 // @ts-expect-error vitest resolves SQL via ?raw
 import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?raw";
@@ -290,6 +292,7 @@ const MIGRATIONS_RAW: string[] = [
   managedTunnelsSchema as string,
   schema0017 as string,
   schema0018 as string,
+  piModelConfigSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

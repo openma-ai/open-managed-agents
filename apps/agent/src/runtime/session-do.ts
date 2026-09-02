@@ -67,6 +67,10 @@ import {
   createPiModelRuntime,
   toAiSdkLanguageModel,
 } from "../harness/pi-provider";
+import {
+  bindStoredModelCardCredentials,
+  type ResolvedModelCardCredentials,
+} from "../harness/model-card-credentials";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
 import { extractTextFromContent } from "@open-managed-agents/shared";
@@ -3538,18 +3542,12 @@ export class SessionDO extends DurableObject<Env> {
    */
   private async resolveModelCardCredentials(
     handle: string,
-  ): Promise<{
-    model: string;
-    apiKey: string;
-    baseURL?: string;
-    provider?: string;
-    customHeaders?: Record<string, string>;
-  }> {
-    let apiKey = this.env.ANTHROPIC_API_KEY;
-    let baseURL = this.env.ANTHROPIC_BASE_URL;
-    let provider: string | undefined;
-    let customHeaders: Record<string, string> | undefined;
-    let wireModel = handle;
+  ): Promise<ResolvedModelCardCredentials> {
+    const fallback: ResolvedModelCardCredentials = {
+      model: handle,
+      apiKey: this.env.ANTHROPIC_API_KEY,
+      baseURL: this.env.ANTHROPIC_BASE_URL,
+    };
 
     if (this.env.MAIN_DB) {
       try {
@@ -3559,12 +3557,8 @@ export class SessionDO extends DurableObject<Env> {
         if (card && !card.archived_at) {
           const key = await services.modelCards.getApiKey({ tenantId, cardId: card.id });
           if (key) {
-            apiKey = key;
-            provider = card.provider;
-            wireModel = card.model;
-            if (card.base_url) baseURL = card.base_url;
-            if (card.custom_headers) customHeaders = card.custom_headers;
             console.log(`[model-card] resolved from D1: id=${card.id} model_id=${card.model_id} model=${card.model} baseURL=${card.base_url ?? "(default)"} provider=${card.provider}`);
+            return bindStoredModelCardCredentials(fallback, card, key);
           }
         }
       } catch (err) {
@@ -3572,7 +3566,7 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    return { model: wireModel, apiKey, baseURL, provider, customHeaders };
+    return fallback;
   }
 
   /**
@@ -3594,6 +3588,8 @@ export class SessionDO extends DurableObject<Env> {
       provider: creds.provider,
       baseURL: creds.baseURL,
       customHeaders: creds.customHeaders,
+      piConfig: creds.piConfig,
+      speed: typeof agent.aux_model === "string" ? undefined : agent.aux_model.speed,
     }));
     return { model, modelInfo: { model_id: handle } };
   }
@@ -4085,6 +4081,9 @@ export class SessionDO extends DurableObject<Env> {
       provider: subCreds.provider,
       baseURL: subCreds.baseURL,
       customHeaders: subCreds.customHeaders,
+      piConfig: subCreds.piConfig,
+      thinkingLevel: typeof subAgent.model === "string" ? undefined : subAgent.model.effort,
+      speed: typeof subAgent.model === "string" ? undefined : subAgent.model.speed,
     });
     const subModel = toAiSdkLanguageModel(subPiRuntime);
 
@@ -4372,6 +4371,9 @@ export class SessionDO extends DurableObject<Env> {
       provider: creds.provider,
       baseURL: creds.baseURL,
       customHeaders: creds.customHeaders,
+      piConfig: creds.piConfig,
+      thinkingLevel: typeof agent.model === "string" ? undefined : agent.model.effort,
+      speed: typeof agent.model === "string" ? undefined : agent.model.speed,
     });
     const model = toAiSdkLanguageModel(piRuntime);
 

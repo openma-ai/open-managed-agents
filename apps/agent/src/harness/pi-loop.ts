@@ -20,6 +20,7 @@ import {
 } from "@open-managed-agents/shared";
 import { eventsToMessagesAsync } from "../runtime/history";
 import type { HarnessContext, HarnessInterface } from "./interface";
+import { withPiRuntimeRequestOptions } from "./pi-provider";
 
 const EMPTY_USAGE: Usage = {
   input: 0,
@@ -76,11 +77,15 @@ export class PiHarness implements HarnessInterface {
         model: ctx.pi.model,
         messages,
         tools: toolsToPi(ctx),
-        thinkingLevel: ctx.pi.model.reasoning ? "medium" : "off",
+        thinkingLevel: ctx.pi.thinkingLevel,
       },
       sessionId: ctx.session_id,
       streamFn: (model, context, options) =>
-        ctx.pi!.models.streamSimple(model, context, options),
+        ctx.pi!.models.streamSimple(
+          model,
+          context,
+          withPiRuntimeRequestOptions(ctx.pi!, options),
+        ),
       toolExecution: "parallel",
     });
 

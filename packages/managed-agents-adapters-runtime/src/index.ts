@@ -537,7 +537,11 @@ interface RuntimeAgentSnapshot {
   id: string;
   name: string;
   description: string | null;
-  model: { id: string; speed?: "standard" | "fast" };
+  model: {
+    id: string;
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
+    speed?: "standard" | "fast";
+  };
   system: string;
   tools: RuntimeAgentTool[];
   mcp_servers: AgentMcpServer[];
@@ -681,6 +685,7 @@ function runtimeAgentSnapshot(input: StartSessionExecution): RuntimeAgentSnapsho
     description: agent.description,
     model: {
       id: agent.model.id,
+      ...(agent.model.effort !== undefined && { effort: agent.model.effort }),
       ...(agent.model.speed !== undefined && { speed: agent.model.speed }),
     },
     system: agent.system ?? "",

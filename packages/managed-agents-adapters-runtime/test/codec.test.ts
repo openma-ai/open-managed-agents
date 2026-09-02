@@ -308,6 +308,11 @@ describe("Managed session runtime codec", () => {
 
     expect(encodeRuntimeSessionStart(input)).toMatchObject({
       agent_snapshot: {
+        model: {
+          id: "claude-opus-5",
+          effort: "high",
+          speed: "fast",
+        },
         skills: [
           { type: "custom", skill_id: "skill_review", version: "3" },
         ],
