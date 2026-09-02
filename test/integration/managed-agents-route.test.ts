@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { exports } from "cloudflare:workers";
 import { unzipSync } from "fflate";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { withAnthropicFormDataSupport } from "../anthropic-sdk-fetch";
 import { verifyManagedAgentsClientStateModel } from "../model/managed-agents-client-state-model";
 
@@ -11,6 +11,8 @@ description: How to work in this repository
 ---
 # Repository guide
 `;
+
+const realFetch = globalThis.fetch;
 
 const workerFetch: typeof fetch = withAnthropicFormDataSupport(
   async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -29,7 +31,26 @@ const workerFetch: typeof fetch = withAnthropicFormDataSupport(
 );
 
 beforeAll(async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    if (url.startsWith("https://api.anthropic.com/")) {
+      return Promise.resolve(new Response(
+        JSON.stringify({ error: { message: "mock model-card probe" } }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      ));
+    }
+    return realFetch(input, init);
+  });
   await workerFetch("http://localhost/health");
+});
+
+afterAll(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Cloudflare official Managed Agents route", () => {

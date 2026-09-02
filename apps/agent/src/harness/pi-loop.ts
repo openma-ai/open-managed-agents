@@ -76,7 +76,7 @@ export class PiHarness implements HarnessInterface {
         model: ctx.pi.model,
         messages,
         tools: toolsToPi(ctx),
-        thinkingLevel: ctx.pi.model.reasoning ? "medium" : "off",
+        thinkingLevel: ctx.pi.thinkingLevel,
       },
       sessionId: ctx.session_id,
       streamFn: (model, context, options) =>

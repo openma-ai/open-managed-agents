@@ -65,6 +65,7 @@ import {
   createPiModelRuntime,
   toAiSdkLanguageModel,
 } from "@open-managed-agents/agent/harness/pi-provider";
+import type { PiModelConfig } from "@open-managed-agents/agent/harness/pi-provider";
 import { generateText } from "ai";
 import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
@@ -685,13 +686,18 @@ async function buildSandbox(
  *  Prefer a matching model card; fall back to ANTHROPIC_* env vars. */
 async function resolveNodeModelCreds(
   tenantId: string,
-  agentModel: string | { id: string; speed?: string },
+  agentModel: string | {
+    id: string;
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
+    speed?: string;
+  },
 ): Promise<{
   wireModel: string;
   apiKey: string;
   baseURL?: string;
   provider?: string;
   customHeaders?: Record<string, string>;
+  piConfig?: PiModelConfig;
 }> {
   const handle = typeof agentModel === "string" ? agentModel : agentModel.id;
   try {
@@ -705,6 +711,9 @@ async function resolveNodeModelCreds(
           baseURL: card.base_url ?? undefined,
           provider: card.provider,
           customHeaders: card.custom_headers ?? undefined,
+          piConfig: card.pi_config
+            ? card.pi_config as PiModelConfig
+            : undefined,
         };
       }
     }
@@ -729,7 +738,11 @@ async function resolveNodeModelCreds(
 
 async function buildNodeLanguageModel(
   tenantId: string,
-  agentModel: string | { id: string; speed?: string },
+  agentModel: string | {
+    id: string;
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
+    speed?: string;
+  },
 ) {
   const creds = await resolveNodeModelCreds(tenantId, agentModel);
   return toAiSdkLanguageModel(createPiModelRuntime({
@@ -738,6 +751,8 @@ async function buildNodeLanguageModel(
     provider: creds.provider,
     baseURL: creds.baseURL,
     customHeaders: creds.customHeaders,
+    piConfig: creds.piConfig,
+    thinkingLevel: typeof agentModel === "string" ? undefined : agentModel.effort,
   }));
 }
 
@@ -777,6 +792,9 @@ const sessionRegistry = new SessionRegistry({
       provider: creds.provider,
       baseURL: creds.baseURL,
       customHeaders: creds.customHeaders,
+      piConfig: creds.piConfig,
+      thinkingLevel:
+        typeof input.agent.model === "string" ? undefined : input.agent.model.effort,
     });
     const runtime = new NodeHarnessRuntime({
       sessionId: input.sessionId,

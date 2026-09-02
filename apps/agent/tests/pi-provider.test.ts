@@ -71,6 +71,17 @@ describe("createPiModelRuntime", () => {
     expect(runtime.model.contextWindow).toBeGreaterThan(0);
   });
 
+  it("keeps the Pi thinking level on the tenant-scoped runtime", () => {
+    const runtime = createPiModelRuntime({
+      model: "deepseek-v4-flash",
+      apiKey: "secret",
+      provider: "deepseek",
+      thinkingLevel: "high",
+    } as Parameters<typeof createPiModelRuntime>[0] & { thinkingLevel: "high" });
+
+    expect(Reflect.get(runtime, "thinkingLevel")).toBe("high");
+  });
+
   it("accepts every provider registered by Pi without an OpenMA provider switch", async () => {
     const runtime = createPiModelRuntime({
       model: "aion-labs/aion-2.0",
@@ -89,6 +100,66 @@ describe("createPiModelRuntime", () => {
     });
   });
 
+  it("passes a custom model's Pi-native configuration through unchanged", () => {
+    const runtime = createPiModelRuntime({
+      model: "custom-reasoner",
+      apiKey: "secret",
+      provider: "my-gateway",
+      baseURL: "https://models.example.test/v1",
+      piConfig: {
+        api: "openai-completions",
+        reasoning: true,
+        input: ["text"],
+        contextWindow: 262_144,
+        maxTokens: 65_536,
+        thinkingLevelMap: {
+          minimal: null,
+          low: "low",
+          medium: null,
+          high: "high",
+          max: "max",
+        },
+        samplingParams: { top_k: 40, min_p: 0.05 },
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: true,
+        },
+      },
+    } as Parameters<typeof createPiModelRuntime>[0] & {
+      piConfig: Record<string, unknown>;
+    });
+
+    expect(runtime.model).toMatchObject({
+      provider: "my-gateway",
+      api: "openai-completions",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 262_144,
+      maxTokens: 65_536,
+      thinkingLevelMap: {
+        minimal: null,
+        low: "low",
+        medium: null,
+        high: "high",
+        max: "max",
+      },
+      samplingParams: { top_k: 40, min_p: 0.05 },
+      compat: {
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: true,
+      },
+    });
+  });
+
+  it("rejects a custom provider without the Pi API implementation it needs", () => {
+    expect(() => createPiModelRuntime({
+      model: "custom-model",
+      apiKey: "secret",
+      provider: "my-gateway",
+      baseURL: "https://models.example.test/v1",
+    })).toThrow(/custom Pi provider.*pi_config\.api/i);
+  });
+
   it("adapts a Pi-registered model to the AI SDK shape used by DefaultHarness", async () => {
     const faux = fauxProvider({ tokensPerSecond: 100_000 });
     faux.setResponses([fauxAssistantMessage("default harness via pi")]);
@@ -103,6 +174,31 @@ describe("createPiModelRuntime", () => {
     const result = streamText({ model, prompt: "hello" });
 
     await expect(result.text).resolves.toBe("default harness via pi");
+  });
+
+  it("forwards the runtime thinking level through the AI SDK projection", async () => {
+    const faux = fauxProvider({ tokensPerSecond: 100_000 });
+    faux.setResponses([fauxAssistantMessage("reasoned through pi")]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const streamSimple = vi.spyOn(models, "streamSimple");
+
+    const candidate = Reflect.get(piProviderModule, "toAiSdkLanguageModel");
+    expect(typeof candidate).toBe("function");
+    if (typeof candidate !== "function") return;
+    const model = candidate({
+      models,
+      model: faux.getModel(),
+      thinkingLevel: "high",
+    }) as LanguageModel;
+    const result = streamText({ model, prompt: "reason carefully" });
+
+    await expect(result.text).resolves.toBe("reasoned through pi");
+    expect(streamSimple).toHaveBeenCalledWith(
+      faux.getModel(),
+      expect.any(Object),
+      expect.objectContaining({ reasoning: "high" }),
+    );
   });
 
   it("supports the non-streaming AI SDK shape used by compaction and outcome judging", async () => {

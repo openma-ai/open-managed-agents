@@ -51,7 +51,7 @@ async function generateWithPi(
   const message = await runtime.models.completeSimple(
     runtime.model,
     toPiContext(options, runtime.model),
-    toPiStreamOptions(options),
+    toPiStreamOptions(runtime, options),
   );
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     throw new Error(message.errorMessage ?? `Pi model stopped with ${message.stopReason}`);
@@ -80,7 +80,7 @@ async function streamWithPi(
   const piStream = runtime.models.streamSimple(
     runtime.model,
     toPiContext(options, runtime.model),
-    toPiStreamOptions(options, abortController.signal),
+    toPiStreamOptions(runtime, options, abortController.signal),
   );
   const iterator = piStream[Symbol.asyncIterator]();
   const warnings = collectWarnings(options);
@@ -259,6 +259,7 @@ function toPiTools(
 }
 
 function toPiStreamOptions(
+  runtime: PiModelRuntime,
   options: LanguageModelV3CallOptions,
   signal = options.abortSignal,
 ): SimpleStreamOptions {
@@ -273,6 +274,9 @@ function toPiStreamOptions(
   };
   return {
     ...piOptions,
+    ...(piOptions.reasoning === undefined && runtime.thinkingLevel !== "off"
+      ? { reasoning: runtime.thinkingLevel }
+      : {}),
     ...(signal ? { signal } : {}),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.maxOutputTokens !== undefined ? { maxTokens: options.maxOutputTokens } : {}),

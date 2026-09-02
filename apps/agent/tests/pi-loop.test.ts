@@ -142,6 +142,20 @@ describe("PiHarness", () => {
     ).toHaveLength(2);
   });
 
+  it("uses the runtime thinking level for every Pi agent turn", async () => {
+    const { ctx } = makeContext([fauxAssistantMessage("careful answer")]);
+    const streamSimple = vi.spyOn(ctx.pi!.models, "streamSimple");
+    Reflect.set(ctx.pi!, "thinkingLevel", "high");
+
+    await new PiHarness().run(ctx);
+
+    expect(streamSimple).toHaveBeenCalledWith(
+      ctx.pi!.model,
+      expect.any(Object),
+      expect.objectContaining({ reasoning: "high" }),
+    );
+  });
+
   it("pauses non-executable tools for OpenMA confirmation", async () => {
     const call = fauxAssistantMessage(
       fauxToolCall("echo", { value: "confirm me" }, { id: "tool-confirm" }),
