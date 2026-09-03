@@ -129,7 +129,7 @@ import {
   IndeterminateCredentialValidationProbe,
   inProcessDreamExecutionSchedulerModule,
   LocalTunnelProvisioner,
-  OpaqueEnvironmentWorkSessionCredentialIssuer,
+  SealedEnvironmentWorkSessionCredentialIssuer,
   DeduplicatingDreamCurator,
   WebCryptoTunnelCertificateAuthority,
   WebCryptoTunnelTokenManager,
@@ -800,6 +800,12 @@ function managedEnvironmentWorkCipherFor(
 
 function managedEnvironmentWorkApplicationFor(ctx: AppCtx) {
   const client = new CfD1SqlClient(ctx.var.tenantDb);
+  const platformRootSecret = ctx.env.PLATFORM_ROOT_SECRET;
+  if (!platformRootSecret) {
+    throw new Error(
+      "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+    );
+  }
   return createCloudflareManagedAgentsApp({
     workspaceId: ctx.var.tenant_id,
     sql: client,
@@ -822,8 +828,12 @@ function managedEnvironmentWorkApplicationFor(ctx: AppCtx) {
       ),
       providePort(
         environmentWorkSessionCredentialIssuerPort,
-        new OpaqueEnvironmentWorkSessionCredentialIssuer({
-          nextToken: () => crypto.randomUUID().replaceAll("-", ""),
+        new SealedEnvironmentWorkSessionCredentialIssuer({
+          crypto: new WebCryptoAesGcm(
+            platformRootSecret,
+            "managed.environment-work.session-token",
+          ),
+          now: () => new Date(),
           apiBaseUrl: new URL(ctx.req.url).origin,
         }),
       ),

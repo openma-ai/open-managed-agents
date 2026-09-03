@@ -192,7 +192,10 @@ try {
       }
       const events = streamed.events;
       const types = events.map(({ type }) => type);
-      assert.ok(types.includes("agent.message"), `received: ${types.join(", ")}`);
+      assert.ok(
+        types.includes("agent.message"),
+        `received: ${JSON.stringify(events)}`,
+      );
       assert.ok(types.includes("session.status_idle"), `received: ${types.join(", ")}`);
     });
   } else {

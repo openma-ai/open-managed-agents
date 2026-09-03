@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -721,6 +720,86 @@ describe("main-node official Managed Agents route", () => {
       prefix: `node-${suffix}`,
     });
   }, 60_000);
+
+  it("runs official worker bearer auth with scoped per-work credentials when auth is enabled", async () => {
+    handle = await startMainNode(dataDirectory, {
+      authDisabled: false,
+      apiKey: "test-key",
+    });
+    const baseURL = `http://127.0.0.1:${handle.port}`;
+    const client = new Anthropic({ apiKey: "test-key", baseURL, maxRetries: 0 });
+    const suffix = randomBytes(8).toString("hex");
+    const modelId = `worker-auth-${suffix}`;
+    const modelCard = await fetch(`${baseURL}/v1/oma/model_cards`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "test-key",
+      },
+      body: JSON.stringify({
+        provider: "ant",
+        model_id: modelId,
+        api_key: "sk-ant-worker-auth-test-key",
+      }),
+    });
+    expect(modelCard.status).toBe(201);
+    const environment = await client.beta.environments.create({
+      name: `worker-auth-${suffix}`,
+      config: { type: "self_hosted" },
+    });
+    const agent = await client.beta.agents.create({
+      name: `worker-auth-${suffix}`,
+      model: modelId,
+    });
+    const session = await client.beta.sessions.create({
+      agent: { type: "agent", id: agent.id, version: agent.version },
+      environment_id: environment.id,
+      title: "Official worker bearer auth",
+    });
+
+    const poller = client.beta.environments.work.poller({
+      environmentId: environment.id,
+      environmentKey: "test-key",
+      workerId: `worker-${suffix}`,
+      blockMs: null,
+      autoStop: false,
+    });
+    const iterator = poller[Symbol.asyncIterator]();
+    const next = await iterator.next();
+    expect(next.done).toBe(false);
+    const work = next.value!;
+    const sessionsToken = decodeWorkSecret(work.secret!).sessions_token;
+    expect(sessionsToken).toMatch(/^sk-ant-req-v1\./);
+    const sessionClient = new Anthropic({
+      apiKey: null,
+      authToken: String(sessionsToken),
+      baseURL,
+      maxRetries: 0,
+    });
+
+    await expect(sessionClient.beta.sessions.retrieve(session.id)).resolves.toMatchObject({
+      id: session.id,
+      environment_id: environment.id,
+    });
+    const unrelated = await fetch(`${baseURL}/v1/agents`, {
+      headers: { Authorization: `Bearer ${sessionsToken}` },
+    });
+    expect(unrelated.status).toBe(401);
+    await expect(
+      sessionClient.beta.environments.work.heartbeat(work.id, {
+        environment_id: environment.id,
+        desired_ttl_seconds: 90,
+      }),
+    ).resolves.toMatchObject({ type: "work_heartbeat", lease_extended: true });
+    await expect(
+      sessionClient.beta.environments.work.stop(work.id, {
+        environment_id: environment.id,
+        force: true,
+      }),
+    ).resolves.toMatchObject({ id: work.id, state: "stopped" });
+    poller.abort();
+    await iterator.return?.();
+  }, 60_000);
 });
 
 function decodeWorkSecret(secret: string): Record<string, unknown> {
@@ -749,21 +828,27 @@ function testCertificatePem(): string {
   ].join("\n");
 }
 
-async function startMainNode(dataDirectory: string): Promise<ProcessHandle> {
-  const port = await pickPort();
+async function startMainNode(
+  dataDirectory: string,
+  options: { authDisabled?: boolean; apiKey?: string } = {},
+): Promise<ProcessHandle> {
   const child = spawn(TSX_BIN, [MAIN_NODE_ENTRY], {
     ...detachedProcessOptions,
     cwd: REPO_ROOT,
     env: {
       ...process.env,
-      PORT: String(port),
+      // Let the server bind port 0 itself. Picking and releasing an ephemeral
+      // port before spawning leaves a TOCTOU window where another process can
+      // claim it and made this state-model E2E intermittently fail EADDRINUSE.
+      PORT: "0",
       DATABASE_PATH: join(dataDirectory, "oma.db"),
       AUTH_DATABASE_PATH: join(dataDirectory, "auth.db"),
       SANDBOX_WORKDIR: join(dataDirectory, "sandboxes"),
       MEMORY_BLOB_DIR: join(dataDirectory, "memory-blobs"),
       FILES_BLOB_DIR: join(dataDirectory, "file-blobs"),
       SESSION_OUTPUTS_DIR: join(dataDirectory, "outputs"),
-      AUTH_DISABLED: "1",
+      AUTH_DISABLED: options.authDisabled === false ? "0" : "1",
+      ...(options.apiKey === undefined ? {} : { API_KEY: options.apiKey }),
       BETTER_AUTH_SECRET: "managed-agents-node-test-secret",
       PLATFORM_ROOT_SECRET: "managed-agents-node-credential-test-root-secret",
       DREAM_CURATOR_MODE: "dedup",
@@ -777,11 +862,17 @@ async function startMainNode(dataDirectory: string): Promise<ProcessHandle> {
 
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`);
-      if (response.ok) return { child, port, logBuffer };
-    } catch {
-      // Process is still booting.
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`main-node exited before becoming ready:\n${logBuffer.join("")}`);
+    }
+    const port = listeningPort(logBuffer);
+    if (port !== null) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        if (response.ok) return { child, port, logBuffer };
+      } catch {
+        // The listener was announced but the health route is still booting.
+      }
     }
     await new Promise((resolveReady) => setTimeout(resolveReady, 200));
   }
@@ -789,22 +880,24 @@ async function startMainNode(dataDirectory: string): Promise<ProcessHandle> {
   throw new Error(`main-node did not become ready:\n${logBuffer.join("")}`);
 }
 
-function killHard(handle: ProcessHandle): Promise<void> {
-  return killProcessTree(handle.child);
+function listeningPort(chunks: readonly string[]): number | null {
+  for (const line of chunks.join("").split("\n")) {
+    try {
+      const event = JSON.parse(line) as { op?: unknown; port?: unknown };
+      if (
+        event.op === "main-node.listening"
+        && Number.isSafeInteger(event.port)
+        && Number(event.port) > 0
+      ) {
+        return Number(event.port);
+      }
+    } catch {
+      // Startup can include non-JSON dependency logs; ignore those lines.
+    }
+  }
+  return null;
 }
 
-function pickPort(): Promise<number> {
-  return new Promise((resolvePort, rejectPort) => {
-    const server = createServer();
-    server.unref();
-    server.on("error", rejectPort);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (typeof address !== "object" || address === null) {
-        rejectPort(new Error("Could not allocate a test port"));
-        return;
-      }
-      server.close(() => resolvePort(address.port));
-    });
-  });
+function killHard(handle: ProcessHandle): Promise<void> {
+  return killProcessTree(handle.child);
 }

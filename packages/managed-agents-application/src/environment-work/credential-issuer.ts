@@ -4,6 +4,7 @@ import type { Session } from "../domain/session";
 
 export interface IssueEnvironmentWorkSessionCredential {
   workspaceId: string;
+  workId: string;
   environment: Environment;
   session: Session;
 }

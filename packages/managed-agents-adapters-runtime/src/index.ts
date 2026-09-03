@@ -31,6 +31,7 @@ export { CronDeploymentSchedulePlanner } from "./deployment-schedule-planner";
 export { DeduplicatingDreamCurator } from "./deduplicating-dream-curator";
 export { TimerEnvironmentWorkAvailabilityWaiter } from "./environment-work-availability-waiter";
 export { OpaqueEnvironmentWorkSessionCredentialIssuer } from "./environment-work-session-credential-issuer";
+export * from "./environment-work-session-token";
 export {
   InProcessDreamExecutionScheduler,
   inProcessDreamExecutionSchedulerModule,

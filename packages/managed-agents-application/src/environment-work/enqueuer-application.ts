@@ -50,14 +50,16 @@ export class EnvironmentWorkEnqueuerService
         message: `Session ${input.session.id} does not belong to an active target environment`,
       };
     }
+    const workId = this.dependencies.ids.nextEnvironmentWorkId();
     const issued = await this.dependencies.credentials.issue({
       workspaceId: this.dependencies.workspaceId,
+      workId,
       environment: input.environment,
       session: input.session,
     });
     if (issued.type === "rejected") return issued;
     const work = {
-      id: this.dependencies.ids.nextEnvironmentWorkId(),
+      id: workId,
       acknowledgedAt: null,
       createdAt: this.dependencies.clock.now().toISOString(),
       data: { type: "session" as const, id: input.session.id },

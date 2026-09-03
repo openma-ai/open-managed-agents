@@ -111,6 +111,9 @@ importers:
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
+      '@open-managed-agents/blob-store':
+        specifier: workspace:*
+        version: link:../../packages/blob-store
       '@open-managed-agents/browser-harness':
         specifier: workspace:*
         version: link:../../packages/browser-harness
@@ -129,6 +132,12 @@ importers:
       '@open-managed-agents/files-store':
         specifier: workspace:*
         version: link:../../packages/files-store
+      '@open-managed-agents/managed-runtime-host':
+        specifier: workspace:*
+        version: link:../../packages/managed-runtime-host
+      '@open-managed-agents/managed-runtime-sandbox':
+        specifier: workspace:*
+        version: link:../../packages/managed-runtime-sandbox
       '@open-managed-agents/markdown':
         specifier: workspace:*
         version: link:../../packages/markdown
@@ -144,6 +153,9 @@ importers:
       '@open-managed-agents/outbound-snapshots-store':
         specifier: workspace:*
         version: link:../../packages/outbound-snapshots-store
+      '@open-managed-agents/runtime-resource-fence-sql':
+        specifier: workspace:*
+        version: link:../../packages/runtime-resource-fence-sql
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
@@ -1045,6 +1057,10 @@ importers:
       hono:
         specifier: ^4.7.0
         version: 4.12.12
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/auth-config:
     dependencies:
@@ -1622,6 +1638,16 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
+  packages/harness-supervisor:
+    dependencies:
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/http-routes:
     dependencies:
       '@open-managed-agents/agents-store':
@@ -2174,6 +2200,57 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
 
+  packages/managed-runtime-host:
+    dependencies:
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-runtime-node:
+    dependencies:
+      '@open-managed-agents/managed-runtime-host':
+        specifier: workspace:*
+        version: link:../managed-runtime-host
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+      '@open-managed-agents/runtime-resource-fence-sql':
+        specifier: workspace:*
+        version: link:../runtime-resource-fence-sql
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/managed-runtime-sandbox:
+    dependencies:
+      '@open-managed-agents/blob-store':
+        specifier: workspace:*
+        version: link:../blob-store
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+    devDependencies:
+      '@types/node':
+        specifier: ^26.2.0
+        version: 26.3.0
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
   packages/markdown:
     dependencies:
       turndown:
@@ -2684,6 +2761,27 @@ importers:
         specifier: github:openma-ai/openma-common#00358ff9c1e4a694171f5617a4715602c61433e7
         version: https://codeload.github.com/openma-ai/openma-common/tar.gz/00358ff9c1e4a694171f5617a4715602c61433e7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
     devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
+
+  packages/runtime-resource-contract: {}
+
+  packages/runtime-resource-fence-sql:
+    dependencies:
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      postgres:
+        specifier: ^3.4.0
+        version: 3.4.9
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.3.0)(@vitest/coverage-v8@4.1.4)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.3.0)(typescript@7.0.2))(vite@8.0.8(@types/node@26.3.0)(esbuild@0.28.1)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.9.0))
@@ -15561,7 +15659,7 @@ snapshots:
 
   '@httptoolkit/httpolyglot@3.0.1':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@httptoolkit/subscriptions-transport-ws@0.11.2(graphql@16.14.0)':
     dependencies:
@@ -19021,7 +19119,7 @@ snapshots:
 
   '@types/bunyan@1.8.9':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/chai@5.2.3':
     dependencies:
@@ -19030,11 +19128,11 @@ snapshots:
 
   '@types/connect@3.4.36':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/cors@2.8.19':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/d3-array@3.2.2': {}
 
@@ -19200,13 +19298,13 @@ snapshots:
 
   '@types/memcached@2.2.10':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/ms@2.1.0': {}
 
   '@types/mysql@2.15.26':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/nlcst@2.0.3':
     dependencies:
@@ -19240,7 +19338,7 @@ snapshots:
 
   '@types/pg@8.6.1':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
       pg-protocol: 1.13.0
       pg-types: 2.2.0
 
@@ -19256,11 +19354,11 @@ snapshots:
 
   '@types/sax@1.2.7':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/set-cookie-parser@2.4.10':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/shimmer@1.2.0': {}
 
@@ -19281,7 +19379,7 @@ snapshots:
 
   '@types/tedious@4.0.14':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   '@types/trusted-types@2.0.7':
     optional: true
@@ -20681,7 +20779,7 @@ snapshots:
 
   destroyable-server@1.1.1:
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   detect-libc@2.1.2: {}
 
@@ -23496,7 +23594,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.1
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
       long: 5.3.2
 
   proxy-addr@2.0.7:
@@ -23673,7 +23771,7 @@ snapshots:
 
   read-tls-client-hello@2.0.0:
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.3.0
 
   readable-stream@2.3.8:
     dependencies:

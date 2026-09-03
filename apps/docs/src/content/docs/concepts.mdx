@@ -70,14 +70,24 @@ Detailed schemas in [Skills & Tools](/build/skills-and-tools/).
 
 ## Harness
 
-The agent loop itself — the code that decides what the model does next given the session events. openma ships a **DefaultHarness** built on the [`ai` SDK](https://sdk.vercel.ai/), but the harness interface is pluggable. You can register a custom harness that:
+The agent loop itself — the code that decides what the model does next given the session events. openma owns the loop and ships three placements behind the same harness interface:
+
+- **DefaultHarness / PiHarness** — run the loop in the OpenMA host.
+- **ACP sandbox harness** — spawn an ACP-compatible agent such as Claude Code or Codex inside the session sandbox while OpenMA keeps ownership of session lifecycle and canonical events.
+- **ACP proxy harness** — use a user-registered local runtime when the agent must run on a particular device.
+
+You can also register a custom harness that:
 
 - Drives a different model loop
 - Handles compaction differently (`shouldCompact`, `compact`)
 - Customizes the system prompt assembly (`deriveModelContext`)
 - Hooks into session lifecycle (`onSessionInit`, `run`)
 
-Two more harness modes are planned: **ContainerAgent** (run an external CLI like Claude Code or Codex inside the sandbox) and **DaemonAgent** (a local daemon connecting to the platform). See [Custom Integrations](/build/integrations/) for the shape.
+The sandbox placement is provider-neutral: every ACP process uses the
+`SandboxDuplexProcessPort`, whether the backing runtime is a Cloudflare
+Container, a local subprocess, or E2B. Stateful ACP sessions retain one child
+across turns, renew the provider lease during a turn, and persist the native
+ACP session id in the workspace so a restored sandbox can resume it.
 
 ## Integration
 

@@ -1,11 +1,15 @@
 // @ts-nocheck
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import { resolveSkills, registerSkill } from "../../apps/agent/src/harness/skills";
 import { SummarizeCompaction } from "../../apps/agent/src/harness/compaction";
 import { TestSandbox, createSandbox, CloudflareSandbox } from "../../apps/agent/src/runtime/sandbox";
+import {
+  createCloudflareManagedRuntime,
+  createCloudflareManagedRuntimeHost,
+} from "../../apps/agent/src/runtime/managed-runtime";
 import { buildTools } from "../../apps/agent/src/harness/tools";
 import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
 import type { AgentConfig, SessionEvent, SessionThreadCreatedEvent, SessionThreadIdleEvent, AgentThreadMessageEvent, AgentMessageEvent, UserMessageEvent } from "@open-managed-agents/shared";
@@ -372,6 +376,61 @@ describe("Sandbox lifecycle", () => {
     expect(result).toContain("fatal: could not read Username");
     expect(result).toContain("Hint:");
     expect(result).toContain("secret-backed command (`git`)");
+  });
+
+  it("CloudflareSandbox restores a workspace backup exactly once", async () => {
+    const restoreBackup = vi.fn(async () => {});
+    const sandbox = new CloudflareSandbox({ SANDBOX: {} } as any, "test-session-id") as any;
+    sandbox.sandboxPromise = Promise.resolve({ restoreBackup });
+
+    await expect(
+      sandbox.restoreWorkspaceBackup({ id: "backup-1", dir: "/workspace" }),
+    ).resolves.toEqual({ ok: true });
+    expect(restoreBackup).toHaveBeenCalledOnce();
+  });
+
+  it("Cloudflare managed runtime advertises portable filesystem restore without warm-process claims", async () => {
+    const runtime = createCloudflareManagedRuntime({ SANDBOX: {}, FILES_BUCKET: {} } as any);
+    const scope = {
+      workspaceId: "workspace-1",
+      environmentId: "environment-1",
+      sessionId: "session-1",
+      workId: "work-1",
+    };
+
+    await expect(runtime.sandbox.capabilities(scope)).resolves.toEqual({
+      suspendResume: "unsupported",
+      hardTerminate: "supported",
+      runtimeCheckpoints: [],
+    });
+    await expect(runtime.workspace.capabilities(scope)).resolves.toEqual({
+      strategies: ["checkpoint_restore"],
+    });
+    await expect(runtime.outputs.capabilities(scope)).resolves.toEqual({
+      strategies: [{ strategy: "final_collect", durability: "durable" }],
+    });
+    await expect(runtime.harness.driverCapabilities(scope)).resolves.toEqual({
+      drivers: ["ama_worker"],
+    });
+  });
+
+  it("Cloudflare host preset preinstalls fencing, orphan cleanup, and both harness lanes", async () => {
+    const runtime = createCloudflareManagedRuntimeHost(
+      { SANDBOX: {}, FILES_BUCKET: {}, MAIN_DB: {} } as any,
+      { ownerId: "session-do:session-1" },
+    );
+    const scope = {
+      workspaceId: "workspace-1",
+      environmentId: "environment-1",
+      sessionId: "session-1",
+      workId: "work-1",
+    };
+
+    await expect(runtime.harnessDriver.driverCapabilities(scope)).resolves.toEqual({
+      drivers: ["ama_worker", "openma_supervised"],
+    });
+    expect(runtime.host).toBeDefined();
+    expect(runtime.orphanReconciler).toBeDefined();
   });
 
   it("TestSandbox exec works with various commands", async () => {

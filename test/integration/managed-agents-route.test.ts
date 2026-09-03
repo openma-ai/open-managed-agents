@@ -684,6 +684,97 @@ describe("Cloudflare official Managed Agents route", () => {
       prefix: `cf-${suffix}`,
     });
   }, 60_000);
+
+  it("accepts the official worker's environment bearer and scopes its per-work sessions token", async () => {
+    const client = new Anthropic({
+      apiKey: "test-key",
+      baseURL: "http://localhost",
+      fetch: workerFetch,
+      maxRetries: 0,
+    });
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const modelId = `worker-auth-${suffix}`;
+    const modelCard = await workerFetch("http://localhost/v1/oma/model_cards", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "test-key",
+      },
+      body: JSON.stringify({
+        provider: "ant",
+        model_id: modelId,
+        api_key: "sk-ant-worker-auth-test-key",
+      }),
+    });
+    expect(modelCard.status).toBe(201);
+    const environment = await client.beta.environments.create({
+      name: `worker-auth-${suffix}`,
+      config: { type: "self_hosted" },
+    });
+    const agent = await client.beta.agents.create({
+      name: `worker-auth-${suffix}`,
+      model: modelId,
+    });
+    const session = await client.beta.sessions.create({
+      agent: { type: "agent", id: agent.id, version: agent.version },
+      environment_id: environment.id,
+      title: "Official worker bearer auth",
+    });
+
+    const poller = client.beta.environments.work.poller({
+      environmentId: environment.id,
+      environmentKey: "test-key",
+      workerId: `worker-${suffix}`,
+      blockMs: null,
+      autoStop: false,
+    });
+    const iterator = poller[Symbol.asyncIterator]();
+    const next = await iterator.next();
+    expect(next.done).toBe(false);
+    const work = next.value!;
+    const secret = decodeWorkSecret(work.secret!);
+    const sessionsToken = secret.sessions_token;
+    expect(sessionsToken).toMatch(/^sk-ant-req-v1\./);
+
+    const sessionClient = new Anthropic({
+      apiKey: null,
+      authToken: String(sessionsToken),
+      baseURL: "http://localhost",
+      fetch: workerFetch,
+      maxRetries: 0,
+    });
+    await expect(sessionClient.beta.sessions.retrieve(session.id)).resolves.toMatchObject({
+      id: session.id,
+      environment_id: environment.id,
+    });
+    await expect(
+      sessionClient.beta.sessions.events.list(session.id),
+    ).resolves.toMatchObject({ data: expect.any(Array) });
+
+    const unrelated = await workerFetch("http://localhost/v1/agents", {
+      headers: { Authorization: `Bearer ${sessionsToken}` },
+    });
+    expect(unrelated.status).toBe(401);
+    const tampered = await workerFetch(`http://localhost/v1/sessions/${session.id}`, {
+      headers: { Authorization: `Bearer ${sessionsToken}tampered` },
+    });
+    expect(tampered.status).toBe(401);
+
+    await expect(
+      sessionClient.beta.environments.work.heartbeat(work.id, {
+        environment_id: environment.id,
+        desired_ttl_seconds: 90,
+      }),
+    ).resolves.toMatchObject({ type: "work_heartbeat", lease_extended: true });
+    await expect(
+      sessionClient.beta.environments.work.stop(work.id, {
+        environment_id: environment.id,
+        force: true,
+      }),
+    ).resolves.toMatchObject({ id: work.id, state: "stopped" });
+    poller.abort();
+    await iterator.return?.();
+  }, 60_000);
 });
 
 function decodeWorkSecret(secret: string): Record<string, unknown> {

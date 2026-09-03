@@ -2,6 +2,8 @@ import { createMiddleware } from "hono/factory";
 import type { Env } from "@open-managed-agents/shared";
 import { logWarn, logError } from "@open-managed-agents/shared";
 import { CfKvStore } from "@open-managed-agents/kv-store";
+import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
+import { authenticateEnvironmentWorkSessionBearer } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 async function sha256(data: string): Promise<string> {
   const encoded = new TextEncoder().encode(data);
@@ -9,6 +11,39 @@ async function sha256(data: string): Promise<string> {
   return [...new Uint8Array(hash)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function resolveWorkspaceApiKey(env: Env, apiKey: string): Promise<{
+  tenantId: string;
+  userId?: string;
+} | null> {
+  if (env.API_KEY && env.API_KEY !== "" && apiKey === env.API_KEY) {
+    return { tenantId: "default" };
+  }
+  const hash = await sha256(apiKey);
+  const keyData = await new CfKvStore(env.CONFIG_KV).get(`apikey:${hash}`);
+  if (!keyData) return null;
+  const { tenant_id, user_id } = JSON.parse(keyData) as {
+    tenant_id: string;
+    user_id?: string;
+  };
+  if (user_id) return { tenantId: tenant_id, userId: user_id };
+  if (!env.MAIN_DB) return { tenantId: tenant_id };
+  try {
+    const result = await env.MAIN_DB
+      .prepare(`SELECT id FROM "user" WHERE tenantId = ? LIMIT 2`)
+      .bind(tenant_id)
+      .all<{ id: string }>();
+    return result.results?.length === 1
+      ? { tenantId: tenant_id, userId: result.results[0].id }
+      : { tenantId: tenant_id };
+  } catch (err) {
+    logWarn(
+      { op: "auth.tenant_user_lookup", tenant_id, err },
+      "MAIN_DB user lookup failed; proceeding without user_id",
+    );
+    return { tenantId: tenant_id };
+  }
 }
 
 export const authMiddleware = createMiddleware<{
@@ -28,53 +63,42 @@ export const authMiddleware = createMiddleware<{
   // 1. Try API Key authentication (for CLI / SDK)
   const apiKey = c.req.header("x-api-key");
   if (apiKey) {
-    // Legacy: check static API_KEY env var for backwards compat
-    if (c.env.API_KEY && c.env.API_KEY !== "" && apiKey === c.env.API_KEY) {
-      c.set("tenant_id", "default");
-      return next();
-    }
-    // Lookup hashed API key in KV. authMiddleware runs before servicesMiddleware,
-    // so c.var.services isn't populated yet — construct the kv adapter inline.
-    const hash = await sha256(apiKey);
-    const kv = new CfKvStore(c.env.CONFIG_KV);
-    const keyData = await kv.get(`apikey:${hash}`);
-    if (!keyData) {
-      return c.json({ error: "Invalid API key" }, 401);
-    }
-    const { tenant_id, user_id } = JSON.parse(keyData) as {
-      tenant_id: string;
-      user_id?: string;
-    };
-    c.set("tenant_id", tenant_id);
-    if (user_id) {
-      c.set("user_id", user_id);
-    } else if (c.env.MAIN_DB) {
-      // Backwards compat: legacy keys minted before user_id was tracked.
-      // If the tenant has exactly one user, attribute the request to them so
-      // user-scoped endpoints (e.g. /v1/oma/integrations/*) keep working without
-      // requiring everyone to regenerate. Multi-user tenants must explicitly
-      // regenerate; we don't guess.
-      try {
-        const r = await c.env.MAIN_DB
-          .prepare(`SELECT id FROM "user" WHERE tenantId = ? LIMIT 2`)
-          .bind(tenant_id)
-          .all<{ id: string }>();
-        if (r.results?.length === 1) {
-          c.set("user_id", r.results[0].id);
-        }
-      } catch (err) {
-        // MAIN_DB query failed — proceed without user_id; downstream
-        // user-scoped routes will reject with their own clear message.
-        logWarn(
-          { op: "auth.tenant_user_lookup", tenant_id, err },
-          "MAIN_DB user lookup failed; proceeding without user_id",
-        );
-      }
-    }
+    const resolved = await resolveWorkspaceApiKey(c.env, apiKey);
+    if (!resolved) return c.json({ error: "Invalid API key" }, 401);
+    c.set("tenant_id", resolved.tenantId);
+    if (resolved.userId) c.set("user_id", resolved.userId);
     return next();
   }
 
-  // 2. Try session cookie authentication (for Console)
+  // 2. Official EnvironmentWorker auth. Its helper clients deliberately emit
+  // only Authorization: Bearer for both the standing environment key and the
+  // per-work sessions token.
+  const authorization = c.req.header("authorization") ?? "";
+  if (authorization.startsWith("Bearer ")) {
+    const token = authorization.slice("Bearer ".length);
+    let resolved: { tenantId: string; userId?: string } | null = null;
+    if (token.startsWith("sk-ant-req-v1.") && c.env.PLATFORM_ROOT_SECRET) {
+      const scoped = await authenticateEnvironmentWorkSessionBearer({
+        token,
+        method: c.req.method,
+        path: c.req.path,
+        crypto: new WebCryptoAesGcm(
+          c.env.PLATFORM_ROOT_SECRET,
+          "managed.environment-work.session-token",
+        ),
+        now: () => new Date(),
+      });
+      if (scoped !== null) resolved = { tenantId: scoped.workspaceId };
+    } else {
+      resolved = await resolveWorkspaceApiKey(c.env, token);
+    }
+    if (resolved === null) return c.json({ error: "Invalid bearer token" }, 401);
+    c.set("tenant_id", resolved.tenantId);
+    if (resolved.userId) c.set("user_id", resolved.userId);
+    return next();
+  }
+
+  // 3. Try session cookie authentication (for Console)
   // Lazy import to avoid crashing workerd in test environments
   // where better-auth's Node.js deps aren't available
   if (c.env.MAIN_DB) {

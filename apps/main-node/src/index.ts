@@ -213,7 +213,8 @@ import {
   IndeterminateCredentialValidationProbe,
   inProcessDreamExecutionSchedulerModule,
   LocalTunnelProvisioner,
-  OpaqueEnvironmentWorkSessionCredentialIssuer,
+  authenticateEnvironmentWorkSessionBearer,
+  SealedEnvironmentWorkSessionCredentialIssuer,
   DeduplicatingDreamCurator,
   WebCryptoTunnelCertificateAuthority,
   WebCryptoTunnelTokenManager,
@@ -1025,13 +1026,27 @@ const managedEnvironmentWorkCipher: EnvironmentWorkSecretCipher = {
     };
   },
 };
+const managedEnvironmentWorkSessionTokenCrypto = platformRootSecret === undefined
+  ? null
+  : new WebCryptoAesGcm(
+      platformRootSecret,
+      "managed.environment-work.session-token",
+    );
 const managedEnvironmentWorkCredentials =
-  new OpaqueEnvironmentWorkSessionCredentialIssuer({
-    nextToken: () => nanoid(48),
-    ...(process.env.PUBLIC_BASE_URL !== undefined && {
-      apiBaseUrl: process.env.PUBLIC_BASE_URL,
-    }),
-  });
+  managedEnvironmentWorkSessionTokenCrypto === null
+    ? {
+        issue: async () => ({
+          type: "rejected" as const,
+          message: "PLATFORM_ROOT_SECRET is required for managed Environment Work credentials",
+        }),
+      }
+    : new SealedEnvironmentWorkSessionCredentialIssuer({
+        crypto: managedEnvironmentWorkSessionTokenCrypto,
+        now: () => new Date(),
+        ...(process.env.PUBLIC_BASE_URL !== undefined && {
+          apiBaseUrl: process.env.PUBLIC_BASE_URL,
+        }),
+      });
 const managedEnvironmentWorkPlatform = createNodePlatform({
   features: { preset: "none", environmentWork: true },
   stores: {
@@ -1626,10 +1641,24 @@ const authMw = buildAuthMw({
     };
   },
   resolveApiKey: async (apiKey) => {
+    if (process.env.API_KEY && apiKey === process.env.API_KEY) {
+      return { tenantId: "default" };
+    }
     const hash = await sha256Hex(apiKey);
     const rec = await apiKeyStorage.findByHash(hash);
     if (!rec) return null;
     return { tenantId: rec.tenant_id, userId: rec.user_id };
+  },
+  resolveBearerToken: async ({ token, method, path }) => {
+    if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
+    const scoped = await authenticateEnvironmentWorkSessionBearer({
+      token,
+      method,
+      path,
+      crypto: managedEnvironmentWorkSessionTokenCrypto,
+      now: () => new Date(),
+    });
+    return scoped === null ? null : { tenantId: scoped.workspaceId };
   },
   defaultTenantForUser: async (userId) => {
     const row = await sql

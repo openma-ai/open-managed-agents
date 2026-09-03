@@ -133,7 +133,7 @@ export async function createE2BSandbox(
   const mod = await loadE2BModule();
   const sb = await mod.Sandbox.create(
     opts.templateId ?? "base",
-    connectionOptions(opts),
+    creationOptions(opts),
   );
   return new E2BSandboxExecutor(sb, opts);
 }
@@ -702,9 +702,16 @@ type E2BConnectionOptions = Pick<
   "apiKey" | "apiUrl" | "sandboxUrl" | "domain"
 >;
 
+type E2BCreateOptions = E2BConnectionOptions & {
+  lifecycle: {
+    onTimeout: { action: "pause"; keepMemory: true };
+    autoResume: true;
+  };
+};
+
 interface E2BModule {
   Sandbox: {
-    create(template: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
+    create(template: string, args?: E2BCreateOptions): Promise<E2BSandboxLike>;
     connect(sandboxId: string, args?: E2BConnectionOptions): Promise<E2BSandboxLike>;
   };
 }
@@ -724,6 +731,20 @@ function connectionOptions(opts: E2BConnectionOptions): E2BConnectionOptions {
     apiUrl: opts.apiUrl,
     sandboxUrl: opts.sandboxUrl,
     domain: opts.domain,
+  };
+}
+
+function creationOptions(opts: E2BConnectionOptions): E2BCreateOptions {
+  return {
+    ...connectionOptions(opts),
+    // ACP keeps a live JSON-RPC process in the sandbox. Killing the sandbox
+    // at the end of its lease loses that process and forces a cold restore;
+    // a memory pause preserves it and E2B resumes it transparently on the
+    // next command or stdin write.
+    lifecycle: {
+      onTimeout: { action: "pause", keepMemory: true },
+      autoResume: true,
+    },
   };
 }
 
@@ -764,7 +785,7 @@ export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
     const mod = await loadE2BModule();
     const sandbox = await mod.Sandbox.create(
       checkpoint.checkpointId,
-      connectionOptions(options),
+      creationOptions(options),
     );
     return new E2BSandboxExecutor(sandbox, options);
   },

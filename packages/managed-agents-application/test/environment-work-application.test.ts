@@ -144,7 +144,7 @@ describe("Environment Work application", () => {
       }),
     ).resolves.toEqual({ type: "queued", work: queuedWork });
     expect(credentialCalls).toEqual([
-      { workspaceId: "workspace_01", environment, session },
+      { workspaceId: "workspace_01", workId: "work_01", environment, session },
     ]);
     expect(insertCalls).toEqual([
       {

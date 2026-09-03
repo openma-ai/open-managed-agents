@@ -27,6 +27,12 @@ export interface ApiKeyResolution {
   userId?: string;
 }
 
+export interface BearerTokenRequest {
+  token: string;
+  method: string;
+  path: string;
+}
+
 export interface AuthMiddlewareDeps {
   /** True bypasses auth entirely; tenant_id="default". */
   disabled: boolean;
@@ -34,6 +40,11 @@ export interface AuthMiddlewareDeps {
   resolveSession(headers: Headers): Promise<AuthSession | null>;
   /** Resolve an x-api-key value → tenant + optional user. Null on miss. */
   resolveApiKey(apiKey: string): Promise<ApiKeyResolution | null>;
+  /** Resolve and scope-check a short-lived worker bearer. Existing workspace
+   * API keys are handled by resolveApiKey as a fallback. */
+  resolveBearerToken?(
+    request: BearerTokenRequest,
+  ): Promise<ApiKeyResolution | null>;
   /** Look up the user's default tenant (first membership by created_at). */
   defaultTenantForUser(userId: string): Promise<string | null>;
   /** Validate (user, tenant) membership — used for x-active-tenant. */
@@ -80,7 +91,28 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       return next();
     }
 
-    // 2. Cookie session
+    // 2. Official Managed Agents helpers use Bearer auth for both the
+    // standing environment key and the per-work sessions token. Resolve the
+    // scoped token first; a normal workspace API key remains a valid standing
+    // environment key through the existing API-key store.
+    const authorization = c.req.header("authorization") ?? "";
+    if (authorization.startsWith("Bearer ")) {
+      const token = authorization.slice("Bearer ".length);
+      const scoped = deps.resolveBearerToken === undefined
+        ? null
+        : await deps.resolveBearerToken({
+            token,
+            method: c.req.method,
+            path: c.req.path,
+          });
+      const resolved = scoped ?? await deps.resolveApiKey(token);
+      if (!resolved) return c.json({ error: "Invalid bearer token" }, 401);
+      c.set("tenant_id", resolved.tenantId);
+      if (resolved.userId) c.set("user_id", resolved.userId);
+      return next();
+    }
+
+    // 3. Cookie session
     let session: AuthSession | null = null;
     try {
       session = await deps.resolveSession(c.req.raw.headers);
@@ -89,7 +121,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
     }
     if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    // 3. Tenant resolution.
+    // 4. Tenant resolution.
     let tenantId: string | null = null;
     const requested = c.req.header("x-active-tenant") || "";
     if (requested) {

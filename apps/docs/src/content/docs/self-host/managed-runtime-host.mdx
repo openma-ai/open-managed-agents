@@ -1,0 +1,180 @@
+---
+title: Managed Runtime Host
+description: Run official Managed Agents workers or OpenMA-supervised harnesses with portable sandbox, workspace, output, fencing, and recovery semantics.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The Managed Runtime Host is the deployment-side layer around a worker or an
+in-sandbox harness. It owns compute lifetime, `/workspace`, final deliverables,
+and split-brain fencing. It does **not** change the Managed Agents API.
+
+An official self-hosted Environment remains exactly:
+
+```ts
+await client.beta.environments.create({
+  name: "my worker pool",
+  config: { type: "self_hosted" },
+});
+```
+
+Provider, volume, checkpoint, output, and retention settings belong to the
+Runtime Host deployment. Do not put them in `Environment.config` or
+`Environment.metadata`.
+
+## Two worker lanes
+
+| Lane | Agent-loop owner | Worker requirement | Runtime behavior |
+|---|---|---|---|
+| `ama_worker` | Managed Agents control plane | Any official/community `EnvironmentWorker` command or image | Started unchanged; it keeps its Work lease through the official API |
+| `openma_supervised` | Pi, ACP, or another OpenMA harness in the sandbox | Implements `openma-harness-supervisor-v1` | Ready, heartbeat, completion, drain, bounded stop |
+
+Both lanes use the same sandbox, workspace, output, and resource-fence Ports.
+The supervisor protocol is never required for an ordinary Managed Agents
+worker.
+
+## Resource contract
+
+The host uses four independent boundaries:
+
+- `ManagedSandboxPort` owns isolated compute and hard cleanup.
+- `WorkspacePersistencePort` materializes `/workspace` and creates immutable
+  restore candidates.
+- `SessionOutputPort` exposes `/mnt/session/outputs`, collects files, and
+  creates an immutable content-addressed manifest.
+- `RuntimeResourceFencePort` is the only authority allowed to publish a
+  workspace/output candidate as active.
+
+The Work heartbeat, runtime resource fence, and supervised-harness heartbeat
+are separate liveness signals. Losing either authoritative lease aborts the
+execution. A stale process can remain alive briefly after a network failure,
+but it cannot publish a new canonical workspace or final output manifest.
+External tool side effects still need their own idempotency key.
+
+<Aside type="caution">
+  A provider pause or retained sandbox is not durable storage. Request a
+  durable workspace only when an external checkpoint/mount implementation is
+  configured. Capability negotiation fails instead of silently downgrading to
+  ephemeral storage.
+</Aside>
+
+## Provider capabilities
+
+| Preset | Workspace | Outputs | Hard cleanup | Process-memory recovery |
+|---|---|---|---|---|
+| Node + Docker | portable filesystem checkpoint | filesystem final collector | Docker force remove | none |
+| Cloudflare Sandbox | portable `createBackup` / `restoreBackup` checkpoint | R2 final collector when `FILES_BUCKET` is bound | Sandbox destroy + durable orphan reaper | none |
+| E2B / E2B-compatible | retained runtime or portable E2B snapshot | S3-compatible final collector when `FILES_S3_*` is configured | reconnect + kill + durable orphan reaper supplied by host | not advertised |
+
+Cloudflare and E2B may internally capture more runtime state. OpenMA treats
+those snapshots only as workspace restore candidates until a separate
+`RuntimeCheckpointPort` is configured. Durable Session events remain the
+source of truth for rebuilding the agent loop.
+
+## Preinstalled composition
+
+<Tabs syncKey="runtime-provider">
+  <TabItem label="Node + Docker">
+    ```ts
+    import { createNodeManagedRuntime } from
+      "@open-managed-agents/managed-runtime-node";
+
+    const runtime = await createNodeManagedRuntime({
+      rootDir: "/var/lib/openma/runtime",
+      sql,
+      initializeFenceSchema: true,
+      ownerId: `runtime-host:${process.pid}`,
+      leaseTtlMs: 90_000,
+      heartbeatIntervalMs: 30_000,
+      image: "my-community-worker:latest",
+    });
+
+    await runtime.host.run({
+      scope: { workspaceId, environmentId, sessionId, workId },
+      profile: {
+        workspace: { requirement: "durable" },
+        outputs: { requirement: "durable" },
+        runtimeCheckpoint: "disabled",
+        driver: {
+          type: "ama_worker",
+          process: { command: "node", args: ["worker.mjs"] },
+        },
+      },
+    });
+    ```
+  </TabItem>
+  <TabItem label="Cloudflare">
+    ```ts
+    import { createCloudflareManagedRuntimeHost } from
+      "@open-managed-agents/agent/runtime/managed-runtime";
+
+    const runtime = createCloudflareManagedRuntimeHost(env, {
+      ownerId: `session-do:${sessionId}`,
+      leaseTtlMs: 90_000,
+      heartbeatIntervalMs: 30_000,
+    });
+    ```
+
+    The preset uses `MAIN_DB` for fence/orphan rows, `SANDBOX` for compute,
+    and `FILES_BUCKET` for immutable output candidates. Applying the exported
+    runtime-resource SQL schema is an operator migration, not an on-request
+    side effect.
+  </TabItem>
+  <TabItem label="E2B">
+    ```ts
+    import { createE2BManagedRuntime } from
+      "@open-managed-agents/managed-runtime-sandbox/e2b";
+
+    const resources = createE2BManagedRuntime({
+      environment: process.env,
+      leaseTtlMs: 90_000,
+    });
+    ```
+
+    `E2B_API_KEY` selects E2B Cloud. `E2B_API_URL`, `E2B_SANDBOX_URL`, and
+    `E2B_DOMAIN` may point the same adapter at an E2B-compatible service.
+    Durable output collection is enabled only when all of
+    `FILES_S3_ENDPOINT`, `FILES_S3_BUCKET`, `FILES_S3_ACCESS_KEY`, and
+    `FILES_S3_SECRET_KEY` are present. A per-scope environment function must
+    pass `outputStore` explicitly.
+  </TabItem>
+</Tabs>
+
+## Failure and persistence behavior
+
+The commit sequence is candidate first, active pointer last:
+
+1. materialize and attach workspace/output bindings;
+2. run and drain the worker or harness;
+3. create and hash an immutable workspace candidate;
+4. enumerate output files, re-read them to detect mutation, upload
+   content-addressed blobs, and create an immutable manifest;
+5. compare-and-set both candidates through the current fence generation;
+6. release compute without deleting the canonical candidates.
+
+If hard termination fails, the host persists a token-free orphan record. The
+reconciler reconnects by the serialized provider/runtime ID and retries an
+idempotent destroy. Fence tokens are never stored in the orphan queue.
+
+An interrupted candidate upload is not active. A duplicate upload is accepted
+only when its bytes hash to the expected content address. Corrupt checkpoint
+metadata or content is rejected; OpenMA never silently creates an empty
+workspace and calls it a restore.
+
+## Verification
+
+Run the deterministic lifecycle and fault matrix with:
+
+```bash
+pnpm test:chaos:runtime
+pnpm test:coverage:runtime
+pnpm test:integration:runtime   # real Docker engine
+pnpm test:integration:storage   # PostgreSQL, MinIO, SQLite
+```
+
+The chaos lane injects failure at every post-acquire boundary, lease loss
+during finalization, failed hard kill, host restart/orphan reap, corrupt
+checkpoints, output mutation/collision, duplicate finalize, and seeded
+multi-owner schedules. Real provider smoke tests supplement this deterministic
+gate; they do not replace it.
+

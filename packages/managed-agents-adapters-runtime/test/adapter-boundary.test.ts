@@ -18,6 +18,7 @@ describe("Managed runtime adapter boundary", () => {
       "../src/deployment-schedule-planner.ts",
       "../src/environment-work-availability-waiter.ts",
       "../src/environment-work-session-credential-issuer.ts",
+      "../src/environment-work-session-token.ts",
       "../src/in-process-dream-execution-scheduler.ts",
       "../src/index.ts",
       "../src/local-tunnel-provisioner.ts",

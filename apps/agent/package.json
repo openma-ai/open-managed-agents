@@ -16,7 +16,8 @@
     "./harness/pi-loop": "./src/harness/pi-loop.ts",
     "./harness/acp-sandbox": "./src/harness/acp-sandbox-loop.ts",
     "./harness/platform-guidance": "./src/harness/platform-guidance.ts",
-    "./runtime/history": "./src/runtime/history.ts"
+    "./runtime/history": "./src/runtime/history.ts",
+    "./runtime/managed-runtime": "./src/runtime/managed-runtime.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.40",
@@ -30,6 +31,7 @@
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",
+    "@open-managed-agents/blob-store": "workspace:*",
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
     "@open-managed-agents/environments-store": "workspace:*",
@@ -38,10 +40,13 @@
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/mcp": "workspace:*",
+    "@open-managed-agents/managed-runtime-host": "workspace:*",
+    "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
     "@open-managed-agents/model-cards-store": "workspace:*",
     "@open-managed-agents/outbound-snapshots-store": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/services": "workspace:*",
+    "@open-managed-agents/runtime-resource-fence-sql": "workspace:*",
     "@open-managed-agents/session-runtime": "workspace:*",
     "@open-managed-agents/session-secrets-store": "workspace:*",
     "@open-managed-agents/session-wakeup": "workspace:*",

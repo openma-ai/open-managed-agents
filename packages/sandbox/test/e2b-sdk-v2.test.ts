@@ -64,6 +64,10 @@ describe("E2B SDK v2 adapter", () => {
       apiUrl: "http://127.0.0.1:3000",
       sandboxUrl: "http://127.0.0.1:3002",
       domain: "localhost",
+      lifecycle: {
+        onTimeout: { action: "pause", keepMemory: true },
+        autoResume: true,
+      },
     });
   });
 
@@ -248,6 +252,10 @@ describe("E2B SDK v2 adapter", () => {
       apiUrl: undefined,
       sandboxUrl: undefined,
       domain: "sandbox.test",
+      lifecycle: {
+        onTimeout: { action: "pause", keepMemory: true },
+        autoResume: true,
+      },
     });
     expect(resumed.runtimeHandle()).toEqual({
       provider: "e2b",

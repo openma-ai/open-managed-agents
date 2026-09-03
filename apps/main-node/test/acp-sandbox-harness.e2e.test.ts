@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+import { E2BSandboxExecutor } from "@open-managed-agents/sandbox/adapters/e2b";
+import type { SandboxPort } from "@open-managed-agents/sandbox";
 import type {
   AgentConfig,
   SessionEvent,
@@ -160,6 +162,86 @@ describe("ACP sandbox harness", () => {
     }
   });
 
+  it("runs the same stateful ACP harness through the E2B adapter", async () => {
+    const service = new ScriptedE2BService();
+    const sandbox = new E2BSandboxExecutor(service.sandbox as never, {});
+    const events: SessionEvent[] = [];
+    const runtime = createRuntime(sandbox, events);
+    registerCoreHarnesses();
+    const agent = {
+      id: "agent_acp_e2b",
+      name: "E2B ACP sandbox agent",
+      model: "unused-by-acp",
+      system: "Keep the ACP process alive across E2B turns.",
+      tools: [],
+      harness: "acp-sandbox",
+      acp: {
+        agent: {
+          command: "acp-agent",
+          args: ["--stdio"],
+          cwd: "/workspace",
+        },
+      },
+      version: 1,
+      created_at: "2026-09-02T00:00:00.000Z",
+    } as unknown as AgentConfig;
+    const adapter = {
+      beginTurn: async () => {},
+      endTurn: async () => {},
+      listOrphanTurns: async () => [],
+    } as unknown as RuntimeAdapter;
+    let checkpointBeforeDestroy: string | undefined;
+    const machine = new SessionStateMachine({
+      sessionId: "session_acp_e2b",
+      tenantId: "tenant_acp_e2b",
+      adapter,
+      sandbox,
+      loadAgent: async () => agent,
+      buildModel: () => ({}) as HarnessContext["model"],
+      buildTools: async () => ({}),
+      buildHarness: () => {
+        const harness = resolveHarness("acp-sandbox");
+        return {
+          run: (ctx) => harness.run(ctx as HarnessContext),
+          dispose: (reason) => harness.dispose?.(reason) ?? Promise.resolve(),
+        };
+      },
+      buildHarnessContext: async ({ userMessage }) => ({
+        ...createContext(agent, runtime, ""),
+        userMessage,
+      }),
+      beforeSandboxDestroy: async () => {
+        checkpointBeforeDestroy = await sandbox.readFile(
+          "/workspace/.openma/acp-session-checkpoint.json",
+        );
+      },
+      publish: () => {},
+    });
+
+    await machine.runHarnessTurn(agent.id, createUserMessage("first"));
+    await machine.runHarnessTurn(agent.id, createUserMessage("second"));
+    await machine.shutdown();
+
+    expect(events.filter((event) => event.type === "agent.message")).toEqual([
+      expect.objectContaining({
+        content: [{ type: "text", text: "e2b-acp:1:first" }],
+      }),
+      expect.objectContaining({
+        content: [{ type: "text", text: "e2b-acp:2:second" }],
+      }),
+    ]);
+    expect(service.processStarts).toBe(1);
+    expect(service.leaseTtls).toEqual([90_000, 90_000]);
+    expect(JSON.parse(checkpointBeforeDestroy ?? "null")).toEqual(
+      expect.objectContaining({ acpSessionId: "e2b-acp-session" }),
+    );
+    expect(service.lifecycle.indexOf("session/close")).toBeGreaterThanOrEqual(0);
+    expect(service.lifecycle.indexOf("process/kill")).toBeGreaterThan(
+      service.lifecycle.indexOf("session/close"),
+    );
+    expect(service.lifecycle.at(-1)).toBe("sandbox/kill");
+  });
+
   it("recovers a crashed sandbox ACP child through its native session id", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-harness-recovery-"));
     const sandbox = new LocalSubprocessSandbox({ workdir });
@@ -250,7 +332,7 @@ function createUserMessage(text: string): UserMessageEvent {
 }
 
 function createRuntime(
-  sandbox: LocalSubprocessSandbox,
+  sandbox: SandboxPort,
   events: SessionEvent[],
 ): HarnessRuntime {
   return {
@@ -272,6 +354,169 @@ function createRuntime(
     broadcastToolInputEnd: vi.fn(async () => {}),
     pendingConfirmations: [],
   } as unknown as HarnessRuntime;
+}
+
+class ScriptedE2BService {
+  readonly files = new Map<string, string>();
+  readonly leaseTtls: number[] = [];
+  readonly lifecycle: string[] = [];
+  processStarts = 0;
+  #promptCount = 0;
+  #activeProcess: { finish(): void } | null = null;
+
+  readonly sandbox = {
+    sandboxId: "e2b-runtime-acp-01",
+    commands: {
+      run: async (
+        _command: string,
+        options?: {
+          background?: boolean;
+          stdin?: boolean;
+          onStdout?(data: string): void | Promise<void>;
+        },
+      ) => {
+        if (!options?.background || !options.stdin) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        this.processStarts += 1;
+        let input = "";
+        let settled = false;
+        let resolveWait!: (result: {
+          stdout: string;
+          stderr: string;
+          exitCode: number;
+        }) => void;
+        const wait = new Promise<{
+          stdout: string;
+          stderr: string;
+          exitCode: number;
+        }>((resolve) => { resolveWait = resolve; });
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolveWait({ stdout: "", stderr: "", exitCode: 0 });
+        };
+        this.#activeProcess = { finish };
+        const send = async (message: unknown) => {
+          const line = `${JSON.stringify(message)}\n`;
+          // Exercise the real ACP stream parser rather than handing it one
+          // conveniently framed JSON object per callback.
+          const split = Math.max(1, Math.floor(line.length / 2));
+          await options.onStdout?.(line.slice(0, split));
+          await options.onStdout?.(line.slice(split));
+        };
+        const dispatch = async (line: string) => {
+          const request = JSON.parse(line) as {
+            id: string | number;
+            method: string;
+            params?: {
+              prompt?: Array<{ text?: string }>;
+            };
+          };
+          const result = (value: unknown) => send({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: value,
+          });
+          switch (request.method) {
+            case "initialize":
+              await result({
+                protocolVersion: 1,
+                agentCapabilities: {
+                  sessionCapabilities: { close: {} },
+                },
+              });
+              break;
+            case "session/new":
+              await result({ sessionId: "e2b-acp-session" });
+              break;
+            case "session/prompt": {
+              this.#promptCount += 1;
+              const text = (request.params?.prompt ?? [])
+                .map((block) => block.text ?? "")
+                .join("");
+              await send({
+                jsonrpc: "2.0",
+                method: "session/update",
+                params: {
+                  sessionId: "e2b-acp-session",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: {
+                      type: "text",
+                      text: `e2b-acp:${this.#promptCount}:${text}`,
+                    },
+                  },
+                },
+              });
+              await result({ stopReason: "end_turn" });
+              break;
+            }
+            case "session/close":
+              this.lifecycle.push("session/close");
+              await result({});
+              break;
+            case "session/cancel":
+              await result({});
+              break;
+            default:
+              await send({
+                jsonrpc: "2.0",
+                id: request.id,
+                error: { code: -32601, message: "Method not found" },
+              });
+          }
+        };
+        return {
+          pid: 91,
+          sendStdin: async (data: string | Uint8Array) => {
+            input += typeof data === "string"
+              ? data
+              : new TextDecoder().decode(data);
+            const lines = input.split("\n");
+            input = lines.pop() ?? "";
+            for (const line of lines) {
+              if (line) await dispatch(line);
+            }
+          },
+          closeStdin: async () => {},
+          kill: async () => {
+            this.lifecycle.push("process/kill");
+            finish();
+            return true;
+          },
+          wait: () => wait,
+        };
+      },
+    },
+    files: {
+      read: async (path: string) => {
+        const value = this.files.get(path);
+        if (value === undefined) throw new Error(`file not found: ${path}`);
+        return value;
+      },
+      write: async (path: string, data: string | Uint8Array) => {
+        this.files.set(
+          path,
+          typeof data === "string" ? data : new TextDecoder().decode(data),
+        );
+      },
+    },
+    kill: async () => {
+      this.lifecycle.push("sandbox/kill");
+      this.#activeProcess?.finish();
+    },
+    getInfo: async () => ({ state: "running" }),
+    setTimeout: async (ttlMs: number) => {
+      this.leaseTtls.push(ttlMs);
+    },
+    pause: async () => true,
+    connect: async () => this.sandbox,
+    createSnapshot: async () => ({
+      snapshotId: "e2b-snapshot-acp-01",
+      names: ["e2b-snapshot-acp-01"],
+    }),
+  };
 }
 
 const fakeAcpAgentSource = String.raw`

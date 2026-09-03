@@ -118,10 +118,48 @@ The agent's `bash` / `read` / `write` / etc. tools execute in a sandbox.
 | `litebox` | Local hardware isolation, no daemon | `SANDBOX_PROVIDER=litebox`. Host needs `/dev/kvm` (Linux) or Apple Silicon (macOS). Per-VM Firecracker-equivalent via libkrun. |
 | `boxrun` | Multi-host with KVM, OMA pods on managed k8s | `SANDBOX_PROVIDER=boxrun BOXRUN_URL=http://host:8100/v1/default`. Run `boxlite serve` on a separate KVM host; OMA pods reach it over HTTP. |
 | `daytona` | Production / untrusted code | `SANDBOX_PROVIDER=daytona DAYTONA_API_KEY=...` (+ optional `DAYTONA_API_URL`). Daytona-managed Linux VMs, one per session. |
-| `e2b` | E2B SaaS / E2B Infra self-host / Aliyun Agent Sandbox (e2b-compatible) | `SANDBOX_PROVIDER=e2b E2B_API_KEY=...` (+ optional `E2B_API_URL` for non-default endpoint). Firecracker microVMs. |
+| `e2b` | E2B SaaS / E2B Infra self-host / Aliyun Agent Sandbox (e2b-compatible) | `SANDBOX_PROVIDER=e2b E2B_API_KEY=...` (+ optional `E2B_API_URL`, `E2B_SANDBOX_URL`, and `E2B_DOMAIN` for a compatible endpoint; `SANDBOX_IMAGE` selects the template). Firecracker microVMs. |
 
 **Remote sandboxes** (Daytona, E2B, BoxRun) sharing memory mounts use
 `MEMORY_S3_*` env (any S3-compatible store — AWS / R2 / OSS / MinIO).
+
+### Run an ACP harness in E2B
+
+Set an Agent's OMA extension to `harness: "acp-sandbox"` and provide the
+process command under `acp.agent`. The selected E2B template must contain that
+binary:
+
+```json
+{
+  "_oma": {
+    "harness": "acp-sandbox",
+    "acp": {
+      "agent": {
+        "command": "codex-acp",
+        "args": [],
+        "cwd": "/workspace"
+      },
+      "restart": {
+        "mode": "on-crash",
+        "max_restarts": 3,
+        "window_ms": 60000
+      }
+    }
+  }
+}
+```
+
+OpenMA uses E2B's live-stdin command channel for ACP JSON-RPC rather than log
+polling. While a turn is running it renews a 90-second lease every 30 seconds.
+When idle, E2B is configured to memory-pause and auto-resume instead of killing
+the ACP process. On host shutdown OpenMA preserves the ACP session checkpoint,
+requests `session/close` when the agent advertises that capability, then tears
+down the child before the sandbox.
+
+For deployment-level fencing, portable `/workspace` checkpoints, immutable
+Session output manifests, and the difference between an official Managed
+Agents worker and an OpenMA-supervised harness, see
+[Managed Runtime Host](/self-host/managed-runtime-host/).
 
 ## Vault sidecar (outbound credential injection)
 

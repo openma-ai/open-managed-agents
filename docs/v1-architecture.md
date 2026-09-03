@@ -9,6 +9,12 @@
 - v0 and v1 coexist during migration. New v1 packages may not import an app,
   route, Durable Object, or service container from v0.
 
+The self-hosted worker boundary, workspace/output persistence semantics,
+provider capabilities, fencing rules, and adapter rollout are normative in
+[`ADR 0005`](adr/0005-self-hosted-worker-runtime-resources.md). The official
+Managed Agents `self_hosted` shape and OpenMA's managed-runtime resource Ports
+are deliberately separate planes.
+
 ## Package model
 
 v1 follows an interface-package plus implementation-package model. A domain
