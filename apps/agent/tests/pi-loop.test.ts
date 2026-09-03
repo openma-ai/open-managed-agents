@@ -9,6 +9,7 @@ import {
 import { z } from "zod";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { HarnessContext, HarnessRuntime } from "../src/harness/interface";
+import type { PiCompactionPolicy } from "../src/harness/pi-compaction";
 import { PiHarness } from "../src/harness/pi-loop";
 
 function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
@@ -74,6 +75,133 @@ function makeContext(responses: ReturnType<typeof fauxAssistantMessage>[]) {
 }
 
 describe("PiHarness", () => {
+  it("runs an injected compaction policy and persists its canonical boundary before the turn", async () => {
+    const { ctx, events, faux } = makeContext([fauxAssistantMessage("after compact")]);
+    events.unshift(
+      { type: "user.message", content: [{ type: "text", text: "older question" }] },
+      { type: "agent.message", message_id: "older-answer", content: [{ type: "text", text: "older answer" }] },
+      { type: "user.message", content: [{ type: "text", text: "follow-up" }] },
+      { type: "agent.message", message_id: "follow-up-answer", content: [{ type: "text", text: "follow-up answer" }] },
+    );
+
+    const policy: PiCompactionPolicy = {
+      name: "test-policy",
+      shouldCompact: vi.fn(() => true),
+      compact: vi.fn(async () => ({
+        summary: [{ type: "text", text: "custom compacted summary" }],
+        pre_tokens: 123,
+        original_message_count: 5,
+        compacted_message_count: 1,
+      })),
+    };
+    let requestText = "";
+    faux.setResponses([
+      (context) => {
+        requestText = JSON.stringify(context.messages);
+        return fauxAssistantMessage("after compact");
+      },
+    ]);
+
+    await new PiHarness({ compaction: policy }).run(ctx);
+
+    expect(policy.shouldCompact).toHaveBeenCalledOnce();
+    expect(policy.compact).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent.thread_context_compacted",
+      summary: [{ type: "text", text: "custom compacted summary" }],
+      trigger: "auto",
+      pre_tokens: 123,
+    }));
+    expect(requestText).toContain("<conversation-summary>");
+    expect(requestText).toContain("custom compacted summary");
+  });
+
+  it("uses Pi itself for the built-in summary and keeps compaction best-effort", async () => {
+    const { ctx, events, faux } = makeContext([]);
+    events.unshift(
+      { type: "user.message", content: [{ type: "text", text: "a".repeat(200) }] },
+      { type: "agent.message", message_id: "a1", content: [{ type: "text", text: "b".repeat(200) }] },
+      { type: "user.message", content: [{ type: "text", text: "c".repeat(200) }] },
+      { type: "agent.message", message_id: "a2", content: [{ type: "text", text: "d".repeat(200) }] },
+    );
+    ctx.agent.metadata = { compaction_trigger_fraction: 0.01 };
+    ctx.pi!.model = { ...ctx.pi!.model, contextWindow: 100 };
+
+    let summaryTools: unknown;
+    let summaryReasoning: unknown;
+    let finalRequestText = "";
+    faux.setResponses([
+      (context, options) => {
+        summaryTools = context.tools;
+        summaryReasoning = options?.reasoning;
+        return fauxAssistantMessage("built-in Pi summary");
+      },
+      (context) => {
+        finalRequestText = JSON.stringify(context.messages);
+        return fauxAssistantMessage("done after summary");
+      },
+    ]);
+
+    await new PiHarness().run(ctx);
+
+    expect(summaryTools).toEqual([]);
+    expect(summaryReasoning).toBeUndefined();
+    expect(finalRequestText).toContain("<conversation-summary>");
+    expect(finalRequestText).toContain("built-in Pi summary");
+    expect(events.filter((event) => event.type === "agent.thread_context_compacted")).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent.message",
+      content: [{ type: "text", text: "done after summary" }],
+    }));
+  });
+
+  it("continues the turn when a compaction policy fails", async () => {
+    const { ctx, events } = makeContext([fauxAssistantMessage("still answered")]);
+    const policy: PiCompactionPolicy = {
+      name: "broken-policy",
+      shouldCompact: () => true,
+      compact: async () => {
+        throw new Error("summarizer unavailable");
+      },
+    };
+
+    await new PiHarness({ compaction: policy }).run(ctx);
+
+    expect(events.some((event) => event.type === "agent.thread_context_compacted")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent.message",
+      content: [{ type: "text", text: "still answered" }],
+    }));
+  });
+
+  it("does one forced compact-and-retry when Pi classifies a context overflow", async () => {
+    const { ctx, events, faux } = makeContext([]);
+    events.unshift(
+      { type: "user.message", content: [{ type: "text", text: "old question 1" }] },
+      { type: "agent.message", message_id: "old-answer-1", content: [{ type: "text", text: "old answer 1" }] },
+      { type: "user.message", content: [{ type: "text", text: "old question 2" }] },
+      { type: "agent.message", message_id: "old-answer-2", content: [{ type: "text", text: "old answer 2" }] },
+    );
+    ctx.pi!.model = { ...ctx.pi!.model, contextWindow: 10_000 };
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "prompt is too long: 12000 tokens > 10000 maximum",
+      }),
+      fauxAssistantMessage("overflow recovery summary"),
+      fauxAssistantMessage("recovered answer"),
+    ]);
+
+    await new PiHarness().run(ctx);
+
+    expect(faux.state.callCount).toBe(3);
+    expect(events.filter((event) => event.type === "agent.thread_context_compacted")).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent.message",
+      content: [{ type: "text", text: "recovered answer" }],
+    }));
+  });
+
   it("drives Pi's tool loop and emits canonical OpenMA events", async () => {
     const first = fauxAssistantMessage(
       [

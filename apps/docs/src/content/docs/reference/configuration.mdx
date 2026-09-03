@@ -28,6 +28,47 @@ interface AgentConfig {
 }
 ```
 
+### Pi harness compaction
+
+`harness: "pi"` always enables harness-owned context compaction. These optional
+metadata keys select and tune the built-in policy:
+
+```json
+{
+  "harness": "pi",
+  "metadata": {
+    "compaction_strategy": "cc-style",
+    "compaction_trigger_fraction": 0.75,
+    "compaction_max_summary_tokens": 2000,
+    "compaction_summary_prompt": "Optional replacement summary prompt"
+  }
+}
+```
+
+`compaction_strategy` accepts `cc-style` (default), `opencode-style`, or
+`summarize`. Invalid names fall back to `cc-style`; there is intentionally no
+`none` mode. All built-in policies use `pi-ai` without requesting reasoning.
+
+- `cc-style` uses an isolated summary payload: a short summary-only system
+  prompt, no tools, image placeholders instead of image bytes, and a separate
+  compaction session id. This is the robust default and intentionally does not
+  reuse the main agent's provider prefix cache.
+- `opencode-style` has the same isolated payload boundary, with a structured
+  Goal / Instructions / Discoveries / Accomplished / Files summary template.
+- `summarize` is the explicit cache-aware strategy. It replays the main
+  request's exact system prompt, tool declarations, message history, and session
+  id, then appends the private compaction instruction. It deliberately leaves
+  `toolChoice` unset because some provider adapters remove tools for
+  `toolChoice: "none"`, which changes the cache prefix. `completeSimple` does
+  not execute tools; a returned tool call rejects the compaction boundary.
+  Prefix-caching providers can therefore reuse the warm conversation prefix.
+
+Applications can replace the whole `PiCompactionPolicy` when constructing
+`PiHarness`; OpenMA still owns the canonical boundary event, failure fallback,
+and the single overflow retry. Every strategy replaces old history with a new
+summary boundary, so the first main-model request after compaction is a new
+prefix even when the summary call itself reused the old prefix.
+
 ### Tool definitions
 
 ```ts

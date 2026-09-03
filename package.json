@@ -62,6 +62,7 @@
     "test:e2e:api": "node test/e2e/managed-agents-sdk.mjs",
     "test:e2e:deployed-console": "playwright test test/e2e/deployed-console.spec.ts --config=playwright.config.ts",
     "test:coverage:protocol": "vitest run --config vitest.protocol.config.ts --coverage",
+    "test:coverage:pi": "vitest run --config vitest.pi.config.ts --coverage",
     "test:coverage:runtime": "pnpm --filter @open-managed-agents/harness-supervisor test:coverage && pnpm --filter @open-managed-agents/managed-runtime-host test:coverage && pnpm --filter @open-managed-agents/managed-runtime-sandbox test:coverage && pnpm --filter @open-managed-agents/managed-runtime-node test:coverage && pnpm --filter @open-managed-agents/runtime-resource-fence-sql test:coverage",
     "test:chaos:runtime": "pnpm --filter @open-managed-agents/managed-runtime-host test:chaos && pnpm --filter @open-managed-agents/managed-runtime-sandbox test:chaos && pnpm --filter @open-managed-agents/managed-runtime-node test:chaos",
     "test:integration:storage": "vitest run --config vitest.storage.config.ts",
