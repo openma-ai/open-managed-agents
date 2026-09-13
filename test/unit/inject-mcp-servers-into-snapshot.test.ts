@@ -12,7 +12,10 @@
 // publish path" doesn't silently revert this.
 
 import { describe, it, expect } from "vitest";
-import { injectMcpServersIntoSnapshot } from "../../apps/main/src/routes/internal";
+import {
+  injectMcpServersIntoSnapshot,
+  mergePublishedMcpIntoSessionSnapshot,
+} from "../../apps/main/src/routes/internal";
 import type { AgentConfig } from "@open-managed-agents/shared";
 
 function baseAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -126,5 +129,54 @@ describe("injectMcpServersIntoSnapshot", () => {
       { name: "slack", url: "https://mcp.slack.com/mcp" },
     ]);
     expect(out.mcp_servers?.[0]?.type).toBe("url");
+  });
+});
+
+describe("mergePublishedMcpIntoSessionSnapshot", () => {
+  it("refreshes MCP settings when an active session resumes without replacing frozen session configuration", () => {
+    const staleSnapshot = baseAgent({
+      system: "Frozen integration protocol prompt",
+      metadata: { session_marker: "keep-me" },
+      tools: [
+        { type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] },
+        // @ts-expect-error — mcp_toolset has an extension field.
+        { type: "mcp_toolset", mcp_server_name: "old-server", default_config: { permission_policy: { type: "always_ask" } } },
+      ],
+      mcp_servers: [{ name: "old-server", type: "url", url: "https://old.example/mcp" }],
+    });
+    const publishedAgent = baseAgent({
+      system: "A later agent edit must not replace the frozen prompt",
+      tools: [
+        // @ts-expect-error — mcp_toolset has an extension field.
+        { type: "mcp_toolset", mcp_server_name: "notion", default_config: { permission_policy: { type: "always_allow" } } },
+      ],
+      mcp_servers: [{ name: "notion", type: "url", url: "https://notion.example/mcp" }],
+    });
+
+    const resumed = mergePublishedMcpIntoSessionSnapshot(
+      staleSnapshot,
+      publishedAgent,
+      [{ name: "slack", url: "https://mcp.slack.com/mcp" }],
+    );
+
+    // Published MCP configuration and the current integration endpoint win.
+    expect(resumed.mcp_servers).toEqual([
+      { name: "notion", type: "url", url: "https://notion.example/mcp" },
+      { name: "slack", type: "url", url: "https://mcp.slack.com/mcp" },
+    ]);
+    expect(resumed.tools).toEqual([
+      { type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] },
+      { type: "mcp_toolset", mcp_server_name: "notion", default_config: { permission_policy: { type: "always_allow" } } },
+      {
+        type: "mcp_toolset",
+        mcp_server_name: "slack",
+        default_config: { permission_policy: { type: "always_allow" } },
+      },
+    ]);
+
+    // These represent session-specific configuration; the merge deliberately
+    // does not replace them while a conversation is active.
+    expect(resumed.system).toBe("Frozen integration protocol prompt");
+    expect(resumed.metadata).toEqual({ session_marker: "keep-me" });
   });
 });

@@ -1090,6 +1090,7 @@ export class GitHubProvider implements IntegrationProvider {
           publication.userId,
           existing.sessionId,
           sessionEvent,
+          { mcpServers },
         );
         return existing.sessionId;
       }

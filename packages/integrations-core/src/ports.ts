@@ -136,6 +136,16 @@ export interface SessionEventInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Integration-owned MCP servers that must be present when a scoped session
+ * is resumed. They are separate from the agent's published MCP settings:
+ * the host merges both into the session snapshot without replacing its
+ * conversation or resource state.
+ */
+export interface ResumeSessionOptions {
+  mcpServers?: ReadonlyArray<{ name: string; url: string; type?: string }>;
+}
+
 export interface SessionCreator {
   create(input: CreateSessionInput): Promise<{ sessionId: SessionId }>;
   /**
@@ -143,7 +153,12 @@ export interface SessionCreator {
    * is required so the host can resolve the session's tenant in O(1) without
    * scanning. Pass the same userId that owned the original `create` call.
    */
-  resume(userId: UserId, sessionId: SessionId, event: SessionEventInput): Promise<void>;
+  resume(
+    userId: UserId,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    options?: ResumeSessionOptions,
+  ): Promise<void>;
 }
 
 /**

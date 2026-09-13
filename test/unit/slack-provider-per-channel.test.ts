@@ -188,6 +188,9 @@ describe("SlackProvider — per_channel granularity", () => {
       const scope = await c.sessionScopes.getByScope(pubId, CHANNEL_SCOPE);
       expect(scope?.status).toBe("completed");
       expect(c.sessions.resumed).toHaveLength(1);
+      expect(c.sessions.resumed[0].options?.mcpServers).toEqual([
+        { name: "slack", url: "https://mcp.slack.com/mcp" },
+      ]);
       const text = (c.sessions.resumed[0].event.content[0] as { text: string }).text;
       expect(text).toContain(`<oma_signal kind="session_closed">`);
     });

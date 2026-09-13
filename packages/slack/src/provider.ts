@@ -1045,6 +1045,7 @@ export class SlackProvider implements IntegrationProvider {
             publication.userId,
             existing.sessionId,
             sessionEvent,
+            { mcpServers },
           );
         }
         return existing.sessionId;
@@ -1101,6 +1102,7 @@ export class SlackProvider implements IntegrationProvider {
           publication.userId,
           existing.sessionId,
           sessionEvent,
+          { mcpServers },
         );
         return existing.sessionId;
       }
@@ -1119,6 +1121,7 @@ export class SlackProvider implements IntegrationProvider {
             publication.userId,
             existing.sessionId,
             sessionEvent,
+            { mcpServers },
           );
           return existing.sessionId;
         }
@@ -1135,7 +1138,7 @@ export class SlackProvider implements IntegrationProvider {
         );
         // Follow-up resume with the actual trigger signal so the agent sees
         // both: "you're new here" + "and X just happened".
-        await this.container.sessions.resume(publication.userId, newId, sessionEvent);
+        await this.container.sessions.resume(publication.userId, newId, sessionEvent, { mcpServers });
         return newId;
       }
 
@@ -1163,6 +1166,7 @@ export class SlackProvider implements IntegrationProvider {
             publication.userId,
             existing.sessionId,
             sessionEvent,
+            { mcpServers },
           );
           return existing.sessionId;
         }
@@ -1186,6 +1190,7 @@ export class SlackProvider implements IntegrationProvider {
           publication.userId,
           existing.sessionId,
           sessionEvent,
+          { mcpServers },
         );
         return existing.sessionId;
       }
@@ -1213,6 +1218,7 @@ export class SlackProvider implements IntegrationProvider {
           publication.userId,
           existing.sessionId,
           sessionEvent,
+          { mcpServers },
         );
         return existing.sessionId;
       }
@@ -1253,7 +1259,7 @@ export class SlackProvider implements IntegrationProvider {
         perThreadKey,
       );
       if (winner && winner.status === "active") {
-        await this.container.sessions.resume(publication.userId, winner.sessionId, sessionEvent);
+        await this.container.sessions.resume(publication.userId, winner.sessionId, sessionEvent, { mcpServers });
         return winner.sessionId;
       }
       // Edge: row exists but inactive (rerouted / completed). Fall through to
@@ -1368,6 +1374,7 @@ export class SlackProvider implements IntegrationProvider {
           publication.userId,
           winner.sessionId,
           sessionEvent,
+          { mcpServers },
         );
         return winner.sessionId;
       }
@@ -1398,6 +1405,7 @@ export class SlackProvider implements IntegrationProvider {
               publication.userId,
               fresh.sessionId,
               sessionEvent,
+              { mcpServers },
             );
             return fresh.sessionId;
           }
@@ -1410,6 +1418,7 @@ export class SlackProvider implements IntegrationProvider {
         publication.userId,
         existing.sessionId,
         sessionEvent,
+        { mcpServers },
       );
       return existing.sessionId;
     }
@@ -1449,6 +1458,7 @@ export class SlackProvider implements IntegrationProvider {
         publication.userId,
         final.sessionId,
         sessionEvent,
+        { mcpServers },
       );
       return final.sessionId;
     }

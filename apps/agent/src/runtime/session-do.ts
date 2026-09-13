@@ -1601,6 +1601,18 @@ export class SessionDO extends DurableObject<Env> {
       return new Response("ok");
     }
 
+    // PATCH /agent-snapshot — update the live configuration selected by a
+    // publish-time resume without re-running /init. In particular, do not
+    // touch the event log, pending queue, mounted memory, or sandbox state.
+    if (request.method === "PATCH" && url.pathname === "/agent-snapshot") {
+      const body = (await request.json()) as { agent_snapshot?: AgentConfig };
+      if (!body.agent_snapshot) {
+        return new Response("agent_snapshot is required", { status: 400 });
+      }
+      this.setState({ ...this.state, agent_snapshot: body.agent_snapshot });
+      return new Response("ok");
+    }
+
     // DELETE /destroy — tear down sandbox and clean up
     if (request.method === "DELETE" && url.pathname === "/destroy") {
       // Abort every in-flight thread (primary + any sub-agents).

@@ -734,7 +734,7 @@ export class LinearProvider implements IntegrationProvider {
           type: "user.message",
           content: [{ type: "text", text: replyText }],
           metadata: { linear: { publicationId: publication.id } },
-        });
+        }, { mcpServers: [{ name: "linear", url: LINEAR_MCP_URL }] });
       } catch (err) {
         // Bot session was archived/deleted between webhook and now. Comment
         // is dropped; operator can react via Linear if it matters.
@@ -922,7 +922,12 @@ export class LinearProvider implements IntegrationProvider {
         // any active row points at a still-resumable session. If resume
         // fails (session was archived/deleted), fall through to claim.
         try {
-          await this.container.sessions.resume(publication.userId, existing.sessionId, sessionEvent);
+          await this.container.sessions.resume(
+            publication.userId,
+            existing.sessionId,
+            sessionEvent,
+            { mcpServers },
+          );
           return existing.sessionId;
         } catch (err) {
           console.warn(

@@ -24,6 +24,7 @@ import type {
   SessionCreator,
   SessionEventInput,
   SessionId,
+  ResumeSessionOptions,
   VaultManager,
   UserId,
 } from "@open-managed-agents/integrations-core";
@@ -653,7 +654,12 @@ class InProcessSessionCreator implements SessionCreator {
     return { sessionId: session.id as SessionId };
   }
 
-  async resume(userId: UserId, sessionId: SessionId, event: SessionEventInput): Promise<void> {
+  async resume(
+    userId: UserId,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    _options?: ResumeSessionOptions,
+  ): Promise<void> {
     if (!this.opts.appendUserEvent) {
       // Bridge wired without an append hook (e.g. unit tests).
       log.warn(

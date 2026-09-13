@@ -112,6 +112,38 @@ export function injectMcpServersIntoSnapshot(
   };
 }
 
+function isMcpToolset(tool: unknown): boolean {
+  return (tool as { type?: unknown }).type === "mcp_toolset";
+}
+
+/**
+ * Refresh only the published MCP portion of a frozen session snapshot.
+ *
+ * The surrounding snapshot remains the session's source of truth: it may
+ * include provider prompt augmentation and, more importantly, it must not
+ * disturb the event log, memory attachments, or any other live session
+ * state. Integration-owned servers are then overlaid last, because their
+ * current publication URL is authoritative for a resumed scoped session.
+ */
+export function mergePublishedMcpIntoSessionSnapshot(
+  snapshot: AgentConfig,
+  publishedAgent: AgentConfig,
+  integrationServers: ReadonlyArray<{ name: string; url: string; type?: string }>,
+): AgentConfig {
+  const snapshotNonMcpTools = (snapshot.tools ?? []).filter((tool) => !isMcpToolset(tool));
+  const publishedMcpTools = (publishedAgent.tools ?? []).filter(isMcpToolset);
+  const refreshed: AgentConfig = {
+    ...snapshot,
+    // Do not carry a removed or reconfigured published server forward from
+    // the stale snapshot. The current agent row is the authority for these.
+    mcp_servers: [...(publishedAgent.mcp_servers ?? [])],
+    // Keep custom/built-in tool configuration frozen for this session while
+    // replacing only MCP toolset declarations/settings.
+    tools: [...snapshotNonMcpTools, ...publishedMcpTools] as AgentConfig["tools"],
+  };
+  return injectMcpServersIntoSnapshot(refreshed, integrationServers);
+}
+
 // Public hostname of the integrations gateway, used to wire a hosted Linear
 // MCP server into Linear-triggered sessions. We hard-fail when the env var
 // is unset rather than fall back to a default: a silent default would have
@@ -176,6 +208,8 @@ interface ResumeSessionBody {
   /** Session owner; required to resolve tenantId in O(1) without scanning. */
   userId: string;
   event: { type: string; content: unknown[]; metadata?: Record<string, unknown> };
+  /** Current integration-owned MCP endpoints from the publication dispatch. */
+  mcpServers?: Array<{ name: string; url: string; type?: string }>;
 }
 
 interface CreateVaultCredentialBody {
@@ -433,6 +467,32 @@ app.post("/sessions/:id/events", async (c) => {
   if (!session.environment_id) {
     return c.json({ error: "session has no environment_id" }, 400);
   }
+  if (!session.agent_id) {
+    return c.json({ error: "session has no agent_id" }, 400);
+  }
+
+  // A scoped integration session can outlive an agent publish. Refresh just
+  // its MCP configuration before enqueuing the resume event; replacing the
+  // whole snapshot here would clobber provider/session-specific state.
+  const agentRow = await c.var.services.agents.get({
+    tenantId,
+    agentId: session.agent_id,
+  });
+  if (!agentRow) return c.json({ error: "agent not found" }, 404);
+  const { tenant_id: _agentTenantId, ...publishedAgent } = agentRow;
+  const currentSnapshot = session.agent_snapshot ?? (publishedAgent as AgentConfig);
+  // Linear's hosted integration also stores a per-session MCP endpoint in
+  // metadata. It is not part of the agent publication, so preserve it after
+  // the current publication's MCP endpoint just as session creation does.
+  const linearMetadata = session.metadata?.linear as { mcp_url?: unknown } | undefined;
+  const sessionOwnedMcpServers = typeof linearMetadata?.mcp_url === "string"
+    ? [{ name: "linear", url: linearMetadata.mcp_url }]
+    : [];
+  const refreshedSnapshot = mergePublishedMcpIntoSessionSnapshot(
+    currentSnapshot,
+    publishedAgent as AgentConfig,
+    [...(body.mcpServers ?? []), ...sessionOwnedMcpServers],
+  );
 
   const envRow2 = await c.var.services.environments.get({
     tenantId,
@@ -444,6 +504,27 @@ app.post("/sessions/:id/events", async (c) => {
     | Fetcher
     | undefined;
   if (!binding) return c.json({ error: `sandbox binding missing` }, 500);
+
+  // Persist first so the MCP proxy authorizes the same configuration the
+  // active SessionDO will use. PATCH is deliberately narrow: it never
+  // re-runs /init and therefore leaves history, pending work, and memory
+  // attachments untouched.
+  await c.var.services.sessions.update({
+    tenantId,
+    sessionId,
+    agentSnapshot: refreshedSnapshot,
+  });
+  const snapshotPatch = await binding.fetch(
+    `https://sandbox/sessions/${sessionId}/agent-snapshot`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_snapshot: refreshedSnapshot }),
+    },
+  );
+  if (!snapshotPatch.ok) {
+    return c.json({ error: "failed to refresh session MCP configuration" }, 502);
+  }
 
   await binding.fetch(`https://sandbox/sessions/${sessionId}/event`, {
     method: "POST",
