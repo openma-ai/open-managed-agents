@@ -6,7 +6,7 @@ import {
   type DeploymentTarget,
 } from "../lib/deploy-wizard";
 
-const targetOrder: DeploymentTarget[] = ["cloudflare", "docker", "fly", "vercel"];
+const targetOrder: DeploymentTarget[] = ["cloudflare", "docker", "fly", "render", "vercel"];
 const initialPlan = buildDeploymentPlan({
   target: "cloudflare",
   modelSetup: "console",
@@ -86,6 +86,9 @@ const initialPlan = buildDeploymentPlan({
                     )}
                     {id === "fly" && (
                       <svg viewBox="0 0 24 24"><path d="M5 17.5 18.5 4l1.5 1.5L14.5 20l-3-5.5L5 17.5Z"></path><path d="m11.5 14.5 2-2"></path></svg>
+                    )}
+                    {id === "render" && (
+                      <svg viewBox="0 0 24 24"><path d="M5 6h14v5H5zM5 14h14v5H5zM8 8.5h1M8 16.5h1"></path></svg>
                     )}
                     {id === "vercel" && (
                       <svg viewBox="0 0 24 24"><path d="m12 4 9 16H3L12 4Z"></path></svg>
@@ -183,15 +186,14 @@ const initialPlan = buildDeploymentPlan({
           <section class="provider-launch" data-provider-launch hidden>
             <div>
               <strong>Deploy the control plane</strong>
-              <p>Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.</p>
+              <p data-provider-description>Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.</p>
             </div>
             <a class="vercel-deploy-button" data-vercel-deploy target="_blank" rel="noopener noreferrer">
               Deploy with Vercel
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 15H4l8-15Z"></path></svg>
             </a>
           </section>
 
-          <div class="command-block">
+          <div class="command-block" data-terminal-command>
             <div class="command-toolbar">
               <span data-command-label>Terminal</span>
               <button type="button" data-copy-command>
@@ -207,7 +209,7 @@ const initialPlan = buildDeploymentPlan({
               <span>Verify after deploy</span>
               <code data-verification-output>{initialPlan.verificationCommand}</code>
             </div>
-            <a href="https://docs.openma.dev/self-host/overview/" target="_blank" rel="noopener noreferrer">
+            <a data-platform-guide href="https://docs.openma.dev/self-host/overview/" target="_blank" rel="noopener noreferrer">
               Full guide
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"></path></svg>
             </a>
@@ -264,6 +266,7 @@ const initialPlan = buildDeploymentPlan({
     import {
       buildDeploymentPlan,
       parseBrowserSelection,
+      parseDeploymentTarget,
       parseVercelDeploymentCallback,
       serializeBrowserSelection,
       type DataMode,
@@ -291,6 +294,13 @@ const initialPlan = buildDeploymentPlan({
       if (Number.isInteger(storedStep) && storedStep >= 1 && storedStep <= 3) {
         step = storedStep;
         furthestStep = storedStep;
+      }
+      const linkedTarget = parseDeploymentTarget(new URLSearchParams(window.location.search));
+      if (linkedTarget) {
+        target = linkedTarget;
+        dataMode = target === "docker" || target === "fly" ? "sqlite" : "managed";
+        step = 1;
+        furthestStep = 1;
       }
       if (vercelCallback) {
         target = "vercel";
@@ -336,8 +346,15 @@ const initialPlan = buildDeploymentPlan({
 
         const providerLaunch = get<HTMLElement>("[data-provider-launch]");
         const deployLink = get<HTMLAnchorElement>("[data-vercel-deploy]");
-        if (providerLaunch) providerLaunch.hidden = target !== "vercel" || Boolean(vercelCallback);
-        if (deployLink && plan.launchUrl) deployLink.href = plan.launchUrl;
+        if (providerLaunch) providerLaunch.hidden = !plan.launchUrl || (target === "vercel" && Boolean(vercelCallback));
+        if (deployLink && plan.launchUrl) {
+          deployLink.href = plan.launchUrl;
+          deployLink.textContent = `Deploy with ${plan.name}`;
+        }
+        const providerDescription = get<HTMLElement>("[data-provider-description]");
+        if (providerDescription) providerDescription.textContent = target === "render"
+          ? "Render creates a paid service with a persistent disk and generates application secrets. Enter your E2B key directly in Render."
+          : "Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.";
 
         const callbackPanel = get<HTMLElement>("[data-vercel-callback]");
         if (callbackPanel) callbackPanel.hidden = target !== "vercel" || !vercelCallback;
@@ -353,12 +370,18 @@ const initialPlan = buildDeploymentPlan({
           }
         }
 
+        const guide = get<HTMLAnchorElement>("[data-platform-guide]");
+        if (guide) guide.href = `https://docs.openma.dev/self-host/${target === "docker" ? "node-docker" : target === "cloudflare" ? "deploy" : target === "vercel" ? "overview" : target}/`;
+        const terminalCommand = get<HTMLElement>("[data-terminal-command]");
+        if (terminalCommand) terminalCommand.hidden = target === "render";
         const commandLabel = get<HTMLElement>("[data-command-label]");
         if (commandLabel) commandLabel.textContent = target === "vercel" ? "CLI fallback" : "Terminal";
 
         const description = get<HTMLElement>("[data-launch-description]");
         if (description) {
-          description.textContent = target === "vercel"
+          description.textContent = target === "render"
+            ? "Create the service in your Render account, then open its URL to finish model setup."
+            : target === "vercel"
             ? "The packaged Function handles API traffic, signed webhook wakeups, and bounded fallback polls; the agent loop runs inside Vercel Sandbox."
             : target === "fly"
               ? "The Fly adapter keeps one Machine awake, mounts durable state, derives its public origin, and starts the portable Node control plane."
@@ -377,6 +400,9 @@ const initialPlan = buildDeploymentPlan({
             if (target === "vercel") {
               title.textContent = "Packaged beta boundary";
               body.textContent = "External Postgres and object storage are durable. The Function is bounded; claimed Work, ACP steering, and the long-running harness loop stay inside Vercel Sandbox.";
+            } else if (target === "render") {
+              title.textContent = "Persistent disk";
+              body.textContent = "Render mounts a paid disk at /app/data. Keep one service instance for SQLite and local files; E2B runs the isolated sandboxes.";
             } else {
               title.textContent = "Provider-managed state";
               body.textContent = "Cloudflare provisions D1, R2, KV, Queue, Durable Objects, and Containers in your account.";

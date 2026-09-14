@@ -1,0 +1,42 @@
+---
+title: Deploy on Render
+description: Create a persistent OpenMA Node service with the Render Blueprint.
+---
+
+The repository includes a `render.yaml` Blueprint for one Node control plane,
+a persistent SQLite disk, and E2B sandboxes. This is a deployment template;
+credentialed cloud provisioning and agent execution are not yet certified.
+
+## Create the service
+
+1. Open [Deploy with Render](https://render.com/deploy?repo=https://github.com/openma-ai/open-managed-agents).
+2. Review the paid service size, region, and 10 GB disk. The template uses one
+   instance; SQLite and local files must remain on that instance.
+3. Enter `E2B_API_KEY` directly in Render. The template generates independent
+   `BETTER_AUTH_SECRET` and `PLATFORM_ROOT_SECRET` values.
+4. Deploy and wait for the `/health` check. Render builds the Console and server
+   from source, so the first build can take several minutes.
+5. Open the service URL, create your account, and add a Model Card.
+
+The startup wrapper derives `PUBLIC_BASE_URL` and `GATEWAY_ORIGIN` from
+`RENDER_EXTERNAL_URL`. For a custom domain, set `PUBLIC_BASE_URL` to its HTTPS
+origin and redeploy. Check the deployed endpoint:
+
+```bash
+curl https://<your-service>.onrender.com/health
+```
+
+## Persistence and updates
+
+Database, auth, files, outputs, and sandbox state live under `/app/data` on the
+persistent disk. Back up that disk and the generated application secrets.
+Automatic deploys are disabled so upstream changes do not silently restart your
+service. Deploy updates explicitly from the Render dashboard.
+
+This template does not create a public vault egress gateway or configure remote
+memory mounts. Add those resources separately for workloads that need them; see
+[Sandbox and persistence](/self-host/sandbox-persistence/). An E2B key configures
+the sandbox provider; model credentials are separate Model Cards in Console.
+
+See Render's [Blueprint reference](https://render.com/docs/blueprint-spec) and
+[Deploy to Render documentation](https://render.com/docs/deploy-to-render).

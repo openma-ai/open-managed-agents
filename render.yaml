@@ -1,0 +1,43 @@
+# Review paid service and disk costs before deploying in the Render dashboard.
+services:
+  - type: web
+    name: openma
+    runtime: docker
+    plan: 1c-2g
+    numInstances: 1
+    dockerfilePath: ./apps/main-node/Dockerfile
+    dockerContext: .
+    dockerCommand: bash /app/apps/main-node/scripts/start-render.sh
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    disk:
+      name: openma-data
+      mountPath: /app/data
+      sizeGB: 10
+    envVars:
+      - key: OPENMA_PROCESS_MODE
+        value: standalone
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "8787"
+      - key: BETTER_AUTH_SECRET
+        generateValue: true
+      - key: PLATFORM_ROOT_SECRET
+        generateValue: true
+      - key: SANDBOX_PROVIDER
+        value: e2b
+      - key: E2B_API_KEY
+        sync: false
+      - key: DATABASE_PATH
+        value: /app/data/oma.db
+      - key: AUTH_DATABASE_PATH
+        value: /app/data/auth.db
+      - key: SANDBOX_WORKDIR
+        value: /app/data/sandboxes
+      - key: MEMORY_BLOB_DIR
+        value: /app/data/memory-blobs
+      - key: FILES_BLOB_DIR
+        value: /app/data/files-blobs
+      - key: SESSION_OUTPUTS_DIR
+        value: /app/data/session-outputs
