@@ -60,3 +60,18 @@ test('packaged CLI installs outside the checkout, preserves secrets and records 
  assert.equal(pg.services['oma-server'].environment.DATABASE_URL,`postgres://oma:${pg.services.postgres.environment.POSTGRES_PASSWORD}@postgres:5432/oma`);
  const config=JSON.parse(await readFile(join(dir,'instance','compose.json'),'utf8'));assert.equal(config.services['oma-server'].environment.E2B_API_KEY,'test-$$secret');
 });
+test('existing Fly installs can reuse remote secrets, including Sprites',()=>{
+ const options=parseOptions(['install','--target','fly','--provider','sprites','--reuse-fly-secrets']);
+ assert.equal(options.provider,'sprites');assert.equal(options.reuseFlySecrets,true);
+ assert.throws(()=>parseOptions(['--target','docker','--reuse-fly-secrets']),/Fly/);
+});
+test('Fly secret reuse fails before deployment when remote credentials are missing',async t=>{
+ const {execFile}=await import('node:child_process');const {promisify}=await import('node:util');const {writeFile,mkdir}=await import('node:fs/promises');const {fileURLToPath}=await import('node:url');
+ const exec=promisify(execFile);const dir=await mkdtemp(join(tmpdir(),'openma-fly-reuse-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ await mkdir(join(dir,'bin'));await mkdir(join(dir,'instance'));
+ await writeFile(join(dir,'instance','fly.toml'),'app = "existing-test"\n');
+ await writeFile(join(dir,'bin','fly'),'#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\nif [ "$1" = status ]; then printf \'{"Name":"existing-test"}\'; else printf \'[]\'; fi\n',{mode:0o755});
+ const cli=fileURLToPath(new URL('../dist/index.js',import.meta.url));
+ await assert.rejects(exec(process.execPath,[cli,'install','--target','fly','--provider','sprites','--reuse-fly-secrets','--dir',join(dir,'instance'),'--image','ghcr.io/openma-ai/open-managed-agents@sha256:'+'a'.repeat(64),'--yes'],{cwd:dir,env:{PATH:join(dir,'bin')+':'+process.env.PATH,CALL_LOG:join(dir,'calls')}}),/missing BETTER_AUTH_SECRET/);
+ assert.doesNotMatch(await readFile(join(dir,'calls'),'utf8'),/deploy|import/);
+});

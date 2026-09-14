@@ -153,3 +153,11 @@ test("Fly setup stages a remote BoxRun endpoint and optional token", async () =>
 test("Fly setup rejects provider names not supported by the Fly deployment adapter", async () => {
   await assert.rejects(runSetup("sqlite", "unknown", {}), /must be e2b, daytona, or boxrun/i);
 });
+
+test("Fly setup stages Sprites credentials without printing them", async () => {
+  const result = await runSetup("sqlite", "sprites", { SPRITES_TOKEN: "sprites-test-token" });
+  assert.match(result.secrets, /^SANDBOX_PROVIDER=sprites$/m);
+  assert.match(result.secrets, /^SPRITES_TOKEN=sprites-test-token$/m);
+  assert.doesNotMatch(result.stdout, /sprites-test-token/);
+  await assert.rejects(runSetup("sqlite", "sprites", {}), /SPRITES_TOKEN is required/);
+});

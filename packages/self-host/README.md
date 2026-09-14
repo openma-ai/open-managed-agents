@@ -17,8 +17,8 @@ oma-self-host upgrade --image ghcr.io/openma-ai/open-managed-agents:YOUR_RELEASE
 ```
 
 Requires Node.js 22+. Docker requires Compose with `--wait`; Fly requires Bash,
-openssl, flyctl, and `fly auth login`. Set E2B_API_KEY, DAYTONA_API_KEY, or BOXRUN_URL
-in your terminal environment, and select `--provider e2b|daytona|boxrun`.
+openssl, flyctl, and `fly auth login`. Set E2B_API_KEY, DAYTONA_API_KEY, BOXRUN_URL, or SPRITES_TOKEN
+in your terminal environment, and select `--provider e2b|daytona|boxrun|sprites`.
 Credentials are never accepted as CLI arguments. `--yes` confirms the displayed
 plan for unattended runs. Use `--data-mode postgres` for Postgres instead of SQLite.
 
@@ -65,3 +65,16 @@ and memory mounts, when needed, require separate configuration.
 From this repository: `pnpm --filter @openma/self-host build`, then
 `node packages/self-host/dist/index.js --help`. The published package contains only
 bundled JavaScript, Fly assets, and this README; there are no runtime npm dependencies.
+
+### Existing Fly apps
+
+Save the existing app's configuration as `<directory>/fly.toml`, then run:
+
+```sh
+oma-self-host install --target fly --provider sprites --dir <directory> --reuse-fly-secrets
+```
+
+This checks required secret names in the app and reuses their values without
+exporting or overwriting them. Select the provider already configured on the app.
+Subsequent installs and upgrades remember this choice. Installation is only
+marked complete after the public `/health` endpoint succeeds.

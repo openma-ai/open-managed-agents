@@ -15,13 +15,14 @@ export const targets = {
  cloudflare:{mode:'source-required',note:'Cloudflare: no standalone deployment artifact yet; use the repository setup guide.'},
 } as const;
 type Target=keyof typeof targets;
-type Options={command:string,target:Target,dir:string,port:number,image:string,provider:string,dataMode:string,yes:boolean,json:boolean,url?:string};
+type Options={command:string,target:Target,dir:string,port:number,image:string,provider:string,dataMode:string,yes:boolean,json:boolean,reuseFlySecrets:boolean,url?:string};
 export function parseOptions(args:string[]):Options {
- const o:Options={command:'install',target:'docker',dir:'',port:8787,image:`${repository}:edge`,provider:'e2b',dataMode:'sqlite',yes:false,json:false};
+ const o:Options={command:'install',target:'docker',dir:'',port:8787,image:`${repository}:edge`,provider:'e2b',dataMode:'sqlite',yes:false,json:false,reuseFlySecrets:false};
  if(args[0]&&!args[0].startsWith('-')) o.command=args.shift()!;
  if(!['install','doctor','status','upgrade','help'].includes(o.command)) throw Error('Use install, doctor, status, upgrade, or help.');
  for(let i=0;i<args.length;i++) {
   const flag=args[i];
+  if(flag==='--reuse-fly-secrets'){o.reuseFlySecrets=true;continue;}
   if(flag==='--yes'){o.yes=true;continue;} if(flag==='--json'){o.json=true;continue;}
   if(flag==='--help'||flag==='-h'){o.command='help';continue;}
   if(!['--target','--dir','--port','--image','--provider','--url','--data-mode'].includes(flag)) throw Error(`Unknown option: ${flag}`);
@@ -37,7 +38,8 @@ export function parseOptions(args:string[]):Options {
  if(!Object.hasOwn(targets,o.target)) throw Error('Choose docker, fly, render, vercel, or cloudflare.');
  if(!Number.isInteger(o.port)||o.port<1||o.port>65535) throw Error('Port must be 1–65535.');
  if(!['sqlite','postgres'].includes(o.dataMode))throw Error('Choose --data-mode sqlite or postgres.');
- if(!['e2b','daytona','boxrun'].includes(o.provider)) throw Error('Choose e2b, daytona, or boxrun.');
+ if(o.reuseFlySecrets&&o.target!=='fly')throw Error('--reuse-fly-secrets is only supported for Fly.');
+ if(!['e2b','daytona','boxrun','sprites'].includes(o.provider)) throw Error('Choose e2b, daytona, boxrun, or sprites.');
  if(!new RegExp('^'+repository.replaceAll('.', '\\.')+'(?::[a-zA-Z0-9_.-]+|@sha256:[a-f0-9]{64})$').test(o.image)) throw Error('Use an official OpenMA GHCR tag or sha256 digest.');
  o.dir ||= join(homedir(),'.openma','self-host',o.target);
  return o;
@@ -48,7 +50,7 @@ const secret=()=>randomBytes(32).toString('hex');
 export async function configureDocker(dir:string,provider:string,env:NodeJS.ProcessEnv) {
  const path=join(dir,'environment.json');
  if(await exists(path)){const saved=await readJSON(path);if(saved.SANDBOX_PROVIDER!==provider)throw Error('Existing sandbox provider differs. Edit environment.json explicitly.');return saved;}
- const key=provider==='e2b'?'E2B_API_KEY':provider==='daytona'?'DAYTONA_API_KEY':'BOXRUN_URL';
+ const key=provider==='sprites'?'SPRITES_TOKEN':provider==='e2b'?'E2B_API_KEY':provider==='daytona'?'DAYTONA_API_KEY':'BOXRUN_URL';
  if(!env[key])throw Error(`Set ${key} in your terminal environment before installing; never pass keys as command arguments.`);
  const value:Record<string,string>={BETTER_AUTH_SECRET:secret(),PLATFORM_ROOT_SECRET:secret(),OPENMA_POSTGRES_PASSWORD:secret(),SANDBOX_PROVIDER:provider,[key]:env[key]!};
  for(const name of ['BOXRUN_TOKEN','E2B_API_URL','E2B_DOMAIN','E2B_SANDBOX_URL','DAYTONA_API_URL'])if(env[name])value[name]=env[name]!;
@@ -83,10 +85,11 @@ export const help=`OpenMA self-host installer (separate from the oma API CLI)
 Usage: oma-self-host [install|doctor|status|upgrade] [options]
   --target docker|fly|render|vercel|cloudflare
   --dir PATH       Installation directory (default ~/.openma/self-host/<target>)
-  --provider e2b|daytona|boxrun   Credentials come from environment variables
+  --provider e2b|daytona|boxrun|sprites   Credentials come from environment variables
   --image REF      Official GHCR image; default edge (development channel)
   --data-mode sqlite|postgres   Database backend (default sqlite)
   --port NUMBER    Docker localhost port (default 8787)
+  --reuse-fly-secrets  Use credentials already configured in an existing Fly app
   --yes            Execute without the interactive plan confirmation
   --url URL        Verify a hosted instance with status
   --json           Machine-readable output for doctor/status
@@ -105,6 +108,7 @@ export async function main(argv=process.argv.slice(2)) {
  const statePath=join(o.dir,'installation.json');
  const saved=await exists(statePath)?await readJSON(statePath):null;
  if(saved&&saved.target!==o.target)throw Error('Installation belongs to another platform. Use its --target or another --dir.');
+ if(saved?.reuseFlySecrets)o.reuseFlySecrets=true;
  if(saved&&!original.includes('--provider'))o.provider=saved.provider;
  if(saved&&!original.includes('--port'))o.port=saved.port;
  if(saved&&!original.includes('--data-mode'))o.dataMode=saved.dataMode??'sqlite';
@@ -112,14 +116,14 @@ export async function main(argv=process.argv.slice(2)) {
  if(o.command==='doctor'){
   const commands=o.target==='docker'?[['docker','compose','version'],['docker','info']]:o.target==='fly'?[['fly','version'],['fly','auth','whoami'],['bash','--version'],['openssl','version']]:[];
   const checks=commands.map(([cmd,...args])=>{try{run(cmd,args,process.cwd(),process.env,true);return {command:cmd+' '+args.join(' '),ok:true};}catch{return {command:cmd+' '+args.join(' '),ok:false};}});
-  console.log(JSON.stringify({target:o.target,...targets[o.target],checks,installed:Boolean(saved),directory:o.dir},null,2));
+  console.log(JSON.stringify({target:o.target,...targets[o.target],checks,installed:saved?.status==='installed',directory:o.dir},null,2));
   if(checks.some(c=>!c.ok))process.exitCode=1;return;
  }
  if(o.command==='status'){
   if(o.url){console.log(JSON.stringify(await verify(o.url),null,2));return;}
   if(!saved)throw Error('No saved installation; use --dir or --url.');
   if(o.target==='docker')console.log(JSON.stringify(await verify(`http://localhost:${saved.port}`),null,2));
-  else if(o.target==='fly')run('fly',['checks','list'],o.dir);
+  else if(o.target==='fly'){const status=JSON.parse(run('fly',['status','--json'],o.dir,process.env,true));console.log(JSON.stringify(await verify(`https://${status.Hostname}`),null,2));}
   else console.log(JSON.stringify({status:'handoff',...saved},null,2));return;
  }
  if(o.json)throw Error('--json is supported for doctor/status only.');
@@ -129,7 +133,7 @@ export async function main(argv=process.argv.slice(2)) {
  if(!o.yes){if(!process.stdin.isTTY)throw Error('Use --yes after reviewing the plan, or run interactively.');const rl=createInterface({input:process.stdin,output:process.stdout});try{if(!/^y(es)?$/i.test(await rl.question('Continue? [y/N] ')))return;}finally{rl.close();}}
  await mkdir(o.dir,{recursive:true,mode:0o700});
  if((await lstat(o.dir)).isSymbolicLink())throw Error('Installation directory must not be a symlink.');
- const record=async(state:Record<string,unknown>)=>{if(await exists(statePath)&& (await lstat(statePath)).isSymbolicLink())throw Error('Refusing symlink state file.');await writeFile(statePath,JSON.stringify({target:o.target,provider:o.provider,port:o.port,dataMode:o.dataMode,...state},null,2)+'\n',{mode:0o600});};
+ const record=async(state:Record<string,unknown>)=>{if(await exists(statePath)&& (await lstat(statePath)).isSymbolicLink())throw Error('Refusing symlink state file.');await writeFile(statePath,JSON.stringify({target:o.target,provider:o.provider,port:o.port,dataMode:o.dataMode,reuseFlySecrets:o.reuseFlySecrets,...state},null,2)+'\n',{mode:0o600});};
  if(o.target==='render'||o.target==='vercel'){
   const url=o.target==='render'?'https://render.com/deploy?repo=https://github.com/openma-ai/open-managed-agents':'https://openma.dev/deploy/?provider=vercel';
   await record({status:'handoff',url});console.log(`Continue in your browser: ${url}\nNot installed yet. After deployment: oma-self-host status --url https://YOUR-SERVICE`);return;
@@ -139,9 +143,22 @@ export async function main(argv=process.argv.slice(2)) {
   await mkdir(join(o.dir,'scripts'),{recursive:true});
   const assets=join(dirname(fileURLToPath(import.meta.url)),'assets');
   for(const [src,dest] of [['setup-fly.sh','scripts/setup-fly.sh'],['fly.toml','fly.toml']])if(!await exists(join(o.dir,dest)))await copyFile(join(assets,src),join(o.dir,dest));
+  if(o.reuseFlySecrets){
+   const status=JSON.parse(run('fly',['status','--json'],o.dir,process.env,true));
+   if(!status.Name)throw Error('An existing app in fly.toml is required to reuse Fly secrets.');
+   const secrets=JSON.parse(run('fly',['secrets','list','--json'],o.dir,process.env,true)) as {name:string}[];
+   const names=new Set(secrets.map(item=>item.name));
+   const key=o.provider==='sprites'?'SPRITES_TOKEN':o.provider==='e2b'?'E2B_API_KEY':o.provider==='daytona'?'DAYTONA_API_KEY':'BOXRUN_URL';
+   for(const name of ['BETTER_AUTH_SECRET','PLATFORM_ROOT_SECRET','SANDBOX_PROVIDER',key])if(!names.has(name))throw Error(`Existing Fly app is missing ${name}.`);
+   await record({image,status:'pending'});
+   run('fly',['deploy','--image',image,'--strategy','rolling','--ha=false',...(o.yes?['--yes']:[])],o.dir);
+  }else{
   await record({image,status:'pending'});
   run('bash',['scripts/setup-fly.sh'],o.dir,{...process.env,OPENMA_FLY_IMAGE:image,OPENMA_FLY_BUILD_FROM_SOURCE:'0',OPENMA_FLY_DATA_MODE:o.dataMode,OPENMA_FLY_SANDBOX_PROVIDER:o.provider});
-  await record({image,status:'installed'});return;
+  }
+  const status=JSON.parse(run('fly',['status','--json'],o.dir,process.env,true));
+  const health=await verify(`https://${status.Hostname}`);
+  await record({image,status:'installed',url:health.url});console.log(`OpenMA is healthy: ${health.url}`);return;
  }
  run('docker',['compose','version'],process.cwd(),process.env,true);run('docker',['info'],process.cwd(),process.env,true);
  const environment=await configureDocker(o.dir,o.provider,process.env);
