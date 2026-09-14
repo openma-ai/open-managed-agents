@@ -701,6 +701,92 @@ describe("SessionsApplicationService", () => {
     expect(versionLookups).toEqual([]);
   });
 
+  describe("agent update idle boundary", () => {
+    async function setup(status: SessionView["status"]) {
+      const store = new MemorySessionStore();
+      const service = new SessionsApplicationService({
+        workspaceId: "workspace_01",
+        store,
+        agents: {
+          findCurrent: async () => structuredClone(agent),
+          findVersion: async () => null,
+        },
+        environments: availableSessionEnvironment,
+        resources: emptySessionResources,
+        lifecycle: silentSessionLifecycle,
+        clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+        ids: { nextSessionId: () => "session_idle_guard" },
+      });
+      await service.createSession({
+        agent: { type: "latest", agentId: agent.id },
+        environmentId: "env_01",
+      });
+      const scope = { workspaceId: "workspace_01", sessionId: "session_idle_guard" };
+      const created = (await store.findCurrent(scope))!;
+      await store.replaceCurrent({
+        ...scope,
+        expectedRevision: created.revision,
+        next: { ...created.session, status },
+      });
+      return { store, service, scope };
+    }
+
+    for (const status of ["running", "rescheduling", "terminated"] as const) {
+      for (const agentUpdate of [{ tools: [] }, { mcpServers: [] }]) {
+        it(`rejects ${Object.keys(agentUpdate)[0]} updates while ${status} without persisting any fields`, async () => {
+          const { store, service, scope } = await setup(status);
+          const before = await store.findCurrent(scope);
+          const result = await service.updateSession({
+            sessionId: scope.sessionId,
+            agent: agentUpdate,
+            title: "Must not be partially applied",
+          });
+          expect(result).toMatchObject({ type: "invalid_request" });
+          expect(await store.findCurrent(scope)).toEqual(before);
+        });
+      }
+    }
+
+    it("allows metadata and title updates while running", async () => {
+      const { store, service, scope } = await setup("running");
+      const before = (await store.findCurrent(scope))!;
+      expect(await service.updateSession({
+        sessionId: scope.sessionId,
+        title: "Renamed",
+        metadata: { owner: "integrations" },
+      })).toMatchObject({ type: "updated" });
+      expect((await store.findCurrent(scope))!.session).toMatchObject({
+        status: "running", title: "Renamed", metadata: { owner: "integrations" },
+        agent: before.session.agent,
+      });
+    });
+
+    it("does not overwrite a concurrent transition from idle to running", async () => {
+      const { store, service, scope } = await setup("idle");
+      const before = (await store.findCurrent(scope))!;
+      const findCurrent = store.findCurrent.bind(store);
+      let transitionPending = true;
+      store.findCurrent = async (input) => {
+        const snapshot = await findCurrent(input);
+        if (transitionPending && snapshot !== null) {
+          transitionPending = false;
+          await store.replaceCurrent({
+            ...input,
+            expectedRevision: snapshot.revision,
+            next: { ...snapshot.session, status: "running" },
+          });
+        }
+        return snapshot;
+      };
+      expect(await service.updateSession({
+        sessionId: scope.sessionId, agent: { mcpServers: [] },
+      })).toMatchObject({ type: "version_conflict" });
+      expect((await store.findCurrent(scope))!.session).toMatchObject({
+        status: "running", agent: before.session.agent,
+      });
+    });
+  });
+
   it("updates mutable session fields through an optimistic revision", async () => {
     let now = new Date("2026-08-26T02:00:00.000Z");
     const store = new MemorySessionStore();
@@ -724,6 +810,14 @@ describe("SessionsApplicationService", () => {
       metadata: { owner: "platform", obsolete: "remove" },
       title: "Initial title",
       vaultIds: ["vault_01"],
+    });
+    const current = (await store.findCurrent({
+      workspaceId: "workspace_01", sessionId: "session_update",
+    }))!;
+    await store.replaceCurrent({
+      workspaceId: "workspace_01", sessionId: "session_update",
+      expectedRevision: current.revision,
+      next: { ...current.session, status: "idle" },
     });
     now = new Date("2026-08-26T03:00:00.000Z");
 

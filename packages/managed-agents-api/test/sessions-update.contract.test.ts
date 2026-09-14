@@ -94,6 +94,33 @@ describe("Managed Agents API — POST /v1/sessions/:session_id", () => {
     });
   });
 
+  it("returns an invalid_request_error when agent configuration requires idle", async () => {
+    const api = buildSessionsTestApi(makeSessionsPort({
+      updateSession: async () => ({
+        type: "invalid_request",
+        message: "Session must be idle to update the agent configuration",
+      }),
+    }));
+    const response = await api.request(
+      `http://openma.test/v1/sessions/${sessionWire.id}`,
+      {
+        method: "POST",
+        headers: {
+          "anthropic-beta": "managed-agents-2026-04-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ agent: { mcp_servers: [] } }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: {
+        type: "invalid_request_error",
+        message: "Session must be idle to update the agent configuration",
+      },
+    });
+  });
+
   it("rejects malformed nested agent updates before resolving the application Port", async () => {
     let updateCalls = 0;
     const api = buildSessionsTestApi(

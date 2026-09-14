@@ -9,13 +9,14 @@
   <img src="https://img.shields.io/badge/Tests-passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/API-Anthropic%20Compatible-blueviolet" alt="Anthropic Compatible" />
   <img src="https://img.shields.io/badge/OpenAI-Agents%20API%20%2B%20SDK-412991" alt="OpenAI Agents API and SDK support" />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Join OpenMA on Discord" /></a>
 </p>
 
 # Open Managed Agents
 
 **Open-source, self-hosted alternative to Claude Managed Agents and OpenAI Agents API.**
 
-🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[github.com/openma-ai/open-managed-agents](https://github.com/openma-ai/open-managed-agents)**
+🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
 
 OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with the Node server's `/openai/v1` endpoint. Bring your own model keys and deploy on your own infrastructure.
 
@@ -814,6 +815,20 @@ The `docs/` folder at the repo root contains **internal design RFCs** — not th
 3. Run tests (`npm test && npm run typecheck`)
 4. Commit your changes
 5. Open a Pull Request
+
+---
+
+## Community
+
+<p align="center">
+  <a href="https://discord.gg/P3EfQFm5bD"><strong>Join OpenMA on Discord →</strong></a><br />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="Scan to join the OpenMA Discord community." width="180" /></a><br />
+  <sub>Scan to join the OpenMA Discord community.</sub>
+</p>
+
+[Join the OpenMA Discord](https://discord.gg/P3EfQFm5bD) for setup help, self-hosting discussions, and sharing what you build. English and Chinese are welcome. Start in `#welcome`, then head to the `open-managed-agents` channels.
+
+Please use [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues) for reproducible bugs and feature requests so they can be tracked.
 
 ---
 

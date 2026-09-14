@@ -444,6 +444,15 @@ export class SessionsApplicationService
     });
     if (current === null) return { type: "not_found" };
 
+    const updatesAgent = command.agent?.tools !== undefined
+      || command.agent?.mcpServers !== undefined;
+    if (updatesAgent && current.session.status !== "idle") {
+      return {
+        type: "invalid_request",
+        message: "Session must be idle to update the agent configuration",
+      };
+    }
+
     const next: Session = {
       ...current.session,
       ...(command.agent !== undefined && {
