@@ -41,6 +41,13 @@ interface SqliteSnapshot {
   tables: Record<string, SnapshotTable>;
 }
 
+const usageAttributionMigration = {
+  fromSnapshot: "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4",
+  toSnapshot: "2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3",
+  indexName: "idx_usage_events_attribution",
+  columns: ["tenant_id", "created_at", "id"],
+} as const;
+
 /**
  * Install the main-node schema in a fresh MySQL database from the canonical
  * SQLite snapshot.  The snapshot is structural input, not SQL to be
@@ -90,12 +97,19 @@ export async function migrateNodeMysqlSchema(
         \`applied_at_ms\` BIGINT NOT NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
-    const installed = await sql
+    let installed = await sql
       .prepare(
         "SELECT snapshot_id FROM openma_schema_metadata WHERE name = ?",
       )
       .bind("main-node")
       .first<{ snapshot_id: string }>();
+    if (
+      installed?.snapshot_id === usageAttributionMigration.fromSnapshot &&
+      snapshot.id === usageAttributionMigration.toSnapshot
+    ) {
+      await migrateUsageAttributionIndex(sql);
+      installed = { snapshot_id: usageAttributionMigration.toSnapshot };
+    }
     if (installed !== null && installed.snapshot_id !== snapshot.id) {
       throw new Error(
         `MySQL schema ${installed.snapshot_id} cannot be silently promoted to ${snapshot.id}; ` +
@@ -123,6 +137,47 @@ export async function migrateNodeMysqlSchema(
       .first()
       .catch(() => null);
   }
+}
+
+async function migrateUsageAttributionIndex(sql: SqlClient): Promise<void> {
+  const existing = await sql
+    .prepare(
+      `SELECT column_name, seq_in_index
+         FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = ?
+          AND index_name = ?
+        ORDER BY seq_in_index`,
+    )
+    .bind("usage_events", usageAttributionMigration.indexName)
+    .all<{ column_name: string; seq_in_index: number }>();
+  const columns = existing.results?.map((column) => column.column_name) ?? [];
+  if (columns.length === 0) {
+    await sql.exec(
+      `CREATE INDEX \`${usageAttributionMigration.indexName}\` ON \`usage_events\` ` +
+        `(${usageAttributionMigration.columns.map(quote).join(", ")})`,
+    );
+  } else if (
+    columns.length !== usageAttributionMigration.columns.length ||
+    columns.some((column, index) => column !== usageAttributionMigration.columns[index])
+  ) {
+    throw new Error(
+      `MySQL index ${usageAttributionMigration.indexName} has unexpected columns: ${columns.join(", ")}`,
+    );
+  }
+  await sql
+    .prepare(
+      `UPDATE openma_schema_metadata
+          SET snapshot_id = ?, applied_at_ms = ?
+        WHERE name = ? AND snapshot_id = ?`,
+    )
+    .bind(
+      usageAttributionMigration.toSnapshot,
+      Date.now(),
+      "main-node",
+      usageAttributionMigration.fromSnapshot,
+    )
+    .run();
 }
 
 async function installEventLogTables(sql: SqlClient): Promise<void> {

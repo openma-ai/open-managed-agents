@@ -72,7 +72,7 @@ afterAll(async () => {
 });
 
 describe.sequential("main-node MySQL composition root", () => {
-  it("upgrades the known local snapshot with Pi configuration and preserves model cards", async () => {
+  it("upgrades known snapshots with Pi configuration and the usage attribution index", async () => {
     if (child) await killProcessTree(child);
     child = undefined;
     const sql = await createMysql2SqlClient(mysqlContainer.getConnectionUri());
@@ -91,6 +91,19 @@ describe.sequential("main-node MySQL composition root", () => {
       await startServer(true);
       expect(await sql.prepare("SELECT model, pi_config FROM model_cards WHERE id = ?")
         .bind("merge_keep").first()).toEqual({ model: "wire-model", pi_config: null });
+      const attributionIndex = await sql.prepare(
+        `SELECT column_name
+           FROM information_schema.statistics
+          WHERE table_schema = DATABASE()
+            AND table_name = 'usage_events'
+            AND index_name = 'idx_usage_events_attribution'
+          ORDER BY seq_in_index`,
+      ).all<{ column_name: string }>();
+      expect(attributionIndex.results?.map(({ column_name }) => column_name)).toEqual([
+        "tenant_id",
+        "created_at",
+        "id",
+      ]);
       // A second startup must accept the migrated snapshot and retain data.
       if (child) await killProcessTree(child);
       child = undefined;

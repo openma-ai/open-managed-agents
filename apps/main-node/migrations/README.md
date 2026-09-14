@@ -25,9 +25,13 @@ are not rewritten, and migration errors fail startup.
 MySQL was introduced on the local branch. Its previous snapshot
 `d5cf91d0-02c4-4655-9ecf-af7e8d916ecc` upgrades automatically to
 `f1e9f474-d719-4e31-b69e-dd7ae24f9bd4` by adding the missing column. An interrupted
-upgrade can finish on the next startup. Other snapshot transitions retain the
-existing explicit migration requirement. Cloudflare keeps its original SQL
-filenames so D1 can apply the previously missing migration by name.
+upgrade can finish on the next startup. Snapshot
+`f1e9f474-d719-4e31-b69e-dd7ae24f9bd4` then upgrades explicitly to
+`2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3` by installing the usage-attribution
+index. Both MySQL transitions are restart-safe. Other snapshot transitions
+retain the existing explicit migration requirement. Cloudflare keeps its
+original SQL filenames so D1 can apply the previously missing migration by
+name.
 
 Regression coverage lives in `test/migration-merge.test.ts` and
 `test/main-node.mysql.integration.ts`. The former runs real SQLite migrations
