@@ -100,6 +100,22 @@ before migrating an existing application. See the
 
 ---
 
+## Self-host installer (preview)
+
+The standalone **`@openma/self-host`** installer is implemented in
+[`packages/self-host`](packages/self-host). It installs Docker/Fly from published
+images without a source checkout. Render/Vercel currently hand off to their web
+flows; Cloudflare still requires the source-based setup guide.
+
+After the first npm release:
+
+```bash
+npx @openma/self-host
+# or: npx @openma/self-host install --target docker
+```
+
+Until then, build and run it from the repository using the package README.
+
 ## Quick start: self-host (Docker)
 
 ```bash

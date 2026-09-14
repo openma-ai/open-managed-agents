@@ -112,7 +112,7 @@
     "test:openai-agents:node": "pnpm --filter @open-managed-agents/main-node test test/openai test/acp-subagents-openai.test.ts test/managed-host-tool-errors.test.ts test/managed-session-subagents.test.ts",
     "test:e2e:openai-agents": "pnpm --filter @open-managed-agents/main-node exec tsc --project tsconfig.openai-e2e.json && pnpm --filter @open-managed-agents/main-node test test/openai-agents-node.test.ts test/openai-e2e",
     "setup:docker": "bash scripts/setup-docker.sh",
-    "test:setup": "node --test scripts/setup-docker.test.mjs scripts/setup-fly.test.mjs scripts/start-render.test.mjs"
+    "test:setup": "node --test scripts/setup-docker.test.mjs scripts/setup-fly.test.mjs scripts/start-render.test.mjs && pnpm --filter @openma/self-host typecheck && pnpm --filter @openma/self-host build && pnpm --filter @openma/self-host test"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.120.0",

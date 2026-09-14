@@ -131,8 +131,8 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=openma-server
           cache-to: type=gha,mode=max,scope=openma-server
-          provenance: mode=max
-          sbom: true
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
 
       - name: Smoke test Docker wizard deployment
         if: github.event_name == 'pull_request'

@@ -182,6 +182,14 @@ const initialPlan = buildDeploymentPlan({
             </a>
           </section>
 
+          <section class="provider-launch" aria-label="Standalone installer">
+            <div>
+              <strong>@openma/self-host · CLI preview</strong>
+              <p>Available after the first npm release. Docker and Fly use published images; Render and Vercel hand off to their web flows. Cloudflare still needs the source setup guide.</p>
+              <code data-installer-command>npx @openma/self-host install --target cloudflare</code>
+            </div>
+          </section>
+
           <div class="command-block" data-terminal-command>
             <div class="command-toolbar">
               <span data-command-label>Terminal</span>
@@ -361,6 +369,8 @@ const initialPlan = buildDeploymentPlan({
 
         const guide = get<HTMLAnchorElement>("[data-platform-guide]");
         if (guide) guide.href = `https://docs.openma.dev/self-host/${target === "docker" ? "node-docker" : target === "cloudflare" ? "deploy" : target === "vercel" ? "overview" : target}/`;
+        const installerCommand = get<HTMLElement>("[data-installer-command]");
+        if (installerCommand) installerCommand.textContent = `npx @openma/self-host install --target ${target}${target === "docker" || target === "fly" ? ` --data-mode ${dataMode === "postgres" ? "postgres" : "sqlite"}` : ""}`;
         const terminalCommand = get<HTMLElement>("[data-terminal-command]");
         if (terminalCommand) terminalCommand.hidden = target === "render";
         const commandLabel = get<HTMLElement>("[data-command-label]");
@@ -718,6 +728,7 @@ const initialPlan = buildDeploymentPlan({
   }
   .provider-launch[hidden], .deployment-return[hidden] { display: none; }
   .provider-launch { justify-content: space-between; background: color-mix(in srgb, var(--color-bg-surface) 42%, var(--color-bg)); }
+  .provider-launch code { display: block; margin-top: .6rem; overflow-wrap: anywhere; font-size: .75rem; }
   .provider-launch strong { display: block; font-size: .8rem; font-weight: 600; }
   .provider-launch p { max-width: 31rem; margin: .2rem 0 0; color: var(--color-fg-muted); font-size: .7rem; line-height: 1.45; }
   .vercel-deploy-button {
