@@ -31,18 +31,6 @@ Compare: [Claude Tag alternative](https://openma.dev/claude-tag-alternative/) ·
 
 ---
 
-## Community
-
-<p align="center">
-  <a href="https://discord.gg/P3EfQFm5bD"><strong>Join OpenMA on Discord →</strong></a><br />
-  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="Scan to join the OpenMA Discord community." width="180" /></a><br />
-  <sub>Scan to join the OpenMA Discord community.</sub>
-</p>
-
-[Join the OpenMA Discord](https://discord.gg/P3EfQFm5bD) for setup help, self-hosting discussions, and sharing what you build. English and Chinese are welcome. Start in `#welcome`, then head to the `open-managed-agents` channels.
-
-Please use [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues) for reproducible bugs and feature requests so they can be tracked.
-
 ## Two ways to run OMA
 
 The same harness, business logic, and event-log model run on both. Pick the
@@ -827,6 +815,20 @@ The `docs/` folder at the repo root contains **internal design RFCs** — not th
 3. Run tests (`npm test && npm run typecheck`)
 4. Commit your changes
 5. Open a Pull Request
+
+---
+
+## Community
+
+<p align="center">
+  <a href="https://discord.gg/P3EfQFm5bD"><strong>Join OpenMA on Discord →</strong></a><br />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="Scan to join the OpenMA Discord community." width="180" /></a><br />
+  <sub>Scan to join the OpenMA Discord community.</sub>
+</p>
+
+[Join the OpenMA Discord](https://discord.gg/P3EfQFm5bD) for setup help, self-hosting discussions, and sharing what you build. English and Chinese are welcome. Start in `#welcome`, then head to the `open-managed-agents` channels.
+
+Please use [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues) for reproducible bugs and feature requests so they can be tracked.
 
 ---
 

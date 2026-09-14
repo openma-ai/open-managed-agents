@@ -22,18 +22,6 @@ OpenMA 提供持久会话、沙箱工具、记忆、加密凭证和崩溃恢复�
 
 ---
 
-## 社区交流
-
-<p align="center">
-  <a href="https://discord.gg/P3EfQFm5bD"><strong>一键加入 OpenMA Discord →</strong></a><br />
-  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="扫码加入 OpenMA Discord 社区。" width="180" /></a><br />
-  <sub>扫码加入 OpenMA Discord 社区。</sub>
-</p>
-
-[加入 OpenMA Discord 社区](https://discord.gg/P3EfQFm5bD)，交流安装部署、使用问题和项目实践。支持中文和英文交流；加入后先看 `#welcome`，再进入 `open-managed-agents` 分区。
-
-可复现的 Bug 和功能建议请提交到 [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues)，方便持续跟踪。
-
 ## 两种运行方式
 
 同一套 harness、业务逻辑和事件日志模型同时支持以下两种部署方式，按你的托管偏好选一种：
@@ -786,6 +774,20 @@ pnpm deploy:docs    # 构建 + wrangler 部署（Cloudflare Worker 静态资源�
 3. 跑测试（`npm test && npm run typecheck`）
 4. 提交修改
 5. 开 Pull Request
+
+---
+
+## 社区交流
+
+<p align="center">
+  <a href="https://discord.gg/P3EfQFm5bD"><strong>一键加入 OpenMA Discord →</strong></a><br />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="扫码加入 OpenMA Discord 社区。" width="180" /></a><br />
+  <sub>扫码加入 OpenMA Discord 社区。</sub>
+</p>
+
+[加入 OpenMA Discord 社区](https://discord.gg/P3EfQFm5bD)，交流安装部署、使用问题和项目实践。支持中文和英文交流；加入后先看 `#welcome`，再进入 `open-managed-agents` 分区。
+
+可复现的 Bug 和功能建议请提交到 [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues)，方便持续跟踪。
 
 ---
 
