@@ -100,9 +100,9 @@ class MigrationStatement implements SqlStatement {
   async all<T = unknown>(): Promise<SqlSelectResult<T>> {
     if (this.sql.includes("information_schema.statistics")) {
       return {
-        results: this.client.indexColumns.map((column_name, index) => ({
-          column_name,
-          seq_in_index: index + 1,
+        results: this.client.indexColumns.map((name, index) => ({
+          name,
+          position: index + 1,
         })) as T[],
         meta: changed(0),
       };

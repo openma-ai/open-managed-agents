@@ -92,14 +92,14 @@ describe.sequential("main-node MySQL composition root", () => {
       expect(await sql.prepare("SELECT model, pi_config FROM model_cards WHERE id = ?")
         .bind("merge_keep").first()).toEqual({ model: "wire-model", pi_config: null });
       const attributionIndex = await sql.prepare(
-        `SELECT column_name
+        `SELECT column_name AS name
            FROM information_schema.statistics
           WHERE table_schema = DATABASE()
             AND table_name = 'usage_events'
             AND index_name = 'idx_usage_events_attribution'
           ORDER BY seq_in_index`,
-      ).all<{ column_name: string }>();
-      expect(attributionIndex.results?.map(({ column_name }) => column_name)).toEqual([
+      ).all<{ name: string }>();
+      expect(attributionIndex.results?.map(({ name }) => name)).toEqual([
         "tenant_id",
         "created_at",
         "id",

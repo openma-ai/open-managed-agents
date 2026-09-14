@@ -142,7 +142,7 @@ export async function migrateNodeMysqlSchema(
 async function migrateUsageAttributionIndex(sql: SqlClient): Promise<void> {
   const existing = await sql
     .prepare(
-      `SELECT column_name, seq_in_index
+      `SELECT column_name AS name, seq_in_index AS position
          FROM information_schema.statistics
         WHERE table_schema = DATABASE()
           AND table_name = ?
@@ -150,8 +150,8 @@ async function migrateUsageAttributionIndex(sql: SqlClient): Promise<void> {
         ORDER BY seq_in_index`,
     )
     .bind("usage_events", usageAttributionMigration.indexName)
-    .all<{ column_name: string; seq_in_index: number }>();
-  const columns = existing.results?.map((column) => column.column_name) ?? [];
+    .all<{ name: string; position: number }>();
+  const columns = existing.results?.map((column) => column.name) ?? [];
   if (columns.length === 0) {
     await sql.exec(
       `CREATE INDEX \`${usageAttributionMigration.indexName}\` ON \`usage_events\` ` +
