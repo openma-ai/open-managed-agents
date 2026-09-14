@@ -8,6 +8,10 @@ on:
       - 'openma-server-v*'
     paths:
       - '.github/workflows/build-server-image.yml'
+      - 'scripts/setup-docker.sh'
+      - 'compose.quickstart*.yml'
+      - 'render.yaml'
+      - '.dockerignore'
       - '.node-version'
       - '.pnpm-approve-builds.json'
       - 'apps/agent/**'
@@ -24,6 +28,10 @@ on:
   pull_request:
     paths:
       - '.github/workflows/build-server-image.yml'
+      - 'scripts/setup-docker.sh'
+      - 'compose.quickstart*.yml'
+      - 'render.yaml'
+      - '.dockerignore'
       - '.node-version'
       - '.pnpm-approve-builds.json'
       - 'apps/agent/**'
@@ -118,12 +126,36 @@ jobs:
           file: apps/main-node/Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=openma-server
           cache-to: type=gha,mode=max,scope=openma-server
           provenance: mode=max
           sbom: true
+
+      - name: Smoke test Docker wizard deployment
+        if: github.event_name == 'pull_request'
+        env:
+          SERVER_IMAGE: ${{ fromJSON(steps.metadata.outputs.json).tags[0] }}
+          OPENMA_DOCKER_PROVIDER: e2b
+          E2B_API_KEY: ci-placeholder-no-sandbox-calls
+        run: |
+          bash scripts/setup-docker.sh --configure-only
+          docker tag "$SERVER_IMAGE" openma/quickstart:local
+          compose=(docker compose --project-name openma-ci --env-file .env.openma -f compose.quickstart.yml)
+          cleanup() {
+            "${compose[@]}" logs --tail 80
+            "${compose[@]}" down -v
+          }
+          trap cleanup EXIT
+          "${compose[@]}" up --no-build --wait --wait-timeout 180
+          curl --fail http://localhost:8787/health
+          "${compose[@]}" exec -T oma-server sh -c 'printf persistent > /app/data/ci-persistence-check'
+          "${compose[@]}" down
+          "${compose[@]}" up --no-build --wait --wait-timeout 180
+          test "$("${compose[@]}" exec -T oma-server cat /app/data/ci-persistence-check)" = persistent
+          curl --fail http://localhost:8787/health
 
       - name: Record immutable image digest
         if: github.event_name != 'pull_request'
