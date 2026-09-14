@@ -343,6 +343,7 @@ pnpm dlx vercel@59.15.1 deploy --local-config vercel.json`,
     verificationCommand: "curl https://<your-project>.vercel.app/health",
     launchUrl: buildVercelDeployButtonUrl({ redirectUrl: options.vercelRedirectUrl }),
     requirements: [
+      "A Vercel plan supporting every-minute Cron (the default production config exceeds Hobby limits)",
       "Confirm the Neon Postgres product and its billing/region in Vercel",
       "Object storage plus a remotely reachable vault egress gateway",
       "A Vercel Sandbox snapshot containing the selected ACP harness worker",
