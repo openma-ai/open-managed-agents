@@ -105,10 +105,16 @@ export async function migrateNodeMysqlSchema(
       .first<{ snapshot_id: string }>();
     if (
       installed?.snapshot_id === usageAttributionMigration.fromSnapshot &&
-      snapshot.id === usageAttributionMigration.toSnapshot
+      (snapshot.id === usageAttributionMigration.toSnapshot || snapshot.id === "725618e8-372f-4f13-98a7-44a94146b663")
     ) {
       await migrateUsageAttributionIndex(sql);
       installed = { snapshot_id: usageAttributionMigration.toSnapshot };
+    }
+    // This snapshot only adds tenant_invitation. The regular idempotent table
+    // installer below performs the DDL before recording the new snapshot.
+    if (installed?.snapshot_id === usageAttributionMigration.toSnapshot &&
+        snapshot.id === "725618e8-372f-4f13-98a7-44a94146b663") {
+      installed = { snapshot_id: snapshot.id };
     }
     if (installed !== null && installed.snapshot_id !== snapshot.id) {
       throw new Error(

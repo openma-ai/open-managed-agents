@@ -162,6 +162,13 @@
       "when": 1789289966309,
       "tag": "0022_wealthy_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1789373117133,
+      "tag": "0023_tenant_invitations",
+      "breakpoints": true
     }
   ]
 }

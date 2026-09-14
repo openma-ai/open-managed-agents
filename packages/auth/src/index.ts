@@ -157,6 +157,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
           403,
         );
       }
+      if (r.userId && !await deps.hasMembership(r.userId, r.tenantId)) {
+        return c.json(authorizationFailure(c.req.path, "Workspace membership revoked"), 403);
+      }
       c.set("tenant_id", r.tenantId);
       if (r.userId) c.set("user_id", r.userId);
       if (r.credential !== undefined) c.set("auth_credential", r.credential);
@@ -186,6 +189,9 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
           authorizationFailure(c.req.path, "Bearer token is not authorized for this resource"),
           403,
         );
+      }
+      if (resolved.userId && !await deps.hasMembership(resolved.userId, resolved.tenantId)) {
+        return c.json(authorizationFailure(c.req.path, "Workspace membership revoked"), 403);
       }
       c.set("tenant_id", resolved.tenantId);
       if (resolved.userId) c.set("user_id", resolved.userId);

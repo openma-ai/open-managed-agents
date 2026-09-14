@@ -235,6 +235,18 @@ export async function applyTenantSchema(sql: SqlClient): Promise<void> {
       "created_at" BIGINT NOT NULL,
       PRIMARY KEY ("user_id", "tenant_id")
     );
+    CREATE TABLE IF NOT EXISTS "tenant_invitation" (
+      "id" TEXT PRIMARY KEY NOT NULL,
+      "tenant_id" TEXT NOT NULL,
+      "token_hash" TEXT NOT NULL UNIQUE,
+      "role" TEXT NOT NULL,
+      "created_by" TEXT NOT NULL,
+      "created_at" BIGINT NOT NULL,
+      "expires_at" BIGINT NOT NULL,
+      "accepted_by" TEXT,
+      "claim_id" TEXT
+    );
+    CREATE INDEX IF NOT EXISTS "idx_tenant_invitation_tenant" ON "tenant_invitation" ("tenant_id");
     CREATE INDEX IF NOT EXISTS "idx_membership_user"
       ON "membership" ("user_id");
   `);

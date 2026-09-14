@@ -108,3 +108,15 @@ export const membership = pgTable(
     index("idx_membership_user").on(t.user_id),
   ],
 );
+
+export const tenant_invitation = pgTable("tenant_invitation", {
+  id: text("id").primaryKey().notNull(),
+  tenant_id: text("tenant_id").notNull(),
+  token_hash: text("token_hash").notNull().unique(),
+  role: text("role").notNull(),
+  created_by: text("created_by").notNull(),
+  created_at: bigint("created_at", { mode: "number" }).notNull(),
+  expires_at: bigint("expires_at", { mode: "number" }).notNull(),
+  accepted_by: text("accepted_by"),
+  claim_id: text("claim_id"),
+}, (t) => [index("idx_tenant_invitation_tenant").on(t.tenant_id)]);

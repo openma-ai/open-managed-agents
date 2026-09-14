@@ -10,6 +10,7 @@
 //   - The /me/cli-tokens route reuses the api_keys table (kv on CF;
 //     SQL row on Node) — both paths look identical from the route's POV.
 
+import { buildMemberRoutes, type MemberRoutesDeps } from "./members";
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import type { RouteServicesArg } from "../types";
@@ -26,7 +27,7 @@ interface MembershipRow {
   created_at: number;
 }
 
-export interface TenantRoutesDeps {
+export interface TenantRoutesDeps extends Partial<MemberRoutesDeps> {
   services: RouteServicesArg;
   /** Optional CF shard assignment. Returning binding name records the new
    *  tenant's shard in the control-plane DB. Node leaves this undefined. */
@@ -94,6 +95,7 @@ export function buildTenantRoutes(deps: TenantRoutesDeps) {
     );
   });
 
+  if (deps.memberSql) app.route("/", buildMemberRoutes({ memberSql: deps.memberSql, loadMemberUser: deps.loadMemberUser }));
   return app;
 }
 

@@ -78,6 +78,9 @@ export const authMiddleware = createMiddleware<{
       if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport: "x-api-key" })) {
         return c.json({ error: "API key is not authorized for this resource" }, 403);
       }
+    if (resolved.userId && !await c.env.MAIN_DB.prepare("SELECT 1 FROM membership WHERE user_id = ? AND tenant_id = ?").bind(resolved.userId, resolved.tenantId).first()) {
+      return c.json({ error: "Workspace membership revoked" }, 403);
+    }
     c.set("tenant_id", resolved.tenantId);
     if (resolved.userId) c.set("user_id", resolved.userId);
     if (resolved.credential !== undefined) {
@@ -148,6 +151,9 @@ export const authMiddleware = createMiddleware<{
     if (resolved === null) return c.json({ error: "Invalid bearer token" }, 401);
     if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport: "bearer" })) {
       return c.json({ error: "Bearer token is not authorized for this resource" }, 403);
+    }
+    if (resolved.userId && !await c.env.MAIN_DB.prepare("SELECT 1 FROM membership WHERE user_id = ? AND tenant_id = ?").bind(resolved.userId, resolved.tenantId).first()) {
+      return c.json({ error: "Workspace membership revoked" }, 403);
     }
     c.set("tenant_id", resolved.tenantId);
     if (resolved.userId) c.set("user_id", resolved.userId);

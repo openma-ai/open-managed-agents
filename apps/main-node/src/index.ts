@@ -2496,7 +2496,11 @@ v1.route("/oma/me", buildMeRoutes({
   },
   mintApiKey: (input) => mintApiKeyOnStorage(apiKeyStorage, input),
 }));
-v1.route("/oma/tenants", buildTenantRoutes({ services }));
+v1.route("/oma/tenants", buildTenantRoutes({ services, memberSql: sql, loadMemberUser: async (id) => {
+  if (!auth) return null;
+  const user = await (await auth.$context).internalAdapter.findUserById(id);
+  return user ? { name: user.name, email: user.email } : null;
+} }));
 v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
 v1.route("/oma/evals", buildEvalRoutes({
   evals: evalsService,

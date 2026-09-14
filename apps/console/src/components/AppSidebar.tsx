@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { ComponentType } from "react";
-import { SearchIcon } from "lucide-react";
+import { SearchIcon, UsersIcon } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 
 import { openCommandPalette } from "./CommandPalette";
@@ -39,7 +39,7 @@ interface NavGroup {
 }
 
 function useNavGroups(): NavGroup[] {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return [
     {
       label: t.nav.overview,
@@ -67,6 +67,7 @@ function useNavGroups(): NavGroup[] {
         { to: "/skills", label: t.nav.skills, icon: SkillsIcon },
         { to: "/memory", label: t.nav.memoryStores, icon: MemoryIcon },
         { to: "/model-cards", label: t.nav.modelCards, icon: ModelCardsIcon },
+        { to: "/members", label: locale === "zh-CN" ? "成员" : "Members", icon: UsersIcon },
         { to: "/api-keys", label: t.nav.apiKeys, icon: ApiKeysIcon },
         { to: "/runtimes", label: t.nav.localRuntimes, icon: RuntimesIcon },
       ],

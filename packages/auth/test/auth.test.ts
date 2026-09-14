@@ -209,3 +209,14 @@ describe("managed worker bearer authentication", () => {
     expect(deps.resolveSession).not.toHaveBeenCalled();
   });
 });
+
+describe('removed workspace members', () => {
+  it.each(['x-api-key', 'authorization'])('rejects a removed member through %s', async header => {
+    const deps = dependencies();
+    const app = new Hono();
+    app.use('*', createAuthMiddleware({ ...deps, resolveApiKey: async () => ({ tenantId: 't', userId: 'removed' }) }));
+    app.get('/v1/agents', c => c.json({ ok: true }));
+    const res = await app.request('/v1/agents', { headers: { [header]: header === 'authorization' ? 'Bearer old-key' : 'old-key' } });
+    expect(res.status).toBe(403);
+  });
+});

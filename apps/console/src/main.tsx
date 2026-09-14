@@ -36,6 +36,7 @@ import { SkillsList } from "./pages/SkillsList";
 import { MemoryStoresList } from "./pages/MemoryStoresList";
 import { MemoryStoreDetail } from "./pages/MemoryStoreDetail";
 import { ModelCardsList } from "./pages/ModelCardsList";
+import { WorkspaceMembers, JoinWorkspace } from "./pages/WorkspaceMembers";
 import { ApiKeysList } from "./pages/ApiKeysList";
 import { CliLogin } from "./pages/CliLogin";
 import { RuntimesList } from "./pages/RuntimesList";
@@ -171,6 +172,7 @@ const protectedRoutes: RouteObject[] = [
     ],
   },
   { path: "model-cards", element: <ModelCardsList />, handle: { crumb: "Model Cards" } },
+  { path: "members", element: <WorkspaceMembers />, handle: { crumb: "Members" } },
   { path: "api-keys", element: <ApiKeysList />, handle: { crumb: "API Keys" } },
   { path: "runtimes", element: <RuntimesList />, handle: { crumb: "Local Runtimes" } },
   {
@@ -261,6 +263,7 @@ const protectedRoutes: RouteObject[] = [
 ];
 
 const router = createBrowserRouter([
+  { path: "join", element: <JoinWorkspace /> },
   { path: "login", element: <Login /> },
   { path: "cli/login", element: <CliLogin /> },
   { path: "connect-runtime", element: <ConnectRuntime /> },

@@ -11,7 +11,7 @@ import type {
 } from "@open-managed-agents/sql-client";
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
-const currentSnapshot = "2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3";
+const currentSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -29,6 +29,12 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.snapshotId).toBe(currentSnapshot);
     expect(sql.indexColumns).toEqual(["tenant_id", "created_at", "id"]);
     expect(sql.createdAttributionIndex).toBe(initialIndex.length === 0);
+  });
+
+  it("upgrades the previous member schema to invitations", async () => {
+    const sql = new MigrationSqlClient("2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3", ["tenant_id", "created_at", "id"]);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.snapshotId).toBe(currentSnapshot);
   });
 
   it("fails closed when an existing attribution index has the wrong shape", async () => {

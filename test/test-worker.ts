@@ -278,6 +278,9 @@ import integrationsSchema from "../apps/main/migrations-integrations/0001_consol
 // @ts-expect-error vitest resolves SQL via ?raw
 import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?raw";
 
+// @ts-expect-error vitest resolves SQL via ?raw
+import tenantInvitationsSchema from "../apps/main/migrations/0023_tenant_invitations.sql?raw";
+
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
   managedAgentsSchema as string,
@@ -305,6 +308,7 @@ const MIGRATIONS_RAW: string[] = [
   sessionExecutionSchema as string,
   environmentServiceKeysSchema as string,
   environmentWorkGenerationSchema as string,
+  tenantInvitationsSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

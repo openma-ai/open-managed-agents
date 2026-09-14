@@ -659,6 +659,8 @@ const tenantsRoutes = new Hono<{
   const ctx = c as unknown as AppCtx;
   const env = ctx.env;
   const app = buildTenantRoutes({
+    memberSql: new CfD1SqlClient(env.MAIN_DB),
+    loadMemberUser: (id) => env.MAIN_DB.prepare('SELECT name, email FROM "user" WHERE id = ?').bind(id).first<{ name: string; email: string }>(),
     services: () => cfRouteServicesFromCtx(ctx),
     createTenantAndMembership: async ({ tenantId, name, userId }) => {
       const now = Math.floor(Date.now() / 1000);
