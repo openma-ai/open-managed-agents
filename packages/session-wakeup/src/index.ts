@@ -93,11 +93,14 @@ export type FindSessionForWakeupResult =
 
 export interface SessionWakeupSessionSource {
   find(input: SessionWakeupScope): Promise<FindSessionForWakeupResult>;
-}
   update(
-    input: SessionWakeupScope,
-    update: { metadata?: Record<string, unknown> | null },
+    opts: {
+      tenantId: string;
+      sessionId: string;
+      metadata?: Record<string, unknown>;
+    },
   ): Promise<void>;
+}
 
 
 export interface ScheduleSessionWakeupOnPlatform {
@@ -261,7 +264,9 @@ export function createSessionWakeups(
 
       // Refresh MCP servers/toolsets (Requirement 1 & 2)
       // I am assuming the metadata update is what refreshes them.
-      await dependencies.sessions.update(input.wakeup, { 
+      await dependencies.sessions.update({
+        tenantId: input.wakeup.workspaceId,
+        sessionId: input.wakeup.sessionId,
         metadata: { refreshedAt: dependencies.clock.now().toISOString() } 
       });
 

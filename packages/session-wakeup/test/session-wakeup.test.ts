@@ -56,8 +56,11 @@ class FakeSessions implements SessionWakeupSessionSource {
     return { type: "found" as const, session: structuredClone(this.current) };
   }
   async update(
-    _input: { workspaceId: string; sessionId: string },
-    _update: { metadata?: Record<string, unknown> | null },
+    _opts: {
+      tenantId: string;
+      sessionId: string;
+      metadata?: Record<string, unknown>;
+    },
   ): Promise<void> {
     // No-op for test
   }

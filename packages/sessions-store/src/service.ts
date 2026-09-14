@@ -191,6 +191,14 @@ export class SessionService {
     });
   }
 
+  /**
+   * Returns true if the session is currently idle.
+   */
+  async isIdle(opts: { tenantId: string; sessionId: string }): Promise<boolean> {
+    const row = await this.requireSession(opts);
+    return row.status === "idle";
+  }
+
   async archive(opts: { tenantId: string; sessionId: string }): Promise<SessionRow> {
     await this.requireSession(opts);
     return this.repo.archive(opts.tenantId, opts.sessionId, this.clock.nowMs());
@@ -438,27 +446,6 @@ export class SessionService {
     if (!row) throw new SessionNotFoundError();
     return row;
   }
-  /**
-   * Refreshes MCP servers and toolsets added to the session.
-   * Assumes idle-state check was performed before calling.
-   */
-  async update(
-    tenantId: string,
-    sessionId: string,
-    update: SessionUpdateFields,
-  ): Promise<SessionRow> {
-    await this.requireSession({ tenantId, sessionId });
-    return this.repo.update(tenantId, sessionId, update);
-  }
-
-  /**
-   * Returns true if the session is currently idle.
-   */
-  async isIdle(opts: { tenantId: string; sessionId: string }): Promise<boolean> {
-    const row = await this.requireSession(opts);
-    return row.status === "idle";
-  }
-
 }
 
 // ============================================================
