@@ -43,4 +43,4 @@ such as `better-sqlite3`.
 
 ## Questions?
 
-Feel free to open an issue for any questions about contributing.
+Join the [OpenMA Discord community](https://discord.gg/P3EfQFm5bD) for questions about setup, usage, and contributing. English and Chinese are welcome. Use [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues) for reproducible bugs and feature requests.

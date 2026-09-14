@@ -9,17 +9,30 @@
   <img src="https://img.shields.io/badge/Tests-passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/API-Anthropic%20Compatible-blueviolet" alt="Anthropic Compatible" />
   <img src="https://img.shields.io/badge/OpenAI-Agents%20API%20%2B%20SDK-412991" alt="OpenAI Agents API 和 SDK 支持" />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Join OpenMA on Discord" /></a>
 </p>
 
 # Open Managed Agents
 
 **Claude Managed Agents 和 OpenAI Agents API 的开源、自部署替代方案。**
 
-🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[github.com/openma-ai/open-managed-agents](https://github.com/openma-ai/open-managed-agents)**
+🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
 
 OpenMA 提供持久会话、沙箱工具、记忆、加密凭证和崩溃恢复。Cloudflare 与 Node 支持 Claude Managed Agents API；Node 还提供 `/openai/v1` 入口，可使用官方 OpenAI SDK。你可以使用自己的模型 API key，部署到自己的基础设施上。
 
 ---
+
+## 社区交流
+
+<p align="center">
+  <a href="https://discord.gg/P3EfQFm5bD"><strong>一键加入 OpenMA Discord →</strong></a><br />
+  <a href="https://discord.gg/P3EfQFm5bD"><img src="docs/assets/discord-qr.png" alt="扫码加入 OpenMA Discord 社区。" width="180" /></a><br />
+  <sub>扫码加入 OpenMA Discord 社区。</sub>
+</p>
+
+[加入 OpenMA Discord 社区](https://discord.gg/P3EfQFm5bD)，交流安装部署、使用问题和项目实践。支持中文和英文交流；加入后先看 `#welcome`，再进入 `open-managed-agents` 分区。
+
+可复现的 Bug 和功能建议请提交到 [GitHub Issues](https://github.com/openma-ai/open-managed-agents/issues)，方便持续跟踪。
 
 ## 两种运行方式
 
