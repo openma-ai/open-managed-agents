@@ -100,6 +100,11 @@ export default defineConfig({
 
       // ─── Stores: package + test-fakes subpath ─────────────────────────
       { find: "@open-managed-agents/api-types", replacement: "./packages/api-types/src/index.ts" },
+      { find: "@open-managed-agents/cost-attribution", replacement: "./packages/cost-attribution/src/index.ts" },
+      { find: "@open-managed-agents/cost-attribution-blaxel", replacement: "./packages/cost-attribution-blaxel/src/index.ts" },
+      { find: "@open-managed-agents/cost-attribution-cloudflare", replacement: "./packages/cost-attribution-cloudflare/src/index.ts" },
+      { find: "@open-managed-agents/cost-attribution-runtime", replacement: "./packages/cost-attribution-runtime/src/index.ts" },
+      { find: "@open-managed-agents/cost-attribution-vercel", replacement: "./packages/cost-attribution-vercel/src/index.ts" },
       { find: "@open-managed-agents/cf-billing", replacement: "./packages/cf-billing/src/index.ts" },
       { find: "@open-managed-agents/eval-core", replacement: "./packages/eval-core/src/index.ts" },
       { find: "@open-managed-agents/shared", replacement: "./packages/shared/src/index.ts" },
@@ -423,6 +428,7 @@ export default defineConfig({
       // is run explicitly by test:certification:runner.
       "scripts/live-certification.test.mjs",
       "scripts/offline-certification.test.mjs",
+      "scripts/cost-attribution-certification.test.mjs",
       "scripts/local-release-certification.test.mjs",
       "scripts/deepseek-live-certification.test.mjs",
       "scripts/harness-in-sandbox-live-certification.test.mjs",

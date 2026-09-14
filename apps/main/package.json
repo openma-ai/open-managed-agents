@@ -14,7 +14,7 @@
     "@open-managed-agents/agents-store": "workspace:*",
     "@open-managed-agents/blob-store": "workspace:*",
     "@open-managed-agents/cap": "workspace:*",
-    "@open-managed-agents/cf-billing": "workspace:*",
+    "@open-managed-agents/cost-attribution-cloudflare": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
     "@open-managed-agents/credential-store-sql": "workspace:*",
     "@open-managed-agents/deployment-store-sql": "workspace:*",

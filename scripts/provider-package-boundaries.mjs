@@ -31,7 +31,10 @@ export async function providerPackageBoundaryViolations(root) {
     const isEnvironmentDispatch = packageJson.name?.startsWith(
       "@open-managed-agents/environment-dispatch-",
     );
-    if (isManagedRuntime || isEnvironmentActivation || isEnvironmentDispatch) {
+    const isCostAttribution = packageJson.name?.startsWith(
+      "@open-managed-agents/cost-attribution-",
+    );
+    if (isManagedRuntime || isEnvironmentActivation || isEnvironmentDispatch || isCostAttribution) {
       const indexPath = join(directory, "src", "index.ts");
       let indexSource = "";
       try {
@@ -43,7 +46,9 @@ export async function providerPackageBoundaryViolations(root) {
         ? "createManagedEnvironmentActivationPort"
         : isEnvironmentDispatch
           ? "createManagedEnvironmentWorkDispatchPort"
-          : "createManagedRuntimeProviderDriver";
+          : isCostAttribution
+            ? "createCostAttributionPort"
+            : "createManagedRuntimeProviderDriver";
       if (!new RegExp(`\\b${requiredFactory}\\b`).test(indexSource)) {
         violations.push(
           `${relative(root, indexPath)}: missing ${requiredFactory} export`,
@@ -135,6 +140,7 @@ function isProviderAdapterDirectory(name) {
     && !name.startsWith("environment-activation-store-")
   ) return true;
   if (name.startsWith("environment-dispatch-")) return true;
+  if (name.startsWith("cost-attribution-")) return true;
   return name.startsWith("managed-runtime-")
     && !["managed-runtime-host", "managed-runtime-node", "managed-runtime-sandbox"].includes(name);
 }
@@ -159,7 +165,7 @@ async function sourceFiles(directory) {
 function importSpecifiers(source) {
   const imports = new Set();
   for (const pattern of [
-    /\bfrom\s*["']([^"']+)["']/g,
+    /\bfrom\s+["']([^"']+)["']/g,
     /\bimport\s*\(\s*["']([^"']+)["']/g,
     /\bimport\s*["']([^"']+)["']/g,
   ]) {

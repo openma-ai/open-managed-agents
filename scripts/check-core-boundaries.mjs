@@ -168,7 +168,10 @@ async function sourceFiles(directory) {
 function importSpecifiers(source) {
   const imports = new Set();
   for (const pattern of [
-    /\bfrom\s*["']([^"']+)["']/g,
+    // Static import/export grammar requires whitespace after `from`. Using
+    // `\s*` also matched ordinary string values such as `"from"` followed by
+    // another quoted expression later on the line.
+    /\bfrom\s+["']([^"']+)["']/g,
     /\bimport\s*\(\s*["']([^"']+)["']/g,
     /\bimport\s*["']([^"']+)["']/g,
   ]) {

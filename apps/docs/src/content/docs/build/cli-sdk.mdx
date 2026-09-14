@@ -222,11 +222,46 @@ Every namespace in the official SDK works against openma:
 Endpoints that don't exist in Anthropic's API (tenants, OAuth, integrations, evals, cost reports, runtimes, …) live under `/v1/oma/*`. `@openma/sdk` provides typed resources for supported extensions and a path-guarded fallback for the rest:
 
 ```ts
-const usage = await client.oma.request<{ total_cost: string }>({
+const usage = await client.oma.request<{
+  total_cost: number | null;
+  total_estimated_cost: number | null;
+  scope: { type: string; id: string };
+  attribution: {
+    provider: string;
+    source: 'provider_billed' | 'provider_metered' | 'openma_metered' | 'estimated';
+    granularity: string;
+    is_invoice_grade: boolean;
+    data_completeness: 'complete' | 'partial' | 'unavailable';
+    warnings: string[];
+  };
+}>({
   method: "get",
   path: "/v1/oma/cost_report",
 });
 ```
+
+Cost reports are explicit about their evidence. `total_cost` is only populated
+when a provider reports monetary cost; price-card math stays in
+`total_estimated_cost`. A missing provider dataset is `partial` or `unavailable`,
+never a zero. The current Cloudflare adapter is account-scoped, so this endpoint
+does not claim per-tenant or per-session Cloudflare invoice attribution. The
+account-scoped report and its `/pricing` sub-resource require the deployment's
+operator `API_KEY`; tenant-scoped API keys and Console cookies are rejected.
+
+`CostAttributionPort` is the reusable server-side extension point. The shipped
+Cloudflare and Vercel adapters retain provider FOCUS payloads; Blaxel and Modal
+retain their provider-native rows while returning the same `scope` and
+`attribution` envelope. The OpenMA runtime-ledger adapter supports tenant and
+session allocation using a versioned operator rate card. Provider-specific
+credentials are constructor inputs to their adapter package and are never
+accepted in a report query or returned in a report.
+
+Server compositions can pass an `AbortSignal` with a report query. All shipped
+adapters propagate cancellation to their provider I/O and normalize transport,
+SDK, authorization, scope, response, and pagination failures into stable
+`CostAttributionError` codes. The runtime adapter connects to the platform
+ledger with `createRuntimeUsageReader(services.usage)` and reads billed as well
+as unbilled history; acknowledgement is a billing workflow state, not deletion.
 
 Or use plain `fetch` — every OMA endpoint is JSON, no extra runtime needed.
 

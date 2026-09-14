@@ -22,5 +22,6 @@ export const usage_events = pgTable(
       .on(t.tenant_id, t.id)
       .where(sql`"billed_at" IS NULL`),
     index("idx_usage_events_session").on(t.session_id),
+    index("idx_usage_events_attribution").on(t.tenant_id, t.created_at, t.id),
   ],
 );

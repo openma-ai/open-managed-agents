@@ -1,0 +1,1 @@
+CREATE INDEX "idx_usage_events_attribution" ON "usage_events" USING btree ("tenant_id","created_at","id");

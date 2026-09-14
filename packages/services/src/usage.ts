@@ -52,6 +52,19 @@ export interface UsageEventRow {
   billed_at: number | null;
 }
 
+export interface UsageHistoryQuery {
+  tenantId: string;
+  sessionId?: string;
+  /** Inclusive event timestamp lower bound. */
+  startMs: number;
+  /** Exclusive event timestamp upper bound. */
+  endMs: number;
+  /** Immutable event id cursor; only rows with id greater than this are returned. */
+  afterId: number;
+  limit: number;
+  signal?: AbortSignal;
+}
+
 export interface UsageStore {
   /** Insert one row. No-op if value clamps to 0. */
   recordUsage(e: UsageEventInput): Promise<void>;
@@ -61,6 +74,12 @@ export interface UsageStore {
    * cursor. Pass since=0 to fetch from the beginning.
    */
   listUnbilled(tenantId: string, since: number, limit: number): Promise<UsageEventRow[]>;
+  /**
+   * Read the immutable usage ledger for attribution and reconciliation.
+   * Unlike listUnbilled this intentionally includes acknowledged rows: billing
+   * status must never erase historical usage from a cost report.
+   */
+  listUsage(query: UsageHistoryQuery): Promise<UsageEventRow[]>;
   /**
    * Return DISTINCT tenant_ids that have at least one unbilled event on
    * this store. Used by the billing reconcile API's cross-shard fan-out
@@ -125,6 +144,34 @@ export class SqlUsageStore implements UsageStore {
       )
       .bind(tenantId, since, cap)
       .all<UsageEventRow>();
+    return r.results ?? [];
+  }
+
+  async listUsage(query: UsageHistoryQuery): Promise<UsageEventRow[]> {
+    query.signal?.throwIfAborted();
+    const cap = Math.max(1, Math.min(5000, Math.floor(query.limit) || 500));
+    const sessionClause = query.sessionId ? " AND session_id = ?" : "";
+    const bindings: unknown[] = [
+      query.tenantId,
+      query.startMs,
+      query.endMs,
+      query.afterId,
+    ];
+    if (query.sessionId) bindings.push(query.sessionId);
+    bindings.push(cap);
+    const r = await this.client
+      .prepare(
+        `SELECT id, tenant_id, session_id, agent_id, kind, value, created_at, billed_at
+           FROM usage_events
+          WHERE tenant_id = ?
+            AND created_at >= ? AND created_at < ?
+            AND id > ?${sessionClause}
+          ORDER BY id ASC
+          LIMIT ?`,
+      )
+      .bind(...bindings)
+      .all<UsageEventRow>();
+    query.signal?.throwIfAborted();
     return r.results ?? [];
   }
 

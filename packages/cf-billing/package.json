@@ -5,5 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@open-managed-agents/cost-attribution-cloudflare": "workspace:*"
   }
 }

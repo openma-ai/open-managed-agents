@@ -112,7 +112,13 @@ export {
   clampUsageValue,
   MAX_VALUE_PER_EMIT_SEC,
 } from "./usage";
-export type { UsageStore, UsageKind, UsageEventInput, UsageEventRow } from "./usage";
+export type {
+  UsageStore,
+  UsageKind,
+  UsageEventInput,
+  UsageEventRow,
+  UsageHistoryQuery,
+} from "./usage";
 
 /**
  * The platform-agnostic service surface. Every service the application uses

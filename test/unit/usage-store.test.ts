@@ -209,6 +209,73 @@ describe("SqlUsageStore — listUnbilled + ack", () => {
   });
 });
 
+describe("SqlUsageStore — historical attribution reads", () => {
+  it("returns billed and unbilled rows inside an inclusive/exclusive period", async () => {
+    const store = new SqlUsageStore(new CfD1SqlClient(db()));
+    const insert = db().prepare(
+      `INSERT INTO usage_events
+        (tenant_id, session_id, agent_id, kind, value, created_at, billed_at)
+       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+    );
+    await db().batch([
+      insert.bind(TENANT_A, "s1", "session_alive_seconds", 10, 1000, 2000),
+      insert.bind(TENANT_A, "s1", "sandbox_active_seconds", 20, 2000, null),
+      insert.bind(TENANT_A, "s2", "browser_active_seconds", 30, 3000, null),
+      insert.bind(TENANT_A, "s1", "session_alive_seconds", 40, 4000, null),
+      insert.bind(TENANT_B, "s1", "session_alive_seconds", 50, 2000, null),
+    ]);
+
+    const rows = await store.listUsage({
+      tenantId: TENANT_A,
+      startMs: 1000,
+      endMs: 4000,
+      afterId: 0,
+      limit: 50,
+    });
+
+    expect(rows.map(({ session_id, value, billed_at }) => ({ session_id, value, billed_at })))
+      .toEqual([
+        { session_id: "s1", value: 10, billed_at: 2000 },
+        { session_id: "s1", value: 20, billed_at: null },
+        { session_id: "s2", value: 30, billed_at: null },
+      ]);
+  });
+
+  it("isolates session scope and advances with the immutable id cursor", async () => {
+    const store = new SqlUsageStore(new CfD1SqlClient(db()));
+    const insert = db().prepare(
+      `INSERT INTO usage_events
+        (tenant_id, session_id, agent_id, kind, value, created_at, billed_at)
+       VALUES (?, ?, NULL, 'session_alive_seconds', ?, 1000, NULL)`,
+    );
+    await db().batch([
+      insert.bind(TENANT_A, "s1", 10),
+      insert.bind(TENANT_A, "s2", 20),
+      insert.bind(TENANT_A, "s1", 30),
+    ]);
+
+    const first = await store.listUsage({
+      tenantId: TENANT_A,
+      sessionId: "s1",
+      startMs: 0,
+      endMs: 2000,
+      afterId: 0,
+      limit: 1,
+    });
+    const second = await store.listUsage({
+      tenantId: TENANT_A,
+      sessionId: "s1",
+      startMs: 0,
+      endMs: 2000,
+      afterId: first[0].id,
+      limit: 1,
+    });
+
+    expect(first.map((row) => row.value)).toEqual([10]);
+    expect(second.map((row) => row.value)).toEqual([30]);
+  });
+});
+
 describe("createCfUsageStore + clampUsageValue helpers", () => {
   it("createCfUsageStore wires the same SqlUsageStore over CfD1SqlClient", async () => {
     const store = createCfUsageStore({ db: db() });

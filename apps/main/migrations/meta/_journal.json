@@ -155,6 +155,13 @@
       "when": 1788804353198,
       "tag": "0022_outgoing_dracula",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1789289966309,
+      "tag": "0022_wealthy_ikaris",
+      "breakpoints": true
     }
   ]
 }

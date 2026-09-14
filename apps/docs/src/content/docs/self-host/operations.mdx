@@ -56,6 +56,103 @@ Query from the dashboard or with the GraphQL API. Useful for "are silent failure
 
 Workers metrics (requests, CPU time, errors) are in the Cloudflare dashboard per Worker. DO metrics (active instances, storage) are under Durable Objects.
 
+## Cost attribution
+
+Cost reporting is a provider Port, not a Cloudflare-shaped core service. Every
+adapter returns the same evidence fields:
+
+| Field | Meaning |
+|---|---|
+| `source` | `provider_billed`, `provider_metered`, `openma_metered`, or `estimated` |
+| `granularity` | Narrowest scope the source can prove, such as account, project, environment, runtime, or session |
+| `is_invoice_grade` | Whether the result can be treated as a finalized invoice value |
+| `data_completeness` | `complete`, `partial`, or `unavailable`; unavailable data is never coerced to zero |
+| `reconciled_at` | Time at which provider data was last read |
+
+The Cloudflare adapter first queries the account billable-usage API and splits
+long periods into provider-supported windows. If every row contains one
+currency and a billed cost, that value becomes `total_cost`. Cloudflare still
+documents this API as alpha, so the adapter keeps `is_invoice_grade: false`.
+When cost fields or API authorization are unavailable, the adapter falls back
+to the configured Cloudflare price card and returns the result only as
+`total_estimated_cost`. A failed Analytics dataset makes the estimate partial
+and therefore leaves the total null instead of under-reporting it.
+
+`GET /v1/oma/cost_report` and its `/pricing` sub-resource expose deployment-wide
+provider data. They therefore accept only the operator `API_KEY`, via
+`x-api-key` or `Authorization: Bearer`; an ordinary tenant credential cannot
+read account spend or modify the fallback price card. Price-card updates are
+strict: unknown services/rates, negative values, and non-numeric values return
+`400` instead of being silently stored.
+
+There are two intentionally separate ledgers:
+
+- Provider cost is the reconciliation source for infrastructure spend at the
+  scope the provider exposes.
+- OpenMA runtime usage is the real-time source for limits and finer-grained
+  tenant/session allocation. It does not become provider invoice data merely
+  because a rate card is applied.
+
+Current adapter status:
+
+| Provider family | Source and boundary | Current state |
+|---|---|---|
+| Cloudflare | FOCUS billable usage; Analytics price-card fallback remains `estimated` | Implemented in an isolated adapter package |
+| Vercel | FOCUS 1.3 JSONL billing charges, account scope, one-year requests automatically split | Implemented in an isolated adapter package |
+| Blaxel | Billing Explorer totals and resource rows, account/workspace/resource scopes | Implemented in an isolated adapter package |
+| Modal | The official TypeScript SDK does not currently expose billing reports | Not implemented; use the OpenMA runtime ledger when an estimate is sufficient |
+| Daytona / E2B / Sprites / Superserve | No stable documented billed-cost API used by OpenMA | Use the OpenMA runtime ledger adapter |
+| Node / Docker / LiteBox / BoxRun | Versioned operator rate card over OpenMA runtime events | Implemented by the runtime ledger adapter |
+
+Provider adapters are registered through `CostAttributionRegistry`, so adding
+or replacing one does not change the API provenance shape. Provider-only
+dimensions stay in the adapter payload rather than leaking into the Port.
+
+Each adapter lives in `packages/cost-attribution-*`. Provider credentials and
+SDKs stop at that package boundary; the default workspace does not install an
+optional provider SDK transitively. Cloudflare and Vercel preserve their FOCUS
+rows verbatim. Blaxel retains its documented native rows and does not pretend
+those rows conform to FOCUS.
+
+### Provider boundaries and failure semantics
+
+- Vercel's response is streamed JSONL. Malformed rows fail the query; a
+  successful empty stream is a complete USD total of zero. Mixed currencies
+  produce `partial` with `total_cost: null`.
+- Blaxel repeats its full-window summary on every cursor page. OpenMA records
+  that total once, rejects missing/repeated cursors, and fails if the summary
+  changes during pagination. Workspace filtering/grouping is account-admin
+  only and a provider `403` remains a failure.
+- The runtime ledger returns a monetary total only when every observed metric
+  has a valid rate in one currency. Missing rates and mixed currencies are
+  partial, never zero-filled.
+- These APIs are read-only and create no provider resources, so a successful or
+  failed report has no cleanup side effects. Caller cancellation is propagated
+  to provider HTTP/SDK work; the SQL ledger checks cancellation around its read.
+- `CostAttributionError` separates invalid query/scope, authentication,
+  permission, provider availability, malformed response, pagination invariant,
+  and incomplete rate-card failures. Only availability/rate-limit failures are
+  retryable; no error includes a provider credential.
+
+For Node, Docker, LiteBox, BoxRun, or a provider without a documented cost API,
+compose `createRuntimeUsageReader(services.usage)` into the runtime adapter.
+The historical ledger includes acknowledged rows, is indexed by tenant and
+time, and remains storage-independent across D1, SQLite, and Postgres.
+
+Run the deterministic contract suite as part of `pnpm test`. To probe real
+provider accounts and write a private evidence artifact:
+
+```bash
+pnpm test:certification:cost -- --allow-missing
+```
+
+The command reports one of `PASS`, `FAIL`, or `NOT_RUN_NO_CREDENTIAL` for each
+provider and writes `artifacts/certification/cost-attribution-certification.json`
+with mode `0600`. Remove `--allow-missing` for a release gate. Expected secrets
+are `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`, `VERCEL_TOKEN` plus
+`VERCEL_TEAM_ID`, and `BL_API_KEY` plus `BL_ACCOUNT_ID`. Reports and
+diagnostics redact credential values.
+
 ## Multi-tenancy
 
 By default, openma is **multi-tenant on a single D1**. Every user gets a `tenant_id` row; every query is scoped by it. Adequate for most teams.

@@ -2,14 +2,61 @@ import { Hono } from "hono";
 import type { Env } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import {
-  generateCostReport,
+  createCloudflareCostAttributionPort,
+  recentCostPeriod,
   DEFAULT_PRICING,
+  mergeCfPricing,
   type CfPricing,
-} from "@open-managed-agents/cf-billing";
+} from "@open-managed-agents/cost-attribution-cloudflare";
 
 const PRICING_KV_KEY = "system:cf_pricing";
 
 const app = new Hono<{ Bindings: Env; Variables: { tenant_id: string; services: Services } }>();
+
+app.use("*", async (c, next) => {
+  const authorization = c.req.header("authorization") ?? "";
+  const supplied = c.req.header("x-api-key")
+    ?? (authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "");
+  if (!c.env.API_KEY || supplied !== c.env.API_KEY) {
+    return c.json(
+      { error: "Operator API key required for account-scoped cost reports" },
+      403,
+    );
+  }
+  return next();
+});
+
+export interface ResolveCloudflareCostReportOptions {
+  accountId: string;
+  token: string;
+  days: number;
+  pricingJson: string | null;
+  fetch?: typeof fetch;
+  now?: Date;
+  signal?: AbortSignal;
+}
+
+export async function resolveCloudflareCostReport(
+  options: ResolveCloudflareCostReportOptions,
+) {
+  const now = options.now;
+  const pricing = mergeCfPricing(
+    DEFAULT_PRICING,
+    options.pricingJson ? JSON.parse(options.pricingJson) : {},
+  );
+  const costAttribution = createCloudflareCostAttributionPort({
+    accountId: options.accountId,
+    token: options.token,
+    pricing,
+    fetch: options.fetch,
+    now: now ? () => now : undefined,
+  });
+  return costAttribution.report({
+    period: recentCostPeriod(options.days, now),
+    scope: { type: "account", id: options.accountId },
+    signal: options.signal,
+  });
+}
 
 app.get("/", async (c) => {
   const token = c.env.CLOUDFLARE_API_TOKEN;
@@ -20,10 +67,13 @@ app.get("/", async (c) => {
 
   const days = Math.min(90, Math.max(1, parseInt(c.req.query("days") ?? "30", 10) || 30));
 
-  const stored = await c.var.services.kv.get(PRICING_KV_KEY);
-  const pricing: CfPricing = stored ? JSON.parse(stored) : DEFAULT_PRICING;
-
-  const report = await generateCostReport(accountId, token, days, pricing);
+  const report = await resolveCloudflareCostReport({
+    accountId,
+    token,
+    days,
+    pricingJson: await c.var.services.kv.get(PRICING_KV_KEY),
+    signal: c.req.raw.signal,
+  });
   return c.json(report);
 });
 
@@ -31,24 +81,28 @@ app.get("/pricing", async (c) => {
   const stored = await c.var.services.kv.get(PRICING_KV_KEY);
   return c.json({
     source: stored ? "custom" : "default",
-    pricing: stored ? JSON.parse(stored) : DEFAULT_PRICING,
+    pricing: mergeCfPricing(DEFAULT_PRICING, stored ? JSON.parse(stored) : {}),
   });
 });
 
 app.put("/pricing", async (c) => {
-  const body = await c.req.json<Partial<CfPricing>>();
+  const body = await c.req.json<unknown>();
   const stored = await c.var.services.kv.get(PRICING_KV_KEY);
-  const current: CfPricing = stored ? JSON.parse(stored) : { ...DEFAULT_PRICING };
-
-  for (const [service, rates] of Object.entries(body)) {
-    if (service in current) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (current as any)[service] = { ...(current as any)[service], ...rates };
-    }
+  const current = mergeCfPricing(
+    DEFAULT_PRICING,
+    stored ? JSON.parse(stored) : {},
+  );
+  let pricing: CfPricing;
+  try {
+    pricing = mergeCfPricing(current, body);
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : "Invalid Cloudflare pricing",
+    }, 400);
   }
 
-  await c.var.services.kv.put(PRICING_KV_KEY, JSON.stringify(current));
-  return c.json({ pricing: current });
+  await c.var.services.kv.put(PRICING_KV_KEY, JSON.stringify(pricing));
+  return c.json({ pricing });
 });
 
 app.delete("/pricing", async (c) => {

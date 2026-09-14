@@ -62,6 +62,20 @@ test("provider source imports require an optional peer dependency", async () => 
   ]);
 });
 
+test("ordinary string values named from are not parsed as module imports", async () => {
+  const root = await fixture(
+    {},
+    `export function createManagedRuntimeProviderDriver() {
+      const url = new URL("https://example.test");
+      const window = { from: "2026-01-01", to: "2026-01-02" };
+      url.searchParams.set("from", window.from);
+      url.searchParams.set("to", window.to);
+      return url;
+    }`,
+  );
+  assert.deepEqual(await providerPackageBoundaryViolations(root), []);
+});
+
 test("provider SDK optional peers are isolated inside their adapter package", async () => {
   const root = await fixture({
     dependencies: {
@@ -169,6 +183,26 @@ test("provider dispatch packages expose their own lazy-loader factory", async ()
     },
     'import type { Client } from "@acme/control-plane"; export type Control = Client; export function createManagedEnvironmentWorkDispatchPort() { return {}; }',
     "environment-dispatch-acme",
+  );
+  assert.deepEqual(await providerPackageBoundaryViolations(isolated), []);
+});
+
+test("cost attribution adapters are isolated packages with one factory shape", async () => {
+  const missing = await fixture({}, "export {};", "cost-attribution-acme");
+  assert.deepEqual(await providerPackageBoundaryViolations(missing), [
+    "packages/cost-attribution-acme/src/index.ts: missing createCostAttributionPort export",
+  ]);
+
+  const isolated = await fixture(
+    {
+      dependencies: {
+        "@open-managed-agents/cost-attribution": "workspace:*",
+      },
+      peerDependencies: { "@acme/billing": "^1.0.0" },
+      peerDependenciesMeta: { "@acme/billing": { optional: true } },
+    },
+    'import type { Billing } from "@acme/billing"; export type Client = Billing; export function createCostAttributionPort() { return {}; }',
+    "cost-attribution-acme",
   );
   assert.deepEqual(await providerPackageBoundaryViolations(isolated), []);
 });
