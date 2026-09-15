@@ -72,10 +72,10 @@ export const DEPLOYMENT_TARGETS: Record<DeploymentTarget, DeploymentTargetDefini
   },
   render: {
     name: "Render",
-    eyebrow: "Template",
+    eyebrow: "Image",
     availability: "guided",
-    summary: "Deploy a persistent Node service from a Render Blueprint.",
-    note: "Paid service and disk, generated application secrets, and your E2B key.",
+    summary: "Run the official OpenMA image with a persistent disk.",
+    note: "Sign in to Render, choose a region, and deploy with your sandbox credentials.",
     estimate: "≈ 15 min",
   },
   vercel: {
@@ -282,16 +282,16 @@ OPENMA_DOCKER_DATA_MODE=${selection.dataMode === "postgres" ? "postgres" : "sqli
   if (selection.target === "render") {
     return {
       ...common,
-      status: "Template",
+      status: "Image deployment",
       topology: "One Node service · SQLite · E2B sandboxes",
       persistence: "Persistent disk mounted at /app/data; keep the service at one instance",
-      command: "# Use Deploy with Render below to create a Blueprint from render.yaml.\n# Enter E2B_API_KEY directly in Render and review the service and disk charges.",
+      command: "npx @openma/self-host install --target render",
       verificationCommand: "curl https://<your-service>.onrender.com/health",
-      launchUrl: `https://render.com/deploy?repo=${encodeURIComponent(OPENMA_REPOSITORY_URL)}`,
-      requirements: ["A Render account with billing enabled for a paid service and persistent disk", "E2B_API_KEY entered directly in Render", "Review region, service size, and disk capacity before deploying"],
+      launchUrl: "https://dashboard.render.com/",
+      requirements: ["A Render account with billing enabled for a paid service and persistent disk", "E2B_API_KEY or another supported sandbox credential, configured locally for the CLI or directly in Render", "Review region, service size, and disk capacity before deploying"],
       nextSteps: [
-        "Render builds the repository, generates application secrets, and mounts the persistent disk.",
-        "The service uses its Render URL automatically; set PUBLIC_BASE_URL when adding a custom domain.",
+        "CLI preview: install the official Render CLI, then run the command below. It opens Render login, uses your active workspace, and deploys a pinned public image with private generated secrets.",
+        "In the dashboard: New → Web Service → Existing Image. Copy the official image and environment configuration from the full guide. No Git repository connection is needed.",
         "Open your service URL, create your account, and add a Model Card in Console.",
         "Automatic deploys are disabled; deploy updates explicitly and back up the disk.",
       ],

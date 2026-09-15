@@ -185,7 +185,7 @@ const initialPlan = buildDeploymentPlan({
           <section class="provider-launch" aria-label="Standalone installer">
             <div>
               <strong>@openma/self-host · CLI preview</strong>
-              <p>Available after the first npm release. Docker and Fly use published images; Render and Vercel hand off to their web flows. Cloudflare still needs the source setup guide.</p>
+              <p>Available after the first npm release. Docker, Fly and Render use published images; Render opens its official CLI authorization flow. Vercel currently hands off to its web flow. Cloudflare still needs the source setup guide.</p>
               <code data-installer-command>npx @openma/self-host install --target cloudflare</code>
             </div>
           </section>
@@ -346,11 +346,11 @@ const initialPlan = buildDeploymentPlan({
         if (providerLaunch) providerLaunch.hidden = !plan.launchUrl || (target === "vercel" && Boolean(vercelCallback));
         if (deployLink && plan.launchUrl) {
           deployLink.href = plan.launchUrl;
-          deployLink.textContent = `Deploy with ${plan.name}`;
+          deployLink.textContent = target === "render" ? "Open Render dashboard" : `Deploy with ${plan.name}`;
         }
         const providerDescription = get<HTMLElement>("[data-provider-description]");
         if (providerDescription) providerDescription.textContent = target === "render"
-          ? "Render creates a paid service with a persistent disk and generates application secrets. Enter your E2B key directly in Render."
+          ? "Use the CLI command to authorize and deploy, or follow the full guide in the Render dashboard. Choose Existing Image; connecting GitHub is optional."
           : "Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.";
 
         const callbackPanel = get<HTMLElement>("[data-vercel-callback]");
@@ -372,7 +372,7 @@ const initialPlan = buildDeploymentPlan({
         const installerCommand = get<HTMLElement>("[data-installer-command]");
         if (installerCommand) installerCommand.textContent = `npx @openma/self-host install --target ${target}${target === "docker" || target === "fly" ? ` --data-mode ${dataMode === "postgres" ? "postgres" : "sqlite"}` : ""}`;
         const terminalCommand = get<HTMLElement>("[data-terminal-command]");
-        if (terminalCommand) terminalCommand.hidden = target === "render";
+        if (terminalCommand) terminalCommand.hidden = false;
         const commandLabel = get<HTMLElement>("[data-command-label]");
         if (commandLabel) commandLabel.textContent = target === "vercel" ? "CLI fallback" : "Terminal";
 

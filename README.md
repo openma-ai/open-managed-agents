@@ -16,7 +16,7 @@
   <a href="https://openma.dev/deploy/?provider=docker"><img src="https://img.shields.io/badge/Deploy-Docker%20wizard-2496ED" alt="Deploy with Docker wizard" /></a>
   <a href="https://openma.dev/deploy/?provider=cloudflare"><img src="https://img.shields.io/badge/Deploy-Cloudflare%20wizard-F38020" alt="Deploy with Cloudflare wizard" /></a>
   <a href="https://openma.dev/deploy/?provider=fly"><img src="https://img.shields.io/badge/Deploy-Fly.io%20wizard-8B5CF6" alt="Deploy with Fly.io wizard" /></a>
-  <a href="https://openma.dev/deploy/?provider=render"><img src="https://img.shields.io/badge/Deploy-Render%20template-000000" alt="Deploy with Render template" /></a>
+  <a href="https://openma.dev/deploy/?provider=render"><img src="https://img.shields.io/badge/Deploy-Render-000000" alt="Deploy with Render" /></a>
   <a href="https://openma.dev/deploy/?provider=vercel"><img src="https://img.shields.io/badge/Deploy-Vercel%20Beta-000000" alt="Deploy with Vercel Beta" /></a>
 </p>
 
@@ -104,7 +104,7 @@ before migrating an existing application. See the
 
 The standalone **`@openma/self-host`** installer is implemented in
 [`packages/self-host`](packages/self-host). It installs Docker/Fly from published
-images without a source checkout. Render/Vercel currently hand off to their web
+images without a source checkout. Render deploys through its authorized CLI; Vercel currently hands off to its web
 flows; Cloudflare still requires the source-based setup guide.
 
 After the first npm release:
@@ -136,8 +136,8 @@ and stop/update commands, see the [Docker guide](https://docs.openma.dev/self-ho
 
 Prefer hosted setup? Use the **[deployment wizard](https://openma.dev/deploy/)**
 for Cloudflare, Fly.io, Docker, Render, or Vercel (Beta). The
-[Render template](https://render.com/deploy?repo=https://github.com/openma-ai/open-managed-agents)
-creates a paid service and persistent disk; enter your E2B key directly in Render.
+[Render guide](https://docs.openma.dev/self-host/render/)
+covers the official image, platform authorization, and a paid service with persistent storage.
 Vercel still requires the documented Sandbox and object-storage configuration.
 
 Smoke test the harness end-to-end:

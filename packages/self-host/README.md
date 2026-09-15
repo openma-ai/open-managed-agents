@@ -28,11 +28,11 @@ plan for unattended runs. Use `--data-mode postgres` for Postgres instead of SQL
 | --- | --- |
 | docker | Pull a published image, configure secrets/volumes, start and check health |
 | fly | Bundle Fly configuration and setup script, deploy a pinned image with flyctl |
-| render | Print the Blueprint URL; saved state explicitly remains `handoff` |
+| render | Authorize with the official Render CLI, create an image service with a disk, and check health |
 | vercel | Print the Beta configurator URL; saved state explicitly remains `handoff` |
 | cloudflare | Explain the missing standalone artifact and link the source-based setup guide |
 
-Render/Vercel provisioning still requires their web flow. Verify the resulting
+Vercel provisioning still requires its web flow. Verify the resulting
 instance with `oma-self-host status --url https://YOUR-SERVICE`. A template handoff
 is never reported as a completed installation. Cloudflare standalone publishing
 is a separate prerequisite; this package does not hide a full source checkout.
@@ -64,7 +64,7 @@ and memory mounts, when needed, require separate configuration.
 
 From this repository: `pnpm --filter @openma/self-host build`, then
 `node packages/self-host/dist/index.js --help`. The published package contains only
-bundled JavaScript, Fly assets, and this README; there are no runtime npm dependencies.
+bundled JavaScript, Fly assets, and this README; the YAML parser is bundled and there are no runtime npm dependencies.
 
 ### Existing Fly apps
 
@@ -78,3 +78,17 @@ This checks required secret names in the app and reuses their values without
 exporting or overwriting them. Select the provider already configured on the app.
 Subsequent installs and upgrades remember this choice. Installation is only
 marked complete after the public `/health` endpoint succeeds.
+
+### Render authorization and deployment
+
+Install the official Render CLI, then use `oma-self-host install --target render`.
+It calls `render login` and resumes after browser authorization. Choose an active
+workspace in Render CLI, or pass `--workspace ID`. `--region` defaults to `oregon`.
+Review the paid `1c-2g` service and 10 GB disk before confirming. SQLite only.
+The platform token remains in Render CLI configuration (or `RENDER_API_KEY` for CI).
+Provider credentials and generated application secrets remain in private local
+configuration and are sent directly to Render, never to the OpenMA website.
+
+`oma-self-host login --target render|fly|vercel|cloudflare` delegates to the
+installed official platform CLI. Render deployment is implemented; Vercel and
+Cloudflare login support does not imply automated deployment support.

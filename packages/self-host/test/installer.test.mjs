@@ -22,7 +22,7 @@ test('configuration creates private independent secrets and preserves them on re
 });
 test('template and unsupported platforms never claim unattended installation',()=>{
  assert.equal(targets.docker.mode,'image');assert.equal(targets.fly.mode,'image');
- assert.equal(targets.render.mode,'handoff');assert.equal(targets.vercel.mode,'handoff');assert.equal(targets.cloudflare.mode,'source-required');
+ assert.equal(targets.render.mode,'image');assert.equal(targets.vercel.mode,'handoff');assert.equal(targets.cloudflare.mode,'source-required');
 });
 test('tag resolution records an immutable published digest',async()=>{
  const {resolveImage}=await import('../src/installer.ts');let calls=0;

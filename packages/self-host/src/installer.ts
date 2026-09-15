@@ -1,3 +1,5 @@
+import {renderCredentials,renderRequest,renderServiceSpec} from './render.ts';
+import {setTimeout as delay} from 'node:timers/promises';
 import {randomBytes, createHash} from 'node:crypto';
 import {mkdir,readFile,writeFile,lstat,copyFile} from 'node:fs/promises';
 import {resolve,join,dirname} from 'node:path';
@@ -10,22 +12,22 @@ const repository='ghcr.io/openma-ai/open-managed-agents';
 export const targets = {
  docker:{mode:'image', note:'Docker: persistent SQLite volume, loopback port; E2B/Daytona/BoxRun runs sandboxes.'},
  fly:{mode:'image',note:'Fly.io: paid Machine and volume; requires fly auth login and sandbox credentials.'},
- render:{mode:'handoff',note:'Render: paid service/disk and E2B key; complete the Blueprint in your account.'},
+ render:{mode:'image',note:'Render: official image, paid 1c-2g service and 10 GB disk; one instance. Review billing in your Render workspace.'},
  vercel:{mode:'handoff',note:'Vercel Beta: Neon, object storage and Sandbox configuration remain required.'},
  cloudflare:{mode:'source-required',note:'Cloudflare: no standalone deployment artifact yet; use the repository setup guide.'},
 } as const;
 type Target=keyof typeof targets;
-type Options={command:string,target:Target,dir:string,port:number,image:string,provider:string,dataMode:string,yes:boolean,json:boolean,reuseFlySecrets:boolean,url?:string};
+type Options={command:string,target:Target,dir:string,port:number,image:string,provider:string,dataMode:string,yes:boolean,json:boolean,reuseFlySecrets:boolean,url?:string,workspace?:string,region:string};
 export function parseOptions(args:string[]):Options {
- const o:Options={command:'install',target:'docker',dir:'',port:8787,image:`${repository}:edge`,provider:'e2b',dataMode:'sqlite',yes:false,json:false,reuseFlySecrets:false};
+ const o:Options={command:'install',target:'docker',dir:'',port:8787,image:`${repository}:edge`,provider:'e2b',dataMode:'sqlite',yes:false,json:false,reuseFlySecrets:false,region:'oregon'};
  if(args[0]&&!args[0].startsWith('-')) o.command=args.shift()!;
- if(!['install','doctor','status','upgrade','help'].includes(o.command)) throw Error('Use install, doctor, status, upgrade, or help.');
+ if(!['install','doctor','status','upgrade','login','help'].includes(o.command)) throw Error('Use install, doctor, status, upgrade, login, or help.');
  for(let i=0;i<args.length;i++) {
   const flag=args[i];
   if(flag==='--reuse-fly-secrets'){o.reuseFlySecrets=true;continue;}
   if(flag==='--yes'){o.yes=true;continue;} if(flag==='--json'){o.json=true;continue;}
   if(flag==='--help'||flag==='-h'){o.command='help';continue;}
-  if(!['--target','--dir','--port','--image','--provider','--url','--data-mode'].includes(flag)) throw Error(`Unknown option: ${flag}`);
+  if(!['--target','--dir','--port','--image','--provider','--url','--data-mode','--workspace','--region'].includes(flag)) throw Error(`Unknown option: ${flag}`);
   const value=args[++i]; if(!value||value.startsWith('--')) throw Error(`Missing value for ${flag}`);
   if(flag==='--target') o.target=value as Target;
   if(flag==='--dir') o.dir=resolve(value);
@@ -34,6 +36,8 @@ export function parseOptions(args:string[]):Options {
   if(flag==='--provider') o.provider=value;
   if(flag==='--data-mode') o.dataMode=value;
   if(flag==='--url') o.url=value;
+  if(flag==='--workspace')o.workspace=value;
+  if(flag==='--region')o.region=value;
  }
  if(!Object.hasOwn(targets,o.target)) throw Error('Choose docker, fly, render, vercel, or cloudflare.');
  if(!Number.isInteger(o.port)||o.port<1||o.port>65535) throw Error('Port must be 1–65535.');
@@ -41,6 +45,7 @@ export function parseOptions(args:string[]):Options {
  if(o.reuseFlySecrets&&o.target!=='fly')throw Error('--reuse-fly-secrets is only supported for Fly.');
  if(!['e2b','daytona','boxrun','sprites'].includes(o.provider)) throw Error('Choose e2b, daytona, boxrun, or sprites.');
  if(!new RegExp('^'+repository.replaceAll('.', '\\.')+'(?::[a-zA-Z0-9_.-]+|@sha256:[a-f0-9]{64})$').test(o.image)) throw Error('Use an official OpenMA GHCR tag or sha256 digest.');
+ if(!['oregon','ohio','virginia','frankfurt','singapore'].includes(o.region))throw Error('Unsupported Render region.');
  o.dir ||= join(homedir(),'.openma','self-host',o.target);
  return o;
 }
@@ -82,8 +87,10 @@ export async function verify(url:string) {
  return {status:'healthy',url:origin.origin};
 }
 export const help=`OpenMA self-host installer (separate from the oma API CLI)
-Usage: oma-self-host [install|doctor|status|upgrade] [options]
+Usage: oma-self-host [install|login|doctor|status|upgrade] [options]
   --target docker|fly|render|vercel|cloudflare
+  --workspace ID   Render workspace (otherwise use active Render CLI workspace)
+  --region NAME    Render region (default oregon)
   --dir PATH       Installation directory (default ~/.openma/self-host/<target>)
   --provider e2b|daytona|boxrun|sprites   Credentials come from environment variables
   --image REF      Official GHCR image; default edge (development channel)
@@ -105,6 +112,11 @@ export async function main(argv=process.argv.slice(2)) {
   const rl=createInterface({input:process.stdin,output:process.stdout});
   try{const target=await rl.question('Platform [docker/fly/render/vercel/cloudflare] (docker): ');if(target){if(!Object.hasOwn(targets,target))throw Error('Unknown platform.');o.target=target as Target;o.dir=join(homedir(),'.openma','self-host',target);}}finally{rl.close();}
  }
+ if(o.command==='login'){
+  const commands:Record<string,[string,string[]]>={fly:['fly',['auth','login']],render:['render',['login']],vercel:['vercel',['login']],cloudflare:['wrangler',['login']]};
+  if(o.target==='docker'){console.log('Docker does not require cloud login.');return;}
+  const [cmd,args]=commands[o.target];run(cmd,args,process.cwd());return;
+ }
  const statePath=join(o.dir,'installation.json');
  const saved=await exists(statePath)?await readJSON(statePath):null;
  if(saved&&saved.target!==o.target)throw Error('Installation belongs to another platform. Use its --target or another --dir.');
@@ -114,7 +126,7 @@ export async function main(argv=process.argv.slice(2)) {
  if(saved&&!original.includes('--data-mode'))o.dataMode=saved.dataMode??'sqlite';
  if(saved&&(saved.dataMode??'sqlite')!==o.dataMode)throw Error('Database changes require an explicit migration, not reinstall.');
  if(o.command==='doctor'){
-  const commands=o.target==='docker'?[['docker','compose','version'],['docker','info']]:o.target==='fly'?[['fly','version'],['fly','auth','whoami'],['bash','--version'],['openssl','version']]:[];
+  const commands=o.target==='docker'?[['docker','compose','version'],['docker','info']]:o.target==='render'?[['render','--version'],['render','whoami','-o','json']]:o.target==='fly'?[['fly','version'],['fly','auth','whoami'],['bash','--version'],['openssl','version']]:[];
   const checks=commands.map(([cmd,...args])=>{try{run(cmd,args,process.cwd(),process.env,true);return {command:cmd+' '+args.join(' '),ok:true};}catch{return {command:cmd+' '+args.join(' '),ok:false};}});
   console.log(JSON.stringify({target:o.target,...targets[o.target],checks,installed:saved?.status==='installed',directory:o.dir},null,2));
   if(checks.some(c=>!c.ok))process.exitCode=1;return;
@@ -123,22 +135,60 @@ export async function main(argv=process.argv.slice(2)) {
   if(o.url){console.log(JSON.stringify(await verify(o.url),null,2));return;}
   if(!saved)throw Error('No saved installation; use --dir or --url.');
   if(o.target==='docker')console.log(JSON.stringify(await verify(`http://localhost:${saved.port}`),null,2));
+  else if(o.target==='render'){if(!saved.url)throw Error('Render deployment is pending. Rerun install to finish.');console.log(JSON.stringify(await verify(saved.url),null,2));}
   else if(o.target==='fly'){const status=JSON.parse(run('fly',['status','--json'],o.dir,process.env,true));console.log(JSON.stringify(await verify(`https://${status.Hostname}`),null,2));}
   else console.log(JSON.stringify({status:'handoff',...saved},null,2));return;
  }
  if(o.json)throw Error('--json is supported for doctor/status only.');
+ if(o.target==='render'&&o.dataMode!=='sqlite')throw Error('Render currently supports SQLite with a persistent disk.');
  if(o.target==='cloudflare')throw Error('Cloudflare standalone artifact is not published yet. Follow https://docs.openma.dev/self-host/deploy/ (source checkout required).');
- if(o.command==='upgrade'&&(!saved||!original.includes('--image')||!['docker','fly'].includes(o.target)))throw Error('Upgrade requires an existing Docker/Fly installation and explicit --image. Back up data first.');
- console.log(`${targets[o.target].note}\nDirectory: ${o.dir}\nImage: ${saved&&o.command==='install'?saved.image:o.image}\nExisting secrets and persistent data are reused. Cloud and sandbox resources may incur charges.`);
+ if(o.command==='upgrade'&&(!saved||!original.includes('--image')||!['docker','fly','render'].includes(o.target)))throw Error('Upgrade requires an existing Docker/Fly/Render installation and explicit --image. Back up data first.');
+ let renderAuth:Awaited<ReturnType<typeof renderCredentials>>|undefined;
+ if(o.target==='render'){run('render',['login'],process.cwd());renderAuth=await renderCredentials();o.workspace ||= saved?.workspace||renderAuth.workspace;if(!o.workspace)throw Error('Select --workspace or run render workspace set.');if(saved?.workspace&&saved.workspace!==o.workspace)throw Error('Use the original Render workspace for this installation.');}
+ console.log(`${targets[o.target].note}${o.target==='render'?`\nWorkspace: ${o.workspace}\nRegion: ${saved?.region||o.region}`:''}\nDirectory: ${o.dir}\nImage: ${saved&&o.command==='install'?saved.image:o.image}\nExisting secrets and persistent data are reused. Cloud and sandbox resources may incur charges.`);
  if(!o.yes){if(!process.stdin.isTTY)throw Error('Use --yes after reviewing the plan, or run interactively.');const rl=createInterface({input:process.stdin,output:process.stdout});try{if(!/^y(es)?$/i.test(await rl.question('Continue? [y/N] ')))return;}finally{rl.close();}}
  await mkdir(o.dir,{recursive:true,mode:0o700});
  if((await lstat(o.dir)).isSymbolicLink())throw Error('Installation directory must not be a symlink.');
  const record=async(state:Record<string,unknown>)=>{if(await exists(statePath)&& (await lstat(statePath)).isSymbolicLink())throw Error('Refusing symlink state file.');await writeFile(statePath,JSON.stringify({target:o.target,provider:o.provider,port:o.port,dataMode:o.dataMode,reuseFlySecrets:o.reuseFlySecrets,...state},null,2)+'\n',{mode:0o600});};
- if(o.target==='render'||o.target==='vercel'){
-  const url=o.target==='render'?'https://render.com/deploy?repo=https://github.com/openma-ai/open-managed-agents':'https://openma.dev/deploy/?provider=vercel';
+ if(o.target==='vercel'){
+  const url='https://openma.dev/deploy/?provider=vercel';
   await record({status:'handoff',url});console.log(`Continue in your browser: ${url}\nNot installed yet. After deployment: oma-self-host status --url https://YOUR-SERVICE`);return;
  }
  const image=saved&&o.command==='install'?saved.image:await resolveImage(o.image);
+ if(o.target==='render'){
+  const token=renderAuth!.token;const owner=o.workspace!;
+  const name='openma-'+createHash('sha256').update(o.dir).digest('hex').slice(0,10);
+  let serviceId=saved?.serviceId as string|undefined;
+  const renderRecord=async(extra:Record<string,unknown>)=>record({image,workspace:owner,region:saved?.region||o.region,name,serviceId,status:'pending',...extra});
+  if(!serviceId){
+   const matches=await renderRequest(token,`/services?ownerId=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}&limit=100`);
+   const found=matches.map((x:any)=>x.service??x).filter((x:any)=>x.name===name);
+   if(found.length){if(!saved?.creationRequested||found.length!==1)throw Error('A Render service with this name already exists. Reconcile it before retrying.');serviceId=found[0].id;}
+   else{
+    const environment=await configureDocker(o.dir,o.provider,process.env);
+    await renderRecord({creationRequested:true});
+    const result=await renderRequest(token,'/services','POST',renderServiceSpec({owner,name,region:o.region,image},environment));
+    serviceId=(result.service??result).id;
+    if(!serviceId)throw Error('Render creation response was incomplete. Rerun install to reconcile the service.');
+   }
+  }
+  await renderRecord({serviceId});
+  if(o.command==='upgrade')run('render',['deploys','create',serviceId!,'--image',image,'--wait','--confirm','-o','json'],o.dir,process.env,true);
+  console.log(`Waiting for Render service ${serviceId}…`);
+  for(let attempt=0;attempt<120;attempt++){
+   const deploys=await renderRequest(token,`/services/${encodeURIComponent(serviceId!)}/deploys?limit=1`);
+   const state=(deploys[0]?.deploy??deploys[0])?.status;
+   if(['build_failed','update_failed','canceled','pre_deploy_failed'].includes(state))throw Error(`Render deployment ${state}. Inspect the service logs and fix/redeploy in Render; rerun install to check it.`);
+   if(state==='live'){
+    const service=await renderRequest(token,`/services/${encodeURIComponent(serviceId!)}`);
+    const url=(service.service??service).serviceDetails?.url;
+    if(typeof url!=='string')throw Error('Render did not return a service URL.');
+    const health=await verify(url);await renderRecord({serviceId,status:'installed',url:health.url});console.log(`OpenMA is healthy: ${health.url}`);return;
+   }
+   await delay(10000);
+  }
+  throw Error('Render is still deploying. Rerun install to resume checking the existing service.');
+ }
  if(o.target==='fly'){
   await mkdir(join(o.dir,'scripts'),{recursive:true});
   const assets=join(dirname(fileURLToPath(import.meta.url)),'assets');

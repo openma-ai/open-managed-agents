@@ -208,12 +208,13 @@ test("provider links override saved wizard choices and ignore unknown targets", 
   assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=render")), "render");
   assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=unknown")), null);
 });
-test("Render launch points to this repository and declares persistent storage and provider credentials", () => {
+test("Render offers image deployment and the authenticated installer without Git repository authorization", () => {
   const plan = buildDeploymentPlan({target:"render", modelSetup:"console", dataMode:"managed"});
   const url = new URL(plan.launchUrl);
-  assert.equal(url.origin, "https://render.com");
-  assert.equal(url.pathname, "/deploy");
-  assert.equal(url.searchParams.get("repo"), "https://github.com/openma-ai/open-managed-agents");
+  assert.equal(url.origin, "https://dashboard.render.com");
+  assert.equal(url.pathname, "/");
+  assert.equal(url.searchParams.get("repo"), null);
+  assert.match(plan.command, /npx @openma\/self-host install --target render/);
   assert.match(plan.persistence, /disk/i);
   assert.ok(plan.requirements.some(value => /E2B_API_KEY/.test(value)));
   assert.equal(plan.collectsSecrets, false);
