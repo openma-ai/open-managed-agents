@@ -98,17 +98,17 @@ test("Cloudflare plan uses the repository setup wizard and never asks the websit
   assert.equal(plan.collectsSecrets, false);
 });
 
-test("Docker plan keeps durable state and vault proxy in the generated topology", () => {
+test("Docker plan uses the local setup wizard and durable volumes", () => {
   const plan = buildDeploymentPlan({
     target: "docker",
     modelSetup: "console",
     dataMode: "sqlite",
   });
 
-  assert.match(plan.command, /docker compose up -d --build/);
-  assert.match(plan.topology, /vault sidecar/i);
-  assert.match(plan.persistence, /\.\/data/);
-  assert.match(plan.command, /SANDBOX_PROVIDER=<e2b\|daytona\|boxrun\|litebox>/);
+  assert.match(plan.command, /bash scripts\/setup-docker\.sh/);
+  assert.match(plan.topology, /Node server/i);
+  assert.match(plan.persistence, /volume/i);
+  assert.doesNotMatch(plan.command, /cp \.env|API_KEY=\.\.\./);
   assert.ok(plan.requirements.some((item) => /isolated sandbox provider/i.test(item)));
   assert.ok(plan.nextSteps.some((item) => /subprocess.*not available/i.test(item)));
 });
@@ -122,7 +122,7 @@ test("Fly plan uses the checked-in Machine adapter and lets Fly Launch provision
 
   assert.equal(plan.status, "Ready");
   assert.match(plan.topology, /Fly Machine.*Node control plane/i);
-  assert.match(plan.command, /pnpm setup:fly/);
+  assert.match(plan.command, /bash scripts\/setup-fly\.sh/);
   assert.match(plan.command, /release checkpoint/i);
   assert.match(plan.command, /E2B_API_KEY=\.\.\./);
   assert.match(plan.command, /OPENMA_FLY_SANDBOX_PROVIDER=e2b/);
@@ -199,4 +199,23 @@ test("site navigation links to the deployment wizard", async () => {
   );
 
   assert.match(homepage, /href="\/deploy\/"[^>]*>Deploy<\/a>/);
+});
+
+
+test("provider links override saved wizard choices and ignore unknown targets", () => {
+  assert.equal(typeof deployWizard.parseDeploymentTarget, "function");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=docker")), "docker");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=render")), "render");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=unknown")), null);
+});
+test("Render offers image deployment and the authenticated installer without Git repository authorization", () => {
+  const plan = buildDeploymentPlan({target:"render", modelSetup:"console", dataMode:"managed"});
+  const url = new URL(plan.launchUrl);
+  assert.equal(url.origin, "https://dashboard.render.com");
+  assert.equal(url.pathname, "/");
+  assert.equal(url.searchParams.get("repo"), null);
+  assert.match(plan.command, /npx @openma\/self-host install --target render/);
+  assert.match(plan.persistence, /disk/i);
+  assert.ok(plan.requirements.some(value => /E2B_API_KEY/.test(value)));
+  assert.equal(plan.collectsSecrets, false);
 });

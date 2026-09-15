@@ -1,4 +1,4 @@
-export type DeploymentTarget = "cloudflare" | "docker" | "fly" | "vercel";
+export type DeploymentTarget = "cloudflare" | "docker" | "fly" | "vercel" | "render";
 export type ModelSetup = "console" | "environment";
 export type DataMode = "managed" | "sqlite" | "postgres";
 
@@ -59,8 +59,8 @@ export const DEPLOYMENT_TARGETS: Record<DeploymentTarget, DeploymentTargetDefini
     eyebrow: "Fastest",
     availability: "ready",
     summary: "A durable Node deployment for one host or private network.",
-    note: "OpenMA server and vault proxy with a shared persistent data directory.",
-    estimate: "≈ 3 min",
+    note: "Interactive setup, generated secrets, and persistent Docker volumes.",
+    estimate: "≈ 10 min",
   },
   fly: {
     name: "Fly.io",
@@ -69,6 +69,14 @@ export const DEPLOYMENT_TARGETS: Record<DeploymentTarget, DeploymentTargetDefini
     summary: "Run the Node topology on Fly Machines with a persistent volume.",
     note: "Fly Launch reads the checked-in Machine adapter and provisions its first volume.",
     estimate: "≈ 8 min",
+  },
+  render: {
+    name: "Render",
+    eyebrow: "Image",
+    availability: "guided",
+    summary: "Run the official OpenMA image with a persistent disk.",
+    note: "Sign in to Render, choose a region, and deploy with your sandbox credentials.",
+    estimate: "≈ 15 min",
   },
   vercel: {
     name: "Vercel",
@@ -104,9 +112,14 @@ function modelSetupLabel(modelSetup: ModelSetup): string {
     : "Set a provider key in the deployment environment";
 }
 
-const TARGET_IDS = new Set<DeploymentTarget>(["cloudflare", "docker", "fly", "vercel"]);
+const TARGET_IDS = new Set<DeploymentTarget>(["cloudflare", "docker", "fly", "vercel", "render"]);
 const MODEL_SETUP_IDS = new Set<ModelSetup>(["console", "environment"]);
 const DATA_MODE_IDS = new Set<DataMode>(["managed", "sqlite", "postgres"]);
+
+export function parseDeploymentTarget(params: URLSearchParams): DeploymentTarget | null {
+  const value = params.get("provider");
+  return value && TARGET_IDS.has(value as DeploymentTarget) ? value as DeploymentTarget : null;
+}
 
 export function serializeBrowserSelection(selection: DeploymentSelection): string {
   return JSON.stringify(selection);
@@ -242,35 +255,45 @@ pnpm setup:cloudflare`,
   }
 
   if (selection.target === "docker") {
-    const composeCommand = selection.dataMode === "postgres"
-      ? "docker compose -f docker-compose.postgres.yml up -d --build"
-      : "docker compose up -d --build";
     return {
       ...common,
       status: "Ready",
-      topology: selection.dataMode === "postgres"
-        ? "Node server · Postgres · vault sidecar"
-        : "Node server · SQLite · vault sidecar",
-      persistence: selection.dataMode === "postgres"
-        ? "Postgres plus ./data for files, outputs, sandboxes, and vault CA"
-        : "./data bind mount for sessions, files, outputs, sandboxes, and vault CA",
+      topology: selection.dataMode === "postgres" ? "Node server · Postgres" : "Node server · SQLite",
+      persistence: "Named Docker volumes for durable database, files, outputs, and sandbox state",
       command: `${REPOSITORY_SETUP}
-cp .env.example .env
-# Add BETTER_AUTH_SECRET and PLATFORM_ROOT_SECRET to .env
-# Set SANDBOX_PROVIDER=<e2b|daytona|boxrun|litebox> and its provider credentials
-${composeCommand}`,
+OPENMA_DOCKER_DATA_MODE=${selection.dataMode === "postgres" ? "postgres" : "sqlite"} bash scripts/setup-docker.sh`,
       verificationCommand: "curl http://localhost:8787/health",
       requirements: [
-        "Docker Engine with Compose v2",
-        "A persistent host directory mounted at ./data",
-        "Two locally generated secrets stored in .env",
-        "Credentials and configuration for an isolated sandbox provider",
+        "Docker Engine/Desktop with Compose v2.24+, Git, Bash, and openssl",
+        "Credentials for an isolated sandbox provider: E2B, Daytona, or BoxRun",
+        "Disk space for the source build and persistent Docker volumes",
       ],
       nextSteps: [
-        "Generate secrets locally with openssl; do not paste them into this website.",
-        "The subprocess adapter is not available in deployable entrypoints; configure an isolated provider before boot.",
-        "Open http://localhost:8787 and create the first workspace owner.",
-        "Add a Model Card in Console or set the provider key in .env.",
+        "Choose an isolated sandbox provider in the terminal; the wizard securely prompts for its credentials.",
+        "The subprocess adapter is not available; select an isolated sandbox provider.",
+        "Application secrets are generated locally in .env.openma; repeated runs preserve them.",
+        "The first source build can take several minutes. Setup waits until /health responds.",
+        "Open http://localhost:8787, create your account, and add a Model Card in Console.",
+        "For a VPS, configure an HTTPS reverse proxy and OPENMA_DOCKER_PUBLIC_URL before sharing access.",
+      ],
+    };
+  }
+
+  if (selection.target === "render") {
+    return {
+      ...common,
+      status: "Image deployment",
+      topology: "One Node service · SQLite · E2B sandboxes",
+      persistence: "Persistent disk mounted at /app/data; keep the service at one instance",
+      command: "npx @openma/self-host install --target render",
+      verificationCommand: "curl https://<your-service>.onrender.com/health",
+      launchUrl: "https://dashboard.render.com/",
+      requirements: ["A Render account with billing enabled for a paid service and persistent disk", "E2B_API_KEY or another supported sandbox credential, configured locally for the CLI or directly in Render", "Review region, service size, and disk capacity before deploying"],
+      nextSteps: [
+        "CLI preview: install the official Render CLI, then run the command below. It opens Render login, uses your active workspace, and deploys a pinned public image with private generated secrets.",
+        "In the dashboard: New → Web Service → Existing Image. Copy the official image and environment configuration from the full guide. No Git repository connection is needed.",
+        "Open your service URL, create your account, and add a Model Card in Console.",
+        "Automatic deploys are disabled; deploy updates explicitly and back up the disk.",
       ],
     };
   }
@@ -285,7 +308,7 @@ ${composeCommand}`,
 fly auth login
 # setup:fly resolves this checkout to its immutable Git-SHA release checkpoint image.
 # E2B example; use Daytona or BoxRun plus its matching configuration if preferred.
-E2B_API_KEY=... OPENMA_FLY_DATA_MODE=${selection.dataMode === "postgres" ? "postgres" : "sqlite"} OPENMA_FLY_SANDBOX_PROVIDER=e2b pnpm setup:fly`,
+E2B_API_KEY=... OPENMA_FLY_DATA_MODE=${selection.dataMode === "postgres" ? "postgres" : "sqlite"} OPENMA_FLY_SANDBOX_PROVIDER=e2b bash scripts/setup-fly.sh`,
       verificationCommand: "fly checks list && curl https://<your-app>.fly.dev/health",
       requirements: [
         "A Fly.io account and flyctl",
@@ -299,6 +322,7 @@ E2B_API_KEY=... OPENMA_FLY_DATA_MODE=${selection.dataMode === "postgres" ? "post
         "fly.toml initial_size provisions and mounts the first /app/data volume; daily snapshots are retained for 14 days.",
         "The main-fly adapter derives the public origin from FLY_APP_NAME before the portable Node app starts.",
         "The setup script maps the checkout's full Git SHA to an immutable GHCR server image, so Fly pulls a release checkpoint instead of rebuilding the monorepo.",
+        "If this checkout has no published image, use OPENMA_FLY_BUILD_FROM_SOURCE=1 or select a published digest.",
         "Pin OPENMA_FLY_IMAGE to an explicit sha256 digest when promoting an audited release.",
         "The setup script generates application secrets locally, stages them directly in Fly, deploys, and runs health checks.",
         "The subprocess adapter is not available in deployable entrypoints; Fly fails closed until an isolated provider is configured.",
@@ -319,6 +343,7 @@ pnpm dlx vercel@59.15.1 deploy --local-config vercel.json`,
     verificationCommand: "curl https://<your-project>.vercel.app/health",
     launchUrl: buildVercelDeployButtonUrl({ redirectUrl: options.vercelRedirectUrl }),
     requirements: [
+      "A Vercel plan supporting every-minute Cron (the default production config exceeds Hobby limits)",
       "Confirm the Neon Postgres product and its billing/region in Vercel",
       "Object storage plus a remotely reachable vault egress gateway",
       "A Vercel Sandbox snapshot containing the selected ACP harness worker",
