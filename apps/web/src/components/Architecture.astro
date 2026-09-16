@@ -3,9 +3,9 @@
     <div class="architecture-entry">
       <h3>Connect your way</h3>
       <ul>
-        <li><a href="https://backchat.openma.ai">Backchat</a><span>Desktop</span></li>
-        <li><a href="https://docs.openma.dev/">OMA CLI</a><span>Terminal</span></li>
-        <li><a href="#openai-agents-api">SDK &amp; API</a><span>Your app</span></li>
+        <li><a href="https://backchat.openma.ai"><svg class="entry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></svg>Backchat</a><span>Desktop</span></li>
+        <li><a href="https://docs.openma.dev/"><svg class="entry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3m6 0h4" /></svg>OMA CLI</a><span>Terminal</span></li>
+        <li><a href="#openai-agents-api"><svg class="entry-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-14-2 16" /></svg>SDK &amp; API</a><span>Your app</span></li>
       </ul>
     </div>
     <div class="architecture-link" aria-hidden="true">
@@ -16,86 +16,92 @@
     <div class="architecture-platform">
       <img src="/logo.svg" alt="" width="32" height="32" />
       <h3>OpenMA</h3>
-      <p>Manage the agent lifecycle</p>
+      <p>Scaling the agents</p>
       <ul>
-        <li><strong>Agents &amp; models</strong><span>Configuration, versions &amp; your model keys</span></li>
-        <li><strong>Durable sessions</strong><span>Event history, streaming &amp; continuation</span></li>
-        <li><strong>Multi-agent collaboration</strong><span>Delegation &amp; child conversations</span></li>
-        <li><strong>Execution &amp; recovery</strong><span>Routing, orchestration &amp; resume</span></li>
-        <li><strong>Tools &amp; integrations</strong><span>MCP servers, skills &amp; custom tools</span></li>
-        <li><strong>Files &amp; memory</strong><span>Session resources &amp; persistent context</span></li>
-        <li><strong>Access &amp; credentials</strong><span>Tenants, permissions &amp; vaults</span></li>
-        <li><strong>Run visibility</strong><span>Tool activity, usage &amp; execution events</span></li>
+        <li>Agents &amp; sessions</li>
+        <li>Environments</li>
+        <li>Files &amp; memory</li>
+        <li>Skills</li>
+        <li>Vaults &amp; credentials</li>
       </ul>
+      <div class="managed-harness">
+        <h4>Meta-Harness</h4>
+        <p><strong>outside the sandbox</strong></p>
+        <span>Easily evolve your own.</span>
+      </div>
     </div>
     <div class="architecture-link" aria-hidden="true">
       <span>Tasks</span>
       <svg viewBox="0 0 80 24" fill="none"><path d="M2 8h74m-6-5 6 5-6 5M78 18H4m6-5-6 5 6 5" /></svg>
       <span>Results</span>
     </div>
-    <div class="architecture-execution">
-      <div class="execution-sandbox">
-        <h3>Sandbox</h3>
-        <p>Your chosen execution environment</p>
-        <div class="execution-harness">
-          <h4>Harness inside the sandbox</h4>
-          <p>Pi · ACP agent · Your harness</p>
-          <span>Model calls &amp; the agent loop</span>
+    <div class="execution-and-mcp">
+      <div class="execution-entity">
+        <h3>Sandbox<span class="machine-heading">Your Machine / PC</span></h3>
+        <p>Code, files &amp; tools</p>
+        <div class="sandbox-placement">
+          <strong>Harness can run here, too</strong>
+          <span>Codex · Claude Code · Pi · OpenCode · etc.</span>
         </div>
-        <div class="execution-workspace"><strong>Tools &amp; workspace</strong><span>Shell, code, files &amp; dependencies</span></div>
       </div>
-      <p class="execution-alternative">A harness can also run in the host runtime and use the sandbox for tools. API-only sessions can run without a sandbox.</p>
+      <div class="mcp-entity">
+        <h3>MCP</h3>
+        <p>External services &amp; tools</p>
+        <span>Scoped credentials</span>
+      </div>
     </div>
   </div>
   <div class="architecture-cloud"><strong>Your infrastructure</strong><span>Self-hosted Node / Docker · Cloud deployment · Hosted OpenMA</span></div>
-  <figcaption id="architecture-caption">Shown: a harness running inside a sandbox, with OpenMA managing the session and coordinating execution. Harness placement and sandbox provider are independent of where you deploy OpenMA. Feature availability depends on the runtime and API; <a href="https://github.com/openma-ai/open-managed-agents/blob/main/docs/openai-agents-compatibility-status.md">see compatibility</a>. Backchat can also run standalone local sessions.</figcaption>
+  <figcaption id="architecture-caption">The harness can run in the host runtime or inside a sandbox. OpenMA keeps the session history and coordinates execution in either arrangement. Available capabilities depend on the harness, runtime and API. Backchat can also run standalone local sessions.</figcaption>
 </figure>
 
 <style>
-  .architecture { margin-top: 44px; }
-  .architecture-flow { display: grid; grid-template-columns: minmax(0, .7fr) 90px minmax(0, 1.8fr) 90px minmax(0, 1.1fr); align-items: center; }
-  h3 { font-size: 22px; font-weight: 580; letter-spacing: -.025em; }
-  p { color: var(--site-ink-soft); font-size: 15px; line-height: 1.6; }
+  .architecture { margin-top: 44px; font-size: 14px; line-height: 1.55; }
+  .architecture-flow { display: grid; grid-template-columns: minmax(0, .8fr) 90px minmax(0, 1.4fr) 90px minmax(0, 1fr); align-items: center; }
+  h3, h4 { font-size: 18px; font-weight: 580; line-height: 1.35; letter-spacing: -.025em; }
+  p { color: var(--site-ink-soft); }
   .architecture-entry ul { margin-top: 22px; }
-  .architecture-entry li { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--site-line); }
+  .architecture-entry li { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px solid var(--site-line); }
   .architecture-entry a { display: inline-flex; align-items: center; min-height: 48px; text-decoration: none; font-weight: 500; }
   .architecture-entry a:hover { color: var(--site-ink); }
-  .architecture-entry li span { color: var(--site-muted); font-size: 13px; }
-  .architecture-link { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--site-muted); font-size: 11px; }
+  .architecture-entry li span { color: var(--site-muted); }
+  .entry-icon { width: 20px; height: 20px; flex-shrink: 0; margin-right: 10px; color: var(--site-ink-soft); }
+  .architecture-link { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--site-muted); text-align: center; }
   .architecture-link svg { width: 72px; height: 24px; stroke: var(--site-muted); stroke-width: 1.2; }
   .architecture-platform { border: 1px solid var(--site-line-strong); border-radius: var(--site-radius-panel); background: var(--site-page); padding: 28px; }
   .architecture-platform img { margin-bottom: 18px; }
-  .architecture-platform h3 { font-size: 28px; }
-  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 24px; font-size: 14px; }
-  .architecture-platform li strong, .execution-workspace strong { display: block; font-weight: 580; }
-  .architecture-platform li span, .execution-workspace span { display: block; color: var(--site-ink-soft); font-size: 13px; line-height: 1.6; margin-top: 3px; }
-  .execution-sandbox { border: 1px dashed var(--site-line-strong); border-radius: var(--site-radius-panel); padding: 24px; }
-  .execution-harness { margin-top: 24px; padding: 18px; border: 1px solid var(--site-line-strong); background: var(--site-page); border-radius: 12px; }
-  .execution-harness h4 { font-size: 16px; font-weight: 580; line-height: 1.4; }
-  .execution-harness p { margin-top: 8px; font-size: 13px; }
-  .execution-harness > span { display: block; color: var(--site-ink-soft); font-size: 13px; margin-top: 8px; }
-  .execution-workspace { margin-top: 22px; font-size: 14px; }
-  .architecture-execution .execution-alternative { margin-top: 16px; font-size: 13px; line-height: 1.6; }
-  .architecture-cloud { display: flex; flex-wrap: wrap; gap: 12px 24px; border-top: 1px solid var(--site-line); border-bottom: 1px solid var(--site-line); padding-block: 20px; margin-top: 32px; font-size: 14px; }
+  .architecture-platform > h3 { font-size: 28px; }
+  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; gap: 8px; }
+  .managed-harness { margin-top: 22px; border-top: 1px solid var(--site-line); padding-top: 20px; }
+  .managed-harness p { margin-top: 4px; font-size: 18px; font-weight: 580; line-height: 1.35; letter-spacing: -.025em; color: var(--site-ink); }
+  .managed-harness strong { font-weight: inherit; }
+  .managed-harness > span { display: block; color: var(--site-muted); margin-top: 8px; }
+  .execution-and-mcp { display: grid; gap: 24px; }
+  .execution-entity, .mcp-entity { border: 1px solid var(--site-line-strong); border-radius: 12px; padding: 24px; background: var(--site-page); }
+  .machine-heading { display: block; margin-top: 5px; }
+  .sandbox-placement { margin-top: 20px; padding: 14px 16px; border: 1px dashed var(--site-line-strong); border-radius: 8px; background: var(--color-bg-surface); }
+  .sandbox-placement strong { display: block; font-weight: 580; }
+  .sandbox-placement span { display: block; margin-top: 6px; color: var(--site-ink-soft); }
+  .mcp-entity { min-height: 128px; }
+  .mcp-entity p { margin-top: 5px; }
+  .mcp-entity > span { display: block; margin-top: 7px; color: var(--site-muted); }
+  .architecture-cloud { display: flex; flex-wrap: wrap; gap: 12px 24px; border-top: 1px solid var(--site-line); border-bottom: 1px solid var(--site-line); padding-block: 20px; margin-top: 32px; }
   .architecture-cloud strong { font-weight: 580; }
   .architecture-cloud span { color: var(--site-ink-soft); }
-  figcaption { margin-top: 28px; max-width: 85ch; font-size: 13px; line-height: 1.7; color: var(--site-muted); }
-  @media (max-width: 1000px) {
-    .architecture-flow { grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1.15fr) 72px minmax(0, 1fr); }
-    .architecture-platform { padding: 20px; }
+  figcaption { margin-top: 28px; max-width: 85ch; color: var(--site-muted); }
+  @media (max-width: 1100px) {
+    .architecture-flow { grid-template-columns: minmax(0, .8fr) 72px minmax(0, 1.4fr) 72px minmax(0, 1fr); }
+    .architecture-platform, .execution-entity, .mcp-entity { padding: 20px; }
     .architecture-link svg { width: 52px; }
     .architecture-entry li { align-items: start; flex-direction: column; gap: 0; padding-bottom: 8px; }
   }
-  @media (max-width: 1100px) {
+  @media (max-width: 900px) {
     .architecture-flow { grid-template-columns: 1fr; }
     .architecture-entry li { flex-direction: row; align-items: center; padding-bottom: 0; }
     .architecture-link { flex-direction: row; justify-content: center; gap: 20px; height: 96px; }
     .architecture-link svg { transform: rotate(90deg); width: 48px; }
-    .architecture-link span { width: 100px; text-align: center; font-size: 12px; }
+    .architecture-link span { width: 100px; }
     .architecture-platform { padding: 28px; }
     figcaption { margin-top: 32px; }
-  }
-  @media (max-width: 600px) {
-    .architecture-platform ul { grid-template-columns: 1fr; }
   }
 </style>
