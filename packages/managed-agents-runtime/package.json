@@ -6,7 +6,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./session-host": "./src/session-host.ts",
-    "./checkpoint": "./src/checkpoint.ts"
+    "./checkpoint": "./src/checkpoint.ts",
+    "./daemon-connection": "./src/daemon-connection.ts",
+    "./daemon-host": "./src/daemon-host.ts"
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",

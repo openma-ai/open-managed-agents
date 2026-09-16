@@ -259,7 +259,22 @@ export class ManagedAgentsSessionHost {
       return;
     }
     if (session.turns.has(input.turnId)) return;
+    // Draining closes admission for new turns on retained sessions too.
+    // Existing in-flight/complete turn IDs above remain idempotent.
+    const rejectDuringDrain = () => {
+      if (!this.#draining) return false;
+      this.#emit({
+        type: "session.error",
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        message: "runtime is draining; retry on another runtime",
+      });
+      return true;
+    };
+    if (rejectDuringDrain()) return;
     if (!await this.#retainGenerationLease(input.sessionId, session)) return;
+    // Lease storage may yield while shutdown starts.
+    if (rejectDuringDrain()) return;
     const controller = new AbortController();
     session.turns.set(input.turnId, controller);
     let promptError: string | undefined;

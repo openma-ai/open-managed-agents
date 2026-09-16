@@ -27,9 +27,21 @@ export type { FileResolver, ResolvedFile } from "../runtime/history";
 
 export type HarnessDisposeReason = "replace" | "shutdown" | "destroy";
 
+export interface HarnessPendingInterruptContext {
+  agent: AgentConfig;
+  session_id: string;
+  tenant_id: string;
+  env: Pick<HarnessContext["env"], "RUNTIME_ROOM">;
+  pendingActions: SessionEvent[];
+}
+
 export interface HarnessInterface {
   /** Main agent loop. Required. Drives generateText and emits events. */
   run(ctx: HarnessContext): Promise<void>;
+
+  /** Interrupt work retained by an execution host after run() paused for a
+   * client callback. Return only request IDs whose native turn has ended. */
+  interruptPending?(ctx: HarnessPendingInterruptContext): Promise<string[]>;
 
   /** Release harness-owned processes. Session hosts call this before the
    * underlying Sandbox is destroyed. */
@@ -165,6 +177,9 @@ export interface HarnessRuntime {
   ) => Promise<void>;
   reportUsage?: (input_tokens: number, output_tokens: number) => Promise<void>;
   pendingConfirmations?: string[];
+  /** Release a completed runner callback from the existing pending-action
+   * state after the execution host acknowledges its response. */
+  consumePendingConfirmation?: (requestId: string) => void;
   abortSignal?: AbortSignal;
   /**
    * Wrap a long async operation (e.g. model fetch + stream consumption) so

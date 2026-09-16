@@ -2197,6 +2197,45 @@ export class SessionDO extends DurableObject<Env> {
             .affected_rows ?? 0,
         );
         const cancelledCount = cancelledRows.length + legacyCancelledCount;
+        const settledRequests: string[] = [];
+        if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
+          const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
+          const pendingActions = history.getEvents().filter((event) =>
+            "id" in event && typeof event.id === "string" && pendingIds.has(event.id) &&
+            ((event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") === targetThread,
+          );
+          if (pendingActions.length > 0) {
+            const threadAgent = targetThread === "sthr_primary" ? this.state.agent_id
+              : [...this.ctx.storage.sql.exec("SELECT agent_id FROM threads WHERE id = ? LIMIT 1", targetThread)][0]?.agent_id;
+            const agent = typeof threadAgent === "string" ? await this.getAgentConfig(threadAgent) : null;
+            if (agent) {
+              try {
+                // Resolve through the registry even after DO eviction; no
+                // in-memory AbortController exists once a callback paused run.
+                const harness = resolveHarness(agent.harness || "default");
+                const settled = await harness.interruptPending?.({ agent, session_id: this.state.session_id,
+                  tenant_id: this.state.tenant_id, env: { RUNTIME_ROOM: this.env.RUNTIME_ROOM }, pendingActions });
+                settledRequests.push(...(settled ?? []).filter((id) => pendingActions.some((event) => "id" in event && event.id === id)));
+              } catch {
+                return new Response(JSON.stringify({ type: "error", error: { type: "api_error", message: "Runner interrupt was not confirmed. The pending action is still available; reconnect and try again." } }),
+                  { status: 503, headers: { "content-type": "application/json" } });
+              }
+            }
+          }
+          if (settledRequests.length > 0) {
+            const settled = new Set(settledRequests);
+            this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => !settled.has(pending.toolCallId)) });
+            for (const requestId of settled) {
+              // Reuse the same error extension emitted by orphan-tool recovery.
+              const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
+                content: [{ type: "text", text: "Cancelled by user" }], is_error: true,
+                ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
+              };
+              history.append(result);
+              this.broadcastEvent(result);
+            }
+          }
+        }
         history.append(body as UserInterruptEvent);
         // Emit status_idle when interrupt actually changed thread state:
         // either an active turn was aborted, or queued events were
@@ -2204,7 +2243,7 @@ export class SessionDO extends DurableObject<Env> {
         // case had been emitting a duplicate status_idle right after a
         // natural-end one, observed 2026-05-11 sess-y5saq (seq 93 idle
         // stop_reason=end_turn, seq 95 idle stop_reason=None).
-        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0;
+        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0 || settledRequests.length > 0;
         if (shouldEmitIdle) {
           // stop_reason is required on session.status_idle per Anthropic
           // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
@@ -5132,6 +5171,14 @@ export class SessionDO extends DurableObject<Env> {
           this.creditUsageToThread(turnThreadId, { input_tokens, output_tokens });
         },
         pendingConfirmations: [],
+        consumePendingConfirmation: (requestId) => {
+          if (activeFence !== undefined && !this.isExecutionFenceCurrent(activeFence)) {
+            const error = new Error("session execution fence is no longer valid");
+            error.name = "ExecutionFenceLostError";
+            throw error;
+          }
+          this.setState({ ...this.state, pending_tool_calls: this.state.pending_tool_calls.filter((pending) => pending.toolCallId !== requestId) });
+        },
         abortSignal: effectiveAbortSignal,
         keepAliveWhile: <T>(fn: () => Promise<T>) => fn(),
       },
