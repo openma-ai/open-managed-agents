@@ -219,3 +219,31 @@ main h2.font-display { font-size: clamp(30px, 3.3vw, 44px); line-height: 1.15; f
 
 main .grid > * { min-width: 0; }
 ::selection { background: var(--site-brand); color: var(--site-brand-ink); }
+
+.architecture-start { display: flex; justify-content: space-between; align-items: center; gap: 32px; border-top: 1px solid var(--site-line); padding-top: 32px; margin-top: 40px; }
+.architecture-start h3 { font-size: 18px; font-weight: 580; }
+.architecture-start p { margin-top: 8px; color: var(--site-ink-soft); font-size: 15px; line-height: 1.6; }
+@media (max-width: 700px) { .architecture-start { align-items: flex-start; flex-direction: column; gap: 24px; } }
+
+.ecosystem-heading { display: grid; grid-template-columns: 1.25fr 1fr; gap: 64px; align-items: end; margin-bottom: 44px; }
+.ecosystem-heading > p { color: var(--site-ink-soft); line-height: 1.7; max-width: 440px; }
+.ecosystem-products > div { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: 40px; align-items: center; padding-block: 28px; border-top: 1px solid var(--site-line); }
+.ecosystem-products dt > a { font-size: 22px; font-weight: 580; letter-spacing: -.025em; }
+.ecosystem-products dt > span { display: block; color: var(--site-muted); font-size: 13px; margin-top: 6px; }
+.ecosystem-products dd { color: var(--site-ink-soft); font-size: 15px; line-height: 1.7; }
+.ecosystem-products dd > .site-button { text-decoration: none; }
+.ecosystem-protocols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px; padding-top: 40px; border-top: 1px solid var(--site-line); }
+.ecosystem-protocols h3 { font-size: 16px; font-weight: 580; margin-bottom: 10px; }
+.ecosystem-protocols p { color: var(--site-ink-soft); font-size: 14px; line-height: 1.7; }
+@media (max-width: 700px) {
+  .ecosystem-heading, .ecosystem-products > div, .ecosystem-protocols { grid-template-columns: 1fr; gap: 20px; }
+  .ecosystem-heading { margin-bottom: 32px; }
+  .ecosystem-protocols { gap: 28px; }
+}
+
+.ecosystem-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 48px; padding-block: 64px; }
+.ecosystem-choices h2 { font-size: 24px; font-weight: 580; letter-spacing: -.025em; margin-bottom: 16px; }
+.ecosystem-choices p { color: var(--site-ink-soft); font-size: 15px; line-height: 1.7; }
+.ecosystem-choices .choice-examples { margin-top: 20px; color: var(--site-muted); font-size: 13px; }
+.ecosystem-choices .choices-note { grid-column: 1 / -1; font-size: 13px; color: var(--site-muted); padding-top: 24px; border-top: 1px solid var(--site-line); }
+@media (max-width: 700px) { .ecosystem-choices { grid-template-columns: 1fr; gap: 32px; } }

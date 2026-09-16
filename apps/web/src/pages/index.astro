@@ -1,9 +1,9 @@
 ---
+import Architecture from "../components/Architecture.astro";
 import Base from "../layouts/Base.astro";
 import { getCollection } from "astro:content";
 import { softwareApplicationSchema } from "../lib/seo";
 import PricingCard from "../components/PricingCard.astro";
-import FeatureCard from "../components/FeatureCard.astro";
 import BlogPostCard from "../components/BlogPostCard.astro";
 
 const posts = (await getCollection("blog", ({ data }) => !data.draft))
@@ -21,8 +21,8 @@ const schemas = [softwareApplicationSchema()];
 ---
 
 <Base
-  title="OpenMA: Claude Managed Agents & OpenAI Agents API"
-  description="Self-host agents with the Claude and OpenAI SDKs. OpenMA handles sessions, tools and recovery. OpenAI Agents API is available on Node."
+  title="OpenMA — Any sandbox. Any harness. Any cloud."
+  description="An open ecosystem for AI agents. Connect your harness, choose your sandbox and cloud, and work through Backchat, OMA CLI or SDKs. Open source, Apache 2.0."
   canonical="/"
   keywords="openai agents api, openai agents api alternative, self-hosted openai agents, claude managed agents, claude managed agents alternative, open-source agent platform, subagents, acp, mcp, byok, claude tag alternative"
   schemas={schemas}
@@ -31,15 +31,16 @@ const schemas = [softwareApplicationSchema()];
   <section class="border-b border-[var(--color-border)]">
     <div class="site-container site-hero">
       <h1 class="font-display text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight">
-        Run Claude and OpenAI agents on your own server
+        <span class="block">Any sandbox.</span><span class="block">Any harness.</span><span class="block">Any cloud.</span>
       </h1>
         <p class="mt-6 text-xl md:text-2xl text-[var(--color-fg-muted)]">
-          Use the SDKs you know. Keep control of where your agents run.
+          An open ecosystem for agents. Built to work together.
         </p>
       <p class="hero-description">
-        OpenMA handles sessions, tools and crash recovery. Connect your own
-        model keys, give agents access to your files and services, and deploy
-        on your infrastructure. Open source, under the Apache 2.0 license.
+        Choose the agent loop, execution environment and infrastructure that fit
+        your work. OpenMA connects them with shared sessions and execution
+        orchestration. Backchat, OMA CLI and SDKs bring that work to your desktop,
+        terminal and applications.
       </p>
       <div class="mt-8 flex items-center gap-3 flex-wrap">
         <a
@@ -69,29 +70,66 @@ const schemas = [softwareApplicationSchema()];
     </div>
   </section>
 
-  <!-- Why Open Managed Agents -->
-  <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-3 text-center">Why Open Managed Agents</h2>
-    <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-12">
-      Give your agents a place to work, remember their conversations, and
-      recover when a process stops. You choose the models and where your data lives.
-    </p>
-    <div class="grid md:grid-cols-3 gap-8">
-      <FeatureCard title="Claude and OpenAI SDKs">
-        Keep using the Claude or OpenAI SDK in your application. Point it at
-        your OpenMA server to create agents, start conversations and get results.
-        OpenAI Agents API is currently available on Node.
-      </FeatureCard>
-      <FeatureCard title="Self-host on Cloudflare">
-        Workers + Durable Objects + Containers + R2. One <code class="font-mono text-xs">wrangler deploy</code>,
-        no servers to patch. Or run the Node + Postgres flavor on your own
-        VPS if you can't be on Cloudflare.
-      </FeatureCard>
-      <FeatureCard title="Apache 2.0">
-        Permissive license. Fork it, ship it inside your product, run a
-        private fleet — no per-seat fee, no usage tax. The hosted service at
-        openma.dev is one deployment of the same code.
-      </FeatureCard>
+  <section class="site-container ecosystem-choices" aria-label="Three independent choices">
+    <div><h2>Any sandbox</h2><p>Choose where code executes. Connect a sandbox provider through OpenMA’s execution interfaces.</p><p class="choice-examples">LiteBox · E2B · Daytona · BoxRun</p></div>
+    <div><h2>Any harness</h2><p>Choose the agent loop. Use a built-in harness, connect an ACP agent or implement your own.</p><p class="choice-examples">Default · Pi · ACP adapters</p></div>
+    <div><h2>Any cloud</h2><p>Choose where you host the platform. Run Node and Docker on your infrastructure, or use a supported cloud deployment.</p><p class="choice-examples">Self-hosted Node · Cloudflare · Hosted OpenMA</p></div>
+    <p class="choices-note">An extensible ecosystem, with concrete integrations. Available features depend on the harness, sandbox adapter and deployment. <a href="/deploy/">Explore supported setups</a>.</p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" aria-labelledby="how-it-works" data-reveal>
+    <div class="site-container py-16">
+      <h2 id="how-it-works" class="font-display text-3xl font-bold mb-4">Different pieces. One connected system.</h2>
+      <p class="text-[var(--color-fg-muted)] max-w-2xl leading-relaxed">
+        Clients connect to OpenMA for sessions and orchestration. The harness
+        runs the agent loop; the sandbox provides an execution environment.
+        Your cloud choice determines where the platform is deployed.
+      </p>
+      <Architecture />
+      <div class="architecture-start">
+        <div>
+          <h3>Start with a working deployment.</h3>
+          <p>Use the hosted service, or follow the setup guide to run OpenMA yourself.</p>
+        </div>
+        <div class="flex flex-wrap gap-3">
+          <a class="site-button site-button-primary" href="/deploy/">Set up OpenMA</a>
+          <a class="site-button" href="https://app.openma.dev/login">Try hosted</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ecosystem" class="site-container py-16" aria-labelledby="ecosystem-title">
+    <div class="ecosystem-heading">
+      <h2 id="ecosystem-title" class="font-display">An open ecosystem.<br />A connected way to work.</h2>
+      <p>Use the platform, desktop app and developer tools together, or start with the part you need.</p>
+    </div>
+    <dl class="ecosystem-products">
+      <div>
+        <dt><a href="https://github.com/openma-ai/open-managed-agents">OpenMA</a><span>Agent platform</span></dt>
+        <dd>Manage agents, tenant sessions, credentials and execution. Use the hosted service or run it yourself.</dd>
+        <dd><a class="site-button" href="/deploy/">Set up OpenMA</a></dd>
+      </div>
+      <div>
+        <dt><a href="https://backchat.openma.ai">Backchat</a><span>Desktop app</span></dt>
+        <dd>Work with local agents and continue OpenMA tenant sessions from one desktop sidebar.</dd>
+        <dd><a class="site-button" href="https://backchat.openma.ai">Explore Backchat</a></dd>
+      </div>
+      <div>
+        <dt><a href="https://github.com/openma-ai/open-managed-agents/tree/main/packages/cli">OMA CLI &amp; SDK</a><span>Developer tools</span></dt>
+        <dd>Connect from your terminal or build OpenMA into your own application with the TypeScript SDK.</dd>
+        <dd><a class="site-button" href="https://github.com/openma-ai/open-managed-agents/tree/main/packages/sdk">Use the SDK</a></dd>
+      </div>
+      <div>
+        <dt><a href="https://github.com/openma-ai/deepseek-harness-acp">DeepSeek ACP</a><span>Agent adapter</span></dt>
+        <dd>Our DeepSeek adapter brings DeepSeek into ACP-compatible clients, including Backchat and OpenMA.</dd>
+        <dd><a class="site-button" href="https://github.com/openma-ai/deepseek-harness-acp">Explore the adapter</a></dd>
+      </div>
+    </dl>
+    <div class="ecosystem-protocols">
+      <div><h3>ACP connects agents</h3><p>Run compatible agents through the Agent Client Protocol. Available features depend on each agent’s capabilities.</p></div>
+      <div><h3>MCP connects tools</h3><p>Give agents access to your services and tools through the Model Context Protocol.</p></div>
+      <div><h3>SDKs connect your app</h3><p>Use the OpenMA SDK, or supported Claude and OpenAI API surfaces. <a href="#openai-agents-api">See compatibility details</a>.</p></div>
     </div>
   </section>
 
@@ -108,44 +146,6 @@ const schemas = [softwareApplicationSchema()];
         <h3>Pick up where your agent left off.</h3>
         <p>Continue an OpenMA session in Backchat and keep the conversation in sync.</p>
         <a href="https://backchat.openma.ai/#download" class="site-button">Get Backchat for macOS</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- How it works -->
-  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
-    <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-3 text-center">How it works</h2>
-      <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-10">
-        Choose a model and tell your agent what to do. OpenMA gives it tools
-        and a workspace, saves its progress, and lets you continue the conversation.
-        Use the built-in agent loop or bring your own.
-      </p>
-
-      <div class="grid md:grid-cols-2 gap-8 items-start">
-        <pre class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto"><code>┌────────────────────────────────────┐
-│  Your agent                       │
-│  instructions, model, tools       │
-├────────────────────────────────────┤
-│  OpenMA                           │
-│  sessions, files, recovery        │
-├────────────────────────────────────┤
-│  Your infrastructure              │
-│  Docker or Cloudflare             │
-└────────────────────────────────────┘</code></pre>
-
-        <div>
-          <p class="text-sm text-[var(--color-fg-muted)] mb-3">
-            Five-line quickstart. No SDK, no Cloudflare account needed for
-            local dev — Docker spins up a fully working stack.
-          </p>
-          <pre class="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto"><code>git clone https://github.com/openma-ai/open-managed-agents
-cd open-managed-agents &amp;&amp; cp .env.example .env
-# Set ANTHROPIC_API_KEY in .env, then:
-docker compose up -d
-curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
-  "model":"claude-sonnet-4-6"&#125;'</code></pre>
-        </div>
       </div>
     </div>
   </section>
@@ -189,143 +189,19 @@ const session = await client.beta.agents.sessions.create({
     </p>
   </section>
 
-  <!-- Cloudflare -->
   <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-4">Choose where your agents run</h2>
-      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
-        Run OpenMA on Cloudflare if you want managed infrastructure, or use
-        Docker on your own server. Either way, you control your model keys,
-        data and agent configuration.
+      <h2 class="font-display text-3xl font-bold mb-4">Choose how you run OpenMA.</h2>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6 max-w-2xl">
+        Use the hosted service or self-host with Node and Docker. Start with
+        SQLite, then connect Postgres and S3 when your deployment needs them.
+        Your agent execution environment is a separate choice: local runtime or cloud sandbox.
       </p>
-      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
-        Start locally with SQLite, or connect Postgres and S3 for your
-        deployment. Choose a sandbox provider for code execution, including
-        LiteBox, E2B, Daytona or BoxRun.
-      </p>
-      <p class="text-[var(--color-fg-muted)] leading-relaxed">
-        Both deployments support Claude Managed Agents. Choose the Node
-        deployment for OpenAI Agents API support. Follow
-        <a href="/blog/self-host-agent-platform-cloudflare-workers/">the self-host guide</a>.
+      <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-2xl">
+        Cloudflare is also available as a deployment option. OpenAI Agents API
+        currently requires Node. <a href="/deploy/">Compare deployment options</a>.
       </p>
     </div>
-  </section>
-
-  <!-- Claude Tag alternatives -->
-  <section class="site-container py-16" data-reveal>
-    <div class="grid md:grid-cols-[0.95fr_1.05fr] gap-10 items-start">
-      <div>
-        <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-3">
-          Claude Tag open-source and self-hosted
-        </p>
-        <h2 class="font-display text-3xl font-bold mb-4">Build the open-source foundation for Claude Tag-style agents</h2>
-        <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
-          Open Managed Agents already has the runtime primitives behind a
-          Claude Tag-style experience: channel publication, durable sessions,
-          MCP and private tools, vault-backed credentials, memory stores,
-          sandboxed work, and BYOK model cards.
-        </p>
-        <div class="flex flex-wrap gap-3">
-          <a href="/claude-tag-alternative/" class="px-4 py-2 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium">
-            Compare with Claude Tag
-          </a>
-          <a href="/claude-tag-open-source/" class="px-4 py-2 rounded-md border border-[var(--color-border)] font-medium">
-            Open-source Claude Tag
-          </a>
-          <a href="/self-hosted-claude-tag/" class="px-4 py-2 rounded-md border border-[var(--color-border)] font-medium">
-            Self-hosted Claude Tag
-          </a>
-        </div>
-      </div>
-      <div class="grid sm:grid-cols-2 gap-4 text-sm">
-        <div class="border border-[var(--color-border)] rounded-lg p-4">
-          <h3 class="font-semibold mb-2">Open-source runtime</h3>
-          <p class="text-[var(--color-fg-muted)]">Inspect, fork, and extend the agent runtime behind a Claude Tag-style product.</p>
-        </div>
-        <div class="border border-[var(--color-border)] rounded-lg p-4">
-          <h3 class="font-semibold mb-2">Self-hosted deployment</h3>
-          <p class="text-[var(--color-fg-muted)]">Run on Cloudflare Workers, Docker, or Node with your own data boundary.</p>
-        </div>
-        <div class="border border-[var(--color-border)] rounded-lg p-4">
-          <h3 class="font-semibold mb-2">MCP and private tools</h3>
-          <p class="text-[var(--color-fg-muted)]">Expose GitHub, Linear, browser, shell, and internal APIs to the agent.</p>
-        </div>
-        <div class="border border-[var(--color-border)] rounded-lg p-4">
-          <h3 class="font-semibold mb-2">BYOK model cards</h3>
-          <p class="text-[var(--color-fg-muted)]">Use Anthropic, OpenAI, OpenRouter, or a private model gateway.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Comparison -->
-  <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Claude Managed Agents</h2>
-    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
-      Both run a managed agent loop on your behalf. The difference is who owns
-      the runtime, the data, and the bill.
-    </p>
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm border border-[var(--color-border)] rounded-lg">
-        <thead>
-          <tr class="bg-[var(--color-bg-surface)] text-left">
-            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Feature</th>
-            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Open Managed Agents</th>
-            <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">Claude Managed Agents</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">License</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Apache 2.0 — fork, embed, commercial use</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Proprietary, closed source</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">Where it runs</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Your Cloudflare account, your VPS, or our hosted</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Anthropic-managed only</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">Data residency</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">You pick the region (Cloudflare or your DC)</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Anthropic's chosen regions</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">LLM key</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">BYOK — Anthropic, OpenAI, OpenRouter, your own gateway</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Anthropic only, no BYOK</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">Pricing model</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Sandbox compute only, no token markup; self-host is free</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Token + platform fees bundled</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">Custom harness</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Yes — write your own loop, swap caching/compaction</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">No — vendor-defined loop</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium border-b border-[var(--color-border)]">Sandbox runtime</th>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Cloudflare Containers, LiteBox, E2B, Daytona, BoxRun</td>
-            <td class="px-4 py-3 border-b border-[var(--color-border)]">Anthropic-managed sandbox</td>
-          </tr>
-          <tr>
-            <th scope="row" class="px-4 py-3 font-medium">API surface</th>
-            <td class="px-4 py-3"><code class="font-mono text-xs">/v1/agents</code>, <code class="font-mono text-xs">/v1/sessions</code> — drop-in compatible</td>
-            <td class="px-4 py-3">Same shape (we mirror it)</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="text-xs text-[var(--color-fg-subtle)] mt-4">
-      Comparison is structural — feature parity is an explicit roadmap item;
-      see the
-      <a href="https://github.com/openma-ai/open-managed-agents">repo</a> for the
-      current matrix, or
-      <a href="/blog/migrate-from-claude-managed-agents/">the migration
-      guide</a> for the practical steps.
-    </p>
   </section>
 
   <!-- Pricing teaser (kept — relevant to hosted CTA) -->
