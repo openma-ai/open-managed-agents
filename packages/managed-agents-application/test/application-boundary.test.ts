@@ -15,7 +15,8 @@ describe("Managed Agents application boundary", () => {
         .map((match) => match[1])
         .filter((specifier) => !specifier?.startsWith("."));
       expect(externalImports.every((specifier) =>
-        specifier === "@open-managed-agents/agent-store"
+        specifier === "@openma/common/protocol/managed"
+        || specifier === "@open-managed-agents/agent-store"
         || specifier === "@open-managed-agents/credential-store"
         || specifier === "@open-managed-agents/deployment-store"
         || specifier === "@open-managed-agents/deployment-run-store"

@@ -1,7 +1,7 @@
 # Shared CLI / desktop runtime kernel
 
 The CLI and Backchat now pin `@openma/common` to
-`80fdc31e7a3d8dc8be325896ecc310a053c57af6`. The former runtime modules are
+`85e0b3b6d46f3b8cd219aa2b5a79a1339b5041a0`. The former runtime modules are
 compatibility exports, preserving consumer imports while removing duplicate
 implementations. The package includes local ACP sessions, connection lifecycle,
 owned shutdown, Managed Session control/event projection and Work lease handling.
@@ -47,3 +47,18 @@ runtime import introduced by the previous extraction. Source-only application
 and both store typechecks pass; the full application test typecheck also exposes
 existing Work fixtures missing claim generation. No live Electron/Docker rerun
 was performed for this follow-up.
+
+
+## Review fixes
+
+Input identity now exports from `@openma/common/protocol/managed`. The application
+boundary permits that neutral protocol entry only; it does not permit the runtime
+entry. The old runtime export remains a compatibility re-export. The architecture
+check now passes, together with 146 application/storage tests. Common passes 353
+tests and typecheck/build. The unrelated Work fixture type errors noted above are
+not covered by these successful runtime tests.
+
+Backchat follows the SDK's `next_page`, opens live observation before history
+catch-up, and deduplicates the overlap by canonical event ID. Definite rejection
+responses release the pending local operation for an explicit retry; ambiguous
+network/server failures retain the no-resend behavior. No entity or schema added.

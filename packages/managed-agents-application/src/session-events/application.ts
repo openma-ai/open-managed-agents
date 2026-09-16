@@ -21,7 +21,7 @@ import type {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-import { sessionInputIdentityPrefix } from "@openma/common/managed-runtime";
+import { sessionInputIdentityPrefix } from "@openma/common/protocol/managed";
 export { sessionInputIdentityPrefix };
 
 function inputPayload(event: SentSessionEvent): string {
