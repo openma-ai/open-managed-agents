@@ -18,10 +18,14 @@
       <h3>OpenMA</h3>
       <p>Manage the agent lifecycle</p>
       <ul>
-        <li><strong>Agents &amp; sessions</strong><span>Configuration, history &amp; streaming</span></li>
+        <li><strong>Agents &amp; models</strong><span>Configuration, versions &amp; your model keys</span></li>
+        <li><strong>Durable sessions</strong><span>Event history, streaming &amp; continuation</span></li>
+        <li><strong>Multi-agent collaboration</strong><span>Delegation &amp; child conversations</span></li>
         <li><strong>Execution &amp; recovery</strong><span>Routing, orchestration &amp; resume</span></li>
-        <li><strong>Tools &amp; context</strong><span>MCP, skills, files &amp; memory</span></li>
-        <li><strong>Identity &amp; credentials</strong><span>Accounts, tenants &amp; vaults</span></li>
+        <li><strong>Tools &amp; integrations</strong><span>MCP servers, skills &amp; custom tools</span></li>
+        <li><strong>Files &amp; memory</strong><span>Session resources &amp; persistent context</span></li>
+        <li><strong>Access &amp; credentials</strong><span>Tenants, permissions &amp; vaults</span></li>
+        <li><strong>Run visibility</strong><span>Tool activity, usage &amp; execution events</span></li>
       </ul>
     </div>
     <div class="architecture-link" aria-hidden="true">
@@ -44,12 +48,12 @@
     </div>
   </div>
   <div class="architecture-cloud"><strong>Your infrastructure</strong><span>Self-hosted Node / Docker · Cloud deployment · Hosted OpenMA</span></div>
-  <figcaption id="architecture-caption">Shown: a harness running inside a sandbox, with OpenMA managing the session and coordinating execution. Harness placement and sandbox provider are independent of where you deploy OpenMA. Backchat can also run standalone local sessions.</figcaption>
+  <figcaption id="architecture-caption">Shown: a harness running inside a sandbox, with OpenMA managing the session and coordinating execution. Harness placement and sandbox provider are independent of where you deploy OpenMA. Feature availability depends on the runtime and API; <a href="https://github.com/openma-ai/open-managed-agents/blob/main/docs/openai-agents-compatibility-status.md">see compatibility</a>. Backchat can also run standalone local sessions.</figcaption>
 </figure>
 
 <style>
   .architecture { margin-top: 44px; }
-  .architecture-flow { display: grid; grid-template-columns: minmax(0, .75fr) 100px minmax(0, 1.15fr) 100px minmax(0, 1.15fr); align-items: center; }
+  .architecture-flow { display: grid; grid-template-columns: minmax(0, .7fr) 90px minmax(0, 1.8fr) 90px minmax(0, 1.1fr); align-items: center; }
   h3 { font-size: 22px; font-weight: 580; letter-spacing: -.025em; }
   p { color: var(--site-ink-soft); font-size: 15px; line-height: 1.6; }
   .architecture-entry ul { margin-top: 22px; }
@@ -62,7 +66,7 @@
   .architecture-platform { border: 1px solid var(--site-line-strong); border-radius: var(--site-radius-panel); background: var(--site-page); padding: 28px; }
   .architecture-platform img { margin-bottom: 18px; }
   .architecture-platform h3 { font-size: 28px; }
-  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; gap: 18px; font-size: 14px; }
+  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 24px; font-size: 14px; }
   .architecture-platform li strong, .execution-workspace strong { display: block; font-weight: 580; }
   .architecture-platform li span, .execution-workspace span { display: block; color: var(--site-ink-soft); font-size: 13px; line-height: 1.6; margin-top: 3px; }
   .execution-sandbox { border: 1px dashed var(--site-line-strong); border-radius: var(--site-radius-panel); padding: 24px; }
@@ -90,5 +94,8 @@
     .architecture-link span { width: 100px; text-align: center; font-size: 12px; }
     .architecture-platform { padding: 28px; }
     figcaption { margin-top: 32px; }
+  }
+  @media (max-width: 600px) {
+    .architecture-platform ul { grid-template-columns: 1fr; }
   }
 </style>
