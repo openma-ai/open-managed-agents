@@ -30,6 +30,19 @@ describe("SqlSessionEventStore thread reader", () => {
     await client.exec(SCHEMA_SQL);
   });
 
+  it("matches event identity prefixes literally without SQL LIKE pattern limits", async () => {
+    // SQLite limits LIKE patterns; D1 has a lower limit than local SQLite.
+    // A literal identity lookup must not depend on either pattern limit.
+    const prefix = `sevt_%_!${"a".repeat(50_001)}`;
+    const event: SessionEventView = { id: `${prefix}0`, type: "user.message",
+      content: [{ type: "text", text: "once" }], processedAt: "2026-08-26T01:00:00.000Z" };
+    await client.prepare("INSERT INTO managed_session_events VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind("workspace_01", "session_01", null, event.id, event.type, JSON.stringify(event), Date.parse(event.processedAt!)).run();
+    const store = new SqlSessionEventStore(client);
+    await expect(store.list({ workspaceId: "workspace_01", sessionId: "session_01", idPrefix: prefix, limit: 2, order: "asc" })).resolves.toEqual([event]);
+    await expect(store.list({ workspaceId: "workspace_01", sessionId: "session_01", idPrefix: "SEVT_", limit: 2, order: "asc" })).resolves.toEqual([]);
+  });
+
   it("uses the stored thread relation even when it is absent from the event document", async () => {
     const linked: SessionEventView = {
       id: "event_01",

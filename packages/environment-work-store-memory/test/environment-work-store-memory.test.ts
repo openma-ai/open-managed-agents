@@ -27,6 +27,25 @@ function record(id: string, createdAt: string, sessionId = `session_${id}`): Env
 }
 
 describe("MemoryEnvironmentWorkStore", () => {
+  it("lets a reserved worker acknowledge only its current claim before Session access", async () => {
+    const store = new MemoryEnvironmentWorkStore();
+    const initial = record("work_01", "2026-08-26T09:00:00.000Z", "session_01");
+    await store.insert({ workspaceId: "workspace_a", record: { ...initial,
+      claim: { claimedAt: initial.work.createdAt, workerId: "worker_01", generation: 1 },
+    } });
+    const claim = { workspaceId: "workspace_a", environmentId: "env_01", sessionId: "session_01",
+      workId: "work_01", claimedAt: initial.work.createdAt, generation: 1,
+      token: initial.secret.sessionsToken, method: "POST", path: "/v1/environments/env_01/work/work_01/ack" };
+    const deps = { store, now: () => new Date("2026-08-26T09:00:01.000Z") };
+    await expect(isCurrentEnvironmentWorkClaim(deps, claim)).resolves.toBe(true);
+    await expect(isCurrentEnvironmentWorkClaim({ ...deps, now: () => new Date("2026-08-26T09:02:00.000Z") }, claim)).resolves.toBe(false);
+    for (const patch of [
+      { path: "/v1/sessions/session_01/events" },
+      { path: "/v1/environments/env_01/work/work_other/ack" },
+      { method: "GET" }, { token: "stale" }, { generation: 2 },
+    ]) await expect(isCurrentEnvironmentWorkClaim(deps, { ...claim, ...patch })).resolves.toBe(false);
+  });
+
   it("lets the current worker control an expired lease without allowing Session writes", async () => {
     const store = new MemoryEnvironmentWorkStore();
     const currentToken = "secret_current";

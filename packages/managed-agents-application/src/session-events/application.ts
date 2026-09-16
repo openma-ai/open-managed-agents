@@ -20,10 +20,9 @@ import type {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-export async function sessionInputIdentityPrefix(workspaceId: string, sessionId: string, key: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([workspaceId, sessionId, key])));
-  return `sevt_req_${Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("")}_`;
-}
+import { sessionInputIdentityPrefix } from "@openma/common/managed-runtime";
+export { sessionInputIdentityPrefix };
+
 function inputPayload(event: SentSessionEvent): string {
   const { id: _id, processedAt: _time, ...body } = event;
   if ("outcomeId" in body) delete (body as {outcomeId?: string}).outcomeId;

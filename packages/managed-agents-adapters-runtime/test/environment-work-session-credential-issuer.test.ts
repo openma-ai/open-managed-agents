@@ -137,6 +137,7 @@ describe("Environment Work Session credential issuer", () => {
       });
 
     for (const [method, path] of [
+      ["POST", "/v1/environments/env_self_01/work/work_01/ack"],
       ["POST", "/v1/environments/env_self_01/work/work_01/heartbeat"],
       ["POST", "/v1/environments/env_self_01/work/work_01/stop"],
       ["GET", "/v1/sessions/session_01"],
@@ -169,6 +170,10 @@ describe("Environment Work Session credential issuer", () => {
     }
 
     for (const [method, path] of [
+      ["POST", "/v1/environments/env_self_01/work/work_other/ack"],
+      ["POST", "/v1/environments/env_other/work/work_01/ack"],
+      ["GET", "/v1/environments/env_self_01/work/work_01/ack"],
+      ["POST", "/v1/environments/env_self_01/work/work_01/ack/extra"],
       ["POST", "/v1/environments/env_self_01/work/work_other/heartbeat"],
       ["GET", "/v1/sessions/session_other"],
       ["POST", "/v1/oma/mcp-proxy/session_other/linear"],

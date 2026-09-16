@@ -255,7 +255,7 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     && parts[2] === claims.environmentId
     && parts[3] === "work"
     && parts[4] === claims.workId
-    && (parts[5] === "heartbeat" || parts[5] === "stop")
+    && (parts[5] === "ack" || parts[5] === "heartbeat" || parts[5] === "stop")
   ) return verb === "POST";
 
   if (

@@ -188,7 +188,10 @@ export function buildSessionEventRoutes(
     }
 
     const result = await resolveApplicationPort(source, c).sendSessionEvents(
-      toSendSessionEventsCommand(c.req.param("sessionId"), parsed.data),
+      {
+        ...toSendSessionEventsCommand(c.req.param("sessionId"), parsed.data),
+        ...(c.req.header("Idempotency-Key") === undefined ? {} : { idempotencyKey: c.req.header("Idempotency-Key") }),
+      },
     );
     if (result.type === "invalid_request") {
       return c.json(invalidRequest(result.message), 400);

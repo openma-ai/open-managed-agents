@@ -5,6 +5,20 @@ import { sessionWire } from "./session-fixtures";
 import { buildSessionEventsTestApi } from "./test-api";
 
 describe("Managed Agents API — POST /v1/sessions/:session_id/events", () => {
+  it("preserves the request idempotency key outside the event body", async () => {
+    const calls: unknown[] = [];
+    const api = buildSessionEventsTestApi(makeSessionEventsPort({ sendSessionEvents: async command => {
+      calls.push(command);
+      return { type: "accepted", events: [] };
+    } }));
+    const response = await api.fetch(new Request(`http://openma.test/v1/sessions/${sessionWire.id}/events`, {
+      method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "desktop-turn-17", "anthropic-beta": "managed-agents-2026-04-01" },
+      body: JSON.stringify({ events: [{ type: "user.message", content: [{ type: "text", text: "once" }] }] }),
+    }));
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([{ sessionId: sessionWire.id, idempotencyKey: "desktop-turn-17", events: [{ type: "user.message", content: [{ type: "text", text: "once" }] }] }]);
+  });
+
   it.each(["version_conflict", "idempotency_conflict"] as const)("preserves native %s as HTTP 409", async type => {
     const api = buildSessionEventsTestApi(makeSessionEventsPort({ sendSessionEvents: async () => ({ type, message: "Input conflicts with the accepted Session state" }) }));
     const client = new Anthropic({ apiKey: "test-key", baseURL: "http://openma.test", maxRetries: 0, fetch: async (input, init) => api.fetch(new Request(input, init)) });

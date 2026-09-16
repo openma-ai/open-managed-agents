@@ -1,4 +1,4 @@
-import { DaemonConnection, type DaemonConnectionState } from "@open-managed-agents/runtime/daemon-connection";
+import { DaemonConnection, type DaemonConnectionState } from "@openma/common/local-runtime";
 import { decodeSessionCommand } from "@openma/common/session-kernel";
 import WebSocket from "ws";
 

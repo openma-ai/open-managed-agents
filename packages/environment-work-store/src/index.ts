@@ -135,6 +135,13 @@ export async function isCurrentEnvironmentWorkClaim(
     || current.secret.sessionsToken !== claim.token
   ) return false;
 
+  // Poll reserves a queued item. Its scoped bearer must be able to ACK
+  // before the item becomes starting, without granting Session access yet.
+  if (current.work.state === "queued") {
+    return claim.method === "POST"
+      && claim.path === `/v1/environments/${encodeURIComponent(claim.environmentId)}/work/${encodeURIComponent(claim.workId)}/ack`
+      && Date.parse(current.claim.claimedAt) + current.heartbeatTtlSeconds * 1_000 > dependencies.now().getTime();
+  }
   const workControlRequest = claim.path.startsWith(
     `/v1/environments/${encodeURIComponent(claim.environmentId)}/work/${encodeURIComponent(claim.workId)}/`,
   );

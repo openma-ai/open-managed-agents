@@ -7,7 +7,7 @@
  */
 
 import { hostname } from "node:os";
-import { DaemonHost } from "@open-managed-agents/runtime/daemon-host";
+import { DaemonHost } from "@openma/common/local-runtime";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { readCreds } from "../lib/config.js";

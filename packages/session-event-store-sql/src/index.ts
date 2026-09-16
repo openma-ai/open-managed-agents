@@ -400,8 +400,8 @@ export class SqlSessionEventStore
       parameters.push(...input.types);
     }
     if (input.idPrefix !== undefined) {
-      conditions.push("id LIKE ? ESCAPE '!'");
-      parameters.push(`${input.idPrefix.replace(/[!%_]/g, value => `!${value}`)}%`);
+      conditions.push("substr(id, 1, length(?)) = ?");
+      parameters.push(input.idPrefix, input.idPrefix);
     }
     if (input.position !== undefined) {
       const operator = input.order === "asc" ? ">" : "<";

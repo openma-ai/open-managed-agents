@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@open-managed-agents/sandbox": "workspace:*",
-    "@openma/common": "github:openma-ai/openma-common#00358ff9c1e4a694171f5617a4715602c61433e7",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#80fdc31e7a3d8dc8be325896ecc310a053c57af6",
     "zod": "^3.23.0"
   },
   "devDependencies": {

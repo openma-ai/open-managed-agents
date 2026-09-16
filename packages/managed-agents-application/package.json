@@ -33,7 +33,8 @@
     "@open-managed-agents/skill-store": "workspace:*",
     "@open-managed-agents/tunnel-store": "workspace:*",
     "@open-managed-agents/user-profile-store": "workspace:*",
-    "@open-managed-agents/vault-store": "workspace:*"
+    "@open-managed-agents/vault-store": "workspace:*",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#80fdc31e7a3d8dc8be325896ecc310a053c57af6"
   },
   "devDependencies": {
     "vitest": "^4.1.3"

@@ -16,7 +16,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.120.0",
     "@open-managed-agents/execution-control": "workspace:*",
-    "@open-managed-agents/runtime-resource-contract": "workspace:*"
+    "@open-managed-agents/runtime-resource-contract": "workspace:*",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#80fdc31e7a3d8dc8be325896ecc310a053c57af6"
   },
   "devDependencies": {
     "standardwebhooks": "1.0.0",
