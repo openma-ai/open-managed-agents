@@ -104,7 +104,7 @@ package needs the workflow registered on npmjs.com:
 
 1. Go to https://www.npmjs.com/package/@openma/cli/access
 2. Trusted Publishers → Add publisher → GitHub Actions
-3. Owner: `open-ma`, repo: `open-managed-agents`
+3. Owner: `openma-ai`, repo: `open-managed-agents`
 4. Workflow filename: `release.yml`
 5. Environment: `production`
 

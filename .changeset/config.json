@@ -1,13 +1,18 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
-  "changelog": ["@changesets/changelog-git", null],
+  "changelog": [
+    "@changesets/changelog-git",
+    null
+  ],
   "commit": false,
   "fixed": [],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [],
+  "ignore": [
+    "@open-managed-agents/harness-runtime-acp"
+  ],
   "privatePackages": {
     "version": false,
     "tag": false

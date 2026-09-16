@@ -1,5 +1,11 @@
 # @openma/sdk
 
+## 1.0.0-beta.2
+
+### Patch Changes
+
+- 952fc3f: Add strongly typed `_oma` Agent extensions and the standard sandbox `stdio` MCP transport to create/update payloads while preserving the official Anthropic Managed Agents resource tree.
+
 ## 1.0.0-beta.1
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @openma/cli
 
+## 0.6.0-beta.2
+
+### Patch Changes
+
+- f0c9aed: Preserve ACP completion token usage when relaying sessions and return the complete agents page in JSON mode, including empty results and pagination metadata.
+- fc24017: Include the underlying network error code in CLI fetch failures.
+- 2b6f7bf: Update the shared runtime so ACP sessions can start without the optional steering extension. Reject unsupported active-turn steering at invocation instead of blocking ordinary prompts.
+- 2b6f7bf: Consume the versioned OpenMA common local runtime for ACP sessions, connection lifecycle and owned-host shutdown. Keep CLI credentials, signals and filesystem adapters outside the shared kernel.
+- 2b6f7bf: Share daemon connection lifecycle with the desktop host, reconnect silent links without replaying user input, and preserve single execution ownership on attachment conflicts.
+
+  Separate owned daemon drain and cleanup from CLI process signals, preserve the output connection until sessions finish, reject new turns during shutdown, and report shutdown failures after cleanup.
+
 ## 0.6.0-beta.1
 
 ### Patch Changes
