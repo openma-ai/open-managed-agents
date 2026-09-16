@@ -30,7 +30,7 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^26.5.0",
+    "@types/node": "^26.5.1",
     "vitest": "^4.1.3"
   }
 }
