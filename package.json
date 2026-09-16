@@ -118,13 +118,13 @@
     "@anthropic-ai/sdk": "0.120.0",
     "@aws-sdk/client-s3": "^3.1096.0",
     "@changesets/changelog-git": "^1.0.0",
-    "@changesets/cli": "^3.0.1",
+    "@changesets/cli": "^3.0.2",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260908.1",
     "@playwright/test": "^1.59.1",
     "@testcontainers/minio": "^12.1.0",
     "@testcontainers/postgresql": "^12.1.0",
-    "@types/node": "^26.5.0",
+    "@types/node": "^26.5.1",
     "@vitest/coverage-v8": "4.1.4",
     "bash-parser": "^0.5.0",
     "drizzle-kit": "^0.31.5",
@@ -136,9 +136,9 @@
     "wrangler": "^4.130.0"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.50",
-    "@ai-sdk/openai": "^4.0.63",
-    "ai": "7.0.95",
+    "@ai-sdk/anthropic": "4.0.53",
+    "@ai-sdk/openai": "^4.0.66",
+    "ai": "7.0.99",
     "better-auth": "^1.6.3",
     "drizzle-orm": "^0.45.2",
     "zod": "4.3.6"
