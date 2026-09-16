@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#85e0b3b6d46f3b8cd219aa2b5a79a1339b5041a0"
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9"
   },
   "devDependencies": {
     "vitest": "^4.1.3"

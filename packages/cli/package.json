@@ -46,7 +46,7 @@
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#85e0b3b6d46f3b8cd219aa2b5a79a1339b5041a0",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
     "@types/node": "^26.5.0",
     "@types/ws": "^8.5.0",
     "esbuild": "^0.25.0",

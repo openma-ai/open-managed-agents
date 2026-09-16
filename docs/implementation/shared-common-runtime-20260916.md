@@ -71,3 +71,21 @@ network/server failures retain the no-resend behavior. No entity or schema added
 - An initial Codex ACP test was mistakenly launched and stopped. Its results are not DeepSeek acceptance evidence.
 - DeepSeek's authenticated model catalog returned `deepseek-flash` and `deepseek-v4-pro`. A direct `deepseek-flash` request returned the expected marker. No claim is made that the alias identifies version 4.1.
 - Real shared-kernel execution using installed DeepSeek ACP 0.4.6 was blocked before a model turn: common's session host requires the vendor `_session/steering` capability and disposed the agent when it did not advertise it. The subsequent `no such session` is a consequence of that rejection. Backchat continuation/restart validation was therefore not reached; full end-to-end acceptance remains failing.
+
+### Optional steering follow-up
+
+Common no longer requires steering at session startup. The session host allows
+ordinary prompts and checks capability when an active-turn steer is invoked.
+Backchat applies the global Queue-off preference only to sessions advertising
+steering; other sessions retain a visible queue. Existing queued messages also
+remain visible after changing the preference. DeepSeek extension support is
+tracked at https://github.com/openma-ai/deepseek-harness-acp/issues/23.
+
+Validation of the optional-steering change: common 353 tests, OMA session-host
+20 tests, Backchat CI 367 tests plus 17 targeted queue/capability assertions,
+and two Electron queue-visibility scenarios passed. Backchat typecheck/build
+passed. The broader ChatView test file retains an unrelated existing assertion
+failure expecting `t("chat.cloud")` in runtime controls (also reproduced before
+the change). The configured DeepSeek live run passed the real OMA first turn,
+but desktop acceptance timed out waiting 5 seconds for initial history to
+appear; full continuation/restart acceptance is not claimed.

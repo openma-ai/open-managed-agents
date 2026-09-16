@@ -4,34 +4,36 @@ import { ManagedAgentsSessionHost } from "../src/session-host";
 import { acpSessionFixture } from "./acp-fixtures";
 
 describe("ManagedAgentsSessionHost", () => {
-  it("rejects and disposes an ACP session that cannot steer", async () => {
-    const events: unknown[] = [];
+  it("runs ordinary prompts without the optional steering extension", async () => {
+    const events: any[] = [];
     let disposeCount = 0;
+    let prompts = 0;
+    let steerCalls = 0;
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
     const host = new ManagedAgentsSessionHost({
-      runtime: {
-        async start() {
-          return acpSessionFixture({
-            acpSessionId: "acp-without-steer",
-            supportsSteering: false,
-            async dispose() { disposeCount += 1; },
-          });
-        },
-      },
-      emit: (event: unknown) => events.push(event),
+      runtime: { async start() { return acpSessionFixture({
+        acpSessionId: "acp-without-steer", supportsSteering: false,
+        async *prompt() { prompts += 1; await pending; },
+        async steer() { steerCalls += 1; return "injected"; },
+        async dispose() { disposeCount += 1; },
+      }); } },
+      emit: event => events.push(event),
     });
-
-    await host.start({
-      sessionId: "session-without-steer",
-      options: { agent: { command: "non-conforming-acp" } },
-    });
-
-    expect(disposeCount).toBe(1);
-    expect(host.has("session-without-steer")).toBe(false);
-    expect(events).toEqual([{
-      type: "session.error",
-      sessionId: "session-without-steer",
-      message: "ACP agent does not support required session steering",
-    }]);
+    await host.start({ sessionId: "session-without-steer", options: { agent: { command: "ordinary-acp" } } });
+    expect(host.has("session-without-steer")).toBe(true);
+    const turn = host.prompt({ sessionId: "session-without-steer", turnId: "turn-1", text: "hello" });
+    await Promise.resolve();
+    await host.steer({ sessionId: "session-without-steer", eventId: "steer-1", text: "change" });
+    expect(steerCalls).toBe(0);
+    expect(events).toContainEqual(expect.objectContaining({ type: "session.error", turnId: "steer-1", message: "ACP agent does not support session steering" }));
+    finish();
+    await turn;
+    await host.prompt({ sessionId: "session-without-steer", turnId: "turn-2", text: "continue" });
+    expect(prompts).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({ type: "session.complete", turnId: "turn-2" }));
+    expect(disposeCount).toBe(0);
+    await host.dispose("session-without-steer");
   });
 
   it("starts one ACP session and re-announces it idempotently", async () => {

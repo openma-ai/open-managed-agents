@@ -53,12 +53,14 @@ or failure. Agent/environment/session records and the isolated local workspace
 remain for inspection; their IDs/paths are in the report. The workspace API key
 is owned by the caller and is never revoked by this runner.
 
-## Current compatibility limitation
+## Steering capabilities
 
-The tested DeepSeek ACP 0.4.6 does not advertise the `_session/steering` extension
-required by common. This profile currently exits nonzero at `oma-first-turn`,
-rather than skipping the failure or substituting a different ACP provider.
-Configuration does not bypass that capability requirement.
+The tested DeepSeek ACP 0.4.6 does not advertise `_session/steering`.
+This optional extension no longer blocks ordinary sessions in common; an
+unsupported active-turn steering request fails explicitly. Backchat keeps its
+queue enabled and visible for agents without steering, even when the global
+queue setting is off. DeepSeek extension support is tracked in
+[deepseek-harness-acp#23](https://github.com/openma-ai/deepseek-harness-acp/issues/23).
 
 Offline configuration regression checks:
 

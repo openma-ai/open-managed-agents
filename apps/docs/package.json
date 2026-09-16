@@ -15,7 +15,7 @@
     "@astrojs/mdx": "^5.0.4",
     "@astrojs/starlight": "^0.38.4",
     "@fontsource-variable/geist": "^5.2.8",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#85e0b3b6d46f3b8cd219aa2b5a79a1339b5041a0",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
     "astro": "^6.1.9",
     "sharp": "^0.34.5"
   },
