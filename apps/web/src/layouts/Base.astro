@@ -128,7 +128,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
     ))}
   </head>
-  <body class="bg-bg text-fg">
+  <body class="bg-bg text-fg site-body">
     <!-- Skip-to-content for keyboard users. sr-only by default, becomes
          visible on :focus-visible (next focusable element after document
          start), so the very first Tab press exposes it. -->
@@ -140,7 +140,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     </a>
 
     <header
-      class="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
+      class="fixed inset-x-0 top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
       data-site-header
     >
       <div class="site-container py-3 flex items-center justify-between gap-3">
@@ -157,7 +157,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         <nav class="hidden lg:flex items-center gap-1 text-sm" aria-label="Primary">
           <a href="/deploy/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Deploy</a>
           <a href="/#ecosystem" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Ecosystem</a>
-          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-brand-text)]">Backchat</a>
+          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-ink)]">Backchat</a>
           <a href="/blog/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Blog</a>
           <a href="https://docs.openma.dev" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Docs</a>
           <a
@@ -281,7 +281,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
           <a href="/claude-tag-alternative/" class="py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
           <a href="/claude-tag-open-source/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Open Source Tag</a>
           <a href="/self-hosted-claude-tag/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Self-hosted Tag</a>
-          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-brand-text)]">Backchat</a>
+          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-ink)]">Backchat</a>
           <a href="/blog/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Blog</a>
           <a href="https://docs.openma.dev" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Docs</a>
           <a

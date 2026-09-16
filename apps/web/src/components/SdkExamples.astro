@@ -6,12 +6,12 @@ const examples = [
     id: "claude",
     label: "Claude Managed Agents",
     package: "@anthropic-ai/sdk",
-    note: "Use your OpenMA API key, configured model and an existing environment ID.",
+    note: "Hosted OpenMA: use your API key, configured model and an existing environment ID.",
     code: `import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "http://localhost:8787",
+  baseURL: "https://app.openma.dev",
 });
 
 const agent = await client.beta.agents.create({
@@ -35,7 +35,7 @@ await client.beta.sessions.events.send(session.id, {
     id: "openai",
     label: "OpenAI Agents API",
     package: "openai",
-    note: "Requires a Node deployment. Use your OpenMA API key and configured model.",
+    note: "Self-hosted Node only; this API is not yet available on hosted OpenMA. Use your API key and configured model.",
     code: `import OpenAI from "openai";
 
 const client = new OpenAI({
@@ -113,7 +113,7 @@ const session = await client.beta.agents.sessions.create({
   .sdk-tabs:not([hidden]) { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--site-line); }
   .sdk-tabs button { min-height: 44px; padding: 10px 16px; font-size: 14px; font-weight: 580; border-radius: 8px; color: var(--site-ink-soft); cursor: pointer; }
   .sdk-tabs button[aria-selected="true"] { background: var(--site-surface-muted); color: var(--site-ink); }
-  .sdk-tabs button:hover { color: var(--site-brand-text); }
+  .sdk-tabs button:hover { color: var(--site-ink); background: var(--site-surface-muted); }
   .sdk-code-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; padding: 24px 24px 0; }
   .sdk-code-heading h3 { font-size: 16px; font-weight: 580; }
   .sdk-code-heading > code { font-family: var(--site-mono); font-size: 12px; color: var(--site-muted); }

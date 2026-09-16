@@ -16,7 +16,7 @@
     "@astrojs/rss": "^4.0.10",
     "@astrojs/sitemap": "^3.4.1",
     "@fontsource-variable/geist": "^5.2.8",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#105d7f00ea91916f37ca7a9f94f3e6f7ad8dcda6",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#d00d876c41a3e244c5f14f7d7ff145d957df7a7f",
     "@tailwindcss/vite": "^4.1.0",
     "astro": "^5.13.0",
     "tailwindcss": "^4.1.0",
