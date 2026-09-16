@@ -754,6 +754,7 @@ class ScriptedE2BService {
               await result({
                 protocolVersion: 1,
                 agentCapabilities: {
+                  mcpCapabilities: { http: true },
                   sessionCapabilities: { close: {} },
                 },
               });
