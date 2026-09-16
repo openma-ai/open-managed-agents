@@ -251,5 +251,4 @@ main .grid > * { min-width: 0; }
 #ecosystem .ecosystem-choices { padding-block: 0 48px; }
 .ecosystem-projects-title { font-size: 24px; font-weight: 580; letter-spacing: -.025em; margin-bottom: 28px; }
 
-.site-body { padding-top: 76px; }
 [data-site-header] > .site-container { height: 76px; padding-block: 0; }

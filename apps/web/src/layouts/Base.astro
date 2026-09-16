@@ -128,7 +128,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
     ))}
   </head>
-  <body class="bg-bg text-fg site-body">
+  <body class="bg-bg text-fg">
     <!-- Skip-to-content for keyboard users. sr-only by default, becomes
          visible on :focus-visible (next focusable element after document
          start), so the very first Tab press exposes it. -->
@@ -140,7 +140,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     </a>
 
     <header
-      class="fixed inset-x-0 top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
+      class="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
       data-site-header
     >
       <div class="site-container py-3 flex items-center justify-between gap-3">
