@@ -194,12 +194,21 @@ export class SqlManagedSessionsComposition {
     const { client, sealer, environments } = dependencies;
     this.agents = new SqlAgentPersistence(client);
     this.files = new SqlFileMetadataPersistence(client);
+    // Self-hosted workers consume the canonical log under Environment Work.
+    // Only cloud placement may also enqueue the Node execution outbox.
+    const executionOutbox = dependencies.executionOutbox === true
+      ? async (scope: { workspaceId: string; environmentId: string }) => {
+          const environment = await environments.find(scope);
+          if (environment === null) throw new Error("Session environment not found for execution routing");
+          return environment.config.type !== "self_hosted";
+        }
+      : false;
     this.sessions = new SqlSessionPersistence(client, sealer, {
-      executionOutbox: dependencies.executionOutbox,
+      executionOutbox,
     });
     this.sessionSource = new SqlSessionSource(client);
     this.sessionEvents = new SqlSessionEventPersistence(client, {
-      executionOutbox: dependencies.executionOutbox,
+      executionOutbox,
     });
     this.sessionResources = new SqlSessionResourceStore(client, sealer);
     this.sessionThreads = new SqlSessionThreadStore(client);

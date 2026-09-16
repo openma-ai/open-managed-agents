@@ -1,3 +1,4 @@
+import { ensureSessionExecutionCoordinatorSchema } from "@open-managed-agents/session-runtime-sql/coordination";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import type { SqlClient } from "@open-managed-agents/sql-client";
@@ -103,6 +104,32 @@ describe("SqlManagedSessionsComposition", () => {
         Date.parse(environment.updatedAt),
       )
       .run();
+  });
+
+  it.each(["self_hosted", "cloud"] as const)("only queues Node execution for cloud environments: %s", async (type) => {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    await client.exec(`CREATE TABLE managed_session_initial_events (session_id TEXT, workspace_id TEXT, sequence INTEGER, document TEXT);`);
+    const routedEnvironment = { ...environment, config: type === "self_hosted"
+      ? { type: "self_hosted" as const }
+      : { type: "cloud" as const, networking: { type: "unrestricted" as const }, packages: { apt: [], cargo: [], gem: [], go: [], npm: [], pip: [] } } };
+    await client.prepare("UPDATE managed_environments SET document = ?").bind(JSON.stringify(routedEnvironment)).run();
+    const composition = new SqlManagedSessionsComposition({
+      client, executionOutbox: true,
+      environments: new SqlSessionEnvironmentSource(client),
+      lifecycle: { sessionStarted: async () => {}, sessionStopped: async () => {} },
+      runtime: { sessionEventsAccepted: async () => {}, sessionThreadArchived: async () => {}, subscribe: () => (async function* () {})() },
+      sealer: { seal: async value => value },
+      clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+      ids: { nextSessionId: () => "session_routed", nextEventId: () => "event_routed", nextOutcomeId: () => "outcome", nextResourceId: () => "resource" },
+    });
+    const ports = composition.portsFor("workspace_01");
+    await expect(ports.sessions.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: environment.id,
+      initialEvents: [{ type: "user.message", content: [{ type: "text", text: "First" }] }],
+    })).resolves.toMatchObject({ type: "created" });
+    await expect(ports.sessionEvents.sendSessionEvents({ sessionId: "session_routed", events: [{ type: "user.message", content: [{ type: "text", text: "Continue" }] }] })).resolves.toMatchObject({ type: "accepted" });
+    await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_executions").first()).resolves.toEqual({ count: type === "cloud" ? 2 : 0 });
+    await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_events").first()).resolves.toEqual({ count: 1 });
+    await composition.stopAll();
   });
 
   it("reuses one tenant-scoped application graph while isolating workspaces", () => {

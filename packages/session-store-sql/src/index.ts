@@ -18,7 +18,7 @@ export type { SessionResourceSecretSealer } from "./secret-sealer";
 
 export interface SqlSessionStoreOptions {
   /** Commit bootstrap execution work atomically with the new Session. */
-  executionOutbox?: boolean;
+  executionOutbox?: boolean | ((scope: { workspaceId: string; environmentId: string }) => Promise<boolean>);
   executionPolicy?: { maxAttempts: number; timeoutMs: number };
 }
 
@@ -71,7 +71,10 @@ export class SqlSessionStore implements SessionStore {
         sealedValue: await this.sealer.seal(secret.authorizationToken),
       })),
     );
-    const bootstrapBatches = this.options.executionOutbox === true
+    const executionOutbox = typeof this.options.executionOutbox === "function"
+      ? await this.options.executionOutbox({ workspaceId: input.workspaceId, environmentId: session.environmentId })
+      : this.options.executionOutbox;
+    const bootstrapBatches = executionOutbox === true
       ? sessionExecutionEventBatches(sessionBootstrapExecutionEvents({
           sessionId: session.id, createdAt: session.createdAt, initialEvents: input.initialEvents,
         }))

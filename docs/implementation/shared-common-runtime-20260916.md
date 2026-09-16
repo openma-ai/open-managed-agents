@@ -62,3 +62,12 @@ Backchat follows the SDK's `next_page`, opens live observation before history
 catch-up, and deduplicates the overlap by canonical event ID. Definite rejection
 responses release the pending local operation for an explicit retry; ambiguous
 network/server failures retain the no-resend behavior. No entity or schema added.
+
+### Docker rerun (2026-09-16)
+
+- Ran current Node API source in an isolated Docker container with SQLite and real authentication. The reused image runs Node 22.23.2; repository target is Node 24, so this is not a release-image certification.
+- Found a second execution path: SQL bootstrap/input persistence unconditionally admitted Node execution outbox entries even for self-hosted environments. Persistence now resolves the environment before admission; self-hosted events remain canonical history consumed by Environment Work, without Node outbox entries. No schema or new entity was introduced.
+- Regression reproduced two unexpected execution entries for a self-hosted bootstrap plus continuation. After the fix, all 6 composition tests and 85 SQL adapter tests pass. The session store, event store and SQL composition packages pass typecheck.
+- An initial Codex ACP test was mistakenly launched and stopped. Its results are not DeepSeek acceptance evidence.
+- DeepSeek's authenticated model catalog returned `deepseek-flash` and `deepseek-v4-pro`. A direct `deepseek-flash` request returned the expected marker. No claim is made that the alias identifies version 4.1.
+- Real shared-kernel execution using installed DeepSeek ACP 0.4.6 was blocked before a model turn: common's session host requires the vendor `_session/steering` capability and disposed the agent when it did not advertise it. The subsequent `no such session` is a consequence of that rejection. Backchat continuation/restart validation was therefore not reached; full end-to-end acceptance remains failing.

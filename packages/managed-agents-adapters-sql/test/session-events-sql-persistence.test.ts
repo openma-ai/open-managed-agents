@@ -166,6 +166,20 @@ describe("SqlSessionEventPersistence", () => {
     ).resolves.toEqual({ thread_id: "thread_01" });
   });
 
+  it.each([false, true])("honors the per-environment execution outbox decision: %s", async (enabled) => {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    let scope: unknown;
+    const executionOutbox = async (input: { workspaceId: string; environmentId: string }) => {
+      scope = input;
+      return enabled;
+    };
+    const event: SentSessionEvent = { id: "event_routed", type: "user.message", content: [{ type: "text", text: "Run once" }], processedAt: session.updatedAt };
+    await new SqlSessionEventPersistence(client, { executionOutbox }).append(appendCommand([event]));
+    await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_events").first()).resolves.toEqual({ count: 1 });
+    expect(scope).toEqual({ workspaceId: "workspace_01", environmentId: session.environmentId });
+    await expect(client.prepare("SELECT COUNT(*) AS count FROM managed_session_executions").first()).resolves.toEqual({ count: enabled ? 1 : 0 });
+  });
+
   it("atomically commits accepted events and their durable execution outbox", async () => {
     const persistence = new SqlSessionEventPersistence(client, {
       executionOutbox: true,
