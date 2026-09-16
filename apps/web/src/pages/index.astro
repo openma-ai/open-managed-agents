@@ -21,8 +21,8 @@ const schemas = [softwareApplicationSchema()];
 ---
 
 <Base
-  title="OpenMA — Any sandbox. Any harness. Any cloud."
-  description="An open ecosystem for AI agents. Connect your harness, choose your sandbox and cloud, and work through Backchat, OMA CLI or SDKs. Open source, Apache 2.0."
+  title="OpenMA — Run and manage your agents"
+  description="Run agents, manage sessions and connect your tools with OpenMA. Continue work through Backchat, OMA CLI or SDKs. Open source and self-hostable."
   canonical="/"
   keywords="openai agents api, openai agents api alternative, self-hosted openai agents, claude managed agents, claude managed agents alternative, open-source agent platform, subagents, acp, mcp, byok, claude tag alternative"
   schemas={schemas}
@@ -31,28 +31,24 @@ const schemas = [softwareApplicationSchema()];
   <section class="border-b border-[var(--color-border)]">
     <div class="site-container site-hero">
       <h1 class="font-display text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight">
-        <span class="block">Any sandbox.</span><span class="block">Any harness.</span><span class="block">Any cloud.</span>
+        Run and manage<br class="hidden sm:block" /> your agents.
       </h1>
-        <p class="mt-6 text-xl md:text-2xl text-[var(--color-fg-muted)]">
-          An open ecosystem for agents. Built to work together.
-        </p>
       <p class="hero-description">
-        Choose the agent loop, execution environment and infrastructure that fit
-        your work. OpenMA connects them with shared sessions and execution
-        orchestration. Backchat, OMA CLI and SDKs bring that work to your desktop,
-        terminal and applications.
+        OpenMA gives your agents persistent sessions, access to tools and a place
+        to execute. Start a task from your app or terminal, follow its progress,
+        and continue the conversation in Backchat.
       </p>
       <div class="mt-8 flex items-center gap-3 flex-wrap">
         <a
           href="/deploy/"
           class="site-button site-button-primary"
-          >Deploy your own</a
+          >Set up OpenMA</a
         >
         <a
           href="https://github.com/openma-ai/open-managed-agents"
           target="_blank" rel="noopener noreferrer"
           class="site-button"
-          >★ Star on GitHub</a
+          >View on GitHub</a
         >
         <a
           href="https://app.openma.dev/login"
@@ -60,26 +56,16 @@ const schemas = [softwareApplicationSchema()];
           >Try the hosted version</a
         >
       </div>
-      <p class="mt-3 text-xs text-[var(--color-fg-subtle)]">
-        Self-host: <code class="font-mono">docker compose up</code>. Hosted: free
-        $1 trial credit, BYOK for LLM spend.
-      </p>
+      <p class="mt-4 text-sm text-[var(--color-fg-subtle)]">Open source · Apache 2.0 · Hosted or self-hosted</p>
       <p class="mt-3 text-sm text-[var(--color-fg-muted)]">
         <a href="#openai-agents-api">Connect your SDK</a>
       </p>
     </div>
   </section>
 
-  <section class="site-container ecosystem-choices" aria-label="Three independent choices">
-    <div><h2>Any sandbox</h2><p>Choose where code executes. Connect a sandbox provider through OpenMA’s execution interfaces.</p><p class="choice-examples">LiteBox · E2B · Daytona · BoxRun</p></div>
-    <div><h2>Any harness</h2><p>Choose the agent loop. Use a built-in harness, connect an ACP agent or implement your own.</p><p class="choice-examples">Default · Pi · ACP adapters</p></div>
-    <div><h2>Any cloud</h2><p>Choose where you host the platform. Run Node and Docker on your infrastructure, or use a supported cloud deployment.</p><p class="choice-examples">Self-hosted Node · Cloudflare · Hosted OpenMA</p></div>
-    <p class="choices-note">An extensible ecosystem, with concrete integrations. Available features depend on the harness, sandbox adapter and deployment. <a href="/deploy/">Explore supported setups</a>.</p>
-  </section>
-
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" aria-labelledby="how-it-works" data-reveal>
     <div class="site-container py-16">
-      <h2 id="how-it-works" class="font-display text-3xl font-bold mb-4">Different pieces. One connected system.</h2>
+      <h2 id="how-it-works" class="font-display text-3xl font-bold mb-4">How OpenMA runs a task.</h2>
       <p class="text-[var(--color-fg-muted)] max-w-2xl leading-relaxed">
         Clients connect to OpenMA for sessions and orchestration. The harness
         runs the agent loop; the sandbox provides an execution environment.
@@ -101,9 +87,17 @@ const schemas = [softwareApplicationSchema()];
 
   <section id="ecosystem" class="site-container py-16" aria-labelledby="ecosystem-title">
     <div class="ecosystem-heading">
-      <h2 id="ecosystem-title" class="font-display">An open ecosystem.<br />A connected way to work.</h2>
-      <p>Use the platform, desktop app and developer tools together, or start with the part you need.</p>
+      <h2 id="ecosystem-title" class="font-display">Where OpenMA fits.</h2>
+      <p>OpenMA coordinates sessions and execution across the agent ecosystem. Harnesses, sandboxes and cloud infrastructure connect through adapters, so each part can evolve independently.</p>
     </div>
+  <div class="ecosystem-choices" aria-label="Ecosystem compatibility">
+    <div><h3>Any sandbox</h3><p>Choose where code executes. Connect a sandbox provider through OpenMA’s execution interfaces.</p><p class="choice-examples">LiteBox · E2B · Daytona · BoxRun</p></div>
+    <div><h3>Any harness</h3><p>Choose the agent loop. Use a built-in harness, connect an ACP agent or implement your own.</p><p class="choice-examples">Default · Pi · ACP adapters</p></div>
+    <div><h3>Any cloud</h3><p>Choose where you host the platform. Run Node and Docker on your infrastructure, or use a supported cloud deployment.</p><p class="choice-examples">Self-hosted Node · Cloudflare · Hosted OpenMA</p></div>
+    <p class="choices-note">An extensible ecosystem, with concrete integrations. Available features depend on the harness, sandbox adapter and deployment. <a href="/deploy/">Explore supported setups</a>.</p>
+  </div>
+
+    <h3 class="ecosystem-projects-title">Tools built around the platform</h3>
     <dl class="ecosystem-products">
       <div>
         <dt><a href="https://github.com/openma-ai/open-managed-agents">OpenMA</a><span>Agent platform</span></dt>

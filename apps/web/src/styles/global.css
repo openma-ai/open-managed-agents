@@ -242,8 +242,11 @@ main .grid > * { min-width: 0; }
 }
 
 .ecosystem-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 48px; padding-block: 64px; }
-.ecosystem-choices h2 { font-size: 24px; font-weight: 580; letter-spacing: -.025em; margin-bottom: 16px; }
+.ecosystem-choices h3 { font-size: 24px; font-weight: 580; letter-spacing: -.025em; margin-bottom: 16px; }
 .ecosystem-choices p { color: var(--site-ink-soft); font-size: 15px; line-height: 1.7; }
 .ecosystem-choices .choice-examples { margin-top: 20px; color: var(--site-muted); font-size: 13px; }
 .ecosystem-choices .choices-note { grid-column: 1 / -1; font-size: 13px; color: var(--site-muted); padding-top: 24px; border-top: 1px solid var(--site-line); }
 @media (max-width: 700px) { .ecosystem-choices { grid-template-columns: 1fr; gap: 32px; } }
+
+#ecosystem .ecosystem-choices { padding-block: 0 48px; }
+.ecosystem-projects-title { font-size: 24px; font-weight: 580; letter-spacing: -.025em; margin-bottom: 28px; }

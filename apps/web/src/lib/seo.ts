@@ -94,7 +94,7 @@ export function softwareApplicationSchema() {
       "Local and cloud agent execution",
     ],
     description:
-      "An open ecosystem for AI agents. Choose your harness, sandbox and cloud. OpenMA manages sessions and execution, with Backchat, OMA CLI and SDKs as connected entry points.",
+      "Run agents, manage persistent sessions and connect tools with OpenMA. Start work from your app or terminal and continue it in Backchat. Open source and self-hostable.",
     sameAs: [REPO_URL],
   };
 }

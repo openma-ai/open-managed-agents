@@ -96,10 +96,9 @@ test("high-impression landing pages emit concise, user-facing search snippets", 
   const title = homepage.match(/<title>([^<]+)<\/title>/)?.[1];
   const description = homepage.match(/<meta name="description" content="([^"]+)"/)?.[1];
   assert.match(title, /OpenMA/);
-  assert.match(title, /Any sandbox/);
-  assert.match(title, /Any harness.*Any cloud/);
+  assert.match(title, /Run and manage your agents/);
   assert.ok(title.length <= 65, "homepage title stays concise");
-  assert.match(description, /open ecosystem/i);
+  assert.match(description, /Run agents, manage sessions/);
   assert.match(description, /Backchat.*CLI.*SDKs/);
   assert.ok(description.length <= 170, "homepage description stays concise");
   assert.equal(homepage.match(/<meta property="og:description" content="([^"]+)"/)?.[1], description);
