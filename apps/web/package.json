@@ -16,11 +16,12 @@
     "@astrojs/rss": "^4.0.10",
     "@astrojs/sitemap": "^3.4.1",
     "@fontsource-variable/geist": "^5.2.8",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
+    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#105d7f00ea91916f37ca7a9f94f3e6f7ad8dcda6",
     "@tailwindcss/vite": "^4.1.0",
     "astro": "^5.13.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "npm:@typescript/typescript6@^6.0.2"
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8"
   },
   "devDependencies": {
     "wrangler": "^4.130.0"

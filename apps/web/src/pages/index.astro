@@ -29,36 +29,33 @@ const schemas = [softwareApplicationSchema()];
 >
   <!-- Hero -->
   <section class="border-b border-[var(--color-border)]">
-    <div class="max-w-5xl mx-auto px-4 py-20 md:py-28 text-center">
-      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
-        Apache 2.0 · Cloudflare-native · Self-hostable
-      </p>
+    <div class="site-container site-hero">
       <h1 class="font-display text-4xl sm:text-5xl md:text-6xl font-bold tracking-tight">
         Run Claude and OpenAI agents on your own server
-        <span class="block mt-4 text-xl md:text-2xl text-[var(--color-fg-muted)] font-medium">
-          Use the SDKs you know. Keep control of where your agents run.
-        </span>
       </h1>
-      <p class="mt-6 text-base md:text-lg text-[var(--color-fg-muted)] max-w-2xl mx-auto leading-relaxed">
+        <p class="mt-6 text-xl md:text-2xl text-[var(--color-fg-muted)]">
+          Use the SDKs you know. Keep control of where your agents run.
+        </p>
+      <p class="hero-description">
         OpenMA handles sessions, tools and crash recovery. Connect your own
         model keys, give agents access to your files and services, and deploy
         on your infrastructure. Open source, under the Apache 2.0 license.
       </p>
-      <div class="mt-8 flex items-center justify-center gap-3 flex-wrap">
+      <div class="mt-8 flex items-center gap-3 flex-wrap">
         <a
           href="/deploy/"
-          class="px-5 py-3 rounded-md bg-[var(--color-brand)] text-[var(--color-brand-fg)] font-medium"
+          class="site-button site-button-primary"
           >Deploy your own</a
         >
         <a
           href="https://github.com/openma-ai/open-managed-agents"
           target="_blank" rel="noopener noreferrer"
-          class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
+          class="site-button"
           >★ Star on GitHub</a
         >
         <a
           href="https://app.openma.dev/login"
-          class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+          class="site-button"
           >Try the hosted version</a
         >
       </div>
@@ -73,7 +70,7 @@ const schemas = [softwareApplicationSchema()];
   </section>
 
   <!-- Why Open Managed Agents -->
-  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-3 text-center">Why Open Managed Agents</h2>
     <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-12">
       Give your agents a place to work, remember their conversations, and
@@ -98,9 +95,26 @@ const schemas = [softwareApplicationSchema()];
     </div>
   </section>
 
+  <section class="backchat-section" aria-labelledby="backchat-title">
+    <div class="site-container backchat-layout">
+      <div>
+        <h2 id="backchat-title">Continue the conversation in Backchat.</h2>
+        <p>A desktop home for your agents. Connect your OpenMA account, browse tenant sessions, and pick up a task from your desktop.</p>
+        <a class="site-button site-button-primary" href="https://backchat.openma.ai">Explore Backchat <span aria-hidden="true" class="ml-2">↗</span></a>
+      </div>
+      <div class="backchat-details">
+        <h3>Local work. Shared conversations.</h3>
+        <p>Keep local sessions alongside your OpenMA tenants in one sidebar.</p>
+        <h3>Pick up where your agent left off.</h3>
+        <p>Continue an OpenMA session in Backchat and keep the conversation in sync.</p>
+        <a href="https://backchat.openma.ai/#download" class="site-button">Get Backchat for macOS</a>
+      </div>
+    </div>
+  </section>
+
   <!-- How it works -->
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
-    <div class="max-w-5xl mx-auto px-4 py-16">
+    <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-3 text-center">How it works</h2>
       <p class="text-center text-[var(--color-fg-muted)] max-w-2xl mx-auto mb-10">
         Choose a model and tell your agent what to do. OpenMA gives it tools
@@ -137,7 +151,7 @@ curl localhost:8787/v1/agents -d '&#123;"name":"hello", \
   </section>
 
   <!-- API compatibility -->
-  <section id="openai-agents-api" class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section id="openai-agents-api" class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Connect the SDK you already use</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
       OpenMA supports Claude Managed Agents and OpenAI Agents API. Start with
@@ -177,7 +191,7 @@ const session = await client.beta.agents.sessions.create({
 
   <!-- Cloudflare -->
   <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
-    <div class="max-w-5xl mx-auto px-4 py-16">
+    <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-4">Choose where your agents run</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
         Run OpenMA on Cloudflare if you want managed infrastructure, or use
@@ -198,7 +212,7 @@ const session = await client.beta.agents.sessions.create({
   </section>
 
   <!-- Claude Tag alternatives -->
-  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section class="site-container py-16" data-reveal>
     <div class="grid md:grid-cols-[0.95fr_1.05fr] gap-10 items-start">
       <div>
         <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-3">
@@ -245,7 +259,7 @@ const session = await client.beta.agents.sessions.create({
   </section>
 
   <!-- Comparison -->
-  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Open Managed Agents vs Claude Managed Agents</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-6">
       Both run a managed agent loop on your behalf. The difference is who owns
@@ -316,7 +330,7 @@ const session = await client.beta.agents.sessions.create({
 
   <!-- Pricing teaser (kept — relevant to hosted CTA) -->
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
-    <div class="max-w-5xl mx-auto px-4 py-16">
+    <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold text-center mb-2">Hosted pricing (optional)</h2>
       <p class="text-center text-[var(--color-fg-muted)] mb-12 max-w-2xl mx-auto">
         Self-host is free forever. The hosted service at openma.dev is for
@@ -362,7 +376,7 @@ const session = await client.beta.agents.sessions.create({
 
   <!-- Recent blog -->
   {posts.length > 0 && (
-    <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+    <section class="site-container py-16" data-reveal>
       <div class="flex items-end justify-between mb-8">
         <h2 class="font-display text-2xl font-bold">From the blog</h2>
         <a href="/blog/" class="text-sm py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">All posts →</a>
@@ -392,17 +406,17 @@ const session = await client.beta.agents.sessions.create({
         <a
           href="https://github.com/openma-ai/open-managed-agents"
           target="_blank" rel="noopener noreferrer"
-          class="px-5 py-3 rounded-md bg-[var(--color-fg)] text-[var(--color-bg)] font-medium"
+          class="site-button"
           >Clone the repo</a
         >
         <a
           href="https://docs.openma.dev"
-          class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+          class="site-button"
           >Read the docs</a
         >
         <a
           href="https://app.openma.dev/login"
-          class="px-5 py-3 rounded-md border border-[var(--color-border)] font-medium"
+          class="site-button"
           >Try hosted</a
         >
       </div>

@@ -68,7 +68,7 @@ const schemas = [
   schemas={schemas}
 >
   <section class="border-b border-[var(--color-border)]">
-    <div class="max-w-5xl mx-auto px-4 py-16 md:py-24">
+    <div class="site-container py-16 md:py-24">
       <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
         Self-hosted Claude Tag
       </p>
@@ -99,7 +99,7 @@ const schemas = [
     </div>
   </section>
 
-  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">The self-hosted architecture</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
       The public product surface can still be Slack, because that is where
@@ -115,7 +115,7 @@ const schemas = [
   </section>
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
-    <div class="max-w-5xl mx-auto px-4 py-16">
+    <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-8">Setup path</h2>
       <ol class="grid md:grid-cols-5 gap-4">
         {setupSteps.map((step, index) => (
@@ -128,7 +128,7 @@ const schemas = [
     </div>
   </section>
 
-  <section class="max-w-5xl mx-auto px-4 py-16" data-reveal>
+  <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Why self-host the Tag pattern</h2>
     <div class="grid md:grid-cols-2 gap-x-10 gap-y-8">
       <article>
@@ -164,7 +164,7 @@ const schemas = [
   </section>
 
   <section class="border-t border-[var(--color-border)]" data-reveal>
-    <div class="max-w-5xl mx-auto px-4 py-16">
+    <div class="site-container py-16">
       <h2 class="font-display text-3xl font-bold mb-8">FAQ</h2>
       <div class="grid md:grid-cols-2 gap-8">
         {faqItems.map((item) => (

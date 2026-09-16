@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
 import "@fontsource-variable/geist";
+import "@fontsource-variable/jetbrains-mono";
 import { organizationSchema, websiteSchema } from "../lib/seo";
 
 export interface Props {
@@ -88,28 +89,8 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       if (t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches)) {
         document.documentElement.classList.add("dark");
       }
+      document.documentElement.dataset.siteTheme = document.documentElement.classList.contains("dark") ? "dark" : "light";
     </script>
-
-    <!-- Fonts: same set Console uses, so cross-domain feels consistent.
-         Trimmed to weights actually used (no italics, no opsz axis): Source
-         Serif 4 needs 400/600/700 and JetBrains Mono needs 400/500/700.
-         Geist is bundled above. The remaining faces use the print-onload pattern so the
-         stylesheet is non-blocking; the <noscript> fallback keeps it
-         working without JS. display=swap on each face avoids CLS. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      media="print"
-      onload="this.setAttribute('media', 'all')"
-    />
-    <noscript>
-      <link
-        rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      />
-    </noscript>
 
     <!-- Open Graph -->
     <meta property="og:title" content={fullTitle} />
@@ -162,7 +143,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
       class="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-bg)]/80 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--color-bg)]/70"
       data-site-header
     >
-      <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+      <div class="site-container py-3 flex items-center justify-between gap-3">
         <a
           href="/"
           class="flex items-center gap-2 text-[var(--color-brand)] hover:text-[var(--color-brand-hover)] py-1.5"
@@ -173,9 +154,10 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         </a>
 
         <!-- Desktop nav -->
-        <nav class="hidden md:flex items-center gap-1 text-sm" aria-label="Primary">
+        <nav class="hidden lg:flex items-center gap-1 text-sm" aria-label="Primary">
           <a href="/deploy/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Deploy</a>
           <a href="/claude-tag-alternative/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Claude Tag</a>
+          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-brand-text)]">Backchat</a>
           <a href="/blog/" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Blog</a>
           <a href="https://docs.openma.dev" class="px-3 py-2 rounded-md text-[var(--color-fg)] hover:text-[var(--color-brand)]">Docs</a>
           <a
@@ -235,7 +217,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
              <summary> handles toggle. Closes on backdrop click via the
              absolute panel design + click-outside detection in the
              inline script below. -->
-        <div class="md:hidden flex items-center gap-1">
+        <div class="lg:hidden flex items-center gap-1">
           <button
             type="button"
             data-theme-toggle
@@ -266,6 +248,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
             >
               <a href="/deploy/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Deploy</a>
               <a href="/claude-tag-alternative/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
+              <a href="https://backchat.openma.ai" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Backchat</a>
               <a href="/blog/" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Blog</a>
               <a href="https://docs.openma.dev" class="block px-4 py-3 hover:bg-[var(--color-bg-surface)]">Docs</a>
               <a
@@ -291,13 +274,14 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
     </main>
 
     <footer class="border-t border-[var(--color-border)] mt-20">
-      <div class="max-w-5xl mx-auto px-4 py-8 text-sm text-[var(--color-fg-muted)] flex flex-wrap gap-x-8 gap-y-2 justify-between">
+      <div class="site-container py-8 text-sm text-[var(--color-fg-muted)] flex flex-wrap gap-x-8 gap-y-2 justify-between">
         <div>© {new Date().getFullYear()} Open Managed Agents. Apache 2.0 licensed.</div>
         <nav class="flex flex-wrap gap-x-3 gap-y-1" aria-label="Footer">
           <a href="/deploy/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Deploy</a>
           <a href="/claude-tag-alternative/" class="py-2 px-2 -mx-2 rounded hover:bg-[var(--color-bg-surface)]">Claude Tag</a>
           <a href="/claude-tag-open-source/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Open Source Tag</a>
           <a href="/self-hosted-claude-tag/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Self-hosted Tag</a>
+          <a href="https://backchat.openma.ai" class="px-3 py-3 rounded-md hover:text-[var(--site-brand-text)]">Backchat</a>
           <a href="/blog/" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Blog</a>
           <a href="https://docs.openma.dev" class="py-2 px-2 rounded hover:bg-[var(--color-bg-surface)]">Docs</a>
           <a
@@ -332,6 +316,7 @@ const allSchemas = [organizationSchema(), websiteSchema(), ...schemas];
         btn.addEventListener('click', () => {
           const isDark = document.documentElement.classList.toggle('dark');
           localStorage.setItem('theme', isDark ? 'dark' : 'light');
+          document.documentElement.dataset.siteTheme = isDark ? 'dark' : 'light';
           syncThemePressed();
         });
       }

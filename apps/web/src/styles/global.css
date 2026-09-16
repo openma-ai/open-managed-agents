@@ -1,25 +1,25 @@
 @import "tailwindcss";
-@import "@openma/common/brand/tokens.css";
+@import "@openma/common/brand/website.css";
 
-/* Mirror the Console design tokens so cross-link feel is consistent. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Source Serif 4", ui-serif, Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
-
-  --color-bg: var(--bg);
-  --color-bg-sidebar: var(--bg-sidebar);
-  --color-bg-surface: var(--bg-surface);
-  --color-bg-bubble: var(--bg-bubble);
-  --color-fg: var(--fg);
-  --color-fg-muted: var(--fg-muted);
-  --color-fg-subtle: var(--fg-subtle);
-  --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
-  --color-brand: var(--brand);
-  --color-brand-hover: var(--brand-hover);
-  --color-brand-subtle: var(--brand-subtle);
-  --color-brand-fg: var(--brand-fg);
+  --font-sans: var(--site-font-sans);
+  --font-display: var(--site-font-sans);
+  --font-mono: var(--site-mono);
+  --color-bg: var(--site-page);
+  --color-bg-sidebar: var(--site-surface-muted);
+  --color-bg-surface: var(--site-surface);
+  --color-bg-bubble: var(--site-surface-raised);
+  --color-fg: var(--site-ink);
+  --color-fg-muted: var(--site-ink-soft);
+  --color-fg-subtle: var(--site-muted);
+  --color-border: var(--site-line);
+  --color-border-strong: var(--site-line-strong);
+  --color-brand: var(--site-brand);
+  --color-brand-hover: var(--site-brand-hover);
+  --color-brand-subtle: var(--site-surface-muted);
+  --color-brand-fg: var(--site-brand-ink);
 }
 
 html {
@@ -185,3 +185,37 @@ input:focus-visible,
   border-radius: 0.5rem;
   margin: 1.5rem 0;
 }
+
+/* Public websites share the Backchat marketing theme. */
+.site-container { width: min(var(--site-max), calc(100% - 48px)); margin-inline: auto; }
+[data-site-header] > .site-container { min-height: 64px; }
+[data-site-header] nav a, footer nav a { min-height: 44px; display: inline-flex; align-items: center; }
+[data-theme-toggle], [data-mobile-menu] > summary { min-width: 44px; min-height: 44px; }
+.site-hero { padding-block: 88px 96px; }
+.site-hero h1 { max-width: 1000px; font-size: clamp(44px, 5.4vw, 78px); font-weight: 580; line-height: 1.06; letter-spacing: -.04em; }
+.site-hero .hero-description { max-width: 680px; font-size: 18px; line-height: 1.65; color: var(--site-ink-soft); margin-top: 28px; }
+.site-button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 11px 17px; border: 1px solid var(--site-line); border-radius: var(--site-radius-control); font-size: 14px; font-weight: 580; background: var(--site-surface); color: var(--site-ink); transition: background var(--site-duration) var(--site-ease); }
+.site-button:hover { text-decoration: none; background: var(--site-surface-muted); }
+.site-button-primary { background: var(--site-brand); color: var(--site-brand-ink); border-color: transparent; }
+.site-button-primary:hover { background: var(--site-brand-hover); }
+main .py-16 { padding-block: var(--site-section-space); }
+main h2.font-display { font-size: clamp(30px, 3.3vw, 44px); line-height: 1.15; font-weight: 580; letter-spacing: -.03em; }
+[data-lift] { border-radius: var(--site-radius-panel); background: var(--site-surface); }
+.backchat-section { border-block: 1px solid var(--site-line); background: var(--site-surface); }
+.backchat-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 64px; align-items: center; padding-block: var(--site-section-space); }
+.backchat-layout h2 { font-size: clamp(32px, 3.5vw, 48px); line-height: 1.12; font-weight: 580; letter-spacing: -.03em; max-width: 560px; }
+.backchat-layout p { color: var(--site-ink-soft); line-height: 1.7; margin-block: 20px 26px; max-width: 520px; }
+.backchat-details { border-left: 1px solid var(--site-line); padding-left: 40px; }
+.backchat-details h3 { font-size: 18px; font-weight: 580; }
+.backchat-details p { margin-block: 8px 24px; font-size: 15px; }
+:where(p, li, dd, td, blockquote) a:hover { color: var(--site-brand-text); }
+@media (max-width: 767px) {
+  .site-container { width: calc(100% - 40px); }
+  .site-hero { padding-block: 56px 64px; }
+  main .py-16 { padding-block: 64px; }
+  .backchat-layout { grid-template-columns: 1fr; gap: 32px; padding-block: 64px; }
+  .backchat-details { padding-left: 0; border-left: 0; }
+}
+
+main .grid > * { min-width: 0; }
+::selection { background: var(--site-brand); color: var(--site-brand-ink); }
