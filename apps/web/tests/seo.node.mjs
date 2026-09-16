@@ -96,10 +96,12 @@ test("high-impression landing pages emit concise, user-facing search snippets", 
   const title = homepage.match(/<title>([^<]+)<\/title>/)?.[1];
   const description = homepage.match(/<meta name="description" content="([^"]+)"/)?.[1];
   assert.match(title, /OpenMA/);
-  assert.match(title, /Run and manage your agents/);
+  assert.match(title, /Claude Managed Agents/);
+  assert.match(title, /OpenAI Agents API/);
   assert.ok(title.length <= 65, "homepage title stays concise");
-  assert.match(description, /Run agents, manage sessions/);
-  assert.match(description, /Backchat.*CLI.*SDKs/);
+  assert.match(description, /Open Managed Agents/);
+  assert.match(description, /OpenAI Agents API.*Node/);
+  assert.match(homepage, /<h1[^>]*>\s*Open Managed Agents\s*<\/h1>/);
   assert.ok(description.length <= 170, "homepage description stays concise");
   assert.equal(homepage.match(/<meta property="og:description" content="([^"]+)"/)?.[1], description);
   assert.match(homepage, /href="#openai-agents-api"/);
