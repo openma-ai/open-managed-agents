@@ -1,0 +1,20 @@
+{
+  "baseUrl": "http://127.0.0.1:18877",
+  "tokenEnv": "OPENMA_LIVE_TEST_TOKEN",
+  "tenantId": "tenant-live",
+  "tenantName": "Local Integration",
+  "user": { "id": "user-live", "email": "integration@localhost.test" },
+  "model": "deepseek-flash",
+  "acp": {
+    "id": "dsh-acp",
+    "command": "dsh-acp",
+    "args": ["--model", "{model}", "--no-thinking", "--session-root", "{workspace}/sessions"],
+    "env": {
+      "DEEPSEEK_API_KEY": { "fromEnv": "DEEPSEEK_API_KEY" },
+      "DSH_HOME": "{workspace}/.dsh"
+    }
+  },
+  "backchatDir": "../backchat",
+  "outputDir": "artifacts/backchat-live",
+  "timeoutMs": 120000
+}

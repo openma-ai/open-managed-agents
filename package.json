@@ -43,6 +43,8 @@
     "apps/*"
   ],
   "scripts": {
+    "test:live:backchat": "tsx apps/main-node/scripts/backchat-common-live.e2e.ts",
+    "test:live:backchat:config": "node --test scripts/backchat-live-config.test.mjs",
     "dev": "wrangler dev -c apps/main/wrangler.jsonc -c apps/agent/wrangler.dev.jsonc",
     "dev:main": "wrangler dev -c apps/main/wrangler.jsonc",
     "dev:agent": "wrangler dev -c apps/agent/wrangler.dev.jsonc",
