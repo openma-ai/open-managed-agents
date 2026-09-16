@@ -1,0 +1,134 @@
+---
+import { Code } from "astro:components";
+
+const examples = [
+  {
+    id: "claude",
+    label: "Claude Managed Agents",
+    package: "@anthropic-ai/sdk",
+    note: "Use your OpenMA API key, configured model and an existing environment ID.",
+    code: `import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  apiKey: process.env.OPENMA_API_KEY,
+  baseURL: "http://localhost:8787",
+});
+
+const agent = await client.beta.agents.create({
+  name: "hello",
+  model: { id: "your-configured-model" },
+});
+
+const session = await client.beta.sessions.create({
+  agent: { type: "agent", id: agent.id, version: agent.version },
+  environment_id: process.env.OPENMA_ENVIRONMENT_ID!,
+});
+
+await client.beta.sessions.events.send(session.id, {
+  events: [{
+    type: "user.message",
+    content: [{ type: "text", text: "Hello" }],
+  }],
+});`,
+  },
+  {
+    id: "openai",
+    label: "OpenAI Agents API",
+    package: "openai",
+    note: "Requires a Node deployment. Use your OpenMA API key and configured model.",
+    code: `import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.OPENMA_API_KEY,
+  baseURL: "http://localhost:8787/openai/v1",
+});
+
+const session = await client.beta.agents.sessions.create({
+  agent: { model: "your-configured-model" },
+  environment: { type: "none" },
+  input: "Hello",
+});`,
+  },
+];
+---
+
+<div class="sdk-examples" data-sdk-examples>
+  <div class="sdk-tabs" role="tablist" aria-label="SDK examples" hidden>
+    {examples.map((example, index) => (
+      <button type="button" id={`sdk-tab-${example.id}`} role="tab" aria-controls={`sdk-panel-${example.id}`} aria-selected={index === 0 ? "true" : "false"} tabindex={index === 0 ? 0 : -1}>{example.label}</button>
+    ))}
+  </div>
+  {examples.map((example) => (
+    <section id={`sdk-panel-${example.id}`} data-sdk-panel aria-labelledby={`sdk-heading-${example.id}`}>
+      <div class="sdk-code-heading">
+        <h3 id={`sdk-heading-${example.id}`}>{example.label}</h3>
+        <code>{example.package}</code>
+      </div>
+      <p class="sdk-note">{example.note}</p>
+      <Code code={example.code} lang="ts" themes={{ light: "github-light", dark: "github-dark" }} defaultColor="light" />
+    </section>
+  ))}
+</div>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-sdk-examples]')) {
+    const list = root.querySelector<HTMLElement>('[role="tablist"]')!;
+    const tabs = Array.from(list.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const panels = Array.from(root.querySelectorAll<HTMLElement>('[data-sdk-panel]'));
+    const select = (index: number, focus = false) => {
+      tabs.forEach((tab, i) => {
+        tab.setAttribute('aria-selected', String(i === index));
+        tab.tabIndex = i === index ? 0 : -1;
+        panels[i].hidden = i !== index;
+      });
+      if (focus) tabs[index].focus();
+    };
+    panels.forEach((panel, i) => {
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', tabs[i].id);
+      panel.tabIndex = 0;
+    });
+    tabs.forEach((tab, i) => {
+      tab.addEventListener('click', () => select(i));
+      tab.addEventListener('keydown', (event) => {
+        let next: number;
+        switch (event.key) {
+          case 'ArrowRight': next = (i + 1) % tabs.length; break;
+          case 'ArrowLeft': next = (i + tabs.length - 1) % tabs.length; break;
+          case 'Home': next = 0; break;
+          case 'End': next = tabs.length - 1; break;
+          default: return;
+        }
+        event.preventDefault();
+        select(next, true);
+      });
+    });
+    select(0);
+    list.hidden = false;
+  }
+</script>
+
+<style>
+  .sdk-examples { margin-block: 28px; border: 1px solid var(--site-line); border-radius: var(--site-radius-panel); overflow: hidden; background: var(--site-surface); }
+  .sdk-tabs:not([hidden]) { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--site-line); }
+  .sdk-tabs button { min-height: 44px; padding: 10px 16px; font-size: 14px; font-weight: 580; border-radius: 8px; color: var(--site-ink-soft); cursor: pointer; }
+  .sdk-tabs button[aria-selected="true"] { background: var(--site-surface-muted); color: var(--site-ink); }
+  .sdk-tabs button:hover { color: var(--site-brand-text); }
+  .sdk-code-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; padding: 24px 24px 0; }
+  .sdk-code-heading h3 { font-size: 16px; font-weight: 580; }
+  .sdk-code-heading > code { font-family: var(--site-mono); font-size: 12px; color: var(--site-muted); }
+  .sdk-note { padding: 8px 24px 0; font-size: 14px; line-height: 1.6; color: var(--site-ink-soft); }
+  .sdk-examples :global(pre.astro-code) { margin: 0; padding: 24px; font-family: var(--site-mono); font-size: 13px; line-height: 1.8; overflow-x: auto; background-color: var(--site-surface) !important; }
+  :global([data-site-theme="dark"]) .sdk-examples :global(.astro-code),
+  :global([data-site-theme="dark"]) .sdk-examples :global(.astro-code span) { color: var(--shiki-dark) !important; }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-site-theme])) .sdk-examples :global(.astro-code),
+    :global(:root:not([data-site-theme])) .sdk-examples :global(.astro-code span) { color: var(--shiki-dark) !important; }
+  }
+  @media (max-width: 600px) {
+    .sdk-tabs button { flex: 1; padding-inline: 8px; font-size: 13px; }
+    .sdk-code-heading { padding: 20px 16px 0; }
+    .sdk-note { padding-inline: 16px; }
+    .sdk-examples :global(pre.astro-code) { padding: 20px 16px; font-size: 12px; }
+  }
+</style>

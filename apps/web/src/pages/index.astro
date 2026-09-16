@@ -1,4 +1,5 @@
 ---
+import SdkExamples from "../components/SdkExamples.astro";
 import Architecture from "../components/Architecture.astro";
 import Base from "../layouts/Base.astro";
 import { getCollection } from "astro:content";
@@ -154,23 +155,9 @@ const schemas = [softwareApplicationSchema()];
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
       OpenMA supports Claude Managed Agents and OpenAI Agents API. Start with
       <a href="/deploy/">a deployment</a>, add your model key, and connect your
-      application. Here's an OpenAI SDK example for a local Node server:
+      application. Choose your SDK below; examples connect to a local OpenMA server.
     </p>
-    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
-      Use the API key and model you configured in OpenMA:
-    </p>
-    <pre class="bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-lg p-4 text-xs leading-relaxed overflow-x-auto mb-4"><code>{`import OpenAI from "openai";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "http://localhost:8787/openai/v1",
-});
-
-const session = await client.beta.agents.sessions.create({
-  agent: { model: "your-configured-model" },
-  environment: { type: "none" },
-  input: "Hello",
-});`}</code></pre>
+    <SdkExamples />
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
       Let an agent hand off subtasks to other agents that share its files.
       Each child keeps its own conversation, and you can follow up or stop it.
