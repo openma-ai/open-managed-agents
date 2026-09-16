@@ -16,11 +16,12 @@
     <div class="architecture-platform">
       <img src="/logo.svg" alt="" width="32" height="32" />
       <h3>OpenMA</h3>
-      <p>Manage the conversation</p>
+      <p>Manage the agent lifecycle</p>
       <ul>
-        <li>Accounts &amp; tenants</li>
-        <li>Sessions &amp; event history</li>
-        <li>Execution routing</li>
+        <li><strong>Agents &amp; sessions</strong><span>Configuration, history &amp; streaming</span></li>
+        <li><strong>Execution &amp; recovery</strong><span>Routing, orchestration &amp; resume</span></li>
+        <li><strong>Tools &amp; context</strong><span>MCP, skills, files &amp; memory</span></li>
+        <li><strong>Identity &amp; credentials</strong><span>Accounts, tenants &amp; vaults</span></li>
       </ul>
     </div>
     <div class="architecture-link" aria-hidden="true">
@@ -29,18 +30,26 @@
       <span>Results</span>
     </div>
     <div class="architecture-execution">
-      <div class="execution-part"><h3>Harness</h3><p>The agent loop</p><span>Built-in · Pi · ACP</span></div>
-      <div class="execution-connector" aria-hidden="true"><svg viewBox="0 0 24 36" fill="none"><path d="M8 2v30m-5-6 5 6 5-6M18 34V4m-5 6 5-6 5 6" /></svg></div>
-      <div class="execution-part"><h3>Sandbox</h3><p>Code, files &amp; tools</p><span>Your chosen provider</span></div>
+      <div class="execution-sandbox">
+        <h3>Sandbox</h3>
+        <p>Your chosen execution environment</p>
+        <div class="execution-harness">
+          <h4>Harness inside the sandbox</h4>
+          <p>Pi · ACP agent · Your harness</p>
+          <span>Model calls &amp; the agent loop</span>
+        </div>
+        <div class="execution-workspace"><strong>Tools &amp; workspace</strong><span>Shell, code, files &amp; dependencies</span></div>
+      </div>
+      <p class="execution-alternative">A harness can also run in the host runtime and use the sandbox for tools. API-only sessions can run without a sandbox.</p>
     </div>
   </div>
   <div class="architecture-cloud"><strong>Your infrastructure</strong><span>Self-hosted Node / Docker · Cloud deployment · Hosted OpenMA</span></div>
-  <figcaption id="architecture-caption">OpenMA manages connected sessions and records events. Harness and sandbox adapters determine how work executes; the deployment determines where OpenMA runs. Backchat can also run standalone local sessions.</figcaption>
+  <figcaption id="architecture-caption">Shown: a harness running inside a sandbox, with OpenMA managing the session and coordinating execution. Harness placement and sandbox provider are independent of where you deploy OpenMA. Backchat can also run standalone local sessions.</figcaption>
 </figure>
 
 <style>
   .architecture { margin-top: 44px; }
-  .architecture-flow { display: grid; grid-template-columns: minmax(0, 1fr) 100px minmax(0, 1.15fr) 100px minmax(0, 1fr); align-items: center; }
+  .architecture-flow { display: grid; grid-template-columns: minmax(0, .75fr) 100px minmax(0, 1.15fr) 100px minmax(0, 1.15fr); align-items: center; }
   h3 { font-size: 22px; font-weight: 580; letter-spacing: -.025em; }
   p { color: var(--site-ink-soft); font-size: 15px; line-height: 1.6; }
   .architecture-entry ul { margin-top: 22px; }
@@ -53,18 +62,19 @@
   .architecture-platform { border: 1px solid var(--site-line-strong); border-radius: var(--site-radius-panel); background: var(--site-page); padding: 28px; }
   .architecture-platform img { margin-bottom: 18px; }
   .architecture-platform h3 { font-size: 28px; }
-  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; gap: 10px; font-size: 14px; }
-  .execution-part { padding-block: 8px; }
-  .execution-part > span { display: block; color: var(--site-muted); font-size: 13px; margin-top: 8px; }
-  .execution-connector { height: 48px; display: flex; align-items: center; }
-  .execution-connector svg { width: 24px; height: 36px; stroke: var(--site-muted); stroke-width: 1.2; }
+  .architecture-platform ul { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--site-line); display: grid; gap: 18px; font-size: 14px; }
+  .architecture-platform li strong, .execution-workspace strong { display: block; font-weight: 580; }
+  .architecture-platform li span, .execution-workspace span { display: block; color: var(--site-ink-soft); font-size: 13px; line-height: 1.6; margin-top: 3px; }
+  .execution-sandbox { border: 1px dashed var(--site-line-strong); border-radius: var(--site-radius-panel); padding: 24px; }
+  .execution-harness { margin-top: 24px; padding: 18px; border: 1px solid var(--site-line-strong); background: var(--site-page); border-radius: 12px; }
+  .execution-harness h4 { font-size: 16px; font-weight: 580; line-height: 1.4; }
+  .execution-harness p { margin-top: 8px; font-size: 13px; }
+  .execution-harness > span { display: block; color: var(--site-ink-soft); font-size: 13px; margin-top: 8px; }
+  .execution-workspace { margin-top: 22px; font-size: 14px; }
+  .architecture-execution .execution-alternative { margin-top: 16px; font-size: 13px; line-height: 1.6; }
   .architecture-cloud { display: flex; flex-wrap: wrap; gap: 12px 24px; border-top: 1px solid var(--site-line); border-bottom: 1px solid var(--site-line); padding-block: 20px; margin-top: 32px; font-size: 14px; }
   .architecture-cloud strong { font-weight: 580; }
   .architecture-cloud span { color: var(--site-ink-soft); }
-  .architecture-execution > p { margin-top: 8px; }
-  .architecture-locations { display: grid; gap: 10px; margin-top: 24px; }
-  .architecture-locations span { border-bottom: 1px solid var(--site-line); padding-block: 10px; font-size: 15px; }
-  .architecture-execution .architecture-resources { margin-top: 22px; color: var(--site-muted); font-size: 13px; }
   figcaption { margin-top: 28px; max-width: 85ch; font-size: 13px; line-height: 1.7; color: var(--site-muted); }
   @media (max-width: 1000px) {
     .architecture-flow { grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1.15fr) 72px minmax(0, 1fr); }
@@ -72,14 +82,13 @@
     .architecture-link svg { width: 52px; }
     .architecture-entry li { align-items: start; flex-direction: column; gap: 0; padding-bottom: 8px; }
   }
-  @media (max-width: 700px) {
+  @media (max-width: 1100px) {
     .architecture-flow { grid-template-columns: 1fr; }
     .architecture-entry li { flex-direction: row; align-items: center; padding-bottom: 0; }
     .architecture-link { flex-direction: row; justify-content: center; gap: 20px; height: 96px; }
     .architecture-link svg { transform: rotate(90deg); width: 48px; }
     .architecture-link span { width: 100px; text-align: center; font-size: 12px; }
     .architecture-platform { padding: 28px; }
-    .architecture-locations { grid-template-columns: 1fr 1fr; }
     figcaption { margin-top: 32px; }
   }
 </style>
