@@ -63,6 +63,18 @@ async function stores() {
 }
 
 describe("MemorySessionEventStore", () => {
+  it("matches complete event IDs and treats an empty ID set as no events", async () => {
+    const { events } = await stores();
+    const first = event("event_1", "2026-08-26T01:00:00.000Z");
+    await events.append({ workspaceId: "workspace_01", sessionId: session.id,
+      expectedRevision: 1, nextSession: session,
+      events: [first, event("event_10", "2026-08-26T01:00:00.000Z")] });
+    const query = { workspaceId: "workspace_01", sessionId: session.id, limit: 10, order: "asc" as const };
+    expect(await events.list({ ...query, eventIds: [first.id] })).toEqual([first]);
+    expect(await events.list({ ...query, eventIds: [] })).toEqual([]);
+    expect(await events.list({ ...query, eventIds: ["event_"] })).toEqual([]);
+  });
+
   it("appends events only when the Session revision wins its CAS", async () => {
     const { sessions, events } = await stores();
     expect(await events.append({

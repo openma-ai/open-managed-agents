@@ -20,7 +20,7 @@ function fixture() {
     execution: { find: async () => ({ session: native, environment: {} as any, revision }) },
     stream: { subscribe: () => (async function* () {})() },
     store: {
-      list: async (input: any) => facts.filter(event => !input.idPrefix || event.id.startsWith(input.idPrefix)).slice(0, input.limit),
+      list: async (input: any) => facts.filter(event => !input.eventIds || input.eventIds.includes(event.id)).slice(0, input.limit),
       append: async (input: any) => {
         if (input.expectedRevision !== revision) return { type: "revision_conflict", actualRevision: revision };
         revision++;

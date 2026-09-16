@@ -11,7 +11,8 @@ Live validation found three protocol/storage defects, now covered by regression
 checks: Session HTTP ingress omitted Idempotency-Key; per-work credentials could
 not ACK a reserved queued item; idempotency prefix lookup exceeded D1 LIKE limits.
 Only the current unexpired reservation can ACK before Session access is allowed.
-Literal prefix comparison preserves exact, case-sensitive event identity.
+The follow-up removes prefix filtering entirely: deduplication selects complete
+event IDs with SQL IN and retains the existing workspace/session scope.
 
 Validation: runtime 42 tests; harness 120; CLI 19; managed runtime host 261;
 managed adapters 65; OpenAI compatibility 73; input/claim regressions 18;
@@ -30,3 +31,19 @@ daemon still requires a Work polling/provisioning adapter. The separate sandbox
 native-state adapter failed a Codex state-directory initialization probe and is
 not qualified by the successful local-host run. Docker deployment and worker
 restart recovery were not qualified in this increment.
+
+
+## Exact event identity follow-up
+
+No request entity, table or identity format is introduced. Retry lookup uses the
+existing deterministic native event IDs, including the next complete ID to reject
+shortened batch retries. Exact lookups are chunked to bound SQL parameters. Both
+SQL and memory stores remove `idPrefix` in favor of `eventIds`; existing stored
+identities and desktop reconciliation remain compatible.
+
+Validation: 83 focused storage/input/OpenAI compatibility tests pass. Application
+suite: 139 pass, one existing architecture-boundary check rejects the common
+runtime import introduced by the previous extraction. Source-only application
+and both store typechecks pass; the full application test typecheck also exposes
+existing Work fixtures missing claim generation. No live Electron/Docker rerun
+was performed for this follow-up.

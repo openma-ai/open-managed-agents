@@ -37,8 +37,8 @@ export interface ListPersistedSessionEvents {
   createdBefore?: string;
   createdAtOrBefore?: string;
   types?: string[];
-  /** Internal exact namespace lookup for deterministic event identities. */
-  idPrefix?: string;
+  /** Match complete native event IDs within this workspace and session. */
+  eventIds?: string[];
   position?: SessionEventListPosition;
 }
 

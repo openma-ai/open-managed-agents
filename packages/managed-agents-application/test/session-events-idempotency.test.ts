@@ -13,7 +13,7 @@ describe("durable Session input idempotency", () => {
       execution: { find: async () => ({session, environment: {}, revision}) },
       sessions: { find: async () => session }, stream: { subscribe: () => (async function*(){})() },
       store: {
-        async list(input: any) { return [...log.values()].filter(event => !input.idPrefix || event.id.startsWith(input.idPrefix)).slice(0, input.limit); },
+        async list(input: any) { return [...log.values()].filter(event => !input.eventIds || input.eventIds.includes(event.id)).slice(0, input.limit); },
         async append(input: any) {
           if (input.expectedRevision !== revision) return {type:"revision_conflict",actualRevision:revision};
           revision++;
@@ -43,4 +43,28 @@ describe("durable Session input idempotency", () => {
     expect(await f.service().sendSessionEvents({...command,events:[...command.events,{type:"user.interrupt"}]})).toMatchObject({type:"idempotency_conflict"});
     expect(f.dispatched).toHaveLength(1);
   });
+  it("does not confuse unrelated inputs and rejects shorter or changed retries", async () => {
+    const f = fixture();
+    const message = { type: "user.message", content: [{ type: "text", text: "once" }] };
+    const command: any = { sessionId: "session", idempotencyKey: "batch", events: [message, { type: "user.interrupt" }] };
+    await f.service().sendSessionEvents({ ...command, idempotencyKey: "other", events: [message] });
+    const accepted = await f.service().sendSessionEvents(command);
+    expect(accepted.type).toBe("accepted");
+    expect(await f.service().sendSessionEvents(command)).toEqual(accepted);
+    expect(await f.service().sendSessionEvents({ ...command, events: [message] })).toMatchObject({ type: "idempotency_conflict" });
+    expect(await f.service().sendSessionEvents({ ...command, events: [{ ...message, content: [{ type: "text", text: "changed" }] }, command.events[1]] })).toMatchObject({ type: "idempotency_conflict" });
+    expect(f.dispatched).toHaveLength(2);
+  });
+
+  it("replays a large batch by exact event IDs and rejects truncation", async () => {
+    const f = fixture();
+    const command: any = { sessionId: "session", idempotencyKey: "large",
+      events: Array.from({ length: 130 }, (_, i) => ({ type: "user.message", content: [{ type: "text", text: String(i) }] })) };
+    const accepted = await f.service().sendSessionEvents(command);
+    expect(accepted.type).toBe("accepted");
+    expect(await f.service().sendSessionEvents(command)).toEqual(accepted);
+    expect(await f.service().sendSessionEvents({ ...command, events: command.events.slice(0, 64) })).toMatchObject({ type: "idempotency_conflict" });
+    expect(f.dispatched).toHaveLength(1);
+  });
+
 });

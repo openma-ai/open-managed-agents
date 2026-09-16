@@ -1,3 +1,4 @@
+import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type {
   SendableSessionEvent,
   SendSessionEventsCommand,
@@ -188,7 +189,18 @@ export class SessionEventsApplicationService
       });
       if (execution === null) return { type: "not_found" };
       if (prefix !== null) {
-        const previous = await this.dependencies.store.list({ workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId, idPrefix: prefix, limit: events.length + 1, order: "asc" });
+        // Check complete event IDs, including the next batch position so a
+        // shorter retry cannot silently accept a previously longer batch.
+        const eventIds = [...events.map(event => event.id), `${prefix}${events.length}`];
+        const previous: SessionEventView[] = [];
+        // Keep bound parameters below D1's limit even for large input batches.
+        for (let offset = 0; offset < eventIds.length; offset += 64) {
+          const ids = eventIds.slice(offset, offset + 64);
+          previous.push(...await this.dependencies.store.list({
+            workspaceId: this.dependencies.workspaceId, sessionId: command.sessionId,
+            eventIds: ids, limit: ids.length, order: "asc",
+          }));
+        }
         if (previous.length > 0) {
           const byId = new Map(previous.map(event => [event.id, event]));
           if (previous.length !== events.length || events.some(event => !byId.has(event.id) || inputPayload(byId.get(event.id)! as SentSessionEvent) !== inputPayload(event))) {

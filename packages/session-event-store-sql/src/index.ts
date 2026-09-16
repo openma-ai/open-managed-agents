@@ -374,6 +374,7 @@ export class SqlSessionEventStore
       throw new Error("Session event list limit must be a positive integer");
     }
     if (input.types !== undefined && input.types.length === 0) return [];
+    if (input.eventIds?.length === 0) return [];
     const conditions = ["workspace_id = ?", "session_id = ?"];
     const parameters: Array<string | number> = [
       input.workspaceId,
@@ -399,9 +400,9 @@ export class SqlSessionEventStore
       conditions.push(`type IN (${input.types.map(() => "?").join(", ")})`);
       parameters.push(...input.types);
     }
-    if (input.idPrefix !== undefined) {
-      conditions.push("substr(id, 1, length(?)) = ?");
-      parameters.push(input.idPrefix, input.idPrefix);
+    if (input.eventIds !== undefined) {
+      conditions.push(`id IN (${input.eventIds.map(() => "?").join(", ")})`);
+      parameters.push(...input.eventIds);
     }
     if (input.position !== undefined) {
       const operator = input.order === "asc" ? ">" : "<";
