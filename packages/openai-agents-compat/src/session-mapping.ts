@@ -52,12 +52,20 @@ export async function readSessionMappingMetadata(metadata: Record<string, string
 }
 
 /** Runtime access is scoped to the native Environment relation. */
-export async function readManagedSessionMappingMetadata(session: ManagedSession, secrets: ResourceSecretSealer): Promise<SessionMappingMetadata | null> {
+export async function readManagedSessionMappingMetadata(session: Pick<ManagedSession, "metadata" | "environmentId">, secrets: ResourceSecretSealer): Promise<SessionMappingMetadata | null> {
   const saved = await readSessionMappingMetadata(session.metadata, secrets);
   return saved?.environmentId === session.environmentId ? saved : null;
 }
 export async function isManagedNoEnvironmentSession(session: ManagedSession, secrets: ResourceSecretSealer): Promise<boolean> {
-  return (await readManagedSessionMappingMetadata(session, secrets))?.environment.type === 'none';
+  return await resolveSessionSandboxMode(session, secrets) === 'none';
+}
+
+/** Normalize protocol metadata once before handing control to the runtime. */
+export async function resolveSessionSandboxMode(
+  session: Pick<ManagedSession, "metadata" | "environmentId">,
+  secrets: ResourceSecretSealer,
+): Promise<"none" | "sandbox"> {
+  return (await readManagedSessionMappingMetadata(session, secrets))?.environment.type === "none" ? "none" : "sandbox";
 }
 
 function mergeConfiguration(base: ResourceObject, overrides: ResourceObject): ResourceObject {

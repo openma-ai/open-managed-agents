@@ -18,7 +18,7 @@
 
 🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
 
-OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with the Node server's `/openai/v1` endpoint. Bring your own model keys and deploy on your own infrastructure.
+OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with either host's `/openai/v1` endpoint. Bring your own model keys and deploy on your own infrastructure.
 
 Use Open Managed Agents when you want:
 
@@ -45,15 +45,16 @@ one that matches your hosting story:
 | Best for | OSS users, on-prem, no CF account, data-resident deploys | Edge scale, no host management, already on CF |
 
 Both hosts expose the Claude-compatible `/v1/agents` and `/v1/sessions` API
-and Console UI. The OpenAI Agents API adapter is currently mounted on the
-Node host at `/openai/v1`.
+and Console UI, plus the OpenAI Agents API at `/openai/v1`. Hosted OpenMA
+is available at `https://app.openma.dev`.
 
 ---
 
-## OpenAI Agents API quickstart (Node)
+## OpenAI Agents API quickstart
 
-[Start a Node server with Docker](#quick-start-self-host-docker), create an
-OpenMA API key, and configure a model in your deployment. Then install the
+Use [hosted OpenMA](https://app.openma.dev), or
+[start a Node server with Docker](#quick-start-self-host-docker). Create an
+OpenMA API key and configure a model. Then install the
 supported OpenAI SDK version:
 
 ```bash
@@ -67,7 +68,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "http://localhost:8787/openai/v1",
+  baseURL: "https://app.openma.dev/openai/v1", // Or your own host + /openai/v1
 });
 
 const session = await client.beta.agents.sessions.create({
@@ -78,13 +79,13 @@ const session = await client.beta.agents.sessions.create({
 console.log(session.id);
 ```
 
-Sessions support text, function calls that wait for your application's result,
-and subagents. Set `agent.multi_agent.enabled: true` to let the main agent
+Sessions support text and function calls that wait for your application's result.
+The Node host additionally supports dynamic subagents. Set `agent.multi_agent.enabled: true` to let the main agent
 delegate subtasks. You can send input, wait, interrupt, close, and resume each
 child. Children keep separate conversations and share the parent's files;
 they cannot create more children.
 
-The OpenAI API currently runs on Node. Advanced environment and plugin settings,
+Hosted OpenMA and Node support sandbox-free sessions. Advanced environment and plugin settings,
 plus some MCP and model options, are not supported yet. Check the
 [supported features and limits](docs/openai-agents-compatibility-status.md)
 before migrating an existing application. See the
@@ -304,8 +305,8 @@ The harness is bundled into the agent worker at build time. Your code runs in th
 ## API
 
 The endpoints below expose the [Claude Managed Agents API](https://docs.anthropic.com/en/docs/agents/managed-agents) at `/v1`.
-The Node host also supports the [OpenAI Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview)
-at `/openai/v1`; see the [OpenAI SDK quickstart](#openai-agents-api-quickstart-node)
+Both hosts also support the [OpenAI Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview)
+at `/openai/v1`; see the [OpenAI SDK quickstart](#openai-agents-api-quickstart)
 for its separate resource and event contract.
 
 <details>

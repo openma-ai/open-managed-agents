@@ -42,7 +42,7 @@ import {
   RuntimeAdapterImpl,
   type RuntimeAdapter,
 } from "@open-managed-agents/session-runtime";
-import { SessionExecutionHost } from "@open-managed-agents/session-runtime";
+import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -600,7 +600,7 @@ export class SessionDO extends DurableObject<Env> {
   private initialized = false;
   private sandbox: SandboxExecutor | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
-  private sandboxWarmupPromise: Promise<void> | null = null;
+  private sandboxRuntime: SessionSandboxRuntime | null = null;
   /** Per-warmup random tag mirrored to /tmp/.oma-warm in the container.
    *  Lets the wrapSandboxWithLazyWarmup proxy detect a recycled container
    *  (CF Sandbox can die independently of SessionDO via OOM, sleepAfter,
@@ -1175,9 +1175,9 @@ export class SessionDO extends DurableObject<Env> {
    * sent during a long-running turn would all be skipped).
    */
   private async getExecutionStore(): Promise<SqlSessionExecutionStore | null> {
-    const db = (this.env as unknown as { MAIN_DB?: D1Database }).MAIN_DB;
-    if (!db || !this.state.tenant_id || !this.state.session_id) return null;
+    if (!this.env.MAIN_DB || !this.state.tenant_id || !this.state.session_id) return null;
     if (this._executionStore === null) {
+      const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
       this._executionStore = new SqlSessionExecutionStore(new CfD1SqlClient(db));
       this._executionStoreReady = ensureSessionExecutionCoordinatorSchema(
         new CfD1SqlClient(db),
@@ -1914,6 +1914,16 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
+      // Canonical session creation has already admitted bootstrap work in the
+      // tenant outbox. Wake the same execution host used by later events;
+      // replaying init must never create another input or execution entity.
+      if (request.headers.has("x-oma-workspace-id")) {
+        await this.ctx.storage.setAlarm(Date.now() + 1_000);
+        void this.recoverExecutionQueue().catch(error => {
+          console.error("[session_do] bootstrap execution wakeup failed", error);
+        });
+      }
+
       // NO ctx.waitUntil(this.warmUpSandbox()) — that pattern dies on
       // DO reset (which happens regularly under our concurrent traffic
       // pattern). Let warmUp fire lazily on the first /event handler
@@ -1948,7 +1958,7 @@ export class SessionDO extends DurableObject<Env> {
       // AND the actual container destroy, leaving the container running
       // until sleepAfter SIGTERM (with no final snapshot).
       if (!this.sandbox) {
-        try { this.getOrCreateSandbox(); } catch {}
+        try { await this.getOrCreateSandbox(); } catch {}
       }
       // Final snapshot — awaited so the squashfs lands in BACKUP_BUCKET
       // before sandbox.destroy() wipes the container. Implementation lives
@@ -1981,7 +1991,7 @@ export class SessionDO extends DurableObject<Env> {
       }
       this.sandbox = null;
       this.wrappedSandbox = null;
-      this.sandboxWarmupPromise = null;
+      this.sandboxRuntime = null;
       // Close the browser session if one was created
       if (this.browserSession) {
         try { await this.browserSession.close(); } catch (err) {
@@ -2062,7 +2072,7 @@ export class SessionDO extends DurableObject<Env> {
       // event from being processed.
       if (mountFileIds && mountFileIds.length > 0 && this.env.FILES_BUCKET) {
         // Wrapped sandbox: first .exec/.writeFileBytes will await warmup.
-        const sandbox = this.getOrCreateSandbox();
+        const sandbox = await this.getOrCreateSandbox();
         const tenantId = this.state.tenant_id;
         try { await sandbox.exec("mkdir -p /mnt/session/uploads", 5000); } catch {}
         for (const fid of mountFileIds) {
@@ -2723,7 +2733,7 @@ export class SessionDO extends DurableObject<Env> {
         });
       }
       try {
-        const sandbox = this.getOrCreateSandbox();
+        const sandbox = await this.getOrCreateSandbox();
         // Wrap multi-line / set-e style scripts in a subshell `( ... )` so
         // they run in a child process. Otherwise commands like `set -e`
         // followed by a failing step (e.g. pytest exit 1) terminate the
@@ -2949,7 +2959,7 @@ export class SessionDO extends DurableObject<Env> {
       const path = url.searchParams.get("path");
       if (!path) return new Response("path query param required", { status: 400 });
       try {
-        const sandbox = this.getOrCreateSandbox();
+        const sandbox = await this.getOrCreateSandbox();
         // SandboxExecutor.readFile returns string (UTF-8 decoded). For binary
         // safety we call the underlying SDK's base64 read directly.
         // Workaround until we widen SandboxExecutor with readFileBytes:
@@ -2997,9 +3007,26 @@ export class SessionDO extends DurableObject<Env> {
    * Get or create the session's sandbox. Singleton per session — reused
    * across turns so files persist within the session lifetime.
    */
-  private getOrCreateSandbox(): SandboxExecutor {
-    this.ensureSandboxCreated();
-    return this.wrappedSandbox!;
+  private sessionSandboxRuntime(): SessionSandboxRuntime {
+    return this.sandboxRuntime ??= new SessionSandboxRuntime({
+      mode: async () => {
+        const source = await this.env.MAIN_MCP?.resolveManagedSessionInputs({
+          tenantId: this.state.tenant_id, sessionId: this.state.session_id,
+        });
+        return source?.type === "found" ? source.session.sandboxMode ?? "sandbox" : "sandbox";
+      },
+      create: () => {
+        this.ensureSandboxCreated();
+        return this.wrappedSandbox!;
+      },
+      prepare: () => this.doWarmUpSandbox(),
+    });
+  }
+
+  private async getOrCreateSandbox(): Promise<SandboxExecutor> {
+    const sandbox = await this.sessionSandboxRuntime().acquire();
+    this.sandbox ??= sandbox;
+    return sandbox;
   }
 
   /**
@@ -3135,12 +3162,12 @@ export class SessionDO extends DurableObject<Env> {
     ]);
     const ensureWarm = async (): Promise<void> => {
       // Cold path — warmup never ran or was reset by a recycle below.
-      if (!this.sandboxWarmupPromise) {
+      if (!this.sessionSandboxRuntime().preparing) {
         await this.warmUpSandbox();
         return;
       }
       // Warm path — wait for the cached promise (handles concurrent calls).
-      await this.sandboxWarmupPromise;
+      await this.sessionSandboxRuntime().preparing;
       // Probe marker every call. Container can recycle (OOM, sleepAfter,
       // host migration) between any two calls; throttling the probe
       // misses fast-cluster-then-die patterns. ~5ms cost per tool call.
@@ -3158,7 +3185,7 @@ export class SessionDO extends DurableObject<Env> {
         { op: "session_do.warmup.recycle_detected", session_id: this.state.session_id, expected: this.currentWarmupGen, got: probed },
         "container marker mismatch — re-warming",
       );
-      this.sandboxWarmupPromise = null;
+      this.sessionSandboxRuntime().invalidatePreparation();
       this.currentWarmupGen = null;
       this.hasWritableManagedMemoryMount = false;
       await this.warmUpSandbox();
@@ -3256,14 +3283,7 @@ export class SessionDO extends DurableObject<Env> {
    * Multiple callers share the same promise — warmup runs exactly once.
    */
   private warmUpSandbox(): Promise<void> {
-    if (!this.sandboxWarmupPromise) {
-      this.sandboxWarmupPromise = this.doWarmUpSandbox().catch((err) => {
-        // Clear cached promise on failure so next call retries.
-        this.sandboxWarmupPromise = null;
-        throw err;
-      });
-    }
-    return this.sandboxWarmupPromise;
+    return this.sessionSandboxRuntime().prepare();
   }
 
   private async doWarmUpSandbox(): Promise<void> {
@@ -4083,7 +4103,7 @@ export class SessionDO extends DurableObject<Env> {
     // Confirmation handlers may not even touch the sandbox depending on
     // tool type, so eager warmup is wasted; lazy is the right default.
     const sandbox = this.bindSandboxToExecution(
-      this.getOrCreateSandbox(),
+      await this.getOrCreateSandbox(),
       parentSignal,
       executionFence,
       (confirmation as unknown as { session_thread_id?: string }).session_thread_id ?? "sthr_primary",
@@ -4293,7 +4313,7 @@ export class SessionDO extends DurableObject<Env> {
 
     if (!tasks.length) return;
 
-    const sandbox = this.getOrCreateSandbox();
+    const sandbox = await this.getOrCreateSandbox();
     let anyPending = false;
     const BG_TASK_MAX_LIFETIME_MS = 30 * 60 * 1000;
 
@@ -4794,7 +4814,7 @@ export class SessionDO extends DurableObject<Env> {
     // control-plane reads below, then is awaited before tools/harness are
     // built so declared resources are present on the first model request.
     let sandbox = this.bindSandboxToExecution(
-      this.getOrCreateSandbox(),
+      await this.getOrCreateSandbox(),
       parentSignal,
       activeFence,
       turnThreadId,
@@ -5280,7 +5300,7 @@ export class SessionDO extends DurableObject<Env> {
             makeVerifierContext: () => ({
               sessionId: this.state.session_id,
               runExec: async (cmd, opts) => {
-                const sb = this.getOrCreateSandbox();
+                const sb = await this.getOrCreateSandbox();
                 const raw = await sb.exec(cmd, opts?.timeoutMs ?? 600_000);
                 // sandbox.exec returns "exit=N\n<merged-output>"
                 const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
@@ -6176,10 +6196,10 @@ export class SessionDO extends DurableObject<Env> {
    * remain inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
-    const db = (this.env as unknown as { MAIN_DB?: D1Database }).MAIN_DB;
     const workspaceId = this.state.tenant_id;
     const sessionId = this.state.session_id;
-    if (!db || !workspaceId || !sessionId) return;
+    if (!this.env.MAIN_DB || !workspaceId || !sessionId) return;
+    const db = await buildCfTenantDbProvider(this.env).resolve(workspaceId);
     const rows = await db
       .prepare(
         `SELECT DISTINCT lane_id
@@ -6313,7 +6333,7 @@ export class SessionDO extends DurableObject<Env> {
         .exec("SELECT 1 FROM background_tasks LIMIT 1")
         .toArray();
       if (rows.length > 0) {
-        const sb = this.getOrCreateSandbox();
+        const sb = await this.getOrCreateSandbox();
         if (typeof (sb as { renewActivityTimeout?: () => Promise<void> }).renewActivityTimeout === "function") {
           await (sb as { renewActivityTimeout: () => Promise<void> }).renewActivityTimeout();
         }

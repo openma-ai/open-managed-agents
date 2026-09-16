@@ -2,7 +2,19 @@
 
 固定外部合同：官方 `openai@7.15.0`，审计日期 2026-09-11。
 
-当前子代理兼容声明：**支持 OpenAI Agents API 子代理接口，采用 Codex 多代理
+## Hosted 验收（2026-09-16）
+
+- Claude SDK base URL：`https://app.openma.dev`。
+- OpenAI SDK base URL：`https://app.openma.dev/openai/v1`。
+- 使用真实 `deepseek-v4-flash` 验证：创建 Agent、读取/列出、创建 `environment: none` 会话、首轮回复、OpenAI SDK 续聊、Claude SDK 继续同一个原生会话。
+- 已验证无认证返回 401、跨租户资源返回 404，并在非默认 D1 分片验证消息执行；临时 API key、模型凭据、会话与路由已清理。
+- Node 与 Cloudflare 使用共享 `SessionSandboxRuntime` 负责沙箱选择和准备。`none` 不调用物理沙箱 provider，协议元数据在兼容层转换为内部执行模式。
+- Hosted 暂不支持 OpenAI 动态子代理控制；该能力仍由 Node runtime 提供。高级 environment 配置、plugins 与未接入的运行环境文件操作返回明确的 unsupported 错误，不按已执行处理。
+- 本次没有迁移旧 `/v1/oma` 会话；旧入口继续保留。新的 Claude/OpenAI 接口共用原生 Agent、Session 和 Event 标识。
+
+下面历史验收矩阵主要记录 Node 路径；不能据此推断 Hosted 已覆盖全部执行能力。
+
+Node host 子代理兼容声明：**支持 OpenAI Agents API 子代理接口，采用 Codex 多代理
 V1 默认的单层执行语义。** 主代理可创建、发送输入、等待、中断、关闭和恢复
 子代理；子代理拥有独立上下文并共享父环境，不获得继续派生工具。
 本阶段不包含递归执行，ACP / common 仍保留上游提供的嵌套关系。

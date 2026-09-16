@@ -40,3 +40,5 @@ export type {
   SessionStreamHandle,
   FileIdResolver,
 } from "./router";
+
+export { SessionSandboxRuntime, type SessionSandboxMode } from "./session-sandbox";

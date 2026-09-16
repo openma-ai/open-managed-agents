@@ -40,7 +40,10 @@ app.get("/health", (c) => c.json({ status: "ok", version: "2" }));
 
 app.all("/sessions/:id/*", async (c) => {
   const sessionId = c.req.param("id");
-  const doId = c.env.SESSION_DO!.idFromName(sessionId);
+  const workspaceId = c.req.header("x-oma-workspace-id")?.trim();
+  const doId = c.env.SESSION_DO!.idFromName(
+    workspaceId ? JSON.stringify([workspaceId, sessionId]) : sessionId,
+  );
   const doStub = c.env.SESSION_DO!.get(doId);
 
   const url = new URL(c.req.url);

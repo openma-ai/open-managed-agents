@@ -1,3 +1,4 @@
+import { SessionSandboxRuntime, type SessionSandboxMode } from "@open-managed-agents/session-runtime";
 import {
   withSandboxExecutionGuard,
   type SandboxExecutor,
@@ -110,6 +111,7 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   resolveSubagentSession?(input: ManagedRunnerContext & { request: ManagedNodeCreateSubagent }): Promise<Session>;
   confirmedTools: ManagedNodeConfirmedToolExecutionPort;
   outcomes: ManagedNodeOutcomeEvaluationPort;
+  sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
   buildSandbox(input: ManagedRunnerContext): Promise<SandboxExecutor>;
   prepareSandbox?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
@@ -168,6 +170,7 @@ function findLastMatching<T>(
 export class DefaultNodeManagedSessionRunner
   implements NodeManagedSessionRunner
 {
+  private readonly sandboxRuntimes = new ScopedSessionMap<SessionSandboxRuntime>();
   private readonly sandboxes = new ScopedSessionMap<SandboxExecutor>();
   private readonly runtimeGenerations = new ScopedSessionMap<string>();
   private readonly sandboxConfigurationFingerprints = new ScopedSessionMap<string>();
@@ -202,29 +205,27 @@ export class DefaultNodeManagedSessionRunner
       this.abortControllers.get(input)?.abort();
       this.abortControllers.delete(input);
       this.sandboxes.delete(input);
+      this.sandboxRuntimes.delete(input);
       this.runtimeGenerations.delete(input);
       this.sandboxConfigurationFingerprints.delete(input);
       await existing.destroy?.();
     }
-    const sandbox = await this.dependencies.buildSandbox({
-      workspaceId: input.workspaceId,
-      session: input.session,
-      environment: input.environment,
-    });
     const runtimeGeneration = this.dependencies.runtimeGenerations?.next()
       ?? `runtime_${randomUUID()}`;
+    const context = { workspaceId: input.workspaceId, session: input.session, environment: input.environment };
+    const runtime = new SessionSandboxRuntime({
+      mode: () => this.dependencies.sandboxMode?.(context) ?? "sandbox",
+      create: () => this.dependencies.buildSandbox(context),
+      prepare: sandbox => this.dependencies.prepareSandbox?.({ ...context, sandbox, runtimeGeneration }) ?? Promise.resolve(),
+    });
+    const sandbox = await runtime.acquire();
     try {
-      await this.dependencies.prepareSandbox?.({
-        workspaceId: input.workspaceId,
-        session: input.session,
-        environment: input.environment,
-        sandbox,
-        runtimeGeneration,
-      });
+      await runtime.prepare();
     } catch (error) {
       await sandbox.destroy?.().catch(() => undefined);
       throw error;
     }
+    this.sandboxRuntimes.set(input, runtime);
     this.sandboxes.set(input, sandbox);
     this.runtimeGenerations.set(input, runtimeGeneration);
     this.sandboxConfigurationFingerprints.set(input, fingerprint);
@@ -235,6 +236,7 @@ export class DefaultNodeManagedSessionRunner
     this.abortControllers.delete(input);
     const sandbox = this.sandboxes.get(input);
     this.sandboxes.delete(input);
+    this.sandboxRuntimes.delete(input);
     this.runtimeGenerations.delete(input);
     this.sandboxConfigurationFingerprints.delete(input);
     await sandbox?.destroy?.();
@@ -517,13 +519,16 @@ export class DefaultNodeManagedSessionRunner
           input.executionFence !== undefined &&
           this.dependencies.synchronizeSandbox !== undefined
         ) {
-          await this.dependencies.synchronizeSandbox({
-            workspaceId: input.workspaceId,
-            session: input.session,
-            environment: input.environment,
-            sandbox: rawSandbox,
-            runtimeGeneration,
-            executionFence: input.executionFence,
+          const executionFence = input.executionFence;
+          await this.sandboxRuntimes.get(input)?.withSandbox(async () => {
+            await this.dependencies.synchronizeSandbox!({
+              workspaceId: input.workspaceId,
+              session: input.session,
+              environment: input.environment,
+              sandbox: rawSandbox,
+              runtimeGeneration,
+              executionFence,
+            });
           });
         }
       } catch (error) {

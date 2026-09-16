@@ -162,6 +162,7 @@ export interface Env {
           session: {
             id: string;
             environmentId: string;
+            sandboxMode?: "none" | "sandbox";
             metadata: Readonly<Record<string, string>>;
             resources: readonly (Readonly<Record<string, unknown>> & { type: string })[];
           };

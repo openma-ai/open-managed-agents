@@ -23,7 +23,7 @@ const schemas = [softwareApplicationSchema()];
 
 <Base
   title="OpenMA: Claude Managed Agents & OpenAI Agents API"
-  description="Open Managed Agents: self-host agents with the Claude and OpenAI SDKs. Sessions, tools and recovery included. OpenAI Agents API is available on Node."
+  description="Open Managed Agents with Claude Managed Agents and OpenAI Agents API compatibility. Use hosted OpenMA or self-host with Node. Bring your own models."
   canonical="/"
   keywords="open managed agents, openai agent api, openai agents api, openai agents api alternative, self-hosted openai agents, claude managed agents, claude managed agents alternative, open-source agent platform, subagents, acp, mcp, byok, claude tag alternative"
   schemas={schemas}
@@ -155,21 +155,21 @@ const schemas = [softwareApplicationSchema()];
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
       OpenMA supports Claude Managed Agents and OpenAI Agents API. Start with
       <a href="/deploy/">a deployment</a>, add your model key, and connect your
-      application. The Claude example uses hosted OpenMA; the OpenAI example requires a self-hosted Node server.
+      application. Both examples connect to hosted OpenMA.
     </p>
     <SdkExamples />
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
-      Let an agent hand off subtasks to other agents that share its files.
+      On self-hosted Node, let an agent hand off subtasks to other agents that share its files.
       Each child keeps its own conversation, and you can follow up or stop it.
       Children cannot create further children.
     </p>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
-      OpenAI Agents API currently requires a Node deployment. Advanced
-      environment and plugin settings are not yet supported.
+      Hosted OpenMA supports sandbox-free OpenAI sessions. Dynamic subagent controls
+      currently require Node; advanced environment and plugin settings remain unsupported.
       <a href="https://github.com/openma-ai/open-managed-agents/blob/main/docs/openai-agents-compatibility-status.md">Check supported features before migrating</a>.
     </p>
     <p class="text-[var(--color-fg-muted)] leading-relaxed">
-      <a href="https://github.com/openma-ai/open-managed-agents#openai-agents-api-quickstart-node">Read the OpenAI SDK setup guide</a>
+      <a href="https://github.com/openma-ai/open-managed-agents#openai-agents-api-quickstart">Read the OpenAI SDK setup guide</a>
       or <a href="https://docs.openma.dev/quickstart/">get started with Claude Managed Agents</a>.
     </p>
   </section>
@@ -183,8 +183,7 @@ const schemas = [softwareApplicationSchema()];
         Your agent execution environment is a separate choice: local runtime or cloud sandbox.
       </p>
       <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-2xl">
-        Cloudflare is also available as a deployment option. OpenAI Agents API
-        currently requires Node. <a href="/deploy/">Compare deployment options</a>.
+        Both Node and Cloudflare expose the Claude Managed Agents and OpenAI Agents APIs. <a href="/deploy/">Compare deployment options</a>.
       </p>
     </div>
   </section>

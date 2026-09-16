@@ -602,6 +602,12 @@ importers:
       '@open-managed-agents/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@open-managed-agents/openai-agents-api':
+        specifier: workspace:*
+        version: link:../../packages/openai-agents-api
+      '@open-managed-agents/openai-agents-compat':
+        specifier: workspace:*
+        version: link:../../packages/openai-agents-compat
       '@open-managed-agents/outbound-snapshots-store':
         specifier: workspace:*
         version: link:../../packages/outbound-snapshots-store

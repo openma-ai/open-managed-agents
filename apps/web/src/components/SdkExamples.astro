@@ -35,12 +35,12 @@ await client.beta.sessions.events.send(session.id, {
     id: "openai",
     label: "OpenAI Agents API",
     package: "openai",
-    note: "Self-hosted Node only; this API is not yet available on hosted OpenMA. Use your API key and configured model.",
+    note: "Hosted OpenMA: use your API key and configured model. This example runs without a sandbox.",
     code: `import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "http://localhost:8787/openai/v1",
+  baseURL: "https://app.openma.dev/openai/v1",
 });
 
 const session = await client.beta.agents.sessions.create({

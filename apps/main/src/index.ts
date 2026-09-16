@@ -1,3 +1,7 @@
+import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
+import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
+import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
+import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
@@ -213,7 +217,7 @@ app.use("*", requestMetricsMiddleware);
 // of the official @anthropic-ai/sdk can `catch (e) { if (e.error?.error?.type
 // === 'authentication_error') ... }`. Runs second so it sees the response
 // body produced by every downstream middleware/handler. See lib/error-envelope.ts.
-app.use("*", errorEnvelopeMiddleware);
+app.use("*", (c, next) => c.req.path.startsWith("/openai/") ? next() : errorEnvelopeMiddleware(c, next));
 
 // Catch-all for anything that escapes per-route try/catch. Logs +
 // records to AE before returning a clean 500 (no internal leak in body).
@@ -540,7 +544,7 @@ const legacyVaultsRoutes = new Hono<{ Bindings: Env; Variables: { tenant_id: str
   return invokePackage(c, app);
 });
 
-const managedVaultsRoutes = buildManagedVaultRoutes((context) => {
+function managedVaultsPortFor(context: AppCtx) {
   const request = context.var as {
     tenant_id: string;
     tenantDb: D1Database;
@@ -556,10 +560,12 @@ const managedVaultsRoutes = buildManagedVaultRoutes((context) => {
         `${namespace === "vault" ? "vlt" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
     },
   }).port(managedAgentsPortTokens.vaults);
-});
+}
+
+const managedVaultsRoutes = buildManagedVaultRoutes(context => managedVaultsPortFor(context as AppCtx));
 
 const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
-const managedCredentialsRoutes = buildManagedCredentialRoutes((context) => {
+function managedCredentialsPortFor(context: AppCtx) {
   const request = context.var as {
     tenant_id: string;
     tenantDb: D1Database;
@@ -601,7 +607,9 @@ const managedCredentialsRoutes = buildManagedCredentialRoutes((context) => {
         `${namespace === "credential" ? "vcrd" : namespace}_${crypto.randomUUID().replaceAll("-", "")}`,
     },
   }).port(managedAgentsPortTokens.credentials);
-});
+}
+
+const managedCredentialsRoutes = buildManagedCredentialRoutes(context => managedCredentialsPortFor(context as AppCtx));
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
   return managedCoreApplicationFor(context)
@@ -1284,6 +1292,60 @@ app.route("/v1/oma/agents", legacyAgentsRoutes);
 app.route("/v1/environments", managedEnvironmentsRoutes);
 app.route("/v1/environments", managedEnvironmentWorkRoutes);
 app.route("/v1/oma/environments", legacyEnvironmentsRoutes);
+// OpenAI compatibility shares the same tenant-scoped application ports as /v1.
+// Keep API requests ahead of the Console asset fallback.
+app.use("/openai/*", async (c, next) => {
+  await next();
+  if (c.res.status !== 401 && c.res.status !== 403 && c.res.status !== 429) return;
+  const status = c.res.status;
+  c.res = new Response(JSON.stringify({ error: {
+    message: status === 401 ? "Authentication required" : status === 403 ? "Permission denied" : "Rate limit exceeded",
+    type: status === 401 ? "authentication_error" : status === 403 ? "permission_error" : "rate_limit_error",
+    param: null,
+    code: status === 401 ? "invalid_api_key" : status === 403 ? "insufficient_permissions" : "rate_limit_exceeded",
+  } }), { status, headers: { ...Object.fromEntries(c.res.headers), "content-type": "application/json" } });
+});
+app.use("/openai/*", authMiddleware);
+app.use("/openai/*", rateLimitMiddleware);
+app.use("/openai/*", tenantDbMiddleware);
+app.use("/openai/*", servicesMiddleware);
+app.route("/openai", buildOpenAIAgentsProtocolApi(context => {
+  const ctx = context as unknown as AppCtx;
+  const workspaceId = ctx.var.tenant_id;
+  if (!workspaceId) throw new OpenAIAgentsProtocolError(401, "Authentication required");
+  const credential = ctx.var.auth_credential;
+  if (credential && credential.type !== "workspace") throw new OpenAIAgentsProtocolError(403, "This credential cannot access the Agents API");
+  const application = managedCoreApplicationFor(ctx);
+  const agents = application.port(managedAgentsPortTokens.agents);
+  const environments = application.port(managedAgentsPortTokens.environments);
+  const native = managedSessionsCompositionFor(ctx).portsFor(workspaceId);
+  const secrets = new CfManagedSessionSecretSealer(ctx.env.PLATFORM_ROOT_SECRET);
+  const blobs = ctx.var.services.filesBlob;
+  if (!blobs) throw new OpenAIAgentsProtocolError(503, "File storage is unavailable");
+  const files = managedFilesApplicationFor({ workspaceId, tenantDb: ctx.var.tenantDb, blobs });
+  const resources = createResourcesHandler({
+    agents, environments, files, secrets,
+    vaults: managedVaultsPortFor(ctx), credentials: managedCredentialsPortFor(ctx),
+  });
+  const artifacts = createArtifactsHandler({
+    files,
+    requireSession: async sessionId => {
+      const found = await native.sessions.retrieveSession({ sessionId });
+      if (found.type !== "found") throw new OpenAIAgentsProtocolError(404, "Session not found");
+    },
+  });
+  const sessions = createSessionsHandler({
+    workspaceId, sessions: native.sessions, sessionEvents: native.sessionEvents,
+    history: new SessionRuntimeHistoryApplicationService({ workspaceId, source: new SqlSessionRuntimeHistorySource(new CfD1SqlClient(ctx.var.tenantDb)) }),
+    mapping: createManagedSessionMapping({ agents, environments, resources, secrets, runtime: createSandboxOptionalSessionMapping(environments) }),
+    resources: { execute: artifacts },
+  });
+  return { execute: request => request.operation.startsWith("sessions.") ? sessions.execute(request) : resources(request) };
+}));
+app.all("/openai/*", c => c.json({ error: {
+  message: "Unknown API endpoint", type: "invalid_request_error", param: null, code: "resource_not_found",
+} }, 404));
+
 app.route("/v1/sessions", managedSessionsRoutes);
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
@@ -1512,7 +1574,13 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       ),
       async () => ({ type: "not_found" as const }),
     );
-    if (canonical.type === "found") return canonical;
+    if (canonical.type === "found") {
+      const sandboxMode = await resolveSessionSandboxMode(
+        { ...canonical.session, metadata: { ...canonical.session.metadata } },
+        new CfManagedSessionSecretSealer(this.env.PLATFORM_ROOT_SECRET),
+      );
+      return { ...canonical, session: { ...canonical.session, sandboxMode } };
+    }
 
     // Compatibility lane for `/v1/oma` Sessions. The fallback remains in
     // the main control plane; the sandbox worker never reads D1/KV directly.

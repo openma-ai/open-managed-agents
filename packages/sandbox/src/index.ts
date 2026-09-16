@@ -52,3 +52,5 @@ export {
   type WorkspaceBackupService,
   type DefaultSandboxOrchestratorDeps,
 } from "./orchestrator";
+
+export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";

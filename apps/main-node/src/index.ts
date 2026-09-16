@@ -16,7 +16,7 @@ import {
   createManagedSessionMapping,
   createResourcesHandler,
   createSessionsHandler,
-  isManagedNoEnvironmentSession,
+  resolveSessionSandboxMode,
   readManagedSessionMappingMetadata,
 } from "@open-managed-agents/openai-agents-compat";
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
@@ -24,7 +24,6 @@ import { buildOpenAISubagentTools, nodeOpenAISubagentPolicy, openAISubagentSessi
 import { buildNodeOpenAIAgentsRoutes } from "./openai-agents.js";
 import { createNodeOpenAIAgentsRuntime } from "./openai-managed-runtime.js";
 import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "./openai-artifact-publication.js";
-import { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./openai-no-environment.js";
 import {
   createNodeLogger,
 } from "@open-managed-agents/observability/logger/node";
@@ -1218,10 +1217,8 @@ const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
       };
     },
   }),
-  buildSandbox: async ({ session }) =>
-    await isManagedNoEnvironmentSession(session, openAIAgentsSecrets)
-      ? createNoEnvironmentSandbox()
-      : buildSandbox(
+  sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
+  buildSandbox: async ({ session }) => buildSandbox(
       session.id,
       join(process.env.SANDBOX_WORKDIR ?? "./data/sandboxes", session.id),
     ),
@@ -1231,7 +1228,6 @@ const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     sandbox,
     runtimeGeneration,
   }) => {
-    if (isNoEnvironmentSandbox(sandbox)) return;
     const preparer = new NodeManagedSessionInputPreparer({
       files: managedAgentsPlatform
         .app({ workspaceId })
@@ -1263,7 +1259,6 @@ const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     runtimeGeneration,
     executionFence,
   }) => {
-    if (isNoEnvironmentSandbox(sandbox)) return;
     await sandbox.synchronizeMemoryStores?.();
     const memories = managedMemoriesApplicationForWorkspace(workspaceId)
       .port(managedAgentsPortTokens.memories);
