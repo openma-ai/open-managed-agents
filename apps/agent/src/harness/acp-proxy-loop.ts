@@ -27,7 +27,7 @@
  *     false / no-op.
  */
 
-import type { HarnessInterface, HarnessContext, HarnessRuntime } from "./interface";
+import type { HarnessInterface, HarnessContext, HarnessRuntime, HarnessPendingInterruptContext } from "./interface";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import { AcpTranslator } from "./acp-translate";
 import { generateEventId, log, logError, logWarn } from "@open-managed-agents/shared";
@@ -39,6 +39,7 @@ interface AttachedWs {
     event: "message" | "close" | "error",
     listener: (event: MessageEvent | CloseEvent | Event) => void,
   ): void;
+  removeEventListener?(event: "message" | "close" | "error", listener: (event: MessageEvent | CloseEvent | Event) => void): void;
 }
 
 export class AcpProxyHarness implements HarnessInterface {
@@ -57,6 +58,35 @@ export class AcpProxyHarness implements HarnessInterface {
 
   deriveModelContext(): never[] {
     return []; // never called — we don't run generateText
+  }
+
+  async interruptPending(ctx: HarnessPendingInterruptContext): Promise<string[]> {
+    const requests = ctx.pendingActions.flatMap((event) => {
+      const value = event as unknown as ParsedFrame;
+      const action = record(record(value.input)._openma);
+      return value.type === "agent.custom_tool_use" && typeof value.id === "string" && action.type === "runtime_action" && typeof action.turn_id === "string"
+        ? [{ id: value.id, turnId: action.turn_id }] : [];
+    });
+    if (!requests.length) return [];
+    const binding = ctx.agent.runtime_binding;
+    if (!binding || !ctx.env.RUNTIME_ROOM) throw new Error("Runner interrupt is unavailable");
+    const channel = await this.#openHarnessWs(ctx.env.RUNTIME_ROOM, ctx.session_id, binding.runtime_id, ctx.tenant_id);
+    if (!channel) throw new Error("Could not connect to the runner to interrupt its pending turn");
+    try {
+      const attached = await channel.take((frame) => frame.type === "attached", 5_000);
+      if (attached.daemon_online === false) throw new Error("Runner is offline; its pending turn has not been interrupted");
+      for (const turnId of new Set(requests.map((request) => request.turnId))) {
+        // The host already owns this turn. Starting or prompting here could
+        // create new work while handling a request to stop it.
+        channel.ws.send(JSON.stringify({ type: "session.cancel", turn_id: turnId }));
+        const result = await channel.take((frame) => frame.type === "session.error" || frame.type === "session.complete" && frame.turn_id === turnId, 30_000);
+        if (result.type === "session.error") throw new Error(String(result.message ?? "Runner interrupt failed"));
+      }
+      return requests.map((request) => request.id);
+    } finally {
+      channel.dispose();
+      try { channel.ws.close(1000, "interrupt finished"); } catch { /* already closed */ }
+    }
   }
 
   async run(ctx: HarnessContext): Promise<void> {
@@ -80,23 +110,69 @@ export class AcpProxyHarness implements HarnessInterface {
     }
 
     const userText = extractUserText(ctx.userMessage);
-    if (!userText) {
+    const resumed = userText ? null : runtimeActionResponse(runtime.history.getEvents() as unknown as ParsedFrame[]);
+    if (!userText && !resumed) {
       this.#emitError(runtime, "Could not extract text from user message — empty turn");
       return;
     }
 
-    const ws = await this.#openHarnessWs(env.RUNTIME_ROOM, sid, binding.runtime_id, ctx.tenant_id);
-    if (!ws) {
+    const turnId = resumed?.turnId ?? generateEventId();
+    const seen: Record<string, number> = Object.assign(Object.create(null), resumed?.after);
+    let channel = await this.#openHarnessWs(env.RUNTIME_ROOM, sid, binding.runtime_id, ctx.tenant_id,
+      resumed?.after ? { turn_id: turnId, after: seen } : undefined);
+    if (!channel) {
       this.#emitError(runtime, "Failed to attach to RuntimeRoom — runtime_id may be invalid or daemon offline");
       return;
     }
 
-    const turnId = generateEventId();
+    let ws = channel.ws;
+    let recoverable = false;
+    let awaitingResponse = Boolean(resumed);
+    const sendResponse = () => {
+      if (resumed) channel!.send({ type: "session.response", turn_id: turnId, request_id: resumed.requestId, response: resumed.response });
+    };
+    const remember = (frame: ParsedFrame) => {
+      const delivery = record(frame.delivery);
+      if (typeof delivery.stream_id === "string" && Number.isSafeInteger(delivery.seq) && Number(delivery.seq) > 0) {
+        seen[delivery.stream_id] = Math.max(seen[delivery.stream_id] ?? 0, Number(delivery.seq));
+      }
+    };
+    const take = async (predicate: (frame: ParsedFrame) => boolean, timeoutMs = 0): Promise<ParsedFrame> => {
+      for (;;) {
+        try {
+          const frame = await channel!.take(predicate, timeoutMs);
+          const delivery = record(frame.delivery);
+          if (typeof delivery.stream_id === "string" && typeof delivery.seq === "number" && delivery.seq <= (seen[delivery.stream_id] ?? 0)) continue;
+          return frame;
+        } catch (error) {
+          if (!(error instanceof RuntimeConnectionError) || !recoverable) throw error;
+          channel!.dispose();
+          // Reconnect the observer of this turn. Never repeat session.prompt:
+          // the runner may still be executing after either socket disappears.
+          let delay = 250;
+          for (;;) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            const replacement = await this.#openHarnessWs(env.RUNTIME_ROOM!, sid, binding.runtime_id, ctx.tenant_id, { turn_id: turnId, after: seen });
+            if (replacement) {
+              try {
+                const attached = await replacement.take((frame) => frame.type === "attached", 5_000);
+                if (!Array.isArray(attached.capabilities) || !attached.capabilities.includes("durable_session_events_v1")) throw new Error("Runtime relay no longer supports output recovery");
+                channel = replacement; ws = replacement.ws;
+                if (runtime.abortSignal?.aborted) abortHandler();
+                else if (awaitingResponse) sendResponse();
+                break;
+              } catch { replacement.dispose(); replacement.ws.close(); }
+            }
+            delay = Math.min(delay * 2, 5_000);
+          }
+        }
+      }
+    };
     const translator = new AcpTranslator(runtime, {
       model: typeof ctx.agent.model === "string" ? ctx.agent.model : ctx.agent.model.id,
     });
     const abortHandler = () => {
-      try { ws.send(JSON.stringify({ type: "session.cancel", turn_id: turnId })); } catch { /* ws may be dead */ }
+      channel!.send({ type: "session.cancel", turn_id: turnId });
     };
     runtime.abortSignal?.addEventListener("abort", abortHandler);
 
@@ -104,47 +180,57 @@ export class AcpProxyHarness implements HarnessInterface {
       // Wait for the DO's "attached" handshake (synthetic, daemon may also
       // have replayed session.ready). After that the daemon is ready to
       // receive session.start / session.prompt.
-      await waitForFrame(ws, (m) => m.type === "attached", 5_000);
+      const attached = await channel.take((m) => m.type === "attached", 5_000);
+      if (attached.daemon_online === false) throw new Error("Runtime daemon is offline");
 
       // Idempotent session.start — daemon spawns ACP child on first call,
       // short-circuits to session.ready on subsequent calls for the same sid.
-      ws.send(JSON.stringify({
+      channel.send({
         type: "session.start",
         agent_id: binding.acp_agent_id,
-      }));
-      await waitForFrame(ws, (m) => m.type === "session.ready" || m.type === "session.error", 60_000)
+      });
+      await channel.take((m) => m.type === "session.ready" || m.type === "session.error", 60_000)
         .then((m) => {
           if (m.type === "session.error") throw new Error(`session.start failed: ${m.message ?? "unknown"}`);
         });
 
-      ws.send(JSON.stringify({
-        type: "session.prompt",
-        turn_id: turnId,
-        text: userText,
-      }));
+      recoverable = Array.isArray(attached.capabilities) && attached.capabilities.includes("durable_session_events_v1");
+      if (resumed) sendResponse();
+      else channel.send({ type: "session.prompt", turn_id: turnId, text: userText });
 
-      // Drain until session.complete or session.error or close.
-      await new Promise<void>((resolve, reject) => {
-        const onMessage = (ev: MessageEvent | CloseEvent | Event) => {
-          const data = (ev as MessageEvent).data;
-          if (typeof data !== "string") return;
-          let parsed: { type?: string; turn_id?: string; message?: string; event?: unknown };
-          try { parsed = JSON.parse(data); } catch { return; }
-
-          if (parsed.type === "session.event" && parsed.turn_id === turnId) {
-            void translator.consume(parsed as never);
-          } else if (parsed.type === "session.complete" && parsed.turn_id === turnId) {
-            resolve();
-          } else if (parsed.type === "session.error") {
-            reject(new Error(parsed.message ?? "session.error from runtime"));
-          }
-        };
-        const onClose = () => reject(new Error("WS to RuntimeRoom closed before turn complete"));
-        const onError = () => reject(new Error("WS error to RuntimeRoom"));
-        ws.addEventListener("message", onMessage);
-        ws.addEventListener("close", onClose);
-        ws.addEventListener("error", onError);
-      });
+      // Consume in order: completing while asynchronous translation is still
+      // pending can lose the final text/usage. The inbox is installed before
+      // accept/start, so early callbacks and reconnect replays are retained.
+      for (;;) {
+        const frame = await take((frame) => frame.type === "session.error" || frame.turn_id === turnId, awaitingResponse ? 30_000 : 0);
+        if (frame.type === "session.error") throw new Error(String(frame.message ?? "session.error from runtime"));
+        if (frame.type === "session.complete") break;
+        if (frame.type !== "session.event") continue;
+        const event = record(frame.event);
+        if (event.type === "client.response" && event.request_id === resumed?.requestId) {
+          awaitingResponse = false;
+          runtime.consumePendingConfirmation?.(resumed!.requestId);
+          remember(frame);
+          continue;
+        }
+        if (event.type === "client.request" && event.method === "session/request_permission" && typeof event.request_id === "string") {
+          if (event.request_id === resumed?.requestId) continue;
+          const params = record(event.params);
+          if (!Array.isArray(params.options)) throw new Error("Invalid runner permission request");
+          await translator.flush("completed");
+          remember(frame);
+          runtime.broadcast({ type: "agent.custom_tool_use", id: event.request_id,
+            name: String(record(params.toolCall).title ?? "Runner permission"),
+            input: { _openma: { type: "runtime_action", method: event.method, turn_id: turnId, params,
+              ...(Object.keys(seen).length ? { after: { ...seen } } : {}),
+            } },
+          } as SessionEvent);
+          (runtime.pendingConfirmations ??= []).push(event.request_id);
+          return; // ACP remains blocked on its original callback.
+        }
+        await translator.consume(frame as never);
+        remember(frame);
+      }
 
       await translator.flush("completed");
     } catch (err) {
@@ -162,6 +248,7 @@ export class AcpProxyHarness implements HarnessInterface {
       }
     } finally {
       runtime.abortSignal?.removeEventListener("abort", abortHandler);
+      channel.dispose();
       try { ws.close(1000, "turn done"); } catch { /* already closed */ }
     }
   }
@@ -175,7 +262,8 @@ export class AcpProxyHarness implements HarnessInterface {
     sid: string,
     runtimeId: string,
     tenantId?: string,
-  ): Promise<AttachedWs | null> {
+    replay?: { turn_id: string; after: Record<string, number> },
+  ): Promise<FrameInbox | null> {
     // Direct DO access. The DO class lives in the main worker but DOs are
     // namespace-scoped; the cross-script binding in wrangler.jsonc lets the
     // agent worker hold a stub without going through main as a service.
@@ -195,6 +283,7 @@ export class AcpProxyHarness implements HarnessInterface {
         "x-session-id": sid,
       };
       if (tenantId) headers["x-harness-tenant"] = tenantId;
+      if (replay) headers["x-runtime-replay"] = JSON.stringify(replay);
       const res = await stub.fetch(
         new Request("http://runtime-room/_attach_harness", { headers }),
       );
@@ -205,8 +294,9 @@ export class AcpProxyHarness implements HarnessInterface {
         );
         return null;
       }
+      const channel = new FrameInbox(res.webSocket as unknown as AttachedWs);
       res.webSocket.accept();
-      return res.webSocket as unknown as AttachedWs;
+      return channel;
     } catch (e) {
       logError({ op: "acp_proxy.attach_throw", err: String(e), sid }, "harness WS attach threw");
       return null;
@@ -230,30 +320,69 @@ interface ParsedFrame {
   [k: string]: unknown;
 }
 
-/** Wait for a single WS frame matching the predicate, with timeout. */
-function waitForFrame(
-  ws: AttachedWs,
-  pred: (msg: ParsedFrame) => boolean,
-  timeoutMs: number,
-): Promise<ParsedFrame> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`timeout waiting for matching frame (${timeoutMs}ms)`));
-    }, timeoutMs);
-    const onMessage = (ev: MessageEvent | CloseEvent | Event) => {
-      const data = (ev as MessageEvent).data;
-      if (typeof data !== "string") return;
-      let parsed: ParsedFrame;
-      try { parsed = JSON.parse(data); } catch { return; }
-      if (!pred(parsed)) return;
-      clearTimeout(timer);
-      resolve(parsed);
-    };
-    const onClose = () => {
-      clearTimeout(timer);
-      reject(new Error("WS closed while waiting for frame"));
-    };
-    ws.addEventListener("message", onMessage);
-    ws.addEventListener("close", onClose);
-  });
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function runtimeActionResponse(events: ParsedFrame[]) {
+  const response = [...events].reverse().find((event) => event.type === "user.custom_tool_result");
+  if (!response || typeof response.custom_tool_use_id !== "string") return null;
+  const request = events.find((event) => event.type === "agent.custom_tool_use" && event.id === response.custom_tool_use_id);
+  const action = record(record(request?.input)._openma);
+  if (action.type !== "runtime_action" || action.method !== "session/request_permission" || typeof action.turn_id !== "string") return null;
+  const content = Array.isArray(response.content) ? response.content.map((block) => record(block).type === "text" ? String(record(block).text ?? "") : "").join("") : "";
+  let value: unknown;
+  try { value = JSON.parse(content); } catch { return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const after = Object.fromEntries(Object.entries(record(action.after)).filter(([, seq]) => Number.isSafeInteger(seq) && Number(seq) >= 0)) as Record<string, number>;
+  return { requestId: response.custom_tool_use_id, turnId: action.turn_id, response: value,
+    ...(Object.keys(after).length ? { after } : {}),
+  };
+}
+
+class RuntimeConnectionError extends Error {}
+
+class FrameInbox {
+  #frames: ParsedFrame[] = [];
+  #closed = false;
+  #wake?: () => void;
+  #message = (event: MessageEvent | CloseEvent | Event) => {
+    const data = (event as MessageEvent).data;
+    if (typeof data !== "string") return;
+    try { this.#frames.push(JSON.parse(data)); } catch { return; }
+    this.#wake?.();
+  };
+  #close = () => { this.#closed = true; this.#wake?.(); };
+  constructor(readonly ws: AttachedWs) {
+    ws.addEventListener("message", this.#message);
+    ws.addEventListener("close", this.#close);
+    ws.addEventListener("error", this.#close);
+  }
+  send(frame: ParsedFrame): void {
+    try { this.ws.send(JSON.stringify(frame)); }
+    catch {
+      // An exception does not tell us whether the peer accepted the bytes.
+      // Let the consumer reconnect its output stream without repeating input.
+      this.#close();
+      try { this.ws.close(); } catch { /* already lost */ }
+    }
+  }
+  async take(predicate: (frame: ParsedFrame) => boolean, timeoutMs = 0): Promise<ParsedFrame> {
+    const deadline = timeoutMs ? Date.now() + timeoutMs : Infinity;
+    for (;;) {
+      const index = this.#frames.findIndex(predicate);
+      if (index >= 0) return this.#frames.splice(index, 1)[0]!;
+      if (this.#closed) throw new RuntimeConnectionError("WS to RuntimeRoom closed before turn complete");
+      await new Promise<void>((resolve, reject) => {
+        const timer = timeoutMs ? setTimeout(() => { this.#wake = undefined; reject(new Error("Runtime response timed out")); }, Math.max(0, deadline - Date.now())) : undefined;
+        this.#wake = () => { if (timer) clearTimeout(timer); this.#wake = undefined; resolve(); };
+      });
+    }
+  }
+  dispose(): void {
+    this.#close();
+    this.ws.removeEventListener?.("message", this.#message);
+    this.ws.removeEventListener?.("close", this.#close);
+    this.ws.removeEventListener?.("error", this.#close);
+  }
 }

@@ -1,5 +1,12 @@
 import type { SessionHostEvent } from "@openma/common/session-kernel";
 
+/** Internal callback transport. Session and tenant always come from the
+ * authenticated harness attachment, never from the response's wire fields. */
+export function runtimeResponseForSession(frame: Record<string, unknown>, sessionId: string, tenantId: string | undefined): Record<string, unknown> | null {
+  if (frame.type !== "session.response" || !sessionId || !tenantId || typeof frame.turn_id !== "string" || !frame.turn_id || typeof frame.request_id !== "string" || !frame.request_id || !frame.response || typeof frame.response !== "object" || Array.isArray(frame.response)) return null;
+  return { type: "session.response", session_id: sessionId, tenant_id: tenantId, turn_id: frame.turn_id, request_id: frame.request_id, response: frame.response };
+}
+
 export interface AuthorizeRuntimeHostEvent {
   authorizedTenantIds: readonly string[] | null;
   reportedTenantId?: string;

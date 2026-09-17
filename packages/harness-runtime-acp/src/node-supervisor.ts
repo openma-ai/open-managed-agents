@@ -133,6 +133,10 @@ export function createNodeManagedAcpSupervisorApp(
   options: NodeManagedAcpSupervisorAppOptions = {},
 ): NodeManagedAcpSupervisorApp {
   const environment = options.environment ?? process.env;
+  const installedHarnesses = parseInstalledHarnesses(environment.OPENMA_ACP_HARNESSES);
+  if (installedHarnesses !== null && (options.agentId !== undefined || options.resolveAgent !== undefined)) {
+    throw new TypeError("OPENMA_ACP_HARNESSES cannot be combined with agentId or resolveAgent");
+  }
   const workspacePath = options.workspacePath ?? "/workspace";
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 5_000;
   const stateIo = options.stateIo ?? createNodeAcpHarnessStateIo({ workspacePath });
@@ -144,7 +148,9 @@ export function createNodeManagedAcpSupervisorApp(
   const resolveHarness = async (
     harness: { id: string; version: string },
   ): Promise<HarnessSupervisorHarness | null> => {
-    if (harness.version !== "1") return null;
+    const installed = installedHarnesses?.find((entry) =>
+      entry.id === harness.id && entry.version === harness.version);
+    if (installedHarnesses !== null ? installed === undefined : harness.version !== "1") return null;
     // `connect` establishes the transport context before the control channel
     // can emit session.start; onSessionLoaded establishes the Session snapshot
     // before that same command is exposed. Definite assignment models that
@@ -153,11 +159,12 @@ export function createNodeManagedAcpSupervisorApp(
     let activeSession!: ManagedAcpSessionSnapshot;
     const sessionState = createAcpNativeSessionState({
       io: stateIo,
+      ...(installed === undefined ? {} : { harness: { id: installed.id, version: installed.version } }),
       resolveSession: async () => {
         const session = activeSession;
-        const resolved = options.resolveAgent === undefined
+        const resolved: AcpStatefulAgentSpec | null = installed ?? (options.resolveAgent === undefined
           ? defaultAgentResolver(options.agentId ?? harness.id)
-          : await options.resolveAgent({ harness, session });
+          : await options.resolveAgent({ harness, session }));
         if (resolved === null) {
           throw new Error(
             `No installed ACP agent is configured for ${harness.id}@${harness.version}`,
@@ -418,6 +425,45 @@ function skillArray(value: unknown): ManagedAcpSkillSnapshot[] {
       type: skill.type,
       skill_id: skill.skill_id,
       version: skill.version,
+    };
+  });
+}
+
+interface InstalledAcpHarness {
+  id: string;
+  version: string;
+  command: string;
+  args?: string[];
+}
+
+/** Image-owned inventory, distinct from the requested harness selection. */
+function parseInstalledHarnesses(raw: string | undefined): InstalledAcpHarness[] | null {
+  if (raw === undefined) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
+  }
+  if (!Array.isArray(value)) throw new TypeError("OPENMA_ACP_HARNESSES must be a JSON array");
+  const seen = new Set<string>();
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry)
+      || !isNonEmptyString(entry.id) || entry.id.trim() !== entry.id
+      || !isNonEmptyString(entry.version) || entry.version.trim() !== entry.version
+      || !isNonEmptyString(entry.command) || !posix.isAbsolute(entry.command)
+      || (entry.args !== undefined && (!Array.isArray(entry.args)
+        || entry.args.some((arg: unknown) => typeof arg !== "string")))) {
+      throw new TypeError("OPENMA_ACP_HARNESSES entries require id, version, absolute command and optional string args");
+    }
+    const key = JSON.stringify([entry.id, entry.version]);
+    if (seen.has(key)) throw new TypeError(`OPENMA_ACP_HARNESSES duplicates ${entry.id}@${entry.version}`);
+    seen.add(key);
+    return {
+      id: entry.id,
+      version: entry.version,
+      command: entry.command,
+      ...(entry.args === undefined ? {} : { args: [...entry.args] as string[] }),
     };
   });
 }

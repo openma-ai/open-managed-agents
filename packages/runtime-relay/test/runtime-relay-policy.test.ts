@@ -3,9 +3,18 @@ import {
   authorizeRuntimeHostEvent,
   planRuntimeHostEventEffects,
   selectRuntimeCommandTenant,
+  runtimeResponseForSession,
 } from "../src/index";
 
 describe("runtime relay policy", () => {
+  it("pins a callback response to the authenticated harness session and tenant", () => {
+    const frame = { type: "session.response", session_id: "forged", tenant_id: "other", turn_id: "turn", request_id: "request", response: { outcome: { outcome: "selected", optionId: "once" } } };
+    expect(runtimeResponseForSession(frame, "session", "team")).toEqual({ ...frame, session_id: "session", tenant_id: "team" });
+    expect(runtimeResponseForSession(frame, "session", undefined)).toBeNull();
+    expect(runtimeResponseForSession({ ...frame, response: "bad" }, "session", "team")).toBeNull();
+    expect(runtimeResponseForSession({ ...frame, request_id: "" }, "session", "team")).toBeNull();
+  });
+
   it("keeps absent tenant additive but rejects unauthorized and cross-session claims", () => {
     expect(authorizeRuntimeHostEvent({
       authorizedTenantIds: ["workspace_a"],

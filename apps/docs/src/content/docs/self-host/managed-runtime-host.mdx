@@ -210,6 +210,16 @@ scope-escape rejection and force-stop. Its reusable core is
 | `ama_worker` | Managed Agents control plane | Any official/community `EnvironmentWorker` command or image | Started unchanged; it keeps its Work lease through the official API |
 | `openma_supervised` | Pi, ACP, or another OpenMA harness in the sandbox | Implements `openma-harness-supervisor-v1` | Ready, heartbeat, completion, drain, bounded stop |
 
+For the ACP supervisor, `driver.harness` selects an exact installed software
+release, for example `{ id: "codex-acp", version: "1.8.0" }`. Declare the
+image's installed executables in `OPENMA_ACP_HARNESSES` (a JSON array of
+`{ id, version, command, args? }`, with absolute command paths). The supervisor
+matches both fields and rejects missing versions. The inventory is image-owned;
+do not generate it from the requested version. Without it, `version: "1"`
+retains legacy, unpinned registry selection. The protocol remains
+`openma-harness-supervisor-v1`. Versioned native checkpoints cannot be resumed
+with another harness release; use a new Session when upgrading.
+
 Both lanes use the same sandbox, workspace, output, and resource-fence Ports.
 The supervisor protocol is never required for an ordinary Managed Agents
 worker. In the `ama_worker` lane, the official worker inside the sandbox owns

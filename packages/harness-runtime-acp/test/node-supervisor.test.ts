@@ -10,7 +10,7 @@ import {
   decodeManagedAcpSessionSnapshot,
   type ManagedAcpSessionSnapshot,
 } from "../src/node-supervisor";
-import type { NodeAcpHarnessStateIo } from "../src/node";
+import { createNodeAcpHarnessStateIo, type NodeAcpHarnessStateIo } from "../src/node";
 
 const scope = {
   workspaceId: "workspace_1",
@@ -361,10 +361,85 @@ describe("preinstalled Node managed ACP supervisor", () => {
     })).rejects.toThrow("does not match the claimed Work scope");
   });
 
-  it("rejects unsupported supervisor protocol versions", async () => {
+  it("rejects undeclared versions in the legacy registry", async () => {
     const app = createNodeManagedAcpSupervisorApp({ environment: {} });
     await expect(app.resolveHarness({ id: "acp", version: "2" })).resolves.toBeNull();
   });
+
+  it.each(["1.8.0", "1.9.0"])("runs the selected installed harness version %s", async (version) => {
+    const workspace = await mkdtemp(join(tmpdir(), "openma-versioned-harness-"));
+    roots.push(workspace);
+    const seen: SessionOptions[] = [];
+    const checkpoints: unknown[] = [];
+    const io = createNodeAcpHarnessStateIo({ workspacePath: workspace });
+    const app = createNodeManagedAcpSupervisorApp({
+      stateIo: {
+        ...io,
+        async writeFile(path, content) {
+          await io.writeFile(path, content);
+          if (path.endsWith("/acp-session.json")) checkpoints.push(JSON.parse(await io.readFile(path)));
+        },
+      },
+      environment: {
+        ...claimedEnvironment,
+        OPENMA_ACP_HARNESSES: JSON.stringify([
+          { id: "codex-acp", version: "1.8.0", command: "/opt/codex-1.8.0/codex-acp" },
+          { id: "codex-acp", version: "1.9.0", command: "/opt/codex-1.9.0/codex-acp", args: ["--verbose"] },
+        ]),
+      },
+      workspacePath: workspace,
+      acpRuntime: fakeAcpRuntime(seen),
+      fetch: productionFetch({}),
+    });
+    const selection = { id: "codex-acp", version };
+    const harness = await app.resolveHarness(selection);
+    expect(harness).not.toBeNull();
+    const run = await harness!.start({
+      scope, harness: selection, workspacePath: "/workspace", outputPath: null,
+      checkpoint: async () => {}, signal: new AbortController().signal,
+    });
+    await expect(run.completed).resolves.toEqual({ exitCode: 0 });
+    await run.drain();
+    expect(checkpoints).toContainEqual(expect.objectContaining({ harness: { id: "codex-acp", version } }));
+    expect(seen[0].agent.command).toBe(`/opt/codex-${version}/codex-acp`);
+    expect(seen[0].agent.args).toEqual(version === "1.9.0" ? ["--verbose"] : undefined);
+    for (const missing of [
+      { id: "codex-acp", version: "1.7.0" },
+      { id: "codex-acp", version: "1" },
+      { id: "pi-acp", version },
+    ]) await expect(app.resolveHarness(missing)).resolves.toBeNull();
+  });
+
+  it.each([
+    "not json", "{}", "[null]",
+    '[{"id":"","version":"1.8.0","command":"/opt/codex-acp"}]',
+    '[{"id":" codex-acp","version":"1.8.0","command":"/opt/codex-acp"}]',
+    '[{"id":"codex-acp","version":" 1.8.0","command":"/opt/codex-acp"}]',
+    '[{"id":"codex-acp","version":"1.8.0","command":""}]',
+    '[{"id":"codex-acp","version":"1.8.0","command":"/opt/codex-acp","args":"bad"}]',
+    '[{"id":"codex-acp","version":"","command":"/opt/codex-acp"}]',
+    '[{"id":"codex-acp","version":"1.8.0","command":"codex-acp"}]',
+    '[{"id":"codex-acp","version":"1.8.0","command":"/opt/codex-acp","args":[1]}]',
+    '[{"id":"codex-acp","version":"1.8.0","command":"/opt/a"},{"id":"codex-acp","version":"1.8.0","command":"/opt/b"}]',
+  ])("rejects an invalid installed harness catalog: %s", (catalog) => {
+    expect(() => createNodeManagedAcpSupervisorApp({
+      environment: { OPENMA_ACP_HARNESSES: catalog },
+    })).toThrow(/OPENMA_ACP_HARNESSES/);
+  });
+
+  it("does not fall back to the legacy registry when the installed catalog is empty", async () => {
+    const app = createNodeManagedAcpSupervisorApp({ environment: { OPENMA_ACP_HARNESSES: "[]" } });
+    await expect(app.resolveHarness({ id: "codex-acp", version: "1" })).resolves.toBeNull();
+  });
+
+  it.each([ { agentId: "pi-acp" }, { resolveAgent: () => null } ])(
+    "rejects conflicting installed harness and agent overrides %#", (override) => {
+      expect(() => createNodeManagedAcpSupervisorApp({
+        ...override,
+        environment: { OPENMA_ACP_HARNESSES: "[]" },
+      })).toThrow(/cannot be combined/);
+    },
+  );
 
   it("uses the built-in installed-agent registry with safe defaults", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "openma-node-supervisor-default-"));

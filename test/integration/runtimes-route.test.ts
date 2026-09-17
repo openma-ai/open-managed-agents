@@ -25,7 +25,7 @@
 
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 
 function api(path: string, init?: RequestInit) {
   return exports.default.fetch(new Request(`http://localhost${path}`, init));
@@ -337,6 +337,80 @@ describe("/agents/runtime/* — multi-tenant CLI bridge daemon (step 2)", () => 
       });
       return { stub, runtimeId: rid, userId: uid };
     }
+
+    it("persists ordered runner output before acknowledging and deduplicates reconnect replay", async () => {
+      const { stub } = await freshRoom(["tn_delivery", "tn_other"]);
+      await runInDurableObject(stub, async (room, state) => {
+        const forwarded: any[] = [];
+        const receipts: any[] = [];
+        const broadcast = room.broadcastToHarness;
+        room.broadcastToHarness = (_sid, frame) => forwarded.push(frame);
+        const socket = { send: (text: string) => {
+          const ack = JSON.parse(text);
+          if (ack.type === "session.ack") {
+            // A receipt may only cover frames already durable in this DO.
+            const saved = state.storage.sql.exec("SELECT seq FROM runtime_delivery_frames WHERE stream = ? ORDER BY seq", ack.delivery.stream_id).toArray();
+            expect(saved.map((row) => row.seq)).toContain(ack.delivery.seq);
+          }
+          receipts.push(ack);
+        } };
+        const base = { session_id: "durable-session", tenant_id: "tn_delivery", turn_id: "original-turn" };
+        const frame = (seq: number, type = "session.event") => ({ ...base, type,
+          ...(type === "session.event" ? { event: { type: "output", text: String(seq) } } : {}),
+          delivery: { stream_id: "durable-stream", seq },
+        });
+        try {
+          await room.onDaemonMessage(socket, frame(2));
+          expect(forwarded).toEqual([]);
+          expect(receipts.filter((r) => r.type === "session.ack")).toEqual([]);
+          await room.onDaemonMessage(socket, frame(1));
+          expect(forwarded).toEqual([frame(1), frame(2)]);
+          expect(receipts.at(-1)).toEqual({ type: "session.ack", session_id: base.session_id, tenant_id: base.tenant_id, delivery: { stream_id: "durable-stream", seq: 2 } });
+          await room.onDaemonMessage(socket, frame(1));
+          expect(forwarded).toHaveLength(2);
+          const beforeInvalid = receipts.length;
+          await room.onDaemonMessage(socket, { ...frame(3), tenant_id: "unauthorized" });
+          await room.onDaemonMessage(socket, { ...frame(3), tenant_id: "tn_other" });
+          await room.onDaemonMessage(socket, { ...frame(3), session_id: "other-session" });
+          expect(receipts).toHaveLength(beforeInvalid);
+          await room.onDaemonMessage(socket, frame(3, "session.complete"));
+          expect(forwarded).toEqual([frame(1), frame(2), frame(3, "session.complete")]);
+          // Recreate the helper from durable storage, as after DO hibernation.
+          room.deliveryLog = undefined;
+          await room.onDaemonMessage(socket, frame(3, "session.complete"));
+          expect(forwarded).toHaveLength(3);
+          expect(receipts.at(-1).delivery.seq).toBe(3);
+        } finally { room.broadcastToHarness = broadcast; }
+      });
+    });
+
+    it("replays only the requested turn beyond its cursor on a new harness socket", async () => {
+      const { stub } = await freshRoom(["tn_replay", "tn_wrong_replay"]);
+      await runInDurableObject(stub, async (room) => {
+        const base = { session_id: "replay-session", tenant_id: "tn_replay" };
+        for (const [seq, turn_id, type] of [[1, "earlier", "session.event"], [2, "current", "session.event"], [3, "side", "session.event"], [4, "current", "session.event"], [5, "current", "session.complete"]]) {
+          await room.onDaemonMessage({ send() {} }, { ...base, type, turn_id, ...(type === "session.event" ? { event: { text: `part-${seq}` } } : {}), delivery: { stream_id: "replay-stream", seq } });
+        }
+      });
+      const response = await stub.fetch(new Request("http://runtime-room/_attach_harness", { headers: {
+        Upgrade: "websocket", "x-attach-role": "harness", "x-session-id": "replay-session", "x-harness-tenant": "tn_replay",
+        "x-runtime-replay": JSON.stringify({ turn_id: "current", after: { "replay-stream": 2 } }),
+      } }));
+      expect(response.status).toBe(101);
+      const frames: any[] = [];
+      response.webSocket.addEventListener("message", (event) => { frames.push(JSON.parse(event.data)); });
+      response.webSocket.accept();
+      try {
+        await vi.waitFor(() => expect(frames.filter((frame) => frame.delivery).map((frame) => frame.delivery.seq)).toEqual([4, 5]), { timeout: 1000 });
+        expect(frames[0]).toMatchObject({ type: "attached", capabilities: ["durable_session_events_v1"] });
+      } finally { response.webSocket.close(); }
+      // The pin belongs to the task, and must survive closing its observer.
+      const wrong = await stub.fetch(new Request("http://runtime-room/_attach_harness", { headers: {
+        Upgrade: "websocket", "x-attach-role": "harness", "x-session-id": "replay-session", "x-harness-tenant": "tn_wrong_replay",
+        "x-runtime-replay": JSON.stringify({ turn_id: "current", after: {} }),
+      } }));
+      expect(wrong.status).toBe(403);
+    });
 
     it("evicts a daemon socket whose server-observed heartbeat lease expired", async () => {
       const { stub, runtimeId, userId } = await freshRoom(["tn_ws_stale"]);
@@ -759,12 +833,22 @@ describe("/agents/runtime/* — multi-tenant CLI bridge daemon (step 2)", () => 
         await (instance as unknown as {
           onHarnessMessage(sid: string, parsed: Record<string, unknown>): Promise<void>;
         }).onHarnessMessage(sid, { type: "session.prompt", turn_id: "t1", text: "hi" });
+        await instance.onHarnessMessage(sid, {
+          type: "session.response", session_id: "forged-session", tenant_id: "forged-tenant",
+          turn_id: "original-turn", request_id: "original-request",
+          response: { outcome: { outcome: "selected", optionId: "original-choice" } },
+        });
       });
 
-      expect(collected.length).toBe(1);
+      expect(collected.length).toBe(2);
       const f = collected[0];
       expect(f.type).toBe("session.prompt");
       expect(f.tenant_id).toBe("tn_inj");
+      expect(collected[1]).toEqual({
+        type: "session.response", session_id: sid, tenant_id: "tn_inj",
+        turn_id: "original-turn", request_id: "original-request",
+        response: { outcome: { outcome: "selected", optionId: "original-choice" } },
+      });
     });
   });
 });

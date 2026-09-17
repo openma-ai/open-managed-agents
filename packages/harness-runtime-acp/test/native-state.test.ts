@@ -16,7 +16,7 @@ describe("OpenMA-owned ACP native session durability", () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  it("copies only the Harbor-derived session allowlist and restores it before ACP resume", async () => {
+  it.each([undefined, { id: "codex-acp", version: "1.8.0" }])("restores only the session allowlist with matching harness identity %j", async (harness) => {
     const workspace = await mkdtemp(join(tmpdir(), "oma-acp-native-workspace-"));
     roots.push(workspace);
     const sessionId = `session_native_${Date.now()}`;
@@ -30,6 +30,7 @@ describe("OpenMA-owned ACP native session durability", () => {
       encodeURIComponent(sessionId),
     ));
     const makeState = () => createAcpNativeSessionState({
+      harness,
       io: createNodeAcpHarnessStateIo({ workspacePath: workspace }),
       resolveSession: async () => ({
         agent: { id: "codex-acp", command: "codex-acp" },
@@ -60,6 +61,7 @@ describe("OpenMA-owned ACP native session durability", () => {
     ), "utf8")).resolves.toBe(
       `${JSON.stringify({
         version: 1,
+        ...(harness === undefined ? {} : { harness }),
         adapter_id: "codex",
         acp_session_id: "acp_native_1",
         last_completed_turn_id: "turn_1",
@@ -109,6 +111,20 @@ describe("OpenMA-owned ACP native session durability", () => {
     ), "utf8")).resolves.toContain(
       '"acp_session_id":"acp_native_2","last_completed_turn_id":"turn_1"',
     );
+
+    const changed = createAcpNativeSessionState({
+      harness: { id: "codex-acp", version: "1.9.0" },
+      io: createNodeAcpHarnessStateIo({ workspacePath: workspace }),
+      resolveSession: async () => ({ agent: { id: "codex-acp", command: "codex-acp" } }),
+    });
+    await expect(changed.beforeStart(start)).rejects.toThrow(/harness version/);
+    if (harness !== undefined) {
+      const legacy = createAcpNativeSessionState({
+        io: createNodeAcpHarnessStateIo({ workspacePath: workspace }),
+        resolveSession: async () => ({ agent: { id: "codex-acp", command: "codex-acp" } }),
+      });
+      await expect(legacy.beforeStart(start)).rejects.toThrow(/harness version/);
+    }
 
     await second.release({ sessionId, reason: "destroy" });
     await expect(readFile(

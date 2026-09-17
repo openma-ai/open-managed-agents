@@ -87,6 +87,8 @@ export interface AcpHarnessResolvedSession {
 
 export interface AcpNativeSessionStateOptions {
   io: NodeAcpHarnessStateIo;
+  /** Exact installed harness identity; changing it requires a new Session. */
+  harness?: { id: string; version: string };
   resolveSession(
     command: SessionStartCommand,
   ): Promise<AcpHarnessResolvedSession>;
@@ -101,6 +103,7 @@ interface NativeStateRecord {
 
 interface NativeCheckpointV1 {
   version: 1;
+  harness?: { id: string; version: string };
   adapter_id: string;
   acp_session_id: string;
   last_completed_turn_id?: string;
@@ -129,6 +132,12 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     });
     await materializeAcpSandboxAgentState(this.options.io, preparation);
     const checkpoint = await this.#readCheckpoint(preparation);
+    if (checkpoint !== null && (
+      checkpoint.harness?.id !== this.options.harness?.id
+      || checkpoint.harness?.version !== this.options.harness?.version
+    )) {
+      throw new Error("Native checkpoint harness version does not match the selected harness; create a new Session");
+    }
     const resumeAcpSessionId = checkpoint?.acp_session_id
       ?? sessionCommand.acpSessionId;
     let semanticRecoveryReason: ManagedHarnessSessionStatePreparation["semanticRecoveryReason"];
@@ -205,6 +214,7 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     const record = this.#requireRecord(event.sessionId);
     const checkpoint: NativeCheckpointV1 = {
       version: 1,
+      ...(this.options.harness === undefined ? {} : { harness: this.options.harness }),
       adapter_id: record.preparation.binding.adapterId,
       acp_session_id: event.acpSessionId,
       ...(record.lastCompletedTurnId === undefined
@@ -226,6 +236,7 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     if (input.turnId !== undefined) record.lastCompletedTurnId = input.turnId;
     const checkpoint: NativeCheckpointV1 = {
       version: 1,
+      ...(this.options.harness === undefined ? {} : { harness: this.options.harness }),
       adapter_id: record.preparation.binding.adapterId,
       acp_session_id: record.resumeAcpSessionId,
       ...(record.lastCompletedTurnId === undefined

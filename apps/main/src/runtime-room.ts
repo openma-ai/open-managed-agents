@@ -42,6 +42,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { RuntimeDeliveryLog, readRuntimeDelivery, readRuntimeReplay } from "./runtime-delivery-log";
 import type { Env } from "@open-managed-agents/shared";
 import { log, logWarn, logError } from "@open-managed-agents/shared";
 import {
@@ -54,6 +55,7 @@ import {
   authorizeRuntimeHostEvent,
   planRuntimeHostEventEffects,
   selectRuntimeCommandTenant,
+  runtimeResponseForSession,
 } from "@open-managed-agents/runtime-relay";
 
 type Side = "daemon" | "harness";
@@ -100,9 +102,11 @@ export class RuntimeRoom extends DurableObject<Env> {
    * cloud side believes for this session, and on the harness → daemon hot
    * path to inject the right `tenant_id` into the forwarded frame.
    *
-   * Cleared when the harness WS closes.
+   * Persisted for the task lifetime, including across WS closes/hibernation.
    */
   #sessionTenant = new Map<string, string>();
+  private deliveryLog?: RuntimeDeliveryLog;
+  private deliveryQueue: Promise<void> = Promise.resolve();
 
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
@@ -179,13 +183,37 @@ export class RuntimeRoom extends DurableObject<Env> {
   }
 
   private async attachHarness(request: Request): Promise<Response> {
+    // Accept and replay before a later live frame can overtake the backlog.
+    const operation = this.deliveryQueue.catch(() => {}).then(() => this.attachHarnessWithReplay(request));
+    this.deliveryQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  private async sessionTenant(sid: string): Promise<string | undefined> {
+    let tenant = this.#sessionTenant.get(sid);
+    if (!tenant) {
+      tenant = await this.ctx.storage.get<string>(`session_tenant:${sid}`);
+      if (tenant) this.#sessionTenant.set(sid, tenant);
+    }
+    return tenant;
+  }
+
+  private async attachHarnessWithReplay(request: Request): Promise<Response> {
     const sid = request.headers.get("x-session-id") ?? "";
     if (!sid) return new Response("missing x-session-id", { status: 400 });
     // x-harness-tenant — agent worker (SessionDO has tenant_id in scope) tells
     // us which tenant this session belongs to. ABSENT from older callers; left
     // as undefined in the map (validation tolerates absence in this step).
     const harnessTenant = request.headers.get("x-harness-tenant");
-    if (harnessTenant) this.#sessionTenant.set(sid, harnessTenant);
+    const rawReplay = request.headers.get("x-runtime-replay");
+    const replayRequest = rawReplay ? readRuntimeReplay(rawReplay) : null;
+    if (rawReplay && (!harnessTenant || !replayRequest)) return new Response("invalid runtime replay request", { status: 400 });
+    const existingTenant = await this.sessionTenant(sid);
+    if (harnessTenant) {
+      if (existingTenant && existingTenant !== harnessTenant) return new Response("session workspace mismatch", { status: 403 });
+      await this.ctx.storage.put(`session_tenant:${sid}`, harnessTenant);
+      this.#sessionTenant.set(sid, harnessTenant);
+    }
 
     await this.ensureIdentity();
 
@@ -195,7 +223,7 @@ export class RuntimeRoom extends DurableObject<Env> {
 
     const daemonUp = await this.activeDaemonSocket() !== null;
     try {
-      server.send(JSON.stringify({ type: "attached", daemon_online: daemonUp }));
+      server.send(JSON.stringify({ type: "attached", daemon_online: daemonUp, capabilities: ["durable_session_events_v1"] }));
     } catch { /* race: harness already closed */ }
 
     // Replay last terminal/transition state for this session if any. The
@@ -204,6 +232,12 @@ export class RuntimeRoom extends DurableObject<Env> {
     const replay = await this.ctx.storage.get<Record<string, unknown>>(this.sessionStateKey(sid));
     if (replay) {
       try { server.send(JSON.stringify(replay)); } catch { /* harness closed */ }
+    }
+    if (replayRequest && harnessTenant) {
+      this.deliveryLog ??= new RuntimeDeliveryLog(this.ctx.storage);
+      for (const frame of this.deliveryLog.replay(sid, harnessTenant, replayRequest)) {
+        try { server.send(JSON.stringify(frame)); } catch { break; }
+      }
     }
 
     return new Response(null, { status: 101, webSocket: client });
@@ -276,7 +310,7 @@ export class RuntimeRoom extends DurableObject<Env> {
       } catch (e) {
         logError({ op: "runtime_room.hello_db", err: String(e), runtime_id: this.runtimeId }, "hello DB update failed");
       }
-      try { ws.send(JSON.stringify({ type: "welcome", runtime_id: this.runtimeId })); } catch { /* */ }
+      try { ws.send(JSON.stringify({ type: "welcome", runtime_id: this.runtimeId, capabilities: ["durable_session_events_v1"] })); } catch { /* */ }
       return;
     }
 
@@ -319,7 +353,7 @@ export class RuntimeRoom extends DurableObject<Env> {
           logWarn({ op: "runtime_room.ensure_authorized_failed", err: String(e), runtime_id: this.runtimeId }, "authorized-tenants lazy load failed; allowing for back-compat");
         }
       }
-      const pinnedTenant = this.#sessionTenant.get(sid);
+      const pinnedTenant = await this.sessionTenant(sid);
       const authorization = authorizeRuntimeHostEvent({
         authorizedTenantIds: this.#authorizedTenants === null
           ? null
@@ -341,12 +375,43 @@ export class RuntimeRoom extends DurableObject<Env> {
         }
         return;
       }
-      // Persist transition states so a harness opening its WS *after* the
-      // daemon already replied still receives the message. Per-event /
-      // per-complete are streamed and lost-on-late-attach is acceptable for v1.
       const forwarded = encodeSessionHostEvent(event, {
         ...(reportedTenant !== null && { tenantId: reportedTenant }),
       });
+      if (parsed.delivery !== undefined) {
+        const delivery = readRuntimeDelivery(parsed.delivery);
+        // Durable streams require a verified workspace, even while the legacy
+        // protocol still tolerates absent workspace metadata.
+        if (!delivery || !reportedTenant || !this.#authorizedTenants?.has(reportedTenant)) return;
+        const frame = { ...forwarded, session_id: sid, tenant_id: reportedTenant, delivery };
+        const operation = this.deliveryQueue.catch(() => {}).then(async () => {
+          const currentPin = await this.sessionTenant(sid);
+          if (currentPin && currentPin !== reportedTenant) return;
+          this.deliveryLog ??= new RuntimeDeliveryLog(this.ctx.storage);
+          const received = this.deliveryLog.receive(frame);
+          if (!received) return;
+          for (const output of received.frames) await this.publishHostEvent(output);
+          if (received.head > 0) {
+            try { ws.send(JSON.stringify({ type: "session.ack", session_id: sid, tenant_id: reportedTenant,
+              delivery: { stream_id: delivery.stream_id, seq: received.head },
+            })); } catch { /* Receipt loss is safe: the runner replays the same sequence. */ }
+          }
+        });
+        this.deliveryQueue = operation;
+        await operation;
+        return;
+      }
+      await this.publishHostEvent(forwarded);
+      return;
+    }
+
+    log({ op: "runtime_room.unhandled_daemon_msg", type: parsed.type }, "unhandled daemon message");
+  }
+
+  private async publishHostEvent(forwarded: Record<string, unknown>): Promise<void> {
+      const event = decodeSessionHostEvent(forwarded);
+      if (!event) return;
+      const sid = event.sessionId;
       const effects = planRuntimeHostEventEffects(event);
       if (effects.replay === "put") {
         await this.ctx.storage.put(this.sessionStateKey(sid), forwarded);
@@ -369,10 +434,6 @@ export class RuntimeRoom extends DurableObject<Env> {
         await this.ctx.storage.delete(this.acpSessionKey(sid));
       }
       this.broadcastToHarness(sid, forwarded);
-      return;
-    }
-
-    log({ op: "runtime_room.unhandled_daemon_msg", type: parsed.type }, "unhandled daemon message");
   }
 
   private async onHarnessMessage(sid: string, parsed: { type?: string; [k: string]: unknown }): Promise<void> {
@@ -399,7 +460,7 @@ export class RuntimeRoom extends DurableObject<Env> {
     // daemon falls back to its single legacy key in that case (step 2 is
     // additive, not enforcing). A cloud-side pin wins over a caller-supplied
     // tenant_id; without a pin the legacy supplied value is preserved.
-    const pinnedTenant = this.#sessionTenant.get(sid);
+    const pinnedTenant = await this.sessionTenant(sid);
     const suppliedTenant = typeof parsed.tenant_id === "string"
       ? parsed.tenant_id
       : undefined;
@@ -407,6 +468,11 @@ export class RuntimeRoom extends DurableObject<Env> {
       ...(pinnedTenant !== undefined && { pinnedTenantId: pinnedTenant }),
       ...(suppliedTenant !== undefined && { suppliedTenantId: suppliedTenant }),
     });
+    if (parsed.type === "session.response") {
+      const response = runtimeResponseForSession(parsed, sid, pinnedTenant);
+      if (response) daemon.send(JSON.stringify(response));
+      return;
+    }
     // session.start carries an optional `resume.acp_session_id`. Today no
     // harness builds that — the cloud-side AcpProxyHarness sends bare
     // session.start. We inject it here from DO storage so daemon restarts
@@ -480,10 +546,7 @@ export class RuntimeRoom extends DurableObject<Env> {
     }
     const sid = tags.map(sessionFromTag).find((s): s is string => !!s);
     if (sid) {
-      // Drop the per-session tenant pin so a future re-attach for the same
-      // sid (rare — happens if the cloud side closes and re-opens) re-reads
-      // the header. Authorized-tenants cache stays put; it's runtime-scoped.
-      this.#sessionTenant.delete(sid);
+      // The task's workspace remains pinned after its last observer detaches.
       log({ op: "runtime_room.harness_close", session_id: sid, code }, "harness closed");
     }
   }
