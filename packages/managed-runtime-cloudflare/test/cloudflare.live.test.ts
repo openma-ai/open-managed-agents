@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath, URL as NodeURL } from "node:url";
 import { join, resolve } from "node:path";
@@ -195,7 +195,7 @@ async function createIsolatedConfig(): Promise<void> {
   await writeFile(configPath, JSON.stringify(buildCloudflareLiveConfig({
     workerName,
     workerPath: resolve(repoRoot, "apps/agent/test/cloudflare-live-certification-worker.ts"),
-    dockerfilePath: resolve(repoRoot, "apps/agent/Dockerfile.sandbox"),
+    dockerfilePath: process.env.OMA_CLOUDFLARE_CERTIFICATION_IMAGE ?? resolve(repoRoot, "apps/agent/Dockerfile.sandbox"),
     ...(r2Live
       ? { r2: { accountId: accountId!, bucketName: r2BucketName } }
       : {}),
@@ -214,7 +214,7 @@ async function createIsolatedConfig(): Promise<void> {
 
 async function invoke(
   url: string,
-  action: "create" | "read" | "renew_lease" | "checkpoint" | "restore" | "attach_proxy" | "proxy" | "revoke_proxy" | "destroy" | "verify_destroyed",
+  action: "create" | "read" | "renew_lease" | "checkpoint" | "restore" | "attach_proxy" | "proxy" | "revoke_proxy" | "destroy" | "verify_destroyed" | "harness_artifacts",
   extra: Record<string, unknown> = {},
 ) {
   const response = await fetch(url, {
@@ -312,6 +312,28 @@ suite("Cloudflare live managed runtime certification", () => {
     expect(invalid.status).toBe(400);
 
     expect((await waitForCreate(workerUrl)).marker).toBe(`${sandboxId}:persisted`);
+
+    if (process.env.OMA_CLOUDFLARE_HARNESS_CERTIFICATION === "1") {
+      const bundlePath = join(fixtureRoot, "harness-probe.mjs");
+      await execFileAsync("pnpm", ["exec", "esbuild", "test/cloudflare-artifacts-probe.ts", "--bundle", "--platform=node", "--format=esm", "--target=node20", `--outfile=${bundlePath}`], {
+        cwd: resolve(repoRoot, "packages/harness-runtime-acp"), timeout: 60_000,
+      });
+      const result = await invoke(workerUrl, "harness_artifacts", {
+        source: await readFile(bundlePath, "utf8"),
+        codex_auth: await readFile(join(homedir(), ".codex/auth.json"), "utf8"),
+      });
+      const output = String(result.output);
+      expect(output, "remote probe exit status").toMatch(/^exit=0\n/);
+      const reportLine = output.split("\n").find(line => line.startsWith('{"ok":true,'));
+      expect(reportLine, output).toBeDefined();
+      const report = JSON.parse(reportLine!);
+      console.log("Cloudflare harness artifacts:", JSON.stringify(report));
+      if (process.env.OMA_CLOUDFLARE_HARNESS_REPORT) {
+        await writeFile(process.env.OMA_CLOUDFLARE_HARNESS_REPORT, JSON.stringify({ workerUrl, ...report }, null, 2));
+      }
+      expect(report.ok).toBe(true);
+      expect(report.steps.map((step: { name: string }) => step.name)).toEqual(["binary", "uvx", "npm-and-acp-session"]);
+    }
 
     const resumed = await invoke(workerUrl, "read");
     expect(resumed.content).toBe(`${sandboxId}:persisted`);

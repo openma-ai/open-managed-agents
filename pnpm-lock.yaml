@@ -1879,8 +1879,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime-resource-contract
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#2b76273d1207dd3ebcb885841877998a78a4e046
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: git+https://github.com/openma-ai/openma-common.git#4d9bb469d3af8ade05d020a9b65bae2bd978101d
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -6551,8 +6551,8 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046':
-    resolution: {gitHosted: true, integrity: sha512-eddInn0FKip6gplljqG6gtVRmldPtU3VsCmjUS/7HHnIaHzmwfInv0pMoa54W602EElNFg13CIaw5AxOk5r8uA==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046}
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d':
+    resolution: {gitHosted: true, integrity: sha512-1saYX3PpLTC2/RlT6QyiWf9ogu7InPnwLifh4ksh9OgJpEJaM3IoDoyBBq9TAOSHJckjGqVVi6lY5tqhelvtIw==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d}
     version: 0.5.0
     engines: {node: '>=20'}
     peerDependencies:
@@ -16352,7 +16352,7 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

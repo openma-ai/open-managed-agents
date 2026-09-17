@@ -47,7 +47,9 @@ interface CertificationEnv {
 }
 
 interface CertificationRequest {
-  action?: "create" | "read" | "renew_lease" | "checkpoint" | "restore" | "attach_proxy" | "proxy" | "revoke_proxy" | "destroy" | "verify_destroyed";
+  action?: "create" | "read" | "renew_lease" | "checkpoint" | "restore" | "attach_proxy" | "proxy" | "revoke_proxy" | "destroy" | "verify_destroyed" | "harness_artifacts";
+  source?: string;
+  codex_auth?: string;
   sandbox_id?: string;
   checkpoint?: import("@open-managed-agents/sandbox").SandboxCheckpointHandle;
 }
@@ -85,6 +87,21 @@ export default {
         await sandbox.writeFile(MARKER_PATH, marker);
         const command = await sandbox.exec(`cat ${MARKER_PATH}`);
         return Response.json({ action: body.action, marker, command });
+      }
+      if (body.action === "harness_artifacts") {
+        if (typeof body.source !== "string" || typeof body.codex_auth !== "string") {
+          return Response.json({ error: "probe_required" }, { status: 400 });
+        }
+        await sandbox.exec("mkdir -p /tmp/openma-certification-codex-home && chmod 700 /tmp/openma-certification-codex-home");
+        try {
+          await sandbox.writeFile("/tmp/openma-certification-codex-home/auth.json", body.codex_auth);
+          await sandbox.exec("chmod 600 /tmp/openma-certification-codex-home/auth.json");
+          await sandbox.writeFile("/tmp/openma-harness-probe.mjs", body.source);
+          const output = await sandbox.exec("node /tmp/openma-harness-probe.mjs", 600_000);
+          return Response.json({ action: body.action, output });
+        } finally {
+          await sandbox.exec("rm -rf /tmp/openma-certification-codex-home /tmp/openma-harness-probe.mjs");
+        }
       }
       if (body.action === "read") {
         const content = await sandbox.readFile(MARKER_PATH);

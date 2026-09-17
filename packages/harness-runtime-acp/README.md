@@ -155,3 +155,32 @@ are never replayed.
 coverage. The Node Runtime Host Docker lane additionally tests a new container
 restoring a prior native Codex Session, ACP resume, cache-usage projection,
 output publication and zero leaked containers.
+
+### Cloudflare live artifact certification
+
+With Wrangler authenticated, Docker running, and a working Codex login at
+`~/.codex/auth.json`, run from the repository root:
+
+```sh
+OMA_CLOUDFLARE_LIVE_CERTIFICATION=1 \
+OMA_CLOUDFLARE_HARNESS_CERTIFICATION=1 \
+pnpm --filter @open-managed-agents/managed-runtime-cloudflare exec vitest run \
+  test/cloudflare.live.test.ts --config vitest.config.ts
+```
+
+To use an existing image without rebuilding and pushing it, set
+`OMA_CLOUDFLARE_CERTIFICATION_IMAGE` to its fully qualified, pinned registry
+reference (the default Dockerfile currently only wraps the published sandbox base).
+
+This creates an isolated Cloudflare Worker/container, uploads the current bundled
+probe at runtime, and prepares uv 0.10.9 (binary), Ruff 0.11.0 (uvx), and
+codex-acp 1.8.0 (npm). It checks cached preparation without artifact network access,
+a real model response, and a second response after restarting the ACP process
+and resuming its native session. It also exercises the provider's persistence,
+lease, outbound proxy, revocation and destruction checks. This tests Cloudflare
+runtime → shared artifact preparation → ACP → model, not the hosted control-plane
+API or the supervisor Work protocol. The Codex credential is copied only into the
+temporary test container and removed in `finally`; the suite deletes its Worker
+and container resources. Set `OMA_CLOUDFLARE_HARNESS_REPORT` to an absolute path to
+save the non-secret result JSON. R2 checkpoint certification remains a separate
+opt-in requiring the R2 fixture credentials.
