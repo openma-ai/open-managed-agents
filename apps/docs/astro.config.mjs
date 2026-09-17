@@ -98,6 +98,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'self-host/overview' },
             { label: 'Node + Docker (no Cloudflare)', slug: 'self-host/node-docker' },
             { label: 'Deploy on Fly.io', slug: 'self-host/fly' },
+            { label: 'Deploy on Render', slug: 'self-host/render' },
             { label: 'Managed Runtime Host', slug: 'self-host/managed-runtime-host' },
             { label: 'Sandbox & persistence', slug: 'self-host/sandbox-persistence' },
             { label: 'Deploy on Cloudflare', slug: 'self-host/deploy' },

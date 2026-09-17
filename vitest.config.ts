@@ -424,6 +424,9 @@ export default defineConfig({
       "scripts/migration-compatibility.test.mjs",
       "scripts/setup-cf.test.mjs",
       "scripts/setup-fly.test.mjs",
+      "scripts/setup-docker.test.mjs",
+      "scripts/start-render.test.mjs",
+      "packages/self-host/**",
       // Credential certification orchestrates real Node child processes and
       // is run explicitly by test:certification:runner.
       "scripts/live-certification.test.mjs",
