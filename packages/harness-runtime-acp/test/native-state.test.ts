@@ -16,7 +16,7 @@ describe("OpenMA-owned ACP native session durability", () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  it.each([undefined, { id: "codex-acp", version: "1.8.0" }])("restores only the session allowlist with matching harness identity %j", async (harness) => {
+  it.each([undefined, { id: "codex-acp", version: "1.8.0" }, { id: "codex-acp", version: "1.8.0", digest: "original" }])("restores only the session allowlist with matching harness identity %j", async (harness) => {
     const workspace = await mkdtemp(join(tmpdir(), "oma-acp-native-workspace-"));
     roots.push(workspace);
     const sessionId = `session_native_${Date.now()}`;
@@ -118,6 +118,14 @@ describe("OpenMA-owned ACP native session durability", () => {
       resolveSession: async () => ({ agent: { id: "codex-acp", command: "codex-acp" } }),
     });
     await expect(changed.beforeStart(start)).rejects.toThrow(/harness version/);
+    if (harness?.digest !== undefined) {
+      const changedArtifact = createAcpNativeSessionState({
+        harness: { ...harness, digest: "different" },
+        io: createNodeAcpHarnessStateIo({ workspacePath: workspace }),
+        resolveSession: async () => ({ agent: { id: "codex-acp", command: "codex-acp" } }),
+      });
+      await expect(changedArtifact.beforeStart(start)).rejects.toThrow(/harness version/);
+    }
     if (harness !== undefined) {
       const legacy = createAcpNativeSessionState({
         io: createNodeAcpHarnessStateIo({ workspacePath: workspace }),

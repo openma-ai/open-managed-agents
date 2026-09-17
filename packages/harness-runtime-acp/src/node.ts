@@ -88,7 +88,7 @@ export interface AcpHarnessResolvedSession {
 export interface AcpNativeSessionStateOptions {
   io: NodeAcpHarnessStateIo;
   /** Exact installed harness identity; changing it requires a new Session. */
-  harness?: { id: string; version: string };
+  harness?: { id: string; version: string; digest?: string };
   resolveSession(
     command: SessionStartCommand,
   ): Promise<AcpHarnessResolvedSession>;
@@ -103,7 +103,7 @@ interface NativeStateRecord {
 
 interface NativeCheckpointV1 {
   version: 1;
-  harness?: { id: string; version: string };
+  harness?: { id: string; version: string; digest?: string };
   adapter_id: string;
   acp_session_id: string;
   last_completed_turn_id?: string;
@@ -135,6 +135,7 @@ export class AcpNativeSessionState implements ManagedHarnessSessionStatePort {
     if (checkpoint !== null && (
       checkpoint.harness?.id !== this.options.harness?.id
       || checkpoint.harness?.version !== this.options.harness?.version
+      || checkpoint.harness?.digest !== this.options.harness?.digest
     )) {
       throw new Error("Native checkpoint harness version does not match the selected harness; create a new Session");
     }

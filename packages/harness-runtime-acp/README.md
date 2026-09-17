@@ -9,31 +9,11 @@ does not claim Environment Work, acquire compute, publish workspace/output
 candidates, or implement durable storage. Those authorities remain outside the
 sandbox in `@open-managed-agents/managed-runtime-host`.
 
-## Preinstalled runner
+## Versioned harness releases
 
-Install `@open-managed-agents/harness-runtime-acp` in a Node-capable runtime
-image and use `openma-acp-supervisor` as the `openma_supervised` process. The
-runner reads the official Environment Work scope and secret from
-`ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_ID`, and
-`ANTHROPIC_WORK_SECRET`. The selected harness id is an installed ACP agent id
-(for example `codex-acp` or `pi-acp`).
-
-Applications that need a custom installed-agent resolver can compose the same
-production path through `createNodeManagedAcpSupervisorApp()` from
-`@open-managed-agents/harness-runtime-acp/node-supervisor`.
-
-## Select an installed harness version
-
-For versioned selection, bake `OPENMA_ACP_HARNESSES` into the runtime image.
-It is a JSON inventory of the **installed** executables, separate from the
-requested selection. Install each version at a stable absolute path:
-
-```dockerfile
-RUN npm install --prefix /opt/harnesses/codex-acp/1.8.0 @agentclientprotocol/codex-acp@1.8.0
-ENV OPENMA_ACP_HARNESSES='[{"id":"codex-acp","version":"1.8.0","command":"/opt/harnesses/codex-acp/1.8.0/node_modules/.bin/codex-acp"}]'
-```
-
-Select that entry in the existing Runtime Profile:
+The environment image supplies Node, npm and `openma-acp-supervisor`. Harness
+software is prepared after sandbox allocation, independently of that image.
+Select a published release in the existing Runtime Profile:
 
 ```ts
 const driver = {
@@ -41,35 +21,66 @@ const driver = {
   protocol: "openma-harness-supervisor-v1",
   supervisor: { command: "openma-acp-supervisor" },
   harness: { id: "codex-acp", version: "1.8.0" },
-  readyTimeoutMs: 30_000,
+  readyTimeoutMs: 660_000, // allow first-install time before ready
   heartbeatTimeoutMs: 30_000,
   drainTimeoutMs: 5_000,
 };
 ```
 
-The `openma-acp-work-item` entry point instead accepts the same selection as
-`OPENMA_HARNESS_ID=codex-acp` and `OPENMA_HARNESS_VERSION=1.8.0`.
-The supervisor protocol remains `openma-harness-supervisor-v1`; its protocol
-version is independent of the selected software version.
+`codex-acp` resolves to `@agentclientprotocol/codex-acp` by default. The shared
+`@openma/common/acp-artifacts` layer reads the exact npm release, verifies its
+published name/version, records its SHA-512 integrity, and installs it into a
+manifest-digest-specific directory. Only a complete, verified install becomes
+launchable. Tags/ranges, unavailable releases and failed installs never fall
+back to another version or a PATH executable. No global npm install is used.
 
-Multiple inventory entries may share an id when their versions differ. Each
-entry takes `id`, `version`, an absolute `command`, and optional string `args`.
-Selection matches both id and version exactly. Missing versions are rejected;
-there is no download, automatic upgrade or fallback to a different executable.
-An empty inventory disables all harnesses. Malformed or duplicate entries fail
-at startup. Inventory selection cannot be combined with `agentId`,
-`OPENMA_ACP_AGENT_ID` in the Work-item runner, or a custom `resolveAgent`.
+Operators can replace the package catalog with `OPENMA_ACP_PACKAGES`, for example:
 
-The inventory is an operator declaration of image contents, not binary
-attestation. Keep it tied to a pinned image and locked dependencies, including
-the underlying Codex version; changing the executable behind a declared version
-invalidates that declaration. Native Session checkpoints store the selected
-harness id and version. Resuming a checkpoint from another version (or migrating
-between legacy and versioned checkpoints) is rejected; create a new Session.
+```json
+{"codex-acp":"@agentclientprotocol/codex-acp","my-harness":"@my-org/my-harness"}
+```
 
-Without the inventory, existing `version: "1"` selections retain their legacy
-registry behavior. That value does **not** pin the installed software release.
-The Console does not currently provide a selector for this Runtime Profile lane.
+This maps identities to package names only; each selected version must actually
+exist in the published package metadata. An empty object disables all releases.
+The package must expose an ACP executable (one bin, or one named after the
+harness/package). This first release supports npm distribution on POSIX
+sandboxes; binary-archive and Python/uv distributions are not yet supported.
+Packages requiring additional launch arguments should expose an ACP wrapper.
+
+The supervisor validates Work scope and credentials before preparation. It
+persists the resolved manifest under
+`/workspace/.openma/harness-releases/<session-id>.json`, so workspace snapshots
+carry it to replacement sandboxes. Restores use that manifest without resolving
+registry metadata again; native checkpoints also bind its digest. Changing a
+Session's package, version or artifact is rejected: create a new Session.
+Artifact cache defaults to `/tmp/openma-acp-artifacts`; set
+`OPENMA_ACP_ARTIFACT_ROOT` to use another sandbox-local cache. Fully prepared
+artifacts can be reused offline. A cold sandbox needs npm/artifact network access.
+
+The digest pins the top-level package artifact. For identical transitive
+packages across independently prepared sandboxes, publish bundled dependencies
+or an npm shrinkwrap; npm otherwise resolves dependencies on first installation.
+The installed cache retains its generated lockfile.
+
+`openma-acp-work-item` uses the same path with `OPENMA_HARNESS_ID=codex-acp`
+and `OPENMA_HARNESS_VERSION=1.8.0`. The supervisor protocol version is independent
+of the harness release. The runner reads `ANTHROPIC_ENVIRONMENT_ID`,
+`ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_ID`, and `ANTHROPIC_WORK_SECRET` from
+its outer worker. Package subprocesses do not inherit these credentials.
+
+## Existing preinstalled integrations
+
+Existing operators may retain `OPENMA_ACP_HARNESSES`, a JSON inventory of
+`{ id, version, command, args? }` with absolute executable paths. This mode
+selects only installed entries; it cannot be combined with `OPENMA_ACP_PACKAGES`
+or custom agent overrides. It is an operator declaration, not artifact
+verification. Without an explicit catalog, legacy `version: "1"` still resolves
+preinstalled agents; it does not pin their software version. New integrations
+should select a published release as above.
+
+Custom integrations may compose `createNodeManagedAcpSupervisorApp()` from
+`@open-managed-agents/harness-runtime-acp/node-supervisor`. The Console does not
+yet provide a selector for this Runtime Profile lane.
 
 ## Ownership boundary
 

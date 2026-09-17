@@ -1,4 +1,7 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -359,6 +362,65 @@ describe("preinstalled Node managed ACP supervisor", () => {
       checkpoint: async () => {},
       signal: new AbortController().signal,
     })).rejects.toThrow("does not match the claimed Work scope");
+  });
+
+  it("prepares a published release and restores its pinned artifact in a replacement sandbox", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openma-published-harness-")); roots.push(root);
+    await mkdir(join(root, "package"));
+    await writeFile(join(root, "package/package.json"), JSON.stringify({
+      name: "@test/harness", version: "1.8.0", bin: { "codex-acp": "cli.cjs" },
+    }));
+    await writeFile(join(root, "package/cli.cjs"), '#!/usr/bin/env node\nconsole.log("1.8.0")\n', { mode: 0o755 });
+    await promisify(execFile)("tar", ["-czf", join(root, "release.tgz"), "-C", root, "package"]);
+    const archive = await readFile(join(root, "release.tgz"));
+    const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
+    let registryAvailable = true;
+    const artifactFetch: typeof fetch = async input => {
+      if (String(input) === "https://registry.npmjs.org/harness.tgz") return new Response(archive);
+      if (!registryAvailable) throw new Error("registry metadata unavailable");
+      return json({ name: "@test/harness", version: "1.8.0", bin: { "codex-acp": "cli.cjs" },
+        dist: { tarball: "https://registry.npmjs.org/harness.tgz", integrity } });
+    };
+    const selection = { id: "codex-acp", version: "1.8.0" };
+    const checkpoints: unknown[] = [];
+    const io = createNodeAcpHarnessStateIo({ workspacePath: root });
+    for (const sandbox of ["first", "replacement"]) {
+      const seen: SessionOptions[] = [];
+      const app = createNodeManagedAcpSupervisorApp({
+        environment: { ...claimedEnvironment, OPENMA_ACP_PACKAGES: '{"codex-acp":"@test/harness"}' },
+        workspacePath: root, fetch: productionFetch({}), acpRuntime: fakeAcpRuntime(seen),
+        artifacts: { root: join(root, sandbox), fetch: artifactFetch },
+        stateIo: { ...io, async writeFile(path, content) {
+          await io.writeFile(path, content);
+          if (path.endsWith("acp-session.json")) checkpoints.push(JSON.parse(content));
+        } },
+      });
+      const harness = await app.resolveHarness(selection);
+      expect(harness).not.toBeNull();
+      const run = await harness!.start({ scope, harness: selection, workspacePath: "/workspace", outputPath: null,
+        checkpoint: async () => {}, signal: new AbortController().signal });
+      await expect(run.completed).resolves.toEqual({ exitCode: 0 }); await run.drain();
+      expect((await promisify(execFile)(seen[0].agent.command, [])).stdout.trim()).toBe("1.8.0");
+      registryAvailable = false;
+    }
+    const changed = createNodeManagedAcpSupervisorApp({
+      environment: { ...claimedEnvironment, OPENMA_ACP_PACKAGES: '{"codex-acp":"@test/harness"}' },
+      workspacePath: root, fetch: productionFetch({}),
+      artifacts: { root: join(root, "replacement"), fetch: artifactFetch },
+    });
+    const changedSelection = { ...selection, version: "1.9.0" };
+    const changedHarness = await changed.resolveHarness(changedSelection);
+    await expect(changedHarness!.start({ scope, harness: changedSelection, workspacePath: "/workspace", outputPath: null,
+      checkpoint: async () => {}, signal: new AbortController().signal })).rejects.toThrow(/create a new Session/);
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[0]).toMatchObject({ harness: { ...selection, digest: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+    expect(checkpoints[1]).toMatchObject({ harness: (checkpoints[0] as { harness: unknown }).harness });
+  }, 30_000);
+
+  it("rejects invalid package catalogs instead of starting legacy agents", () => {
+    for (const catalog of ['[]', '{"codex-acp":"https://evil.test/a.tgz"}', '{"../bad":"foo"}']) {
+      expect(() => createNodeManagedAcpSupervisorApp({ environment: { OPENMA_ACP_PACKAGES: catalog } })).toThrow(/OPENMA_ACP_PACKAGES/);
+    }
   });
 
   it("rejects undeclared versions in the legacy registry", async () => {
