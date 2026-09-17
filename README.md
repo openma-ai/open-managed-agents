@@ -16,7 +16,7 @@
 
 **Open-source, self-hosted alternative to Claude Managed Agents and OpenAI Agents API.**
 
-🌐 **[openma.dev](https://openma.dev)** · 📖 **[docs.openma.dev](https://docs.openma.dev)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
+🌐 **[openma.ai](https://openma.ai)** · 📖 **[docs.openma.ai](https://docs.openma.ai)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
 
 OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with either host's `/openai/v1` endpoint. Bring your own model keys and deploy on your own infrastructure.
 
