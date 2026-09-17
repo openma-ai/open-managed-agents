@@ -1879,8 +1879,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime-resource-contract
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#c9c1de8508d176bb27ced1414afc20a2d0c7b51e
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c9c1de8508d176bb27ced1414afc20a2d0c7b51e(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: git+https://github.com/openma-ai/openma-common.git#2b76273d1207dd3ebcb885841877998a78a4e046
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -6422,6 +6422,10 @@ packages:
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
     engines: {node: '>=12'}
 
+  '@isaacs/fs-minipass@4.0.1':
+    resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
+    engines: {node: '>=18.0.0'}
+
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
 
@@ -6547,8 +6551,8 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/c9c1de8508d176bb27ced1414afc20a2d0c7b51e':
-    resolution: {gitHosted: true, integrity: sha512-wkb7WJS23Is93Mlr84xDkWQpfFsMlJyVA+67VRHhD5fOtd7MGcnU5SbVnNstFHIwZydG913Ec4bjTYehjBIXCA==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/c9c1de8508d176bb27ced1414afc20a2d0c7b51e}
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046':
+    resolution: {gitHosted: true, integrity: sha512-eddInn0FKip6gplljqG6gtVRmldPtU3VsCmjUS/7HHnIaHzmwfInv0pMoa54W602EElNFg13CIaw5AxOk5r8uA==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046}
     version: 0.5.0
     engines: {node: '>=20'}
     peerDependencies:
@@ -9575,6 +9579,10 @@ packages:
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
 
+  chownr@3.0.0:
+    resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
+    engines: {node: '>=18'}
+
   ci-info@4.4.0:
     resolution: {integrity: sha512-77PSwercCZU2Fc4sX94eF8k8Pxte6JAwL4/ICZLFjJLqegs7kCuAsqqj/70NQF6TvDpgFjkubQB2FW2ZZddvQg==}
     engines: {node: '>=8'}
@@ -10528,6 +10536,9 @@ packages:
 
   fflate@0.8.2:
     resolution: {integrity: sha512-cPJU47OaAoCbg0pBvzsgpTPhmhqI5eJjh/JIu8tPj5q+T7iLvW/JAYUqmE7KOB4R1ZyEhzBaIQpQpardBF5z8A==}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   figures@6.1.0:
     resolution: {integrity: sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg==}
@@ -11717,6 +11728,10 @@ packages:
   minipass@7.1.3:
     resolution: {integrity: sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==}
     engines: {node: '>=16 || 14 >=14.17'}
+
+  minizlib@3.1.0:
+    resolution: {integrity: sha512-KZxYo1BUkWD2TVFLr0MQoM8vUUigWD3LlD83a/75BqC+4qE0Hb1Vo5v1FgcfaNXvfXzr+5EhQ6ing/CaBijTlw==}
+    engines: {node: '>= 18'}
 
   mkdirp-classic@0.5.3:
     resolution: {integrity: sha512-gKLcREMhtuZRwRAfqP3RFW+TK4JqApVBtOIftVgjuABpAtpxhPGaDcfvbhNvD0B8iD1oUr/txX35NjcaY6Ns/A==}
@@ -13037,6 +13052,10 @@ packages:
   tar-stream@3.2.1:
     resolution: {integrity: sha512-nqsEO8zLZJvrOMdEwkA0QdCLFbetHMn95Zqu4fKwX+hkaTWJPZZOrxx/PwtxoK0MMGQmBQNRW3CPs8IFYQz4cQ==}
 
+  tar@7.5.22:
+    resolution: {integrity: sha512-MFO/QzvtAOmJbkhOaCTvbGcFN9L9b+JunIsDwaKljSOdcLMea3NJ1k9Usz/rjdfSXTq4dfzfeS7W4p4YOAAHeA==}
+    engines: {node: '>=18'}
+
   tdigest@0.1.2:
     resolution: {integrity: sha512-+G0LLgjjo9BZX2MfdvPfH+MKLCrxlXSYec5DaPYP1fe6Iyhf0/fSmJ0bFiZ1F8BT6cGXl2LpltQptzjXKWEkKA==}
 
@@ -13845,6 +13864,10 @@ packages:
 
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
+
+  yallist@5.0.0:
+    resolution: {integrity: sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw==}
+    engines: {node: '>=18'}
 
   yaml-language-server@1.20.0:
     resolution: {integrity: sha512-qhjK/bzSRZ6HtTvgeFvjNPJGWdZ0+x5NREV/9XZWFjIGezew2b4r5JPy66IfOhd5OA7KeFwk1JfmEbnTvev0cA==}
@@ -16097,6 +16120,10 @@ snapshots:
       wrap-ansi: 8.1.0
       wrap-ansi-cjs: wrap-ansi@7.0.0
 
+  '@isaacs/fs-minipass@4.0.1':
+    dependencies:
+      minipass: 7.1.3
+
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
@@ -16325,15 +16352,17 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/c9c1de8508d176bb27ced1414afc20a2d0c7b51e(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/2b76273d1207dd3ebcb885841877998a78a4e046(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       clsx: 2.1.1
+      fflate: 0.8.3
       lucide-react: 1.35.0(react@19.2.8)
       streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       streaming-markdown: 0.2.15
       tailwind-merge: 3.6.0
+      tar: 7.5.22
       use-stick-to-bottom: 1.1.4(react@19.2.8)
     optionalDependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
@@ -19881,6 +19910,8 @@ snapshots:
 
   chownr@1.1.4: {}
 
+  chownr@3.0.0: {}
+
   ci-info@4.4.0: {}
 
   cjs-module-lexer@1.2.3: {}
@@ -20895,6 +20926,8 @@ snapshots:
       web-streams-polyfill: 3.3.3
 
   fflate@0.8.2: {}
+
+  fflate@0.8.3: {}
 
   figures@6.1.0:
     dependencies:
@@ -22462,6 +22495,10 @@ snapshots:
   minimist@1.2.8: {}
 
   minipass@7.1.3: {}
+
+  minizlib@3.1.0:
+    dependencies:
+      minipass: 7.1.3
 
   mkdirp-classic@0.5.3: {}
 
@@ -24167,6 +24204,14 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
+  tar@7.5.22:
+    dependencies:
+      '@isaacs/fs-minipass': 4.0.1
+      chownr: 3.0.0
+      minipass: 7.1.3
+      minizlib: 3.1.0
+      yallist: 5.0.0
+
   tdigest@0.1.2:
     dependencies:
       bintrees: 1.0.2
@@ -24873,6 +24918,8 @@ snapshots:
   y18n@5.0.8: {}
 
   yallist@3.1.1: {}
+
+  yallist@5.0.0: {}
 
   yaml-language-server@1.20.0:
     dependencies:

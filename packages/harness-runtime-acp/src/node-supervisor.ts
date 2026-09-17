@@ -1,4 +1,7 @@
-import { resolveNpmAcpRelease, prepareNpmAcpRelease, validateNpmAcpRelease, type NpmAcpRelease } from "@openma/common/acp-artifacts";
+import {
+  resolveAcpRelease, prepareAcpRelease, validateAcpRelease, acpReleaseMatchesSource,
+  parseAcpReleaseSource, isPinnedAcpVersion, type AcpRelease, type AcpReleaseSource,
+} from "@openma/common/acp-artifacts";
 import type { AcpRuntime } from "@open-managed-agents/acp-runtime";
 import { posix } from "node:path";
 import { unzipSync } from "fflate";
@@ -88,7 +91,7 @@ export interface NodeManagedAcpSupervisorAppOptions {
   heartbeatIntervalMs?: number;
   fetch?: typeof globalThis.fetch;
   acpRuntime?: AcpRuntime;
-  /** Versioned npm release cache, independent of the environment image. */
+  /** Versioned release cache, independent of the environment image. */
   artifacts?: { root?: string; fetch?: typeof globalThis.fetch };
   stateIo?: NodeAcpHarnessStateIo;
   /** Fixed installed Agent selection for a generic `acp@1` harness. */
@@ -140,10 +143,15 @@ export function createNodeManagedAcpSupervisorApp(
   if (installedHarnesses !== null && (options.agentId !== undefined || options.resolveAgent !== undefined)) {
     throw new TypeError("OPENMA_ACP_HARNESSES cannot be combined with agentId or resolveAgent");
   }
-  const packages = parseHarnessPackages(environment.OPENMA_ACP_PACKAGES);
-  if (environment.OPENMA_ACP_PACKAGES !== undefined && (
+  if (environment.OPENMA_ACP_SOURCES !== undefined && environment.OPENMA_ACP_PACKAGES !== undefined) {
+    throw new TypeError("OPENMA_ACP_SOURCES and OPENMA_ACP_PACKAGES cannot be combined");
+  }
+  const sourceVariable = environment.OPENMA_ACP_SOURCES !== undefined ? "OPENMA_ACP_SOURCES" : "OPENMA_ACP_PACKAGES";
+  const explicitSources = environment[sourceVariable] !== undefined;
+  const sources = parseHarnessSources(environment[sourceVariable], sourceVariable);
+  if (explicitSources && (
     installedHarnesses !== null || options.agentId !== undefined || options.resolveAgent !== undefined
-  )) throw new TypeError("OPENMA_ACP_PACKAGES cannot be combined with installed harness or agent overrides");
+  )) throw new TypeError(`${sourceVariable} cannot be combined with installed harness or agent overrides`);
   const workspacePath = options.workspacePath ?? "/workspace";
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 5_000;
   const stateIo = options.stateIo ?? createNodeAcpHarnessStateIo({ workspacePath });
@@ -157,13 +165,14 @@ export function createNodeManagedAcpSupervisorApp(
   ): Promise<HarnessSupervisorHarness | null> => {
     const installed = installedHarnesses?.find((entry) =>
       entry.id === harness.id && entry.version === harness.version);
-    const packageName = installedHarnesses === null && options.agentId === undefined && options.resolveAgent === undefined
-      && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(harness.version)
-      && Object.hasOwn(packages, harness.id) ? packages[harness.id] : undefined;
-    if (installedHarnesses !== null ? installed === undefined : packageName === undefined && harness.version !== "1") return null;
-    if (environment.OPENMA_ACP_PACKAGES !== undefined && packageName === undefined) return null;
+    const publishedVersion = isPinnedAcpVersion(harness.version) && (explicitSources || harness.version.includes("."));
+    const source = installedHarnesses === null && options.agentId === undefined && options.resolveAgent === undefined && publishedVersion
+      ? (Object.hasOwn(sources, harness.id) ? sources[harness.id] : explicitSources ? undefined : { type: "registry" as const })
+      : undefined;
+    if (installedHarnesses !== null ? installed === undefined : source === undefined && harness.version !== "1") return null;
+    if (explicitSources && source === undefined) return null;
     const identity: { id: string; version: string; digest?: string } | undefined =
-      installed !== undefined || packageName !== undefined ? { ...harness } : undefined;
+      installed !== undefined || source !== undefined ? { ...harness } : undefined;
     let prepared: AcpStatefulAgentSpec | undefined;
     // `connect` establishes the transport context before the control channel
     // can emit session.start; onSessionLoaded establishes the Session snapshot
@@ -247,29 +256,29 @@ export function createNodeManagedAcpSupervisorApp(
         if (proxy === null) {
           throw new Error("A valid scoped ANTHROPIC_WORK_SECRET is required");
         }
-        if (packageName !== undefined) {
+        if (source !== undefined) {
           const releasePath = `/workspace/.openma/harness-releases/${encodeURIComponent(input.scope.sessionId)}.json`;
-          let release: NpmAcpRelease;
+          let release: AcpRelease;
           let saved: string | undefined;
           try { saved = await stateIo.readFile(releasePath); }
           catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
           if (saved !== undefined) {
-            release = validateNpmAcpRelease(JSON.parse(saved));
-            if (release.id !== harness.id || release.version !== harness.version || release.package !== packageName) {
+            release = validateAcpRelease(JSON.parse(saved));
+            if (release.id !== harness.id || release.version !== harness.version || !acpReleaseMatchesSource(release, source)) {
               throw new Error("Session harness release does not match the selection; create a new Session");
             }
           } else {
-            release = await resolveNpmAcpRelease({ ...harness, package: packageName }, {
+            release = await resolveAcpRelease(harness, source, {
               fetch: options.artifacts?.fetch, signal: input.signal,
             });
             await stateIo.writeFile(releasePath, `${JSON.stringify(release)}\n`);
           }
-          const artifact = await prepareNpmAcpRelease(release, {
+          const artifact = await prepareAcpRelease(release, {
             root: options.artifacts?.root ?? environment.OPENMA_ACP_ARTIFACT_ROOT ?? "/tmp/openma-acp-artifacts",
             fetch: options.artifacts?.fetch, signal: input.signal,
           });
           identity!.digest = release.digest;
-          prepared = { id: harness.id, command: artifact.command };
+          prepared = { id: harness.id, command: artifact.command, args: artifact.args, env: artifact.env };
         }
         const history = createManagedHarnessHttpRecoveryHistory({
           apiBaseUrl: proxy.gatewayBaseUrl,
@@ -467,16 +476,21 @@ function skillArray(value: unknown): ManagedAcpSkillSnapshot[] {
   });
 }
 
-/** Operator-owned package names; versions come from published package metadata. */
-function parseHarnessPackages(raw: string | undefined): Record<string, string> {
-  if (raw === undefined) return { "codex-acp": "@agentclientprotocol/codex-acp" };
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new TypeError("OPENMA_ACP_PACKAGES must be a JSON object"); }
-  if (!isRecord(value) || Object.entries(value).some(([id, pkg]) =>
-    !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id) || typeof pkg !== "string"
-    || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/.test(pkg)
-  )) throw new TypeError("OPENMA_ACP_PACKAGES must map harness ids to npm package names");
-  return Object.assign(Object.create(null) as Record<string, string>, value);
+/** Optional operator allowlist; absent catalogs also accept official Registry ids. */
+function parseHarnessSources(raw: string | undefined, variable: string): Record<string, AcpReleaseSource> {
+  if (raw === undefined) return { "codex-acp": { type: "npm", package: "@agentclientprotocol/codex-acp" } };
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value)) throw new Error("must be a JSON object");
+    const result = Object.create(null) as Record<string, AcpReleaseSource>;
+    for (const [id, source] of Object.entries(value)) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new Error("invalid harness id");
+      result[id] = parseAcpReleaseSource(source);
+    }
+    return result;
+  } catch (error) {
+    throw new TypeError(`${variable}: ${error instanceof Error ? error.message : "invalid release sources"}`);
+  }
 }
 
 interface InstalledAcpHarness {

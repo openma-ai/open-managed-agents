@@ -27,52 +27,69 @@ const driver = {
 };
 ```
 
-`codex-acp` resolves to `@agentclientprotocol/codex-acp` by default. The shared
-`@openma/common/acp-artifacts` layer reads the exact npm release, verifies its
-published name/version, records its SHA-512 integrity, and installs it into a
-manifest-digest-specific directory. Only a complete, verified install becomes
-launchable. Tags/ranges, unavailable releases and failed installs never fall
-back to another version or a PATH executable. No global npm install is used.
+`codex-acp` resolves to `@agentclientprotocol/codex-acp` by default. Other
+published selections resolve through the official ACP Registry, including its
+history for older versions. The shared `@openma/common/acp-artifacts` layer
+selects a compatible binary, npx or uvx distribution and verifies its release
+identity and artifact integrity before making it launchable. There is no
+fallback to another version or a PATH executable when preparation fails.
 
-Operators can replace the package catalog with `OPENMA_ACP_PACKAGES`, for example:
+Operators can replace the default registry/catalog with `OPENMA_ACP_SOURCES`:
 
 ```json
-{"codex-acp":"@agentclientprotocol/codex-acp","my-harness":"@my-org/my-harness"}
+{
+  "codex-acp": { "type": "npm", "package": "@agentclientprotocol/codex-acp" },
+  "python-agent": { "type": "uvx", "package": "python-agent", "command": "agent", "python": "3.12" },
+  "goose": { "type": "registry" },
+  "custom": { "type": "registry", "manifestUrl": "https://releases.example/{version}/agent.json" }
+}
 ```
 
-This maps identities to package names only; each selected version must actually
-exist in the published package metadata. An empty object disables all releases.
-The package must expose an ACP executable (one bin, or one named after the
-harness/package). This first release supports npm distribution on POSIX
-sandboxes; binary-archive and Python/uv distributions are not yet supported.
-Packages requiring additional launch arguments should expose an ACP wrapper.
+The explicit catalog is an allowlist; `{}` disables all published releases.
+`OPENMA_ACP_PACKAGES` remains an alias for existing npm package-string catalogs,
+and cannot be combined with `OPENMA_ACP_SOURCES`. Release versions belong to
+the published metadata, not the catalog. Registry sources optionally specify
+`preference: ["uvx", "npx", "binary"]`; the default is binary → npx → uvx.
+Registry arguments and environment are preserved, with Work credentials scrubbed
+before the ACP child starts. Custom manifest URLs accept `{id}` and `{version}`
+placeholders and must return an ACP manifest with the matching identity.
+
+Binary preparation supports raw executables, zip, tar, tar.gz/tgz, tar.bz2/tbz2,
+and tar.xz/txz. It validates paths and checksums before publishing an executable.
+If an old Registry entry omits its checksum, the first HTTPS download's content
+hash is pinned in the Session record. uvx uses an isolated, relocatable virtual
+environment with the selected PyPI release's hashes. Both console entry points
+and wheel-packaged executables are supported.
 
 The supervisor validates Work scope and credentials before preparation. It
 persists the resolved manifest under
 `/workspace/.openma/harness-releases/<session-id>.json`, so workspace snapshots
 carry it to replacement sandboxes. Restores use that manifest without resolving
 registry metadata again; native checkpoints also bind its digest. Changing a
-Session's package, version or artifact is rejected: create a new Session.
+Session's source, version or artifact is rejected: create a new Session.
 Artifact cache defaults to `/tmp/openma-acp-artifacts`; set
-`OPENMA_ACP_ARTIFACT_ROOT` to use another sandbox-local cache. Fully prepared
-artifacts can be reused offline. A cold sandbox needs npm/artifact network access.
+`OPENMA_ACP_ARTIFACT_ROOT` to use another sandbox-local cache. It is partitioned
+by platform and language runtime, and fully prepared artifacts work offline.
 
-The digest pins the top-level package artifact. For identical transitive
-packages across independently prepared sandboxes, publish bundled dependencies
-or an npm shrinkwrap; npm otherwise resolves dependencies on first installation.
-The installed cache retains its generated lockfile.
+The environment needs npm for npm sources; uv and a compatible Python interpreter
+for uvx; and bzip2/xz for those binary formats. Provision Python with
+`uv python install` if needed. A cold sandbox needs registry/artifact network
+access, and first preparation must fit within `readyTimeoutMs`. OS libraries
+remain part of the environment. These preparation paths target POSIX sandboxes.
+The digest pins the top-level artifact; identical transitive dependency trees
+across independently prepared sandboxes need bundled or locked releases.
 
 `openma-acp-work-item` uses the same path with `OPENMA_HARNESS_ID=codex-acp`
 and `OPENMA_HARNESS_VERSION=1.8.0`. The supervisor protocol version is independent
 of the harness release. The runner reads `ANTHROPIC_ENVIRONMENT_ID`,
 `ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_ID`, and `ANTHROPIC_WORK_SECRET` from
-its outer worker. Package subprocesses do not inherit these credentials.
+its outer worker. Installer subprocesses do not inherit these credentials.
 
 ## Existing preinstalled integrations
 
 Existing operators may retain `OPENMA_ACP_HARNESSES`, a JSON inventory of
 `{ id, version, command, args? }` with absolute executable paths. This mode
-selects only installed entries; it cannot be combined with `OPENMA_ACP_PACKAGES`
+selects only installed entries; it cannot be combined with `OPENMA_ACP_SOURCES`, `OPENMA_ACP_PACKAGES`
 or custom agent overrides. It is an operator declaration, not artifact
 verification. Without an explicit catalog, legacy `version: "1"` still resolves
 preinstalled agents; it does not pin their software version. New integrations
