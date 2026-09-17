@@ -1,3 +1,4 @@
+import { startKeepAwake } from "../lib/keep-awake.js";
 /**
  * `oma bridge daemon` — long-running reverse-WS to the control plane.
  *
@@ -164,6 +165,7 @@ export async function runDaemon(): Promise<void> {
   process.on("SIGTERM", onTerminate);
   process.on("SIGINT", onInterrupt);
   process.on("SIGHUP", onRefresh);
+  const stopKeepAwake = startKeepAwake({ warn: (message) => log.warn(message) });
   const pidPath = join(paths().configDir, "daemon.pid");
   try {
     try {
@@ -175,6 +177,7 @@ export async function runDaemon(): Promise<void> {
     host.start();
     await stopped;
   } finally {
+    stopKeepAwake();
     process.off("SIGTERM", onTerminate);
     process.off("SIGINT", onInterrupt);
     process.off("SIGHUP", onRefresh);

@@ -35,6 +35,23 @@ oma api                              # HTTP API quick reference
 
 Run `oma --help` for the full command tree.
 
+## Local daemon power management
+
+`oma bridge daemon` automatically keeps the machine available for local tasks
+while it is running, including while idle and during graceful shutdown. The
+screen can still turn off. No extra switch is required.
+
+The adapter uses macOS `caffeinate`, Linux `systemd-inhibit`, or the Windows
+power-management API through PowerShell. It releases the sleep assertion when
+the daemon exits. If the OS denies the request or the helper is missing, the
+daemon logs a warning and retries every 30 seconds. Linux requires logind and
+permission to acquire an inhibitor; explicit sleep and OS policy may override
+power requests.
+
+Service-mode process recovery continues to use launchd KeepAlive on macOS and
+systemd Restart=always on Linux. Windows currently installs a logon task, not a
+crash-restart policy. Foreground execution has no external process supervisor.
+
 ## License
 
 MIT
