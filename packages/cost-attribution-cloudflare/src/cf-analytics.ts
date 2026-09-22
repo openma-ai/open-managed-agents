@@ -183,32 +183,34 @@ async function queryWorkers(acct: string, token: string, period: CostPeriod, pri
 async function queryDurableObjects(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const [inv, periodic, storage, sql] = await Promise.all([
-    gql<{ durableObjectsInvocationsAdaptiveGroups: Array<{ sum: { requests: number }; dimensions: { objectName: string } }> }>(
-      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsInvocationsAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { requests } dimensions { objectName } } } } }`, fetcher),
-    gql<{ durableObjectsPeriodicGroups: Array<{ sum: { cpuTime: number }; max: { wallTime: number; activeTime: number } }> }>(
-      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsPeriodicGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { cpuTime } max { wallTime activeTime } } } } }`, fetcher),
+    gql<{ durableObjectsInvocationsAdaptiveGroups: Array<{ sum: { requests: number } }> }>(
+      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsInvocationsAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { requests } } } } }`, fetcher),
+    gql<{ durableObjectsPeriodicGroups: Array<{ sum: { duration: number; rowsRead: number; rowsWritten: number } }> }>(
+      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsPeriodicGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { duration rowsRead rowsWritten } } } } }`, fetcher),
     gql<{ durableObjectsStorageGroups: Array<{ max: { storedBytes: number } }> }>(
       acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsStorageGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { max { storedBytes } } } } }`, fetcher),
-    gql<{ durableObjectsSqlStorageGroups: Array<{ sum: { rowsRead: number; rowsWritten: number }; max: { databaseSizeBytes: number } }> }>(
-      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsSqlStorageGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { rowsRead rowsWritten } max { databaseSizeBytes } } } } }`, fetcher),
+    gql<{ durableObjectsSqlStorageGroups: Array<{ max: { storedBytes: number } }> }>(
+      acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsSqlStorageGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { max { storedBytes } } } } }`, fetcher),
   ]);
 
   const requests = inv?.durableObjectsInvocationsAdaptiveGroups?.reduce((s, r) => s + r.sum.requests, 0) ?? 0;
-  const sqlReads = sql?.durableObjectsSqlStorageGroups?.reduce((s, r) => s + r.sum.rowsRead, 0) ?? 0;
-  const sqlWrites = sql?.durableObjectsSqlStorageGroups?.reduce((s, r) => s + r.sum.rowsWritten, 0) ?? 0;
+  const durationGBSeconds = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.duration, 0) ?? 0;
+  const sqlReads = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.rowsRead, 0) ?? 0;
+  const sqlWrites = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.rowsWritten, 0) ?? 0;
   const storageBytes = Math.max(...(storage?.durableObjectsStorageGroups?.map(r => r.max.storedBytes) ?? [0]), 0);
-  const sqlSizeBytes = Math.max(...(sql?.durableObjectsSqlStorageGroups?.map(r => r.max.databaseSizeBytes) ?? [0]), 0);
+  const sqlSizeBytes = Math.max(...(sql?.durableObjectsSqlStorageGroups?.map(r => r.max.storedBytes) ?? [0]), 0);
   const storedGB = (storageBytes + sqlSizeBytes) / (1024 ** 3);
 
   const cost =
     overageCostPerM(requests, INCLUDED.durable_objects.requests, pricing.durable_objects.requests) +
+    overageCostPerM(durationGBSeconds, INCLUDED.durable_objects.duration_gb_s, pricing.durable_objects.duration_gb_s) +
     overageCostPerM(sqlReads, INCLUDED.durable_objects.sql_read, pricing.durable_objects.sql_read) +
     overageCostPerM(sqlWrites, INCLUDED.durable_objects.sql_write, pricing.durable_objects.sql_write) +
     Math.max(0, storedGB - INCLUDED.durable_objects.storage_gb) * pricing.durable_objects.storage_gb;
 
   return {
-    usage: { requests, sql_reads: sqlReads, sql_writes: sqlWrites, storage_gb: +storedGB.toFixed(4) },
-    included: { requests: INCLUDED.durable_objects.requests, sql_reads: INCLUDED.durable_objects.sql_read, sql_writes: INCLUDED.durable_objects.sql_write, storage_gb: INCLUDED.durable_objects.storage_gb },
+    usage: { requests, duration_gb_seconds: durationGBSeconds, sql_reads: sqlReads, sql_writes: sqlWrites, storage_gb: +storedGB.toFixed(4) },
+    included: { requests: INCLUDED.durable_objects.requests, duration_gb_seconds: INCLUDED.durable_objects.duration_gb_s, sql_reads: INCLUDED.durable_objects.sql_read, sql_writes: INCLUDED.durable_objects.sql_write, storage_gb: INCLUDED.durable_objects.storage_gb },
     cost,
   };
 }
@@ -295,14 +297,14 @@ async function queryD1(acct: string, token: string, period: CostPeriod, pricing:
 async function queryAI(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const data = await gql<{
-    aiInferenceAdaptiveGroups: Array<{ sum: { neurons: number }; dimensions: { modelName: string } }>;
-  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { aiInferenceAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { neurons } dimensions { modelName } } } } }`, fetcher);
+    aiInferenceAdaptiveGroups: Array<{ sum: { totalNeurons: number }; dimensions: { modelId: string } }>;
+  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { aiInferenceAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { totalNeurons } dimensions { modelId } } } } }`, fetcher);
 
   const rows = data?.aiInferenceAdaptiveGroups ?? [];
-  const neurons = rows.reduce((s, r) => s + r.sum.neurons, 0);
+  const neurons = rows.reduce((s, r) => s + r.sum.totalNeurons, 0);
 
   const byModel = new Map<string, number>();
-  for (const r of rows) byModel.set(r.dimensions.modelName, (byModel.get(r.dimensions.modelName) ?? 0) + r.sum.neurons);
+  for (const r of rows) byModel.set(r.dimensions.modelId, (byModel.get(r.dimensions.modelId) ?? 0) + r.sum.totalNeurons);
 
   return {
     usage: { neurons },
@@ -315,12 +317,12 @@ async function queryAI(acct: string, token: string, period: CostPeriod, pricing:
 async function queryBrowserRendering(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const data = await gql<{
-    browserRenderingApiAdaptiveGroups: Array<{ sum: { requests: number; durationMs: number } }>;
-  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { browserRenderingApiAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { requests durationMs } } } } }`, fetcher);
+    browserRenderingApiAdaptiveGroups: Array<{ count: number }>;
+    browserRenderingBrowserTimeUsageAdaptiveGroups: Array<{ sum: { totalSessionDurationMs: number } }>;
+  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { browserRenderingApiAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { count } browserRenderingBrowserTimeUsageAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { totalSessionDurationMs } } } } }`, fetcher);
 
-  const rows = data?.browserRenderingApiAdaptiveGroups ?? [];
-  const requests = rows.reduce((s, r) => s + r.sum.requests, 0);
-  const hours = rows.reduce((s, r) => s + r.sum.durationMs, 0) / 3_600_000;
+  const requests = data?.browserRenderingApiAdaptiveGroups?.reduce((s, r) => s + r.count, 0) ?? 0;
+  const hours = (data?.browserRenderingBrowserTimeUsageAdaptiveGroups?.reduce((s, r) => s + r.sum.totalSessionDurationMs, 0) ?? 0) / 3_600_000;
 
   return {
     usage: { requests, hours: +hours.toFixed(2) },
@@ -332,12 +334,12 @@ async function queryBrowserRendering(acct: string, token: string, period: CostPe
 async function queryContainers(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const data = await gql<{
-    containersMetricsAdaptiveGroups: Array<{ sum: { cpuTimeUs: number; memoryGiBSeconds: number; diskGBSeconds: number } }>;
-  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { containersMetricsAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { cpuTimeUs memoryGiBSeconds diskGBSeconds } } } } }`, fetcher);
+    containersMetricsAdaptiveGroups: Array<{ sum: { allocatedCpu: number; allocatedMemory: number } }>;
+  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { containersMetricsAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { allocatedCpu allocatedMemory } } } } }`, fetcher);
 
   const rows = data?.containersMetricsAdaptiveGroups ?? [];
-  const cpuS = rows.reduce((s, r) => s + r.sum.cpuTimeUs, 0) / 1_000_000;
-  const memGiBs = rows.reduce((s, r) => s + r.sum.memoryGiBSeconds, 0);
+  const cpuS = rows.reduce((s, r) => s + r.sum.allocatedCpu, 0);
+  const memGiBs = rows.reduce((s, r) => s + r.sum.allocatedMemory, 0) / (1024 ** 3);
 
   const inclCpuS = INCLUDED.containers.cpu_vcpu_min * 60;
   const inclMemS = INCLUDED.containers.mem_gib_h * 3600;
