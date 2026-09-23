@@ -212,10 +212,14 @@ export class NodeSessionRouter implements SessionRouter {
     // Replay history > lastEventId before subscribing — gated by `replay`
     // OR `lastEventId` (Last-Event-ID = SSE-native resume contract: client
     // sent it, they want history > N regardless of opt-in flag).
+    let afterSeq: number | undefined;
     if (opts.replay || opts.lastEventId !== undefined) {
       const log = this.deps.newEventLog(sessionId);
       const history = await log.getEventsAsync(opts.lastEventId ?? undefined);
+      afterSeq = opts.lastEventId ?? 0;
       for (const ev of history) {
+        const seq = (ev as { seq?: number }).seq;
+        if (typeof seq === "number" && seq > afterSeq) afterSeq = seq;
         const tid =
           (ev as { session_thread_id?: string }).session_thread_id ??
           "sthr_primary";
@@ -243,7 +247,11 @@ export class NodeSessionRouter implements SessionRouter {
         }
       },
     };
-    const detach = this.deps.hub.attach(sessionId, writer);
+    const detach = this.deps.hub.attach(
+      sessionId,
+      writer,
+      afterSeq === undefined ? {} : { afterSeq },
+    );
 
     return {
       [Symbol.asyncIterator]() {

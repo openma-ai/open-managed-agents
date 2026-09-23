@@ -152,11 +152,31 @@ auth code do not branch on MySQL.
 
 MySQL schema bootstrap is idempotent for the same canonical snapshot and
 fails closed if a newer application snapshot needs an explicit migration; it
-never marks an un-applied schema upgrade as successful. The current
-in-process realtime hub means a MySQL deployment should remain one main-node
-replica until a shared realtime adapter is configured.
+never marks an un-applied schema upgrade as successful. MySQL deployments
+can run several main-node replicas: live Session events reach SSE subscribers
+on other replicas through SQL tailing (see "Cross-replica live events" below).
 
-### Running multiple oma-server replicas (PG mode only)
+### Cross-replica live events
+
+A Session's turn runs on whichever replica holds its execution lease (or, for
+`/v1/oma`, received the turn), while its SSE subscribers can be attached to
+any replica behind the load balancer. `OMA_REALTIME_FANOUT` selects how
+committed events cross that gap:
+
+| Mode | Default for | `/v1/oma/.../events/stream` | `/v1/sessions/.../events/stream` |
+|---|---|---|---|
+| `memory` | SQLite | in-process only | in-process only |
+| `pg-notify` | Postgres | `LISTEN/NOTIFY` | SQL tailing |
+| `sql-poll` | MySQL | SQL tailing | SQL tailing |
+
+SQL tailing runs one poll loop per replica (`OMA_REALTIME_POLL_INTERVAL_MS`,
+default `300`). Each tick issues one batched primary-key/index range query per
+50 subscribed Sessions and no query while the replica has no subscribers. The
+executing replica still delivers its own events immediately, including
+unpersisted token deltas; subscribers on other replicas receive canonical
+(persisted) events within one poll interval, de-duplicated and in order.
+
+### Running multiple oma-server replicas (PG or MySQL)
 
 PG mode supports >1 `oma-server` process behind a load balancer. SSE
 fanout works across replicas: every `append` issues `NOTIFY
@@ -368,7 +388,7 @@ The same demo works on the Postgres compose unchanged.
 | `/v1/tenants` create workspace + membership | ✓ (no shard assign — CF-only) |
 | `/v1/oma/*` mirror namespace | ✓ |
 | Postgres backend (DATABASE_URL=postgres://...) | ✓ same code path as SQLite |
-| Multi-instance oma-server (PG mode) | ✓ PG `LISTEN/NOTIFY`-backed SSE fanout; better-auth on shared PG; `oma-vault` is stateless and replicable; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
+| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; `oma-vault` is stateless and replicable; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
 | Multi-tenant authentication (better-auth) | ✓ email+password + OTP, AUTH_DISABLED=1 escape |
 | Console UI (vite dev or built `dist`) | ✓ talks to main-node via `/auth/*` + `/v1/*` |
 | Integrations (linear / github / slack) — read-side CRUD on publications, installations, dispatch rules | ✓ wired via `@open-managed-agents/integrations-adapters-node` (set `PLATFORM_ROOT_SECRET`). |

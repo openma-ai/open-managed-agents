@@ -329,7 +329,7 @@ pnpm deploy
 | Start cmd | `docker compose up` | `pnpm dev` | n/a (run-as-deployed) |
 | Deploy cmd | `docker compose up -d` | n/a (dev only) | `pnpm deploy` |
 | Multi-tenant | better-auth + tenant/membership tables | better-auth + tenant/membership tables | better-auth + tenant/membership tables + shard router |
-| Multi-instance | sqlite: no; pg: yes with LISTEN/NOTIFY; mysql: one replica until a shared realtime hub is configured | n/a | scales by default |
+| Multi-instance | sqlite: no; pg: yes with LISTEN/NOTIFY; mysql: yes with SQL-tailing fanout (`OMA_REALTIME_FANOUT=sql-poll`) | n/a | scales by default |
 
 ## Picking a topology
 

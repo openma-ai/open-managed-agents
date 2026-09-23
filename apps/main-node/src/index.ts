@@ -218,6 +218,7 @@ import {
   SqlMemoryStoreSource,
   SqlManagedSessionsComposition,
   SqlPersistedSessionEventStream,
+  SqlReplicatedSessionEventStream,
   SqlSessionEnvironmentSource,
   SqlSessionSource,
   SqlSessionRuntimeProjectionPersistence,
@@ -309,6 +310,8 @@ import {
   type EventStreamHub,
 } from "./lib/event-stream-hub";
 import { PgEventStreamHub } from "./lib/pg-event-stream-hub";
+import { SqlPollingEventStreamHub } from "./lib/sql-polling-event-stream-hub";
+import { resolveRealtimeFanout } from "./realtime-fanout";
 import { NodeHarnessRuntime } from "./lib/node-harness-runtime";
 import { SessionRegistry } from "./registry.js";
 import { buildNodeSkillsRoutes } from "./lib/node-skills-routes.js";
@@ -752,11 +755,17 @@ function newEventLog(sessionId: string): SqlEventLog {
   });
 }
 
+const realtimeFanout = resolveRealtimeFanout(process.env, dialect);
 let hub: EventStreamHub;
-if (usePostgres) {
+if (realtimeFanout.mode === "pg-notify") {
   hub = await PgEventStreamHub.create({
     dsn: dbUrl,
     fetchEventsAfter: (sid, afterSeq) => newEventLog(sid).getEventsAsync(afterSeq),
+  });
+} else if (realtimeFanout.mode === "sql-poll") {
+  hub = new SqlPollingEventStreamHub({
+    sql,
+    pollIntervalMs: realtimeFanout.pollIntervalMs,
   });
 } else {
   hub = new InProcessEventStreamHub();
@@ -1431,6 +1440,14 @@ const managedSessionRuntime = new NodeManagedSessionRuntimeAdapter(
   managedRuntimeDriver,
   managedSessionExecutionWorker,
 );
+// The Session Execution lease can land on any replica, so the official
+// stream must also tail the canonical projection unless this is a single
+// in-memory replica.
+const managedSessionRuntimeStream = realtimeFanout.mode === "memory"
+  ? null
+  : new SqlReplicatedSessionEventStream(sql, managedSessionRuntime, {
+    pollIntervalMs: realtimeFanout.pollIntervalMs,
+  });
 
 const persistedManagedEnvironments = new SqlSessionEnvironmentSource(sql);
 const nodeManagedEnvironments: SessionEnvironmentSourcePort = {
@@ -1493,7 +1510,7 @@ const managedSessionsComposition = new SqlManagedSessionsComposition({
   }),
   eventStream: new EnvironmentAwareSessionEventStreamRouter({
     environments: nodeManagedEnvironments,
-    runtime: managedSessionRuntime,
+    runtime: managedSessionRuntimeStream ?? managedSessionRuntime,
     selfHosted: new SqlPersistedSessionEventStream(sql),
   }),
   sealer: {
@@ -2203,7 +2220,7 @@ app.get("/health", (c) =>
     backends: {
       agents: dialect,
       events: dialect,
-      hub: usePostgres ? "pg-notify" : "in-process",
+      hub: realtimeFanout.mode === "memory" ? "in-process" : realtimeFanout.mode,
       memory_blobs: memoryBlobDescription,
       db: backendDescription,
     },
@@ -2989,9 +3006,10 @@ export const shutdownNodeApp = async (signal = "dispose") => {
   if (feishuRunner) {
     try { await feishuRunner.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.feishu_runner_stop_failed" }, "feishu ws runner stop failed"); }
   }
-  if (hub instanceof PgEventStreamHub) {
-    try { await hub.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.pg_hub_stop_failed" }, "pg-hub stop failed"); }
+  if (hub instanceof PgEventStreamHub || hub instanceof SqlPollingEventStreamHub) {
+    try { await hub.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.realtime_hub_stop_failed" }, "realtime hub stop failed"); }
   }
+  managedSessionRuntimeStream?.stop();
   if (authShutdown) {
     try { await authShutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.auth_failed" }, "auth shutdown failed"); }
   }

@@ -29,9 +29,22 @@ export interface EventWriter {
   close(): void;
 }
 
+export interface EventStreamHubAttachOptions {
+  /**
+   * Last persisted seq the caller has already delivered (e.g. the tail of a
+   * history replay). Cross-replica hubs resume from here so events appended
+   * between the replay read and attach are not lost. Omit for live-only.
+   */
+  afterSeq?: number;
+}
+
 export interface EventStreamHub {
   /** Subscribe a writer to events for one session. Returns an unsubscribe. */
-  attach(sessionId: string, writer: EventWriter): () => void;
+  attach(
+    sessionId: string,
+    writer: EventWriter,
+    options?: EventStreamHubAttachOptions,
+  ): () => void;
   /** Broadcast an event to every writer subscribed to `sessionId`. */
   publish(sessionId: string, event: SessionEvent & { seq?: number }): void;
   /** Drop every writer for a session — use on session destroy. */
