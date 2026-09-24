@@ -71,6 +71,50 @@ describe("E2B SDK v2 adapter", () => {
     });
   });
 
+  it("passes creation metadata from JSON to E2B-compatible providers", async () => {
+    await sandboxFactory(
+      { sessionId: "session_dynamic", workdir: "/tmp/unused" },
+      {
+        E2B_API_KEY: "local",
+        SANDBOX_IMAGE: "design-worker-dynamic",
+        E2B_CREATE_METADATA: JSON.stringify({
+          "e2b.agents.kruise.io/image": "txharbor.example/openma-sandbox:v1",
+          "e2b.agents.kruise.io/create-on-no-stock": "true",
+        }),
+      },
+    );
+
+    expect(sdk.create).toHaveBeenCalledWith(
+      "design-worker-dynamic",
+      expect.objectContaining({
+        metadata: {
+          "e2b.agents.kruise.io/image": "txharbor.example/openma-sandbox:v1",
+          "e2b.agents.kruise.io/create-on-no-stock": "true",
+        },
+      }),
+    );
+  });
+
+  it("rejects malformed creation metadata before calling the provider", async () => {
+    await expect(
+      sandboxFactory(
+        { sessionId: "session_bad_metadata", workdir: "/tmp/unused" },
+        { E2B_API_KEY: "local", E2B_CREATE_METADATA: "not-json" },
+      ),
+    ).rejects.toThrow(/E2B_CREATE_METADATA.*JSON/);
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-string creation metadata values", async () => {
+    await expect(
+      sandboxFactory(
+        { sessionId: "session_bad_metadata_value", workdir: "/tmp/unused" },
+        { E2B_API_KEY: "local", E2B_CREATE_METADATA: '{"image":42}' },
+      ),
+    ).rejects.toThrow(/E2B_CREATE_METADATA.*string values/);
+    expect(sdk.create).not.toHaveBeenCalled();
+  });
+
   it("uses the official live-stdin command channel for ACP", async () => {
     let commandOptions:
       | {

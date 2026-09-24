@@ -92,6 +92,8 @@ export interface E2BSandboxOptions {
   sandboxUrl?: string;
   /** Optional E2B-compatible base domain. Falls back to E2B_DOMAIN. */
   domain?: string;
+  /** Metadata passed only when creating a sandbox. */
+  createMetadata?: Record<string, string>;
   /**
    * Template id (the `template` field in E2B's UI). Default "base" matches
    * the SDK's default — has python/node/git/curl etc preinstalled. Override
@@ -701,6 +703,7 @@ type E2BConnectionOptions = Pick<
 >;
 
 type E2BCreateOptions = E2BConnectionOptions & {
+  metadata?: Record<string, string>;
   lifecycle: {
     onTimeout: { action: "pause"; keepMemory: true };
     autoResume: true;
@@ -732,9 +735,10 @@ function connectionOptions(opts: E2BConnectionOptions): E2BConnectionOptions {
   };
 }
 
-function creationOptions(opts: E2BConnectionOptions): E2BCreateOptions {
+function creationOptions(opts: E2BSandboxOptions): E2BCreateOptions {
   return {
     ...connectionOptions(opts),
+    ...(opts.createMetadata === undefined ? {} : { metadata: opts.createMetadata }),
     // ACP keeps a live JSON-RPC process in the sandbox. Killing the sandbox
     // at the end of its lease loses that process and forces a cold restore;
     // a memory pause preserves it and E2B resumes it transparently on the
@@ -746,12 +750,32 @@ function creationOptions(opts: E2BConnectionOptions): E2BCreateOptions {
   };
 }
 
+function parseCreateMetadata(value: string | undefined): Record<string, string> | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("E2B_CREATE_METADATA must be valid JSON");
+  }
+  if (
+    typeof parsed !== "object"
+    || parsed === null
+    || Array.isArray(parsed)
+    || Object.values(parsed).some((item) => typeof item !== "string")
+  ) {
+    throw new Error("E2B_CREATE_METADATA must be a JSON object with string values");
+  }
+  return parsed as Record<string, string>;
+}
+
 function optionsFromFactory(env: SandboxFactoryEnv): E2BSandboxOptions {
   return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
     sandboxUrl: env.E2B_SANDBOX_URL,
     domain: env.E2B_DOMAIN,
+    createMetadata: parseCreateMetadata(env.E2B_CREATE_METADATA),
     templateId: env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
   };
