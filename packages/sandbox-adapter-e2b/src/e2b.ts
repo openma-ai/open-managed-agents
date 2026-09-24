@@ -250,9 +250,9 @@ export class E2BSandboxExecutor
 
   async exec(command: string, timeout?: number): Promise<string> {
     const wrapped = this.applyEnv(command);
-    const result = (await this.sandbox.commands.run(wrapped, {
+    const result = await settleCommand(this.sandbox.commands.run(wrapped, {
       timeoutMs: timeout ?? this.defaultTimeoutMs,
-    })) as E2BCommandResult;
+    }) as Promise<E2BCommandResult>);
     // Match @cloudflare/sandbox's behaviour: combined stdout+stderr,
     // newline-trimmed, plus an exit-code suffix.
     const separator = result.stdout.length > 0 && !result.stdout.endsWith("\n") ? "\n" : "";
@@ -648,7 +648,7 @@ class E2BProcessHandle implements ProcessHandle {
   constructor(public id: string, private handle: E2BCommandHandle) {
     this.pid = handle.pid;
     if (handle.wait) {
-      this.waitPromise = handle.wait().then((r) => {
+      this.waitPromise = settleCommand(handle.wait()).then((r) => {
         this.finalResult = r;
         this.stdout = r.stdout;
         this.stderr = r.stderr;
@@ -681,6 +681,27 @@ function shellEscape(value: string): string {
   // Single-quote-wrap; double any embedded single quotes via the
   // ' '\'' ' idiom which is portable across POSIX shells.
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * The official SDK rejects a finished command with CommandExitError (which
+ * implements CommandResult) whenever the exit code is non-zero. A non-zero
+ * exit is an ordinary outcome for SandboxPort callers, so fold it back into a
+ * result; anything else (transport, auth, timeout) stays an error.
+ */
+async function settleCommand(pending: Promise<E2BCommandResult>): Promise<E2BCommandResult> {
+  try {
+    return await pending;
+  } catch (cause) {
+    const exitCode = readExitCode(cause);
+    if (exitCode === null) throw cause;
+    const failed = cause as { stdout?: unknown; stderr?: unknown };
+    return {
+      exitCode,
+      stdout: typeof failed.stdout === "string" ? failed.stdout : "",
+      stderr: typeof failed.stderr === "string" ? failed.stderr : "",
+    };
+  }
 }
 
 function readExitCode(cause: unknown): number | null {

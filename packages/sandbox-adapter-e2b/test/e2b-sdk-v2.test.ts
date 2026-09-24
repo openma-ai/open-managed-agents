@@ -115,6 +115,48 @@ describe("E2B SDK v2 adapter", () => {
     expect(sdk.create).not.toHaveBeenCalled();
   });
 
+  it("reports a non-zero exit the way the official SDK signals it: a rejected CommandExitError", async () => {
+    // e2b v2 never resolves commands.run() with exitCode !== 0; it rejects with
+    // an error that implements CommandResult.
+    class CommandExitError extends Error {
+      constructor(readonly exitCode: number, readonly stdout: string, readonly stderr: string) {
+        super(`exit status ${exitCode}`);
+      }
+    }
+    const sandbox = makeSdkSandbox("exit-codes");
+    sandbox.commands.run.mockRejectedValueOnce(new CommandExitError(1, "partial\n", "ls: no such file\n"));
+    const adapter = new E2BSandboxExecutor(sandbox as never, {});
+
+    await expect(adapter.exec("ls /missing")).resolves.toBe("partial\nls: no such file\n[exit 1]");
+  });
+
+  it("still surfaces transport failures from exec as errors", async () => {
+    const sandbox = makeSdkSandbox("transport");
+    sandbox.commands.run.mockRejectedValueOnce(new Error("[unauthenticated] invalid username: 'user'"));
+    const adapter = new E2BSandboxExecutor(sandbox as never, {});
+
+    await expect(adapter.exec("id")).rejects.toThrow("invalid username");
+  });
+
+  it("records a background process's non-zero exit instead of leaving it running forever", async () => {
+    const sandbox = makeSdkSandbox("background");
+    let reject!: (error: unknown) => void;
+    sandbox.commands.run.mockResolvedValueOnce({
+      pid: 41,
+      kill: async () => true,
+      wait: () => new Promise((_, r) => { reject = r; }),
+    });
+    const adapter = new E2BSandboxExecutor(sandbox as never, {});
+    const handle = (await adapter.startProcess("node server.js"))!;
+    expect(await handle.getStatus()).toBe("running");
+
+    reject(Object.assign(new Error("exit status 3"), { exitCode: 3, stdout: "boot\n", stderr: "crash\n" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(await handle.getStatus()).toBe("error");
+    expect(await handle.getLogs()).toEqual({ stdout: "boot\n", stderr: "crash\n" });
+  });
+
   it("uses the official live-stdin command channel for ACP", async () => {
     let commandOptions:
       | {
