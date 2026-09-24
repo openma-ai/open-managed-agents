@@ -1,10 +1,14 @@
 /**
- * apps/main-node — self-host Node entry for the Open Managed Agents API.
+ * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
  *
- * Wiring file. ~280 lines: build services → mount route bundles from
- * @open-managed-agents/http-routes → start server. All route bodies live
- * in packages/http-routes; storage adapters in their respective packages
- * (agents-store, vaults-store, memory-store, etc.).
+ * createNodeControlPlane(env) is the composition root: it reads only the
+ * environment it is given, builds the SqlClient, stores, auth, blob stores,
+ * realtime hub, Session runtimes and background workers, mounts the route
+ * bundles from @open-managed-agents/http-routes and the Managed Agents API,
+ * and returns a handle that owns all of it. Route bodies live in
+ * packages/http-routes; storage adapters in their respective packages.
+ *
+ * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
 import { serveStatic } from "@hono/node-server/serve-static";
