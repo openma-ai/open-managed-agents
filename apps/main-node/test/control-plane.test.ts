@@ -183,3 +183,36 @@ describe("createNodeControlPlane dependency injection", () => {
     expect(body.backends.files_blobs).toBe("test files store");
   });
 });
+
+describe("createNodeControlPlane dependency injection (official /v1 Sessions)", () => {
+  it("runs v1 session turns through the injected sandbox factory as well", async () => {
+    const calls: string[] = [];
+    const sandboxFactory: SandboxFactory = async (ctx) => {
+      calls.push(ctx.sessionId);
+      throw new Error("injected sandbox factory was called");
+    };
+    const cp = await controlPlane({ sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
+    const env = await (await cp.fetch(new Request("http://cp/v1/environments", json({
+      name: "cp-env", config: { type: "cloud", networking: { type: "unrestricted" } },
+    }, beta)))).json() as { id: string };
+    const agent = await (await cp.fetch(new Request("http://cp/v1/agents", json({
+      name: "cp", model: "claude-sonnet-4-6", system: "hi",
+    }, beta)))).json() as { id: string };
+    const session = await (await cp.fetch(new Request("http://cp/v1/sessions", json({
+      agent: agent.id, environment_id: env.id,
+    }, beta)))).json() as { id: string };
+    expect(session.id).toMatch(/^session_/);
+
+    // v1 turns are claimed by the execution poller, which only runs after start().
+    await cp.start();
+    const sent = await cp.fetch(new Request(`http://cp/v1/sessions/${session.id}/events`, json({
+      events: [{ type: "user.message", content: [{ type: "text", text: "ping" }] }],
+    }, beta)));
+    expect(sent.status).toBeLessThan(300);
+
+    for (let i = 0; i < 150 && calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(calls).toEqual([session.id]);
+  });
+});
