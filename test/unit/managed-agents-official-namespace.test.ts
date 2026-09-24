@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import cloudflareComposition from "../../apps/main/src/index.ts?raw";
-import nodeComposition from "../../apps/main-node/src/index.ts?raw";
+import nodeComposition from "../../apps/main-node/src/control-plane.ts?raw";
 import skillsConsole from "../../apps/console/src/pages/SkillsList.tsx?raw";
 
 const productionSources = import.meta.glob(

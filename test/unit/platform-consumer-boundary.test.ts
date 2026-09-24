@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import nodeComposition from "../../apps/main-node/src/index.ts?raw";
+import nodeComposition from "../../apps/main-node/src/control-plane.ts?raw";
 import cloudflareComposition from "../../apps/main/src/index.ts?raw";
 
 describe("platform SDK consumer boundary", () => {
