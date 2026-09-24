@@ -352,6 +352,8 @@ import {
 } from "./process-mode.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
 import { Disposables } from "./lifecycle.js";
+import type { SandboxFactory } from "@open-managed-agents/sandbox";
+import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
 
 registerCoreHarnesses();
 
@@ -365,6 +367,25 @@ export type NodeControlPlaneApp = Hono<{
     auth_credential?: ApiKeyResolution["credential"];
   };
 }>;
+
+/**
+ * Adapters a deployment has already chosen. Anything omitted is selected from
+ * the environment exactly as before, so presets can inject one seam at a time.
+ */
+export interface NodeControlPlaneDeps {
+  /**
+   * Sandbox provider for legacy (v0) Session turns. Replaces the
+   * SANDBOX_PROVIDER lookup and the dynamic import of the adapter module; the
+   * environment is still passed through so the factory can read its own keys.
+   */
+  sandboxFactory?: SandboxFactory;
+  /** Cross-replica fanout for /v1/oma event streams. Replaces OMA_REALTIME_FANOUT selection. */
+  realtimeHub?: EventStreamHub & { stop?(): void | Promise<void> };
+  /** Memory Store content. Replaces MEMORY_S3_* / MEMORY_BLOB_DIR selection. */
+  memoryBlobs?: { store: MemoryBlobStore; description: string };
+  /** Files, workspace backups and Session outputs. Replaces FILES_S3_* / FILES_BLOB_DIR selection. */
+  filesBlobs?: { store: BlobStore; description: string };
+}
 
 export interface NodeControlPlane {
   /** Hono application: mount it, or serve it with @hono/node-server. */
@@ -386,7 +407,10 @@ export interface NodeControlPlane {
  * two control planes can coexist in one process (tests, embedding) and the
  * entrypoint decides when to listen and how to handle signals.
  */
-export async function createNodeControlPlane(env: NodeEnvironment): Promise<NodeControlPlane> {
+export async function createNodeControlPlane(
+  env: NodeEnvironment,
+  deps: NodeControlPlaneDeps = {},
+): Promise<NodeControlPlane> {
   const log: { current: Logger | null } = { current: null };
   const disposables = new Disposables({
     onError: (name, err) => {
@@ -395,11 +419,12 @@ export async function createNodeControlPlane(env: NodeEnvironment): Promise<Node
       else console.warn(`[main-node] ${message}`, err);
     },
   });
-  return disposables.guard(() => assembleNodeControlPlane(env, disposables, log));
+  return disposables.guard(() => assembleNodeControlPlane(env, deps, disposables, log));
 }
 
 async function assembleNodeControlPlane(
   env: NodeEnvironment,
+  deps: NodeControlPlaneDeps,
   disposables: Disposables,
   log: { current: Logger | null },
 ): Promise<NodeControlPlane> {
@@ -407,7 +432,7 @@ async function assembleNodeControlPlane(
   const processMode = resolveNodeProcessMode(env);
   validateNodeProcessEnvironment(env);
   const ownsLongLivedProcesses = processMode === "standalone";
-  const standaloneSandboxProvider = ownsLongLivedProcesses
+  const standaloneSandboxProvider = ownsLongLivedProcesses && deps.sandboxFactory === undefined
     ? resolveSandboxProviderForEnvironment(env)
     : null;
 
@@ -672,7 +697,10 @@ async function assembleNodeControlPlane(
     region: string;
   } | null = null;
 
-  if (
+  if (deps.memoryBlobs !== undefined) {
+    memoryBlobs = deps.memoryBlobs.store;
+    memoryBlobDescription = deps.memoryBlobs.description;
+  } else if (
     env.MEMORY_S3_ENDPOINT &&
     env.MEMORY_S3_BUCKET &&
     env.MEMORY_S3_ACCESS_KEY &&
@@ -778,7 +806,10 @@ async function assembleNodeControlPlane(
 
   let filesBlob: BlobStore;
   let filesBlobDescription: string;
-  if (
+  if (deps.filesBlobs !== undefined) {
+    filesBlob = deps.filesBlobs.store;
+    filesBlobDescription = deps.filesBlobs.description;
+  } else if (
     env.FILES_S3_ENDPOINT &&
     env.FILES_S3_BUCKET &&
     env.FILES_S3_ACCESS_KEY &&
@@ -819,8 +850,15 @@ async function assembleNodeControlPlane(
   }
 
   const realtimeFanout = resolveRealtimeFanout(env, dialect);
+  const realtimeDescription = deps.realtimeHub !== undefined
+    ? "custom"
+    : realtimeFanout.mode === "memory" ? "in-process" : realtimeFanout.mode;
   let hub: EventStreamHub;
-  if (realtimeFanout.mode === "pg-notify") {
+  if (deps.realtimeHub !== undefined) {
+    hub = deps.realtimeHub;
+    const injected = deps.realtimeHub;
+    if (injected.stop) disposables.add("realtime_hub", () => injected.stop!());
+  } else if (realtimeFanout.mode === "pg-notify") {
     hub = await PgEventStreamHub.create({
       dsn: dbUrl,
       fetchEventsAfter: (sid, afterSeq) => newEventLog(sid).getEventsAsync(afterSeq),
@@ -844,12 +882,10 @@ async function assembleNodeControlPlane(
     sessionId: string,
     workdir: string,
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
-    const selection = standaloneSandboxProvider
-      ?? resolveSandboxProviderForEnvironment(env);
-    const mod = (await import(selection.modulePath)) as {
-      sandboxFactory: import("@open-managed-agents/sandbox").SandboxFactory;
-    };
-    return mod.sandboxFactory(
+    const sandboxFactory = deps.sandboxFactory ?? await loadSandboxFactory(
+      standaloneSandboxProvider ?? resolveSandboxProviderForEnvironment(env),
+    );
+    return sandboxFactory(
       {
         sessionId,
         workdir,
@@ -2293,8 +2329,9 @@ async function assembleNodeControlPlane(
       backends: {
         agents: dialect,
         events: dialect,
-        hub: realtimeFanout.mode === "memory" ? "in-process" : realtimeFanout.mode,
+        hub: realtimeDescription,
         memory_blobs: memoryBlobDescription,
+        files_blobs: filesBlobDescription,
         db: backendDescription,
       },
     }),
@@ -3103,6 +3140,13 @@ async function assembleNodeControlPlane(
     },
     stop: (signal) => shutdownNodeApp(signal),
   };
+}
+
+async function loadSandboxFactory(
+  selection: ReturnType<typeof resolveSandboxProviderForEnvironment>,
+): Promise<SandboxFactory> {
+  const mod = (await import(selection.modulePath)) as { sandboxFactory: SandboxFactory };
+  return mod.sandboxFactory;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
