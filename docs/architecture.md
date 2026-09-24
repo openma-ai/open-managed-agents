@@ -203,7 +203,10 @@ Session runtimes, mount route bundles, and return a handle that owns every
 resource (`app`, `fetch`, `start`, `stop`). `apps/main-node/src/index.ts` is
 the executable entrypoint: it assembles one control plane from `process.env`,
 listens, and installs signal handlers; importing it keeps exporting `app` and
-`shutdownNodeApp` for deployment presets and tests.
+`shutdownNodeApp` for deployment presets and tests. The optional second
+argument, `NodeControlPlaneDeps`, lets a deployment pass adapters it has
+already chosen (`sandboxFactory`, `realtimeHub`, `memoryBlobs`, `filesBlobs`);
+anything omitted is selected from the environment as before.
 
 `apps/main/src/index.ts` mounts agents / vaults / sessions / api-keys /
 me / tenants from `@open-managed-agents/http-routes`. The legacy

@@ -3099,6 +3099,7 @@ async function assembleNodeControlPlane(
     },
     memory: memoryService,
     integrationsSql: platformRootSecret ? sql : null,
+    env,
   });
   disposables.add("scheduler", () => scheduler.stop());
   // Registered last so it stops first: it drives the Session compositions above.
