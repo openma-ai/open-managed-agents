@@ -11,11 +11,14 @@ import type { TestProject } from "vitest/node";
 import type { StorageIntegrationConfig } from "./storage-integration.js";
 
 const POSTGRES_IMAGE = "postgres:16-alpine";
-// Pin the official Quay multi-arch manifest. 2025-09-07 is an `mc` client
-// release, not a MinIO Server image, and Docker Hub now answers 404 for that
-// mistaken tag on clean CI runners.
+// MinIO's own registries no longer serve anonymous pulls: docker.io/minio/minio
+// answers 404 and quay.io/minio/minio answers 401, on clean CI runners and
+// developer machines alike. Chainguard publishes a multi-arch MinIO Server
+// image whose `latest` tag is pullable anonymously; pin its manifest digest so
+// the fixture stays reproducible. It runs as uid 65532 and creates /data
+// itself, so the testcontainers default command works unchanged.
 const MINIO_IMAGE =
-  "quay.io/minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0";
+  "cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1";
 const REGION = "us-east-1";
 const POSTGRES_DATABASES = {
   agentsSql: "openma_agents_sql_test",
