@@ -347,6 +347,7 @@ import {
   type NodeProcessMode,
 } from "./process-mode.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
+import { Disposables } from "./lifecycle.js";
 
 registerCoreHarnesses();
 
@@ -382,6 +383,22 @@ export interface NodeControlPlane {
  * entrypoint decides when to listen and how to handle signals.
  */
 export async function createNodeControlPlane(env: NodeEnvironment): Promise<NodeControlPlane> {
+  const log: { current: Logger | null } = { current: null };
+  const disposables = new Disposables({
+    onError: (name, err) => {
+      const message = `${name} stop failed`;
+      if (log.current) log.current.warn({ err, op: `main-node.shutdown.${name}_stop_failed` }, message);
+      else console.warn(`[main-node] ${message}`, err);
+    },
+  });
+  return disposables.guard(() => assembleNodeControlPlane(env, disposables, log));
+}
+
+async function assembleNodeControlPlane(
+  env: NodeEnvironment,
+  disposables: Disposables,
+  log: { current: Logger | null },
+): Promise<NodeControlPlane> {
 
 const processMode = resolveNodeProcessMode(env);
 validateNodeProcessEnvironment(env);
@@ -404,11 +421,13 @@ const logger: Logger = await createNodeLogger({
   bindings: { service: "main-node", pid: process.pid },
 });
 setRootLogger(logger);
+log.current = logger;
 
 const metrics: NodeMetricsHandle = await createNodeMetricsRecorder();
 const tracer: NodeTracerHandle = await createNodeTracer({
   serviceName: "oma-main-node",
 });
+disposables.add("tracer", () => tracer.shutdown());
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────
 
@@ -489,6 +508,7 @@ if (usePostgres) {
   migrate(drizzleDb as never, { migrationsFolder });
 }
 if (!useMysql) await ensureEventLogSchema(sql, dialect);
+if (databaseShutdown) disposables.add("database", databaseShutdown);
 const managedAgentsPersistence = new SqlAgentPersistence(sql);
 const managedAgentsPlatform = createNodePlatform({
   features: {
@@ -521,6 +541,7 @@ const managedAgentsPlatform = createNodePlatform({
     }),
   ],
 });
+disposables.add("managed_platform", () => managedAgentsPlatform.stopAll());
 
 // Integrations subsystem boot is gated on PLATFORM_ROOT_SECRET (used to
 // encrypt OAuth tokens etc.). Tables are part of the consolidated baseline
@@ -615,6 +636,8 @@ if (!authDisabled) {
     };
   }
 }
+
+if (authShutdown) disposables.add("auth", authShutdown);
 
 // ─── Stores ─────────────────────────────────────────────────────────────
 
@@ -718,6 +741,8 @@ const memoryWatcher = !ownsLongLivedProcesses
     ? startMemoryBlobWatcher({ memoryRoot: memoryBlobLocalDir, memoryRepo })
     : { stop: async () => {} };
 
+disposables.add("memory_watcher", () => memoryWatcher.stop());
+
 let s3Poller: { stop: () => Promise<void> } | null = null;
 let feishuRunner: { stop: () => Promise<void> } | null = null;
 if (ownsLongLivedProcesses && s3MemoryConfig) {
@@ -734,6 +759,7 @@ if (ownsLongLivedProcesses && s3MemoryConfig) {
     intervalMs: Math.max(5_000, intervalSec * 1000),
     s3: s3MemoryConfig,
   });
+  disposables.add("s3_poller", () => s3Poller?.stop());
 }
 
 const outputsRoot = env.SESSION_OUTPUTS_DIR ?? "./data/session-outputs";
@@ -802,6 +828,10 @@ if (realtimeFanout.mode === "pg-notify") {
   });
 } else {
   hub = new InProcessEventStreamHub();
+}
+if (hub instanceof PgEventStreamHub || hub instanceof SqlPollingEventStreamHub) {
+  const stoppable = hub;
+  disposables.add("realtime_hub", () => stoppable.stop());
 }
 
 // ─── Sandbox factory ────────────────────────────────────────────────────
@@ -1008,6 +1038,7 @@ const sessionRegistry = new SessionRegistry({
     } satisfies HarnessContext;
   },
 });
+disposables.add("session_registry", () => sessionRegistry.shutdown());
 
 await sessionRegistry.bootstrap();
 
@@ -1481,6 +1512,7 @@ const managedSessionRuntimeStream = realtimeFanout.mode === "memory"
   : new SqlReplicatedSessionEventStream(sql, managedSessionRuntime, {
     pollIntervalMs: realtimeFanout.pollIntervalMs,
   });
+disposables.add("managed_session_runtime_stream", () => managedSessionRuntimeStream?.stop());
 
 const persistedManagedEnvironments = new SqlSessionEnvironmentSource(sql);
 const nodeManagedEnvironments: SessionEnvironmentSourcePort = {
@@ -1564,6 +1596,7 @@ const managedSessionsComposition = new SqlManagedSessionsComposition({
     nextResourceId: () => `sesrsc_${nanoid()}`,
   },
 });
+disposables.add("managed_sessions", () => managedSessionsComposition.stopAll());
 
 const managedDeploymentCrypto = platformRootSecret === undefined
   ? null
@@ -1728,6 +1761,7 @@ const managedDeploymentsPlatform = createNodePlatform({
     providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(sql)),
   ],
 });
+disposables.add("managed_deployments_platform", () => managedDeploymentsPlatform.stopAll());
 const managedDeploymentsRoutes = buildManagedDeploymentRoutes((context) => {
   const workspaceId = (context.var as { tenant_id: string }).tenant_id;
   return managedDeploymentsPlatform
@@ -1829,6 +1863,7 @@ const managedDreamsPlatform = createNodePlatform({
     ];
   },
 });
+disposables.add("managed_dreams_platform", () => managedDreamsPlatform.stopAll());
 const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
   managedDreamsPlatform
     .app({
@@ -2043,6 +2078,7 @@ const managedCredentialsPlatform = createNodePlatform({
       `${namespace === "credential" ? "vcrd" : namespace === "vault" ? "vlt" : namespace}_${nanoid()}`,
   },
 });
+disposables.add("managed_credentials_platform", () => managedCredentialsPlatform.stopAll());
 const managedVaultsRoutes = buildManagedVaultRoutes((context) =>
   managedCredentialsPlatform
     .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
@@ -2747,6 +2783,7 @@ if (
       hub,
       http: feishuHttp,
     });
+    disposables.add("feishu_runner", () => feishuRunner?.stop());
   } catch (err) {
     logger.warn(
       { err, op: "main-node.feishu_ws_runner_start_failed" },
@@ -3022,35 +3059,13 @@ const scheduler = buildNodeScheduler({
   memory: memoryService,
   integrationsSql: platformRootSecret ? sql : null,
 });
+disposables.add("scheduler", () => scheduler.stop());
+// Registered last so it stops first: it drives the Session compositions above.
+disposables.add("managed_session_execution_worker", () => managedSessionExecutionWorker.stop());
 
 const shutdownNodeApp = async (signal = "dispose") => {
   logger.info({ op: "main-node.shutdown", signal }, `received ${signal}, shutting down`);
-  managedSessionExecutionWorker.stop();
-  try { await managedSessionsComposition.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_sessions_stop_failed" }, "managed Sessions app graphs stop failed"); }
-  try { await managedAgentsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_platform_stop_failed" }, "managed platform stop failed"); }
-  try { await managedCredentialsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_credentials_platform_stop_failed" }, "managed Credentials platform stop failed"); }
-  try { await managedDeploymentsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_deployments_platform_stop_failed" }, "managed Deployments platform stop failed"); }
-  try { await managedDreamsPlatform.stopAll(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.managed_dreams_platform_stop_failed" }, "managed Dreams platform stop failed"); }
-  try { await scheduler.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.scheduler_stop_failed" }, "scheduler stop failed"); }
-  try { await memoryWatcher.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.watcher_stop_failed" }, "memory watcher stop failed"); }
-  if (s3Poller) {
-    try { await s3Poller.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.s3_poller_stop_failed" }, "s3-poller stop failed"); }
-  }
-  if (feishuRunner) {
-    try { await feishuRunner.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.feishu_runner_stop_failed" }, "feishu ws runner stop failed"); }
-  }
-  if (hub instanceof PgEventStreamHub || hub instanceof SqlPollingEventStreamHub) {
-    try { await hub.stop(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.realtime_hub_stop_failed" }, "realtime hub stop failed"); }
-  }
-  managedSessionRuntimeStream?.stop();
-  if (authShutdown) {
-    try { await authShutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.auth_failed" }, "auth shutdown failed"); }
-  }
-  if (databaseShutdown) {
-    try { await databaseShutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.database_failed" }, "database shutdown failed"); }
-  }
-  try { await sessionRegistry.shutdown(); } catch (err) { logger.warn({ err, op: "main-node.shutdown.session_registry_failed" }, "session registry shutdown failed"); }
-  try { await tracer.shutdown(); } catch { /* tracer shutdown is best-effort */ }
+  await disposables.dispose();
 };
 
 
