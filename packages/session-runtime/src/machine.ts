@@ -162,6 +162,9 @@ export class SessionStateMachine {
     await this.deps.adapter.beginTurn(this.deps.sessionId, turnId);
     this.deps.adapter.hintTurnInFlight?.(this.deps.sessionId, turnId);
 
+    let isFatalProviderError = false;
+    let turnError: unknown;
+
     try {
       // Memory store mounts: optional adapter step, runs once per turn
       // so a session newly bound to a store picks it up on the next
@@ -190,9 +193,31 @@ export class SessionStateMachine {
 
       const harness = await this.resolveHarness(agent);
       await harness.run(ctx);
+    } catch (err: unknown) {
+      turnError = err;
+      if (err instanceof Error && err.name === "ProviderToolError") {
+        isFatalProviderError = true;
+      } else if (err && typeof err === "object" && "name" in err && (err as any).name === "ProviderToolError") {
+        isFatalProviderError = true;
+      }
+      throw err;
     } finally {
       this.activeTurnId = null;
-      await this.deps.adapter.endTurn(this.deps.sessionId, turnId, "idle");
+      if (isFatalProviderError) {
+        this.logger.warn(`intercepted ProviderToolError during turn ${turnId}, gently terminating session...`, {
+          error: turnError instanceof Error ? turnError.message : String(turnError),
+        });
+        
+        await this.deps.adapter.terminate(this.deps.sessionId, "Provider tool exception");
+        
+        try {
+          await this.releaseSandbox("destroy");
+        } catch (cleanupErr) {
+          this.logger.warn(`sandbox cleanup failed during error termination: ${(cleanupErr as Error).message}`);
+        }
+      } else {
+        await this.deps.adapter.endTurn(this.deps.sessionId, turnId, "idle");
+      }
     }
   }
 
