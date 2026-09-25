@@ -12,6 +12,7 @@ import type { SandboxFactory } from "@open-managed-agents/sandbox";
 import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
 
+import { loadNodeConfig } from "../src/config";
 import {
   createNodeControlPlane,
   type NodeControlPlane,
@@ -50,7 +51,7 @@ async function controlPlane(
   deps?: NodeControlPlaneDeps,
   overrides?: Record<string, string | undefined>,
 ): Promise<NodeControlPlane> {
-  const cp = await createNodeControlPlane(environment(overrides), deps);
+  const cp = await createNodeControlPlane(loadNodeConfig(environment(overrides)), deps);
   created.push(cp);
   return cp;
 }

@@ -197,16 +197,26 @@ package mounted by both apps:
 | `@open-managed-agents/session-runtime` | `SessionStateMachine` + `RuntimeAdapter` (Phase 2) plus `SessionRouter` — uniform contract over the per-runtime session routing layer. CF impl wraps the SessionDO RPC surface; Node impl wraps `SessionRegistry` + `SqlEventLog` + `EventStreamHub`. | `apps/main/src/lib/cf-session-router.ts`, `apps/main-node/src/lib/node-session-router.ts` |
 | `@open-managed-agents/sandbox/orchestrator` | `SandboxOrchestrator` — single entry point both runtimes use to provision a session sandbox: vault outbound (HTTPS_PROXY + CA), `/mnt/memory` mounts, `/mnt/session/outputs` mount, optional workspace backup/restore. Replaces the per-runtime plumbing that lived separately in `apps/agent/src/oma-sandbox.ts` and `apps/main-node/src/registry.ts`. Per-provider capability matrix lives in `docs/self-host.md`. | `DefaultSandboxOrchestrator` (both runtimes); CF wires the OmaSandbox + R2 squashfs backup; Node wires `NodeWorkspaceBackupService` (tar+upload to BlobStore). |
 
-`apps/main-node/src/control-plane.ts` exports `createNodeControlPlane(env)`,
-the Node composition root: build the SqlClient, construct services and
-Session runtimes, mount route bundles, and return a handle that owns every
-resource (`app`, `fetch`, `start`, `stop`). `apps/main-node/src/index.ts` is
-the executable entrypoint: it assembles one control plane from `process.env`,
-listens, and installs signal handlers; importing it keeps exporting `app` and
-`shutdownNodeApp` for deployment presets and tests. The optional second
-argument, `NodeControlPlaneDeps`, lets a deployment pass adapters it has
-already chosen (`sandboxFactory`, `realtimeHub`, `memoryBlobs`, `filesBlobs`);
-anything omitted is selected from the environment as before.
+`apps/main-node/src/config.ts` is the only place the Node control plane reads
+environment variables: `loadNodeConfig(env)` turns them into a typed
+`NodeConfig` once, applies the documented defaults, and reports every problem
+in one `NodeConfigError` at startup. `redactNodeConfig` produces the
+secret-free view logged as `main-node.config`.
+
+`apps/main-node/src/control-plane.ts` exports
+`createNodeControlPlane(config, deps?)`, the Node composition root: build the
+SqlClient, construct services and Session runtimes, mount route bundles, and
+return a handle that owns every resource (`app`, `fetch`, `start`, `stop`).
+`NodeControlPlaneDeps` lets a deployment pass adapters it has already chosen
+(`sandboxFactory`, `realtimeHub`, `memoryBlobs`, `filesBlobs`); anything
+omitted is built from `config`. The sandbox provider's own namespace
+(`SANDBOX_PROVIDER`, `E2B_*`, …) stays env-shaped as `config.sandbox.environment`
+because `SandboxFactory`'s public contract is.
+
+`apps/main-node/src/index.ts` is the executable entrypoint: `loadNodeConfig(process.env)`
+→ `createNodeControlPlane(config)` → listen and install signal handlers.
+Importing it keeps exporting `app` and `shutdownNodeApp` for deployment
+presets and tests.
 
 `apps/main/src/index.ts` mounts agents / vaults / sessions / api-keys /
 me / tenants from `@open-managed-agents/http-routes`. The legacy

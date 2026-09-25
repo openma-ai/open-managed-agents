@@ -20,6 +20,8 @@ export interface CreateAuthOpts {
   baseURL?: string;
   google?: { clientId: string; clientSecret: string };
   github?: { clientId: string; clientSecret: string };
+  requireEmailVerify?: boolean;
+  cookieDomain?: string;
 }
 
 // Logger-backed sender that prints OTP codes to stdout. Used in
@@ -53,8 +55,8 @@ export function createAuth(opts: CreateAuthOpts): Auth {
     googleClientSecret: opts.google?.clientSecret,
     githubClientId: opts.github?.clientId,
     githubClientSecret: opts.github?.clientSecret,
-    requireEmailVerify: process.env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
-    cookieDomain: process.env.AUTH_COOKIE_DOMAIN,
+    requireEmailVerify: opts.requireEmailVerify ?? false,
+    cookieDomain: opts.cookieDomain,
     ensureTenant: (u) => ensureTenantSqlite(opts.mainSql, u.id, u.name, u.email),
   });
   // Cast to the legacy Auth shape — better-auth's generic over options is

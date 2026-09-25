@@ -40,15 +40,21 @@ export interface NodeSchedulerDeps {
    *  in-process LinearProvider is available. Skip when null — most
    *  self-host deployments don't run the Linear gateway side yet. */
   linearSweeper?: (() => Promise<LinearDispatchSweeper | null>) | null;
-  /** Override defaults via env so an operator can quiet noisy crons
-   *  during a maintenance window without a code change. */
-  env?: NodeJS.ProcessEnv;
+  /** Cron expressions; the control plane resolves them from configuration
+   *  so an operator can quiet noisy crons without a code change. */
+  cron?: Partial<NodeSchedulerCron>;
+}
+
+export interface NodeSchedulerCron {
+  evalTick: string;
+  memoryRetention: string;
+  webhookEventsRetention: string;
+  linearDispatch: string;
 }
 
 export function buildNodeScheduler(deps: NodeSchedulerDeps) {
-  const env = deps.env ?? process.env;
-  const cron = (key: string, fallback: string) => {
-    const v = env[key];
+  const cron = (key: keyof NodeSchedulerCron, fallback: string) => {
+    const v = deps.cron?.[key];
     return v && v.trim() ? v : fallback;
   };
 
@@ -65,7 +71,7 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
   };
   scheduler.register({
     name: "eval-tick",
-    cron: cron("EVAL_TICK_CRON", "* * * * *"),
+    cron: cron("evalTick", "* * * * *"),
     handler: async () => {
       try {
         await tickEvalRuns(evalCtx);
@@ -78,7 +84,7 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
   // Memory retention.
   scheduler.register({
     name: "memory-retention",
-    cron: cron("MEMORY_RETENTION_CRON", "* * * * *"),
+    cron: cron("memoryRetention", "* * * * *"),
     handler: memoryRetentionTick({
       forEachShard: async (fn) => [await fn({ memory: deps.memory }, "default")],
     }),
@@ -91,7 +97,7 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
     const integrationsSql = deps.integrationsSql;
     scheduler.register({
       name: "webhook-events-retention",
-      cron: cron("WEBHOOK_EVENTS_RETENTION_CRON", "* * * * *"),
+      cron: cron("webhookEventsRetention", "* * * * *"),
       handler: webhookEventsRetentionTick({
         resolveIntegrationsDb: () => integrationsSql,
       }),
@@ -106,7 +112,7 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
     const resolveSweeper = deps.linearSweeper;
     scheduler.register({
       name: "linear-dispatch",
-      cron: cron("LINEAR_DISPATCH_CRON", "* * * * *"),
+      cron: cron("linearDispatch", "* * * * *"),
       handler: linearDispatchTick({ resolveSweeper }),
     });
   }

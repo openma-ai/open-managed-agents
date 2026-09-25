@@ -1,8 +1,9 @@
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
  *
- * createNodeControlPlane(env) is the composition root: it reads only the
- * environment it is given, builds the SqlClient, stores, auth, blob stores,
+ * createNodeControlPlane(config, deps) is the composition root: it receives
+ * typed configuration (see config.ts, the only place the environment is read)
+ * and already-chosen adapters, builds the SqlClient, stores, auth, blob stores,
  * realtime hub, Session runtimes and background workers, mounts the route
  * bundles from @open-managed-agents/http-routes and the Managed Agents API,
  * and returns a handle that owns all of it. Route bodies live in
@@ -294,7 +295,7 @@ import {
   buildBetterAuth,
   ensureTenantSqlite,
 } from "@open-managed-agents/auth-config";
-import { senderFromEnv } from "@open-managed-agents/email/adapters/nodemailer";
+import { NodemailerSender } from "@open-managed-agents/email/adapters/nodemailer";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import {
   selectBrowserHarness,
@@ -314,7 +315,6 @@ import {
 } from "./lib/event-stream-hub";
 import { PgEventStreamHub } from "./lib/pg-event-stream-hub";
 import { SqlPollingEventStreamHub } from "./lib/sql-polling-event-stream-hub";
-import { resolveRealtimeFanout } from "./realtime-fanout";
 import { NodeHarnessRuntime } from "./lib/node-harness-runtime";
 import { SessionRegistry } from "./registry.js";
 import { buildNodeSkillsRoutes } from "./lib/node-skills-routes.js";
@@ -345,11 +345,8 @@ import {
   createNodeMcpProxyBinding,
   type NodeMcpProxyTarget,
 } from "./lib/http-mcp-proxy.js";
-import {
-  resolveNodeProcessMode,
-  validateNodeProcessEnvironment,
-  type NodeProcessMode,
-} from "./process-mode.js";
+import type { NodeProcessMode } from "./process-mode.js";
+import { redactNodeConfig, type NodeConfig } from "./config.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
 import { Disposables } from "./lifecycle.js";
 import type { SandboxFactory } from "@open-managed-agents/sandbox";
@@ -357,7 +354,7 @@ import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-s
 
 registerCoreHarnesses();
 
-export type NodeEnvironment = Readonly<Record<string, string | undefined>>;
+export type { NodeEnvironment } from "./config.js";
 
 /** A fully assembled Node control plane. Nothing listens or polls until start(). */
 export type NodeControlPlaneApp = Hono<{
@@ -408,7 +405,7 @@ export interface NodeControlPlane {
  * entrypoint decides when to listen and how to handle signals.
  */
 export async function createNodeControlPlane(
-  env: NodeEnvironment,
+  config: NodeConfig,
   deps: NodeControlPlaneDeps = {},
 ): Promise<NodeControlPlane> {
   const log: { current: Logger | null } = { current: null };
@@ -419,21 +416,21 @@ export async function createNodeControlPlane(
       else console.warn(`[main-node] ${message}`, err);
     },
   });
-  return disposables.guard(() => assembleNodeControlPlane(env, deps, disposables, log));
+  return disposables.guard(() => assembleNodeControlPlane(config, deps, disposables, log));
 }
 
 async function assembleNodeControlPlane(
-  env: NodeEnvironment,
+  config: NodeConfig,
   deps: NodeControlPlaneDeps,
   disposables: Disposables,
   log: { current: Logger | null },
 ): Promise<NodeControlPlane> {
 
-  const processMode = resolveNodeProcessMode(env);
-  validateNodeProcessEnvironment(env);
+  const { processMode } = config;
+  const sandboxEnvironment = config.sandbox.environment;
   const ownsLongLivedProcesses = processMode === "standalone";
   const standaloneSandboxProvider = ownsLongLivedProcesses && deps.sandboxFactory === undefined
-    ? resolveSandboxProviderForEnvironment(env)
+    ? resolveSandboxProviderForEnvironment(sandboxEnvironment)
     : null;
 
   const toMarkdownProvider = nodeToMarkdown();
@@ -451,6 +448,7 @@ async function assembleNodeControlPlane(
   });
   setRootLogger(logger);
   log.current = logger;
+  logger.info({ op: "main-node.config", config: redactNodeConfig(config) }, "effective configuration");
 
   const metrics: NodeMetricsHandle = await createNodeMetricsRecorder();
   const tracer: NodeTracerHandle = await createNodeTracer({
@@ -460,10 +458,10 @@ async function assembleNodeControlPlane(
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────
 
-  const dbUrl = env.DATABASE_URL ?? "";
-  const usePostgres = dbUrl.startsWith("postgres://") || dbUrl.startsWith("postgresql://");
-  const useMysql = dbUrl.startsWith("mysql://") || dbUrl.startsWith("mysql2://");
-  const dialect = usePostgres ? "postgres" : useMysql ? "mysql" : "sqlite";
+  const dbUrl = config.database.kind === "sqlite" ? "" : config.database.url;
+  const usePostgres = config.database.kind === "postgres";
+  const useMysql = config.database.kind === "mysql";
+  const dialect = config.database.kind;
 
   let sql: SqlClient;
   let backendDescription: string;
@@ -500,7 +498,7 @@ async function assembleNodeControlPlane(
       await (sql as import("@open-managed-agents/sql-client").Mysql2SqlClient).close();
     };
   } else {
-    const dbPath = env.DATABASE_PATH ?? "./data/oma.db";
+    const dbPath = config.database.kind === "sqlite" ? config.database.path : "./data/oma.db";
     mkdirSync(dirname(dbPath), { recursive: true });
     sql = await createBetterSqlite3SqlClient(dbPath);
     const { drizzle: drizzleBetterSqlite3 } = await import("drizzle-orm/better-sqlite3");
@@ -576,7 +574,7 @@ async function assembleNodeControlPlane(
   // encrypt OAuth tokens etc.). Tables are part of the consolidated baseline
   // above so they're always created — the gate now only controls subsystem
   // wiring, not schema bootstrap.
-  const platformRootSecret = env.PLATFORM_ROOT_SECRET;
+  const platformRootSecret = config.platformRootSecret;
   const openAIAgentsConfigurationCipher = platformRootSecret === undefined
     ? null
     : new WebCryptoAesGcm(platformRootSecret, "openai.agents.configuration");
@@ -593,9 +591,9 @@ async function assembleNodeControlPlane(
 
   // ─── Auth ───────────────────────────────────────────────────────────────
 
-  const authDisabled = env.AUTH_DISABLED === "1";
-  const authDbPath = env.AUTH_DATABASE_PATH ?? "./data/auth.db";
-  const sender = senderFromEnv(env);
+  const authDisabled = config.auth.disabled;
+  const authDbPath = config.auth.databasePath;
+  const sender = config.email === null ? null : new NodemailerSender(config.email);
 
   let auth: ReturnType<typeof buildBetterAuth> | null = null;
   let authShutdown: (() => Promise<void>) | null = null;
@@ -608,14 +606,14 @@ async function assembleNodeControlPlane(
       auth = buildBetterAuth({
         database: pgPool,
         sender,
-        secret: env.BETTER_AUTH_SECRET ?? randomFallback(),
-        baseURL: env.PUBLIC_BASE_URL,
-        googleClientId: env.GOOGLE_CLIENT_ID,
-        googleClientSecret: env.GOOGLE_CLIENT_SECRET,
-        githubClientId: env.GITHUB_CLIENT_ID,
-        githubClientSecret: env.GITHUB_CLIENT_SECRET,
-        requireEmailVerify: env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
-        cookieDomain: env.AUTH_COOKIE_DOMAIN,
+        secret: config.auth.secret ?? randomFallback(),
+        baseURL: config.http.publicBaseUrl,
+        googleClientId: config.auth.google.clientId,
+        googleClientSecret: config.auth.google.clientSecret,
+        githubClientId: config.auth.github.clientId,
+        githubClientSecret: config.auth.github.clientSecret,
+        requireEmailVerify: config.auth.requireEmailVerify,
+        cookieDomain: config.auth.cookieDomain,
         ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
       });
       authShutdown = async () => {
@@ -627,14 +625,14 @@ async function assembleNodeControlPlane(
       auth = buildBetterAuth({
         database: mysqlPool,
         sender,
-        secret: env.BETTER_AUTH_SECRET ?? randomFallback(),
-        baseURL: env.PUBLIC_BASE_URL,
-        googleClientId: env.GOOGLE_CLIENT_ID,
-        googleClientSecret: env.GOOGLE_CLIENT_SECRET,
-        githubClientId: env.GITHUB_CLIENT_ID,
-        githubClientSecret: env.GITHUB_CLIENT_SECRET,
-        requireEmailVerify: env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
-        cookieDomain: env.AUTH_COOKIE_DOMAIN,
+        secret: config.auth.secret ?? randomFallback(),
+        baseURL: config.http.publicBaseUrl,
+        googleClientId: config.auth.google.clientId,
+        googleClientSecret: config.auth.google.clientSecret,
+        githubClientId: config.auth.github.clientId,
+        githubClientSecret: config.auth.github.clientSecret,
+        requireEmailVerify: config.auth.requireEmailVerify,
+        cookieDomain: config.auth.cookieDomain,
         ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
       });
     } else {
@@ -650,14 +648,14 @@ async function assembleNodeControlPlane(
       auth = buildBetterAuth({
         database: authDb,
         sender,
-        secret: env.BETTER_AUTH_SECRET ?? randomFallback(),
-        baseURL: env.PUBLIC_BASE_URL,
-        googleClientId: env.GOOGLE_CLIENT_ID,
-        googleClientSecret: env.GOOGLE_CLIENT_SECRET,
-        githubClientId: env.GITHUB_CLIENT_ID,
-        githubClientSecret: env.GITHUB_CLIENT_SECRET,
-        requireEmailVerify: env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
-        cookieDomain: env.AUTH_COOKIE_DOMAIN,
+        secret: config.auth.secret ?? randomFallback(),
+        baseURL: config.http.publicBaseUrl,
+        googleClientId: config.auth.google.clientId,
+        googleClientSecret: config.auth.google.clientSecret,
+        githubClientId: config.auth.github.clientId,
+        githubClientSecret: config.auth.github.clientSecret,
+        requireEmailVerify: config.auth.requireEmailVerify,
+        cookieDomain: config.auth.cookieDomain,
         ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
       });
       authShutdown = async () => {
@@ -695,26 +693,23 @@ async function assembleNodeControlPlane(
     accessKey: string;
     secretKey: string;
     region: string;
+    pollIntervalMs: number;
   } | null = null;
 
   if (deps.memoryBlobs !== undefined) {
     memoryBlobs = deps.memoryBlobs.store;
     memoryBlobDescription = deps.memoryBlobs.description;
-  } else if (
-    env.MEMORY_S3_ENDPOINT &&
-    env.MEMORY_S3_BUCKET &&
-    env.MEMORY_S3_ACCESS_KEY &&
-    env.MEMORY_S3_SECRET_KEY
-  ) {
+  } else if (config.blobs.memory.kind === "s3") {
     const { S3BlobStore } = await import(
       "@open-managed-agents/memory-store/adapters/s3-blob"
     );
     s3MemoryConfig = {
-      endpoint: env.MEMORY_S3_ENDPOINT,
-      bucket: env.MEMORY_S3_BUCKET,
-      accessKey: env.MEMORY_S3_ACCESS_KEY,
-      secretKey: env.MEMORY_S3_SECRET_KEY,
-      region: env.MEMORY_S3_REGION ?? "us-east-1",
+      endpoint: config.blobs.memory.endpoint,
+      bucket: config.blobs.memory.bucket,
+      accessKey: config.blobs.memory.accessKey,
+      secretKey: config.blobs.memory.secretKey,
+      region: config.blobs.memory.region,
+      pollIntervalMs: config.blobs.memory.pollIntervalMs ?? 30_000,
     };
     memoryBlobs = new S3BlobStore({
       endpoint: s3MemoryConfig.endpoint,
@@ -725,7 +720,7 @@ async function assembleNodeControlPlane(
     });
     memoryBlobDescription = `s3 ${s3MemoryConfig.endpoint}/${s3MemoryConfig.bucket}`;
   } else {
-    memoryBlobLocalDir = env.MEMORY_BLOB_DIR ?? "./data/memory-blobs";
+    memoryBlobLocalDir = config.blobs.memory.kind === "localfs" ? config.blobs.memory.dir : "./data/memory-blobs";
     memoryBlobs = new MemoryLocalFsBlobStore({ baseDir: memoryBlobLocalDir });
     memoryBlobDescription = `localfs ${memoryBlobLocalDir}`;
   }
@@ -757,7 +752,7 @@ async function assembleNodeControlPlane(
   // code path. Every SQL backend uses the same durable lease/fence contract.
   // Set MEMORY_QUEUE=disabled to skip wiring and fall back to the legacy
   // direct-call watcher.
-  const useQueue = (env.MEMORY_QUEUE ?? "auto") !== "disabled";
+  const useQueue = config.memoryQueue !== "disabled";
   const memoryWatcher = !ownsLongLivedProcesses
     ? { stop: async () => {} }
     : memoryBlobLocalDir && useQueue
@@ -781,20 +776,19 @@ async function assembleNodeControlPlane(
     // memory_blob_poller_lease lives in the consolidated baseline already; no
     // separate schema bootstrap needed here.
     const replicaId = `replica_${process.pid}_${Math.floor(Math.random() * 1e9).toString(36)}`;
-    const intervalSec = Number(env.MEMORY_S3_POLL_INTERVAL_SEC ?? 30);
     const { startS3MemoryPoller } = await import("./lib/s3-memory-poller.js");
     s3Poller = await startS3MemoryPoller({
       sql,
       sqlDialect: dialect,
       memoryRepo,
       replicaId,
-      intervalMs: Math.max(5_000, intervalSec * 1000),
+      intervalMs: s3MemoryConfig.pollIntervalMs,
       s3: s3MemoryConfig,
     });
     disposables.add("s3_poller", () => s3Poller?.stop());
   }
 
-  const outputsRoot = env.SESSION_OUTPUTS_DIR ?? "./data/session-outputs";
+  const outputsRoot = config.paths.sessionOutputs;
   mkdirSync(outputsRoot, { recursive: true });
 
   // ─── Files-store blob backend ────────────────────────────────────────
@@ -809,22 +803,17 @@ async function assembleNodeControlPlane(
   if (deps.filesBlobs !== undefined) {
     filesBlob = deps.filesBlobs.store;
     filesBlobDescription = deps.filesBlobs.description;
-  } else if (
-    env.FILES_S3_ENDPOINT &&
-    env.FILES_S3_BUCKET &&
-    env.FILES_S3_ACCESS_KEY &&
-    env.FILES_S3_SECRET_KEY
-  ) {
+  } else if (config.blobs.files.kind === "s3") {
     filesBlob = new FilesS3BlobStore({
-      endpoint: env.FILES_S3_ENDPOINT,
-      bucket: env.FILES_S3_BUCKET,
-      accessKeyId: env.FILES_S3_ACCESS_KEY,
-      secretAccessKey: env.FILES_S3_SECRET_KEY,
-      region: env.FILES_S3_REGION ?? "us-east-1",
+      endpoint: config.blobs.files.endpoint,
+      bucket: config.blobs.files.bucket,
+      accessKeyId: config.blobs.files.accessKey,
+      secretAccessKey: config.blobs.files.secretKey,
+      region: config.blobs.files.region,
     });
-    filesBlobDescription = `s3 ${env.FILES_S3_ENDPOINT}/${env.FILES_S3_BUCKET}`;
+    filesBlobDescription = `s3 ${config.blobs.files.endpoint}/${config.blobs.files.bucket}`;
   } else {
-    const filesBlobDir = env.FILES_BLOB_DIR ?? "./data/files-blobs";
+    const filesBlobDir = config.blobs.files.dir;
     mkdirSync(filesBlobDir, { recursive: true });
     filesBlob = new FilesLocalFsBlobStore({ baseDir: filesBlobDir });
     filesBlobDescription = `localfs ${filesBlobDir}`;
@@ -849,7 +838,7 @@ async function assembleNodeControlPlane(
     });
   }
 
-  const realtimeFanout = resolveRealtimeFanout(env, dialect);
+  const realtimeFanout = config.realtime;
   const realtimeDescription = deps.realtimeHub !== undefined
     ? "custom"
     : realtimeFanout.mode === "memory" ? "in-process" : realtimeFanout.mode;
@@ -883,7 +872,7 @@ async function assembleNodeControlPlane(
     workdir: string,
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
     const sandboxFactory = deps.sandboxFactory ?? await loadSandboxFactory(
-      standaloneSandboxProvider ?? resolveSandboxProviderForEnvironment(env),
+      standaloneSandboxProvider ?? resolveSandboxProviderForEnvironment(sandboxEnvironment),
     );
     return sandboxFactory(
       {
@@ -898,7 +887,7 @@ async function assembleNodeControlPlane(
         },
         outputsRoot,
       },
-      env,
+      sandboxEnvironment,
     );
   }
 
@@ -944,7 +933,7 @@ async function assembleNodeControlPlane(
         `[model-card] lookup failed, falling back to env: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    const apiKey = env.ANTHROPIC_API_KEY;
+    const apiKey = config.model.apiKey;
     if (!apiKey) {
       throw new Error(
         "No model card matched and ANTHROPIC_API_KEY is unset — configure a model card or set the env var",
@@ -953,8 +942,8 @@ async function assembleNodeControlPlane(
     return {
       wireModel: handle,
       apiKey,
-      baseURL: env.ANTHROPIC_BASE_URL,
-      customHeaders: parseCustomHeaders(env.ANTHROPIC_CUSTOM_HEADERS),
+      baseURL: config.model.baseUrl,
+      customHeaders: config.model.customHeaders,
     };
   }
 
@@ -1002,7 +991,7 @@ async function assembleNodeControlPlane(
     sandboxOrchestrator,
     newEventLog,
     buildSandbox,
-    sandboxWorkdirRoot: env.SANDBOX_WORKDIR ?? "./data/sandboxes",
+    sandboxWorkdirRoot: config.paths.sandboxWorkdir,
     sqlDialect: dialect,
     buildModel: (agent, tenantId) => buildNodeLanguageModel(tenantId, agent.model),
     buildTools: async (agent, sandbox, tenantId) => {
@@ -1333,7 +1322,7 @@ async function assembleNodeControlPlane(
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
     buildSandbox: async ({ session }) => buildSandbox(
         session.id,
-        join(env.SANDBOX_WORKDIR ?? "./data/sandboxes", session.id),
+        join(config.paths.sandboxWorkdir, session.id),
       ),
     prepareSandbox: async ({
       workspaceId,
@@ -1528,13 +1517,12 @@ async function assembleNodeControlPlane(
         managedRuntimeRunner.cancel(input);
       },
     },
-    ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ??
-      `node:${process.pid}:${nanoid()}`,
+    ownerId: config.execution.ownerId,
     clock: { now: () => new Date() },
     ids: { nextAttemptId: () => `attempt_${nanoid()}` },
     leaseTtlMs: 30_000,
     heartbeatIntervalMs: 10_000,
-    maxConcurrent: Number(env.OMA_SESSION_EXECUTION_CONCURRENCY ?? 8),
+    maxConcurrent: config.execution.concurrency,
     onError: (err) => logger.error(
       { err, op: "main-node.session_execution.background_failed" },
       "managed Session execution background operation failed",
@@ -1596,7 +1584,7 @@ async function assembleNodeControlPlane(
         sessionId,
       });
       await rm(
-        join(env.SANDBOX_WORKDIR ?? "./data/sandboxes", sessionId),
+        join(config.paths.sandboxWorkdir, sessionId),
         { recursive: true, force: true },
       );
     },
@@ -1709,13 +1697,13 @@ async function assembleNodeControlPlane(
       : new SealedEnvironmentWorkSessionCredentialIssuer({
           crypto: managedEnvironmentWorkSessionTokenCrypto,
           now: () => new Date(),
-          ...(env.PUBLIC_BASE_URL !== undefined && {
-            apiBaseUrl: env.PUBLIC_BASE_URL,
+          ...(config.http.publicBaseUrl !== undefined && {
+            apiBaseUrl: config.http.publicBaseUrl,
           }),
         });
-  const managedEnvironmentWebhookUrl = env.OMA_MANAGED_AGENTS_WEBHOOK_URL;
+  const managedEnvironmentWebhookUrl = config.managedWebhooks.url;
   const managedEnvironmentWebhookKey =
-    env.OMA_MANAGED_AGENTS_WEBHOOK_SIGNING_KEY;
+    config.managedWebhooks.signingKey;
   const managedEnvironmentWebhook =
     managedEnvironmentWebhookUrl !== undefined
     && managedEnvironmentWebhookKey !== undefined
@@ -1723,7 +1711,7 @@ async function assembleNodeControlPlane(
           endpoint: managedEnvironmentWebhookUrl,
           signingKey: managedEnvironmentWebhookKey,
           organizationId: ({ workspaceId }) =>
-            env.OMA_MANAGED_AGENTS_ORGANIZATION_ID ?? workspaceId,
+            config.managedWebhooks.organizationId ?? workspaceId,
           nextEventId: () => `whe_${nanoid()}`,
         })
       : null;
@@ -1831,13 +1819,13 @@ async function assembleNodeControlPlane(
   );
 
   const managedDreamCurator =
-    env.DREAM_CURATOR_MODE === "dedup" ||
-      env.ANTHROPIC_API_KEY === undefined
+    config.dreamCurator === "dedup" ||
+      config.model.apiKey === undefined
     ? new DeduplicatingDreamCurator()
     : new AnthropicMessagesDreamCurator({
-        apiKey: env.ANTHROPIC_API_KEY,
-        ...(env.ANTHROPIC_BASE_URL !== undefined && {
-          baseUrl: env.ANTHROPIC_BASE_URL,
+        apiKey: config.model.apiKey,
+        ...(config.model.baseUrl !== undefined && {
+          baseUrl: config.model.baseUrl,
         }),
       });
   const managedDreamsPlatform = createNodePlatform({
@@ -1924,7 +1912,7 @@ async function assembleNodeControlPlane(
   );
 
   const managedTunnelProvisioner = new LocalTunnelProvisioner({
-    domainSuffix: env.TUNNEL_DOMAIN_SUFFIX ?? "tunnels.localhost",
+    domainSuffix: config.tunnels.domainSuffix,
     nextTokenId: () => `ttok_${nanoid()}`,
   });
   const managedTunnelTokens = new WebCryptoTunnelTokenManager({
@@ -2302,7 +2290,7 @@ async function assembleNodeControlPlane(
   // port (acceptable for self-host single-operator deploys, documented in
   // .env.example). For prod, ops should either set the token or front the
   // app with a reverse proxy that filters /metrics.
-  const metricsToken = env.METRICS_BIND_TOKEN;
+  const metricsToken = config.http.metricsToken;
   app.get("/metrics", async (c) => {
     if (metricsToken && c.req.header("x-metrics-token") !== metricsToken) {
       return c.text("forbidden", 403);
@@ -2342,11 +2330,11 @@ async function assembleNodeControlPlane(
       providers: authDisabled
         ? []
         : listAuthProviders({
-            emailOtp: env.AUTH_REQUIRE_EMAIL_VERIFY === "1",
-            googleClientId: env.GOOGLE_CLIENT_ID,
-            googleClientSecret: env.GOOGLE_CLIENT_SECRET,
-            githubClientId: env.GITHUB_CLIENT_ID,
-            githubClientSecret: env.GITHUB_CLIENT_SECRET,
+            emailOtp: config.auth.requireEmailVerify,
+            googleClientId: config.auth.google.clientId,
+            googleClientSecret: config.auth.google.clientSecret,
+            githubClientId: config.auth.github.clientId,
+            githubClientSecret: config.auth.github.clientSecret,
           }),
       turnstile_site_key: null,
     }),
@@ -2374,7 +2362,7 @@ async function assembleNodeControlPlane(
       };
     },
     resolveApiKey: async (apiKey) => {
-      if (env.API_KEY && apiKey === env.API_KEY) {
+      if (config.http.apiKey && apiKey === config.http.apiKey) {
         return { tenantId: "default" };
       }
       const hash = await sha256Hex(apiKey);
@@ -2579,9 +2567,9 @@ async function assembleNodeControlPlane(
   v1.route("/oma/dreams", buildDreamRoutes({
     services,
     curatorEnv: {
-      DREAM_CURATOR_MODE: env.DREAM_CURATOR_MODE,
-      ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-      ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
+      DREAM_CURATOR_MODE: config.dreamCurator === "dedup" ? "dedup" : undefined,
+      ANTHROPIC_API_KEY: config.model.apiKey,
+      ANTHROPIC_BASE_URL: config.model.baseUrl,
     },
   }));
   v1.route("/tunnels", managedTunnelsRoutes);
@@ -2756,8 +2744,8 @@ async function assembleNodeControlPlane(
   // install-proxy endpoints (start-a1 / credentials / handoff-link /
   // personal-token) call into the in-process InstallBridge, mirroring the
   // CF /linear/publications/* etc. wire shapes verbatim.
-  const integrationsInternalToken = env.INTEGRATIONS_INTERNAL_TOKEN ?? null;
-  const gatewayOrigin = env.GATEWAY_ORIGIN ?? env.PUBLIC_BASE_URL ?? "http://localhost:8787";
+  const integrationsInternalToken = config.integrationsInternalToken ?? null;
+  const gatewayOrigin = config.http.gatewayOrigin;
   let installBridge: NodeInstallBridge | null = null;
   if (platformRootSecret) {
     installBridge = new NodeInstallBridge({
@@ -2797,7 +2785,7 @@ async function assembleNodeControlPlane(
     ownsLongLivedProcesses
     && platformRootSecret
     && installBridge
-    && env.FEISHU_WS_RUNNER === "1"
+    && config.feishuWsRunner
   ) {
     try {
       const { startFeishuWsRunner } = await import("./lib/ws-feishu-runner.js");
@@ -3050,7 +3038,7 @@ async function assembleNodeControlPlane(
   void _capResolver;
 
   // ── Console UI (optional) ──
-  const consoleDir = env.CONSOLE_DIR;
+  const consoleDir = config.http.consoleDir;
   if (consoleDir) {
     const cwd = process.cwd();
     const rootRel = consoleDir.startsWith("/")
@@ -3099,7 +3087,7 @@ async function assembleNodeControlPlane(
     },
     memory: memoryService,
     integrationsSql: platformRootSecret ? sql : null,
-    env,
+    cron: config.cron,
   });
   disposables.add("scheduler", () => scheduler.stop());
   // Registered last so it stops first: it drives the Session compositions above.
@@ -3151,17 +3139,6 @@ async function loadSandboxFactory(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-function parseCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
-  if (!raw) return undefined;
-  const out: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [name, ...rest] = part.split(":");
-    if (!name || rest.length === 0) continue;
-    out[name.trim()] = rest.join(":").trim();
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
 
 /**
  * In-process forwarder for the package's `installProxy` deps. Each subpath

@@ -10,24 +10,33 @@
 
 import { serve } from "@hono/node-server";
 
+import { loadNodeConfig } from "./config.js";
 import { createNodeControlPlane } from "./control-plane.js";
 
+export {
+  loadNodeConfig,
+  redactNodeConfig,
+  NodeConfigError,
+  type NodeConfig,
+  type NodeEnvironment,
+} from "./config.js";
 export {
   createNodeControlPlane,
   type NodeControlPlane,
   type NodeControlPlaneApp,
-  type NodeEnvironment,
+  type NodeControlPlaneDeps,
 } from "./control-plane.js";
 
-const controlPlane = await createNodeControlPlane(process.env);
+// The only read of process.env: everything else receives typed configuration.
+const config = loadNodeConfig(process.env);
+const controlPlane = await createNodeControlPlane(config);
 const { logger } = controlPlane;
 
 export const app = controlPlane.app;
 export const shutdownNodeApp = (signal = "dispose"): Promise<void> => controlPlane.stop(signal);
 
 if (controlPlane.processMode === "standalone") {
-  const port = Number(process.env.PORT ?? 8787);
-  const host = process.env.HOST ?? "0.0.0.0";
+  const { host, port } = config.http;
   await controlPlane.start();
   serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     logger.info(
