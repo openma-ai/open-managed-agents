@@ -67,7 +67,7 @@
     "fflate": "^0.8.2"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "esbuild": "^0.25.0",
     "vitest": "^4.1.3"
   }

@@ -19,7 +19,7 @@
     "@open-managed-agents/sandbox-adapter-e2b": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "vitest": "^4.1.3"
   }
 }
