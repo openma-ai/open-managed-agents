@@ -6,7 +6,7 @@ import {
   type DeploymentTarget,
 } from "../lib/deploy-wizard";
 
-const targetOrder: DeploymentTarget[] = ["cloudflare", "docker", "fly", "vercel"];
+const targetOrder: DeploymentTarget[] = ["cloudflare", "docker", "fly", "render", "vercel"];
 const initialPlan = buildDeploymentPlan({
   target: "cloudflare",
   modelSetup: "console",
@@ -77,18 +77,10 @@ const initialPlan = buildDeploymentPlan({
                     value={id}
                     checked={id === "cloudflare"}
                   />
-                  <span class="target-icon" aria-hidden="true">
-                    {id === "cloudflare" && (
-                      <svg viewBox="0 0 24 24"><path d="M8.2 16.8h10.1a3.2 3.2 0 0 0 .3-6.4A5.6 5.6 0 0 0 8 9.2a4 4 0 0 0 .2 7.6Z"></path><path d="M3.5 16.8h2.2"></path></svg>
-                    )}
-                    {id === "docker" && (
-                      <svg viewBox="0 0 24 24"><path d="M3 13h17c0 4.5-3.2 7-7.7 7H8.5C5.5 20 3 17.5 3 13Z"></path><path d="M7 10h3v3H7zM10 7h3v3h-3zM10 10h3v3h-3zM13 10h3v3h-3zM17.5 11.5c.5-1.5 1.4-2.2 2.5-2.5"></path></svg>
-                    )}
-                    {id === "fly" && (
-                      <svg viewBox="0 0 24 24"><path d="M5 17.5 18.5 4l1.5 1.5L14.5 20l-3-5.5L5 17.5Z"></path><path d="m11.5 14.5 2-2"></path></svg>
-                    )}
-                    {id === "vercel" && (
-                      <svg viewBox="0 0 24 24"><path d="m12 4 9 16H3L12 4Z"></path></svg>
+                  <span class:list={["target-icon", ["fly", "render", "vercel"].includes(id) && "has-dark-brand"]} aria-hidden="true">
+                    <img class="brand-light" src={`/brands/${id}.svg`} width="28" height="28" alt="" />
+                    {["fly", "render", "vercel"].includes(id) && (
+                      <img class="brand-dark" src={`/brands/${id}-dark.svg`} width="28" height="28" alt="" />
                     )}
                   </span>
                   <span class="target-copy">
@@ -183,15 +175,22 @@ const initialPlan = buildDeploymentPlan({
           <section class="provider-launch" data-provider-launch hidden>
             <div>
               <strong>Deploy the control plane</strong>
-              <p>Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.</p>
+              <p data-provider-description>Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.</p>
             </div>
             <a class="vercel-deploy-button" data-vercel-deploy target="_blank" rel="noopener noreferrer">
               Deploy with Vercel
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 15H4l8-15Z"></path></svg>
             </a>
           </section>
 
-          <div class="command-block">
+          <section class="provider-launch" aria-label="Standalone installer">
+            <div>
+              <strong>@openma/self-host · CLI preview</strong>
+              <p>Available after the first npm release. Docker, Fly and Render use published images; Render opens its official CLI authorization flow. Vercel currently hands off to its web flow. Cloudflare still needs the source setup guide.</p>
+              <code data-installer-command>npx @openma/self-host install --target cloudflare</code>
+            </div>
+          </section>
+
+          <div class="command-block" data-terminal-command>
             <div class="command-toolbar">
               <span data-command-label>Terminal</span>
               <button type="button" data-copy-command>
@@ -207,7 +206,7 @@ const initialPlan = buildDeploymentPlan({
               <span>Verify after deploy</span>
               <code data-verification-output>{initialPlan.verificationCommand}</code>
             </div>
-            <a href="https://docs.openma.dev/self-host/overview/" target="_blank" rel="noopener noreferrer">
+            <a data-platform-guide href="https://docs.openma.dev/self-host/overview/" target="_blank" rel="noopener noreferrer">
               Full guide
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"></path></svg>
             </a>
@@ -264,6 +263,7 @@ const initialPlan = buildDeploymentPlan({
     import {
       buildDeploymentPlan,
       parseBrowserSelection,
+      parseDeploymentTarget,
       parseVercelDeploymentCallback,
       serializeBrowserSelection,
       type DataMode,
@@ -291,6 +291,13 @@ const initialPlan = buildDeploymentPlan({
       if (Number.isInteger(storedStep) && storedStep >= 1 && storedStep <= 3) {
         step = storedStep;
         furthestStep = storedStep;
+      }
+      const linkedTarget = parseDeploymentTarget(new URLSearchParams(window.location.search));
+      if (linkedTarget) {
+        target = linkedTarget;
+        dataMode = target === "docker" || target === "fly" ? "sqlite" : "managed";
+        step = 1;
+        furthestStep = 1;
       }
       if (vercelCallback) {
         target = "vercel";
@@ -336,8 +343,15 @@ const initialPlan = buildDeploymentPlan({
 
         const providerLaunch = get<HTMLElement>("[data-provider-launch]");
         const deployLink = get<HTMLAnchorElement>("[data-vercel-deploy]");
-        if (providerLaunch) providerLaunch.hidden = target !== "vercel" || Boolean(vercelCallback);
-        if (deployLink && plan.launchUrl) deployLink.href = plan.launchUrl;
+        if (providerLaunch) providerLaunch.hidden = !plan.launchUrl || (target === "vercel" && Boolean(vercelCallback));
+        if (deployLink && plan.launchUrl) {
+          deployLink.href = plan.launchUrl;
+          deployLink.textContent = target === "render" ? "Open Render dashboard" : `Deploy with ${plan.name}`;
+        }
+        const providerDescription = get<HTMLElement>("[data-provider-description]");
+        if (providerDescription) providerDescription.textContent = target === "render"
+          ? "Use the CLI command to authorize and deploy, or follow the full guide in the Render dashboard. Choose Existing Image; connecting GitHub is optional."
+          : "Vercel clones the repository, provisions Neon Postgres, and collects the remaining values directly. You return here after deployment to finish Sandbox setup.";
 
         const callbackPanel = get<HTMLElement>("[data-vercel-callback]");
         if (callbackPanel) callbackPanel.hidden = target !== "vercel" || !vercelCallback;
@@ -353,12 +367,20 @@ const initialPlan = buildDeploymentPlan({
           }
         }
 
+        const guide = get<HTMLAnchorElement>("[data-platform-guide]");
+        if (guide) guide.href = `https://docs.openma.dev/self-host/${target === "docker" ? "node-docker" : target === "cloudflare" ? "deploy" : target === "vercel" ? "overview" : target}/`;
+        const installerCommand = get<HTMLElement>("[data-installer-command]");
+        if (installerCommand) installerCommand.textContent = `npx @openma/self-host install --target ${target}${target === "docker" || target === "fly" ? ` --data-mode ${dataMode === "postgres" ? "postgres" : "sqlite"}` : ""}`;
+        const terminalCommand = get<HTMLElement>("[data-terminal-command]");
+        if (terminalCommand) terminalCommand.hidden = false;
         const commandLabel = get<HTMLElement>("[data-command-label]");
         if (commandLabel) commandLabel.textContent = target === "vercel" ? "CLI fallback" : "Terminal";
 
         const description = get<HTMLElement>("[data-launch-description]");
         if (description) {
-          description.textContent = target === "vercel"
+          description.textContent = target === "render"
+            ? "Create the service in your Render account, then open its URL to finish model setup."
+            : target === "vercel"
             ? "The packaged Function handles API traffic, signed webhook wakeups, and bounded fallback polls; the agent loop runs inside Vercel Sandbox."
             : target === "fly"
               ? "The Fly adapter keeps one Machine awake, mounts durable state, derives its public origin, and starts the portable Node control plane."
@@ -377,6 +399,9 @@ const initialPlan = buildDeploymentPlan({
             if (target === "vercel") {
               title.textContent = "Packaged beta boundary";
               body.textContent = "External Postgres and object storage are durable. The Function is bounded; claimed Work, ACP steering, and the long-running harness loop stay inside Vercel Sandbox.";
+            } else if (target === "render") {
+              title.textContent = "Persistent disk";
+              body.textContent = "Render mounts a paid disk at /app/data. Keep one service instance for SQLite and local files; E2B runs the isolated sandboxes.";
             } else {
               title.textContent = "Provider-managed state";
               body.textContent = "Cloudflare provisions D1, R2, KV, Queue, Durable Objects, and Containers in your account.";
@@ -649,8 +674,13 @@ const initialPlan = buildDeploymentPlan({
   .target-card:hover { border-color: var(--color-border-strong); background: var(--color-bg-surface); }
   .target-card:focus-within { outline: 1px solid var(--color-brand); outline-offset: 1px; }
   .target-card.is-selected { border-color: color-mix(in srgb, var(--color-brand) 55%, var(--color-border)); background: color-mix(in srgb, var(--color-brand-subtle) 50%, var(--color-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand) 10%, transparent); }
-  .target-icon { display: grid; width: 2rem; height: 2rem; place-items: center; border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-bg); color: var(--color-fg-muted); }
-  .target-icon svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .target-icon { display: grid; width: 2rem; height: 2rem; place-items: center; }
+  .target-icon img { grid-area: 1 / 1; width: 1.75rem; height: 1.75rem; object-fit: contain; }
+  /* The official Render export has a 400px mark inside an 800px artboard. */
+  [data-target-card="render"] .target-icon img { transform: scale(2); }
+  .target-icon .brand-dark { display: none; }
+  :global(.dark) .has-dark-brand .brand-light { display: none; }
+  :global(.dark) .has-dark-brand .brand-dark { display: block; }
   .target-copy { min-width: 0; }
   .target-title-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 2rem; }
   .target-title-row strong { font-size: .86rem; font-weight: 600; }
@@ -698,6 +728,7 @@ const initialPlan = buildDeploymentPlan({
   }
   .provider-launch[hidden], .deployment-return[hidden] { display: none; }
   .provider-launch { justify-content: space-between; background: color-mix(in srgb, var(--color-bg-surface) 42%, var(--color-bg)); }
+  .provider-launch code { display: block; margin-top: .6rem; overflow-wrap: anywhere; font-size: .75rem; }
   .provider-launch strong { display: block; font-size: .8rem; font-weight: 600; }
   .provider-launch p { max-width: 31rem; margin: .2rem 0 0; color: var(--color-fg-muted); font-size: .7rem; line-height: 1.45; }
   .vercel-deploy-button {
