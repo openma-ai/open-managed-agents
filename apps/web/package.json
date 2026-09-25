@@ -24,6 +24,6 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8"
   },
   "devDependencies": {
-    "wrangler": "^4.130.0"
+    "wrangler": "^4.136.1"
   }
 }
