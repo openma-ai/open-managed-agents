@@ -136,9 +136,9 @@
     "wrangler": "^4.130.0"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.53",
-    "@ai-sdk/openai": "^4.0.66",
-    "ai": "7.0.99",
+    "@ai-sdk/anthropic": "4.0.59",
+    "@ai-sdk/openai": "^4.0.72",
+    "ai": "7.0.109",
     "better-auth": "^1.6.3",
     "drizzle-orm": "^0.45.2",
     "zod": "4.3.6"
