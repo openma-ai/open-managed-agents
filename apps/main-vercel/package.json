@@ -19,7 +19,7 @@
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/vercel-sandbox-contract": "workspace:*",
     "@cloudflare/workers-types": "^5.20260908.1",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "@vercel/functions": "^3.0.0",
     "@vercel/sandbox": "^3.2.1"
   },

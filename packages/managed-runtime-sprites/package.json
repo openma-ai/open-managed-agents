@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@fly/sprites": "0.2.2",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "vitest": "^4.1.3"
   }
 }
