@@ -349,6 +349,7 @@ import type { NodeProcessMode } from "./process-mode.js";
 import { redactNodeConfig, type NodeConfig } from "./config.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
 import { Disposables } from "./lifecycle.js";
+import { createManagedIdGenerator } from "./managed-ids.js";
 import type { SandboxFactory } from "@open-managed-agents/sandbox";
 import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
 
@@ -537,38 +538,6 @@ async function assembleNodeControlPlane(
   if (!useMysql) await ensureEventLogSchema(sql, dialect);
   if (databaseShutdown) disposables.add("database", databaseShutdown);
   const managedAgentsPersistence = new SqlAgentPersistence(sql);
-  const managedAgentsPlatform = createNodePlatform({
-    features: {
-      preset: "none",
-      agents: true,
-      environments: true,
-      files: true,
-      memoryStores: true,
-      userProfiles: true,
-    },
-    stores: {
-      agents: managedAgentsPersistence,
-      environments: new SqlEnvironmentPersistence(sql),
-      files: new SqlFileStore(sql),
-      memoryStores: new SqlMemoryStoreStore(sql),
-      userProfiles: new SqlUserProfileStore(sql),
-    },
-    fileContent: () => new BlobFileContentStore(filesBlob),
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        `${namespace === "environment" ? "env" : namespace === "memory_store" ? "memstore" : namespace === "user-profile" ? "uprof" : namespace}_${nanoid()}`,
-    },
-    modules: () => [
-      providePort(userProfileEnrollmentIssuerPort, {
-        issue: async () => ({
-          type: "conflict" as const,
-          message: "User Profile enrollment is unavailable in self-hosted mode",
-        }),
-      }),
-    ],
-  });
-  disposables.add("managed_platform", () => managedAgentsPlatform.stopAll());
 
   // Integrations subsystem boot is gated on PLATFORM_ROOT_SECRET (used to
   // encrypt OAuth tokens etc.). Tables are part of the consolidated baseline
@@ -1272,7 +1241,7 @@ async function assembleNodeControlPlane(
       if (saved) return openAISubagentSession(session, request);
       const member = session.agent.multiagent?.agents.find(item => item.type === "agent" && item.id === request.agentId);
       if (!member || member.type !== "agent") throw new Error("Subagent is not in the configured callable agent roster");
-      const selected = await managedAgentsPlatform.app({ workspaceId }).port(managedAgentsPortTokens.agents).retrieveAgent({ agentId: member.id, version: member.version });
+      const selected = await managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.agents).retrieveAgent({ agentId: member.id, version: member.version });
       if (selected.type !== "found" || selected.agent.archivedAt !== null) throw new Error("Configured subagent is unavailable");
       return { ...session, agent: { ...selected.agent, multiagent: null } };
     },
@@ -1331,10 +1300,10 @@ async function assembleNodeControlPlane(
       runtimeGeneration,
     }) => {
       const preparer = new NodeManagedSessionInputPreparer({
-        files: managedAgentsPlatform
+        files: managedPlatform
           .app({ workspaceId })
           .port(managedAgentsPortTokens.files),
-        skillVersions: managedSkillsPlatform
+        skillVersions: managedPlatform
           .app({ workspaceId })
           .port(managedAgentsPortTokens.skillVersions),
         repositoryCredentials: managedSessionResourceSecrets,
@@ -1411,7 +1380,7 @@ async function assembleNodeControlPlane(
     },
     afterExecution: withReportedArtifactPublication(createNodeOpenAIArtifactPublisher({
       historyForWorkspace: workspaceId => new SessionRuntimeHistoryApplicationService({ workspaceId, source: managedRuntimeReaders.history }),
-      filesForWorkspace: workspaceId => managedAgentsPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
+      filesForWorkspace: workspaceId => managedPlatform.app({ workspaceId }).port(managedAgentsPortTokens.files),
       secrets: openAIAgentsSecrets,
       isFenceActive: isManagedSessionExecutionFenceActive,
       environmentId: session => `oai_env_${session.id}`,
@@ -1719,92 +1688,28 @@ async function assembleNodeControlPlane(
     sql,
     managedEnvironmentWorkCipher,
   );
-  const managedEnvironmentWorkPlatform = createNodePlatform({
-    features: { preset: "none", environmentWork: true },
-    stores: {
-      environmentWork: managedEnvironmentWorkStore,
-    },
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        `${namespace === "environment-work" ? "work" : namespace}_${nanoid()}`,
-    },
-    modules: () => [
-      providePort(environmentWorkEnvironmentSourcePort, nodeManagedEnvironments),
-      providePort(
-        environmentWorkAvailabilityWaiterPort,
-        managedEnvironmentWorkAvailability,
-      ),
-      providePort(
-        environmentWorkSessionCredentialIssuerPort,
-        managedEnvironmentWorkCredentials,
-      ),
-      providePort(environmentWorkWakeupPort, {
-        notifyRunStarted: async (input) => {
-          if (managedEnvironmentWebhook === null) return;
-          void managedEnvironmentWebhook.notifyRunStarted(input).catch((err) => {
-            logger.error(
-              { err, op: "main-node.environment_work.webhook_failed" },
-              "Managed Agents webhook wake-up failed; poll fallback remains active",
-            );
-          });
-        },
-      }),
-      environmentWorkEnqueuerModule(),
-    ],
-  });
   function managedEnvironmentWorkEnqueuerFor(
     workspaceId: string,
   ) {
-    return managedEnvironmentWorkPlatform
+    return managedPlatform
       .app({ workspaceId })
       .port(environmentSessionWorkEnqueuerPort);
   }
-  const managedDeploymentsPlatform = createNodePlatform({
-    features: {
-      preset: "none",
-      deploymentRuns: true,
-      deployments: true,
-    },
-    stores: {
-      deployments: new SqlDeploymentStore(sql, managedDeploymentCipher),
-      deploymentRuns: new SqlDeploymentRunStore(sql),
-    },
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        `${namespace === "deployment" ? "depl" : namespace === "deployment-run" ? "drun" : namespace}_${nanoid()}`,
-    },
-    modules: (scope) => [
-      providePort(deploymentAgentSourcePort, new SqlDeploymentAgentSource(sql)),
-      providePort(deploymentEnvironmentSourcePort, nodeManagedEnvironments),
-      providePort(deploymentFileSourcePort, new SqlFileMetadataPersistence(sql)),
-      providePort(deploymentMemoryStoreSourcePort, new SqlMemoryStoreSource(sql)),
-      providePort(deploymentSchedulePlannerPort, managedDeploymentSchedulePlanner),
-      providePort(
-        deploymentSessionLauncherPort,
-        managedSessionsComposition.portsFor(scope.workspaceId)
-          .deploymentSessionLauncher,
-      ),
-      providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(sql)),
-    ],
-  });
-  disposables.add("managed_deployments_platform", () => managedDeploymentsPlatform.stopAll());
   const managedDeploymentsRoutes = buildManagedDeploymentRoutes((context) => {
     const workspaceId = (context.var as { tenant_id: string }).tenant_id;
-    return managedDeploymentsPlatform
+    return managedPlatform
       .app({ workspaceId })
       .port(managedAgentsPortTokens.deployments);
   });
   const managedDeploymentRunsRoutes = buildManagedDeploymentRunRoutes((context) => {
     const workspaceId = (context.var as { tenant_id: string }).tenant_id;
-    return managedDeploymentsPlatform
+    return managedPlatform
       .app({ workspaceId })
       .port(managedAgentsPortTokens.deploymentRuns);
   });
 
   const managedEnvironmentsRoutes = buildManagedEnvironmentRoutes((context) =>
-    managedAgentsPlatform
+    managedPlatform
       .app({
         workspaceId: (context.var as { tenant_id: string }).tenant_id,
       })
@@ -1813,7 +1718,7 @@ async function assembleNodeControlPlane(
 
   const managedEnvironmentWorkRoutes = buildManagedEnvironmentWorkRoutes(
     (context) =>
-      managedEnvironmentWorkPlatform
+      managedPlatform
         .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
         .port(managedAgentsPortTokens.environmentWork),
   );
@@ -1828,72 +1733,8 @@ async function assembleNodeControlPlane(
           baseUrl: config.model.baseUrl,
         }),
       });
-  const managedDreamsPlatform = createNodePlatform({
-    features: {
-      preset: "none",
-      dreams: true,
-      memories: true,
-      memoryStores: true,
-    },
-    stores: {
-      dreams: new SqlDreamStore(sql),
-      memoryStores: new SqlMemoryStoreStore(sql),
-      memories: new SqlMemoryDocumentStore(sql),
-    },
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) => `${
-        namespace === "memory_store"
-          ? "memstore"
-          : namespace === "memory"
-            ? "mem"
-            : namespace === "memory-version"
-              ? "memver"
-              : "dream"
-      }_${nanoid()}`,
-    },
-    modules: (scope) => {
-      const memoryStoreSource = new SqlMemoryStoreSource(sql);
-      return [
-        providePort(dreamMemoryStoreSourcePort, memoryStoreSource),
-        providePort(memoryStoreForMemorySourcePort, memoryStoreSource),
-        providePort(memoryContentDescriptorPort, managedMemoryContent),
-        providePort(memoryVersionActorPort, {
-          kind: "service_account",
-          serviceAccountId: "dream_executor",
-        }),
-        providePort(dreamSessionSourcePort, new SqlSessionSource(sql)),
-        providePort(dreamCuratorPort, managedDreamCurator),
-        defineAppModule({
-          name: "managed-agents:dream-memory-workspace",
-          provides: [dreamMemoryWorkspacePort],
-          requires: [
-            managedAgentsPortTokens.memoryStores,
-            managedAgentsPortTokens.memories,
-          ],
-          setup: ({ port }) => ({
-            ports: [bindPort(
-              dreamMemoryWorkspacePort,
-              new ApplicationDreamMemoryWorkspace({
-                workspaceId: scope.workspaceId,
-                memoryStores: port(managedAgentsPortTokens.memoryStores),
-                memories: port(managedAgentsPortTokens.memories),
-              }),
-            )],
-          }),
-        }),
-        dreamExecutionModule(),
-        inProcessDreamExecutionSchedulerModule({
-          defer: (task) => {
-            void task;
-          },
-        }),
-      ];
-    },
-  });
-  disposables.add("managed_dreams_platform", () => managedDreamsPlatform.stopAll());
   const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
-    managedDreamsPlatform
+    managedPlatform
       .app({
         workspaceId: (context.var as { tenant_id: string }).tenant_id,
       })
@@ -1920,37 +1761,19 @@ async function assembleNodeControlPlane(
     nextTokenId: () => `ttok_${nanoid()}`,
   });
   const managedTunnelCertificates = new WebCryptoTunnelCertificateAuthority();
-  const managedTunnelsPlatform = createNodePlatform({
-    features: {
-      preset: "none",
-      tunnelCertificates: true,
-      tunnels: true,
-    },
-    stores: { tunnels: new SqlTunnelStore(sql) },
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        `${namespace === "tunnel" ? "tnl" : "tcrt"}_${nanoid()}`,
-    },
-    modules: () => [
-      providePort(tunnelProvisionerPort, managedTunnelProvisioner),
-      providePort(tunnelTokenManagerPort, managedTunnelTokens),
-      providePort(tunnelCertificateAuthorityPort, managedTunnelCertificates),
-    ],
-  });
   const managedTunnelsRoutes = buildManagedTunnelRoutes((context) =>
-    managedTunnelsPlatform.app({
+    managedPlatform.app({
       workspaceId: (context.var as { tenant_id: string }).tenant_id,
     }).port(managedAgentsPortTokens.tunnels),
   );
   const managedTunnelCertificateRoutes = buildManagedTunnelCertificateRoutes(
-    (context) => managedTunnelsPlatform.app({
+    (context) => managedPlatform.app({
       workspaceId: (context.var as { tenant_id: string }).tenant_id,
     }).port(managedAgentsPortTokens.tunnelCertificates),
   );
 
   const managedFilesRoutes = buildManagedFileRoutes((context) =>
-    managedAgentsPlatform
+    managedPlatform
       .app({
         workspaceId: (context.var as { tenant_id: string }).tenant_id,
       })
@@ -1958,7 +1781,7 @@ async function assembleNodeControlPlane(
   );
 
   const managedMemoryStoresRoutes = buildManagedMemoryStoreRoutes((context) =>
-    managedAgentsPlatform
+    managedPlatform
       .app({
         workspaceId: (context.var as { tenant_id: string }).tenant_id,
       })
@@ -2029,39 +1852,13 @@ async function assembleNodeControlPlane(
   );
 
   const managedSkillCompiler = new ZipSkillPackageCompiler();
-  let lastManagedSkillVersion = 0n;
-  function nextManagedSkillVersion(): string {
-    const now = BigInt(Date.now()) * 1_000n;
-    lastManagedSkillVersion = now > lastManagedSkillVersion
-      ? now
-      : lastManagedSkillVersion + 1n;
-    return lastManagedSkillVersion.toString();
-  }
-  const managedSkillsPlatform = createNodePlatform({
-    features: {
-      preset: "none",
-      skills: true,
-      skillVersions: true,
-    },
-    stores: { skills: new SqlSkillStore(sql) },
-    clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        namespace === "skill-version-value"
-          ? nextManagedSkillVersion()
-          : `${namespace === "skill-version" ? "skv" : namespace}_${nanoid()}`,
-    },
-    modules: () => [
-      providePort(skillPackageCompilerPort, managedSkillCompiler),
-    ],
-  });
   const managedSkillsRoutes = buildManagedSkillRoutes((context) =>
-    managedSkillsPlatform.app({
+    managedPlatform.app({
       workspaceId: (context.var as { tenant_id: string }).tenant_id,
     }).port(managedAgentsPortTokens.skills),
   );
   const managedSkillVersionsRoutes = buildManagedSkillVersionRoutes((context) =>
-    managedSkillsPlatform.app({
+    managedPlatform.app({
       workspaceId: (context.var as { tenant_id: string }).tenant_id,
     }).port(managedAgentsPortTokens.skillVersions),
   );
@@ -2089,37 +1886,146 @@ async function assembleNodeControlPlane(
   };
   const managedCredentialValidation = new IndeterminateCredentialValidationProbe();
   const managedCredentialStore = new SqlCredentialStore(sql, managedCredentialCipher);
-  const managedCredentialsPlatform = createNodePlatform({
+  // One managed platform graph per process. Every official application
+  // module is installed on the same workspace App, so a workspace has one
+  // App, one clock, one id generator and one set of stores. `modules` runs on
+  // the first `.app()` call for a workspace, after this assembly has finished,
+  // which is why it may reference values declared below it.
+  const managedPlatform = createNodePlatform({
     features: {
       preset: "none",
+      agents: true,
       credentials: true,
+      deploymentRuns: true,
+      deployments: true,
+      dreams: true,
+      environmentWork: true,
+      environments: true,
+      files: true,
+      memories: true,
+      memoryStores: true,
+      skillVersions: true,
+      skills: true,
+      tunnelCertificates: true,
+      tunnels: true,
+      userProfiles: true,
       vaults: true,
     },
     stores: {
+      agents: managedAgentsPersistence,
       credentials: managedCredentialStore,
+      deploymentRuns: new SqlDeploymentRunStore(sql),
+      deployments: new SqlDeploymentStore(sql, managedDeploymentCipher),
+      dreams: new SqlDreamStore(sql),
+      environmentWork: managedEnvironmentWorkStore,
+      environments: new SqlEnvironmentPersistence(sql),
+      files: new SqlFileStore(sql),
+      memories: new SqlMemoryDocumentStore(sql),
+      memoryStores: new SqlMemoryStoreStore(sql),
+      skills: new SqlSkillStore(sql),
+      tunnels: new SqlTunnelStore(sql),
+      userProfiles: new SqlUserProfileStore(sql),
       vaults: new SqlVaultStore(sql),
     },
+    fileContent: () => new BlobFileContentStore(filesBlob),
     credentialValidation: managedCredentialValidation,
     clock: { now: () => new Date() },
-    ids: {
-      next: (namespace) =>
-        `${namespace === "credential" ? "vcrd" : namespace === "vault" ? "vlt" : namespace}_${nanoid()}`,
+    ids: createManagedIdGenerator(),
+    modules: (scope) => {
+      const memoryStoreSource = new SqlMemoryStoreSource(sql);
+      return [
+        providePort(userProfileEnrollmentIssuerPort, {
+          issue: async () => ({
+            type: "conflict" as const,
+            message: "User Profile enrollment is unavailable in self-hosted mode",
+          }),
+        }),
+        providePort(environmentWorkEnvironmentSourcePort, nodeManagedEnvironments),
+        providePort(
+          environmentWorkAvailabilityWaiterPort,
+          managedEnvironmentWorkAvailability,
+        ),
+        providePort(
+          environmentWorkSessionCredentialIssuerPort,
+          managedEnvironmentWorkCredentials,
+        ),
+        providePort(environmentWorkWakeupPort, {
+          notifyRunStarted: async (input) => {
+            if (managedEnvironmentWebhook === null) return;
+            void managedEnvironmentWebhook.notifyRunStarted(input).catch((err) => {
+              logger.error(
+                { err, op: "main-node.environment_work.webhook_failed" },
+                "Managed Agents webhook wake-up failed; poll fallback remains active",
+              );
+            });
+          },
+        }),
+        environmentWorkEnqueuerModule(),
+        providePort(deploymentAgentSourcePort, new SqlDeploymentAgentSource(sql)),
+        providePort(deploymentEnvironmentSourcePort, nodeManagedEnvironments),
+        providePort(deploymentFileSourcePort, new SqlFileMetadataPersistence(sql)),
+        providePort(deploymentMemoryStoreSourcePort, memoryStoreSource),
+        providePort(deploymentSchedulePlannerPort, managedDeploymentSchedulePlanner),
+        providePort(
+          deploymentSessionLauncherPort,
+          managedSessionsComposition.portsFor(scope.workspaceId)
+            .deploymentSessionLauncher,
+        ),
+        providePort(deploymentVaultSourcePort, new SqlDeploymentVaultSource(sql)),
+        providePort(dreamMemoryStoreSourcePort, memoryStoreSource),
+        providePort(memoryStoreForMemorySourcePort, memoryStoreSource),
+        providePort(memoryContentDescriptorPort, managedMemoryContent),
+        providePort(memoryVersionActorPort, {
+          kind: "service_account",
+          serviceAccountId: "dream_executor",
+        }),
+        providePort(dreamSessionSourcePort, new SqlSessionSource(sql)),
+        providePort(dreamCuratorPort, managedDreamCurator),
+        defineAppModule({
+          name: "managed-agents:dream-memory-workspace",
+          provides: [dreamMemoryWorkspacePort],
+          requires: [
+            managedAgentsPortTokens.memoryStores,
+            managedAgentsPortTokens.memories,
+          ],
+          setup: ({ port }) => ({
+            ports: [bindPort(
+              dreamMemoryWorkspacePort,
+              new ApplicationDreamMemoryWorkspace({
+                workspaceId: scope.workspaceId,
+                memoryStores: port(managedAgentsPortTokens.memoryStores),
+                memories: port(managedAgentsPortTokens.memories),
+              }),
+            )],
+          }),
+        }),
+        dreamExecutionModule(),
+        inProcessDreamExecutionSchedulerModule({
+          defer: (task) => {
+            void task;
+          },
+        }),
+        providePort(tunnelProvisionerPort, managedTunnelProvisioner),
+        providePort(tunnelTokenManagerPort, managedTunnelTokens),
+        providePort(tunnelCertificateAuthorityPort, managedTunnelCertificates),
+        providePort(skillPackageCompilerPort, managedSkillCompiler),
+      ];
     },
   });
-  disposables.add("managed_credentials_platform", () => managedCredentialsPlatform.stopAll());
+  disposables.add("managed_platform", () => managedPlatform.stopAll());
   const managedVaultsRoutes = buildManagedVaultRoutes((context) =>
-    managedCredentialsPlatform
+    managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
       .port(managedAgentsPortTokens.vaults),
   );
   const managedCredentialsRoutes = buildManagedCredentialRoutes((context) =>
-    managedCredentialsPlatform
+    managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
       .port(managedAgentsPortTokens.credentials),
   );
 
   const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
-    managedAgentsPlatform
+    managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
       .port(managedAgentsPortTokens.userProfiles),
   );
@@ -2473,7 +2379,7 @@ async function assembleNodeControlPlane(
   // has configured model cards, agent model handles must resolve to an active
   // card; an empty card set keeps the legacy ANTHROPIC_API_KEY fallback usable.
   v1.route("/agents", buildManagedAgentRoutes((context) =>
-    managedAgentsPlatform
+    managedPlatform
       .app({
         workspaceId: (context.var as { tenant_id: string }).tenant_id,
       })
@@ -2645,14 +2551,14 @@ async function assembleNodeControlPlane(
   v1.get("/oma/runtimes", (c) => c.json({ data: [] }));
   v1.get("/oma/stats", async (c) => {
     const tenantId = c.get("tenant_id");
-    const managedApp = managedAgentsPlatform.app({ workspaceId: tenantId });
+    const managedApp = managedPlatform.app({ workspaceId: tenantId });
     const managedAgents = managedApp.port(managedAgentsPortTokens.agents);
     const managedEnvironments = managedApp.port(managedAgentsPortTokens.environments);
     const managedSessions = managedSessionsComposition.portsFor(tenantId).sessions;
-    const managedSkills = managedSkillsPlatform
+    const managedSkills = managedPlatform
       .app({ workspaceId: tenantId })
       .port(managedAgentsPortTokens.skills);
-    const managedVaults = managedCredentialsPlatform
+    const managedVaults = managedPlatform
       .app({ workspaceId: tenantId })
       .port(managedAgentsPortTokens.vaults);
     const [
@@ -2959,8 +2865,8 @@ async function assembleNodeControlPlane(
   app.route("/openai", buildNodeOpenAIAgentsRoutes({
     authMiddleware: authMw,
     portFor: (workspaceId) => {
-      const application = managedAgentsPlatform.app({ workspaceId });
-      const credentialApplication = managedCredentialsPlatform.app({ workspaceId });
+      const application = managedPlatform.app({ workspaceId });
+      const credentialApplication = managedPlatform.app({ workspaceId });
       const native = managedSessionsComposition.portsFor(workspaceId);
       const agents = application.port(managedAgentsPortTokens.agents);
       const environments = application.port(managedAgentsPortTokens.environments);

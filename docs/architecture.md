@@ -207,6 +207,10 @@ secret-free view logged as `main-node.config`.
 `createNodeControlPlane(config, deps?)`, the Node composition root: build the
 SqlClient, construct services and Session runtimes, mount route bundles, and
 return a handle that owns every resource (`app`, `fetch`, `start`, `stop`).
+Official application modules are installed on one `createNodePlatform`
+graph, so a workspace has one App, one clock, one id generator
+(`src/managed-ids.ts` owns the prefix table) and one set of stores; route
+bundles resolve their ports from that App per request.
 `NodeControlPlaneDeps` lets a deployment pass adapters it has already chosen
 (`sandboxFactory`, `realtimeHub`, `memoryBlobs`, `filesBlobs`); anything
 omitted is built from `config`. The sandbox provider's own namespace
