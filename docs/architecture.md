@@ -214,9 +214,13 @@ omitted is built from `config`. The sandbox provider's own namespace
 because `SandboxFactory`'s public contract is.
 
 `apps/main-node/src/index.ts` is the executable entrypoint: `loadNodeConfig(process.env)`
-→ `createNodeControlPlane(config)` → listen and install signal handlers.
-Importing it keeps exporting `app` and `shutdownNodeApp` for deployment
-presets and tests.
+→ `createNodeControlPlane(config)` → `serveNodeControlPlane(controlPlane, { host, port, signals })`.
+Importing it keeps exporting `app` and `shutdownNodeApp` for scripts and
+tests. Deployment presets use the side-effect-free subpaths instead —
+`@open-managed-agents/main-node/config`, `/control-plane` and `/serve` —
+so `apps/main-fly` assembles and hosts the control plane explicitly, and
+`apps/main-vercel` assembles one per warm isolate from the environment it
+prepared, without touching `process.env`.
 
 `apps/main/src/index.ts` mounts agents / vaults / sessions / api-keys /
 me / tenants from `@open-managed-agents/http-routes`. The legacy
