@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => {
     anthropicOptions: undefined as unknown,
     loadedEnvironment: undefined as unknown,
     assembledConfig: undefined as unknown,
+    assembledFromDefaults: undefined as unknown,
     workerDependencies: undefined as unknown,
   };
 });
@@ -34,9 +35,13 @@ vi.mock("@open-managed-agents/main-node/config", () => ({
     return { processMode: environment.OPENMA_PROCESS_MODE };
   },
 }));
+vi.mock("@open-managed-agents/main-node/components", () => ({
+  nodeDefaults: async (config: { processMode: string }) => ({ config, defaults: true }),
+}));
 vi.mock("@open-managed-agents/main-node/control-plane", () => ({
-  createNodeControlPlane: async (config: { processMode: string }) => {
-    mocks.assembledConfig = config;
+  createNodeControlPlane: async (components: { config: { processMode: string }; defaults: boolean }) => {
+    mocks.assembledConfig = components.config;
+    mocks.assembledFromDefaults = components.defaults;
     return { fetch: mocks.apiFetch };
   },
 }));
@@ -103,6 +108,7 @@ describe("production Vercel wiring", () => {
     expect(mocks.loadedEnvironment).toBe(mutableEnvironment);
     expect(mutableEnvironment.OPENMA_PROCESS_MODE).toBe("serverless");
     expect(mocks.assembledConfig).toEqual({ processMode: "serverless" });
+    expect(mocks.assembledFromDefaults).toBe(true);
 
     const poll = () => controlPlane.fetch(new Request(
       "https://control.example.test/api/openma/environment/poll",

@@ -13,6 +13,7 @@
 
 import { loadNodeConfig } from "./config.js";
 import { createNodeControlPlane } from "./control-plane.js";
+import { nodeDefaults } from "./components.js";
 import { serveNodeControlPlane } from "./serve.js";
 
 export {
@@ -26,13 +27,23 @@ export {
   createNodeControlPlane,
   type NodeControlPlane,
   type NodeControlPlaneApp,
-  type NodeControlPlaneDeps,
 } from "./control-plane.js";
+export {
+  nodeDefaults,
+  type NodeAuth,
+  type NodeBlobs,
+  type NodeComponentOverrides,
+  type NodeComponents,
+  type NodeDatabase,
+  type NodeRealtime,
+  type NodeSecrets,
+} from "./components.js";
 export { serveNodeControlPlane, type NodeServer } from "./serve.js";
 
-// The only read of process.env: everything else receives typed configuration.
+// The only read of process.env: everything else receives typed configuration,
+// and the control plane receives components built from it.
 const config = loadNodeConfig(process.env);
-const controlPlane = await createNodeControlPlane(config);
+const controlPlane = await createNodeControlPlane(await nodeDefaults(config));
 
 export const app = controlPlane.app;
 export const shutdownNodeApp = (signal = "dispose"): Promise<void> => controlPlane.stop(signal);

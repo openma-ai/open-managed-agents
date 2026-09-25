@@ -1,6 +1,6 @@
 // The control plane is a value, not a module side effect: two of them can be
 // assembled in one process from different environments, each owns its own
-// resources and lifecycle, and a deployment can hand it the adapters it has
+// resources and lifecycle, and a deployment hands it the components it has
 // already chosen instead of describing them through environment variables.
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,11 +13,8 @@ import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-s
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-memory";
 
 import { loadNodeConfig } from "../src/config";
-import {
-  createNodeControlPlane,
-  type NodeControlPlane,
-  type NodeControlPlaneDeps,
-} from "../src/control-plane";
+import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
+import { nodeDefaults, type NodeComponentOverrides } from "../src/components";
 import type { EventStreamHub } from "../src/lib/event-stream-hub";
 
 const created: NodeControlPlane[] = [];
@@ -48,10 +45,10 @@ afterEach(async () => {
 });
 
 async function controlPlane(
-  deps?: NodeControlPlaneDeps,
+  overridesFor?: NodeComponentOverrides,
   overrides?: Record<string, string | undefined>,
 ): Promise<NodeControlPlane> {
-  const cp = await createNodeControlPlane(loadNodeConfig(environment(overrides)), deps);
+  const cp = await createNodeControlPlane(await nodeDefaults(loadNodeConfig(environment(overrides)), overridesFor));
   created.push(cp);
   return cp;
 }
@@ -125,7 +122,7 @@ describe("createNodeControlPlane dependency injection", () => {
     };
     // No SANDBOX_PROVIDER / OPENMA_TEST_SANDBOX_PROVIDER at all: with injection
     // the environment must not be consulted for a provider.
-    const cp = await controlPlane({ sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
+    const cp = await controlPlane({ sandbox: sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
     const sessionId = await legacySession(cp);
 
     const sent = await cp.fetch(new Request(`http://cp/v1/oma/sessions/${sessionId}/events`, json({
@@ -150,7 +147,7 @@ describe("createNodeControlPlane dependency injection", () => {
       publish() {},
       closeSession() {},
     };
-    const cp = await controlPlane({ realtimeHub: hub });
+    const cp = await controlPlane({ realtime: { hub, replicaSync: null, description: "custom" } });
     expect((await health(cp)).backends.hub).toBe("custom");
 
     const sessionId = await legacySession(cp);
@@ -175,8 +172,10 @@ describe("createNodeControlPlane dependency injection", () => {
       delete: async (key) => { memory.delete(key); },
     };
     const cp = await controlPlane({
-      memoryBlobs: { store: memoryStore, description: "test memory store" },
-      filesBlobs: { store: new InMemoryBlobStore(), description: "test files store" },
+      blobs: {
+        memory: { store: memoryStore, description: "test memory store" },
+        files: { store: new InMemoryBlobStore(), description: "test files store" },
+      },
     });
 
     const body = await health(cp);
@@ -192,7 +191,7 @@ describe("createNodeControlPlane dependency injection (official /v1 Sessions)", 
       calls.push(ctx.sessionId);
       throw new Error("injected sandbox factory was called");
     };
-    const cp = await controlPlane({ sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
+    const cp = await controlPlane({ sandbox: sandboxFactory }, { OPENMA_TEST_SANDBOX_PROVIDER: undefined });
     const env = await (await cp.fetch(new Request("http://cp/v1/environments", json({
       name: "cp-env", config: { type: "cloud", networking: { type: "unrestricted" } },
     }, beta)))).json() as { id: string };

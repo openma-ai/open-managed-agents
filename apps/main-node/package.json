@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./components": "./src/components.ts",
     "./config": "./src/config.ts",
     "./control-plane": "./src/control-plane.ts",
     "./serve": "./src/serve.ts"
@@ -121,14 +122,15 @@
     "turndown": "^7.2.0"
   },
   "devDependencies": {
-    "openai": "7.15.0",
     "@anthropic-ai/sdk": "0.120.0",
     "@earendil-works/pi-ai": "0.84.4",
     "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/agent-store-memory": "workspace:*",
     "@testcontainers/mysql": "^12.1.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/pg": "^8.20.0",
     "@types/turndown": "^5.0.5",
+    "openai": "7.15.0",
     "tsx": "^4.19.0",
     "vitest": "^4.1.3"
   }

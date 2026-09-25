@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
+import { nodeDefaults } from "../src/components";
 import { serveNodeControlPlane, type NodeServer } from "../src/serve";
 
 const created: NodeControlPlane[] = [];
@@ -20,7 +21,7 @@ afterEach(async () => {
 async function controlPlane(): Promise<NodeControlPlane> {
   const dir = mkdtempSync(join(tmpdir(), "oma-serve-"));
   dirs.push(dir);
-  const cp = await createNodeControlPlane(loadNodeConfig({
+  const cp = await createNodeControlPlane(await nodeDefaults(loadNodeConfig({
     NODE_ENV: "test",
     AUTH_DISABLED: "1",
     OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess",
@@ -32,7 +33,7 @@ async function controlPlane(): Promise<NodeControlPlane> {
     FILES_BLOB_DIR: join(dir, "files"),
     SESSION_OUTPUTS_DIR: join(dir, "outputs"),
     ANTHROPIC_API_KEY: "unused",
-  }));
+  })));
   created.push(cp);
   return cp;
 }

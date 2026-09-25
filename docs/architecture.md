@@ -199,29 +199,47 @@ package mounted by both apps:
 
 `apps/main-node/src/config.ts` is the only place the Node control plane reads
 environment variables: `loadNodeConfig(env)` turns them into a typed
-`NodeConfig` once, applies the documented defaults, and reports every problem
-in one `NodeConfigError` at startup. `redactNodeConfig` produces the
-secret-free view logged as `main-node.config`.
+`NodeConfig` once — plain values such as paths, ports and limits — applies the
+documented defaults, and reports every problem in one `NodeConfigError`.
+`redactNodeConfig` produces the secret-free view logged as `main-node.config`.
+
+`apps/main-node/src/components.ts` is where behaviour is chosen. A
+`NodeComponents` value holds the database, secrets, auth, email sender,
+sandbox factory, realtime fanout, blob stores and any store overrides, each
+an ordinary object. Every default is an exported constructor
+(`openNodeDatabase`, `createNodeSecrets`, `createBetterAuthComponent`,
+`createNodeRealtime`, `createMemoryBlobs`, …) and `nodeDefaults(config,
+overrides)` calls the ones the caller did not supply. A deployment's
+composition root therefore reads like an SDK program:
+
+```ts
+const database = await openNodeDatabase({ kind: "mysql", url });
+const cp = await createNodeControlPlane(await nodeDefaults(config, {
+  database,
+  realtime: { hub: new SqlPollingEventStreamHub({ sql: database.sql }), replicaSync: { pollIntervalMs: 300 }, description: "sql-poll" },
+  sandbox: mySandboxFactory,
+  secrets: kmsSecrets,
+  stores: { agents: new MemoryAgentStore() },
+}));
+```
 
 `apps/main-node/src/control-plane.ts` exports
-`createNodeControlPlane(config, deps?)`, the Node composition root: build the
-SqlClient, construct services and Session runtimes, mount route bundles, and
-return a handle that owns every resource (`app`, `fetch`, `start`, `stop`).
-Official application modules are installed on one `createNodePlatform`
-graph, so a workspace has one App, one clock, one id generator
-(`src/managed-ids.ts` owns the prefix table) and one set of stores; route
-bundles resolve their ports from that App per request.
-`NodeControlPlaneDeps` lets a deployment pass adapters it has already chosen
-(`sandboxFactory`, `realtimeHub`, `memoryBlobs`, `filesBlobs`); anything
-omitted is built from `config`. The sandbox provider's own namespace
-(`SANDBOX_PROVIDER`, `E2B_*`, …) stays env-shaped as `config.sandbox.environment`
-because `SandboxFactory`'s public contract is.
+`createNodeControlPlane(components)`, the Node composition root: build the
+stores, Session runtimes and background workers on the components, mount
+route bundles, and return a handle that owns every resource (`app`, `fetch`,
+`start`, `stop`, `components`). Official application modules are installed
+on one `createNodePlatform` graph, so a workspace has one App, one clock,
+one id generator (`src/managed-ids.ts` owns the prefix table) and one set of
+stores; route bundles resolve their ports from that App per request. The
+sandbox provider's own namespace (`SANDBOX_PROVIDER`, `E2B_*`, …) stays
+env-shaped as `config.sandbox.environment` because `SandboxFactory`'s public
+contract is; supplying `sandbox` bypasses it.
 
 `apps/main-node/src/index.ts` is the executable entrypoint: `loadNodeConfig(process.env)`
-→ `createNodeControlPlane(config)` → `serveNodeControlPlane(controlPlane, { host, port, signals })`.
+→ `nodeDefaults(config)` → `createNodeControlPlane(components)` → `serveNodeControlPlane(controlPlane, { host, port, signals })`.
 Importing it keeps exporting `app` and `shutdownNodeApp` for scripts and
 tests. Deployment presets use the side-effect-free subpaths instead —
-`@open-managed-agents/main-node/config`, `/control-plane` and `/serve` —
+`@open-managed-agents/main-node/config`, `/components`, `/control-plane` and `/serve` —
 so `apps/main-fly` assembles and hosts the control plane explicitly, and
 `apps/main-vercel` assembles one per warm isolate from the environment it
 prepared, without touching `process.env`.

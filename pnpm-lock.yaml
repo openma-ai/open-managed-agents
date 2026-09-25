@@ -985,6 +985,9 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
+      '@open-managed-agents/agent-store-memory':
+        specifier: workspace:*
+        version: link:../../packages/agent-store-memory
       '@testcontainers/mysql':
         specifier: ^12.1.0
         version: 12.1.0

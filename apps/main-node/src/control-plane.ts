@@ -1,14 +1,16 @@
 /**
  * apps/main-node — Node control-plane assembly for the Open Managed Agents API.
  *
- * createNodeControlPlane(config, deps) is the composition root: it receives
- * typed configuration (see config.ts, the only place the environment is read)
- * and already-chosen adapters, builds the SqlClient, stores, auth, blob stores,
- * realtime hub, Session runtimes and background workers, mounts the route
- * bundles from @open-managed-agents/http-routes and the Managed Agents API,
- * and returns a handle that owns all of it. Route bodies live in
- * packages/http-routes; storage adapters in their respective packages.
+ * createNodeControlPlane(components) is the composition root: it receives the
+ * components a deployment chose (see components.ts — database, secrets, auth,
+ * email, sandbox, realtime, blobs, store overrides — and the plain NodeConfig
+ * from config.ts), builds the stores, Session runtimes and background
+ * workers on top of them, mounts the route bundles from
+ * @open-managed-agents/http-routes and the Managed Agents API, and returns a
+ * handle that owns all of it. Route bodies live in packages/http-routes;
+ * storage adapters in their respective packages.
  *
+ * nodeDefaults(config) builds the components from configuration alone;
  * index.ts is the executable entrypoint (process.env, listen, signals).
  */
 
@@ -45,24 +47,13 @@ import {
   setRootLogger,
   type Logger,
 } from "@open-managed-agents/observability";
-import {
-  createBetterSqlite3SqlClient,
-  createMysql2SqlClient,
-  createPostgresSqlClient,
-  type SqlClient,
-} from "@open-managed-agents/sql-client";
 import { createSqliteAgentService } from "@open-managed-agents/agents-store";
 import {
   createSqliteMemoryStoreService,
   SqlMemoryRepo,
 } from "@open-managed-agents/memory-store";
 import { createSqliteDreamService } from "@open-managed-agents/dreams-store";
-import { LocalFsBlobStore as MemoryLocalFsBlobStore } from "@open-managed-agents/memory-store/adapters/local-fs-blob";
-import {
-  S3BlobStore as FilesS3BlobStore,
-  type BlobStore,
-} from "@open-managed-agents/blob-store";
-import { LocalFsBlobStore as FilesLocalFsBlobStore } from "@open-managed-agents/blob-store/adapters/local-fs";
+import type { BlobStore } from "@open-managed-agents/blob-store";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
 import { createSqliteSessionService } from "@open-managed-agents/sessions-store";
@@ -92,11 +83,6 @@ import { generateText } from "ai";
 import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform-guidance";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
-import { applyBetterAuthSchema } from "@open-managed-agents/schema";
-import type { OmaDb } from "@open-managed-agents/db-schema";
-import { migrateNodeMysqlSchema } from "@open-managed-agents/db-schema/node-mysql";
-import { reconcilePiModelConfigMigration } from "./lib/reconcile-pi-model-config-migration.js";
-import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
 import {
   buildAgentRoutes as buildLegacyAgentRoutes,
   buildVaultRoutes as buildLegacyVaultRoutes,
@@ -265,7 +251,6 @@ import {
   SqlSlackInstallationRepo,
   SqlSlackPublicationRepo,
   SqlSlackAppRepo,
-  WebCryptoAesGcm,
   CryptoIdGenerator,
   WorkerHttpClient,
   type NodeReposEnv,
@@ -291,11 +276,7 @@ import {
   createAuthMiddleware as buildAuthMw,
   type ApiKeyResolution,
 } from "@open-managed-agents/auth";
-import {
-  buildBetterAuth,
-  ensureTenantSqlite,
-} from "@open-managed-agents/auth-config";
-import { NodemailerSender } from "@open-managed-agents/email/adapters/nodemailer";
+import { ensureTenantSqlite } from "@open-managed-agents/auth-config";
 import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import {
   selectBrowserHarness,
@@ -307,14 +288,9 @@ import { buildNodeScheduler } from "./lib/node-scheduler-jobs.js";
 import { startNodeMemoryQueue } from "./lib/node-memory-queue.js";
 import { mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import { nanoid } from "nanoid";
-import {
-  InProcessEventStreamHub,
-  type EventStreamHub,
-} from "./lib/event-stream-hub";
-import { PgEventStreamHub } from "./lib/pg-event-stream-hub";
-import { SqlPollingEventStreamHub } from "./lib/sql-polling-event-stream-hub";
+import type { EventStreamHub } from "./lib/event-stream-hub";
 import { NodeHarnessRuntime } from "./lib/node-harness-runtime";
 import { SessionRegistry } from "./registry.js";
 import { buildNodeSkillsRoutes } from "./lib/node-skills-routes.js";
@@ -346,11 +322,10 @@ import {
   type NodeMcpProxyTarget,
 } from "./lib/http-mcp-proxy.js";
 import type { NodeProcessMode } from "./process-mode.js";
-import { redactNodeConfig, type NodeConfig } from "./config.js";
-import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
+import { redactNodeConfig } from "./config.js";
 import { Disposables } from "./lifecycle.js";
+import type { NodeComponents } from "./components.js";
 import { createManagedIdGenerator } from "./managed-ids.js";
-import type { SandboxFactory } from "@open-managed-agents/sandbox";
 import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
 
 registerCoreHarnesses();
@@ -366,31 +341,14 @@ export type NodeControlPlaneApp = Hono<{
   };
 }>;
 
-/**
- * Adapters a deployment has already chosen. Anything omitted is selected from
- * the environment exactly as before, so presets can inject one seam at a time.
- */
-export interface NodeControlPlaneDeps {
-  /**
-   * Sandbox provider for legacy (v0) Session turns. Replaces the
-   * SANDBOX_PROVIDER lookup and the dynamic import of the adapter module; the
-   * environment is still passed through so the factory can read its own keys.
-   */
-  sandboxFactory?: SandboxFactory;
-  /** Cross-replica fanout for /v1/oma event streams. Replaces OMA_REALTIME_FANOUT selection. */
-  realtimeHub?: EventStreamHub & { stop?(): void | Promise<void> };
-  /** Memory Store content. Replaces MEMORY_S3_* / MEMORY_BLOB_DIR selection. */
-  memoryBlobs?: { store: MemoryBlobStore; description: string };
-  /** Files, workspace backups and Session outputs. Replaces FILES_S3_* / FILES_BLOB_DIR selection. */
-  filesBlobs?: { store: BlobStore; description: string };
-}
-
 export interface NodeControlPlane {
   /** Hono application: mount it, or serve it with @hono/node-server. */
   readonly app: NodeControlPlaneApp;
   readonly processMode: NodeProcessMode;
   /** Human-readable database backend, e.g. "mysql host:3306/oma". */
   readonly backendDescription: string;
+  /** What this control plane was assembled from. */
+  readonly components: NodeComponents;
   readonly logger: Logger;
   fetch(request: Request): Response | Promise<Response>;
   /** Start background work owned by a standalone process (execution poller, scheduler). */
@@ -400,14 +358,14 @@ export interface NodeControlPlane {
 }
 
 /**
- * Assemble the Node control plane from an explicit environment. Every store,
- * worker, hub and route is created here and owned by the returned handle, so
- * two control planes can coexist in one process (tests, embedding) and the
- * entrypoint decides when to listen and how to handle signals.
+ * Assemble the Node control plane from explicit components. Every store,
+ * worker and route is created here and owned by the returned handle — the
+ * components too, which are stopped with it — so two control planes can
+ * coexist in one process (tests, embedding) and the entrypoint decides when
+ * to listen and how to handle signals.
  */
 export async function createNodeControlPlane(
-  config: NodeConfig,
-  deps: NodeControlPlaneDeps = {},
+  components: NodeComponents,
 ): Promise<NodeControlPlane> {
   const log: { current: Logger | null } = { current: null };
   const disposables = new Disposables({
@@ -417,22 +375,18 @@ export async function createNodeControlPlane(
       else console.warn(`[main-node] ${message}`, err);
     },
   });
-  return disposables.guard(() => assembleNodeControlPlane(config, deps, disposables, log));
+  return disposables.guard(() => assembleNodeControlPlane(components, disposables, log));
 }
 
 async function assembleNodeControlPlane(
-  config: NodeConfig,
-  deps: NodeControlPlaneDeps,
+  components: NodeComponents,
   disposables: Disposables,
   log: { current: Logger | null },
 ): Promise<NodeControlPlane> {
-
+  const { config } = components;
   const { processMode } = config;
   const sandboxEnvironment = config.sandbox.environment;
   const ownsLongLivedProcesses = processMode === "standalone";
-  const standaloneSandboxProvider = ownsLongLivedProcesses && deps.sandboxFactory === undefined
-    ? resolveSandboxProviderForEnvironment(sandboxEnvironment)
-    : null;
 
   const toMarkdownProvider = nodeToMarkdown();
 
@@ -459,84 +413,11 @@ async function assembleNodeControlPlane(
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────
 
-  const dbUrl = config.database.kind === "sqlite" ? "" : config.database.url;
-  const usePostgres = config.database.kind === "postgres";
-  const useMysql = config.database.kind === "mysql";
-  const dialect = config.database.kind;
-
-  let sql: SqlClient;
-  let backendDescription: string;
-  let mysqlPool: import("mysql2/promise").Pool | null = null;
-  let databaseShutdown: (() => Promise<void>) | null = null;
-  // drizzleDb is the dependency-inversion seam new-style adapters take.
-  // Constructed once at the composition root from the right concrete driver.
-  // Existing SqlClient is still built alongside for the legacy applySchema /
-  // integrations adapters until those finish migrating.
-  let drizzleDb: OmaDb<Record<string, unknown>>;
-  if (usePostgres) {
-    sql = await createPostgresSqlClient(dbUrl);
-    const { drizzle: drizzlePostgresJs } = await import("drizzle-orm/postgres-js");
-    const postgresMod = (await import("postgres" as string)) as { default: (dsn: string) => unknown };
-    const pgClient = postgresMod.default(dbUrl);
-    drizzleDb = drizzlePostgresJs(pgClient as never) as unknown as OmaDb<Record<string, unknown>>;
-    const u = new URL(dbUrl);
-    backendDescription = `postgres ${u.hostname}:${u.port || 5432}${u.pathname}`;
-  } else if (useMysql) {
-    sql = await createMysql2SqlClient(dbUrl);
-    const mysql = await import("mysql2/promise");
-    mysqlPool = mysql.createPool({
-      uri: dbUrl,
-      supportBigNumbers: true,
-      bigNumberStrings: false,
-      timezone: "Z",
-    });
-    const { drizzle: drizzleMysql2 } = await import("drizzle-orm/mysql2");
-    drizzleDb = drizzleMysql2(mysqlPool) as unknown as OmaDb<Record<string, unknown>>;
-    const u = new URL(dbUrl);
-    backendDescription = `mysql ${u.hostname}:${u.port || 3306}${u.pathname}`;
-    databaseShutdown = async () => {
-      await mysqlPool?.end();
-      await (sql as import("@open-managed-agents/sql-client").Mysql2SqlClient).close();
-    };
-  } else {
-    const dbPath = config.database.kind === "sqlite" ? config.database.path : "./data/oma.db";
-    mkdirSync(dirname(dbPath), { recursive: true });
-    sql = await createBetterSqlite3SqlClient(dbPath);
-    const { drizzle: drizzleBetterSqlite3 } = await import("drizzle-orm/better-sqlite3");
-    const BetterSqlite3 = (await import("better-sqlite3")).default;
-    const sqliteRaw = new BetterSqlite3(dbPath);
-    // Match D1's runtime default — FK enforcement off. See packages/sql-client
-    // for the rationale (publication-first install + a few other paths).
-    sqliteRaw.exec("PRAGMA foreign_keys = OFF");
-    drizzleDb = drizzleBetterSqlite3(sqliteRaw) as unknown as OmaDb<Record<string, unknown>>;
-    backendDescription = `sqlite ${dbPath}`;
-  }
-
-  // Apply the consolidated baseline (Drizzle migrate runner — one folder per
-  // dialect, generated by `pnpm db:generate:node-{pg,sqlite}`). Replaces the
-  // pre-Drizzle applySchema / applyTenantSchema / applyIntegrationsSchema /
-  // applyMemoryPollerSchema chain — those creator functions hand-wrote
-  // CREATE TABLE IF NOT EXISTS and ad-hoc ALTER backfills, which had been
-  // drifting from the canonical CF migration files.
-  //
-  // session_events (event-log) is still its own concern: its idempotent
-  // ensureSchema lives in @open-managed-agents/event-log/sql and runs after
-  // the baseline migration applies the rest.
-  const migrationsFolder = usePostgres
-    ? new URL("../migrations", import.meta.url).pathname
-    : new URL("../migrations-sqlite", import.meta.url).pathname;
-  await reconcilePiModelConfigMigration(sql, dialect);
-  if (usePostgres) {
-    const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-    await migrate(drizzleDb as never, { migrationsFolder });
-  } else if (useMysql) {
-    await migrateNodeMysqlSchema(sql, migrationsFolder);
-  } else {
-    const { migrate } = await import("drizzle-orm/better-sqlite3/migrator");
-    migrate(drizzleDb as never, { migrationsFolder });
-  }
-  if (!useMysql) await ensureEventLogSchema(sql, dialect);
-  if (databaseShutdown) disposables.add("database", databaseShutdown);
+  const { database } = components;
+  const { sql, dialect, drizzle: drizzleDb, description: backendDescription } = database;
+  const usePostgres = dialect === "postgres";
+  const useMysql = dialect === "mysql";
+  if (database.stop) disposables.add("database", () => database.stop!());
   const managedAgentsPersistence = new SqlAgentPersistence(sql);
 
   // Integrations subsystem boot is gated on PLATFORM_ROOT_SECRET (used to
@@ -544,9 +425,10 @@ async function assembleNodeControlPlane(
   // above so they're always created — the gate now only controls subsystem
   // wiring, not schema bootstrap.
   const platformRootSecret = config.platformRootSecret;
-  const openAIAgentsConfigurationCipher = platformRootSecret === undefined
+  const { secrets } = components;
+  const openAIAgentsConfigurationCipher = secrets === null
     ? null
-    : new WebCryptoAesGcm(platformRootSecret, "openai.agents.configuration");
+    : secrets.cipherFor("openai.agents.configuration");
   const openAIAgentsSecrets = {
     seal: async (plaintext: string) => {
       if (!openAIAgentsConfigurationCipher) throw new OpenAIAgentsProtocolError(503, "PLATFORM_ROOT_SECRET is required for confidential Agents API configuration", undefined, "configuration_unavailable");
@@ -560,80 +442,9 @@ async function assembleNodeControlPlane(
 
   // ─── Auth ───────────────────────────────────────────────────────────────
 
-  const authDisabled = config.auth.disabled;
-  const authDbPath = config.auth.databasePath;
-  const sender = config.email === null ? null : new NodemailerSender(config.email);
-
-  let auth: ReturnType<typeof buildBetterAuth> | null = null;
-  let authShutdown: (() => Promise<void>) | null = null;
-
-  if (!authDisabled) {
-    if (usePostgres) {
-      const { Pool } = (await import("pg")) as typeof import("pg");
-      const pgPool = new Pool({ connectionString: dbUrl });
-      await applyBetterAuthSchema({ sql, dialect: "postgres" });
-      auth = buildBetterAuth({
-        database: pgPool,
-        sender,
-        secret: config.auth.secret ?? randomFallback(),
-        baseURL: config.http.publicBaseUrl,
-        googleClientId: config.auth.google.clientId,
-        googleClientSecret: config.auth.google.clientSecret,
-        githubClientId: config.auth.github.clientId,
-        githubClientSecret: config.auth.github.clientSecret,
-        requireEmailVerify: config.auth.requireEmailVerify,
-        cookieDomain: config.auth.cookieDomain,
-        ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
-      });
-      authShutdown = async () => {
-        await pgPool.end();
-      };
-    } else if (useMysql) {
-      if (mysqlPool === null) throw new Error("MySQL pool was not initialized");
-      await applyBetterAuthSchema({ sql, dialect: "mysql" });
-      auth = buildBetterAuth({
-        database: mysqlPool,
-        sender,
-        secret: config.auth.secret ?? randomFallback(),
-        baseURL: config.http.publicBaseUrl,
-        googleClientId: config.auth.google.clientId,
-        googleClientSecret: config.auth.google.clientSecret,
-        githubClientId: config.auth.github.clientId,
-        githubClientSecret: config.auth.github.clientSecret,
-        requireEmailVerify: config.auth.requireEmailVerify,
-        cookieDomain: config.auth.cookieDomain,
-        ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
-      });
-    } else {
-      mkdirSync(dirname(authDbPath), { recursive: true });
-      const BetterSqlite3 = (await import("better-sqlite3")).default;
-      const authDb = new BetterSqlite3(authDbPath);
-      // Run the better-auth schema on the auth db via a thin SqlClient shim —
-      // applyBetterAuthSchema only uses sql.exec which maps cleanly.
-      await applyBetterAuthSchema({
-        sql: betterSqliteAsSqlClient(authDb),
-        dialect: "sqlite",
-      });
-      auth = buildBetterAuth({
-        database: authDb,
-        sender,
-        secret: config.auth.secret ?? randomFallback(),
-        baseURL: config.http.publicBaseUrl,
-        googleClientId: config.auth.google.clientId,
-        googleClientSecret: config.auth.google.clientSecret,
-        githubClientId: config.auth.github.clientId,
-        githubClientSecret: config.auth.github.clientSecret,
-        requireEmailVerify: config.auth.requireEmailVerify,
-        cookieDomain: config.auth.cookieDomain,
-        ensureTenant: (u) => ensureTenantSqlite(sql, u.id, u.name, u.email),
-      });
-      authShutdown = async () => {
-        authDb.close();
-      };
-    }
-  }
-
-  if (authShutdown) disposables.add("auth", authShutdown);
+  const authDisabled = components.auth === null;
+  const auth = components.auth;
+  if (auth?.stop) disposables.add("auth", () => auth.stop!());
 
   // ─── Stores ─────────────────────────────────────────────────────────────
 
@@ -647,52 +458,14 @@ async function assembleNodeControlPlane(
   const modelCardsService = createSqliteModelCardService(
     { db: drizzleDb },
     {
-      crypto: platformRootSecret
-        ? new WebCryptoAesGcm(platformRootSecret, "model.cards.keys")
-        : undefined,
+      crypto: secrets === null ? undefined : secrets.cipherFor("model.cards.keys"),
     },
   );
 
-  let memoryBlobs: import("@open-managed-agents/memory-store").BlobStore;
-  let memoryBlobDescription: string;
-  let memoryBlobLocalDir: string | null = null;
-  let s3MemoryConfig: {
-    endpoint: string;
-    bucket: string;
-    accessKey: string;
-    secretKey: string;
-    region: string;
-    pollIntervalMs: number;
-  } | null = null;
-
-  if (deps.memoryBlobs !== undefined) {
-    memoryBlobs = deps.memoryBlobs.store;
-    memoryBlobDescription = deps.memoryBlobs.description;
-  } else if (config.blobs.memory.kind === "s3") {
-    const { S3BlobStore } = await import(
-      "@open-managed-agents/memory-store/adapters/s3-blob"
-    );
-    s3MemoryConfig = {
-      endpoint: config.blobs.memory.endpoint,
-      bucket: config.blobs.memory.bucket,
-      accessKey: config.blobs.memory.accessKey,
-      secretKey: config.blobs.memory.secretKey,
-      region: config.blobs.memory.region,
-      pollIntervalMs: config.blobs.memory.pollIntervalMs ?? 30_000,
-    };
-    memoryBlobs = new S3BlobStore({
-      endpoint: s3MemoryConfig.endpoint,
-      bucket: s3MemoryConfig.bucket,
-      accessKeyId: s3MemoryConfig.accessKey,
-      secretAccessKey: s3MemoryConfig.secretKey,
-      region: s3MemoryConfig.region,
-    });
-    memoryBlobDescription = `s3 ${s3MemoryConfig.endpoint}/${s3MemoryConfig.bucket}`;
-  } else {
-    memoryBlobLocalDir = config.blobs.memory.kind === "localfs" ? config.blobs.memory.dir : "./data/memory-blobs";
-    memoryBlobs = new MemoryLocalFsBlobStore({ baseDir: memoryBlobLocalDir });
-    memoryBlobDescription = `localfs ${memoryBlobLocalDir}`;
-  }
+  const memoryBlobs: MemoryBlobStore = components.blobs.memory.store;
+  const memoryBlobDescription = components.blobs.memory.description;
+  const memoryBlobLocalDir = components.blobs.memory.localDir ?? null;
+  const s3MemoryConfig = components.blobs.memory.s3 ?? null;
 
   const memoryService = createSqliteMemoryStoreService({
     db: drizzleDb,
@@ -767,26 +540,8 @@ async function assembleNodeControlPlane(
   // the files-store table content AND workspace_backups tar archives —
   // same single store, two key prefixes.
 
-  let filesBlob: BlobStore;
-  let filesBlobDescription: string;
-  if (deps.filesBlobs !== undefined) {
-    filesBlob = deps.filesBlobs.store;
-    filesBlobDescription = deps.filesBlobs.description;
-  } else if (config.blobs.files.kind === "s3") {
-    filesBlob = new FilesS3BlobStore({
-      endpoint: config.blobs.files.endpoint,
-      bucket: config.blobs.files.bucket,
-      accessKeyId: config.blobs.files.accessKey,
-      secretAccessKey: config.blobs.files.secretKey,
-      region: config.blobs.files.region,
-    });
-    filesBlobDescription = `s3 ${config.blobs.files.endpoint}/${config.blobs.files.bucket}`;
-  } else {
-    const filesBlobDir = config.blobs.files.dir;
-    mkdirSync(filesBlobDir, { recursive: true });
-    filesBlob = new FilesLocalFsBlobStore({ baseDir: filesBlobDir });
-    filesBlobDescription = `localfs ${filesBlobDir}`;
-  }
+  const filesBlob: BlobStore = components.blobs.files.store;
+  const filesBlobDescription = components.blobs.files.description;
 
   const workspaceBackups = new NodeWorkspaceBackupService({
     sql,
@@ -807,32 +562,9 @@ async function assembleNodeControlPlane(
     });
   }
 
-  const realtimeFanout = config.realtime;
-  const realtimeDescription = deps.realtimeHub !== undefined
-    ? "custom"
-    : realtimeFanout.mode === "memory" ? "in-process" : realtimeFanout.mode;
-  let hub: EventStreamHub;
-  if (deps.realtimeHub !== undefined) {
-    hub = deps.realtimeHub;
-    const injected = deps.realtimeHub;
-    if (injected.stop) disposables.add("realtime_hub", () => injected.stop!());
-  } else if (realtimeFanout.mode === "pg-notify") {
-    hub = await PgEventStreamHub.create({
-      dsn: dbUrl,
-      fetchEventsAfter: (sid, afterSeq) => newEventLog(sid).getEventsAsync(afterSeq),
-    });
-  } else if (realtimeFanout.mode === "sql-poll") {
-    hub = new SqlPollingEventStreamHub({
-      sql,
-      pollIntervalMs: realtimeFanout.pollIntervalMs,
-    });
-  } else {
-    hub = new InProcessEventStreamHub();
-  }
-  if (hub instanceof PgEventStreamHub || hub instanceof SqlPollingEventStreamHub) {
-    const stoppable = hub;
-    disposables.add("realtime_hub", () => stoppable.stop());
-  }
+  const hub: EventStreamHub = components.realtime.hub;
+  const realtimeDescription = components.realtime.description;
+  if (components.realtime.stop) disposables.add("realtime_hub", () => components.realtime.stop!());
 
   // ─── Sandbox factory ────────────────────────────────────────────────────
 
@@ -840,10 +572,7 @@ async function assembleNodeControlPlane(
     sessionId: string,
     workdir: string,
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
-    const sandboxFactory = deps.sandboxFactory ?? await loadSandboxFactory(
-      standaloneSandboxProvider ?? resolveSandboxProviderForEnvironment(sandboxEnvironment),
-    );
-    return sandboxFactory(
+    return components.sandbox(
       {
         sessionId,
         workdir,
@@ -1504,10 +1233,11 @@ async function assembleNodeControlPlane(
   // The Session Execution lease can land on any replica, so the official
   // stream must also tail the canonical projection unless this is a single
   // in-memory replica.
-  const managedSessionRuntimeStream = realtimeFanout.mode === "memory"
+  const replicaSync = components.realtime.replicaSync;
+  const managedSessionRuntimeStream = replicaSync === null
     ? null
     : new SqlReplicatedSessionEventStream(sql, managedSessionRuntime, {
-      pollIntervalMs: realtimeFanout.pollIntervalMs,
+      pollIntervalMs: replicaSync.pollIntervalMs,
     });
   disposables.add("managed_session_runtime_stream", () => managedSessionRuntimeStream?.stop());
 
@@ -1558,9 +1288,9 @@ async function assembleNodeControlPlane(
       );
     },
   });
-  const managedResourceCipher = platformRootSecret === undefined
+  const managedResourceCipher = secrets === null
     ? null
-    : new WebCryptoAesGcm(platformRootSecret, "managed.sessions.resources");
+    : secrets.cipherFor("managed.sessions.resources");
   const managedSessionsComposition = new SqlManagedSessionsComposition({
     client: sql,
     executionOutbox: true,
@@ -1595,9 +1325,9 @@ async function assembleNodeControlPlane(
   });
   disposables.add("managed_sessions", () => managedSessionsComposition.stopAll());
 
-  const managedDeploymentCrypto = platformRootSecret === undefined
+  const managedDeploymentCrypto = secrets === null
     ? null
-    : new WebCryptoAesGcm(platformRootSecret, "managed.deployments.resources");
+    : secrets.cipherFor("managed.deployments.resources");
   const managedDeploymentCipher: DeploymentResourceSecretCipher = {
     seal: async ({ plaintext }) => {
       if (managedDeploymentCrypto === null) {
@@ -1619,9 +1349,9 @@ async function assembleNodeControlPlane(
   const managedDeploymentSchedulePlanner = new CronDeploymentSchedulePlanner();
   const managedEnvironmentWorkAvailability =
     new TimerEnvironmentWorkAvailabilityWaiter();
-  const managedEnvironmentWorkCrypto = platformRootSecret === undefined
+  const managedEnvironmentWorkCrypto = secrets === null
     ? null
-    : new WebCryptoAesGcm(platformRootSecret, "managed.environment-work.secret");
+    : secrets.cipherFor("managed.environment-work.secret");
   const managedEnvironmentWorkCipher: EnvironmentWorkSecretCipher = {
     seal: async ({ plaintext }) => {
       if (managedEnvironmentWorkCrypto === null) {
@@ -1644,12 +1374,9 @@ async function assembleNodeControlPlane(
       };
     },
   };
-  const managedEnvironmentWorkSessionTokenCrypto = platformRootSecret === undefined
+  const managedEnvironmentWorkSessionTokenCrypto = secrets === null
     ? null
-    : new WebCryptoAesGcm(
-        platformRootSecret,
-        "managed.environment-work.session-token",
-      );
+    : secrets.cipherFor("managed.environment-work.session-token");
   const managedEnvironmentWorkCredentials =
     managedEnvironmentWorkSessionTokenCrypto === null
       ? {
@@ -1863,9 +1590,9 @@ async function assembleNodeControlPlane(
     }).port(managedAgentsPortTokens.skillVersions),
   );
 
-  const managedCredentialCrypto = platformRootSecret === undefined
+  const managedCredentialCrypto = secrets === null
     ? null
-    : new WebCryptoAesGcm(platformRootSecret, "managed.vault.credentials");
+    : secrets.cipherFor("managed.vault.credentials");
   const managedCredentialCipher: CredentialDocumentCipher = {
     seal: async ({ plaintext }) => {
       if (managedCredentialCrypto === null) {
@@ -1926,6 +1653,7 @@ async function assembleNodeControlPlane(
       tunnels: new SqlTunnelStore(sql),
       userProfiles: new SqlUserProfileStore(sql),
       vaults: new SqlVaultStore(sql),
+      ...components.stores,
     },
     fileContent: () => new BlobFileContentStore(filesBlob),
     credentialValidation: managedCredentialValidation,
@@ -2213,19 +1941,14 @@ async function assembleNodeControlPlane(
       runtime: "node",
       pid: process.pid,
       uptime_s: Math.round(process.uptime()),
-      auth: authDisabled
-        ? "disabled"
-        : usePostgres
-          ? "better-auth-pg"
-          : useMysql
-            ? "better-auth-mysql"
-            : "better-auth-sqlite",
+      auth: auth === null ? "disabled" : auth.description,
       backends: {
         agents: dialect,
         events: dialect,
         hub: realtimeDescription,
         memory_blobs: memoryBlobDescription,
         files_blobs: filesBlobDescription,
+        v1_stream: managedSessionRuntimeStream === null ? "in-memory" : "sql-replicated",
         db: backendDescription,
       },
     }),
@@ -2247,7 +1970,7 @@ async function assembleNodeControlPlane(
   );
 
   if (auth) {
-    app.on(["GET", "POST"], "/auth/*", (c) => auth!.handler(c.req.raw));
+    app.on(["GET", "POST"], "/auth/*", (c) => auth.handler(c.req.raw));
   }
 
   // Auth middleware via packages/auth — same five-priority resolution as
@@ -2255,18 +1978,7 @@ async function assembleNodeControlPlane(
   const authMw = buildAuthMw({
     disabled: authDisabled,
     bypassPath: (path) => path === "/health" || path.startsWith("/auth/"),
-    resolveSession: async (headers) => {
-      if (!auth) return null;
-      const session = (await auth.api.getSession({ headers })) as
-        | { user?: { id: string; email?: string | null; name?: string | null } }
-        | null;
-      if (!session?.user) return null;
-      return {
-        userId: session.user.id,
-        email: session.user.email ?? null,
-        name: session.user.name ?? null,
-      };
-    },
+    resolveSession: (headers) => auth ? auth.resolveSession(headers) : Promise.resolve(null),
     resolveApiKey: async (apiKey) => {
       if (config.http.apiKey && apiKey === config.http.apiKey) {
         return { tenantId: "default" };
@@ -2513,9 +2225,8 @@ async function assembleNodeControlPlane(
     mintApiKey: (input) => mintApiKeyOnStorage(apiKeyStorage, input),
   }));
   v1.route("/oma/tenants", buildTenantRoutes({ services, memberSql: sql, loadMemberUser: async (id) => {
-    if (!auth) return null;
-    const user = await (await auth.$context).internalAdapter.findUserById(id);
-    return user ? { name: user.name, email: user.email } : null;
+    const user = auth ? await auth.findUser(id) : null;
+    return user ? { name: user.name, email: user.email ?? undefined } : null;
   } }));
   v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
   v1.route("/oma/evals", buildEvalRoutes({
@@ -2738,7 +2449,7 @@ async function assembleNodeControlPlane(
       buildIntegrationsRoutes({
         bags: () => {
           const repos = buildNodeRepos(integrationsRepoEnv);
-          const slackCrypto = new WebCryptoAesGcm(platformRootSecret, "integrations.tokens");
+          const slackCrypto = secrets!.cipherFor("integrations.tokens");
           const slackIds = new CryptoIdGenerator();
           return {
             linear: {
@@ -3005,17 +2716,6 @@ async function assembleNodeControlPlane(
   };
 
 
-  function randomFallback(): string {
-    // Pre-bootstrap fallback — logger is built before BetterAuth in the
-    // current ordering, so this can use the structured logger.
-    logger.warn(
-      { op: "main-node.auth_secret_missing" },
-      "BETTER_AUTH_SECRET not set — generating per-process random secret. Sessions will not survive restart.",
-    );
-    return Array.from(crypto.getRandomValues(new Uint8Array(32)))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-  }
 
   let started = false;
   return {
@@ -3033,16 +2733,11 @@ async function assembleNodeControlPlane(
       await scheduler.start();
       logger.info({ op: "main-node.scheduler.started" }, "scheduler started");
     },
+    components,
     stop: (signal) => shutdownNodeApp(signal),
   };
 }
 
-async function loadSandboxFactory(
-  selection: ReturnType<typeof resolveSandboxProviderForEnvironment>,
-): Promise<SandboxFactory> {
-  const mod = (await import(selection.modulePath)) as { sandboxFactory: SandboxFactory };
-  return mod.sandboxFactory;
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -3136,22 +2831,3 @@ function bridgeAsInstallProxy(bridge: NodeInstallBridge): InstallProxyForwarder 
   };
 }
 
-/**
- * Lightweight SqlClient shim around a better-sqlite3 Database. Used only
- * to run the better-auth schema apply against the auth db (separate
- * connection from the main SqlClient). We don't ship a full adapter — only
- * .exec() is needed.
- */
-function betterSqliteAsSqlClient(
-  db: import("better-sqlite3").Database,
-): SqlClient {
-  return {
-    exec: async (s: string) => {
-      db.exec(s);
-    },
-    prepare: () => {
-      throw new Error("not implemented");
-    },
-    batch: async () => [],
-  } as SqlClient;
-}
