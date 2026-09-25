@@ -22,12 +22,23 @@ const mocks = vi.hoisted(() => {
     handleWebhook,
     run,
     anthropicOptions: undefined as unknown,
+    loadedEnvironment: undefined as unknown,
+    assembledConfig: undefined as unknown,
     workerDependencies: undefined as unknown,
   };
 });
 
-vi.mock("@open-managed-agents/main-node", () => ({
-  app: { fetch: mocks.apiFetch },
+vi.mock("@open-managed-agents/main-node/config", () => ({
+  loadNodeConfig: (environment: Record<string, string | undefined>) => {
+    mocks.loadedEnvironment = environment;
+    return { processMode: environment.OPENMA_PROCESS_MODE };
+  },
+}));
+vi.mock("@open-managed-agents/main-node/control-plane", () => ({
+  createNodeControlPlane: async (config: { processMode: string }) => {
+    mocks.assembledConfig = config;
+    return { fetch: mocks.apiFetch };
+  },
 }));
 
 vi.mock("@vercel/functions", () => ({ waitUntil: mocks.waitUntil }));
@@ -87,6 +98,11 @@ describe("production Vercel wiring", () => {
 
     const apiResponse = await controlPlane.fetch(new Request("https://control.example.test/health"));
     expect(await apiResponse.json()).toEqual({ path: "/health" });
+    // The control plane is assembled from the environment object Vercel
+    // prepared — serverless mode, no side-effect import, no process.env.
+    expect(mocks.loadedEnvironment).toBe(mutableEnvironment);
+    expect(mutableEnvironment.OPENMA_PROCESS_MODE).toBe("serverless");
+    expect(mocks.assembledConfig).toEqual({ processMode: "serverless" });
 
     const poll = () => controlPlane.fetch(new Request(
       "https://control.example.test/api/openma/environment/poll",

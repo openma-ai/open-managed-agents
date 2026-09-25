@@ -55,10 +55,13 @@ export function createProductionVercelControlPlane(
 
   return createVercelControlPlaneHandler({
     async loadApi() {
-      const module = await import("@open-managed-agents/main-node") as {
-        app: { fetch(request: Request): Promise<Response> | Response };
-      };
-      return module.app;
+      // Serverless instances never start() or listen: the Environment Worker
+      // and the request boundary below own all long-lived work.
+      const [{ loadNodeConfig }, { createNodeControlPlane }] = await Promise.all([
+        import("@open-managed-agents/main-node/config"),
+        import("@open-managed-agents/main-node/control-plane"),
+      ]);
+      return createNodeControlPlane(loadNodeConfig(environment));
     },
     async loadEnvironmentWorker() {
       const config = readVercelControlPlaneConfig(environment);

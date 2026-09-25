@@ -1,7 +1,13 @@
+import { loadNodeConfig } from "@open-managed-agents/main-node/config";
+import { createNodeControlPlane } from "@open-managed-agents/main-node/control-plane";
+import { serveNodeControlPlane } from "@open-managed-agents/main-node/serve";
+
 import { prepareFlyMachineEnvironment } from "./production.js";
 
+// Project Fly Machine metadata onto the Node configuration contract, then
+// assemble and host the control plane explicitly — no side-effect import.
 prepareFlyMachineEnvironment(process.env);
-
-// Import only after Fly metadata has been projected into the Node contract;
-// main-node constructs its stores and long-running workers during module load.
-await import("@open-managed-agents/main-node");
+const config = loadNodeConfig(process.env);
+const controlPlane = await createNodeControlPlane(config);
+await controlPlane.start();
+await serveNodeControlPlane(controlPlane, { ...config.http, signals: {} });
