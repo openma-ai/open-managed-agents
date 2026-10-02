@@ -1,5 +1,11 @@
 # @openma/cli
 
+## 0.6.1
+
+### Patch Changes
+
+- a011976: Prevent idle sleep while the local daemon is available, release the power assertion during shutdown, and retry unavailable platform helpers without interrupting tasks.
+
 ## 0.6.0
 
 ### Minor Changes
