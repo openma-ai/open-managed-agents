@@ -7,7 +7,7 @@
   "dependencies": {
     "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
     "@cloudflare/containers": "^0.3.7",
-    "@cloudflare/sandbox": "0.12.9",
+    "@cloudflare/sandbox": "0.12.10",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/app": "workspace:*",
     "@open-managed-agents/auth": "workspace:*",
