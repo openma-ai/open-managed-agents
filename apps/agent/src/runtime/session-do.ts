@@ -524,6 +524,33 @@ export class SessionDO extends DurableObject<Env> {
    * data through the init body and avoid the KV cross-binding issue.
    */
   private async getAgentConfig(agentId: string): Promise<AgentConfig | null> {
+    // Integration resume writes a refreshed snapshot through sessions.update()
+    // while the session is idle. The next turn must read that row: the DO
+    // copy taken at /init would keep the publish-time MCP wiring forever.
+    if (
+      agentId === this.state.agent_id &&
+      this.state.session_id &&
+      this.state.tenant_id
+    ) {
+      try {
+        const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
+        const session = await services.sessions.get({
+          tenantId: this.state.tenant_id,
+          sessionId: this.state.session_id,
+        });
+        if (session?.agent_snapshot) {
+          if (JSON.stringify(this.state.agent_snapshot) !== JSON.stringify(session.agent_snapshot)) {
+            this.setState({ ...this.state, agent_snapshot: session.agent_snapshot });
+          }
+          return session.agent_snapshot;
+        }
+      } catch (err) {
+        logWarn(
+          { op: "session_do.agent_snapshot_reload", session_id: this.state.session_id, err },
+          "failed to reload agent snapshot; using the DO copy",
+        );
+      }
+    }
     if (this.state.agent_snapshot && agentId === this.state.agent_id) {
       return this.state.agent_snapshot;
     }

@@ -21,11 +21,18 @@ import type {
   CreateCapCliInput,
   CreateCredentialInput,
   CreateSessionInput,
+  ResumeSessionOptions,
   SessionCreator,
   SessionEventInput,
   SessionId,
   VaultManager,
   UserId,
+} from "@open-managed-agents/integrations-core";
+import {
+  SessionResumeNotIdleError,
+  injectMcpServersIntoSnapshot,
+  refreshIntegrationMcpServers,
+  sessionOwnedMcpUrls,
 } from "@open-managed-agents/integrations-core";
 import {
   ALL_CAPABILITIES as ALL_LINEAR_CAPS,
@@ -73,9 +80,10 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
-import type { SessionService } from "@open-managed-agents/sessions-store";
+import { SessionNotIdleError, type SessionService } from "@open-managed-agents/sessions-store";
 import type { AgentService } from "@open-managed-agents/agents-store";
 import type {
+  AgentConfig,
   SessionEvent,
   UserMessageEvent,
 } from "@open-managed-agents/shared";
@@ -624,13 +632,19 @@ class InProcessSessionCreator implements SessionCreator {
     const agentBase = { ...agentRow, tenant_id: undefined } as unknown as Record<string, unknown>;
     delete agentBase.tenant_id;
 
-    // Provider-supplied prose appended to system. Mirror apps/main internal.ts
-    // so per_channel Slack sessions land here with the same frozen protocol
-    // text. Idempotent on empty input.
+    // Same create-time augmentation as apps/main internal.ts: integration
+    // MCP servers + toolsets, then the provider's frozen protocol prose.
+    let agentSnapshot = injectMcpServersIntoSnapshot(
+      agentBase as unknown as AgentConfig,
+      input.mcpServers,
+    );
     if (input.additionalSystemPrompt && input.additionalSystemPrompt.trim()) {
-      const existing = (agentBase.system as string | undefined) ?? "";
+      const existing = agentSnapshot.system ?? "";
       const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
-      agentBase.system = existing + sep + input.additionalSystemPrompt;
+      agentSnapshot = {
+        ...agentSnapshot,
+        system: existing + sep + input.additionalSystemPrompt,
+      };
     }
 
     // Self-host agents always run on local-runtime. We use a synthetic env
@@ -646,22 +660,19 @@ class InProcessSessionCreator implements SessionCreator {
       environmentId: input.environmentId,
       title: "",
       vaultIds: [...input.vaultIds],
-      agentSnapshot: agentBase as never,
+      agentSnapshot,
       environmentSnapshot: envSnapshot as never,
       metadata: meta as never,
     });
     return { sessionId: session.id as SessionId };
   }
 
-  async resume(userId: UserId, sessionId: SessionId, event: SessionEventInput): Promise<void> {
-    if (!this.opts.appendUserEvent) {
-      // Bridge wired without an append hook (e.g. unit tests).
-      log.warn(
-        { op: "install_bridge.resume.no_hook", session_id: sessionId, user_id: userId },
-        "session resume invoked but appendUserEvent hook is not wired",
-      );
-      return;
-    }
+  async resume(
+    userId: UserId,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    options?: ResumeSessionOptions,
+  ): Promise<void> {
     // Resolve session + agent so the harness gets the right (sid, tenantId,
     // agentId) tuple. 404/410 surface to the provider's webhook handler,
     // which logs and returns 200 (webhook contract — never re-deliver).
@@ -673,6 +684,36 @@ class InProcessSessionCreator implements SessionCreator {
       agentId: session.agent_id,
     });
     if (!agentRow) throw new Error(`agent_gone: ${session.agent_id}`);
+
+    const integrationServers = options?.mcpServers ?? [];
+    if (integrationServers.length > 0 && session.agent_snapshot) {
+      const refreshed = refreshIntegrationMcpServers(
+        session.agent_snapshot,
+        integrationServers,
+        { preserveUrls: sessionOwnedMcpUrls(session.metadata) },
+      );
+      try {
+        await this.opts.sessions.update({
+          tenantId: session.tenant_id,
+          sessionId,
+          agentSnapshot: refreshed,
+        });
+      } catch (err) {
+        if (err instanceof SessionNotIdleError) {
+          throw new SessionResumeNotIdleError(err.message);
+        }
+        throw err;
+      }
+    }
+
+    if (!this.opts.appendUserEvent) {
+      // Bridge wired without an append hook (e.g. unit tests).
+      log.warn(
+        { op: "install_bridge.resume.no_hook", session_id: sessionId, user_id: userId },
+        "session resume invoked but appendUserEvent hook is not wired",
+      );
+      return;
+    }
 
     // SessionEventInput from integrations-core is structurally a SessionEvent
     // (type + content). Translation rule: webhook events normalize to a

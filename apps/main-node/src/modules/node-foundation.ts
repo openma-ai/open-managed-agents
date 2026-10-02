@@ -48,6 +48,7 @@ import { nodeToMarkdown } from "@open-managed-agents/markdown/adapters/node";
 import { SqlAgentPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 
 import { resolveFeishuAgentTools } from "../lib/feishu-agent-tools.js";
+import { createLegacySessionMcpProxy } from "../lib/legacy-session-mcp-proxy.js";
 
 import { NodeWorkspaceBackupService } from "../lib/node-workspace-backup.js";
 import { NodeSharedSessionOutputs } from "../lib/node-shared-session-outputs.js";
@@ -376,6 +377,11 @@ export async function createNodeFoundation(
     }));
   }
 
+  const legacySessionMcpProxy = createLegacySessionMcpProxy({
+    sessions: sessionsService,
+    credentials: credentialService,
+  });
+
   const sessionRegistry = new SessionRegistry({
     sql,
     hub,
@@ -387,12 +393,15 @@ export async function createNodeFoundation(
     sandboxWorkdirRoot: config.paths.sandboxWorkdir,
     sqlDialect: dialect,
     buildModel: (agent, tenantId) => buildNodeLanguageModel(tenantId, agent.model),
-    buildTools: async (agent, sandbox, tenantId) => {
+    buildTools: async (agent, sandbox, tenantId, sessionId) => {
       const creds = await resolveNodeModelCreds(tenantId, agent.model);
       return buildTools(agent, sandbox, {
         ANTHROPIC_API_KEY: creds.apiKey,
         ANTHROPIC_BASE_URL: creds.baseURL,
         toMarkdown: toMarkdownProvider,
+        tenantId,
+        sessionId,
+        mcpBinding: legacySessionMcpProxy,
       });
     },
     buildHarness: (agent) => {
