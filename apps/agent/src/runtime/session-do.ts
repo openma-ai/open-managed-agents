@@ -996,6 +996,25 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
+   * Cancel every pending wakeup for this session. Used when the managed MCP
+   * proxy observes a terminal loss of access. Idempotent: a second call
+   * finds an empty list.
+   */
+  async cancelAllWakeups(): Promise<{ cancelled: number }> {
+    // This Durable Object is already one session. Cancel every wakeup
+    // schedule on it, including rows whose stored scope was written before
+    // state.session_id was hydrated.
+    const pending = this.getSchedules().filter(
+      (record) => record.callback === "onScheduledWakeup",
+    );
+    let cancelled = 0;
+    for (const record of pending) {
+      if (await this.cancelSchedule(record.id)) cancelled += 1;
+    }
+    return { cancelled };
+  }
+
+  /**
    * List pending wakeup schedules for THIS session. Filters on
    * `callback === "onScheduledWakeup"` so the agent never sees the
    * framework's internal recoverEventQueue / pollBackgroundTasks rows.
@@ -2535,6 +2554,11 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+
+    if (request.method === "POST" && url.pathname === "/wakeups/cancel") {
+      const cancelled = await this.cancelAllWakeups();
+      return Response.json(cancelled);
     }
 
     // GET /status

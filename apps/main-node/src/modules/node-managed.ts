@@ -79,6 +79,7 @@ import { buildNodeManagedSkillReminders, buildNodeManagedAppendablePromptReminde
 import { NodeManagedMemorySnapshotMaterializer } from "../lib/node-managed-memory-snapshots.js";
 import { NodeSessionExecutionWorker } from "../lib/node-session-execution-worker.js";
 import { createNodeMcpProxyBinding, type NodeMcpProxyTarget } from "../lib/http-mcp-proxy.js";
+import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
 
 import { Disposables } from "../lifecycle.js";
 import type { NodeComponents } from "../components.js";
@@ -264,6 +265,7 @@ export async function createManagedNodeRuntime(
 
   const nodeMcpProxyBinding = createNodeMcpProxyBinding({
     resolveTarget: resolveNodeMcpProxyTarget,
+    accessLoss: await createNodeAccessLossRuntime(sql),
   });
 
   const managedSessionResourceSecrets = new SqlSessionResourceSecretSource(sql, {

@@ -14,6 +14,7 @@ export type {
   GitHubIssueSessionRepo,
   GitHubIssueSessionStatus,
 } from "./ports";
+export { githubAccessLossCatalog } from "./access-loss";
 export {
   type GitHubConfig,
   ALL_GITHUB_CAPABILITIES,

@@ -593,6 +593,9 @@ importers:
       '@open-managed-agents/managed-agents-application':
         specifier: workspace:*
         version: link:../../packages/managed-agents-application
+      '@open-managed-agents/mcp-access-loss':
+        specifier: workspace:*
+        version: link:../../packages/mcp-access-loss
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../../packages/memory-store
@@ -819,6 +822,9 @@ importers:
       '@open-managed-agents/markdown':
         specifier: workspace:*
         version: link:../../packages/markdown
+      '@open-managed-agents/mcp-access-loss':
+        specifier: workspace:*
+        version: link:../../packages/mcp-access-loss
       '@open-managed-agents/memory-document-store-sql':
         specifier: workspace:*
         version: link:../../packages/memory-document-store-sql
@@ -2807,6 +2813,25 @@ importers:
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
+
+  packages/mcp-access-loss:
+    dependencies:
+      '@open-managed-agents/github':
+        specifier: workspace:*
+        version: link:../github
+      '@open-managed-agents/linear':
+        specifier: workspace:*
+        version: link:../linear
+      '@open-managed-agents/slack':
+        specifier: workspace:*
+        version: link:../slack
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.5.1)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.5.1)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
   packages/memory-document-store:
     dependencies:
