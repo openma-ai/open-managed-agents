@@ -136,6 +136,7 @@ export interface RefreshedTokens {
 export async function refreshMcpOAuth(
   meta: OauthRefreshMetadata,
   fetcher: typeof fetch = fetch,
+  failure?: { code: string | null },
 ): Promise<RefreshedTokens | null> {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -154,7 +155,19 @@ export async function refreshMcpOAuth(
   } catch {
     return null;
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    if (failure && failure.code === null) {
+      try {
+        const payload = await res.clone().json() as { error?: unknown };
+        if (typeof payload.error === "string" && payload.error.length > 0) {
+          failure.code = payload.error;
+        }
+      } catch {
+        /* token endpoint body is not JSON */
+      }
+    }
+    return null;
+  }
 
   let tokens: { access_token?: string; refresh_token?: string; expires_in?: number };
   try {
@@ -196,6 +209,14 @@ export interface ForwardOpts {
   onRefreshed?: (t: RefreshedTokens) => Promise<void>;
   /** Pluggable transport. Defaults to globalThis.fetch. */
   fetcher?: typeof fetch;
+  /** Called with the final upstream response, after a refresh attempt. */
+  onFinal?: (info: {
+    status: number;
+    bodyText: string;
+    refreshed: boolean;
+    refreshFailed: boolean;
+    refreshFailureCode: string | null;
+  }) => Promise<void>;
   /** Headers to scrub from the upstream request. Default: edge-injected
    *  CF headers + host (caller may want to override on Node). */
   scrubHeaders?: string[];
@@ -251,8 +272,36 @@ export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
     return fetcher(opts.upstreamUrl, init);
   };
 
+  const finish = async (
+    response: Response,
+    info: {
+      refreshed: boolean;
+      refreshFailed: boolean;
+      refreshFailureCode: string | null;
+    },
+  ): Promise<Response> => {
+    if (!opts.onFinal) return response;
+    const bodyText = await response.text();
+    await opts.onFinal({ status: response.status, bodyText, ...info });
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    headers.delete("transfer-encoding");
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+
   const first = await send(opts.accessToken);
-  if (first.status !== 401 || !opts.refresh) return first;
+  if (first.status !== 401 || !opts.refresh) {
+    return finish(first, {
+      refreshed: false,
+      refreshFailed: false,
+      refreshFailureCode: null,
+    });
+  }
 
   // Drain the body so we can return a fresh Response without two
   // outstanding streams.
@@ -262,11 +311,16 @@ export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
     /* already consumed / closed */
   }
 
-  const refreshed = await refreshMcpOAuth(opts.refresh, fetcher);
+  const refreshFailure: { code: string | null } = { code: null };
+  const refreshed = await refreshMcpOAuth(opts.refresh, fetcher, refreshFailure);
   if (!refreshed) {
     // Refresh failed — re-issue with the original token to surface the
     // upstream's actual 401 (matches old apps/main behavior).
-    return send(opts.accessToken);
+    return finish(await send(opts.accessToken), {
+      refreshed: false,
+      refreshFailed: true,
+      refreshFailureCode: refreshFailure.code,
+    });
   }
   if (opts.onRefreshed) {
     try {
@@ -275,7 +329,11 @@ export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
       // Best-effort; caller has the new token regardless.
     }
   }
-  return send(refreshed.access_token);
+  return finish(await send(refreshed.access_token), {
+    refreshed: true,
+    refreshFailed: false,
+    refreshFailureCode: null,
+  });
 }
 
 // Re-export the credentials-store's CredentialConfig for convenience —

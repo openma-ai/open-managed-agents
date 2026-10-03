@@ -1,5 +1,10 @@
 import { Hono } from "hono";
 import {
+  bindAccessLossHooks,
+  mcpRequestBodyText,
+  type AccessLossRuntime,
+} from "@open-managed-agents/mcp-access-loss";
+import {
   forwardWithRefresh,
   type OauthRefreshMetadata,
   type RefreshedTokens,
@@ -19,6 +24,7 @@ export interface NodeHttpMcpProxyDependencies {
     serverName: string;
   }): Promise<NodeMcpProxyTarget | null>;
   fetcher?: typeof fetch;
+  accessLoss?: AccessLossRuntime;
 }
 
 export interface NodeMcpProxyBinding {
@@ -50,6 +56,14 @@ export function createNodeMcpProxyBinding(
       const body = ["GET", "HEAD"].includes(request.method.toUpperCase())
         ? null
         : await request.arrayBuffer();
+      const hooks = dependencies.accessLoss
+        ? await bindAccessLossHooks(dependencies.accessLoss, {
+          workspaceId: tenantId,
+          sessionId,
+          serverName,
+          requestBody: mcpRequestBodyText(body),
+        })
+        : undefined;
       return forwardWithRefresh({
         upstreamUrl: target.upstreamUrl,
         method: request.method,
@@ -59,6 +73,7 @@ export function createNodeMcpProxyBinding(
         refresh: target.refresh,
         onRefreshed: target.onRefreshed,
         fetcher: dependencies.fetcher,
+        onFinal: hooks?.onFinal,
       });
     },
   };
@@ -88,6 +103,14 @@ export function buildNodeHttpMcpProxyRoutes(
     const body = ["GET", "HEAD"].includes(context.req.method.toUpperCase())
       ? null
       : await context.req.raw.arrayBuffer();
+    const hooks = dependencies.accessLoss
+      ? await bindAccessLossHooks(dependencies.accessLoss, {
+        workspaceId: tenantId,
+        sessionId,
+        serverName,
+        requestBody: mcpRequestBodyText(body),
+      })
+      : undefined;
     return forwardWithRefresh({
       upstreamUrl: target.upstreamUrl,
       method: context.req.method,
@@ -97,6 +120,7 @@ export function buildNodeHttpMcpProxyRoutes(
       refresh: target.refresh,
       onRefreshed: target.onRefreshed,
       fetcher: dependencies.fetcher,
+      onFinal: hooks?.onFinal,
     });
   });
   return routes;

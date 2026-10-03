@@ -61,6 +61,7 @@ import { relative } from "node:path";
 import { buildNodeSkillsRoutes } from "../lib/node-skills-routes.js";
 
 import { buildNodeHttpMcpProxyRoutes } from "../lib/http-mcp-proxy.js";
+import { createNodeAccessLossRuntime } from "../lib/mcp-access-loss.js";
 
 import { Disposables } from "../lifecycle.js";
 
@@ -393,6 +394,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   }));
   v1.route("/oma/mcp-proxy", buildNodeHttpMcpProxyRoutes({
     resolveTarget: resolveNodeMcpProxyTarget,
+    accessLoss: await createNodeAccessLossRuntime(sql),
   }));
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
