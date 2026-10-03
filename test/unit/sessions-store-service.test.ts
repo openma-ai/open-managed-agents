@@ -25,6 +25,7 @@ import {
   SessionArchivedError,
   SessionMemoryStoreMaxExceededError,
   SessionNotFoundError,
+  SessionNotIdleError,
   SessionResourceMaxExceededError,
   SessionResourceNotFoundError,
 } from "../../packages/sessions-store/src/index";
@@ -110,6 +111,35 @@ describe("SessionService — create + read", () => {
     const { service } = createInMemorySessionService();
     expect(await service.get({ tenantId: TENANT, sessionId: "missing" })).toBeNull();
     expect(await service.getById({ sessionId: "missing" })).toBeNull();
+  });
+
+  it("rejects an agent snapshot update when the session is not idle", async () => {
+    const { service } = createInMemorySessionService();
+    const { session } = await service.create({
+      tenantId: TENANT,
+      agentId: AGENT,
+      environmentId: ENV_ID,
+      agentSnapshot: SAMPLE_AGENT_SNAPSHOT,
+    });
+    await service.update({
+      tenantId: TENANT,
+      sessionId: session.id,
+      status: "running",
+    });
+    await expect(service.update({
+      tenantId: TENANT,
+      sessionId: session.id,
+      agentSnapshot: { ...SAMPLE_AGENT_SNAPSHOT, name: "changed" },
+    })).rejects.toBeInstanceOf(SessionNotIdleError);
+    const got = await service.get({ tenantId: TENANT, sessionId: session.id });
+    expect(got?.agent_snapshot?.name).toBe("test agent");
+    expect(got?.status).toBe("running");
+    await service.update({
+      tenantId: TENANT,
+      sessionId: session.id,
+      title: "still allowed",
+    });
+    expect((await service.get({ tenantId: TENANT, sessionId: session.id }))?.title).toBe("still allowed");
   });
 
   it("round-trips agent_snapshot, environment_snapshot, vault_ids, metadata", async () => {

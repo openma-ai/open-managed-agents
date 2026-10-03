@@ -13,6 +13,7 @@ import {
   SessionArchivedError,
   SessionMemoryStoreMaxExceededError,
   SessionNotFoundError,
+  SessionNotIdleError,
   SessionResourceMaxExceededError,
   SessionResourceNotFoundError,
 } from "./errors";
@@ -167,15 +168,30 @@ export class SessionService {
     environmentSnapshot?: EnvironmentConfig;
   }): Promise<SessionRow> {
     const existing = await this.requireSession(opts);
+    const updatesAgent = opts.agentSnapshot !== undefined;
+    if (updatesAgent && existing.status !== "idle") {
+      throw new SessionNotIdleError();
+    }
     const update: SessionUpdateFields = { updatedAt: this.clock.nowMs() };
     if (opts.title !== undefined) update.title = opts.title;
     if (opts.status !== undefined) update.status = opts.status;
-    if (opts.agentSnapshot !== undefined) update.agentSnapshot = opts.agentSnapshot;
+    if (opts.agentSnapshot !== undefined) {
+      update.agentSnapshot = opts.agentSnapshot;
+      // Re-check at the write so an idle-to-running race cannot land.
+      update.expectedStatus = "idle";
+    }
     if (opts.environmentSnapshot !== undefined) update.environmentSnapshot = opts.environmentSnapshot;
     if (opts.metadata !== undefined) {
       update.metadata = mergeMetadata(existing.metadata, opts.metadata);
     }
-    return this.repo.update(opts.tenantId, opts.sessionId, update);
+    const row = await this.repo.update(opts.tenantId, opts.sessionId, update);
+    if (
+      updatesAgent &&
+      JSON.stringify(row.agent_snapshot) !== JSON.stringify(opts.agentSnapshot)
+    ) {
+      throw new SessionNotIdleError();
+    }
+    return row;
   }
 
   /** Just status — convenience for the SessionDO write-back path. */

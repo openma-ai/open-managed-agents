@@ -5,6 +5,15 @@ import { generateVaultId } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import { forEachShardServices } from "@open-managed-agents/services";
 import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
+import {
+  injectMcpServersIntoSnapshot,
+  refreshIntegrationMcpServers,
+  sessionOwnedMcpUrls,
+} from "@open-managed-agents/integrations-core";
+import { SessionNotIdleError } from "@open-managed-agents/sessions-store";
+import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
+
+export { injectMcpServersIntoSnapshot, refreshIntegrationMcpServers };
 
 // Internal endpoints, called only by the integrations gateway worker via the
 // `MAIN` service binding. Auth is a shared header secret — no better-auth
@@ -46,72 +55,6 @@ export function appendToAgentSnapshotSystemPrompt(
   return { ...snapshot, system: existing + sep + additional };
 }
 
-/**
- * Augment an agent snapshot with extra MCP servers, injecting BOTH the
- * `mcp_servers` URL entry AND a matching `mcp_toolset` declaration into
- * `tools[]` so the agent runtime actually exposes the server's tools.
- *
- * Why both: the harness's MCP wiring (apps/agent/src/harness/tools.ts)
- * iterates `agentConfig.mcp_servers` to set up clients, but the model only
- * sees a tool if there's a corresponding `mcp_toolset` declaration in
- * `tools[]`. Pre-fix, the publish flow added the server URL but never the
- * toolset entry — so a Slack-published agent had the slack vault + server
- * attached, yet the model literally told users to run curl commands
- * because no `mcp__slack__*` tool surfaced. Tracked 2026-05-19.
- *
- * Permission policy = always_allow for injected toolsets: the user just
- * published the agent to this integration, so requiring a per-tool
- * confirmation defeats the point of a teammate bot. Vault binding still
- * gates access — unpublish to revoke.
- *
- * Idempotent on the toolset side: if the agent already declares an
- * mcp_toolset for one of the injected servers (e.g. user manually added
- * slack to the agent before publishing), the existing entry stays.
- * Servers go through unchanged — `mcp_servers` tolerates duplicates today
- * but the URL is what callers rely on anyway, and `tools[]` is the
- * canonical guard.
- */
-export function injectMcpServersIntoSnapshot(
-  snapshot: AgentConfig,
-  servers: ReadonlyArray<{ name: string; url: string; type?: string }>,
-): AgentConfig {
-  if (servers.length === 0) return snapshot;
-  const existingServers = snapshot.mcp_servers ?? [];
-  const existingTools = snapshot.tools ?? [];
-  const declaredToolsetServers = new Set(
-    existingTools
-      .filter(
-        (t): t is { type: "mcp_toolset"; mcp_server_name: string } =>
-          (t as { type?: string }).type === "mcp_toolset" &&
-          typeof (t as { mcp_server_name?: unknown }).mcp_server_name === "string",
-      )
-      .map((t) => t.mcp_server_name),
-  );
-  const toolsToInject = servers
-    .filter((s) => !declaredToolsetServers.has(s.name))
-    .map((s) => ({
-      // mcp_toolset entries carry an extension field `mcp_server_name` not
-      // represented in ToolsetConfig today — existing rows in production
-      // look identical. Cast through unknown to satisfy TS without widening
-      // the shared type for this one path.
-      type: "mcp_toolset",
-      mcp_server_name: s.name,
-      default_config: { permission_policy: { type: "always_allow" as const } },
-    })) as unknown as AgentConfig["tools"];
-  return {
-    ...snapshot,
-    mcp_servers: [
-      ...existingServers,
-      ...servers.map((s) => ({
-        name: s.name,
-        type: (s.type === "sse" || s.type === "http" ? s.type : "url") as
-          "url" | "http" | "sse",
-        url: s.url,
-      })),
-    ],
-    tools: [...existingTools, ...toolsToInject],
-  };
-}
 
 // Public hostname of the integrations gateway, used to wire a hosted Linear
 // MCP server into Linear-triggered sessions. We hard-fail when the env var
@@ -177,6 +120,8 @@ interface ResumeSessionBody {
   /** Session owner; required to resolve tenantId in O(1) without scanning. */
   userId: string;
   event: { type: string; content: unknown[]; metadata?: Record<string, unknown> };
+  /** Current integration-owned MCP servers. Refreshed onto the frozen snapshot before the event is appended. */
+  mcpServers?: Array<{ name: string; url: string; type?: string }>;
 }
 
 interface CreateVaultCredentialBody {
@@ -243,19 +188,11 @@ app.post("/sessions", async (c) => {
   });
   if (!envRow) return c.json({ error: "environment not found in tenant" }, 404);
 
-  // Resolve the sandbox binding for this environment. Same naming convention
-  // as the public sessions route: SANDBOX_<sanitized worker name>.
-  // Read directly from the row — sandbox_worker_name is a server-internal
-  // detail, not surfaced on the wire.
-  if (!envRow.sandbox_worker_name) {
-    return c.json({ error: "environment has no sandbox worker" }, 500);
-  }
-  const bindingName = `SANDBOX_${envRow.sandbox_worker_name.replace(/-/g, "_")}`;
-  const binding = (c.env as unknown as Record<string, unknown>)[bindingName] as
-    | Fetcher
-    | undefined;
+  // Named SANDBOX_<worker> in production. Combined-worker tests and
+  // local-runtime fall back to SANDBOX_sandbox_default / SESSION_DO.
+  const binding = resolveSessionSandboxFetcher(c.env, envRow.sandbox_worker_name);
   if (!binding) {
-    return c.json({ error: `sandbox binding ${bindingName} not bound` }, 500);
+    return c.json({ error: "environment has no sandbox worker" }, 500);
   }
 
   // Build the agent snapshot up-front so we can ship it to SessionDO at /init
@@ -435,15 +372,43 @@ app.post("/sessions/:id/events", async (c) => {
     return c.json({ error: "session has no environment_id" }, 400);
   }
 
+  // Refresh only the integration's MCP servers and toolsets. The rest of
+  // the frozen snapshot (system prompt, user tools, user MCP servers)
+  // stays. sessions.update() rejects the write when the session is not
+  // idle; the event is not appended in that case.
+  const integrationServers = body.mcpServers ?? [];
+  if (integrationServers.length > 0 && session.agent_snapshot) {
+    const refreshed = refreshIntegrationMcpServers(
+      session.agent_snapshot,
+      integrationServers,
+      { preserveUrls: sessionOwnedMcpUrls(session.metadata) },
+    );
+    try {
+      await c.var.services.sessions.update({
+        tenantId,
+        sessionId,
+        agentSnapshot: refreshed,
+      });
+    } catch (err) {
+      if (err instanceof SessionNotIdleError) {
+        return c.json(
+          {
+            error: "session_not_idle",
+            message: "Session must be idle to update the agent configuration",
+          },
+          409,
+        );
+      }
+      throw err;
+    }
+  }
+
   const envRow2 = await c.var.services.environments.get({
     tenantId,
     environmentId: session.environment_id,
   });
   if (!envRow2) return c.json({ error: "environment missing" }, 500);
-  const bindingName = `SANDBOX_${(envRow2.sandbox_worker_name ?? "").replace(/-/g, "_")}`;
-  const binding = (c.env as unknown as Record<string, unknown>)[bindingName] as
-    | Fetcher
-    | undefined;
+  const binding = resolveSessionSandboxFetcher(c.env, envRow2.sandbox_worker_name);
   if (!binding) return c.json({ error: `sandbox binding missing` }, 500);
 
   await binding.fetch(`https://sandbox/sessions/${sessionId}/event`, {

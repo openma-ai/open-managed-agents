@@ -77,6 +77,7 @@ export interface SessionRegistryDeps {
     agent: AgentConfig,
     sandbox: SandboxPort,
     tenantId: string,
+    sessionId: string,
   ): Promise<unknown>;
 
   /** Build harness instance + context. Each is platform-neutral so the
@@ -258,6 +259,19 @@ export class SessionRegistry {
       adapter,
       sandbox,
       loadAgent: async (agentId) => {
+        // The session snapshot is the frozen user config plus the integration
+        // MCP wiring refreshed on resume. Sub-agents still resolve live.
+        const stored = await this.deps.sql
+          .prepare(`SELECT agent_id, agent_snapshot FROM sessions WHERE id = ?`)
+          .bind(sessionId)
+          .first<{ agent_id: string | null; agent_snapshot: string | null }>();
+        if (stored?.agent_id === agentId && stored.agent_snapshot) {
+          try {
+            return JSON.parse(stored.agent_snapshot) as AgentConfig;
+          } catch {
+            // Fall through to the live agent row.
+          }
+        }
         const row = await this.deps.agentsService.get({ tenantId, agentId });
         return row ?? null;
       },
@@ -267,7 +281,7 @@ export class SessionRegistry {
       mountMemoryStores: async () => {},
       mountSessionOutputs: async () => {},
       buildModel: (agent) => this.deps.buildModel(agent, tenantId),
-      buildTools: (agent, sb) => this.deps.buildTools(agent, sb, tenantId),
+      buildTools: (agent, sb) => this.deps.buildTools(agent, sb, tenantId, sessionId),
       buildHarness: (agent) => this.deps.buildHarness(agent),
       buildHarnessContext: (input) =>
         this.deps.buildHarnessContext({

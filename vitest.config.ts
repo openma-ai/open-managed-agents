@@ -72,6 +72,7 @@ const cfWorkerOptions = {
       // and model_cards.api_key_cipher. Tests don't care about the value as
       // long as it's stable across encrypt/decrypt within a single process.
       PLATFORM_ROOT_SECRET: "test-platform-root-secret-padded-to-thirtytwo",
+      INTEGRATIONS_INTERNAL_SECRET: "test-internal-secret",
       RATE_LIMIT_WRITE: 10000,
       RATE_LIMIT_READ: 10000,
     },

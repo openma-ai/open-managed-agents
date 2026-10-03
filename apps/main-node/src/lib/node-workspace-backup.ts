@@ -175,8 +175,9 @@ export class NodeWorkspaceBackupService implements WorkspaceBackupService {
       this.logger.warn(`tarWorkspace read failed: ${(err as Error).message}`);
       return null;
     } finally {
-      // Best-effort cleanup of the tar inside the sandbox.
-      void sandbox.exec(`rm -f '${tmpInside}'`, 5_000).catch(() => undefined);
+      // The local-subprocess sandbox shares the host /tmp. Leave the tar
+      // around and the main-node temp hygiene check treats it as a leak.
+      await sandbox.exec(`rm -f '${tmpInside}'`, 5_000).catch(() => undefined);
     }
   }
 
