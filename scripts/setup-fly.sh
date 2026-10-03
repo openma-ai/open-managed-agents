@@ -21,7 +21,7 @@ sandbox_provider="${sandbox_provider#"${sandbox_provider%%[![:space:]]*}"}"
 sandbox_provider="${sandbox_provider%"${sandbox_provider##*[![:space:]]}"}"
 sandbox_provider="$(printf '%s' "$sandbox_provider" | tr '[:upper:]' '[:lower:]')"
 if [[ -z "$sandbox_provider" ]]; then
-  echo "OPENMA_FLY_SANDBOX_PROVIDER is required; choose an isolated provider such as e2b, daytona, or boxrun" >&2
+  echo "OPENMA_FLY_SANDBOX_PROVIDER is required; choose an isolated provider such as e2b, daytona, boxrun, or sprites" >&2
   exit 1
 fi
 if [[ "$sandbox_provider" == "subprocess" ]]; then
@@ -41,6 +41,13 @@ emit_provider_configuration() {
       [[ -z "${E2B_SANDBOX_URL:-}" ]] || printf 'E2B_SANDBOX_URL=%s\n' "$E2B_SANDBOX_URL"
       [[ -z "${E2B_DOMAIN:-}" ]] || printf 'E2B_DOMAIN=%s\n' "$E2B_DOMAIN"
       ;;
+    sprites)
+      if [[ -z "${SPRITES_TOKEN:-}" ]]; then
+        echo "SPRITES_TOKEN is required when OPENMA_FLY_SANDBOX_PROVIDER=sprites" >&2
+        return 1
+      fi
+      printf 'SPRITES_TOKEN=%s\n' "$SPRITES_TOKEN"
+      ;;
     daytona)
       if [[ -z "${DAYTONA_API_KEY:-}" ]]; then
         echo "DAYTONA_API_KEY is required when OPENMA_FLY_SANDBOX_PROVIDER=daytona" >&2
@@ -58,7 +65,7 @@ emit_provider_configuration() {
       [[ -z "${BOXRUN_TOKEN:-}" ]] || printf 'BOXRUN_TOKEN=%s\n' "$BOXRUN_TOKEN"
       ;;
     *)
-      echo "OPENMA_FLY_SANDBOX_PROVIDER must be e2b, daytona, or boxrun" >&2
+      echo "OPENMA_FLY_SANDBOX_PROVIDER must be e2b, daytona, or boxrun, or sprites" >&2
       return 1
       ;;
   esac

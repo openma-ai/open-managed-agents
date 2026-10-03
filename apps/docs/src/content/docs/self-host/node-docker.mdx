@@ -32,36 +32,68 @@ runtime decides. SQLite needs only `DATABASE_PATH`; server databases use
 uses the selected server database; only SQLite mode uses a separate
 `auth.db`.
 
-## Quickstart (Docker, SQLite)
+## Quickstart wizard (Docker)
+
+Requires Docker Engine/Desktop with Compose v2.24+, Git, Bash, and openssl.
+No host Node.js or pnpm installation is required.
 
 ```bash
 git clone https://github.com/openma-ai/open-managed-agents.git
 cd open-managed-agents
-cp .env.example .env
-
-# Two secrets are required before first boot — both generated locally:
-#   BETTER_AUTH_SECRET   — signs Console sessions
-#   PLATFORM_ROOT_SECRET — encrypts credentials, model-card API keys, integration tokens
-#                          (lose it and every encrypted row is unreadable — back it up)
-$EDITOR .env
-# BETTER_AUTH_SECRET=$(openssl rand -hex 32)
-# PLATFORM_ROOT_SECRET=$(openssl rand -base64 32)
-# ANTHROPIC_API_KEY is optional — in production, prefer a per-tenant Model Card.
-# SANDBOX_PROVIDER is required; choose an isolated runtime and add its credentials:
-# SANDBOX_PROVIDER=e2b
-# E2B_API_KEY=...
-
-# First time builds the image; subsequent runs skip --build
-docker compose up -d --build
-
-# Sanity
-curl localhost:8787/health
-# → {"status":"ok","backends":{"db":"sqlite ..."},...}
-
-# Console UI on the same port — sign up with email + password,
-# you'll be in the app immediately (no email-OTP gate by default)
-open http://localhost:8787
+bash scripts/setup-docker.sh
 ```
+
+Choose SQLite or Postgres, then E2B, Daytona, or BoxRun. Enter the provider
+credential in the terminal. The wizard generates application secrets, builds
+the image, and waits for `/health`. The first build can take several minutes.
+Open `http://localhost:8787`, create your account, and add a Model Card.
+
+The wizard uses `compose.quickstart.yml`, the optional Postgres overlay, and a
+private `.env.openma`. Existing `.env` and legacy Compose configurations are
+separate. Named Docker volumes preserve database, files, and sandbox state.
+This quickstart runs one control-plane instance and does not provision a public
+vault egress gateway; configure that separately if your sandbox needs vault-backed
+outbound credentials. See [sandbox persistence](/self-host/sandbox-persistence/).
+
+### Unattended configuration and VPS
+
+Supply `OPENMA_DOCKER_PROVIDER=e2b` and `E2B_API_KEY` through your shell's secret
+manager (or the corresponding Daytona/BoxRun variables). To configure without
+starting containers:
+
+```bash
+OPENMA_DOCKER_DATA_MODE=postgres bash scripts/setup-docker.sh --configure-only
+```
+
+Localhost binding is the default. For a VPS, put an HTTPS reverse proxy in front
+of the service, then set `OPENMA_DOCKER_PUBLIC_URL=https://oma.example.com` before
+the first run. Keep the loopback bind when the reverse proxy is on the same host.
+Set `OPENMA_DOCKER_BIND_HOST=0.0.0.0` only when your proxy requires it, with a
+firewall limiting access to the backend. `OPENMA_DOCKER_PORT` changes port 8787.
+
+### Updates and backups
+
+Rerun `bash scripts/setup-docker.sh` after pulling updates to rebuild and wait
+for health. Existing secrets are reused. Edit `.env.openma` explicitly to change
+configuration; switching database engines requires a separate data migration.
+Back up this file together with consistent database and volume backups.
+
+To stop the SQLite install while retaining data:
+
+```bash
+docker compose --project-name openma-quickstart --env-file .env.openma -f compose.quickstart.yml stop
+```
+
+For Postgres, add `-f compose.quickstart.postgres.yml` before `stop`.
+The wizard prints the correct command for your installation. Avoid `down -v`
+unless you intend to delete the persistent data.
+
+### Manual Compose setup
+
+The legacy `docker-compose.yml` and `docker-compose.postgres.yml` remain available
+for customized deployments with `.env` and a vault sidecar. Their storage layout
+uses `./data`; do not switch an existing installation to the wizard without
+migrating and backing up its data.
 
 Drive the harness end-to-end:
 

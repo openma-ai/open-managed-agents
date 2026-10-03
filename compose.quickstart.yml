@@ -1,0 +1,34 @@
+# Generated credentials live in .env.openma (created by scripts/setup-docker.sh).
+# A single control plane with an external isolated sandbox provider.
+services:
+  oma-server:
+    build:
+      context: .
+      dockerfile: apps/main-node/Dockerfile
+    image: openma/quickstart:local
+    ports:
+      - "${OPENMA_BIND_HOST:-127.0.0.1}:${OPENMA_PORT:-8787}:8787"
+    env_file: .env.openma
+    environment:
+      OPENMA_PROCESS_MODE: standalone
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Run scripts/setup-docker.sh first}
+      PLATFORM_ROOT_SECRET: ${PLATFORM_ROOT_SECRET:?Run scripts/setup-docker.sh first}
+      SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Choose an isolated sandbox provider}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set the public origin}
+      DATABASE_PATH: /app/data/oma.db
+      AUTH_DATABASE_PATH: /app/data/auth.db
+      SANDBOX_WORKDIR: /app/data/sandboxes
+      MEMORY_BLOB_DIR: /app/data/memory-blobs
+      FILES_BLOB_DIR: /app/data/files-blobs
+      SESSION_OUTPUTS_DIR: /app/data/session-outputs
+    volumes:
+      - openma-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+volumes:
+  openma-data:

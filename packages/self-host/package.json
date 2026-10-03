@@ -1,0 +1,34 @@
+{
+  "name": "@openma/self-host",
+  "version": "0.1.0",
+  "description": "Install and maintain a self-hosted OpenMA instance without cloning source",
+  "type": "module",
+  "bin": {
+    "oma-self-host": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openma-ai/open-managed-agents",
+    "directory": "packages/self-host"
+  },
+  "devDependencies": {
+    "yaml": "2.9.0"
+  }
+}

@@ -59,3 +59,6 @@ rl/tasks/terminal-bench/findings-*.md
 data/
 .env
 .vercel
+
+# Docker setup wizard credentials and atomic-write scratch files
+.env.openma*

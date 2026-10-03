@@ -1,0 +1,77 @@
+---
+title: Deploy on Render
+description: Authorize the installer and deploy the official OpenMA image with persistent storage.
+---
+
+Deploy the public OpenMA image in your own Render workspace. A Git repository
+connection is not required. Sign in to Render using your preferred login method.
+
+## Guided CLI installation
+
+The `@openma/self-host` package is a preview until its first npm publication.
+Install the [official Render CLI](https://render.com/docs/cli) first, then run:
+
+```sh
+npx @openma/self-host install --target render
+```
+
+The installer runs `render login`, which opens Render's browser authorization.
+After authorization it continues in your terminal, using the active Render
+workspace. The platform token stays in Render CLI's local configuration.
+Set your sandbox credential in your terminal environment before installing:
+`E2B_API_KEY`, `DAYTONA_API_KEY`, `BOXRUN_URL`, or `SPRITES_TOKEN`, with the matching
+`--provider e2b|daytona|boxrun|sprites` option. Never put credentials in command arguments.
+
+Review the displayed workspace, region, image and paid resources before accepting:
+one `1c-2g` service and a 10 GB disk. Use `--workspace ID` and `--region singapore`
+to select a different workspace or region. The default region is Oregon.
+The CLI generates private application secrets, creates the service from the public
+image, and waits for deployment and `/health`. Rerunning preserves the service ID.
+
+## Deploy from the dashboard
+
+1. Open the [Render dashboard](https://dashboard.render.com/).
+2. Choose **New → Web Service → Existing Image**.
+3. Use `ghcr.io/openma-ai/open-managed-agents:edge`, or an audited published digest.
+   `edge` is a development channel. Public image pulls require no GitHub credentials.
+4. Select your region and a paid compute plan; keep **one instance** for SQLite.
+5. Add a **10 GB persistent disk** mounted at `/app/data` and health path `/health`.
+6. Configure the following environment variables directly in Render:
+
+| Key | Value |
+| --- | --- |
+| `OPENMA_PROCESS_MODE` | `standalone` |
+| `HOST` | `0.0.0.0` |
+| `PORT` | `8787` |
+| `DATABASE_PATH` | `/app/data/oma.db` |
+| `AUTH_DATABASE_PATH` | `/app/data/auth.db` |
+| `SANDBOX_WORKDIR` | `/app/data/sandboxes` |
+| `MEMORY_BLOB_DIR` | `/app/data/memory-blobs` |
+| `FILES_BLOB_DIR` | `/app/data/files-blobs` |
+| `SESSION_OUTPUTS_DIR` | `/app/data/session-outputs` |
+| `BETTER_AUTH_SECRET` | Generate a random secret |
+| `PLATFORM_ROOT_SECRET` | Generate another independent random secret |
+| `SANDBOX_PROVIDER` | `e2b`, `daytona`, `boxrun`, or `sprites` |
+
+Also add the selected provider's credential. Set the Docker command to:
+
+```sh
+sh -c 'export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-$RENDER_EXTERNAL_URL}"; export GATEWAY_ORIGIN="${GATEWAY_ORIGIN:-$PUBLIC_BASE_URL}"; exec pnpm start'
+```
+
+Review costs and deploy. Once `/health` passes, open the service URL, create an
+OpenMA account and add a Model Card. For a custom domain set `PUBLIC_BASE_URL`
+and `GATEWAY_ORIGIN` to its HTTPS origin.
+
+## Updates and source development
+
+Back up your installation configuration and disk before upgrades. Choose an
+explicit image with `oma-self-host upgrade --target render --image <image>`.
+Image availability and cross-version database compatibility remain prerequisites.
+
+Developers modifying OpenMA can instead use the repository's optional
+[`render.yaml` Blueprint](https://github.com/openma-ai/open-managed-agents/blob/main/render.yaml),
+which builds from source. It is separate from the default image installation.
+
+See [Render image deployment](https://render.com/docs/deploying-an-image) for
+platform requirements and [Render CLI authorization](https://render.com/docs/cli).

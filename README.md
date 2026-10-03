@@ -12,6 +12,14 @@
   <a href="https://discord.gg/P3EfQFm5bD"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Join OpenMA on Discord" /></a>
 </p>
 
+<p align="center">
+  <a href="https://openma.dev/deploy/?provider=docker"><img src="https://img.shields.io/badge/Deploy-Docker%20wizard-2496ED" alt="Deploy with Docker wizard" /></a>
+  <a href="https://openma.dev/deploy/?provider=cloudflare"><img src="https://img.shields.io/badge/Deploy-Cloudflare%20wizard-F38020" alt="Deploy with Cloudflare wizard" /></a>
+  <a href="https://openma.dev/deploy/?provider=fly"><img src="https://img.shields.io/badge/Deploy-Fly.io%20wizard-8B5CF6" alt="Deploy with Fly.io wizard" /></a>
+  <a href="https://openma.dev/deploy/?provider=render"><img src="https://img.shields.io/badge/Deploy-Render-000000" alt="Deploy with Render" /></a>
+  <a href="https://openma.dev/deploy/?provider=vercel"><img src="https://img.shields.io/badge/Deploy-Vercel%20Beta-000000" alt="Deploy with Vercel Beta" /></a>
+</p>
+
 # Open Managed Agents
 
 **Open-source, self-hosted alternative to Claude Managed Agents and OpenAI Agents API.**
@@ -41,7 +49,7 @@ one that matches your hosting story:
 | Where it lives | Your VPS / Mac / Docker host / fly.io / your k8s | Cloudflare Workers + DO + Containers |
 | Storage | SQLite or Postgres + local FS | D1 + KV + R2 |
 | Sandbox | LiteBox / Daytona / E2B / BoxRun | Cloudflare Sandbox (Containers) |
-| Time to running | `docker compose up` (~2 min) | wrangler deploy (~10 min once configured) |
+| Time to running | Docker setup wizard (first build takes several minutes) | wrangler deploy (~10 min once configured) |
 | Best for | OSS users, on-prem, no CF account, data-resident deploys | Edge scale, no host management, already on CF |
 
 Both hosts expose the Claude-compatible `/v1/agents` and `/v1/sessions` API
@@ -93,37 +101,45 @@ before migrating an existing application. See the
 
 ---
 
+## Self-host installer (preview)
+
+The standalone **`@openma/self-host`** installer is implemented in
+[`packages/self-host`](packages/self-host). It installs Docker/Fly from published
+images without a source checkout. Render deploys through its authorized CLI; Vercel currently hands off to its web
+flows; Cloudflare still requires the source-based setup guide.
+
+After the first npm release:
+
+```bash
+npx @openma/self-host
+# or: npx @openma/self-host install --target docker
+```
+
+Until then, build and run it from the repository using the package README.
+
 ## Quick start: self-host (Docker)
 
 ```bash
 git clone https://github.com/openma-ai/open-managed-agents.git
 cd open-managed-agents
-cp .env.example .env
-
-# Two secrets are required before first boot — both generated locally:
-#   BETTER_AUTH_SECRET   — signs Console sessions
-#   PLATFORM_ROOT_SECRET — encrypts credentials, model-card API keys, integration tokens at rest
-#                          (lose it and every encrypted row is unreadable — back it up)
-$EDITOR .env
-# BETTER_AUTH_SECRET=$(openssl rand -hex 32)
-# PLATFORM_ROOT_SECRET=$(openssl rand -base64 32)
-#
-# Optional: ANTHROPIC_API_KEY lets the first agent run without a Model Card.
-# In production, add a Model Card per tenant from the Console instead.
-# SANDBOX_PROVIDER is required. Choose an isolated provider and add its config,
-# for example SANDBOX_PROVIDER=e2b plus E2B_API_KEY.
-
-# SQLite + an explicitly configured isolated sandbox
-docker compose up -d
-
-# Or Postgres backend
-# docker compose -f docker-compose.postgres.yml up -d
-
-curl localhost:8787/health
-# → {"status":"ok","backends":{"db":"sqlite ..."}, ...}
-
-open http://localhost:8787   # Console UI on the same port
+bash scripts/setup-docker.sh
 ```
+
+The wizard asks for SQLite or Postgres and an isolated sandbox provider (E2B,
+Daytona, or BoxRun). It generates application secrets in a private `.env.openma`,
+builds the server, and waits for its health check. Open **http://localhost:8787**,
+create your account, and add a Model Card. You need Docker Compose v2.24+, Git,
+Bash, and openssl; the first build can take several minutes.
+
+Data lives in named Docker volumes. Rerunning the wizard preserves credentials
+and data. Back up `.env.openma` with your volumes. For unattended setup, VPS HTTPS,
+and stop/update commands, see the [Docker guide](https://docs.openma.dev/self-host/node-docker/).
+
+Prefer hosted setup? Use the **[deployment wizard](https://openma.dev/deploy/)**
+for Cloudflare, Fly.io, Docker, Render, or Vercel (Beta). The
+[Render guide](https://docs.openma.dev/self-host/render/)
+covers the official image, platform authorization, and a paid service with persistent storage.
+Vercel still requires the documented Sandbox and object-storage configuration.
 
 Smoke test the harness end-to-end:
 
