@@ -15,6 +15,15 @@ import { nanoid } from "nanoid";
 // Concrete adapters (CF / Node / CDP / Disabled) live in the package and
 // dynamic-import their workerd / Node peers only at first launch().
 import type { BrowserHarness, BrowserBillingHook } from "@open-managed-agents/browser-harness";
+import { fetchWebSearchGet, postTavilySearch, WEB_SEARCH_DDG_TIMEOUT_MS } from "./tool-http-fetch";
+import {
+  fetchWebFetchUrl,
+  webFetchGuardError,
+  webFetchHttpErrorMessage,
+  WEB_FETCH_RAW_TIMEOUT_MS,
+  WEB_FETCH_TIMEOUT_MS,
+  type WebFetchNetworking,
+} from "./web-fetch-http";
 
 // Source of truth for which tool names are part of the agent_toolset_20260401
 // built-in suite. Used by buildTools() below to decide which tool entries to
@@ -140,10 +149,13 @@ If the page is an error/404/login wall/empty result, output exactly one line sta
  * converts for the AI SDK.
  */
 type ToolResultValue = string | Record<string, unknown>;
-function safe<T>(fn: (args: T) => Promise<ToolResultValue>): (args: T) => Promise<ToolResultValue> {
-  return async (args: T) => {
+type ToolExecuteOptions = { abortSignal?: AbortSignal };
+function safe<T>(
+  fn: (args: T, toolOpts?: ToolExecuteOptions) => Promise<ToolResultValue>,
+): (args: T, toolOpts?: ToolExecuteOptions) => Promise<ToolResultValue> {
+  return async (args: T, toolOpts?: ToolExecuteOptions) => {
     try {
-      const result = await fn(args);
+      const result = await fn(args, toolOpts);
       // Handle empty string results (CC pattern: prevent model stop sequence issues)
       if (typeof result === "string" && result.trim() === "") return "(completed with no output)";
       return result;
@@ -355,9 +367,7 @@ export async function buildTools(
     toMarkdown?: ToMarkdownProvider;
     delegateToAgent?: (agentId: string, message: string) => Promise<string>;
     environmentConfig?: {
-      networking?: {
-        type: string;
-        allowed_hosts?: string[];
+      networking?: WebFetchNetworking & {
         allow_mcp_servers?: boolean;
         allow_package_managers?: boolean;
       };
@@ -748,22 +758,21 @@ export async function buildTools(
           .optional()
           .describe("Truncate returned markdown to this many chars (default 50000)"),
       }),
-      execute: safe(async ({ url, max_length }) => {
-        // Networking restriction enforcement (limited mode)
-        if (env?.environmentConfig?.networking?.type === "limited") {
-          const allowedHosts = env.environmentConfig.networking.allowed_hosts || [];
-          try {
-            const parsedUrl = new URL(url);
-            const isAllowed = allowedHosts.some(
-              h => parsedUrl.hostname === h || parsedUrl.hostname.endsWith(`.${h}`)
-            );
-            if (!isAllowed) {
-              return `Error: Host "${parsedUrl.hostname}" is not allowed. Allowed hosts: ${allowedHosts.join(", ")}`;
-            }
-          } catch {
-            return "Error: Invalid URL";
-          }
-        }
+      execute: safe(async ({ url, max_length }, toolOpts) => {
+        const fetchNetworking: WebFetchNetworking | undefined =
+          env?.environmentConfig?.networking;
+        const fetchOpts = {
+          networking: fetchNetworking,
+          abortSignal: toolOpts?.abortSignal,
+          timeoutMs: WEB_FETCH_TIMEOUT_MS,
+        };
+        const fetchHeaders = {
+          "User-Agent": "OMA-Agent/1.0 (+web_fetch)",
+          Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
+        };
+
+        const guardErr = webFetchGuardError(url, fetchNetworking);
+        if (guardErr) return guardErr;
 
         const cap = max_length || 50000;
         const truncate = (s: string) => (s.length > cap ? s.slice(0, cap) + `\n\n…[truncated to ${cap} chars]` : s);
@@ -777,14 +786,7 @@ export async function buildTools(
         let isRaw = false;
         if (env?.toMarkdown) {
           try {
-            const r = await fetch(url, {
-              headers: {
-                "User-Agent": "OMA-Agent/1.0 (+web_fetch)",
-                Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
-              },
-              redirect: "follow",
-              signal: AbortSignal.timeout(20_000),
-            });
+            const r = await fetchWebFetchUrl(url, { headers: fetchHeaders }, fetchOpts);
             if (r.ok) {
               const buf = await r.arrayBuffer();
               const ct = r.headers.get("content-type") || "text/html";
@@ -815,13 +817,17 @@ export async function buildTools(
           }
         }
         if (markdown === null) {
-          // Fallback: raw curl from sandbox (last-resort, model gets warning)
-          const raw = await sandbox.exec(
-            `curl -sL -m 30 '${url.replace(/'/g, "'\\''")}' | head -c ${cap}`,
-            35000,
-          );
-          markdown = `[NOTE: markdown extraction unavailable for this URL — returning raw response. Look for the actual content between HTML tags.]\n\n${truncateResult(raw)}`;
-          isRaw = true;
+          try {
+            const r = await fetchWebFetchUrl(url, { headers: fetchHeaders }, {
+              ...fetchOpts,
+              timeoutMs: WEB_FETCH_RAW_TIMEOUT_MS,
+            });
+            const body = await r.text();
+            markdown = `[NOTE: markdown extraction unavailable for this URL — returning raw response. Look for the actual content between HTML tags.]\n\n${truncateResult(body.slice(0, cap))}`;
+            isRaw = true;
+          } catch (err) {
+            return `Error: ${webFetchHttpErrorMessage(err, WEB_FETCH_RAW_TIMEOUT_MS)}`;
+          }
         }
 
         // ── Step 2: Aux summarization + offload (when configured) ──
@@ -997,10 +1003,14 @@ export async function buildTools(
         query: z.string().describe("Search query"),
         max_results: z.number().optional().describe("Max results (default 5)"),
       }),
-      execute: safe(async ({ query, max_results }) => {
+      execute: safe(async ({ query, max_results }, toolOpts) => {
         const count = max_results || 5;
         // Step 1: Get VQD token from DuckDuckGo
-        const vqdRes = await fetch(`https://duckduckgo.com/?${new URLSearchParams({ q: query, ia: "web" })}`);
+        const vqdRes = await fetchWebSearchGet(
+          `https://duckduckgo.com/?${new URLSearchParams({ q: query, ia: "web" })}`,
+          toolOpts?.abortSignal,
+          WEB_SEARCH_DDG_TIMEOUT_MS,
+        );
         if (!vqdRes.ok) return `DuckDuckGo error: ${vqdRes.status}`;
         const vqdText = await vqdRes.text();
         const vqd = /vqd=['"](\d+-\d+(?:-\d+)?)['"]/?.exec(vqdText)?.[1];
@@ -1011,7 +1021,11 @@ export async function buildTools(
           q: query, l: "en-us", kl: "wt-wt", s: "0", dl: "en",
           ct: "US", ss_mkt: "us", vqd, sp: "1", bpa: "1",
         });
-        const searchRes = await fetch(`https://links.duckduckgo.com/d.js?${params}`);
+        const searchRes = await fetchWebSearchGet(
+          `https://links.duckduckgo.com/d.js?${params}`,
+          toolOpts?.abortSignal,
+          WEB_SEARCH_DDG_TIMEOUT_MS,
+        );
         if (!searchRes.ok) return `DuckDuckGo search error: ${searchRes.status}`;
         const body = await searchRes.text();
 
@@ -1047,18 +1061,22 @@ export async function buildTools(
         query: z.string().describe("Search query"),
         max_results: z.number().optional().describe("Max results (default 5)"),
       }),
-      execute: safe(async ({ query, max_results }) => {
+      execute: safe(async ({ query, max_results }, toolOpts) => {
         if (!tavilyKey)
           return "web_search unavailable: TAVILY_API_KEY not configured";
-        const res = await fetch("https://api.tavily.com/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            api_key: tavilyKey,
-            query,
-            max_results: max_results || 5,
-          }),
-        });
+        let res: Response;
+        try {
+          res = await postTavilySearch(
+            JSON.stringify({
+              api_key: tavilyKey,
+              query,
+              max_results: max_results || 5,
+            }),
+            toolOpts?.abortSignal,
+          );
+        } catch (err) {
+          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const data = (await res.json()) as any;
         return JSON.stringify(
