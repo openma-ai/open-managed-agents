@@ -49,7 +49,7 @@
     "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
     "@types/node": "^26.6.3",
     "@types/ws": "^8.5.0",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.3",
