@@ -1,0 +1,199 @@
+---
+title: Claude Managed Agents compatibility
+description: "Which Claude Managed Agents surfaces OpenMA implements — the API matrix, the worker-protocol boundary, and an honest list of what is planned or missing."
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+OpenMA implements a **Claude Managed Agents (CMA)–compatible control-plane API**
+and the **Environment Worker protocol boundary** on top of it. It is not
+Anthropic's hosted CMA product: "compatible" here means protocol and wire-shape
+compatibility, not feature parity with the hosted service.
+
+Two properties keep that claim honest:
+
+- Request and response contracts in
+  [`packages/managed-agents-api/src/contracts/`](https://github.com/openma-ai/open-managed-agents/tree/main/packages/managed-agents-api/src/contracts)
+  are Zod schemas checked with `satisfies` against the official
+  `@anthropic-ai/sdk@0.120.0` `beta/*` resource types. When the SDK's Managed
+  Agents surface changes, the contracts stop compiling until OpenMA catches up.
+- Every endpoint below exists in
+  [`packages/managed-agents-api/src/routes/`](https://github.com/openma-ai/open-managed-agents/tree/main/packages/managed-agents-api/src/routes)
+  and is mounted on both hosts — the Cloudflare Worker (`apps/main`) and the
+  Node server (`apps/main-node`) — under `/v1`. OpenMA-specific extensions live
+  under `/v1/oma/*` so the compatible surface stays clean.
+
+The Anthropic SDK sends the required `anthropic-beta` flags automatically. When
+calling endpoints by hand, send the flag listed in the matrix (for example
+`anthropic-beta: managed-agents-2026-04-01`) or the route rejects the request.
+
+## API surface matrix
+
+| CMA surface | OpenMA | Where in code |
+|---|---|---|
+| Agents CRUD + versioning | **Implemented** — create, list, get, update, delete, archive, `versions` list + get | `routes/agents.ts` → `/v1/agents` |
+| Sessions | **Implemented** — create, list, get, update, delete, archive | `routes/sessions.ts` → `/v1/sessions` |
+| Session events | **Implemented** — `POST /events`, `GET /events` (JSON), `GET /events/stream` (SSE) | `routes/session-events.ts` |
+| Session resources | **Implemented** — attach, list, update, remove `file`, `github_repository`, `memory_store` | `routes/session-resources.ts` |
+| Session threads | **Implemented** — list, get, archive, thread events + stream | `routes/session-threads.ts`, `session-thread-events.ts` |
+| Session outputs | **Implemented** (OpenMA extension) — `GET /outputs`, `GET /outputs/:filename` | `routes/session-outputs.ts` |
+| Environments | **Implemented** — CRUD + archive | `routes/environments.ts` → `/v1/environments` |
+| Environment Work (worker API) | **Implemented** — list, `work/poll`, get, update, `ack`, `heartbeat`, `stop`, `work/stats` | `routes/environment-work.ts` → `/v1/environments/:id/work` |
+| Memory stores | **Implemented** — store CRUD + archive, memories CRUD with CAS `precondition`, `memory_versions` history + redact | `routes/memory-stores.ts`, `memories.ts`, `memory-versions.ts` → `/v1/memory_stores` (`anthropic-beta: agent-memory-2026-07-22`) |
+| Skills | **Implemented** — skill CRUD, versions, version content download | `routes/skills.ts`, `skill-versions.ts` → `/v1/skills` (`anthropic-beta: skills-2025-10-02`) |
+| Files | **Implemented** — upload, retrieve, content, delete | `routes/files.ts` → `/v1/files` (`anthropic-beta: files-api-2025-04-14`) |
+| Vaults & credentials | **Implemented** — vault CRUD + archive, credential CRUD + archive, `mcp_oauth_validate` | `routes/vaults.ts`, `credentials.ts` → `/v1/vaults` |
+| Models | **Implemented** (read-only) — list + retrieve | `routes/models.ts` → `/v1/models`; projected from tenant Model Cards |
+| Deployments & deployment runs | **Implemented** — deployment CRUD, `run`, run list/get | `routes/deployments.ts`, `deployment-runs.ts` → `/v1/deployments`, `/v1/deployment_runs` |
+| Dreams | **Implemented** — `anthropic-beta: dreaming-2026-04-21` | `routes/dreams.ts` → `/v1/dreams` |
+| MCP tunnels | **Implemented** — tunnel CRUD, certificates, `reveal_token`, `rotate_token` | `routes/tunnels.ts`, `tunnel-certificates.ts` → `/v1/tunnels` (`anthropic-beta: mcp-tunnels-2026-06-22`) |
+| User profiles | **Implemented** — `anthropic-beta: user-profiles-2026-08-18` | `routes/user-profiles.ts` → `/v1/user_profiles` |
+| MCP servers | **Implemented** — as the `mcp_servers` field on Agent config (URL/HTTP/SSE/stdio); there is no standalone MCP-server resource in the SDK surface | `routes/agents.ts`, `contracts/agent-input-components.ts` |
+| Callable agents | **Implemented** — `callable_agents` on Agent config derives `call_agent_*` tools | `routes/agents.ts`, `contracts/agents.ts`; OMA integrations (GitHub/Slack/Linear/Feishu) are an extension under `/v1/oma/integrations/*` |
+| `/openai/v1` adapter | **Implemented** — OpenAI Agents API projection over the same native sessions | `packages/openai-agents-api`, `openai-agents-compat`; mounted at `/openai` in `apps/main/src/index.ts` |
+
+### Sendable session events
+
+`POST /v1/sessions/:id/events` accepts the official sendable union
+(`sendableEventSchema` in `contracts/session-event-inputs.ts`):
+
+| Event | Direction |
+|---|---|
+| `user.message` | User turn (text or file blocks) |
+| `user.interrupt` | Interrupt a running turn, optionally scoped to `session_thread_id` |
+| `user.tool_confirmation` | `allow`/`deny` a permission-gated tool call |
+| `user.custom_tool_result` | Result for a custom tool that paused the session |
+| `user.tool_result` | Result for a client-side tool call |
+| `user.define_outcome` | Outcome rubric for evaluation (`max_iterations` ≤ 20) |
+| `system.message` | System-injected text blocks |
+
+## Worker protocol boundary
+
+The sandbox/worker boundary follows the invariants in
+[`docs/claude-managed-agents-sandbox-provider-audit.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/claude-managed-agents-sandbox-provider-audit.md):
+
+- **An Environment is a Work queue.** A worker polls
+  `GET /v1/environments/{id}/work/poll` continuously, or is woken by a signed
+  webhook (`session.status_run_started`, Standard Webhooks signature, at most
+  three attempts). The webhook is a hint only — Work is claimed by the poll,
+  never by webhook delivery.
+- **One credential path.** Environment-scoped `oma_env_` service keys are
+  Bearer-only, valid only on that Environment's `/work/**` routes, rotatable by
+  create/revoke, and never authorize Session resources. Every claimed Work
+  carries a separate claim-bound `sessions_token` (delivered inside
+  `ANTHROPIC_WORK_SECRET`); a reclaim rotates it and fences the old owner.
+- **ACK/heartbeat/stop ownership is explicit.** Three embedded activation
+  strategies exist: `claim_then_acquire` (the SDK poller claims and ACKs, then
+  the Runtime Host acquires compute), `poll_unacked_then_dispatch`
+  (Cloudflare/GKE raw-poll without ACK; the in-pod `ant beta:worker run` owns
+  the first heartbeat and stop), and `acquire_then_session_poll` (AWS-style
+  launch-before-poll; the launched VM polls, claims, heartbeats, and stops).
+- **The event log is the source of truth.** Work and webhook payloads carry
+  only the Session ID — the worker then fetches the claimed Session with its
+  `sessions_token` and replays the append-only log.
+- **Credentials are designed to stay out of the sandbox.** Enforced
+  transparent HTTPS interception exists only on the `cloudflare`
+  managed-runtime driver (see below); everywhere else the boundary keeps
+  secrets out of the session but does not claim network enforcement — the
+  `oma-vault` env proxy on Node/Docker is advisory, and other drivers report
+  `unsupported`.
+- **External workers are a first-class lane.** `external_worker` mode exposes
+  the unchanged Work API and starts no OpenMA sandbox. The repo ships a
+  destructive conformance probe (`pnpm test:e2e:external-worker-conformance`,
+  `runExternalEnvironmentWorkerConformance()`) that exercises poll + ACK,
+  token scoping, scope-escape rejection, and force-stop against a queued
+  Session.
+
+### Driver lanes
+
+Per `MANAGED_RUNTIME_PROVIDER_CONFORMANCE` in
+[`packages/managed-runtime-host/src/provider-conformance.ts`](https://github.com/openma-ai/open-managed-agents/blob/main/packages/managed-runtime-host/src/provider-conformance.ts)
+every managed-runtime driver supports the `ama_worker` lane (an unmodified
+official or community Environment Worker command/image). Most additionally
+support `openma_supervised` (an OpenMA harness supervisor speaking
+`openma-harness-supervisor-v1` around a Pi/ACP harness):
+
+| Provider driver | `ama_worker` | `openma_supervised` |
+|---|---|---|
+| `node-docker` | yes | yes |
+| `cloudflare` | yes | yes |
+| `cloudflare-bridge` | yes | no |
+| `e2b` | yes | yes |
+| `daytona` | yes | yes |
+| `litebox` | yes | yes |
+| `boxrun` | yes | yes |
+| `blaxel` | yes | yes |
+| `sprites` | yes | yes |
+| `vercel` | yes | no |
+| `modal` | yes | yes |
+| `superserve` | yes | yes |
+
+Per-driver lifecycle/workspace/output capabilities live in the same file —
+it is the machine-readable source of truth, and the
+[Managed Runtime Host](/self-host/managed-runtime-host/) page narrates it.
+
+## What is not implemented
+
+- **Warm pools — planned.** No portable warm-pool surface exists. The one real
+  binding is the GKE dispatch Port's `warmPool` field
+  (`packages/environment-dispatch-gke`), which names a Kubernetes
+  agent-sandbox warm pool behind the `poll_unacked_then_dispatch` strategy.
+- **`fork` — planned.** There is no session/sandbox fork surface; the
+  [execution backend contract](/self-host/sandbox-backend/) lists box fork as
+  a gap.
+- **General egress allowlist proxy — planned** (tracked in
+  [#297](https://github.com/openma-ai/open-managed-agents/issues/297)).
+  `Environment.config.networking` `type: "limited"` with `allowed_hosts` is
+  enforced **only inside the `web_fetch` tool**
+  (`apps/agent/src/harness/web-fetch-http.ts` `assertWebFetchUrlAllowed`,
+  suffix match `host === allowed || host.endsWith('.' + allowed)`, re-checked
+  on every redirect hop by `fetchWebFetchUrl`). `bash`/`curl`, `web_search`,
+  and MCP calls are not restricted by it — the stored allowlist is not a
+  packet filter.
+- **Credential egress is enforced on one driver.** Only
+  `managed-runtime-cloudflare` declares
+  `{ enforcement: "enforced", credentialMode: "live", interceptedProtocols: ["http", "https"] }`.
+  Every other driver reports `{ enforcement: "unsupported", credentialMode: "snapshot", interceptedProtocols: [] }`
+  unless the operator injects a certified implementation via
+  `options.credentialEgress`. On Node/Docker, the legacy `oma-vault` env proxy
+  is advisory — the sandbox can bypass it.
+- **No process-memory checkpoint/restore.** `runtimeCheckpoints` is `[]` for
+  every driver in the conformance table. Provider pause/suspend primitives
+  appear as `retained_runtime` workspace strategies; they are not promoted to
+  portable OpenMA checkpoints.
+- **The stateless Messages API.** `/v1/messages` is the core Anthropic API,
+  not a Managed Agents surface, and OpenMA does not implement it.
+
+## Known deltas vs hosted CMA
+
+- **Beta flags are enforced per resource family.** Requests missing the
+  documented `anthropic-beta` value get a 400 (`requireBeta` in
+  `packages/managed-agents-api/src/beta.ts`). The official SDK sends these
+  automatically for beta resources.
+- **Session list filters.** `metadata_key` / `metadata_value` query params are
+  rejected with a 400 — list filters cover `agent_id`, `agent_version`,
+  `created_at` bounds, `deployment_id`, `memory_store_id`, `statuses[]`,
+  `order`, and `include_archived`.
+- **OpenAI adapter limits.** The `/openai/v1` adapter supports sandbox-free
+  sessions (`environment: { "type": "none" }`) but does not accept advanced
+  environment configuration, plugins, or runtime file operations — those
+  return explicit unsupported errors rather than silent success. Hosted
+  OpenAI dynamic sub-agent control is unavailable (the Node runtime provides
+  it). Details: `docs/openai-agents-compatibility-status.md`.
+- **OMA extensions share the host.** `/v1/oma/*` (API keys, `me`, tenants,
+  integrations, evals, stats, MCP/inference proxies) and convenience routes
+  like `POST /v1/sessions/:id/messages` are OpenMA additions, not CMA
+  surface — see [API Endpoints](/reference/api/).
+
+<Aside type="note">
+  When the code and this page disagree, the code wins. The conformance table
+  in `provider-conformance.ts` and the route files under
+  `packages/managed-agents-api/src/routes/` are the ground truth — please file
+  an issue if you spot drift.
+</Aside>
+
+## Go deeper
+
+<LinkCard title="API Endpoints" href="/reference/api/" description="Endpoint-by-endpoint REST reference for the /v1 surface." />
+<LinkCard title="Managed Runtime Host" href="/self-host/managed-runtime-host/" description="Worker activation strategies, the two driver lanes, and the credential path." />
+<LinkCard title="Execution backend contract" href="/self-host/sandbox-backend/" description="The ports a sandbox backend implements, and the honest gap list." />
