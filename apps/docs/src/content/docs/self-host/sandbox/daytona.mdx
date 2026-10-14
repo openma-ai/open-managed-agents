@@ -1,0 +1,72 @@
+---
+title: Self-host on Daytona sandboxes
+description: Run sessions on Daytona Cloud workspaces via SANDBOX_PROVIDER=daytona or the managed-runtime driver — stable-name lifecycle, snapshots, stop/start, and network controls.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Daytona Cloud gives each Session a managed Linux VM with a stable name,
+ownership labels, stop/start, snapshots, and activity-renewed leases. The
+driver follows Daytona's own conflict-recovery lifecycle, so resuming a
+Session re-attaches to the same VM rather than starting a new one.
+
+## Prerequisites
+
+```bash
+DAYTONA_API_KEY=      # required
+DAYTONA_API_URL=      # optional endpoint override
+SANDBOX_IMAGE=        # optional image reference
+```
+
+## Configuration
+
+On the standalone Node server, select the adapter directly:
+
+```bash
+SANDBOX_PROVIDER=daytona
+DAYTONA_API_KEY=...
+```
+
+To embed the driver in the Runtime Host composition, use
+`createDaytonaProvider`, `createDaytonaManagedRuntime`, or
+`createDaytonaManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-daytona`:
+
+```ts
+const driver = createDaytonaManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  apiKey: process.env.DAYTONA_API_KEY,
+  apiUrl: process.env.DAYTONA_API_URL,   // optional
+  image: "node:22-slim",                  // or snapshot: "<snapshot name>"
+  autoStopInterval: 0,
+  autoArchiveInterval: 0,
+});
+```
+
+The full option set: `apiKey`, `apiUrl`, `target`, `snapshot`, `image`,
+`autoStopInterval`, `autoPauseInterval`, `autoArchiveInterval`,
+`autoDeleteInterval`, `networkBlockAll`, `networkAllowList`,
+`domainAllowList`, `outboundProxyUrl`, `outputStore`, `outputKeyPrefix`,
+`credentialEgress`, `sessionInputs`, `runtimeEnvironment`, `readiness`,
+`client`, and the required `leaseTtlMs`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | supported (provider stop/start + snapshots) |
+| Workspace | `retained_runtime` + `checkpoint_restore`, durable |
+| Outputs | `final_collect`, durable |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="caution">
+  Daytona exposes network knobs the driver passes through —
+  `networkBlockAll`, `networkAllowList`, `domainAllowList`, and
+  `outboundProxyUrl`. These are provider network controls, not OpenMA
+  credential interception: the descriptor still reports
+  `{enforcement: "unsupported", credentialMode: "snapshot",
+  interceptedProtocols: []}` until a certified `options.credentialEgress`
+  is supplied.
+</Aside>

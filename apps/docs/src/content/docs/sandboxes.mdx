@@ -1,0 +1,195 @@
+---
+title: Sandboxes
+description: "Pick a sandbox backend for OpenMA: seven execution-environment classes mapped to the managed-runtime drivers — Docker, E2B, Daytona, Modal, Sprites, Vercel, Blaxel, BoxLite, Cloudflare, and GKE agent-sandbox."
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+OpenMA treats the execution environment as a replaceable backend. A Session
+keeps the same Managed Agents API shape no matter which driver provides its
+compute; the [Managed Runtime Host](/self-host/managed-runtime-host/) owns the
+lifecycle, `/workspace`, outputs, and fencing on top.
+
+This page maps the landscape: seven classes of agent execution environment,
+and the OpenMA drivers that implement each. Every conformance claim below is
+generated from the machine-readable table in
+`packages/managed-runtime-host/src/provider-conformance.ts`
+(`MANAGED_RUNTIME_PROVIDER_CONFORMANCE`).
+
+## 1. Local process / Docker container
+
+Compute on the same host (or host cluster) as the control plane, no external
+sandbox service.
+
+| Driver | What it is |
+|---|---|
+| `node-docker` | `packages/managed-runtime-node` — a Docker CLI adapter (`docker create`, exec, rm). The host's composition manages the container lifecycle. |
+| `litebox` | `SANDBOX_PROVIDER=litebox` (alias `boxlite`) — an embedded BoxLite microVM on the host via `sandbox-adapter-litebox`. Host-local retained boxes. |
+| `boxrun` | `SANDBOX_PROVIDER=boxrun` — BoxLite through the official REST client (`sandbox-adapter-boxrun`). |
+| `subprocess` | Test-only `local-subprocess` adapter. Rejected outside `NODE_ENV=test`; the production server fails closed rather than run agent commands on the API host. |
+
+**Pick this when** you want a fully self-hosted box with no third-party
+dependency — at the cost of weaker isolation (containers share the host
+kernel) and no suspend/resume on the plain Docker driver.
+
+## 2. MicroVM / dev-box services
+
+Dedicated dev-box platforms that keep a named sandbox alive between turns and
+can suspend and resume it.
+
+| Driver | Service |
+|---|---|
+| `e2b` | E2B sandboxes. Provider suspend/resume plus a provider memory snapshot (still not an OpenMA checkpoint). |
+| `daytona` | Daytona workspaces: stable names, ownership labels, stop/start, portable filesystem snapshots, activity-renewal lease. |
+| `litebox` / `boxrun` | See class 1 — BoxLite retained boxes also implement suspend/resume, but their storage is best-effort, host-local. |
+
+**Pick this when** you want long-lived, resumable dev boxes without operating
+Kubernetes.
+
+## 3. Serverless sandbox-as-a-service
+
+On-demand sandbox APIs that bill per second and keep a durable filesystem per
+sandbox.
+
+| Driver | Service | Notes |
+|---|---|---|
+| `modal` | Modal sandboxes | Mounts a pre-created Volume v2 session subpath at `/workspace`, syncs before detach, recreates compute over the durable volume. |
+| `sprites` | Fly Sprites | Provider-persistent ext4 filesystem, automatic pause/wake, native network policy. |
+| `vercel` | Vercel Sandbox | Persistent named sandbox with automatic snapshot restore. Its deny-by-default firewall is a provider feature, not OpenMA credential egress. `ama_worker` lane only. |
+| `blaxel` | Blaxel | Stable Session identity, archive/unarchive retained filesystem. Its native proxy firewall and secret injection are provider features, not OpenMA credential egress — workspace durability is best-effort. |
+| `superserve` | Superserve | Retained pause/resume that preserves processes and files, token-rotating reconnect. Its provider-side secret proxy is a provider feature, not OpenMA credential egress. |
+
+**Pick this when** you want zero-ops, pay-per-use compute with per-sandbox
+durable storage.
+
+## 4. Edge containers
+
+Sandboxed containers that run next to the Cloudflare control plane.
+
+| Driver | What it is |
+|---|---|
+| `cloudflare` | `packages/managed-runtime-cloudflare` — Cloudflare Workers Containers. The only driver whose credential egress is **`enforced`**: the sandbox can only reach the OpenMA egress proxy (`credentialMode: "live"`, intercepted protocols `http`/`https`). |
+| `cloudflare-bridge` | `packages/managed-runtime-cloudflare-bridge` — a Node control plane reaching an operator-deployed official Cloudflare Sandbox Bridge over HTTP. `ama_worker` lane only. |
+
+**Pick this when** credential interception is a hard requirement, or when you
+are already deploying on Cloudflare. No suspend/resume on either driver.
+
+## 5. Kubernetes-native claims
+
+A Kubernetes `SandboxClaim` resolved by the cluster's agent-sandbox
+controller.
+
+`packages/environment-dispatch-gke` implements the `poll_unacked_then_dispatch`
+strategy for GKE: the dispatcher reaps stale `SandboxClaim`s, binds one warm
+pod from the configured `warmPool` (a real K8s agent-sandbox warm pool — the
+only warm-pool integration that exists in code today), and lets the in-pod
+runtime take over Work heartbeats.
+
+**Pick this when** you already run Kubernetes and want sandbox lifetime owned
+by a cluster controller.
+
+## 6. Full VMs
+
+A VM per session, launched on demand.
+
+`packages/environment-activation-aws` implements the
+`acquire_then_session_poll` strategy: a durable activation-intent queue drives
+an `AwsMicrovmLauncherPort`, and the in-VM worker polls, claims, heartbeats,
+and stops Work itself. A VM created after ownership loss is reaped as an
+orphan.
+
+A general warm-pool / `fork` model across providers is **planned**, not
+implemented.
+
+## 7. No sandbox / host execution
+
+`environment: { type: "none" }` creates a sandbox-free session — the agent
+runs on the host without tool isolation. Hosted OpenMA and the Node server
+support it. Useful for chat-only agents and lightweight tool use; see the
+README's sandbox-free session example.
+
+<Aside type="caution">
+  A sandbox-free session has no compute isolation at all — never combine it
+  with code execution you do not fully trust.
+</Aside>
+
+## Conformance at a glance
+
+The source of truth is `MANAGED_RUNTIME_PROVIDER_CONFORMANCE`. **Every**
+managed-runtime driver below advertises `hardTerminate: supported`,
+`orphanReap: host-managed`, and `runtimeCheckpoints: []` — there is no
+process-memory checkpoint/restore on any driver.
+
+| Driver | Lanes | Suspend/resume | Workspace | Credential egress |
+|---|---|---|---|---|
+| `node-docker` | `ama_worker`, `openma_supervised` | unsupported | durable | unsupported (oma-vault env proxy is advisory) |
+| `cloudflare` | `ama_worker`, `openma_supervised` | unsupported | durable | **enforced** — live, `http`/`https` |
+| `cloudflare-bridge` | `ama_worker` | unsupported | durable | unsupported |
+| `e2b` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `daytona` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `litebox` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `boxrun` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `blaxel` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `sprites` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `vercel` | `ama_worker` | supported | durable | unsupported |
+| `modal` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `superserve` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+
+Notable `sandboxPortFacts` per driver (what the raw adapter can and cannot
+do):
+
+| Driver | Has | Lacks |
+|---|---|---|
+| `node-docker` | `duplex_process`, `workspace_file_io` | `provider_suspend_resume` |
+| `cloudflare` | `duplex_process`, `workspace_backup`, `session_output_mount` | `runtime_scoped_resume`, `process_memory_checkpoint` |
+| `cloudflare-bridge` | `http_bridge`, `argv_sse_process`, `workspace_file_io`, `workspace_tar_checkpoint` | `interactive_stdin_without_pty`, `provider_lease`, `process_memory_checkpoint` |
+| `e2b` | `duplex_process`, `provider_suspend_resume`, `provider_memory_snapshot` | `process_memory_checkpoint` |
+| `daytona` | `provider_activity_lease`, `stable_name_with_ownership_labels`, `retained_filesystem_stop_start`, `portable_filesystem_snapshot`, `duplex_session_process` | `process_memory_checkpoint`, `durable_output_mount` |
+| `litebox` | `stable_get_or_create`, `detached_retained_filesystem`, `duplex_process`, `native_network_allowlist`, `native_secret_substitution` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `boxrun` | `official_boxlite_rest_client`, `stable_get_or_create`, `detached_retained_filesystem`, `duplex_process` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `blaxel` | `stable_name_external_id_and_ownership_labels`, `archive_unarchive_retained_filesystem`, `duplex_named_process`, `native_proxy_firewall_and_secret_injection`, `optional_persistent_volume` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `sprites` | `stable_name_and_ownership_labels`, `persistent_ext4_filesystem`, `automatic_pause_and_wake`, `duplex_process`, `native_network_policy` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `vercel` | `stable_name_and_ownership_tags`, `persistent_filesystem_with_automatic_snapshot_restore`, `detached_process_logs`, `deny_by_default_network_policy`, `path_scoped_header_transform_and_forward_proxy` | `streaming_process_stdin`, `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `modal` | `stable_name_and_ownership_tags`, `session_scoped_volume_v2_subpath`, `volume_sync_before_detach`, `duplex_process`, `native_domain_and_cidr_allowlist`, `compute_recreate_over_durable_volume` | `portable_workspace_checkpoint`, `stable_process_memory_checkpoint` |
+| `superserve` | `stable_name_and_ownership_metadata`, `pause_resume_preserves_processes_and_files`, `transparent_token_rotation_and_auto_resume`, `duplex_process`, `deny_by_default_network_policy`, `provider_side_secret_proxy_and_audit` | `portable_workspace_checkpoint`, `stable_process_memory_checkpoint` |
+
+<Aside type="note" title="Read the credential-egress column carefully">
+  `enforced` exists on exactly one driver: `cloudflare`. Every other driver
+  reports `enforcement: "unsupported"` unless the operator injects a certified
+  `CredentialEgressPort` via the driver's `options.credentialEgress`. On
+  Node/Docker the `oma-vault` compose sidecar is an HTTPS-proxy sidecar —
+  advisory, and bypassable by the sandbox. Separately, an Environment's
+  `networking.allowed_hosts` (limited mode) is enforced only inside the
+  `web_fetch` tool; `bash`, `curl`, `web_search`, and MCP calls are not
+  restricted by it.
+</Aside>
+
+## How to pick
+
+1. Decide whether credential interception is a hard requirement. If it is,
+   the choice today is the `cloudflare` driver (or an operator-injected
+   `CredentialEgressPort` on another driver).
+2. Decide whether sessions must suspend and resume with retained compute.
+   That rules out `node-docker`, `cloudflare`, and `cloudflare-bridge`.
+3. Decide how durable the workspace must be. `litebox`, `boxrun`, and
+   `blaxel` are best-effort; the rest are durable.
+4. Match the remaining drivers to your infrastructure: Docker host, a dev-box
+   service, a serverless sandbox API, Cloudflare, GKE, or AWS VMs.
+
+<LinkCard
+  title="Managed Runtime Host"
+  href="/self-host/managed-runtime-host/"
+  description="How drivers compose into the host's sandbox, workspace, output, and fencing state machine."
+/>
+
+Per-driver setup guides:
+
+- [Node + Docker](/self-host/sandbox/docker/)
+- [E2B](/self-host/sandbox/e2b/)
+- [Daytona](/self-host/sandbox/daytona/)
+- [Modal](/self-host/sandbox/modal/)
+- [Fly Sprites](/self-host/sandbox/sprites/)
+- [Vercel Sandbox](/self-host/sandbox/vercel/)
+- [Blaxel](/self-host/sandbox/blaxel/)
+- [Cloudflare](/self-host/sandbox/cloudflare/)
+- [GKE agent-sandbox](/self-host/sandbox/gke/)

@@ -1,0 +1,59 @@
+---
+title: 在 Cloudflare 沙箱上自托管
+description: 在 Cloudflare Workers Containers 上运行 Session——唯一声明强制实时凭证出口的驱动——或接入运维方部署的 Cloudflare Sandbox Bridge。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Cloudflare 是参考运行时：每个 Session 在由平台部署管理的 Workers Containers 沙箱中运行。它是**唯一声明强制（enforced）凭证出口**的驱动——容器的出站 HTTP 和 HTTPS 流量会被拦截，作用域凭证被实时注入，从不暴露给沙箱。完整部署见 [部署到 Cloudflare](/self-host/deploy/)，组合方式见 [托管运行时宿主](/self-host/managed-runtime-host/)。
+
+## 前置条件
+
+```bash
+CLOUDFLARE_API_TOKEN=     # 必需（或已认证的 wrangler 配置）
+CLOUDFLARE_ACCOUNT_ID=    # 必需
+
+# 检查点/输出存储
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+OMA_CLOUDFLARE_R2_BUCKET=
+
+# 仅 Sandbox Bridge 变体
+OMA_CLOUDFLARE_BRIDGE_URL=
+OMA_CLOUDFLARE_BRIDGE_API_KEY=
+OMA_CLOUDFLARE_BRIDGE_RUNTIME_ID=
+```
+
+## 配置
+
+Cloudflare 驱动由平台部署组合，而不是 `SANDBOX_PROVIDER`。工厂是
+`@open-managed-agents/managed-runtime-cloudflare` 的
+`createCloudflareManagedRuntime` / `createCloudflareManagedRuntimeDriver`：
+
+```ts
+const driver = createCloudflareManagedRuntimeDriver(env, {
+  leaseTtlMs: 90_000,
+  createSandbox: (env, runtimeId) => /* 基于 SDK 的 Sandbox/DO 封装 */,
+  controlPlaneBaseUrl: "https://openma.example",
+  workspaceDurableMount: true, // Session 作用域的 R2 挂载到 /workspace
+});
+```
+
+选项：`createSandbox`（必需——应用自己的封装，因此该包从不导入应用）、`leaseTtlMs`、`controlPlaneBaseUrl`、`runtimeEnvironment`，以及 `workspaceDurableMount`（需要 `WORKSPACE_BUCKET`、`WORKSPACE_BUCKET_NAME`、`R2_ENDPOINT` 和 `R2_*` 凭证）。
+
+**`cloudflare-bridge`** 变体改为通过 HTTP 接入运维方部署的官方 Cloudflare Sandbox Bridge。其工厂 `createCloudflareBridgeManagedRuntime` 接受 `baseUrl`、`apiKey`（Bridge 的 `SANDBOX_API_KEY`，绝不进入沙箱）、用于可移植 `/workspace` tar 归档的 `checkpointStore` BlobStore，以及 `checkpointKeyPrefix`、`checkpointExcludes`、`maxHydrateBytes` 和 `fetch`。
+
+## 能力
+
+| | `cloudflare` | `cloudflare-bridge` |
+|---|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` | 仅 `ama_worker` |
+| suspendResume | 不支持 | 不支持 |
+| 工作区 | `checkpoint_restore`，持久 | `checkpoint_restore`，持久 |
+| 输出 | `final_collect`，持久 | `final_collect`，持久 |
+| 进程检查点 | 无 | 无 |
+| 凭证出口 | **`enforced` / `live`，http+https** | 默认 `unsupported`/`snapshot` |
+
+<Aside type="note">
+  bridge 驱动中 OpenMA 仍是 Work 与栅栏权威，Node 侧通过 HTTP 通道与 Bridge 通信（`argv` 式 SSE 进程、工作区文件 I/O、tar 检查点）。该端口上不支持无 PTY 的交互式标准输入和提供商侧租约。
+</Aside>

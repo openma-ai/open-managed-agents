@@ -1,0 +1,48 @@
+---
+title: 在 Blaxel 沙箱上自托管
+description: 在 Blaxel 沙箱计算平台上运行 Session——稳定的 Session 身份、归档/解档的保留文件系统、命名进程以及原生网络/密钥注入。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Blaxel 在其沙箱计算平台上运行每个 Session，使用官方 `@blaxel/core` SDK（动态导入）。驱动遵循 Blaxel 自身的生命周期：认领前就绪、通过 external ID 和归属标签保持稳定 Session 身份、归档/解档保留文件系统、命名进程、原生代理/防火墙以及 janitor 清理。
+
+## 前置条件
+
+```bash
+BL_API_KEY=           # 必需——由 Blaxel SDK 读取
+```
+
+## 配置
+
+Blaxel 通过运行时宿主组合接入，而不是 `SANDBOX_PROVIDER`。使用
+`@open-managed-agents/managed-runtime-blaxel` 提供的
+`createBlaxelProvider`、`createBlaxelManagedRuntime` 或
+`createBlaxelManagedRuntimeDriver`：
+
+```ts
+const driver = createBlaxelManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  image: "node:22-slim",
+  memory: 2048,       // MiB
+  region: "us-pdx-1",
+  ttl: "24h",
+});
+```
+
+基础选项：`image`（必需）、`memory`、`region`、`ttl` 和 `lifecycle`（`expirationPolicies`，动作 `ttl-idle`/`ttl-max-age`/`date`，以及 `terminatedRetention`）。按分配实例的附加项走 `allocationOptions`：`envs`、`volumes`（持久或临时）、`network`、`snapshotEnabled`。工厂还接受 `client`、`runtimeEnvironment`、`outputStore`、`outputKeyPrefix`、`credentialEgress`、`sessionInputs` 和 `readiness`。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 支持（归档/解档保留文件系统） |
+| 工作区 | `retained_runtime`，持久性为 **best_effort** |
+| 输出 | `final_collect`，持久 |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="caution">
+  在一致性档案中，Blaxel 的工作区持久性评为 **best_effort**：保留的存储是提供商本地的，不作为可移植检查点宣传。持久 `outputStore` 仍适用于最终交付物。OpenMA 仍是 Work/栅栏权威；提供商的原生密钥注入是 Blaxel 的功能，不是 OpenMA 的凭证出口声明。
+</Aside>

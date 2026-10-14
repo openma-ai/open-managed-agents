@@ -1,0 +1,78 @@
+---
+title: Self-host on Cloudflare sandboxes
+description: Run sessions on Cloudflare Workers Containers — the only driver with enforced live credential egress — or on an operator-deployed Cloudflare Sandbox Bridge.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Cloudflare is the reference runtime: each Session runs in a Workers
+Containers sandbox managed by the platform deploy. It is the **only driver
+that declares enforced credential egress** — the container's outbound HTTP
+and HTTPS traffic is intercepted and scoped credentials are injected live,
+never exposed to the sandbox. See [Deploy on Cloudflare](/self-host/deploy/)
+for the full deployment and [Managed Runtime Host](/self-host/managed-runtime-host/)
+for the composition.
+
+## Prerequisites
+
+```bash
+CLOUDFLARE_API_TOKEN=     # required (or an authenticated wrangler profile)
+CLOUDFLARE_ACCOUNT_ID=    # required
+
+# Checkpoint/output storage
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+OMA_CLOUDFLARE_R2_BUCKET=
+
+# Sandbox Bridge variant only
+OMA_CLOUDFLARE_BRIDGE_URL=
+OMA_CLOUDFLARE_BRIDGE_API_KEY=
+OMA_CLOUDFLARE_BRIDGE_RUNTIME_ID=
+```
+
+## Configuration
+
+The Cloudflare driver is composed by the platform deploy, not by
+`SANDBOX_PROVIDER`. The factory is `createCloudflareManagedRuntime` /
+`createCloudflareManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-cloudflare`:
+
+```ts
+const driver = createCloudflareManagedRuntimeDriver(env, {
+  leaseTtlMs: 90_000,
+  createSandbox: (env, runtimeId) => /* SDK-backed Sandbox/DO wrapper */,
+  controlPlaneBaseUrl: "https://openma.example",
+  workspaceDurableMount: true, // session-scoped R2 mount at /workspace
+});
+```
+
+Options: `createSandbox` (required — the application's own wrapper, so the
+package never imports the app), `leaseTtlMs`, `controlPlaneBaseUrl`,
+`runtimeEnvironment`, and `workspaceDurableMount` (requires
+`WORKSPACE_BUCKET`, `WORKSPACE_BUCKET_NAME`, `R2_ENDPOINT`, and the `R2_*`
+credentials).
+
+The **`cloudflare-bridge`** variant reaches an operator-deployed official
+Cloudflare Sandbox Bridge over HTTP instead. Its factory,
+`createCloudflareBridgeManagedRuntime`, takes `baseUrl`, `apiKey` (the
+Bridge's `SANDBOX_API_KEY`, never entering the sandbox), a `checkpointStore`
+BlobStore for portable `/workspace` tar archives, plus
+`checkpointKeyPrefix`, `checkpointExcludes`, `maxHydrateBytes`, and `fetch`.
+
+## Capabilities
+
+| | `cloudflare` | `cloudflare-bridge` |
+|---|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` | `ama_worker` only |
+| suspendResume | unsupported | unsupported |
+| Workspace | `checkpoint_restore`, durable | `checkpoint_restore`, durable |
+| Outputs | `final_collect`, durable | `final_collect`, durable |
+| Process checkpoints | none | none |
+| Credential egress | **`enforced` / `live`, http+https** | `unsupported`/`snapshot` default |
+
+<Aside type="note">
+  The bridge driver keeps OpenMA as the Work and fencing authority while the
+  Node side talks to the Bridge over an HTTP channel (`argv`-style SSE
+  processes, workspace file I/O, tar checkpoints). Interactive stdin without
+  a PTY and provider-side leases are unavailable on that port.
+</Aside>

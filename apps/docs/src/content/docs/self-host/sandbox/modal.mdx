@@ -1,0 +1,71 @@
+---
+title: Self-host on Modal sandboxes
+description: Run sessions on Modal cloud sandboxes with a session-scoped Volume v2 workspace mounted at /workspace — durable storage with compute recreated on top.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Modal runs each Session as a cloud sandbox with a session-scoped subpath of a
+pre-created Modal Volume v2 mounted at `/workspace`. The driver syncs the
+volume before detach and recreates expired compute over that durable state,
+so the workspace survives sandbox restarts.
+
+## Prerequisites
+
+```bash
+MODAL_TOKEN_ID=       # required
+MODAL_TOKEN_SECRET=   # required
+```
+
+The `modal` npm package is dynamically imported by the driver and must be
+installed in the worker process. A **Volume v2 must already exist** — the
+adapter looks it up with `createIfMissing: false` and never implicitly
+creates a legacy volume, which would weaken the configured durability.
+
+## Configuration
+
+Modal is wired through the Runtime Host composition, not `SANDBOX_PROVIDER`.
+Use `createModalProvider`, `createModalManagedRuntime`, or
+`createModalManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-modal`:
+
+```ts
+const driver = createModalManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  credentials: {
+    tokenId: process.env.MODAL_TOKEN_ID!,
+    tokenSecret: process.env.MODAL_TOKEN_SECRET!,
+  },
+  appName: "openma-workers",
+  image: "node:22-slim",
+  workspaceVolumeName: "openma-workspaces", // pre-created Volume v2
+});
+```
+
+Per-acquisition tuning goes through `createOptions`, which receives the
+allocation context and returns any `ModalSandboxCreateOptions`: `cpu`,
+`cpuLimit`, `memoryMiB`, `memoryLimitMiB`, `gpu`, `timeoutMs`,
+`idleTimeoutMs`, `encryptedPorts`, `h2Ports`, `unencryptedPorts`,
+`blockNetwork`, `outboundCidrAllowlist`, `outboundDomainAllowlist`,
+`inboundCidrAllowlist`, `cloud`, `regions`, `includeOidcIdentityToken`, and
+`experimentalEnableSnapshot`. The factory also accepts `client`,
+`runtimeEnvironment`, `outputStore`, `outputKeyPrefix`, `credentialEgress`,
+`sessionInputs`, and `readiness`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | supported |
+| Workspace | `retained_runtime` over a durable Volume v2 subpath |
+| Outputs | `final_collect`, durable |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="note">
+  The driver applies Modal's native domain/CIDR allowlists and stable
+  ownership tags, and recreates compute over the durable volume when the
+  provider sandbox expires. Provider memory preview is not advertised as a
+  stable OpenMA checkpoint — `runtimeCheckpoints` is empty.
+</Aside>

@@ -1,0 +1,62 @@
+---
+title: 在 Modal 沙箱上自托管
+description: 在 Modal 云沙箱上运行 Session，Session 作用域的 Volume v2 子路径挂载在 /workspace——持久存储之上按需重建计算实例。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Modal 把每个 Session 作为一个云沙箱运行，并将预先创建的 Modal Volume v2 中按 Session 划分的子路径挂载到 `/workspace`。驱动在分离前同步该卷，并在这份持久状态之上重建过期的计算实例，因此工作区能在沙箱重启后存活。
+
+## 前置条件
+
+```bash
+MODAL_TOKEN_ID=       # 必需
+MODAL_TOKEN_SECRET=   # 必需
+```
+
+驱动会动态导入 `modal` npm 包，因此它必须安装在 worker 进程中。**Volume v2 必须事先存在**——适配器以 `createIfMissing: false` 查找它，绝不隐式创建旧版卷，因为那会削弱配置好的持久性。
+
+## 配置
+
+Modal 通过运行时宿主组合接入，而不是 `SANDBOX_PROVIDER`。使用
+`@open-managed-agents/managed-runtime-modal` 提供的
+`createModalProvider`、`createModalManagedRuntime` 或
+`createModalManagedRuntimeDriver`：
+
+```ts
+const driver = createModalManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  credentials: {
+    tokenId: process.env.MODAL_TOKEN_ID!,
+    tokenSecret: process.env.MODAL_TOKEN_SECRET!,
+  },
+  appName: "openma-workers",
+  image: "node:22-slim",
+  workspaceVolumeName: "openma-workspaces", // 预先创建的 Volume v2
+});
+```
+
+按分配实例调节的参数走 `createOptions`——它接收分配上下文并返回任意
+`ModalSandboxCreateOptions`：`cpu`、`cpuLimit`、`memoryMiB`、
+`memoryLimitMiB`、`gpu`、`timeoutMs`、`idleTimeoutMs`、
+`encryptedPorts`、`h2Ports`、`unencryptedPorts`、`blockNetwork`、
+`outboundCidrAllowlist`、`outboundDomainAllowlist`、
+`inboundCidrAllowlist`、`cloud`、`regions`、`includeOidcIdentityToken`、
+`experimentalEnableSnapshot`。工厂还接受 `client`、`runtimeEnvironment`、
+`outputStore`、`outputKeyPrefix`、`credentialEgress`、`sessionInputs` 和
+`readiness`。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 支持 |
+| 工作区 | `retained_runtime`，基于持久 Volume v2 子路径 |
+| 输出 | `final_collect`，持久 |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="note">
+  驱动使用 Modal 原生的域名/CIDR 白名单和稳定的归属标签；当提供商沙箱过期时，会在持久卷上重建计算实例。提供商的内存预览不作为稳定的 OpenMA 检查点来宣传——`runtimeCheckpoints` 为空。
+</Aside>

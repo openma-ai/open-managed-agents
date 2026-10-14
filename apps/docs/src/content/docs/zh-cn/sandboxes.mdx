@@ -1,0 +1,171 @@
+---
+title: 沙箱
+description: "为 OpenMA 选择沙箱后端：七类执行环境到托管运行时驱动的映射——Docker、E2B、Daytona、Modal、Sprites、Vercel、Blaxel、BoxLite、Cloudflare 和 GKE agent-sandbox。"
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+OpenMA 把执行环境当作可替换的后端。无论由哪个 driver 提供计算，Session 的
+Managed Agents API 形状都不变；[托管运行时宿主](/self-host/managed-runtime-host/)
+在其上负责生命周期、`/workspace`、输出和栅栏。
+
+本页梳理全局：七类 Agent 执行环境，以及实现每一类的 OpenMA driver。下面的
+每一条一致性声明都来自 `packages/managed-runtime-host/src/provider-conformance.ts`
+中的机器可读表（`MANAGED_RUNTIME_PROVIDER_CONFORMANCE`）。
+
+## 1. 本地进程 / Docker 容器
+
+计算和控制面在同一台主机（或主机集群）上，没有外部沙箱服务。
+
+| Driver | 是什么 |
+|---|---|
+| `node-docker` | `packages/managed-runtime-node` —— Docker CLI 适配器（`docker create`、exec、rm）。容器生命周期由宿主自身的组合管理。 |
+| `litebox` | `SANDBOX_PROVIDER=litebox`（别名 `boxlite`）—— 通过 `sandbox-adapter-litebox` 在宿主机上内嵌的 BoxLite microVM。保留 box 是宿主机本地的。 |
+| `boxrun` | `SANDBOX_PROVIDER=boxrun` —— 通过官方 REST client 使用 BoxLite（`sandbox-adapter-boxrun`）。 |
+| `subprocess` | 仅供测试的 `local-subprocess` 适配器。在 `NODE_ENV=test` 之外被拒绝；生产服务器宁可拒绝也不会在 API 宿主机上跑 Agent 命令。 |
+
+**什么时候选**：想要完全自托管、不依赖第三方——代价是隔离较弱（容器与宿主机共享内核），且纯 Docker driver 不支持挂起/恢复。
+
+## 2. MicroVM / dev-box 服务
+
+专门的 dev-box 平台：有名字的沙箱在多次会话轮次之间保持存活，可以挂起和恢复。
+
+| Driver | 服务 |
+|---|---|
+| `e2b` | E2B 沙箱。提供方级的挂起/恢复，外加提供方内存快照（仍不是 OpenMA 检查点）。 |
+| `daytona` | Daytona workspace：稳定名字、所有权标签、stop/start、可移植的文件系统快照、活动续租 lease。 |
+| `litebox` / `boxrun` | 见第 1 类 —— BoxLite 的保留 box 也实现了挂起/恢复，但存储是 best-effort 的宿主机本地存储。 |
+
+**什么时候选**：想要长期存活、可恢复的 dev box，又不想运维 Kubernetes。
+
+## 3. Serverless 沙箱即服务
+
+按需的沙箱 API，按秒计费，每个沙箱一个持久文件系统。
+
+| Driver | 服务 | 说明 |
+|---|---|---|
+| `modal` | Modal sandbox | 在 `/workspace` 挂载预先创建的 Volume v2 会话子路径，detach 前同步，在这份持久卷上重建计算。 |
+| `sprites` | Fly Sprites | 提供方持久的 ext4 文件系统，自动暂停/唤醒，原生网络策略。 |
+| `vercel` | Vercel Sandbox | 持久的有名沙箱，自动快照恢复。其默认拒绝的防火墙是提供方特性，不是 OpenMA 的凭据出口。仅 `ama_worker` 通道。 |
+| `blaxel` | Blaxel | 稳定 Session 身份、archive/unarchive 保留文件系统。其原生代理防火墙与 secret 注入是提供方特性，不是 OpenMA 的凭据出口——workspace 持久性是 best-effort。 |
+| `superserve` | Superserve | 保留式暂停/恢复，保住进程和文件；token 轮换重连。其提供方侧 secret 代理是提供方特性，不是 OpenMA 的凭据出口。 |
+
+**什么时候选**：想要零运维、按用量计费的计算，且每个沙箱有持久存储。
+
+## 4. 边缘容器
+
+跑在 Cloudflare 控制面旁边的沙箱容器。
+
+| Driver | 是什么 |
+|---|---|
+| `cloudflare` | `packages/managed-runtime-cloudflare` —— Cloudflare Workers Containers。唯一一个凭据出口为 **`enforced`** 的 driver：沙箱只能到达 OpenMA 出口代理（`credentialMode: "live"`，拦截协议 `http`/`https`）。 |
+| `cloudflare-bridge` | `packages/managed-runtime-cloudflare-bridge` —— Node 控制面通过 HTTP 到达运维方部署的官方 Cloudflare Sandbox Bridge。仅 `ama_worker` 通道。 |
+
+**什么时候选**：当凭据拦截是硬性要求时，或你已经在 Cloudflare 上部署。两个 driver 都不支持挂起/恢复。
+
+## 5. Kubernetes 原生 claim
+
+由集群的 agent-sandbox 控制器解决的 Kubernetes `SandboxClaim`。
+
+`packages/environment-dispatch-gke` 为 GKE 实现了 `poll_unacked_then_dispatch`
+策略：dispatcher 回收过期的 `SandboxClaim`，从配置的 `warmPool` 绑定一个热备
+pod（一个真实的 K8s agent-sandbox 热备池——也是代码里目前唯一存在的
+warm-pool 集成），然后让 pod 内运行时接管 Work 心跳。
+
+**什么时候选**：已经运行 Kubernetes，希望沙箱生命周期由集群控制器拥有。
+
+## 6. 完整 VM
+
+每个 Session 一台 VM，按需启动。
+
+`packages/environment-activation-aws` 实现了 `acquire_then_session_poll`
+策略：一条持久的 activation-intent 队列驱动 `AwsMicrovmLauncherPort`，VM 内
+的 worker 自己 poll、claim、心跳、停止 Work。在失去所有权之后创建的 VM 会
+被当作孤儿回收。
+
+跨 provider 的通用 warm-pool / `fork` 模型属于**规划中**，尚未实现。
+
+## 7. 无沙箱 / 宿主机执行
+
+`environment: { type: "none" }` 创建一个无沙箱 Session——Agent 直接在宿主机上运行，没有工具隔离。托管的 OpenMA 和 Node 服务器都支持。适用于纯对话 Agent 和轻量工具使用；见 README 中的无沙箱 Session 示例。
+
+<Aside type="caution">
+  无沙箱 Session 完全没有计算隔离——不要把它和你不完全信任的代码执行放在一起。
+</Aside>
+
+## 一致性速览
+
+事实来源是 `MANAGED_RUNTIME_PROVIDER_CONFORMANCE`。下面**每一个**
+managed-runtime driver 都声明 `hardTerminate: supported`、
+`orphanReap: host-managed` 和 `runtimeCheckpoints: []`——任何 driver 上都没有进程内存检查点/恢复。
+
+| Driver | 通道 | 挂起/恢复 | Workspace | 凭据出口 |
+|---|---|---|---|---|
+| `node-docker` | `ama_worker`, `openma_supervised` | unsupported | durable | unsupported（oma-vault 环境代理是 advisory） |
+| `cloudflare` | `ama_worker`, `openma_supervised` | unsupported | durable | **enforced** —— live，`http`/`https` |
+| `cloudflare-bridge` | `ama_worker` | unsupported | durable | unsupported |
+| `e2b` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `daytona` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `litebox` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `boxrun` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `blaxel` | `ama_worker`, `openma_supervised` | supported | best_effort | unsupported |
+| `sprites` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `vercel` | `ama_worker` | supported | durable | unsupported |
+| `modal` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+| `superserve` | `ama_worker`, `openma_supervised` | supported | durable | unsupported |
+
+各 driver 值得注意的 `sandboxPortFacts`（裸适配器能做什么、不能做什么）：
+
+| Driver | 具备 | 缺少 |
+|---|---|---|
+| `node-docker` | `duplex_process`, `workspace_file_io` | `provider_suspend_resume` |
+| `cloudflare` | `duplex_process`, `workspace_backup`, `session_output_mount` | `runtime_scoped_resume`, `process_memory_checkpoint` |
+| `cloudflare-bridge` | `http_bridge`, `argv_sse_process`, `workspace_file_io`, `workspace_tar_checkpoint` | `interactive_stdin_without_pty`, `provider_lease`, `process_memory_checkpoint` |
+| `e2b` | `duplex_process`, `provider_suspend_resume`, `provider_memory_snapshot` | `process_memory_checkpoint` |
+| `daytona` | `provider_activity_lease`, `stable_name_with_ownership_labels`, `retained_filesystem_stop_start`, `portable_filesystem_snapshot`, `duplex_session_process` | `process_memory_checkpoint`, `durable_output_mount` |
+| `litebox` | `stable_get_or_create`, `detached_retained_filesystem`, `duplex_process`, `native_network_allowlist`, `native_secret_substitution` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `boxrun` | `official_boxlite_rest_client`, `stable_get_or_create`, `detached_retained_filesystem`, `duplex_process` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `blaxel` | `stable_name_external_id_and_ownership_labels`, `archive_unarchive_retained_filesystem`, `duplex_named_process`, `native_proxy_firewall_and_secret_injection`, `optional_persistent_volume` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `sprites` | `stable_name_and_ownership_labels`, `persistent_ext4_filesystem`, `automatic_pause_and_wake`, `duplex_process`, `native_network_policy` | `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `vercel` | `stable_name_and_ownership_tags`, `persistent_filesystem_with_automatic_snapshot_restore`, `detached_process_logs`, `deny_by_default_network_policy`, `path_scoped_header_transform_and_forward_proxy` | `streaming_process_stdin`, `portable_workspace_checkpoint`, `process_memory_checkpoint` |
+| `modal` | `stable_name_and_ownership_tags`, `session_scoped_volume_v2_subpath`, `volume_sync_before_detach`, `duplex_process`, `native_domain_and_cidr_allowlist`, `compute_recreate_over_durable_volume` | `portable_workspace_checkpoint`, `stable_process_memory_checkpoint` |
+| `superserve` | `stable_name_and_ownership_metadata`, `pause_resume_preserves_processes_and_files`, `transparent_token_rotation_and_auto_resume`, `duplex_process`, `deny_by_default_network_policy`, `provider_side_secret_proxy_and_audit` | `portable_workspace_checkpoint`, `stable_process_memory_checkpoint` |
+
+<Aside type="note" title="仔细读凭据出口那一列">
+  `enforced` 只存在于一个 driver：`cloudflare`。其他所有 driver 都报告
+  `enforcement: "unsupported"`，除非运维方通过 driver 的
+  `options.credentialEgress` 注入一个经过认证的 `CredentialEgressPort`。
+  在 Node/Docker 上，`oma-vault` compose sidecar 是 HTTPS 代理 sidecar——
+  是 advisory 的，沙箱可以绕过它。另外，Environment 的
+  `networking.allowed_hosts`（limited 模式）只在 `web_fetch` 工具内生效；
+  `bash`、`curl`、`web_search` 和 MCP 调用都不受它限制。
+</Aside>
+
+## 如何选择
+
+1. 先决定凭据拦截是不是硬性要求。如果是，今天的选择是 `cloudflare`
+   driver（或在其他 driver 上注入运维方提供的 `CredentialEgressPort`）。
+2. 决定 Session 是否必须挂起并带着保留的计算恢复。这会排除
+   `node-docker`、`cloudflare` 和 `cloudflare-bridge`。
+3. 决定 workspace 需要多持久。`litebox`、`boxrun` 和 `blaxel` 是
+   best-effort；其余都是 durable。
+4. 把剩下的 driver 对照你的基础设施：Docker 宿主机、dev-box 服务、
+   serverless 沙箱 API、Cloudflare、GKE 或 AWS VM。
+
+<LinkCard
+  title="托管运行时宿主"
+  href="/self-host/managed-runtime-host/"
+  description="driver 如何组合进宿主的沙箱、workspace、输出和栅栏状态机。"
+/>
+
+按 driver 的安装指南：
+
+- [Node + Docker](/self-host/sandbox/docker/)
+- [E2B](/self-host/sandbox/e2b/)
+- [Daytona](/self-host/sandbox/daytona/)
+- [Modal](/self-host/sandbox/modal/)
+- [Fly Sprites](/self-host/sandbox/sprites/)
+- [Vercel Sandbox](/self-host/sandbox/vercel/)
+- [Blaxel](/self-host/sandbox/blaxel/)
+- [Cloudflare](/self-host/sandbox/cloudflare/)
+- [GKE agent-sandbox](/self-host/sandbox/gke/)

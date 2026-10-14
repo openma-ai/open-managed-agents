@@ -1,0 +1,54 @@
+---
+title: 在 Docker 沙箱上自托管
+description: 在 Node 宿主机上的本地 Docker 容器中运行 Session——node-docker 驱动，带 SQL 栅栏和持久的工作区检查点/恢复（文件系统级；无进程内存检查点）。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`node-docker` 驱动把每个 Session 运行在与 Node 服务器同一台主机的 Docker 容器里，通过 Docker CLI 适配器驱动——不需要外部沙箱账号。工作区位于宿主机文件系统，在文件系统层面做持久的工作区检查点/恢复——没有进程内存检查点，也没有提供商侧挂起/恢复。
+
+## 前置条件
+
+- Docker 已安装且对 worker 进程可达（`DockerCommandPort` 适配器；非标准环境可注入自定义 `docker` 命令端口）。
+- 镜像引用，如 `node:22-slim`。
+- Node 自托管自身的要求（`BETTER_AUTH_SECRET`、`PLATFORM_ROOT_SECRET`、一个 SQL 后端）。见 [Node + Docker（不用 Cloudflare）](/self-host/node-docker/)。
+
+## 配置
+
+Docker 作为预装的 Node 运行时组合，而不是通过 `SANDBOX_PROVIDER`。工厂是
+`@open-managed-agents/managed-runtime-node` 的
+`createNodeManagedRuntime` / `createNodeManagedRuntimeDriver` /
+`createNodeManagedEnvironmentWorker`：
+
+```ts
+const runtime = await createNodeManagedRuntime({
+  rootDir: "/var/lib/openma",
+  sql,                       // SqlClient——SQLite/Postgres/MySQL
+  initializeFenceSchema: true,
+  ownerId: processId,
+  leaseTtlMs: 90_000,
+  heartbeatIntervalMs: 30_000,
+  image: "node:22-slim",
+});
+```
+
+完整选项集：`rootDir`、`sql`、`initializeFenceSchema`、`ownerId`、
+`leaseTtlMs`、`heartbeatIntervalMs`、`checkpointIntervalMs`、`image`、
+`network`、`docker`、`additionalMounts`（source/destination/readOnly）、
+`extraHosts`、`scheduler`、`fence`、`runtimeCheckpoint`、
+`credentialEgress`、`sessionInputs`。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 不支持 |
+| 工作区 | `checkpoint_restore`，持久（宿主机文件系统） |
+| 输出 | `final_collect`，持久（宿主机文件系统） |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="caution">
+  默认的 Docker 组合**不带**凭证出口实现：仅靠代理环境变量并不是凭证隔离边界，Node/Docker 上旧的 `oma-vault` 环境代理是建议性的——沙箱可以绕过它。当 Session 需要实时凭证注入时，通过 `options.credentialEgress` 声明一个 enforced/advisory 的 `CredentialEgressPort`。
+</Aside>

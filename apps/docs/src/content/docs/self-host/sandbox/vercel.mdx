@@ -1,0 +1,67 @@
+---
+title: Self-host on Vercel sandboxes
+description: Run sessions on Vercel Sandboxes — persistent named microVMs with automatic snapshot/restore, deny-by-default firewall, and path-scoped credential transforms.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Vercel runs each Session as a persistent named sandbox created through the
+official `@vercel/sandbox` SDK (dynamically imported, so it must be
+installed). The driver reapplies a deny-by-default firewall policy before
+readiness, supports provider-side credential transforms and forwarding, and
+owner-validates hard deletion.
+
+## Prerequisites
+
+```bash
+VERCEL_TOKEN=         # required
+VERCEL_TEAM_ID=       # required
+VERCEL_PROJECT_ID=    # required
+```
+
+## Configuration
+
+Vercel is wired through the Runtime Host composition, not
+`SANDBOX_PROVIDER`. Use `createVercelProvider`,
+`createVercelManagedRuntime`, or `createVercelManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-vercel`:
+
+```ts
+const driver = createVercelManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  credentials: {
+    token: process.env.VERCEL_TOKEN!,
+    teamId: process.env.VERCEL_TEAM_ID!,
+    projectId: process.env.VERCEL_PROJECT_ID!,
+  },
+  networkPolicy: () => ({
+    // deny-by-default rule set reapplied before readiness
+  }),
+});
+```
+
+`createOptions` receives the allocation context and returns any
+`VercelCreateOptions` (image, resources, timeouts, ports, environment).
+`networkPolicy` returns a `VercelNetworkPolicy` — the provider's
+deny-by-default matcher set, including path-scoped header transform and
+forward-proxy rules. The factory also accepts `client`,
+`runtimeEnvironment`, `outputStore`, `outputKeyPrefix`, `credentialEgress`,
+`sessionInputs`, and `readiness`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker` only |
+| suspendResume | supported (persistent filesystem + snapshot restore) |
+| Workspace | `retained_runtime`, durable |
+| Outputs | `final_collect`, durable |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="caution">
+  Vercel is an **`ama_worker`-only** driver in the conformance profile — the
+  `openma_supervised` lane is not available. Provider snapshots count as
+  retained-runtime state, not portable OpenMA checkpoints, and streaming
+  process stdin is unavailable on the raw sandbox port.
+</Aside>

@@ -1,0 +1,82 @@
+---
+title: Self-host on E2B sandboxes
+description: Run sessions on hosted E2B Firecracker microVMs via SANDBOX_PROVIDER=e2b or the managed-runtime driver — memory-snapshot suspend/resume and durable output collection.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+E2B runs each Session inside a hosted Firecracker microVM. It is the simplest
+hosted backend for the Node self-host: one API key, no infrastructure to run,
+and provider memory snapshots for suspend/resume.
+
+## Prerequisites
+
+```bash
+E2B_API_KEY=          # required
+SANDBOX_IMAGE=        # E2B template reference used as the Environment image
+```
+
+For E2B-compatible endpoints, the connection details stay in the same
+environment map:
+
+```bash
+E2B_API_URL=          # or E2B_SANDBOX_URL / E2B_DOMAIN, depending on deployment
+OMA_E2B_TEMPLATE=     # explicit template override
+```
+
+<Aside type="note">
+  The managed runtime's default resolver requires an Environment template —
+  with no `SANDBOX_IMAGE`/`OMA_E2B_TEMPLATE` reference it throws rather than
+  falling back to the SDK's base image. For durable session outputs, set the
+  `FILES_S3_ENDPOINT`, `FILES_S3_BUCKET`, `FILES_S3_ACCESS_KEY` and
+  `FILES_S3_SECRET_KEY` variables so the runtime can attach an S3 output
+  store.
+</Aside>
+
+## Configuration
+
+On the standalone Node server, select the adapter directly:
+
+```bash
+SANDBOX_PROVIDER=e2b
+E2B_API_KEY=...
+SANDBOX_IMAGE=...
+```
+
+To embed the driver in the Runtime Host composition instead, use
+`createE2BManagedRuntime` / `createE2BManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-e2b`:
+
+```ts
+const driver = createE2BManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  environment: {
+    E2B_API_KEY: process.env.E2B_API_KEY!,
+    SANDBOX_IMAGE: process.env.SANDBOX_IMAGE!,
+  },
+});
+```
+
+The factory also accepts a per-scope `environment` function, an explicit
+`outputStore` (`null` disables the S3 default), `credentialEgress`,
+`sessionInputs`, `runtimeEnvironment`, `context`, and a test seam
+`provider`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | supported (provider memory snapshot) |
+| Workspace | `retained_runtime` + `checkpoint_restore`, durable |
+| Outputs | `final_collect`, durable (S3 store when configured) |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="caution">
+  Like every non-Cloudflare driver, the E2B composition declares credential
+  egress `{enforcement: "unsupported", credentialMode: "snapshot",
+  interceptedProtocols: []}` unless the operator injects a certified
+  implementation via `options.credentialEgress`. Provider-side egress policy
+  is not assumed: the adapter supplies no network wire point by default.
+</Aside>
