@@ -1,0 +1,96 @@
+---
+title: OpenMA — 开源、可自托管的 Claude Managed Agents，支持可插拔沙箱
+description: "在 Node、Docker 或 Cloudflare 上运行与 Claude Managed Agents 兼容的控制平面，并接入你选择的沙箱：E2B、Daytona、Modal、Fly Sprites、Vercel、Blaxel、Cloudflare 或本地 Docker。"
+template: splash
+head:
+  # Starlight 自动生成的 <title> 会追加 " | openma"（站点标题），
+  # 造成品牌名叠在品牌名后面。这里覆盖掉，让富含关键词的页面标题
+  # 在搜索结果里独立出现。
+  - tag: title
+    content: OpenMA — 开源、可自托管的 Claude Managed Agents，支持可插拔沙箱
+hero:
+  tagline: 自行运行 Claude agent。持久 Session、沙箱中的工具、由 Vault 支撑的凭据，内置 MCP 与 Claude Code 技能。接入你选择的沙箱——E2B、Daytona、Modal、Sprites、Vercel、Blaxel、Cloudflare 或本地 Docker。API 可直接替换。
+  image:
+    file: ../../../assets/logo.svg
+    alt: 'OpenMA 标志'
+  actions:
+    - text: 快速开始
+      link: /zh-cn/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: 在 GitHub 上查看
+      link: https://github.com/openma-ai/open-managed-agents
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## openma 是什么？
+
+**openma**（Open Managed Agents）是 AI agent 的基础设施层。你带来 Harness——决定模型下一步做什么的循环——openma 负责其余的一切：持久 Session、沙箱中的代码执行、工具调用、语义记忆、隔离安全的凭据，以及崩溃恢复。
+
+它完全运行在 Cloudflare（Workers、Durable Objects、D1、R2、KV、Vectorize、Containers）上。你可以**使用 [openma.ai](https://app.openma.ai) 上的托管产品**，也可以 **fork 并自托管**到自己的 Cloudflare 账号。
+
+## 选择你的路径
+
+<CardGrid>
+  <LinkCard
+    title="我想使用 openma.ai"
+    href="/console/getting-started/"
+    description="注册账号，在 Console 里创建第一个 Agent，连接 Linear 或 GitHub。无需部署。"
+  />
+  <LinkCard
+    title="我想在 API 上构建 Agent"
+    href="/build/api/"
+    description="REST 端点、CLI、自定义技能、自定义工具、MCP 服务器，以及 Harness 接口。"
+  />
+  <LinkCard
+    title="我想自托管"
+    href="/self-host/overview/"
+    description="Fork 仓库，部署到自己的 Cloudflare 账号，注册自己的 OAuth 应用。"
+  />
+  <LinkCard
+    title="我想参与贡献"
+    href="/contribute/"
+    description="仓库布局、本地开发循环，以及设计 RFC 所在的位置。"
+  />
+</CardGrid>
+
+## 为什么选择 openma？
+
+大多数 agent 框架告诉你*如何*构建一个 agent——循环、提示词格式、编排形态。openma 不同：它不介入 Harness，而是提供每个长时间运行的 agent 都需要、自己做起来却很痛苦的东西。
+
+<CardGrid>
+  <Card title="持久 Session" icon="approve-check">
+    每个 Session 在由 SQLite 支撑的 Durable Object 里保存只追加的事件日志。可以从任意位置恢复；能经受重启和崩溃。
+  </Card>
+  <Card title="沙箱执行" icon="seti:docker">
+    工具调用在按 Session 划分的 Cloudflare Containers 中运行。用声明式方式预装 Python / Node / apt 包。
+  </Card>
+  <Card title="由 Vault 支撑的凭据" icon="seti:lock">
+    凭据永远不会进入沙箱。出站代理按主机注入认证头，于是工具可以访问私有 API，却始终看不到密钥。
+  </Card>
+  <Card title="内置记忆" icon="document">
+    跨 Session 的、按 Agent 划分的语义记忆，通过 Workers AI embeddings 索引在 Vectorize 中。
+  </Card>
+  <Card title="无处不在的 MCP" icon="puzzle">
+    连接任意 MCP 服务器，openma 会自动生成模型可以调用的 `mcp_*` 工具。
+  </Card>
+  <Card title="第一天就有的三项集成" icon="rocket">
+    把 Agent 发布到 Linear（可指派的 issue）、GitHub（PR）和 Slack（频道），认证由 OAuth 管理。
+  </Card>
+</CardGrid>
+
+## 下一步
+
+<LinkCard
+  title="阅读概念页"
+  href="/concepts/"
+  description="一页看完每个名词：Agent、Session、Environment、Vault、技能、工具、Harness、集成。"
+/>
+<LinkCard
+  title="跑一遍快速开始"
+  href="/quickstart/"
+  description="注册账号，拿到 API key，五分钟内用 curl 创建一个 Session。"
+/>

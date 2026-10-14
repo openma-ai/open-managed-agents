@@ -18,7 +18,7 @@
  *
  * Default-skipped because:
  *   - It needs staging cli creds (`oma auth login --base-url
- *     https://app.staging.openma.dev` first).
+ *     https://app.staging.openma.ai` first).
  *   - It mints + tears down a real launchd plist / systemd unit, which
  *     is destructive on the user's machine.
  *   - It uses OMA_PROFILE=e2e-test so it can't collide with the user's
@@ -64,7 +64,7 @@ const PROFILE = "e2e-test";
 // staging server. Tests that hit the chat path expect a staging cli
 // auth profile (~/.config/oma/credentials.e2e-test.json) — caller's
 // responsibility to set up via `OMA_PROFILE=e2e-test oma auth login`.
-const SERVER = "https://app.staging.openma.dev";
+const SERVER = "https://app.staging.openma.ai";
 
 interface RunResult { code: number; stdout: string; stderr: string; combined: string; }
 function run(args: string[], opts: { timeoutMs?: number; input?: string } = {}): RunResult {

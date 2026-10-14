@@ -30,7 +30,7 @@ describe("/admin gate (ultrareview bug_006)", () => {
     describe(path, () => {
       it("404s in prod env even with the right TEMP_DEBUG_TOKEN", async () => {
         const env = envWith({
-          gatewayOrigin: "https://integrations.openma.dev",
+          gatewayOrigin: "https://integrations.openma.ai",
           debugToken: "right-token",
         });
         const res = await app.fetch(
@@ -43,7 +43,7 @@ describe("/admin gate (ultrareview bug_006)", () => {
       });
 
       it("404s in prod env even when TEMP_DEBUG_TOKEN is unset", async () => {
-        const env = envWith({ gatewayOrigin: "https://integrations.openma.dev" });
+        const env = envWith({ gatewayOrigin: "https://integrations.openma.ai" });
         const res = await app.fetch(
           new Request("https://example.com" + path),
           env,
@@ -96,7 +96,7 @@ describe("/admin gate (ultrareview bug_006)", () => {
 
   it("does not misclassify host substrings that merely contain 'stag'", async () => {
     const env = envWith({
-      gatewayOrigin: "https://stagecoach.openma.dev",
+      gatewayOrigin: "https://stagecoach.openma.ai",
       debugToken: "right-token",
     });
     const res = await app.fetch(

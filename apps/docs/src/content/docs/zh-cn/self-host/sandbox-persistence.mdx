@@ -1,0 +1,329 @@
+---
+title: 沙箱与持久化契约
+description: 与 provider 无关的精确形状与生命周期保证，覆盖计算、workspace 状态、输出、检查点，以及 Harness 放置。
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+OpenMA 把 **Harness 在哪里运行** 和 **它的文件如何存活** 分开。沙箱拥有计算的生命周期。Workspace 持久化拥有可变的编码工作区。Session 输出拥有用户可见的交付物。资源栅栏是唯一被允许把新的 workspace 或 output 修订标为活跃的组件。
+
+[执行后端接入契约](/self-host/sandbox-backend/) 是新计算后端的接入指南。本页是那份指南所依赖的持久化与栅栏契约。
+
+这些设置都不扩展公开的 Anthropic Managed Agents 形状。官方自托管 Environment 仍然恰好是：
+
+```ts
+await client.beta.environments.create({
+  name: "my worker pool",
+  config: { type: "self_hosted" },
+});
+```
+
+Provider 选择、镜像、卷、存储桶、保留期，以及 Harness 放置配置，都属于部署时的运行时宿主配置。
+
+## Harness 放置
+
+OpenMA 支持两种互相独立的放置：
+
+| 放置 | Agent 循环 | 沙箱用途 | 典型驱动 |
+|---|---|---|---|
+| 沙箱外的 Harness | Pi/default 循环跑在应用里；工具通过 `SandboxPort` 执行 | 工具进程与文件系统隔离 | 应用运行时加上一个 Sandbox 适配器 |
+| 沙箱内的 Harness | Pi、ACP 或其他 Harness 进程跑在隔离计算里 | 整个循环、工具和 workspace 共享一个运行时 | `openma_supervised` |
+
+还有一条兼容通道 `ama_worker`。它原样启动官方或社区的 Anthropic EnvironmentWorker。那个 worker 仍然是 Managed Agents 控制面的“手”；它不会被转换成 OpenMA/Pi Agent 循环。
+
+```ts
+type HarnessDriver =
+  | {
+      type: "ama_worker";
+      process: { command: string; args?: string[]; cwd?: string };
+    }
+  | {
+      type: "openma_supervised";
+      protocol: "openma-harness-supervisor-v1";
+      supervisor: { command: string; args?: string[]; cwd?: string };
+      harness: { id: string; version: string };
+      readyTimeoutMs: number;
+      heartbeatTimeoutMs: number;
+      drainTimeoutMs: number;
+    };
+```
+
+监督协议增加了就绪、心跳、完成、排空和有界停止。它不把资源栅栏令牌交给子进程。外层运行时宿主保留发布权威和硬杀死责任。
+
+### 每种放置只有一个调度权威
+
+```text
+沙箱外的 Harness                  自托管沙箱内的 Harness
+SessionExecution 认领             官方 Environment Work 认领
+  └─ 应用侧 Harness                 └─ 一个沙箱执行器
+       └─ 工具沙箱                       ├─ supervisor
+                                          ├─ harness
+                                          └─ tools
+```
+
+这是互斥的执行路径。一次自托管、沙箱内的运行不会同时认领 Session 执行队列。它那一次 Environment Work 认领拥有合并后的沙箱 + Harness 尝试。下面的 `RuntimeResourceFencePort` 只控制哪些不可变的 workspace / 检查点 / output 候选变为活跃；supervisor 心跳只控制进程健康。
+
+两个调度器在内部共享一个与协议无关的租约控制器，因此租约丢失、瞬时续约失败、优雅停止和取消具有相同语义，且不改变官方 Environment Work API。每一次 Environment Work 重新认领还会轮换绑定在认领上的 Session bearer，在旧令牌的墙钟过期之前，就把前一个沙箱挡在 Session 写入之外。
+
+## 运行时配置形状
+
+应用请求的是语义保证，而不是点名某个 provider：
+
+```ts
+interface ManagedRuntimeProfile {
+  workspace: {
+    requirement: "durable" | "continuable" | "ephemeral";
+    preferredStrategies?: Array<
+      "durable_mount" | "retained_runtime" |
+      "checkpoint_restore" | "ephemeral"
+    >;
+  };
+  outputs: {
+    requirement: "durable" | "best_effort" | "disabled";
+    preferredStrategies?: Array<
+      "durable_mount" | "watch_and_upload" | "final_collect"
+    >;
+  };
+  runtimeCheckpoint: "required" | "optional" | "disabled";
+  driver: HarnessDriver;
+}
+```
+
+规划发生在获取计算之前。无法满足某项必需保证的 provider 会造成配置错误；宿主绝不会把 `durable` 静默降级成临时存储。
+
+## 四条资源边界
+
+| Port | 拥有 | 不得拥有 |
+|---|---|---|
+| `ManagedSandboxPort` | 隔离计算的获取、观察、心跳、挂起、终止和孤儿回收 | 规范文件或 Session 状态 |
+| `WorkspacePersistencePort` | 物化 `/workspace` 并挂上它；仅对检查点策略创建不可变的恢复候选 | 用户可见的最终交付物 |
+| `SessionOutputPort` | 准备 `/mnt/session/outputs`、收集文件并创建不可变清单 | 可变的编码 workspace |
+| `RuntimeResourceFencePort` | 代次租约，以及活跃候选指针的原子发布 | Provider 进程管理 |
+
+沙箱租约故意可序列化，这样宿主崩溃后孤儿回收器可以重连：
+
+```ts
+interface ManagedSandboxLease {
+  provider: string;
+  runtimeId: string;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+```
+
+孤儿记录可以包含那份租约、它的资源范围、代次、原因和重试次数。它绝不包含 API 凭据或栅栏令牌。
+
+## Workspace 持久化策略
+
+每一次成功的物化都暴露 `/workspace`，但这并不意味着 POSIX 网络挂载。
+
+| 策略 | 什么会留下来 | 提交点 | 主要边界 |
+|---|---|---|---|
+| `durable_mount` | 外部持久文件系统已接受的实时写入 | 文件系统 / provider 的确认；一次有栅栏的发布可以记录挂载身份，**而不是它的内容** | 挂载延迟和 provider 一致性模型；**已挂载文件没有版本，也不能回滚** |
+| `retained_runtime` | provider 保留该运行时期间的本地磁盘 | 成功的挂起 / 保留 | 对 provider 过期或删除不持久 |
+| `checkpoint_restore` | 当前代发布的最后一份完整归档 / 快照 | 不可变候选哈希 + 有栅栏的指针 CAS | 上次检查点之后的改动可能丢失 |
+| `ephemeral` | 终止之后什么都不留 | 无 | 仅在明确请求时有效 |
+
+对编码 Agent 来说，`checkpoint_restore` 是可移植的基线：获取一个新运行时，把最后一份活跃候选恢复进 `/workspace`，回放持久的 Session 事件日志，然后恢复 Harness。Provider 原生的保留型运行时是延迟优化，除非同时存在外部检查点。可配置的检查点间隔是 **安全 Harness 边界上的目标**：一次没有安全点的长时间回合可以超过它。检查点字节先暂存；上传失败或栅栏过期绝不会推进活跃指针。普通的对象存储挂载是另一种策略，沙箱检查点不会回滚它。
+
+### 可选的进程内存检查点
+
+宿主有一个感知 provider 的 `RuntimeCheckpointPort`，用于真正能够捕获并恢复进程状态的运行时。它故意与 workspace 持久化分开：provider 快照或温热的 `suspend` 句柄不得被广告为进程检查点，除非它的适配器实现了这个 Port。存在时，该引用与 workspace 和 output 候选在同一次有栅栏的 CAS 里发布。后来的所有者在尝试恢复之前，会校验 provider、session、代次、检查点种类和 Harness 身份。失败或过期的恢复会回退到规范的 `checkpoint_restore` workspace 路径；检查点是优化，绝不是事实来源。配置为 `runtimeCheckpoint: "required"` 的 profile，在组合没有暴露该 Port、或无法创建所请求的检查点时，会失败即拒绝。
+
+<Aside type="caution">
+  文件系统持久化不是进程内存持久化。打开的文件句柄、套接字、子进程 PID 和内存中的模型上下文都会重建。ACP 可以把它的原生逻辑 session ID 持久化在 `/workspace/.openma/` 下；那是恢复令牌，不是内存镜像。
+</Aside>
+
+<span id="acp-native-session-persistence"></span>
+
+## ACP 原生会话持久化
+
+OpenMA 不复制 Harbor 的按 Agent 交互适配器。每个外部编码 Agent 仍然通过 ACP 启动和驱动：`initialize`、`session/new` 或 `session/resume`（带旧的 `session/load` 回退）、`session/prompt`、`session/cancel`，以及 `session/close`。
+
+它确实复用了 Harbor 已安装 Agent 适配器里可靠的一部分：哪些原生 session 产物是恢复所需要的、因 Agent 而异的知识。Harbor 只作为这份允许列表的参考。OpenMA 拥有持久协议、检查点版本、恢复屏障、栅栏、重试策略和清理。
+
+ACP 进程启动之前，`@open-managed-agents/acp-runtime/native-state` 给 Agent 一个临时、隔离的原生根目录。Agent 绝不把凭据或可变配置直接写进持久的 workspace 命名空间：
+
+```text
+/tmp/openma-harness-state/acp/<session-id>/<profile>/v1/native/
+└── Agent 拥有的运行时文件（临时；可能包含配置和凭据）
+```
+
+在检查点边界，OpenMA 只把已声明的 session 产物复制进持久的 workspace 候选：
+
+```text
+/workspace/.openma/harness-state/acp/<session-id>/<profile>/v1/
+├── acp-session.json       # ACP id、适配器身份、已完成回合水位
+├── session-binding.json   # 独占的原生 session 产物清单
+└── native/                # 仅已声明 session 产物的持久副本
+```
+
+与 provider 无关的 `@open-managed-agents/acp-runtime/sandbox-agent` 模块把该 profile 变成一份准备计划。它的生命周期助手只消费 `AcpSandboxAgentStatePort`（`writeFile` 和 `exec`），因此可以用于 Cloudflare Sandbox、Docker、E2B 兼容适配器，或一个确定性的测试替身。ACP 包不导入任何 provider SDK。该 Port 在启动前物化清单，在 `session/resume` 之前探测必需产物，并应用关闭时保留 / 销毁时删除的语义；ACP 本身仍然是唯一的进程交互协议。
+
+持久绑定故意只属于 session。它不声称 Agent 的配置、凭据、技能、遥测、缓存、日志、shell 历史或普通家目录是可移植的。`session-binding.json` 是继续一个 Agent session 所需的原生产物的完整允许列表。Provider 可以把包含它们的 `/workspace` 作为一份粗粒度文件系统候选来做检查点，但清单之外的兄弟文件不属于原生 session 契约，恢复期间消费者不得依赖它们。
+
+优雅排空会在候选定稿之前停止 ACP 写入者。每个完成的回合都会推进 `acp-session.json` 里的 `last_completed_turn_id`，捕获原生允许列表，通过 `session.status_idle` 发布规范事件，然后用有栅栏的 CAS 提交外层 workspace / output 候选。替换运行时恢复该候选，并从 Managed Events 序列推导最后一次规范的已完成输入。只有两个水位都匹配时，它才调用 ACP `session/resume`（或旧的 `session/load`）。如果宿主在事件发布之后、候选 CAS 之前死亡，恢复出来的原生标记会落后，运行器使用规范事件的语义恢复，而不是静默丢失上下文。这是文件系统恢复，不是进程内存恢复。下一次成功的候选发布之前发生的硬丢失，可能丢掉当前未完成的回合，但不能用一次部分上传替换最后一份活跃候选。
+
+宿主关闭、沙箱丢失和 Harness 替换会删除临时的原生根目录，但为下一次放置保留持久的 session 命名空间。逻辑 Session 销毁会删除两份副本，包括 ACP id、清单、已声明的 session 产物，以及临时根目录里的附带文件。
+
+完整大脑的 ACP 实现是 `@open-managed-agents/harness-runtime-acp`。它在受监督的沙箱进程里运行 Session 命令流、ACP 子进程、原生状态生命周期和 Session 事件汇。外层运行时宿主仍然拥有 Environment Work 认领、资源代次、workspace / output 发布和硬杀死。因此同一个 ACP 运行器可以用于任何提供监督进程传输的 provider；没有 provider SDK 进入 Harness 包。
+
+原生 session 产物没有独立的持续上传器。它们使用 workspace 的排空 / 检查点 / 定稿生命周期，而 session 输出仍然是另一个公开交付命名空间，保留语义不同。OpenMA 声明一份允许列表，而不是试图为每一次 Agent 发布维护一份无界的拒绝列表。标记为 `directory` 的产物是递归的。标记为 `sqlite` 的产物把基础数据库及其 `-wal` 和 `-shm` 侧车文件作为一个已静默的单元包含进来。
+
+恢复时，OpenMA 校验每一个标记为 `requiredForResume` 的产物，以及原生 / 规范的已完成回合水位。两者都有效时，通过 `session/resume` 的恢复是无损的。当必需状态缺失或其水位过期时，OpenMA 不发送过期的 resume id，也不回放先前的工具调用。它启动一个新的 ACP session，并恰好发送一条从规范 Managed Agents 事件日志投影出来的有界恢复消息。该消息包含最新的压缩摘要、随后的用户 / 助手回合、已完成的工具结果、附件引用和当前请求；已完成工具的原始输入被省略。一条来源为 `acp_semantic_recovery` 的 `session.warning` 为 UI 和可观测性标出这条有损边界。
+
+| ACP profile | 绑定的运行时根 | 可移植的原生 session 产物 | 恢复声明 |
+|---|---|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` | `projects/` | 原生 + ACP load |
+| Codex | `CODEX_HOME` | `sessions/` | 原生 + ACP load |
+| Gemini CLI | `GEMINI_CLI_HOME` | `.gemini/tmp/` | 原生 + ACP load |
+| OpenCode | `XDG_DATA_HOME`、`XDG_STATE_HOME` | 当前原生恢复路径使用的 OpenCode session 数据 / 状态存储 | 原生 + ACP load |
+| Pi / pi-acp | `PI_CODING_AGENT_DIR`、隔离的 `HOME` | Pi 的 `sessions/` 加上 pi-acp 的 `session-map.json` | 原生 + ACP load |
+| MiniMax Code | `MINIMAX_DATA_DIR` | `v2/sessions/` 加上两份 v2 SQLite 索引 | 原生 + ACP load |
+| GitHub Copilot CLI | 隔离的 `HOME` | `session-state/` 加上 `session-store.db` 家族 | 原生 + ACP load |
+| Cortex Code | 隔离的 `HOME` | `.snowflake/cortex/conversations/` | 原生 + ACP load |
+| Goose | `XDG_DATA_HOME`、`XDG_STATE_HOME` | 两棵 Goose 数据 / 状态树 | 原生 + ACP load |
+| Junie | 隔离的 `HOME` | `.junie/sessions/` | 原生 + ACP load |
+| Kimi CLI | `KIMI_SHARE_DIR` | `sessions/` | 原生 + ACP load |
+| Qwen Code | 隔离的 `HOME` | `.qwen/projects/` | 原生 + ACP load |
+| Mistral Vibe | `VIBE_HOME` | `logs/session/` | 仅捕获；不广告原生恢复 |
+| DeepSeek Harness ACP | `DSH_HOME`、`DSH_SESSION_ROOT` | `sessions/` JSONL 树 | OMA 扩展；原生 + ACP resume/load |
+| Hermes | `HERMES_HOME` | `state.db` 家族 | OMA 扩展；原生 + ACP load |
+| Aider | 仅 ACP 状态根 | 无（原生记录不稳定） | ACP 适配器；规范事件恢复 |
+| Kimi Code | 仅 ACP 状态根 | 无（原生记录不稳定） | ACP 适配器；规范事件恢复 |
+| MiMo | 仅 ACP 状态根 | 无（原生记录不稳定） | ACP 适配器；规范事件恢复 |
+
+Agent 仍在写入时只复制 SQLite 基础文件，不是有效的检查点。配置和认证在每次放置时都从 Agent、Model Card 和 Vault 输入重建；它们绝不从原生 session 产物集里恢复。
+
+Harbor 对 Aider、Kimi Code 和 MiMo 也有 CLI 适配器。OpenMA 现在为这些 Agent 提供了显式的 ACP 进程入口（`aider-acp`、`kimi acp` 和 `mimo acp`）。Aider 使用社区的 [aider-acp 桥](https://github.com/jorgejhms/aider-acp)；Kimi Code 和 MiMo Code 暴露原生 ACP 命令。它们被故意不声称支持原生 session 文件恢复：它们的原生记录不是稳定的持久化契约，所以恢复使用 ACP 检查点和规范的 Managed Agents 事件日志。MiMo 的 ACP 命令在某些版本里目前有上游 `session/prompt` 失败模式；适配器仍然可发现，但失败的 prompt 会被暴露出来，恢复回退到规范事件上下文。OpenMA 仍然绝不回退到定制的 CLI 协议；所有进程交互都保持为 ACP。
+
+ACP 的 `PromptResponse.usage` 被投影成成对的 `span.model_request_start` / `span.model_request_end` 事件。终态事件把 `inputTokens`、`outputTokens`、`cachedReadTokens` 和 `cachedWriteTokens` 保留为 Managed Agents 的 `model_usage`，因此恢复后的原生 session 的 provider 前缀缓存行为，在直接沙箱和 daemon 托管两种放置里都可观察。标准的 `usage_update` 仍然是上下文窗口占用（`used` / `size`），不被当作模型计费用量。
+
+## Session 输出策略
+
+只有刻意写在 `/mnt/session/outputs` 下的文件才是交付物。`/workspace` 下改动的普通文件仍是 workspace 状态。
+
+| 策略 | 上传时机 | 适用于 |
+|---|---|---|
+| `durable_mount` | 每次写入期间 | Provider 提供可信的对象 / 文件系统挂载 |
+| `watch_and_upload` | 稳定文件在工作运行期间上传 | 长时间工作需要渐进交付，且有观察者 / sidecar |
+| `final_collect` | 优雅排空或恢复收集期间 | Provider 支持文件枚举 / 读取，但没有持久挂载 |
+
+最终收集会枚举路径、校验限制、读取字节、计算哈希、上传内容寻址的 blob、必要时重新读取以检测变更，并写入一份不可变清单。已有 blob 仅在其字节与期望的 SHA-256 匹配时才被接受。清单只有通过一次成功的有栅栏发布才变为可见。
+
+## 销毁、崩溃与恢复
+
+正常事务是：
+
+1. 获取单调递增的资源栅栏代次；
+2. 物化 workspace 和 output 绑定；
+3. 获取计算、挂上绑定，并运行选定的驱动；
+4. 在运行、排空、检查点和 output 定稿期间保持资源栅栏存活；
+5. 对 `checkpoint_restore`，写入一份不可变的 workspace 候选；对 `durable_mount`，只记录挂载身份；独立地定稿任何 output 候选；
+6. 在当前代次下原子发布候选指针（这不会使挂载写入变成事务）；
+7. 终止或挂起计算，然后释放临时绑定。
+
+失败行为故意不对称：
+
+| 失败点 | 恢复行为 |
+|---|---|
+| 候选创建之前 | 最后的活跃 workspace / output 指针保持不变 |
+| 上传期间 | 部分候选保持非活跃，可以被垃圾回收 |
+| 上传之后、指针 CAS 之前 | 用同一个幂等键重试；过期的代次会被拒绝 |
+| 丢失 Work 租约或资源栅栏 | 先协作中止，再硬杀死；迟到的事件和发布会被拒绝 |
+| 沙箱消失 | 冷获取，恢复最后的活跃 workspace，回放 Session 事件 |
+| 硬杀死失败 | 持久化不含令牌的孤儿，并重试幂等的 provider 回收 |
+| 已发布的检查点缺失或损坏 | 失败即拒绝；绝不静默用空 workspace 替换已有的 workspace。选择更早的已验证修订需要一次显式的恢复操作 |
+
+这在每一个 OpenMA 提交点上限制了脑裂。它不能撤销一个过期进程已经在 GitHub、数据库或其他外部服务里完成的副作用；这类工具仍然需要幂等键或补偿。
+
+## 当前 provider 映射
+
+下表描述的是今天已发布预设所广告的内容，不是厂商理论上可能支持的内容。
+
+| 预设 | 沙箱生命周期 | Workspace | 输出 | 运行时内存 | 驱动通道 |
+|---|---|---|---|---|---|
+| Node + Docker | 硬删除；没有挂起 | 文件系统 `checkpoint_restore` | 文件系统 `final_collect` | 无 | `ama_worker`；`openma_supervised` |
+| Cloudflare Sandbox | 销毁 + 持久的孤儿回收；没有按运行时范围的恢复 | `createBackup` / `restoreBackup` 作为 `checkpoint_restore`；可选的无版本 R2 `durable_mount`（另一种策略） | 当 `FILES_BUCKET` 存在时为 R2 `final_collect` | 未广告 | `ama_worker`；完整预设也安装 `openma_supervised` 传输 |
+| E2B / 兼容 | 挂起 / 恢复 + 杀死 / 回收 | `retained_runtime`，以及作为 `checkpoint_restore` 的 provider 快照 | 仅在存储配置完整时才有 S3 兼容的 `final_collect` | 未广告；进程内存需要 RuntimeCheckpointPort | `ama_worker`；`openma_supervised` |
+| Daytona | 停止 / 启动 + 稳定名字删除 / 回收 | `retained_runtime` 和可移植的文件系统快照 | 显式配置时为 BlobStore `final_collect` | 未广告 | `ama_worker`；`openma_supervised` |
+| LiteBox / BoxRun | 稳定的 get-or-create、停止 / 启动、强制删除 / 回收 | provider 本地的 `retained_runtime` | 显式配置时为 BlobStore `final_collect` | 未广告 | `ama_worker`；`openma_supervised` |
+
+托管的 LiteBox/BoxRun 包使用官方的低层 BoxLite 客户端，包括 BoxRun 的 REST 构造器，而不是提升旧的阻塞式 SandboxPort 包装。保留的 box 在同一个 provider 控制面上可以继续，但被报告为 `best_effort`：BoxLite 的原生快照仍然是宿主本地的，不被当作可移植的持久 workspace 检查点。因此，要求 `durable` 的 profile 在配置了单独的持久 workspace Port 之前会接纳失败。
+
+对 E2B，持久输出需要显式的 `outputStore`，或者下面全部：
+
+```text
+FILES_S3_ENDPOINT
+FILES_S3_BUCKET
+FILES_S3_ACCESS_KEY
+FILES_S3_SECRET_KEY
+```
+
+`FILES_S3_REGION`、`FILES_S3_FORCE_PATH_STYLE` 和 `FILES_S3_PREFIX` 是可选的。省略必需的存储意味着该预设不广告持久输出策略；它不会假装本地输出文件已被持久化。
+
+## 组合示例
+
+<Tabs syncKey="sandbox-persistence-provider">
+  <TabItem label="Node + Docker">
+    ```ts
+    const runtime = await createNodeManagedRuntime({
+      rootDir: "/var/lib/openma/runtime",
+      sql,
+      initializeFenceSchema: true,
+      ownerId: `runtime-host:${process.pid}`,
+      leaseTtlMs: 90_000,
+      heartbeatIntervalMs: 30_000,
+      image: "my-worker:latest",
+    });
+    ```
+  </TabItem>
+  <TabItem label="Cloudflare">
+    ```ts
+    const runtime = createCloudflareManagedRuntimeHost(env, {
+      ownerId: `session-do:${sessionId}`,
+      leaseTtlMs: 90_000,
+      heartbeatIntervalMs: 30_000,
+    });
+    ```
+
+    完整预设用 `MAIN_DB` 做栅栏 / 孤儿，用 `SANDBOX` 做计算，用 `FILES_BUCKET` 做输出。应用 SQL 模式仍然是操作者迁移。可选的 `workspaceDurableMount: true` 只有在 `WORKSPACE_BUCKET`、它的存储桶名以及真实的 R2 FUSE 凭据都存在时，才广告一个实时的 `/workspace` R2 挂载。这**不会**对已挂载文件做版本或回滚；provider 挂载必须在实际沙箱里测试。
+  </TabItem>
+  <TabItem label="E2B">
+    ```ts
+    const resources = createE2BManagedRuntime({
+      environment: process.env,
+      outputStore,
+      leaseTtlMs: 90_000,
+    });
+    ```
+
+    `E2B_API_URL`、`E2B_SANDBOX_URL` 和 `E2B_DOMAIN` 允许同一套适配器形状指向一个 E2B 兼容服务。
+  </TabItem>
+</Tabs>
+
+## 测试覆盖与仍待真实 provider 验证的边界
+
+| 路径 | 证据 |
+|---|---|
+| 沙箱外的 Harness | 真实的 DefaultHarness（`default` / `ai-sdk` 注册）和 Pi 循环，配真实的本地子进程 Sandbox 和真实的文件系统工具；只有 LLM / provider 是脚本化的 |
+| 沙箱内的 ACP 进程 | 跨回合的真实有状态 ACP 子进程、子进程崩溃后的逻辑 session 恢复、租约续期和关闭顺序 |
+| E2B ACP 映射 | 有状态的 E2B SDK 适配器对着一个脚本化的 E2B 服务运行；普通 CI 不需要 E2B 凭据 |
+| 通用监督协议 | 就绪 / 心跳 / 完成 / 排空 / 超时 / 停止状态机，带确定性的传输故障和一个真实的 Docker supervisor 进程 |
+| ACP 原生恢复 | 真实的子进程崩溃、workspace 检查点复制、全新沙箱 + 全新 Harness、原生状态恢复，然后 ACP `session/resume`；本地子进程矩阵启动全部 18 个已注册的 ACP 原生状态适配器，并校验它们的隔离绑定清单 |
+| ACP 语义恢复 | 删除必需的原生状态，或恢复一份落后于规范 `session.status_idle` 的检查点；断言一次 `session/new` 恢复 prompt、有界的规范历史、不回放已完成工具的输入，以及一条显式的警告边界 |
+| 运行时里的直接 worker | 真实的 Docker Engine、绑定路径、进程执行、检查点恢复、输出清单，以及栅栏丢失后的硬杀死 |
+| 官方 AMA worker 线路 | 已安装的 `@anthropic-ai/sdk` EnvironmentWorker 原样运行 poll、ack、心跳、Session 事件 / 工具结果和强制停止 |
+| Cloudflare 部署 | 带凭据的 staging SDK / Console / CLI 和 SSE 回合；确定性的外部 LLM，真实的 Worker / DO / 存储路径 |
+
+因此这套测试覆盖两种放置模型，但不是每一种组合都作为带凭据的厂商端到端。特别是，E2B 测试是适配器级的协议模拟。带凭据的 E2B / Modal / Cloudflare 运行仍然是 provider 认证通道，不是可移植核心的隐藏保证。
+
+用下面的命令运行可移植门禁：
+
+```bash
+pnpm test:chaos:runtime
+pnpm test:coverage:runtime
+pnpm test:integration:runtime
+pnpm test:integration:storage
+```
+
+组合方式见 [托管运行时宿主](/self-host/managed-runtime-host/)，规范性设计决策见 [ADR 0005](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0005-self-hosted-worker-runtime-resources.md)。

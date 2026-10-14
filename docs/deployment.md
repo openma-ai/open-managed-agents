@@ -225,7 +225,7 @@ curl localhost:8787/health
 each with its own bindings, deployed via `wrangler deploy`.
 
 ```
-                     ┌──── *.openma.dev (CF Anycast) ────┐
+                     ┌──── *.openma.ai (CF Anycast) ────┐
                      │                                     │
                      ▼                                     ▼
        ┌────────────────────────────┐         ┌─────────────────────────┐
@@ -257,7 +257,7 @@ each with its own bindings, deployed via `wrangler deploy`.
 
 | Concern | Implementation |
 |---|---|
-| HTTP server | Cloudflare Workers, anycast at openma.dev |
+| HTTP server | Cloudflare Workers, anycast at openma.ai |
 | SQL store | D1 (`openma-auth` DB; `staging` env has `openma-auth-staging`) |
 | KV | `CONFIG_KV` — agent config snapshots, outbound URL→cred map, session secrets |
 | Blob store | R2 — `managed-agents-files`, `managed-agents-memory`, `managed-agents-workspace`, `managed-agents-backups` |

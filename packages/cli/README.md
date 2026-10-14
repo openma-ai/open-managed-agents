@@ -1,6 +1,6 @@
 # @openma/cli
 
-Command-line client for [openma](https://openma.dev) managed agents.
+Command-line client for [openma](https://openma.ai) managed agents.
 
 > **Beta.** API surface and command names may change before 0.1.0 final.
 
@@ -16,10 +16,10 @@ This installs an `oma` binary on your `PATH`. (If a different `oma` is already i
 
 ```bash
 export OMA_API_KEY=sk_...
-export OMA_BASE_URL=https://api.openma.dev   # default
+export OMA_BASE_URL=https://app.openma.ai   # default
 ```
 
-Generate an API key from the [openma console](https://openma.dev) → API Keys.
+Generate an API key from the [openma console](https://app.openma.ai) → API Keys.
 
 ## Usage
 

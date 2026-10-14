@@ -1,5 +1,5 @@
 /**
- * End-to-end bridge / ACP-agents test against prod openma.dev.
+ * End-to-end bridge / ACP-agents test against prod openma.ai.
  *
  * Validates the full CLI-first flow for OMA's local-runtime story:
  *   `oma bridge daemon` (already attached) → openma relay → ACP child → reply
@@ -344,7 +344,7 @@ test("bundle layout: opencode session cwd has AGENTS.md (skill files only when a
   assert.ok(existsSync(join(cwd!, "AGENTS.md")), `AGENTS.md missing in ${cwd}`);
   // Note: .opencode/agents/<id>.md is only emitted when the agent has
   // skills attached + main worker has the new bundle code deployed
-  // (this branch's apps/main change is not yet on prod openma.dev).
+  // (this branch's apps/main change is not yet on prod openma.ai).
 });
 
 test("console bundle: ships canonicalize + install-hint code", () => {

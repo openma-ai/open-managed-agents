@@ -1,0 +1,91 @@
+---
+title: OAuth 应用
+description: Linear / GitHub / Slack 集成在自托管部署上如何引导——按发布登记应用，而不是整次部署共用的密钥。
+---
+
+import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+**先看全局：没有一个要为整次部署登记的 OAuth 应用。** Linear / GitHub / Slack 集成是**按发布（publication）**的——每个 Agent 发布在安装时通过 Console 向导登记自己的 Linear OAuth 应用 / GitHub App / Slack 应用。凭据以加密形式存在该发布的行上，密钥为 `PLATFORM_ROOT_SECRET`。操作者要做的，只是让集成网关能从公网访问到。
+
+你（操作者）需要为整次部署做一次的事：
+
+1. 把 `GATEWAY_ORIGIN`（或 `PUBLIC_BASE_URL`——网关会回退到它）设为 `apps/integrations` 的**公网 HTTPS URL**。Slack 和 GitHub 都会在安装完成前校验 webhook 与 OAuth URL，因此 localhost 或自签名配置会失败。
+2. 设置 `PLATFORM_ROOT_SECRET`（任何安装都需要——见 [配置](/reference/configuration/)）。
+3. 设置 `INTEGRATIONS_INTERNAL_SECRET`，让 `apps/main` 和 `apps/integrations` 能互相通信。
+4. （可选）若要走 GitHub 的按 Vault 刷新路径，设置 `INTEGRATIONS_INTERNAL_TOKEN`。
+
+就这些。按发布的凭据由 Agent 所有者在 Console 向导里粘贴——按发布优先的流程**不会**读取 `LINEAR_OAUTH_CLIENT_ID/SECRET`、`GITHUB_APP_ID/PRIVATE_KEY/WEBHOOK_SECRET`、`SLACK_CLIENT_ID/SECRET/SIGNING_SECRET` 这些环境变量。
+
+<Aside type="caution" title="从按发布优先之前的部署迁过来？">
+  当前代码会忽略旧的共享应用环境变量（`LINEAR_CLIENT_ID`、`GITHUB_APP_ID`、`SLACK_CLIENT_ID` 等）。`/start-a1` 安装端点返回 `410 linear_legacy_install_removed`。请通过 Console 为每个发布重新登记。
+</Aside>
+
+## Linear
+
+两条安装路径，都是按发布的：
+
+| 路径 | 何时选择 | 操作者设置 |
+|---|---|---|
+| **Personal API Key（PAT）** | 单个工作区、不走 OAuth、最快 | 无——Agent 所有者用自己的 PAT 运行 `oma linear install-pat` |
+| **专用 OAuth 应用** | 多个工作区、正规的 bot 身份、OAuth 刷新 | 无——Agent 所有者在 `linear.app/settings/api` 登记自己的 OAuth 应用，把凭据粘贴进 Console 向导 |
+
+走 OAuth 路径时，Agent 所有者从 Console 向导拿到预填的回调 URL 和 webhook URL（两者都按发布 id 区分，例如 `https://integrations.example.com/linear/oauth/pub/<pubId>/callback`），把它们粘贴进 Linear 的 OAuth 应用表单，再把得到的 client id / secret 粘贴回 Console。**做这件事的是 Agent 所有者，不是操作者。**
+
+完整逐步说明见 Agent 侧手册 [`skills/openma/integrations-linear.md`](https://github.com/openma-ai/open-managed-agents/blob/main/skills/openma/integrations-linear.md)。
+
+## GitHub
+
+按发布的 **GitHub App**，通过 [App Manifest 流程](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) 登记——一键注册，重定向 URL、webhook URL 和建议权限都已写入。Agent 所有者运行 `oma github bind <agent-id> --env <env-id>`（或使用 Console 向导），得到一个 `manifestStartUrl`，在 GitHub 的确认页上点过去，选择要安装到哪些仓库，该发布即变为 `live`。
+
+操作者不必做的事（尽管更早的文档可能这么写）：
+
+- 在 github.com 上登记一个 GitHub App——Agent 会登记自己的。
+- 把 `GITHUB_APP_ID`、`GITHUB_PRIVATE_KEY`、`GITHUB_WEBHOOK_SECRET` 设为 Worker 密钥——按发布优先的流程不读取这些环境变量。凭据按发布存放，加密写在 `github_publications` 行上。
+
+可选的操作者开关：`GITHUB_MCP_URL`，用于指向自托管的 GitHub MCP 服务器，而不是 `https://api.githubcopilot.com/mcp/`。
+
+## Slack
+
+按发布的 **Slack 应用**，通过 Slack 的 “Create from manifest” URL 流程登记。Agent 所有者运行 `oma slack publish <agent-id>`（或使用 Console 向导），得到一个 `manifestLaunchUrl`，它会打开已预填清单的 `api.slack.com/apps`——重定向 URL `/slack/oauth/pub/<pubId>/callback` 和 Events Request URL `/slack/webhook/pub/<pubId>` 都已写入，因此刷新或重试不会把它们弄丢。
+
+在新 Slack 应用的 **Basic Information** 页面，Agent 所有者把 **Client ID**、**Client Secret** 和 **Signing Secret** 复制进 Console 向导。提交 → 安装到工作区 → 发布变为 `live`。
+
+操作者不必做的事：
+
+- 登记一个带 `app_mention` / `message.*` 事件的共享 Slack 应用——每个 Agent 都有自己的。
+- 把 `SLACK_CLIENT_ID/SECRET/SIGNING_SECRET` 设为 Worker 密钥——按发布存放，加密写在 `slack_publications` 上。
+
+操作者唯一的硬性要求是：`GATEWAY_ORIGIN` 必须解析到公网可访问的 HTTPS。Slack 不会接受它无法预先校验 URL 的清单，因此 localhost / `*.local` / 自签名证书都行不通。开发时使用隧道（`cloudflared tunnel`、`ngrok http`）。
+
+## 自定义 OAuth（Console 的 Google 登录）
+
+这一项**是**整次部署范围的——Google 登录在邮箱 + 密码 / 邮箱 OTP 之外，为 Console 增加一条 SSO 路径。
+
+<Steps>
+
+1. 打开 [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) → **Create Credentials → OAuth client ID → Web application**。
+
+2. **Authorized redirect URI：** `https://app.yourdomain.com/api/auth/callback/google`
+
+3. 记下 client ID 和 secret。设置：
+   ```bash
+   npx wrangler secret put GOOGLE_CLIENT_ID
+   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   ```
+
+4. 重新部署 main worker。
+
+</Steps>
+
+## 接下来
+
+<LinkCard
+  title="运维"
+  href="/self-host/operations/"
+  description="自定义域名、可观测性、多租户配置、故障排查。"
+/>
+<LinkCard
+  title="自定义集成"
+  href="/build/integrations/"
+  description="添加未随附的集成（Jira、Discord、你的内部工具）。"
+/>

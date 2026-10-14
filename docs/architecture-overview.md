@@ -77,7 +77,7 @@ open-managed-agents/
 │   ├── cli/                       # `oma` 命令行
 │   └── sdk/                       # `@openma/sdk` 公网 TS SDK
 ├── docs/                          # 内部 RFC / 设计文档（本文亦在此）
-├── apps/docs/                     # 用户文档（Astro Starlight，docs.openma.dev）
+├── apps/docs/                     # 用户文档（Astro Starlight，docs.openma.ai）
 ├── skills/                        # 内置技能（openma SOP、create-agent）
 ├── rl/                            # Reinforcement Learning 自训练子系统
 ├── scripts/                       # 部署 / 迁移 / 监控脚本
@@ -223,7 +223,7 @@ open-managed-agents/
 
 ### 4.5 apps/docs —— 用户文档站
 
-Astro Starlight，部署到 `docs.openma.dev`。脚本通过 `pnpm --filter` 触发。
+Astro Starlight，部署到 `docs.openma.ai`。脚本通过 `pnpm --filter` 触发。
 
 ---
 

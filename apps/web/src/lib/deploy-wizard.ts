@@ -84,7 +84,7 @@ const REPOSITORY_SETUP = `git clone https://github.com/openma-ai/open-managed-ag
 cd open-managed-agents`;
 
 const OPENMA_REPOSITORY_URL = "https://github.com/openma-ai/open-managed-agents";
-const DEFAULT_VERCEL_REDIRECT_URL = "https://openma.dev/deploy/?provider=vercel&phase=callback";
+const DEFAULT_VERCEL_REDIRECT_URL = "https://openma.ai/deploy/?provider=vercel&phase=callback";
 const VERCEL_ENVIRONMENT_KEYS = [
   "BETTER_AUTH_SECRET",
   "PLATFORM_ROOT_SECRET",
@@ -169,9 +169,9 @@ export function buildVercelDeployButtonUrl(
   url.searchParams.set("env", VERCEL_ENVIRONMENT_KEYS.join(","));
   url.searchParams.set(
     "envDescription",
-    "Postgres is provisioned through Neon. Add S3-compatible object storage and OpenMA secrets directly in Vercel; values never pass through openma.dev.",
+    "Postgres is provisioned through Neon. Add S3-compatible object storage and OpenMA secrets directly in Vercel; values never pass through openma.ai.",
   );
-  url.searchParams.set("envLink", "https://openma.dev/deploy/");
+  url.searchParams.set("envLink", "https://openma.ai/deploy/");
   return url.toString();
 }
 
@@ -236,7 +236,7 @@ pnpm setup:cloudflare`,
       nextSteps: [
         "The CLI provisions resources and deploys all three Workers in dependency order.",
         "Open the main Worker URL and create the first workspace owner.",
-        "Add a Model Card in Console; no model key is sent through openma.dev.",
+        "Add a Model Card in Console; no model key is sent through openma.ai.",
       ],
     };
   }

@@ -2,7 +2,7 @@
  * `oma bridge setup` — one-time onboarding.
  *
  *   1. Bind 127.0.0.1:<rand-port> as a single-shot HTTP server.
- *   2. Open the user's browser to https://app.openma.dev/connect-runtime?cb=…&state=…
+ *   2. Open the user's browser to https://app.openma.ai/connect-runtime?cb=…&state=…
  *   3. User clicks "Allow this machine" (already auth'd via session cookie).
  *      Browser POSTs /v1/oma/runtimes/connect-runtime → gets one-time `code`.
  *      Browser redirects to http://127.0.0.1:<port>/cb?code=…&state=…
@@ -61,7 +61,7 @@ interface SetupOpts {
   serverUrl: string;
   /** Browser-facing origin where the user authorizes this machine. Almost
    *  always the same as `serverUrl` in production (Console + API both live
-   *  on the same Worker at openma.dev). Kept separate so dev/staging can
+   *  on the same Worker at openma.ai). Kept separate so dev/staging can
    *  point the browser at one host while the daemon hits another. */
   browserOrigin: string;
   /** When true, skip system service install. The setup process exec's

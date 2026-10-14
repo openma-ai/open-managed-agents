@@ -2,8 +2,8 @@
 //   - http://*  → 301 → https://*  (HTTPS is canonical, kills the
 //     "Alternate page with proper canonical tag" GSC noise we'd
 //     otherwise rack up on every URL)
-//   - www.openma.dev/* → 301 → openma.dev/*  (apex is canonical)
-//   - openma.dev/{login,sessions,agents,...} → 301 → app.openma.dev/...
+//   - www.openma.ai/* → 301 → openma.ai/*  (apex is canonical)
+//   - openma.ai/{login,sessions,agents,...} → 301 → app.openma.ai/...
 //     (old bookmarks from when apex was the Console SPA)
 //   - everything else: pass through to env.ASSETS (Astro static)
 //
@@ -15,7 +15,7 @@ interface Env {
   ASSETS: { fetch: typeof fetch };
 }
 
-// Top-level paths that belong to the Console SPA at app.openma.dev. Old
+// Top-level paths that belong to the Console SPA at app.openma.ai. Old
 // bookmarks, accidentally-shared apex links, and external backlinks
 // (forums, Twitter, our own historical CLI versions) all 301 to app.*
 // instead of 404'ing against the marketing site.
@@ -80,7 +80,7 @@ function isConsolePath(pathname: string): boolean {
 }
 
 // www → apex: drop the leading "www." subdomain. Works for both prod
-// (www.openma.dev → openma.dev) and staging (www.staging.openma.dev →
+// (www.openma.ai → openma.ai) and staging (www.staging.openma.dev →
 // staging.openma.dev). Keeps the path + query intact.
 function wwwToApex(url: URL): URL {
   const out = new URL(url.toString());

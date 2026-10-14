@@ -34,7 +34,7 @@ Seed a vault credential pointing at the fake server:
 ```sh
 ORIGIN="https://oma-fake-oauth-mcp.<acct>.workers.dev"
 
-curl -sX POST "https://app.staging.openma.dev/v1/vaults/<vault-id>/credentials" \
+curl -sX POST "https://app.staging.openma.ai/v1/vaults/<vault-id>/credentials" \
   -H "x-api-key: <oma-api-key>" \
   -H "Content-Type: application/json" \
   -d "{

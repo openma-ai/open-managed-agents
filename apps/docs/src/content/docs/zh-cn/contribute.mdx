@@ -1,0 +1,157 @@
+---
+title: 参与贡献
+description: openma 仓库如何布局、如何在本地运行、设计 RFC 在哪里，以及如何提交一个 PR。
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+感谢考虑贡献。openma 以仓库根目录的 LICENSE 开源；功能、缺陷修复、文档和集成的 PR 都欢迎。
+
+## 仓库布局
+
+```text
+open-managed-agents/
+├── apps/
+│   ├── main/             # REST API + Console static assets (CF Worker)
+│   ├── agent/            # Session DOs + sandbox Containers (CF Worker)
+│   ├── console/          # React SPA (Vite, served by main)
+│   ├── integrations/     # OAuth + webhook gateway (CF Worker)
+│   └── docs/             # This site (Astro + Starlight, static-asset Worker)
+├── packages/
+│   ├── api-types/        # Shared TS DTOs (zero deps; safe to import anywhere)
+│   ├── cli/              # Node CLI: `oma`
+│   ├── shared/           # Cross-worker utilities
+│   ├── github/           # GitHub integration internals
+│   ├── linear/           # Linear integration internals
+│   ├── integrations-core/        # IntegrationProvider interface + types
+│   ├── integrations-adapters-cf/ # D1/KV/R2-backed repos
+│   ├── integrations-ui/  # Console UI components for integrations
+│   ├── storage/          # Pluggable storage backends
+│   └── ...
+├── scripts/              # deploy.sh, seed scripts, etc.
+├── docs/                 # ★ Internal design RFCs (gap analyses, integration designs, harness specs)
+├── rl/                   # Reinforcement-learning experiments
+├── skills/               # Built-in skill source
+├── test/                 # Cross-package tests
+├── AGENTS.md             # Agent config schema reference
+├── README.md             # Project README
+└── prd.md                # Product requirements (Chinese)
+```
+
+仓库根目录的 `docs/` 文件夹是**内部 RFC 和设计笔记**，不是面向用户的文档站点。面向用户的文档（本站）位于 `apps/docs/`。
+
+## 本地开发循环
+
+<Steps>
+
+1. **安装 Node 22+、pnpm 10+ 和 `wrangler`。** 用 `npx wrangler login` 登录一次。
+
+2. **安装依赖。**
+
+   ```bash
+   pnpm install
+   ```
+
+3. **设置本地凭据。**
+
+   把 `.dev.vars.example` 复制为 `.dev.vars`，至少填上 `PLATFORM_ROOT_SECRET`（`openssl rand -base64 32`）、`BETTER_AUTH_SECRET`（`openssl rand -hex 32`）和 `API_KEY`。`ANTHROPIC_API_KEY` 是可选的——设置它可以在本地开发时跳过 Model Card 配置，也可以改为从 Console 添加 Model Card。其余凭据在本地都是可选的。
+
+4. **运行。** 按需要挑选：
+
+   ```bash
+   # API + agent worker (most common dev loop)
+   pnpm dev
+
+   # Just one of them
+   pnpm dev:main
+   pnpm dev:agent
+
+   # The Console (Vite)
+   pnpm dev:console     # → http://localhost:5173
+
+   # The docs site (this site)
+   pnpm dev:docs        # → http://localhost:4321
+   ```
+
+5. **做类型检查。**
+
+   ```bash
+   pnpm typecheck
+   ```
+
+6. **运行测试。**
+
+   ```bash
+   pnpm test
+   ```
+
+   Vitest 配合 `@cloudflare/vitest-pool-workers`——测试在 Workers 运行时内部、对着真实 isolate 运行。不要 mock D1 / KV / R2；使用测试绑定。
+
+</Steps>
+
+## 去哪里找
+
+| 要找的东西 | 去看 |
+|---|---|
+| REST 端点处理器 | `apps/main/src/routes/` |
+| Session DO | `apps/agent/src/session/` |
+| 沙箱 Container | `apps/agent/src/sandbox/`、`Dockerfile.sandbox` |
+| 默认 Harness | `apps/agent/src/harness/default.ts` |
+| Linear / GitHub / Slack | `apps/integrations/src/routes/{linear,github,slack}/` |
+| Console 页面 | `apps/console/src/pages/` |
+| Console 路由 | `apps/console/src/main.tsx` |
+| TypeScript DTO | `packages/api-types/src/` |
+| CLI 源码 | `packages/cli/src/` |
+| Schema 文档 | `AGENTS.md`、`prd.md` |
+| 设计 RFC | `docs/*.md` |
+
+## 约定
+
+- **到处都是 TypeScript。** 源码里没有 JS。类型检查必须通过。
+- **D1 里不要外键约束。** 级联放在应用层（见 Memory 中的 “No FK Constraints” 条目）。
+- **不要把凭据存在 agent 提示词里。** Vault 就是为此存在的。
+- **对着真实的 Workers 运行时做测试。** 不要 mock D1/KV/R2。
+- **Session 事件日志只追加。** 永远不要修改过去的事件。
+- **保持 `packages/api-types` 零依赖。** CLI 和 Console 都会导入它。
+
+## 提交 PR
+
+<Steps>
+
+1. 如果是功能或非平凡的改动，先开一个 issue。错别字和小型缺陷直接开 PR 即可。
+
+2. 从 `main` 拉分支。使用描述性的分支名（`feature/jira-integration`、`fix/session-resume-race`）。
+
+3. 确保 `pnpm typecheck` 和 `pnpm test` 通过。
+
+4. 对着 `main` 开 PR，描述要覆盖：
+   - **做了什么** — 改了什么
+   - **为什么** — 解决什么问题
+   - **测试计划** — 你如何验证
+   - **风险** — 审阅者需要额外留意的地方
+
+5. CI 会跑类型检查和测试。审阅通过且 CI 变绿之后，由维护者合并。
+
+</Steps>
+
+<Aside type="tip" title="改文档时">
+  只改文档的 PR 受欢迎，合并也快。编辑任意 `apps/docs/src/content/docs/**` 文件；每个文档页底部的 “Edit this page” 链接会把你带到仓库里对应的文件。
+</Aside>
+
+## 接下来去哪里
+
+<LinkCard
+  title="概念"
+  href="/concepts/"
+  description="钻进源码之前，先回顾这些名词。"
+/>
+<LinkCard
+  title="自定义集成"
+  href="/build/integrations/"
+  description="最常见的贡献：添加一项新的第三方集成。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="源码里到处会引用到的 schema。"
+/>

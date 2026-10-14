@@ -33,7 +33,7 @@ keeps the Durable Object placement clean.
 | `openma-web` | Marketing site + blog (this site) |
 
 For a minimum self-host you need the first three. Docs and web are
-optional — you can point at the public docs.openma.dev instead.
+optional — you can point at the public docs.openma.ai instead.
 
 ## Prerequisites
 
@@ -265,7 +265,7 @@ self-host work:
 
 ```bash
 # Hosted, BYOK
-curl https://openma.dev/v1/agents \
+curl https://openma.ai/v1/agents \
   -H "x-api-key: YOUR_PLATFORM_KEY" \
   -H "content-type: application/json" \
   -d '{"name":"hello","model":"claude-sonnet-4-6"}'

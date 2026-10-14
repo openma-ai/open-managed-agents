@@ -27,7 +27,7 @@ This document describes the end-to-end test steps for the openma console UI. An 
 2. **Assert**: Heading changes to "Create your account"
 3. Fill in:
    - Name: `Test User`
-   - Email: `test-<timestamp>@openma.dev`
+   - Email: `test-<timestamp>@openma.ai`
    - Password: `testpass123`
 4. Click **"Create account"**
 5. **Assert**: Redirected to `/` (dashboard)
@@ -235,7 +235,7 @@ Managed Agents turn, then runs the deployed Console path and a CLI API call;
 the product Worker, SessionDO, event stream, and storage remain real.
 
 ```bash
-OMA_E2E_BASE_URL=https://app.staging.openma.dev \
+OMA_E2E_BASE_URL=https://app.staging.openma.ai \
 OMA_E2E_API_KEY="$TEST_API_KEY" \
 OMA_E2E_MOCK_MODEL_BASE_URL=https://oma-mock-services.example.workers.dev \
 pnpm test:e2e:release
@@ -249,7 +249,7 @@ flakiness:
 
 ```bash
 OMA_E2E_MOCK_SERVICES_BASE_URL=https://oma-mock-services.example.workers.dev \
-OMA_E2E_BASE_URL=https://app.staging.openma.dev \
+OMA_E2E_BASE_URL=https://app.staging.openma.ai \
 OMA_E2E_API_KEY="$TEST_API_KEY" \
 OMA_E2E_MOCK_MODEL_BASE_URL=https://oma-mock-services.example.workers.dev \
 pnpm test:e2e:release

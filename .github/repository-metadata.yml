@@ -3,12 +3,12 @@
 #
 # gh repo edit openma-ai/open-managed-agents \
 #   --description "Open-source Claude Managed Agents API implementation and self-hosted Claude Tag-style agent runtime. Drop-in compatible; runs on Cloudflare Workers/Durable Objects or Node.js. Apache 2.0." \
-#   --homepage "https://openma.dev" \
+#   --homepage "https://openma.ai" \
 #   --add-topic claude-tag --add-topic claude-tag-alternative --add-topic open-source-agents --add-topic self-hosted-agents --add-topic mcp --add-topic byok
 
 repository: openma-ai/open-managed-agents
 description: "Open-source Claude Managed Agents API implementation and self-hosted Claude Tag-style agent runtime. Drop-in compatible; runs on Cloudflare Workers/Durable Objects or Node.js. Apache 2.0."
-homepage: "https://openma.dev"
+homepage: "https://openma.ai"
 social_preview: "apps/web/public/og-default.png"
 topics:
   - agent-framework

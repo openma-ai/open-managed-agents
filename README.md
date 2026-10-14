@@ -18,7 +18,7 @@
 
 🌐 **[openma.ai](https://openma.ai)** · 📖 **[docs.openma.ai](https://docs.openma.ai)** · 💬 **[Discord](https://discord.gg/P3EfQFm5bD)** · **[GitHub](https://github.com/openma-ai/open-managed-agents)**
 
-OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with either host's `/openai/v1` endpoint. Bring your own model keys and deploy on your own infrastructure.
+OpenMA runs agents with durable sessions, sandboxed tools, memory, encrypted credentials, and crash recovery. Use the Claude Managed Agents API on Cloudflare or Node, or the official OpenAI SDK with either host's `/openai/v1` endpoint. Plug in the sandbox you choose — E2B, Daytona, Modal, Fly Sprites, Vercel, Blaxel, Cloudflare, or local Docker. Bring your own model keys and deploy on your own infrastructure.
 
 Use Open Managed Agents when you want:
 
@@ -27,7 +27,7 @@ Use Open Managed Agents when you want:
 - An open-source, self-hosted Claude Tag-style workflow with BYOK model credentials.
 - MCP, private tools, encrypted vaults, and durable sessions under your own deployment boundary.
 
-Compare: [Claude Tag alternative](https://openma.dev/claude-tag-alternative/) · [Open-source Claude Tag](https://openma.dev/claude-tag-open-source/) · [Self-hosted Claude Tag](https://openma.dev/self-hosted-claude-tag/)
+Compare: [Claude Tag alternative](https://openma.ai/claude-tag-alternative/) · [Open-source Claude Tag](https://openma.ai/claude-tag-open-source/) · [Self-hosted Claude Tag](https://openma.ai/self-hosted-claude-tag/)
 
 ---
 
@@ -40,19 +40,19 @@ one that matches your hosting story:
 |---|---|---|
 | Where it lives | Your VPS / Mac / Docker host / fly.io / your k8s | Cloudflare Workers + DO + Containers |
 | Storage | SQLite or Postgres + local FS | D1 + KV + R2 |
-| Sandbox | LiteBox / Daytona / E2B / BoxRun | Cloudflare Sandbox (Containers) |
+| Sandbox | Docker, or managed runtimes: E2B / Daytona / Modal / Sprites / Vercel / Blaxel / BoxLite / Superserve | Cloudflare Sandbox (Containers), or managed runtimes via the `cloudflare-bridge` driver (`ama_worker` lane) |
 | Time to running | `docker compose up` (~2 min) | wrangler deploy (~10 min once configured) |
 | Best for | OSS users, on-prem, no CF account, data-resident deploys | Edge scale, no host management, already on CF |
 
 Both hosts expose the Claude-compatible `/v1/agents` and `/v1/sessions` API
 and Console UI, plus the OpenAI Agents API at `/openai/v1`. Hosted OpenMA
-is available at `https://app.openma.dev`.
+is available at `https://app.openma.ai`.
 
 ---
 
 ## OpenAI Agents API quickstart
 
-Use [hosted OpenMA](https://app.openma.dev), or
+Use [hosted OpenMA](https://app.openma.ai), or
 [start a Node server with Docker](#quick-start-self-host-docker). Create an
 OpenMA API key and configure a model. Then install the
 supported OpenAI SDK version:
@@ -68,7 +68,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "https://app.openma.dev/openai/v1", // Or your own host + /openai/v1
+  baseURL: "https://app.openma.ai/openai/v1", // Or your own host + /openai/v1
 });
 
 const session = await client.beta.agents.sessions.create({
@@ -139,7 +139,7 @@ curl -s -X POST localhost:8787/v1/sessions/$SID/events -H 'content-type: applica
 ```
 
 Full self-host guide (sandbox modes, Postgres, BoxRun, vault sidecar,
-Console UI, operator gotchas): **[docs.openma.dev/self-host/overview](https://docs.openma.dev/self-host/overview/)**
+Console UI, operator gotchas): **[docs.openma.ai/self-host/overview](https://docs.openma.ai/self-host/overview/)**
 
 ---
 
@@ -172,7 +172,7 @@ npx wrangler secret put API_KEY               # initial bootstrap key for the RE
 # npx wrangler secret put ANTHROPIC_API_KEY
 
 npm run deploy
-# → https://openma.dev (or https://managed-agents.<your-subdomain>.workers.dev for a personal deploy)
+# → https://app.openma.ai (or https://managed-agents.<your-subdomain>.workers.dev for a personal deploy)
 ```
 
 What gets deployed:
@@ -186,7 +186,7 @@ What gets deployed:
 
 ### Create your first agent
 
-The smoke test above works against any deployment. For the Console-driven flow (Model Cards, vaults, integrations) see **[docs.openma.dev/quickstart](https://docs.openma.dev/quickstart)**. The minimal API equivalent:
+The smoke test above works against any deployment. For the Console-driven flow (Model Cards, vaults, integrations) see **[docs.openma.ai/quickstart](https://docs.openma.ai/quickstart)**. The minimal API equivalent:
 
 ```bash
 BASE=http://localhost:8787   # or your deployed URL
@@ -233,7 +233,7 @@ A **meta-harness** is not an agent — it's the platform that runs agents. It de
 ├─────────────────────────────────────────────────────────┤
 │  Infrastructure (Cloudflare or Node self-host)          │
 │  - Event log: Durable-Object SQLite (CF) or SQLite/Pg   │
-│  - Sandbox: CF Containers / LiteBox / E2B / Daytona     │
+│  - Sandbox: Docker / CF Containers / pluggable drivers  │
 │  - Storage: KV + R2 (CF) or local FS (self-host)        │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -488,7 +488,7 @@ curl -X PUT $BASE/v1/agents/$AGENT -H "x-api-key: $KEY" -H "content-type: applic
 oma connect linear --vault $VAULT_ID
 ```
 
-Tool discovery is bounded at 15 s per server; one bad server logs and skips, the rest stay live. Full design: [docs.openma.dev/build/vault-and-mcp](https://docs.openma.dev/build/vault-and-mcp/).
+Tool discovery is bounded at 15 s per server; one bad server logs and skips, the rest stay live. Full design: [docs.openma.ai/build/vault-and-mcp](https://docs.openma.ai/build/vault-and-mcp/).
 
 ---
 
@@ -565,7 +565,7 @@ Three credential types share one resolver:
 | `mcp_oauth` | request host matches `mcp_server_url` | on 401 / 403 via `token_endpoint`, CAS-writes new token to D1 |
 | `cap_cli` | sandbox CLI invocations match `cli_id` in the cap registry (`gh`, `glab`, `aws`, …) | per-CLI |
 
-Max 20 credentials per vault. Each forward emits a structured `op:"mcp_proxy.forward"` log. Full design: [`docs/mcp-credential-architecture.md`](docs/mcp-credential-architecture.md), [docs.openma.dev/build/vault-and-mcp](https://docs.openma.dev/build/vault-and-mcp/).
+Max 20 credentials per vault. Each forward emits a structured `op:"mcp_proxy.forward"` log. Full design: [`docs/mcp-credential-architecture.md`](docs/mcp-credential-architecture.md), [docs.openma.ai/build/vault-and-mcp](https://docs.openma.ai/build/vault-and-mcp/).
 
 ---
 
@@ -695,8 +695,8 @@ open-managed-agents/
 │   ├── integrations/      # Integrations gateway — Linear / GitHub / Slack OAuth + webhooks
 │   ├── oma-vault/         # Vault sidecar — outbound auth-header injection (per-host secrets)
 │   ├── console/           # Web dashboard — React + Vite + Tailwind v4
-│   ├── docs/              # Docs site (Astro Starlight) — published to docs.openma.dev
-│   └── web/               # Marketing site (Astro) — published to openma.dev
+│   ├── docs/              # Docs site (Astro Starlight) — published to docs.openma.ai
+│   └── web/               # Marketing site (Astro) — published to openma.ai
 ├── packages/
 │   ├── cli/                       # `oma` CLI — agent / session / integration commands
 │   ├── sdk/                       # Harness SDK — defineHarness, generateText helpers
@@ -733,7 +733,7 @@ The variables that gate boot and at-rest safety:
 | `SANDBOX_PROVIDER` | **Yes** (Node/Fly) | Explicit isolated backend: `litebox` (local Firecracker), `daytona`, `e2b`, or `boxrun`. Deployable entrypoints have no subprocess fallback. |
 | `TAVILY_API_KEY` | No | Backend for the `web_search` built-in tool. |
 
-Full list (integrations OAuth credentials, Postgres URL, sandbox tunables, memory-bucket config, Google sign-in, etc.) — see **[docs.openma.dev/reference/configuration](https://docs.openma.dev/reference/configuration/)** and `.env.example` / `.dev.vars.example`.
+Full list (integrations OAuth credentials, Postgres URL, sandbox tunables, memory-bucket config, Google sign-in, etc.) — see **[docs.openma.ai/reference/configuration](https://docs.openma.ai/reference/configuration/)** and `.env.example` / `.dev.vars.example`.
 
 ---
 
@@ -797,7 +797,7 @@ tested SDK version, coverage and known limits.
 
 ## Documentation
 
-The user-facing docs site lives at [`apps/docs`](apps/docs/) (Astro Starlight) and is published to **[docs.openma.dev](https://docs.openma.dev)**.
+The user-facing docs site lives at [`apps/docs`](apps/docs/) (Astro Starlight) and is published to **[docs.openma.ai](https://docs.openma.ai)**.
 
 ```bash
 pnpm dev:docs       # local preview at http://localhost:4321

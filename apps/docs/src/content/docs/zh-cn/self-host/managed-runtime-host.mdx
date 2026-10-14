@@ -1,0 +1,572 @@
+---
+title: 托管运行时宿主
+description: 用可移植的沙箱、workspace、输出、栅栏与恢复语义，运行官方 Managed Agents worker 或 OpenMA 监督的 Harness。
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+托管运行时宿主是包在 worker 或沙箱内 Harness 外面的部署侧层。它拥有计算生命周期、`/workspace`、最终交付物，以及脑裂栅栏。它**不**改变 Managed Agents API。新后端的实现者遵循 [执行后端接入契约](/self-host/sandbox-backend/)。
+
+官方自托管 Environment 仍然恰好是：
+
+```ts
+await client.beta.environments.create({
+  name: "my worker pool",
+  config: { type: "self_hosted" },
+});
+```
+
+Provider、卷、检查点、输出和保留期设置属于运行时宿主的部署。不要把它们放进 `Environment.config` 或 `Environment.metadata`。
+
+## Environment Worker 激活
+
+API 客户端创建 Session。它从不创建沙箱，webhook 也从不拥有一个 work 项。OpenMA 支持三种内嵌激活策略：
+
+| 策略 | 外层控制面 | 运行时所有者 |
+|---|---|---|
+| `claim_then_acquire` | 官方 SDK 轮询器认领并 ACK，然后运行时宿主获取计算 | 外层运行时宿主拥有心跳 / 停止 |
+| `poll_unacked_then_dispatch` | 原始 `work.poll` 在不 ACK 的情况下预留投递，然后分发给一个 session 运行时 | Cloudflare/GKE 运行时发送第一次心跳 / ACK，并拥有心跳 / 停止 |
+| `acquire_then_session_poll` | 持久的 webhook 意图在 Work 被轮询之前启动计算 | AWS 虚拟机内的 worker 轮询、认领、心跳并停止 Work |
+
+宿主拥有的共同顺序是：
+
+```text
+API 客户端          OpenMA 控制面              Environment Worker       沙箱
+    | POST Session           |                         |                    |
+    |----------------------->| 持久入队                |                    |
+    |                        |-- 已签名 run_started -->| 唤醒提示           |
+    |                        |<------ work.poll -------| 原子认领           |
+    |                        |<------ work.ack --------|                    |
+    |                        |<-- GET 已认领 Session --| sessions_token     |
+    |                        |                         |-- 获取/恢复 ------>|
+    |                        |                         |-- 暂存输入 ------->|
+    |                        |                         |---- 启动 --------->|
+    |                        |<----- 心跳 ----------------------------------|
+    |                        |<----- Session 事件/结果 ---------------------|
+    |                        |<----- work.stop -----------------------------|
+```
+
+`session.status_run_started` 包含 Session ID 和工作区身份，不包含已入队的 work 载荷。接收方校验 Standard Webhooks 签名，然后调用官方 Work 轮询器。缺失、重复、迟到或乱序的 webhook 是无害的，因为 work 只由 `GET /v1/environments/{environment_id}/work/poll` 认领。`run()` 在启动时立即轮询，然后默认每五秒一次，所以 webhook 投递丢失时它也是持久回退。
+
+只有 `claim_then_acquire` 通道使用会在交出之前 ACK 的 SDK 轮询器。Cloudflare 和 GKE 使用原始 poll 端点，并故意把该项留在未确认状态，直到 session 运行时用第一次心跳建立所有权。AWS 根本不从启动器轮询。已预留但未确认的项在 `reclaim_older_than_ms` 之后变为可重新认领；已确认的项只有在心跳租约过期之后才可重新认领。两个替换副本可能竞争，但服务端 CAS 选出一个。旧代次随后在心跳上收到 `412 Precondition Failed`。OpenMA 把任何 provider 启动代次都保留为内部栅栏元数据；它不往官方 Work 响应里加字段。
+
+Work 和 webhook 载荷不携带 Session 快照。Session Work 被认领之后，内嵌的 OpenMA worker 解码认领的 `sessions_token`，调用 `GET /v1/sessions/{session_id}`，并同时校验 Session ID 和 Environment ID。只有这时 `profileFor(work, session)` 才可以选择运行时 profile。`session.metadata` 是 Session 创建者写入的同一份不透明字符串映射；OpenMA 不给 `repo`、`commit_sha` 或 `input_file` 这类键赋予通用含义。
+
+`session.resources` 不是不透明元数据。同一份 Session 响应包含官方的 `file`、`github_repository` 和 `memory_store` 资源记录，包括文件 ID、仓库 URL、挂载路径，以及分支 / 提交检出数据。控制面返回这些记录；它自己不把它们写进沙箱。
+
+如果部署提供了 `SessionInputMaterializerPort`，运行时宿主会在挂上 workspace / output / 凭据出站之后、Harness 进程启动之前调用它。它同时收到官方资源数组和不透明元数据映射；运行时在这里克隆仓库、下载文件，并解释任何应用键。当这个 Port 不存在时，带有一个或多个官方资源的 Session 会在分配计算之前被拒绝；OpenMA 绝不会在文件 / 仓库 / 记忆输入被静默缺失的情况下启动 Harness。只有不透明元数据时不需要物化器。Session GET 失败或输入物化失败不会启动 Harness，并在租约过期后把 Work 留在可重新认领状态。
+
+Webhook 投递是带官方投递语义的优化：事件 ID 和正文在最多三次尝试中保持稳定，而每次尝试都收到新的时间戳和签名。OpenMA 使用从 5 秒到 120 秒的带抖动指数退避。只有 `3xx` 重定向不可重试，因为官方投递会立即禁用该端点；其他非 `2xx` 响应消耗这三次尝试的预算。部署仍然必须运行一个周期性轮询器，因为 webhook 不是持久日志。
+
+设置这些控制面变量以发出唤醒提示：
+
+```bash
+OMA_MANAGED_AGENTS_WEBHOOK_URL=https://worker.example/webhooks/managed-agents
+OMA_MANAGED_AGENTS_WEBHOOK_SIGNING_KEY=whsec_...
+OMA_MANAGED_AGENTS_ORGANIZATION_ID=org_... # 可选；工作区 ID 是回退
+```
+
+接收方 Worker 必须订阅 `session.status_run_started`，对已签名请求调用 `handleWebhook()`，并保持 `run()` 活跃。对 `claim_then_acquire` 和 `poll_unacked_then_dispatch`，`run()` 定期轮询 Work，作为丢失 webhook 的回退。对 `acquire_then_session_poll`，它改为调和一条持久的激活意图队列；provider 运行时是唯一的 Work 轮询器。扩缩以副本为单位，每一次状态转换都受 CAS / 栅栏保护。
+
+`createManagedEnvironmentWorkerInstallation()` 是与 provider 无关的入口。把 `mode` 设为 `runtime_host`、`provider_dispatch`、`provider_activation` 或 `external_worker`。分发和激活模式只动态导入它们选中的隔离适配器包。外部模式不启动本地调度器：OpenMA 暴露未改动的 Work API，操作者拥有它下面的 Worker。
+
+对 `runtime_host`，同一个入口可以加载一个 provider 驱动，并把它的资源 Port 投影进共同的栅栏 / 持久化 / 输出状态机：
+
+```ts
+const installation = await createManagedEnvironmentWorkerInstallation({
+  mode: "runtime_host",
+  adapter: {
+    provider: "daytona",
+    moduleSpecifier: "@open-managed-agents/managed-runtime-daytona",
+    factoryOptions: daytonaOptions,
+  },
+  runtime: {
+    placement: "in_process",
+    providerConfig: {},
+    ownerId: processId,
+    leaseTtlMs: 90_000,
+    heartbeatIntervalMs: 30_000,
+    fences,
+    orphans,
+  },
+  worker: environmentWorkerOptions,
+});
+```
+
+`factoryOptions` 是适配器构造器。Provider 特有的部署事实留在那里：例如 GKE 的 `namespace` / `template` / `warmPool`，Cloudflare 后端绑定和运行时解析器，或 AWS 启动器 / AMI 配置。直接调用 provider factory 会暴露对应的强 TypeScript 类型。共享的 Work 和 Runtime Port 载荷保持与 provider 无关；它们不擦除也不重新解释那些构造器字段。
+
+### 一条 Worker 凭据路径
+
+内嵌 worker 和 BYOW / 外部 worker 使用同一条控制面路径。创建一把专用的 Environment 服务密钥，而不是复用工作区 API 密钥：
+
+```http
+POST /v1/oma/api_keys
+X-API-Key: <workspace-admin-key>
+Content-Type: application/json
+
+{"name":"production workers","environment_id":"env_..."}
+```
+
+明文 `oma_env_...` 密钥只返回一次。它只作为 Bearer 令牌被 `/v1/environments/{that_environment}/work/**` 接受；它不能访问另一个 Environment、Session/Agent API，也不能通过 `x-api-key` 访问 Work API。每一次认领随后都会收到一份单独的、限定在 Session 上的密钥。撤销 Environment 密钥会立即阻止后续的 poll / claim 请求；重新认领 Work 会轮换 Session 密钥，并栅栏住旧所有者。
+
+```text
+Environment 服务密钥
+  -> Work poll / claim+ACK
+      -> 每次认领的 sessions_token
+          -> Work 心跳 / 停止 + 已认领 Session API
+      -> 外部 BYOW 进程  或  OpenMA 内嵌内核 + provider 驱动
+```
+
+对一次性的已入队 Session，仓库包含一个破坏性的符合性探测。它拒绝触碰除精确期望 ID 之外的任何 Work，并把失败的 Work 留在可重新认领状态：
+
+```bash
+OMA_BASE_URL=https://openma.example \
+OMA_ENVIRONMENT_ID=env_... \
+OMA_ENVIRONMENT_KEY=oma_env_... \
+OMA_CONFORMANCE_WORK_ID=work_... \
+pnpm test:e2e:external-worker-conformance
+```
+
+该探测使用官方 WorkPoller（因此会行使 poll + ACK），然后切换到认领的 `sessions_token`，用于心跳、已认领 Session 访问、作用域逃逸拒绝和强制停止。它可复用的核心是 `runExternalEnvironmentWorkerConformance()`。
+
+## 两条 Worker 通道
+
+| 通道 | Agent 循环所有者 | Worker 要求 | 运行时行为 |
+|---|---|---|---|
+| `ama_worker` | Managed Agents 控制面 | 任何官方 / 社区 `EnvironmentWorker` 命令或镜像 | 原样启动；它通过官方 API 保持自己的 Work 租约 |
+| `openma_supervised` | 沙箱里的 Pi、ACP 或其他 OpenMA Harness | 实现 `openma-harness-supervisor-v1` | 就绪、心跳、完成、排空、有界停止 |
+
+对 ACP supervisor，`driver.harness` 选择一个已发布的版本，例如 `{ id: "codex-acp", version: "1.8.0" }`。通用 supervisor 在沙箱分配之后使用 `@openma/common/acp-artifacts` 准备 npm、uvx 或平台特定的二进制分发。选定的 Harness 不烤进环境镜像。在 `readyTimeoutMs` 里留出首次安装时间（例如 660,000 毫秒），并为冷沙箱提供注册表 / 制品网络访问。
+
+`codex-acp` 默认使用它的 npm 包；其他 id 使用官方 ACP Registry，包括精确的历史版本。`OPENMA_ACP_SOURCES` 可以把目录限制为 npm 包源、uvx 包 / 解释器 / 命令源，或 ACP 注册表清单。`OPENMA_ACP_PACKAGES` 与现有 npm 目录保持兼容。二进制 → npx → uvx 是默认的分发偏好；注册表条目可以覆盖它。二进制格式包括原始文件、zip，以及带 gzip、bzip2 或 xz 压缩的 tar。环境提供对应的语言运行时和解压工具。
+
+Session 已解析的清单随 workspace 快照一起走，原生检查点绑定它的摘要。不同的版本需要一个新 Session。注册表里的参数和环境会被保留，而 Work 密钥在启动 Agent 之前被移除。传递依赖需要打包或锁定的版本才能完全可复现。现有的预装清单（`OPENMA_ACP_HARNESSES`）和旧的未钉版本 `version: "1"` 仍然支持。协议仍然是 `openma-harness-supervisor-v1`。
+
+两条通道使用相同的沙箱、workspace、输出和资源栅栏 Port。普通的 Managed Agents worker 从不需要 supervisor 协议。在 `ama_worker` 通道里，沙箱内的官方 worker 拥有 Work 心跳和 `stop`，所以外层轮询器使用 `autoStop: false`。在 `openma_supervised` 通道里，外层 Environment Worker 拥有官方 Work 心跳和 `stop`；`412` 会中止内层宿主，并阻止过期代次发布候选。
+
+Harness 原生的 session 数据和用户可见的输出共享运行时宿主的排空 / 检查点 / 定稿生命周期。它们不共享命名空间或数据契约：输出是已发布的不可变制品，而原生 session 数据是 workspace 候选内部的私有恢复状态。每个 Agent 适配器声明一份独占的 session 产物允许列表。原生 session 契约不包括 Agent 的完整 profile、配置、凭据、缓存或普通家目录。一份粗粒度的 provider workspace 快照在物理上可以带上无关的 workspace 字节，但替换 Harness 不得把那些字节当作原生恢复状态。OpenMA 不运行第二个持续的状态同步 sidecar。
+
+对 ACP Harness，交互保持与 provider 无关，而原生恢复是因 Agent 而异的。`@open-managed-agents/harness-runtime-acp` 在沙箱内运行 Session 命令流和 ACP 子进程。它选择一个原生 session profile，把活的 Agent 根隔离在 `/tmp/openma-harness-state/` 下，只把已声明的恢复产物复制到 `/workspace/.openma/harness-state/`，并把 ACP 逻辑 session id 存在它们旁边。运行时宿主把那份持久副本作为 workspace 候选的一部分保存下来。如果恢复的候选缺少必需的原生状态，宿主会用一条从规范 Session 事件推导出的有界语义恢复消息启动一个新的 ACP session；它绝不回放旧的工具调用。Claude Code、Codex、Gemini、OpenCode、Pi、MCode、Copilot、Cortex、Goose、Junie、Kimi、Qwen、Vibe、DeepSeek Harness ACP 和 Hermes 的精确 session 产物见 [ACP 原生会话持久化](/self-host/sandbox-persistence/#acp-native-session-persistence)。
+
+## Session 大脑放置与扩缩
+
+两种部署里，应用都与 `SessionEventDispatchPort` 对话：
+
+| 预设 | 单一所有者机制 | 持久的待处理工作 |
+|---|---|---|
+| Cloudflare | 每个 Session 一个 `SessionDO` 身份 | DO SQLite 事件队列 |
+| Node PostgreSQL/SQLite/MySQL | 可续期的 SQL 认领，带所有者、尝试和代次栅栏 | `managed_session_executions` 发件箱 |
+
+因此 Node 服务器可以水平扩展。每一批被接受的可执行 Event 及其执行行，都在同一个 Session 修订 CAS 下提交；副本并行认领不同的 Session，但在一个 Session 内保持 FIFO。丢失的租约会拒绝迟到的规范输出，并允许另一个副本重新认领该尝试。不确定的续约会停止本地运行时，而不是假定它仍然拥有该 Session。
+
+执行表是仅 Node 的基础设施。它不改变 Managed Agents SDK 形状，不给 `managed_sessions` 加字段，也不出现在 Cloudflare D1 模式里。Node 部署通过正常生成的 PostgreSQL/SQLite 迁移或 MySQL 模式适配器来应用它。
+
+放置恰好选择一个调度权威：
+
+| 放置 | 唯一的执行认领 | 认领拥有什么 |
+|---|---|---|
+| 沙箱外的 Harness | Session 执行认领 | 应用侧的 Harness 尝试，以及它驱动的任何工具沙箱 |
+| 自托管沙箱内的 Harness | 官方 Environment Work 认领 | 一个合并的沙箱执行器，内含 supervisor、Harness 和工具 |
+
+沙箱内通道绝不获取嵌套的 Session 执行认领。运行时宿主的资源代次是 workspace、检查点和输出候选的从属发布栅栏；supervisor 心跳是进程健康信号。二者都不是第二个调度器。
+
+Session 执行和 Environment Work 使用共享的内部租约控制器，处理串行续约、有界不确定性、取消和优雅停止，但保持各自的存储和线路协议。这保留了官方 Environment Worker 形状，同时给两个平面相同的失败语义。
+
+每一次 Work 重新认领都会轮换绑定在认领上的 Session bearer。来自旧沙箱的请求会被拒绝，即使它的密封令牌还没过期。已过期的当前 bearer 可以调用 Work 心跳 / 停止，以便官方端点返回 `412` 或完成清理，但它不能追加 Session Event。
+
+### Worker 内的 Session 资源
+
+`ANTHROPIC_WORK_SECRET` 包含官方的 base64 编码 Work 密钥。它的 `sessions_token` 是沙箱内 worker 用于 Session 数据的唯一凭据。OpenMA 把这些精确能力封进该令牌，并在每个请求上重新检查活的 Work 认领：
+
+| Session 资源 | Work 令牌能力 | 文件系统行为 |
+|---|---|---|
+| Session 与事件 | 读取已认领的 Session；列出 / 流式传输 / 发送它的事件 | 没有隐式文件 |
+| Agent 技能 | 列出版本，并且只下载已解析 Session agent 所声明的技能 | 官方 `EnvironmentWorker` 解析 `latest`，把它解压到 `<workdir>/skills/<name>` 之下，并在拆除时删除 |
+| Memory Store | 只访问已挂上的存储；变更需要 `read_write` | 官方 worker 下载到 `mount_path`，定期调和，做最后一次同步，并强制 `read_only` |
+| 文件 | 只读取挂在该 Session 上的文件的元数据 / 内容 | 官方 worker SDK **不会**自动挂载文件；自定义 worker 下载它，或 OpenMA / provider 资源挂载器把它写到 `mount_path` |
+| GitHub 仓库 | Session 或 Work 密钥里不出现仓库令牌 | 运行时 / provider 在 `mount_path` 克隆它；已认证的出站在沙箱之外解析 Session 资源凭据 |
+| HTTP MCP 服务器 | 只调用已认领的 Session / 服务器网关路径 | 沙箱收到 OpenMA 代理 URL，绝不是上游 MCP 凭据 |
+
+文件列表、上传、删除、无关的技能 / 文件 / 存储，以及另一个 Session 的 API，都不属于这份能力。Cloudflare 出站处理器也只把令牌转发到已配置的 OpenMA 源站和那些路由族；API 侧的认领仍然是最终的授权边界。
+
+对内嵌的 `runtime_host`，OpenMA 围绕那个 Session 客户端构造一个限定在认领上的 `SessionInputAccessPort`。宿主持有 `sessions_token`；provider 适配器只收到下载的字节和已校验的元数据。Harness 启动之前，预装的通用物化器把二进制文件精确写到 `mount_path`，并在那里克隆仓库资源。仓库资源使凭据出站成为强制项，所以当选定的 provider 没有已验证的线路接入点时，接纳会在分配之前失败。当一份规范的 workspace 检查点已被恢复时，会跳过仓库克隆，以免覆盖已恢复的编辑。
+
+官方 `ama_worker` 仍然拥有技能和 Memory Store 的注水 / 同步。在 `openma_supervised` 里，宿主物化器拥有全部已声明的 Session 资源。预装的通用物化器只实现文件和仓库，所以带 Memory Store 的受监督 Session 需要操作者提供的同步物化器，否则会在 Harness 启动之前失败。Port 输入显式携带这份所有权；通用适配器绝不能静默跳过物化器拥有的记忆。在 `provider_dispatch`、`provider_activation` 和 `external_worker` 模式下，被分发的或外部的 Worker 拥有同一份官方资源契约，因为 OpenMA 不在它下面运行内嵌的运行时宿主。
+
+<Aside type="note">
+  技能和 Memory Store 的物化是官方 Node `EnvironmentWorker` 的行为。文件和仓库挂载在自托管协议里故意是操作者 / 运行时的行为。不要因为任意社区 Worker 能读取 Session 形状，就假定它会挂载它们。
+</Aside>
+
+### 内置入口的所有权与当前边界
+
+相同的公开 Session 形状并不意味着每个进程都拥有资源物化。选择入口时使用这张矩阵：
+
+| 入口 | 文件与仓库 | 技能与 Memory Store | MCP 与 Environment 策略 | 输出 | 动态变更 |
+|---|---|---|---|---|---|
+| Node 本地托管 Session（`apps/main-node`，沙箱外的 Harness） | OpenMA 下载二进制文件，克隆精确的分支 / 提交，把私有仓库请求头限定到 `git`，并在保留编辑之前校验已保留的仓库 | OpenMA 挂载自定义技能，并告诉模型它们精确的 `SKILL.md` 根。托管记忆被投影成不可变的**只读**快照；`read_write` 在物化之前被拒绝 | URL MCP 支持工具集启用和按工具的权限。`allow_mcp_servers !== true` 的受限 Environment 绝不联系 MCP。没有宿主可达 URL 的沙箱本地 stdio 会被拒绝 | 持久的本地挂载，加上 `GET /v1/sessions/:id/outputs[/:filename]` | 文件 / 资源、技能和 Environment 的变更在每个回合边界被指纹化；快照变了就会在执行前重建并准备沙箱 |
+| Cloudflare 本地托管 Session（`apps/main` + `SessionDO`） | Session 资源在沙箱预热期间挂载；任何现在无法准备的已声明文件、Memory、环境变量或仓库都会使预热失败，而不是被跳过 | SessionDO 使用 Cloudflare 绑定解析并挂载已配置的资源和技能 | 同样的 URL MCP 检查适用；由 Vault 支撑的 MCP 和 HTTPS 使用有栅栏的 Worker/DO 出站。沙箱本地 stdio 对宿主不可达，会被拒绝 | 当绑定了 `FILES_BUCKET` 时，必需的 R2 挂载和同样的 OpenMA 输出端点。不支持存储桶挂载的本地 workerd 会创建一个明确非持久的测试目录 | 温热沙箱使用它的预热快照。资源变更在冷启动 / 重建的沙箱之后得到保证，而不是作为对已经在跑的回合的实时注入 |
+| 内嵌 `runtime_host` + `ama_worker` | OpenMA 在启动前物化文件 / 仓库 | 未修改的官方 Worker 拥有技能和 Memory 的注水 / 最终同步 | Worker 使用官方的、限定在认领上的令牌和已配置的网关 | 运行时宿主的输出 Port | 每个 Work 项一份不可变的已认领 Session 快照 |
+| 内嵌 `runtime_host` + `openma_supervised` | 通用物化器支持文件 / 仓库 | 选定的 Harness / Agent 适配器拥有技能。物化器拥有的 Memory 需要一个操作者同步 Port，否则失败即拒绝 | Supervisor / 运行时 profile 拥有接线 | 运行时宿主的输出 Port | 重新获取 / 重启边界；回合中途没有变更 |
+| `external_worker` / provider 分发 | 外部 Worker 拥有全部物化 | 外部 Worker 拥有全部同步 | 官方 Work API 原样暴露 | 外部 Worker / 部署拥有它 | 由那个 Worker 定义 |
+
+输出端点是 OpenMA 的 REST 扩展，不是 `@anthropic-ai/sdk` 当前投影出来的方法。它们仍然需要 Managed Agents beta 请求头，通过正常的 API 中间件认证，校验 Session 存在于当前工作区，拒绝穿越文件名，并从选定的 Node 或 Cloudflare 输出适配器流式读取。
+
+两条本地通道里，私有 Git 凭据的安全强度不同。Cloudflare 使用它强制的出站处理器。Node 本地执行使用限定在命令上的 Git 配置，适用于受信任的本地或隔离部署；它不被广告为不可绕过的透明出站。当仓库凭据的爆炸半径很大时，选择一个通过了必需凭据出站符合性的运行时宿主 provider。
+
+## 资源契约
+
+宿主使用五条独立边界：
+
+- `ManagedSandboxPort` 拥有隔离计算和硬清理。
+- `WorkspacePersistencePort` 物化 `/workspace`，并创建不可变的恢复候选。
+- `SessionOutputPort` 暴露 `/mnt/session/outputs`，收集文件，并创建一份不可变的内容寻址清单。
+- `SessionInputMaterializerPort` 在资源挂上之后、Harness 启动之前，暂存官方的已认领 Session 资源，并解释不透明元数据。
+- `SessionInputAccessPort` 是该物化器使用的、临时的、按认领划分的内容读取器。它绝不被序列化进租约、检查点、provider 配置或沙箱环境。
+- `RuntimeResourceFencePort` 是唯一被允许把 workspace / output 候选发布为活跃的权威。
+
+Work 心跳、运行时资源栅栏和受监督 Harness 的心跳是分开的存活信号。只有 Work 租约是沙箱内的调度认领；资源栅栏把守发布，supervisor 心跳报告进程健康。丢失一份权威租约会中止执行。网络故障之后，一个过期进程可以短暂保持存活，但它不能追加规范的 Session Event，也不能发布新的规范 workspace / 最终输出清单。外部工具副作用仍然需要它们自己的幂等键。
+
+<Aside type="caution">
+  Provider 暂停或保留的沙箱不是持久存储。只有在配置了外部检查点 / 挂载实现时，才请求持久 workspace。能力协商会失败，而不是静默降级到临时存储。
+</Aside>
+
+## Provider 能力
+
+运行时宿主在 provider 分配之前解析一份 Environment 制品，然后在 provider 适配器边界翻译它。这是部署侧契约，不是第二种 `Environment.config` 或 `Environment.metadata` 形状。每一个新创建、恢复或继续的运行时，都必须在租约发布之前完成幂等的 Environment 准备，并证明选定的 Harness 可执行文件存在。Provider 或制品不匹配会在分配之前失败；分配之后的探测失败会销毁该分配。
+
+| Provider | 其托管适配器接受的 Environment 载体 |
+|---|---|
+| Node + Docker | 显式的 OCI 镜像 |
+| LiteBox / BoxRun、Blaxel、Modal | OCI 镜像 |
+| Daytona | OCI 镜像或 provider 快照 |
+| E2B / 兼容 | E2B 模板 |
+| Superserve | 模板、快照、预装运行时或引导 |
+| Vercel | OCI 镜像、快照、预装运行时或引导 |
+| Sprites | 预装运行时或引导 |
+| Cloudflare Sandbox / Bridge | 预装运行时或引导；Worker 绑定拥有底层镜像 |
+
+`base` 和 `custom` 选择谁拥有该制品，而不是另一种运行时协议。自定义镜像 / 模板 / 快照必须通过与有版本的 OpenMA 基础制品相同的可执行文件探测。当需要该 Environment 载体时，托管适配器绝不会静默替换成它们 SDK 的示例 / 默认镜像。
+
+| 预设 | Workspace | 输出 | 硬清理 | 进程内存恢复 |
+|---|---|---|---|---|
+| Node + Docker | 可移植的文件系统检查点 | 文件系统最终收集器 | Docker 强制删除 | 无 |
+| Cloudflare Sandbox | 可移植的 `createBackup` / `restoreBackup` 检查点 | 绑定了 `FILES_BUCKET` 时的 R2 最终收集器 | Sandbox 销毁 + 持久的孤儿回收器 | 无 |
+| Node → Cloudflare Sandbox Bridge | 已配置 BlobStore 里的可移植 `/workspace` tar | 规范的 `/mnt/session/outputs` 最终收集器 | 已认证的 Bridge DELETE + 句柄发布之后的持久孤儿回收器 | 无 |
+| E2B / E2B 兼容 | 保留型运行时或可移植的 E2B 快照 | 配置了 `FILES_S3_*` 时的 S3 兼容最终收集器 | 重连 + 杀死 + 宿主提供的持久孤儿回收器 | 未广告 |
+| Daytona | 保留的沙箱或可移植的文件系统快照 | 已配置时的 BlobStore 最终收集器 | 稳定名字的所有权检查 + 删除 / 回收 | 未广告 |
+| LiteBox / BoxRun | provider 本地的保留 box | 已配置时的 BlobStore 最终收集器 | 稳定名字的所有权检查 + 强制删除 / 回收 | 未广告 |
+| Sprites | provider 持久的 ext4 文件系统 | 已配置时的 BlobStore 最终收集器 | 已校验所有者的删除 / 回收 | 未广告 |
+| Vercel | 带自动文件系统快照的持久命名沙箱 | 已配置时的 BlobStore 最终收集器 | 沙箱加上孤儿快照的删除 / 回收 | 未广告 |
+| Modal | 限定在 Session 上的 Volume v2 子路径 | 已配置时的 BlobStore 最终收集器 | 计算终止 / 回收；Volume 仍是规范存储 | 实验性内存快照未广告 |
+| Superserve | 默认无限期保留的暂停 / 恢复 | 已配置时的 BlobStore 最终收集器 | 已校验所有者的幂等杀死 / 回收 | provider 暂停不被提升为可移植检查点 |
+
+Cloudflare 和 E2B 在内部可能捕获更多运行时状态。在配置了单独的 `RuntimeCheckpointPort` 之前，OpenMA 只把那些快照当作 workspace 恢复候选。持久的 Session 事件仍然是重建 Agent 循环的事实来源。
+
+符合性注册表故意比通用的 `SandboxPort` 适配器注册表更严格：
+
+| Provider | ManagedRuntimeHost 符合性 | 原始 SandboxPort 适配器仍然可以做什么 |
+|---|---|---|
+| Node + Docker | `managed-runtime` | Docker 进程 / stdio，以及文件系统 workspace / 输出 port |
+| Cloudflare Sandbox | `managed-runtime` | Sandbox DO 进程 / stdio、`createBackup` / `restoreBackup`，以及已配置的 R2 输出挂载 |
+| Cloudflare Sandbox Bridge | `managed-runtime`（仅 `ama_worker`） | Bearer 认证的生命周期、argv/SSE 执行、workspace 文件和 tar 持久化 / 注水 |
+| E2B / 兼容 | `managed-runtime`（`ama_worker`、`openma_supervised`） | E2B 挂起 / 恢复、provider 内存快照、实时 stdin，以及已配置的 S3 兼容输出收集 |
+| Daytona | `managed-runtime`（`ama_worker`、`openma_supervised`） | 稳定名字和所有权标签、启动 / 停止、可移植快照、session 进程 stdio，以及已配置的 BlobStore 输出收集 |
+| LiteBox | `managed-runtime`（`ama_worker`、`openma_supervised`） | 官方低层嵌入式客户端、稳定的 get-or-create、分离的文件系统、原生 stdio、停止 / 启动，以及原生网络 / 密钥创建选项 |
+| BoxRun | `managed-runtime`（`ama_worker`、`openma_supervised`） | 通过官方 REST 客户端使用同一个托管 BoxLite 驱动；旧的手写 REST 仍然只属于 SandboxPort |
+| Blaxel | `managed-runtime`（`ama_worker`、`openma_supervised`） | 稳定的外部身份、归档 / 解档保留、命名的全双工进程、原生网络策略和可选的持久卷 |
+| Sprites | `managed-runtime`（`ama_worker`、`openma_supervised`） | 稳定的 Sprite、持久 ext4、自动暂停 / 唤醒、全双工进程和原生网络策略 |
+| Vercel | `managed-runtime`（仅 `ama_worker`） | 持久的命名 Sandbox、自动文件系统快照恢复、默认拒绝的防火墙和请求变换；没有流式 stdin |
+| Modal | `managed-runtime`（`ama_worker`、`openma_supervised`） | 预创建的 Volume v2 Session 子路径上的命名计算、全双工进程，以及域名 / CIDR 允许列表 |
+| Superserve | `managed-runtime`（`ama_worker`、`openma_supervised`） | 稳定的元数据所有权、保留的暂停 / 恢复、轮换令牌的重连、全双工进程、严格出站和 provider 侧密钥代理 |
+
+`sandbox-port-only` 对任何尚未提供完整组合的原始或未来适配器，仍然是故意的失败即拒绝状态。在它提供有栅栏的租约、workspace 候选发布、输出清单发布、孤儿回收，以及已声明的 Harness 通道之一之前，这样的适配器不得传给 ManagedRuntimeHost。机器可读的来源是 `@open-managed-agents/managed-runtime-host` 里的 `MANAGED_RUNTIME_PROVIDER_CONFORMANCE`。
+
+Provider 依赖按包隔离。与 provider 无关的 `@open-managed-agents/sandbox` 和 `@open-managed-agents/managed-runtime-sandbox` 包只包含 Port 和组合代码。SDK 住在 `sandbox-adapter-*`、`managed-runtime-*`、`environment-dispatch-*` 或 `environment-activation-*` 这些 provider 包里，因此一次部署只安装它选中的适配器包。每个厂商 SDK 都恰好是它自己适配器包的可选 peer；单仓库设置了 `autoInstallPeers: false`，所以仅仅检出或构建 OpenMA 不会解析全部 provider 依赖树。选择某个 provider 的部署一起安装它的适配器和匹配的 SDK，然后把该适配器包传给惰性驱动加载器。例如：
+
+```sh
+pnpm add @open-managed-agents/managed-runtime-daytona @daytona/sdk
+```
+
+宿主从不静态导入 provider 适配器。它只加载已配置包的 `createManagedRuntimeProviderDriver()`、`createManagedEnvironmentWorkDispatchPort()` 或 `createManagedEnvironmentActivationPort()` 导出，并拒绝 provider ID 或生命周期策略与选择不匹配的 descriptor。单元测试使用结构性的假客户端，因此不需要任何 provider SDK 就能运行。带凭据的 provider 符合性通道会显式安装 provider SDK。架构门禁会拒绝：把 SDK 放进运行时依赖、没有可选 peer 声明的源码导入、跨 provider 的运行时依赖、缺少统一的 factory 导出、自动安装 peer，或任何泄漏进中性包的 provider 导入。
+
+离线适配器认证是普通 CI 的一部分，不需要 provider 账号、网络访问或密钥。它针对 Blaxel、Cloudflare、Modal、Sprites、Superserve 和 Vercel 的 SDK 边界的结构性实现，运行完整的适配器套件。每一条通道都必须执行：没有基于凭据的跳过路径，一条通道失败不会阻止其余通道运行，任何失败都会使该命令失败。报告以模式 `0600` 写到 `artifacts/certification/offline-certification.json`：
+
+```sh
+# 运行每一条无密钥的 provider 适配器通道。
+pnpm test:certification:offline
+
+# 聚焦一个或多个适配器，同时保留同一份报告契约。
+pnpm test:certification:offline -- --providers cloudflare,vercel
+```
+
+这道门禁证明的是 OpenMA 对 provider SDK 语义的映射：稳定身份、所有权校验、生命周期 / 状态映射、发布前就绪屏障、stdio 和文件系统行为、默认拒绝的出站、挂起 / 恢复或重建行为、栅栏失败、幂等销毁，以及在支持的地方做孤儿回收。它**不**证明 provider 可用性、已部署镜像、账号策略、区域行为，或与活的厂商控制面的兼容性。
+
+因此带凭据的认证与离线门禁保持分开；单元测试和契约测试不能冒充真实 provider 的证据。在线门禁总是为每个选中的 provider 打印 `PASS`、`FAIL` 或 `NOT_RUN_NO_CREDENTIAL` 之一，并把打码后的 JSON 报告写到 `artifacts/certification/live-certification.json`：
+
+```sh
+# 本地凭据只配置一次；Git 忽略这个文件。
+cp .env.certification.example .env.certification.local
+$EDITOR .env.certification.local
+
+# 审计每一个已注册的 provider。缺少凭据会使门禁失败。
+pnpm test:certification:live
+
+# 只运行已配置的 provider。对选中的集合仍然严格。
+E2B_API_KEY=... pnpm test:certification:live -- --providers e2b
+
+# Cloudflare 也接受本地 Wrangler OAuth 配置；`pnpm exec wrangler login`
+# 之后不需要复制 API 令牌。
+pnpm test:certification:live -- --providers cloudflare
+
+# 生产 R2 检查点 / 恢复是单独的通道，需要 S3 密钥。
+pnpm test:certification:live -- --providers cloudflare-r2
+
+# 对着一个隔离的本地集群，行使 Node、官方 SDK、CLI、Console 浏览器，
+# 以及一个真实的本地 LiteBox 微虚拟机。
+pnpm test:certification:local-release
+
+# 如果 ~/.dsh 含有 DeepSeek 凭据，认证沙箱外的工具使用、
+# 压缩 / 前缀缓存行为，以及沙箱内的 ACP 原生恢复。
+pnpm test:certification:live -- --providers deepseek-model
+
+# 清单模式是显式的；它绝不会把 FAIL 变成成功。
+pnpm test:certification:live -- --allow-missing
+```
+
+在线运行器会自动加载 `.env.certification.local`；已经导出的环境变量优先于文件里的值。用 `--credentials-file /absolute/path/to/provider.env` 选择另一个文件。CI 应该从它的密钥管理器注入同样的变量名，而不是创建这个本地文件。从运行器的角度看，GitHub Actions Secrets 是只写的，不能下载下来供本地复用；如果本地和 CI 必须共享一份受管理的副本，用密码管理器或密钥代理作为事实来源。
+
+两份报告都记录精确的 Git 修订和脏状态、时间戳、每个 provider 的耗时和打码后的诊断。凭据值绝不写到 stdout 或报告里。退出码 `1` 表示某个 provider 测试失败；退出码 `2` 表示至少一个 provider 因为缺少必需凭据或 provider 配置而没有运行。后者在默认 / 发布门禁模式下故意非零，因此被跳过的真实 provider 通道不能被报告成一次成功的认证。
+
+可执行的在线通道是 Cloudflare 生命周期 / 出站、Cloudflare R2 检查点 / 恢复、E2B、BoxLite、隔离的本地发布栈，以及 DeepSeek 模型矩阵。其他已注册的 provider 已经出现在矩阵里，未配置时保持 `NOT_RUN_NO_CREDENTIAL`；如果在它们的带凭据测试实现之前就配置了，缺失的包脚本会变成显式的 `FAIL`，而不是静默通过。
+
+单独的 provider 通道仍然可以用于聚焦诊断：
+
+```sh
+E2B_API_KEY=... pnpm --filter @open-managed-agents/sandbox-adapter-e2b test:certification
+pnpm --filter @open-managed-agents/managed-runtime-boxlite test:certification
+pnpm --filter @open-managed-agents/managed-runtime-cloudflare test:certification
+pnpm --filter @open-managed-agents/managed-runtime-cloudflare test:certification:r2
+```
+
+Cloudflare 通道接受 `CLOUDFLARE_API_TOKEN` 加上 `CLOUDFLARE_ACCOUNT_ID`，或者一次成功的本地 `wrangler whoami` OAuth 探测。它部署一个唯一命名的 Worker 和 `standard-1` Sandbox 应用，然后测试实际的 OpenMA `CloudflareSandbox` 包装：命令和文件 I/O、跨 Worker 请求的稳定沙箱身份、Worker 侧出站处理器的挂上与撤销、容器进程环境里没有代理密钥、硬销毁，以及重建之后的全新状态。测试清理会删除 Worker、Container 应用和本地模式为 `0600` 的密钥文件，任何残留的 Container 应用都会使该通道失败。瞬时的 Cloudflare 429/502/503/504 以及推送后的清单可见性错误最多重试三次。
+
+该通道不声称覆盖生产 R2 备份 / 恢复。单独的 `cloudflare-r2` 通道把一个 R2 存储桶绑定为 `BACKUP_BUCKET`，写入一个 workspace 标记，创建一份可移植的文件系统检查点，销毁 Sandbox，把它恢复进一个新容器，并证明标记还在。它需要来自一把专用 R2 Object Read & Write 令牌的 `CLOUDFLARE_ACCOUNT_ID`、`R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY`；Wrangler OAuth 可以授权 Worker 和存储桶管理，但不能代替那些 S3 凭据。
+
+默认情况下，该通道会创建、清空并删除一个唯一命名的临时存储桶。设置 `OMA_CLOUDFLARE_R2_BUCKET` 可以复用一个已有的专用存储桶，并使用最小权限的、限定在存储桶上的凭据。复用模式下，清理绝不列出或删除无关对象：它只删除这次运行创建的每个检查点所发出的两个键，`backups/<checkpoint-id>/data.sqsh` 和 `backups/<checkpoint-id>/meta.json`，并保留该存储桶。把持久化分开，是为了避免把一次生命周期通过误当成检查点认证。
+
+`local-release` 通道构建 Console，用 SQLite 和一个真实的 LiteBox 微虚拟机启动一个隔离的 Node 部署，通过一次完整的流式回合行使官方 Managed Agents SDK，校验 CLI 的托管投影，并用 Playwright 通过同一个 API 驱动 Console。它还断言子进程和临时状态已被删除。
+
+`deepseek-model` 通道使用本地 DSH 凭据，不打印也不复制它。它验证带一次真实沙箱工具调用的 Pi 沙箱外执行、显式的不思考模型行为、在较低测试阈值上的主动压缩、压缩前后的前缀缓存命中率，以及缓存用量被保留的沙箱内 ACP 原生 session 恢复。
+
+BoxLite 认证通道启动一个真实的嵌入式 MicroVM，并验证 workspace 创建、停止 / 启动保留、worker stdio、所有权和硬删除。在 macOS 上，它的临时运行时根故意使用短路径，使嵌套的 Unix 套接字保持在平台 `SUN_LEN` 限制之下。它可选的、依赖 SDK 的 TypeScript 项目被隔离在 `typecheck:certification` 后面；默认的单仓库类型检查保持与 provider 无关。架构门禁防止带凭据的认证源码意外把可选的厂商 SDK 重新引进那条默认通道。
+
+为 E2B 兼容控制面设置 `E2B_API_URL`，为要认证的模板设置 `OMA_E2B_TEMPLATE`。该通道行使真实的命令执行、租约续期、内存挂起 / 恢复，以及一份可移植的 provider 快照。它不把那份快照提升为进程内存检查点语义；那仍然需要一个显式的 `RuntimeCheckpointPort`。
+
+## 凭据出站
+
+`CredentialEgressPort` 是不受信任沙箱所使用凭据的、与 provider 无关的生命周期。它在获取运行时栅栏之后准备一份不透明绑定，在 Harness 启动之前挂上并验证 provider 线路接入点，在沙箱清理之前撤销它，最后释放它。绑定的范围是 `(workspace, environment, Session, Work, generation)`，并且绝不包含 Vault 令牌。
+
+Profile 选择 `required`、`best_effort` 或 `disabled`。`required` 只有在 provider 报告了一份经过测试、不可绕过的实现时才启动。缺失的 port、建议性的代理环境变量、无效的栅栏，或失败的 Vault 查找，都会造成启动 / 请求失败，而不是一次静默的直连。
+
+| Provider / 路径 | 当前声明 | 说明 |
+|---|---|---|
+| Cloudflare 透明 HTTP/HTTPS | `enforced`，活凭据 | `enableInternet = false`；每次查找都检查精确的活跃运行时栅栏；撤销会装上一个拒绝处理器 |
+| Cloudflare 或 Node 沙箱内 Harness 的 HTTP MCP | 有范围的网关 | ACP 收到代理 URL 加上当前 Work 的 `sessions_token`；上游 URL / 令牌被省略 |
+| Node/Docker 透明代理 | `advisory` | 旧的 `oma-vault` 环境代理可以被绕过，作为多租户边界并不安全 |
+| E2B / Daytona / LiteBox | 取决于 provider | 当前的通用适配器是建议性的；部署可以在符合性之后通过该 Port 注入一个原生的强制适配器 |
+| BoxRun | `unsupported` | 在它已部署的 API 证明了所需的创建时网络 / 密钥控制之前，失败即拒绝 |
+
+Work 的 `sessions_token` 是短生命周期的能力，不是 Vault 凭据。它只被接受用于 Session、事件、已挂上的文件、已声明的技能、已挂上的 Memory Store、Work 心跳 / 停止，以及由其工作区 / environment / Session / Work 认领编码的 MCP 网关路径。每个请求都会对照当前存储的认领和心跳 TTL 检查它。重新认领会轮换存储的令牌，立即把旧沙箱挡在每一个资源 API 和 MCP 网关之外。只在 `Authorization` 请求头里传递它；绝不持久化或记录它。
+
+这是 OpenMA 运行时宿主的扩展。它不改变官方 Managed Agents Environment Worker、Work、webhook 或 Session 的线路形状。仓库的 `docs/adr/0007-sandbox-credential-egress.md` 包含完整的 provider 与混沌矩阵。
+
+## 预置组合
+
+<Tabs syncKey="runtime-provider">
+  <TabItem label="Node + Docker">
+    ```ts
+    import Anthropic from "@anthropic-ai/sdk";
+    import { createNodeManagedEnvironmentWorker } from
+      "@open-managed-agents/managed-runtime-node";
+
+    const cluster = await createNodeManagedEnvironmentWorker({
+      runtime: {
+        rootDir: "/var/lib/openma/runtime",
+        sql,
+        initializeFenceSchema: true,
+        ownerId: `environment-worker:${process.pid}`,
+        leaseTtlMs: 90_000,
+        heartbeatIntervalMs: 30_000,
+        image: "my-community-worker:latest",
+        sessionInputs: repoAndFileMaterializer,
+      },
+      worker: {
+        client: new Anthropic({
+          apiKey: null,
+          authToken: environmentKey,
+          baseURL: openmaBaseUrl,
+          webhookKey,
+        }),
+        environmentId,
+        environmentKey,
+        workspaceId,
+        profileFor: async (_work, session) => ({
+          workspace: { requirement: "durable" },
+          outputs: { requirement: "durable" },
+          runtimeCheckpoint: "disabled",
+          driver: {
+            type: "ama_worker",
+            process: { command: "node", args: ["worker.mjs"] },
+          },
+        }),
+      },
+    });
+
+    // 立即轮询，并定期作为回退。你的 HTTP 路由可以同时
+    // 调用 cluster.environmentWorker.handleWebhook(...)。
+    await cluster.environmentWorker.run(shutdown.signal);
+    ```
+
+    对官方 SDK 在沙箱内的通道，`worker.mjs` 可以只有：
+
+    ```ts
+    import Anthropic from "@anthropic-ai/sdk";
+
+    const client = new Anthropic({
+      apiKey: null,
+      authToken: process.env.ANTHROPIC_ENVIRONMENT_KEY,
+      baseURL: process.env.ANTHROPIC_BASE_URL,
+    });
+    await client.beta.environments.work.worker({
+      workdir: "/workspace",
+    }).handleItem();
+    ```
+
+    宿主注入 `ANTHROPIC_ENVIRONMENT_ID`、`ANTHROPIC_ENVIRONMENT_KEY`、`ANTHROPIC_SESSION_ID`、`ANTHROPIC_WORK_ID`、`ANTHROPIC_WORK_SECRET` 和 `ANTHROPIC_BASE_URL`。它绝不注入 API 客户端的父密钥。
+  </TabItem>
+  <TabItem label="Cloudflare">
+    ```ts
+    import { createCloudflareManagedEnvironmentWorker } from
+      "@open-managed-agents/agent/runtime/managed-runtime";
+
+    const cluster = createCloudflareManagedEnvironmentWorker(env, {
+      runtime: {
+        ownerId: `environment-worker:${env.INSTANCE_ID}`,
+        leaseTtlMs: 90_000,
+        heartbeatIntervalMs: 30_000,
+        sessionInputs: repoAndFileMaterializer,
+      },
+      worker: {
+        client,
+        environmentId,
+        environmentKey,
+        workspaceId,
+        profileFor: async (_work, session) => ({
+          workspace: { requirement: "durable" },
+          outputs: { requirement: "durable" },
+          runtimeCheckpoint: "disabled",
+          driver: {
+            type: "ama_worker",
+            process: { command: "node", args: ["worker.mjs"] },
+          },
+        }),
+      },
+    });
+    ```
+
+    该预设用 `MAIN_DB` 做栅栏 / 孤儿行，用 `SANDBOX` 做计算，用 `FILES_BUCKET` 做不可变的输出候选。应用导出的运行时资源 SQL 模式是操作者迁移，不是请求上的副作用。
+  </TabItem>
+  <TabItem label="Node → Cloudflare Bridge">
+    ```ts
+    import { createCloudflareBridgeManagedRuntime } from
+      "@open-managed-agents/managed-runtime-cloudflare-bridge";
+
+    const resources = createCloudflareBridgeManagedRuntime({
+      baseUrl: process.env.CLOUDFLARE_SANDBOX_BRIDGE_URL!,
+      apiKey: process.env.CLOUDFLARE_SANDBOX_BRIDGE_KEY!,
+      checkpointStore,
+      outputStore,
+      leaseTtlMs: 90_000,
+    });
+    ```
+
+    这会调用操作者部署的官方 Sandbox Bridge Worker。Bridge 密钥留在 Node 宿主上；沙箱只收到已认领 Work 的 environment / session 值。适配器等待一次真实的存活探测，校验每一个 SSE 终态事件，在恢复之前存储一份哈希过的 `/workspace` tar，并销毁部分注水或失败的分配。
+
+    稳定的 Bridge HTTP `/exec` 路由没有流式 stdin，所以这个预设只广告 `ama_worker`。交互式 `openma_supervised` 需要一份单独实现并测试过的 PTY 传输。Bridge 也不能在创建时给 OpenMA 一个确定性的沙箱 ID；远程分配和持久句柄发布之间的宿主崩溃可能留下一个空闲的 provider 孤儿。当 OpenMA 内核跑在 Workers 上、并且需要这个更强的身份属性时，使用直接的 Cloudflare 绑定。
+  </TabItem>
+  <TabItem label="E2B">
+    ```ts
+    import { createE2BManagedRuntime } from
+      "@open-managed-agents/managed-runtime-e2b";
+
+    const resources = createE2BManagedRuntime({
+      environment: process.env,
+      leaseTtlMs: 90_000,
+    });
+    ```
+
+    `E2B_API_KEY` 选择 E2B Cloud。`E2B_API_URL`、`E2B_SANDBOX_URL` 和 `E2B_DOMAIN` 可以把同一个适配器指向一个 E2B 兼容服务。只有当 `FILES_S3_ENDPOINT`、`FILES_S3_BUCKET`、`FILES_S3_ACCESS_KEY` 和 `FILES_S3_SECRET_KEY` 全部存在时，才启用持久输出收集。按范围的环境函数必须显式传入 `outputStore`。
+  </TabItem>
+  <TabItem label="LiteBox / BoxRun">
+    ```ts
+    import { createBoxLiteManagedRuntimeDriver } from
+      "@open-managed-agents/managed-runtime-boxlite";
+
+    const litebox = createBoxLiteManagedRuntimeDriver({
+      providerId: "litebox",
+      connection: { type: "embedded", homeDir: "/var/lib/openma/boxlite" },
+      image: "node:22-slim",
+      leaseTtlMs: 90_000,
+      outputStore,
+    });
+
+    const boxrun = createBoxLiteManagedRuntimeDriver({
+      providerId: "boxrun",
+      connection: {
+        type: "rest",
+        url: "http://boxrun:8100",
+        prefix: "default",
+      },
+      image: "node:22-slim",
+      leaseTtlMs: 90_000,
+      outputStore,
+    });
+    ```
+
+    两者使用同一个官方 `JsBoxlite` 生命周期和 stdio API。嵌入模式调用本地运行时；REST 模式调用 `JsBoxlite.rest()`。原生网络允许列表、密钥替换、卷和资源限制，由 provider 包的 `allocationOptions` Port 在 `getOrCreate()` 之前提供。它们不是普通的 `providerConfig` 密钥值。
+  </TabItem>
+</Tabs>
+
+## 失败与持久化行为
+
+激活和提交顺序以输入为门、以候选为先：
+
+1. 认领 Work，用每次认领的 bearer 读取 Session，并校验身份；
+2. 物化并挂上 workspace / output / 凭据出站绑定；
+3. 暂存应用拥有的 Session 元数据输入；
+4. 运行并排空 worker 或 Harness；
+5. 创建并哈希一份不可变的 workspace 候选；
+6. 枚举输出文件，重新读取它们以检测变更，上传内容寻址的 blob，并创建一份不可变清单；
+7. 通过当前栅栏代次对两份候选做比较并设置；
+8. 释放计算，而不删除规范候选。
+
+如果硬终止失败，宿主会持久化一条不含令牌的孤儿记录。调和器按序列化的 provider / runtime ID 重连，并重试一次幂等销毁。栅栏令牌绝不存在孤儿队列里。
+
+被中断的候选上传不是活跃的。重复上传只有在其字节哈希等于期望的内容地址时才被接受。损坏的检查点元数据或内容会被拒绝；OpenMA 绝不会静默创建一个空 workspace 并称之为恢复。
+
+## 验收
+
+用下面的命令运行确定性的生命周期和故障矩阵：
+
+```bash
+pnpm test:chaos:runtime
+pnpm test:coverage:runtime
+pnpm test:integration:runtime   # 真实的 Docker engine
+pnpm test:integration:storage   # PostgreSQL、MinIO、SQLite
+```
+
+混沌通道在每一个获取之后的边界注入失败，包括定稿期间的租约丢失、硬杀死失败、宿主重启 / 孤儿回收、损坏的检查点、输出变更 / 冲突、重复定稿，以及播种的多所有者调度。真实 provider 的冒烟测试补充这道确定性门禁；它们不代替它。
+
+资源符合性通道还会在一个真实的 Docker 容器里运行未修改的 Anthropic `EnvironmentWorker`。它通过公开 API 解析一个 `latest` 技能，解压并读取它的 `SKILL.md`，把一个 Memory Store 下载到它声明的挂载路径，通过一次普通工具调用修改一条记忆，并校验最终写回。Node 和 Cloudflare 的 API 测试行使已挂文件的下载、技能别名解析、只读 / 读写 Memory Store 授权、跨 Session 拒绝、Work 重新认领，以及过期令牌栅栏。Cloudflare Harness 测试覆盖二进制文件物化、不注入凭据的仓库检出、环境密钥，以及记忆挂载标志。
+
+精确的运行时 profile、Port 方法所有权、provider 能力矩阵、销毁 / 恢复事务，以及沙箱外 Harness 与沙箱内 Harness 的区别，见 [沙箱与持久化契约](/self-host/sandbox-persistence/)。

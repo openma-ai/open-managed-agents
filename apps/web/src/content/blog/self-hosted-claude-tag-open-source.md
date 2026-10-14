@@ -94,7 +94,7 @@ backend. The Cloudflare route gives you Workers, Durable Objects,
 Containers, D1, KV, and R2. The Docker route gives you a simpler
 self-host path with SQLite or Postgres.
 
-See the [self-host overview](https://docs.openma.dev/self-host/overview/)
+See the [self-host overview](https://docs.openma.ai/self-host/overview/)
 for the full deployment choices.
 
 ## Step 2: Create the agent
@@ -220,6 +220,6 @@ publish a narrow Tag-style agent into one channel, give it one or two
 real tools, and observe where humans naturally delegate work.
 
 For more detail, read the
-[Slack self-host setup](https://docs.openma.dev/self-host/oauth-apps/#slack),
-the [custom integrations guide](https://docs.openma.dev/build/integrations/),
+[Slack self-host setup](https://docs.openma.ai/self-host/oauth-apps/#slack),
+the [custom integrations guide](https://docs.openma.ai/build/integrations/),
 and the [Cloudflare deployment guide](/blog/self-host-agent-platform-cloudflare-workers/).

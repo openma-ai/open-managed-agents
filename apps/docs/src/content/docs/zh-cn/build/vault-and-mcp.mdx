@@ -1,0 +1,98 @@
+---
+title: Vault 与 MCP 凭据
+description: OMA 如何用主侧凭据代理，把上游凭据与 Agent 和沙箱隔离开。
+---
+
+OMA 的 Vault 是上游凭据（MCP 服务器令牌、OAuth 令牌、API key）的唯一事实来源。Agent 本身——无论是运行 `generateText` 的云端 DO、拉起 `claude-agent-acp` 的本地守护进程，还是运行 `curl` 的沙箱容器——**内存中从不持有明文凭据**。三个调用方都只知道 `(tenantId, sessionId, server-name | hostname)`，并请 **main worker** 代为发起实际上游调用。Main 在**每次调用时实时**查找凭据，注入 bearer，然后转发。
+
+这对应 [Claude Managed Agents](https://www.anthropic.com/engineering/managed-agents) 的「凭据代理位于 Harness 之外」模式：被注入 prompt 的 Agent 没有凭据可泄漏，因为它的地址空间里根本没有凭据。
+
+## 三个调用方，一个解析器
+
+```text
+                    ┌──────────────────┐
+                    │  Vault (D1+KV)   │  single source of truth
+                    └────────┬─────────┘
+                             │ live read on EVERY call
+              ┌──────────────▼──────────────┐
+              │  apps/main worker            │
+              │  resolveProxyTargetByTenant  │  URL match
+              │  resolveOutboundCredentialByHost  │  hostname match
+              │  forwardWithRefresh          │  inject + 401-refresh
+              └──┬─────────┬───────────┬────┘
+                 │         │           │
+        ┌────────┘         │           └────────┐
+        │ HTTP             │ RPC                │ RPC
+        ▼                  ▼                    ▼
+  ACP child          Cloud agent DO         Sandbox container
+  (laptop daemon)    (in-Worker)            (HTTPS interceptor)
+        │                  │                    │
+        └─ NONE of these three holds plaintext credentials ─┘
+```
+
+| 调用方 | 知道 | 请求 |
+|---|---|---|
+| 本地运行时 ACP 子进程 | `(sid, server, agent api key)` | 带 `Authorization: Bearer <apiKey>` 的 HTTP `/v1/oma/mcp-proxy/<sid>/<server>` |
+| 云端 Agent DO | `(tenantId, sid, server)` | 通过 service-binding RPC 调用 `env.MAIN_MCP.mcpForward(...)`（绑定范围即认证） |
+| 沙箱容器 | 完整的上游 URL | 经 Agent worker 的出站拦截器调用 `env.MAIN_MCP.outboundForward(...)` |
+
+## OAuth 刷新
+
+对于类型为 `mcp_oauth` 的凭据，代理自动处理 401：
+
+1. 上游返回 401
+2. 从 D1 重新读取凭据行——如果 `access_token` 已经越过那枚过期令牌（并发调用先刷新了），就使用实时令牌。否则：
+3. 用 `refresh_token` POST `token_endpoint`
+4. 通过 `services.credentials.refreshAuth` 把轮换后的 `{access_token, refresh_token, expires_at}` 写回 D1
+5. 用新的 bearer 重试一次
+
+如果刷新本身失败（refresh_token 被撤销、scope 变更），第二次上游调用会把原来的 401 返回给调用方。不会用虚假成功来掩盖。
+
+## 模型看到什么
+
+注册为 `mcp__<server>__<tool_name>` 的工具带有完整 schema——它们是一等的 AI SDK 工具，不是靠字符串拼出来的包装。模型按名称和结构化参数选择工具；平台负责认证与转发。
+
+```text
+agent.mcp_tool_use:
+  name: mcp__linear__list_issues
+  input: { team: "OpenMA", limit: 1, orderBy: "updatedAt" }
+
+agent.mcp_tool_result:
+  content: { issues: [{ id: "OPE-48", title: "...", status: "Done", ... }] }
+```
+
+模型看不到 bearer token——只能看到响应。
+
+## 审计轨迹
+
+每次经过 `forwardWithRefresh` 的调用都会发出一行结构化日志：
+
+```json
+{
+  "op": "mcp_proxy.forward",
+  "caller": "http" | "rpc-mcp" | "rpc-outbound",
+  "tenant_id": "...",
+  "session_id": "...",
+  "server": "linear",
+  "host": "mcp.linear.app",
+  "method": "POST",
+  "status": 200,
+  "refreshed": true | false,
+  "ms": 1234
+}
+```
+
+生产事故响应可以回答「谁在何时调用了什么」，而不需要在每个调用点单独埋点。
+
+## 限制
+
+- **`command_secret` 凭据**（例如在 `git` 命令上作为环境变量注入的 `GIT_TOKEN`）会进入沙箱容器按命令划分的进程环境。AST 门禁限定为单一简单命令形式（复合的 `&&` / `;` / `|` 会挡住注入）——模型随手执行 `env | grep` 什么也得不到。**有针对性的 prompt 注入**如果构造出针对该二进制的单命令泄漏向量，仍然可以外带。在 command_secret 迁移到与 MCP / 出站相同的沙箱外代理模式之前，不要把爆炸半径很大的凭据（组织级 GitHub PAT、生产数据库凭据）挂到处理不可信输入的 Agent 上。
+
+- **经 `outboundForward` 的流式上传**——当前 RPC 请求体类型是 `string | null`。来自 `curl -F file=@big.pdf` 的数 MB 二进制上传需要先放宽请求体类型。
+
+- **速率限制**——mcp-proxy 里还没有按凭据 / 按 Session 的配额。行为异常的 Agent 可以持续冲击上游，直到把整个租户限流。
+
+## 另见
+
+- 内部架构深潜：[`docs/mcp-credential-architecture.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/mcp-credential-architecture.md)
+- E2E 测试夹具：[`test/fixtures/fake-oauth-mcp/`](https://github.com/openma-ai/open-managed-agents/tree/main/test/fixtures/fake-oauth-mcp) — 一个可部署的 CF Worker，同时扮演 OAuth 提供商和 MCP 服务器，用来演练刷新路径，而不消耗真实提供商凭据。

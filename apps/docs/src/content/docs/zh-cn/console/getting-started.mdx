@@ -1,0 +1,98 @@
+---
+title: 在控制台入门
+description: 注册、创建 Agent、运行 Session、管理技能与 Vault——全部在 openma.ai 界面完成。
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+[app.openma.ai](https://app.openma.ai) 上的控制台是使用 openma 最直接的方式——不需要调用 API，也不需要 curl。本页说明各处功能在哪里，以及如何不离开浏览器就做到「第一个 Agent 跑起来」。
+
+## 登录
+
+邮箱 + OTP，或 Google OAuth。首次登录时，openma 会自动为你创建一个租户。不需要邀请码，也不需要管理员预先配置。
+
+## 页面
+
+左侧边栏把功能分成三个区域：
+
+### 核心
+
+- **Dashboard** — 一页看清你的 Agent、最近的 Session 和用量。
+- **Agents** — 列出、创建、编辑、归档。点开某个 Agent 可查看其配置与版本历史。
+- **Sessions** — 所有 Agent 的全部对话；某个 Session 正在运行时，可看实时事件流。
+- **Environments** — 沙箱模板。定义预先安装哪些 Python / Node / apt 包，并设置网络规则。
+
+### 配置
+
+- **技能** — 上传一份 `SKILL.md` 以及任意配套文件。平台会把它们挂载到选择启用这些技能的沙箱中。
+- **Vaults** — 密钥存储。添加 bearer token、OAuth 令牌、环境变量；绑定到特定主机，让出站代理注入认证，同时不把密钥泄漏给模型。
+- **Memory** — 按 Agent 划分的语义记忆存储。
+- **Model Cards** — 通过任意 Pi 内置提供商（Anthropic、OpenAI、DeepSeek、OpenRouter、Google、MiniMax 等）接入你自己的模型，或使用带显式 Pi wire API 的自定义提供商。
+- **API Keys** — 管理 REST API 与 CLI 使用的个人访问令牌。
+
+### 集成
+
+- **Linear** / **GitHub** / **Slack** — 各自有独立的设置页。参见 [接入集成](/console/integrations/)。
+
+## 在界面中创建第一个 Agent
+
+<Steps>
+
+1. 打开 **Agents → New agent**。
+
+2. 填写：
+   - **Name** — 任意名称。之后集成会看到它。
+   - **Model** — 从你的 Model Cards 中选择。如果平台引导时配置了 `ANTHROPIC_API_KEY`，开箱即有一条 Anthropic Claude 记录；否则先到 **Settings → Model Cards** 添加一张 Model Card。
+   - **System prompt** — 说明这个 Agent 用来做什么。
+   - **Tools** — 暂时保持默认（内置工具集）。
+
+3. 点击 **Create**。
+
+4. 打开该 Agent → **New session**。输入一条消息。观察事件流实时填充。
+
+</Steps>
+
+<Aside type="tip" title="版本">
+  每次保存都会创建一个新的 Agent 版本。Session 固定在创建时所绑定的版本上——之后编辑 Agent 不会改变正在运行或回放中的 Session。
+</Aside>
+
+<Aside type="note" title="YAML 与 JSON 编辑">
+  表单、YAML 与 JSON 三种模式编辑的是同一份结构化的 Agent 配置。在切换模式或保存之前会先解析 YAML，并且绝不会把 YAML 当作源文本存储。语法无效的内容以及非对象文档会留在编辑器里；随后由 API 校验强制 Managed Agents 的字段形状、metadata 上限、MCP 引用以及多智能体名册规则。一次成功的更新会存储一份新的 JSON Agent 文档，并以原子方式保留先前版本。
+</Aside>
+
+## 常见工作流
+
+### 添加 Vault，让 Agent 能调用私有 API
+
+1. **Vaults → New vault** — 选择 “Bearer token”，粘贴令牌，并绑定到主机（例如 `api.example.com`）。
+2. 编辑你的 Agent → **Tools** → 添加一个端点位于该主机上的自定义工具。
+3. 当 Agent 调用该工具时，出站代理会按请求注入 `Authorization: Bearer ...`。模型看不到这个令牌。
+
+### 给 Agent 代码执行能力
+
+1. **Environments → New environment** — 选择基础镜像，添加 `pip:numpy` 或 `apt:ffmpeg` 等。
+2. 编辑你的 Agent → **Environment** → 选择新建的 Environment。
+3. 该 Agent 现在可以在按 Session 隔离的容器里使用 `bash`、`read`、`write`、`edit`、`glob`、`grep`。
+
+### 接入自定义 MCP 服务器
+
+1. 编辑某个 Agent → **MCP servers** → 粘贴 URL。
+2. 平台会与该服务器握手，并把每个工具注册为 `mcp_<server>_<tool>`。下一次 Session 即可调用它们。
+
+## 接下来
+
+<LinkCard
+  title="接入集成"
+  href="/console/integrations/"
+  description="把 Agent 接到 Linear、GitHub 或 Slack，让用户在已有的工作场所与它交互。"
+/>
+<LinkCard
+  title="概念"
+  href="/concepts/"
+  description="回顾 Agent、Session、Environment、Vault、技能、工具、Harness、集成。"
+/>
+<LinkCard
+  title="REST API"
+  href="/build/api/"
+  description="控制台能做的一切，你都可以通过程序完成。"
+/>

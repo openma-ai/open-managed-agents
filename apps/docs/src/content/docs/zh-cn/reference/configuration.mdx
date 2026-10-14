@@ -1,0 +1,326 @@
+---
+title: 配置参考
+description: Agent、Environment、技能、Vault 的模式，以及运行 openma 所需的全部环境变量。
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+openma 配置形状的权威参考。TypeScript 事实来源在 `packages/api-types`；仓库内给人读的模式文档是 `AGENTS.md`。
+
+## Agent
+
+```ts
+interface AgentConfig {
+  id: string;                   // 由平台分配
+  name: string;
+  model: string;                // 例如 "claude-sonnet-4-6"
+  system: string;               // 系统提示词
+  tools: ToolDefinition[];
+  skills?: string[];            // 技能 id
+  environment_id?: string;
+  mcp_servers?: McpServerConfig[];
+  memory_store_id?: string;
+  harness?: string;             // 默认 "default"
+  archived?: boolean;
+  version: number;              // 每次更新由平台递增
+  created_at: string;
+  updated_at: string;
+}
+```
+
+### Pi Harness 压缩
+
+`harness: "pi"` 始终启用由 Harness 拥有的上下文压缩。这些可选的元数据键用来选择并调节内置策略：
+
+```json
+{
+  "harness": "pi",
+  "metadata": {
+    "compaction_strategy": "cc-style",
+    "compaction_trigger_fraction": 0.75,
+    "compaction_max_summary_tokens": 2000,
+    "compaction_summary_prompt": "可选的替换摘要提示词"
+  }
+}
+```
+
+`compaction_strategy` 接受 `cc-style`（默认）、`opencode-style` 或 `summarize`。非法名称会回退到 `cc-style`；故意没有 `none` 模式。所有内置策略都使用 `pi-ai`，并且不请求推理。
+
+- `cc-style` 使用隔离的摘要载荷：一条只做摘要的短系统提示词、没有工具、用图像占位符代替图像字节，以及单独的压缩 session id。这是稳健的默认值，并且故意不复用主 Agent 的 provider 前缀缓存。
+- `opencode-style` 有同样的隔离载荷边界，摘要模板为结构化的 Goal / Instructions / Discoveries / Accomplished / Files。
+- `summarize` 是显式的缓存感知策略。它回放主请求精确的系统提示词、工具声明、消息历史和 session id，然后追加私有的压缩指令。它故意不设置 `toolChoice`，因为有些 provider 适配器会为 `toolChoice: "none"` 去掉工具，从而改变缓存前缀。`completeSimple` 不执行工具；返回的工具调用会拒绝这次压缩边界。因此，支持前缀缓存的 provider 可以复用已预热的对话前缀。
+
+构造 `PiHarness` 时，应用可以替换整个 `PiCompactionPolicy`；OpenMA 仍然拥有规范的边界事件、失败回退，以及唯一一次溢出重试。每种策略都用一条新的摘要边界替换旧历史，所以压缩之后的第一次主模型请求是新前缀，即使摘要调用本身复用了旧前缀。
+
+### 工具定义
+
+```ts
+type ToolDefinition =
+  | { type: 'agent_toolset_20260401' }                    // 内置工具集
+  | {
+      type: 'custom';
+      name: string;
+      description: string;
+      input_schema: JsonSchema;
+      execution:
+        | { type: 'http'; endpoint: string; method?: string }
+        | { type: 'sandbox'; command: string };
+    };
+```
+
+### MCP 服务器配置
+
+```ts
+type McpServerConfig =
+  | {
+      name: string;                 // 成为前缀：mcp__<name>__<tool>
+      type: 'url';
+      url: string;
+      authorization_token?: string; // 内联 bearer（否则：匹配到的 vault 凭据）
+    }
+  | {
+      name: string;
+      type: 'stdio';
+      command: string;              // Environment 提供的可执行文件路径
+      args?: string[];
+      env?: Record<string, string>; // 进入沙箱；不要把长期凭据放在这里
+    };
+```
+
+`stdio` 是标准的 MCP/ACP 进程传输；没有端口或 SSE 路径。当外部 Worker，或运行在沙箱内的 Harness 拥有子进程时，它可用。沙箱外的 Harness 运行时会明确拒绝它，因为它们无法拥有沙箱内的进程。URL MCP 发现对每个服务器限制为 15 秒；每个 Agent 最多 20 个服务器。
+
+Agent 声明是启动配置，不是安装配置。选定的 Environment 必须在声明的路径上提供该可执行文件及其全部运行时依赖，通过它的包配置或自定义镜像。每个由 OpenMA 管理的基础 Environment 都包含 Node.js/npm（因此包含 `npx`）以及 uv 工具链（`uv` / `uvx`）；provider 适配器必须启动对应的 OpenMA 镜像、模板或快照，且不改变这份契约。OpenMA 不会从 `command` 推断或安装依赖。额外的可执行文件属于 Environment 的包列表或镜像。自带镜像和外部 Worker 不在基础镜像保证之内，必须自己声明并提供运行时内容。
+
+## Environment
+
+```ts
+interface EnvironmentConfig {
+  id: string;
+  name: string;
+  base_image: string;            // 例如 "openma/sandbox-base:python-3.12"
+  packages: {
+    pip?: string[];
+    npm?: string[];
+    apt?: string[];
+    cargo?: string[];
+    gem?: string[];
+    go?: string[];
+  };
+  network?: {
+    allowlist?: string[];        // 沙箱可以到达的主机名
+    denylist?: string[];
+  };
+  env?: Record<string, string>;
+}
+```
+
+## Vault
+
+Vault 是按租户划分的凭据包；其中的凭据绑定到 MCP 服务器或沙箱 CLI。
+
+```ts
+interface Vault {
+  id: string;
+  tenant_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string;
+}
+
+// 凭据存在单独的表里；每条是三种类型之一
+type CredentialAuth =
+  | { type: 'static_bearer'; token: string; mcp_server_url: string }
+  | { type: 'mcp_oauth'; access_token: string; refresh_token?: string;
+      token_endpoint?: string; expires_at?: string; mcp_server_url: string }
+  | { type: 'cap_cli'; cli_id: string; token: string };  // 例如 cli_id："gh"、"glab"、"aws"
+```
+
+与主机的绑定发生在凭据上，而不是 Vault 上：`static_bearer` / `mcp_oauth` 凭据通过解析请求主机名并对照 `mcp_server_url` 来匹配；`cap_cli` 凭据通过在 cap 规范注册表里查找 `cli_id` 来匹配。每个 Vault 最多 20 条凭据。令牌在静态存储中用 `PLATFORM_ROOT_SECRET` 做 AES-GCM 加密，写入之后永不经 API 返回。
+
+### Codex / ChatGPT 订阅凭据
+
+<Aside type="caution" title="仅限本地调试 — 高风险">
+  Codex 或 ChatGPT 订阅登录是本地直连宿主的便利功能，不是生产模型集成。Provider 条款、速率限制和安全检查可以限制或暂停账号。这条路径只用于受信任机器上的本地调试。
+</Aside>
+
+**当前状态：** Model Card 目前接受静态 API key 凭据。Codex/ChatGPT 订阅 OAuth 是用于本地调试的直连宿主适配器契约；它不是托管的 Model Card，也不是远程沙箱的凭据类型。
+
+当该直连宿主适配器启用时，它把 provider OAuth 凭据留在宿主本地、与 Pi 兼容的凭据库里。它绝不能把 `~/.codex/auth.json`、刷新令牌或访问令牌复制进沙箱、workspace 检查点、输出归档、Model Card 或请求载荷。沙箱收不到订阅凭据，也不能刷新它。
+
+对于远程或托管沙箱，应在 OMA 模型网关后面配置已批准的 API key 或 provider OAuth 凭据。网关是凭据边界：它认证请求、应用租户 / 模型策略，并且只把模型响应返回给沙箱。这样保留了相同的 Harness 端点形状，又不会把订阅登录变成可携带的密钥。
+
+这些路径故意分开：
+
+| 路径 | 凭据位置 | 预期用途 |
+|---|---|---|
+| 本地 `direct-host` | 受信任宿主上的 Pi 凭据库 | 仅本地调试 |
+| 远程 / 托管沙箱 | OMA 模型网关；已批准的 API/OAuth 凭据留在控制面 | 生产 / 托管执行 |
+
+不要把本地凭据文件当成可携带的 session 产物。如果运行时替换之后它不见了，就从已声明的 session 状态恢复 ACP / 原生 session，并要求用户在受信任的宿主上重新认证；不要从 Session 事件里重建或传输订阅令牌。
+
+## 技能
+
+```ts
+interface SkillMetadata {
+  type: 'skill';
+  id: string;
+  display_title: string;
+  name: string;                  // SKILL.md frontmatter 的 `name` — 也是挂载文件夹名
+  description: string;
+  source: 'anthropic' | 'custom';
+  latest_version: string;        // 数字纪元字符串
+  created_at: string;
+  updated_at: string;
+}
+
+// GET /v1/skills/:id/versions/:version 返回的按版本详情
+interface SkillVersion {
+  version: string;
+  files: Array<{ filename: string }>;  // R2 对象，位于 t/{tenant}/skills/{id}/{version}/<filename>
+}
+```
+
+平台把技能文件挂载到 `/home/user/.skills/{name}/`（使用 SKILL.md 的 `name`，不是 `id`），并在 Session 开始时**把 SKILL.md 正文直接内联进系统提示词** —— 没有惰性读取。注入的包装是：
+
+```text
+<source name="skill:{id}">
+<skill name="{name}">
+{full SKILL.md body}
+</skill>
+</source>
+```
+
+用对象形式挂到 Agent 上（不是裸字符串数组）：
+
+```json
+{ "skills": [{ "skill_id": "skill_abc123", "type": "custom" }] }
+```
+
+内置技能（`source: "anthropic"`）：`xlsx`、`pdf`、`docx`、`pptx` —— 共四个，无需上传。
+
+## Memory store
+
+```ts
+interface MemoryStore {
+  id: string;
+  agent_id: string;
+  embedding_model: string;       // 默认使用平台设置
+  vector_index: string;          // Vectorize 索引名
+}
+```
+
+## Session
+
+```ts
+interface SessionMeta {
+  id: string;
+  agent_id: string;
+  agent_version: number;         // 创建时钉住
+  status: 'pending' | 'running' | 'idle' | 'done' | 'failed';
+  created_at: string;
+  updated_at: string;
+}
+
+interface SessionEvent {
+  id: string;
+  session_id: string;
+  type: string;                  // 'agent.message'、'agent.tool_use'、'agent.thinking' 等
+  data: unknown;
+  created_at: string;
+}
+```
+
+完整的事件类型目录在 `packages/api-types/src/events.ts`。
+
+## 环境变量
+
+自托管所必需。通过 `npx wrangler secret put NAME` 设为 Worker secret。
+
+### 必需
+
+| 变量 | Worker | 用途 |
+|---|---|---|
+| `PLATFORM_ROOT_SECRET` | main、integrations | 静态加密的根密钥（凭据、模型卡密钥、集成令牌）以及出站 MCP 令牌签名。没有它 Worker 拒绝启动。**请备份** —— 丢失后每一行加密数据都无法读取。 |
+| `BETTER_AUTH_SECRET` | main | better-auth 的 session 签名密钥 |
+| `API_KEY` | main | REST API 的初始开发 API 密钥 |
+| `INTEGRATIONS_INTERNAL_SECRET` | main、integrations | main 与 integrations worker 之间的共享密钥 |
+
+### 可选集成
+
+| 变量 | Worker | 用途 |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | main、agent | 租户尚未添加 Model Card 时的回退 LLM 凭据。生产环境请优先使用 Console 里按租户划分的 Model Card —— 它们在 `PLATFORM_ROOT_SECRET` 下加密，并且可以不重新部署就轮换。（替代项：`OPENAI_API_KEY`、`MINIMAX_API_KEY`。） |
+| `LINEAR_CLIENT_ID` | integrations | Linear OAuth |
+| `LINEAR_CLIENT_SECRET` | integrations | Linear OAuth |
+| `LINEAR_WEBHOOK_SECRET` | integrations | 校验入站 Linear webhook |
+| `GITHUB_APP_ID` | integrations | GitHub App ID |
+| `GITHUB_PRIVATE_KEY` | integrations | GitHub App 私钥（.pem 内容） |
+| `GITHUB_WEBHOOK_SECRET` | integrations | 校验入站 GitHub webhook |
+| `SLACK_CLIENT_ID` | integrations | Slack OAuth |
+| `SLACK_CLIENT_SECRET` | integrations | Slack OAuth |
+| `SLACK_SIGNING_SECRET` | integrations | 校验入站 Slack 事件 |
+| `GOOGLE_CLIENT_ID` | main | Console 的 Google 登录 |
+| `GOOGLE_CLIENT_SECRET` | main | Console 的 Google 登录 |
+
+### 可选基础设施
+
+| 变量 | Worker | 用途 |
+|---|---|---|
+| `TAVILY_API_KEY` | main、agent | 内置 `web_search` 的网页搜索后端 |
+| `CLOUDFLARE_API_TOKEN` | main | 编程方式管理 CF 资源（可选） |
+| `CLOUDFLARE_ACCOUNT_ID` | main | 编程方式管理 CF 资源（可选） |
+| `INTEGRATIONS_PUBLIC_URL` | main | 覆盖自动检测的 integrations URL |
+| `PER_TENANT_DB_ENABLED` | main | 设为 `"true"` 以启用按租户的 D1 隔离 |
+| `STORE_BACKENDS` | main | 存储后端的 JSON 配置（高级） |
+| `DATABASE_URL` | main | 外部 Postgres URL（高级） |
+
+## Cloudflare 绑定
+
+每个 Worker 在其 `wrangler.jsonc` 里需要的内容：
+
+### `apps/main`
+
+| 绑定 | 类型 | 名称 |
+|---|---|---|
+| `MAIN_DB` | D1 | `openma-auth` |
+| `CONFIG_KV` | KV | （你的命名空间） |
+| `FILES_BUCKET` | R2 | `managed-agents-files` |
+| `AI` | Workers AI | （内置） |
+| `VECTORIZE` | Vectorize | `openma-memory` |
+| `SANDBOX_sandbox_default` | Service | → agent worker |
+| `INTEGRATIONS` | Service | → integrations worker |
+| `SEND_EMAIL` | Email | （你的发件人） |
+| `ANALYTICS` | Analytics Engine | `oma_events` |
+
+### `apps/agent`
+
+| 绑定 | 类型 | 名称 |
+|---|---|---|
+| `SESSION_DO` | Durable Object | `SessionDO` |
+| `SANDBOX` | Durable Object | `Sandbox`（Container 类） |
+| `CONFIG_KV` | KV | （与 main 共享） |
+| `MAIN_DB` | D1 | （与 main 共享） |
+| `WORKSPACE_BUCKET` | R2 | `managed-agents-workspace` |
+| `FILES_BUCKET` | R2 | （与 main 共享） |
+| `AI`、`VECTORIZE`、`BROWSER`、`ANALYTICS` | （与 main 相同） | |
+
+### `apps/integrations`
+
+| 绑定 | 类型 | 名称 |
+|---|---|---|
+| `MAIN_DB` | D1 | （与 main 共享） |
+| `MAIN` | Service | → main worker |
+
+## 接下来
+
+<LinkCard
+  title="API 端点"
+  href="/reference/api/"
+  description="逐端点参考。"
+/>
+<LinkCard
+  title="术语表"
+  href="/reference/glossary/"
+  description="按字母排序的每个术语。"
+/>

@@ -14,7 +14,7 @@ import {
 test("Vercel Deploy Button provisions Postgres, carries callback, and no secret values", () => {
   assert.equal(typeof deployWizard.buildVercelDeployButtonUrl, "function");
   const deployUrl = new URL(deployWizard.buildVercelDeployButtonUrl({
-    redirectUrl: "https://openma.dev/deploy/?provider=vercel&phase=callback",
+    redirectUrl: "https://openma.ai/deploy/?provider=vercel&phase=callback",
   }));
 
   assert.equal(deployUrl.origin, "https://vercel.com");
@@ -25,7 +25,7 @@ test("Vercel Deploy Button provisions Postgres, carries callback, and no secret 
   );
   assert.equal(
     deployUrl.searchParams.get("redirect-url"),
-    "https://openma.dev/deploy/?provider=vercel&phase=callback",
+    "https://openma.ai/deploy/?provider=vercel&phase=callback",
   );
   const environmentKeys = new Set(deployUrl.searchParams.get("env")?.split(","));
   for (const key of [

@@ -3,7 +3,7 @@
 //
 // Goal: a self-host deployment that omits AUTH_DB_01 from wrangler.jsonc
 // should silently land in single-D1 mode (no tenant_shard reads), and
-// openma.dev's --env production deployment with all 4 shards should
+// openma.ai's --env production deployment with all 4 shards should
 // continue to use the meta-table router.
 
 import { describe, expect, it } from "vitest";

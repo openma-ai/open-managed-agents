@@ -1,0 +1,185 @@
+---
+title: 接入集成
+description: 从控制台把 Agent 发布到 Linear、GitHub 或 Slack——安装应用、授予权限范围，并选择哪个 Agent 服务哪个工作区。
+---
+
+import { Tabs, TabItem, Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+集成让你的 Agent 出现在用户已经在用的地方。openma 开箱提供三个集成；每个都遵循同一形态：**安装应用**、**授予权限范围**、**发布 Agent**。
+
+本页针对**托管产品**。如果自行托管，OAuth 应用需要你自己注册——参见 [自托管 → OAuth 应用](/self-host/oauth-apps/)。
+
+## 集成如何工作
+
+对于每个已连接的工作区，平台把 OAuth 凭据存在 Vault 中，监听该平台的 webhook，并向 Agent 暴露一组 MCP 工具。当触发事件发生时（Linear 议题被指派给你的 Agent、Slack 的 `@mention`、GitHub PR 评论），平台会创建一个新 Session 并分发过去。
+
+Webhook 由对应平台签名；openma 会校验签名。回到第三方的出站调用使用 OAuth 令牌——该令牌不会直接暴露给模型。
+
+## 接入 Linear
+
+<Tabs>
+  <TabItem label="托管版（openma.ai）">
+
+<Steps>
+
+1. **Integrations → Linear → Install**。
+2. 在 Linear OAuth 页面授权 openma（你必须是 Linear 工作区管理员）。
+3. 选择哪个 Agent 服务该工作区。
+4. 选择能力：评论文题、更改状态、创建议题等。
+
+</Steps>
+
+该 Agent 现在会作为 Linear 中的**工作区成员**出现。在评论里提及它，或把议题指派给它——两种操作都会创建一个新 Session。
+
+  </TabItem>
+  <TabItem label="自托管">
+
+你需要先有自己的 Linear OAuth 应用。参见 [自托管 → OAuth 应用 → Linear](/self-host/oauth-apps/#linear)。
+
+  </TabItem>
+</Tabs>
+
+## 接入 GitHub
+
+<Tabs>
+  <TabItem label="托管版（openma.ai）">
+
+<Steps>
+
+1. **Integrations → GitHub → Install**。
+2. 选择组织或用户账号。选择 GitHub App 可以访问哪些仓库。
+3. 选择哪个 Agent 服务这些仓库。
+4. 授予能力：读取 PR、评论 PR、推送分支、打开 PR 等。
+
+</Steps>
+
+<Aside type="caution" title="仓库范围">
+  默认情况下，Agent 只对你明确授权的仓库执行操作。之后要增加仓库，需要重新授权 GitHub App。
+</Aside>
+
+  </TabItem>
+  <TabItem label="自托管">
+
+你需要先有自己的 GitHub App。参见 [自托管 → OAuth 应用 → GitHub](/self-host/oauth-apps/#github)。
+
+  </TabItem>
+</Tabs>
+
+### 用户如何唤起 GitHub 机器人
+
+有两条触发路径，按优先级排列：
+
+**基于标签的互动（主要方式）。** 安装时，OMA 会在每个选中的仓库里自动创建一个以机器人人设命名的标签（小写并 slug 化——例如人设 “Coder” → 标签 `coder`）。要在任意 issue 或 PR 上唤起机器人，**加上这个标签**。一旦打上标签，该 issue/PR 上每一次白名单内的活动都会唤醒机器人——后续跟进不必再次提及：
+
+| 来源 | 是否唤醒机器人？ |
+| ------------------------------- | -------------- |
+| `issues.opened` | 是（创建时已打标签） |
+| `issues.labeled`（触发标签） | 是（订阅） |
+| `issues.unlabeled`（触发标签） | 取消订阅——机器人停止响应 |
+| `issues.edited` / `reopened` | 是 |
+| 其他 issue 动作（assignee、milestone、lock 等） | 否 |
+| `issue_comment.created` | 是 |
+| `pull_request.opened` / `labeled`（触发） | 是 |
+| `pull_request.synchronize`（新提交） | 是 |
+| `pull_request.ready_for_review` | 是 |
+| `pull_request.edited` / `reopened` | 是 |
+| 其他 PR 动作 | 否 |
+| `pull_request_review.submitted` | 是 |
+| `pull_request_review_comment.created`（含行内回复） | 是 |
+
+如果从某个仓库删除该标签，OMA 不会重新创建；在重新加上标签之前，机器人不会再响应该仓库。
+
+**`@` 提及回退。** 在 issue 正文、PR 正文、评论或行内 review 评论的任意位置输入 `@<bot-slug>[bot]`（或 `@<bot-slug>`）。GitHub 的 `@` 选择器不会自动补全 Bot 账号，因此把完整 handle 作为纯文本输入——解析器仍然能识别。每一次 `@` 提及都会开始一次临时互动，效果等同于加上该标签。
+
+<Aside type="note" title="为什么有两条路径？">
+  GitHub 的 `@` 提及自动补全会排除 Bot 类型账号。如果用户只依赖自动补全下拉框，就发现不了这个机器人。触发标签是一等的 GitHub 界面（标签选择器里可自动补全、一眼可见、可在仪表盘中筛选）。`@` 提及回退则照顾肌肉记忆和临时的一次性互动。
+</Aside>
+
+
+## 接入 Slack
+
+Slack 安装是**按 Agent 专用的 Slack App**——每一次发布都在 `api.slack.com` 上拥有自己的 Slack App 条目，以及自己的 OAuth 凭据和 bot 用户。这样租户彼此隔离（你的机器人住在自己的 App 里，而不是共享的市场应用），并且每次发布可以独立划定权限范围。
+
+<Tabs>
+  <TabItem label="托管版（openma.ai）">
+
+<Steps>
+
+1. **Integrations → Slack → Publish agent**。选择 Agent + Environment + 人设名称。点击 **Continue**。控制台会在服务器上创建一个发布外壳，并显示你需要的回调 URL。
+2. 点击 **Create Slack app from manifest**——打开已预填 manifest 的 `api.slack.com/apps`。OAuth redirect URL 与 Events Request URL 已经写入（两者都按你的 publication id 作为键，因此刷新或重试不会弄坏它们）。
+3. 从新 Slack App 的 **Basic Information** 页面，把 **Client ID**、**Client Secret** 和 **Signing Secret** 复制到控制台的第 2 步表单。点击 **Save credentials**。
+4. 点击 **Install to workspace**。Slack 会提示工作区管理员授权；成功后你会回到控制台，该发布标记为 **Live**。
+5. 把机器人加入频道（`/invite @your-bot`）——它会先自我介绍，然后按下面的表响应 `@mentions`、私信和 reaction。
+
+</Steps>
+
+<Aside type="tip">
+**如果安装中途失败**——D1 超时、网络抖动、你关掉了标签页——发布外壳会留在服务器上，状态为 `pending_setup` / `credentials_filled`。重新打开 **Integrations → Slack**：进行中的安装会显示在列表顶部，并带有 **Resume install** 按钮。重试不会留下幽灵行。
+</Aside>
+
+  </TabItem>
+  <TabItem label="自托管">
+
+先发布再安装的流程相同——你把向导指向自己的自托管网关。向导第 2 步的 manifest 仍然链到 `api.slack.com/apps`，与 openma 跑在哪里无关（Slack 的应用配置始终在 Slack 一侧）。manifest 流程的注意事项见 [自托管 → OAuth 应用 → Slack](/self-host/oauth-apps/#slack)。
+
+  </TabItem>
+</Tabs>
+
+### 机器人接收哪些事件
+
+机器人在安装时订阅一组固定事件（写入 manifest）。平台把每个入站事件归类为一个**分发意图**，然后创建或恢复 Session、更新元数据，或丢弃该事件。默认是按频道的 Session：每个 `(publication, channel)` 有一个正在运行的 Session，该频道内的全部事件都路由到同一个 session id。
+
+| Slack 事件 | Sessions 表效果 | Agent 看到的内容 |
+|---|---|---|
+| `app_mention`（`@bot ...`） | 恢复或惰性创建频道 Session | `<oma_signal kind="direct_invocation">`，带有 channel、thread_ts 以及用户文本 |
+| 私信中的 `message`（`channel_type == "im"`） | 同上 | 同上（私信按定义就是直接调用） |
+| 机器人所在频道中的 `message`，**顶层消息** | 启动一个防抖窗口；以 `channel_scan_armed` 信号恢复 Session | `<oma_signal kind="channel_scan_armed">`——Agent 安排一次唤醒，在防抖窗口之后扫描近期历史 |
+| 机器人所在频道中的 `message`，且是机器人已在其中的线程里的**线程回复** | 恢复频道 Session | `<oma_signal kind="direct_invocation">` |
+| `assistant_thread_started`（用户打开了该机器人的 AI 面板） | 恢复或惰性创建频道 Session | `<oma_signal kind="direct_invocation">`——该面板就是对话界面，按直接调用处理 |
+| 针对**机器人自身**的 `member_joined_channel`（你执行了 `/invite @bot`） | 惰性创建频道 Session | `<oma_signal kind="joined_channel">`——Agent 调用 `conversations.info` 与 `conversations.history`，再决定是否发布一段简短介绍 |
+| 针对其他人的 `member_joined_channel` | 丢弃 | 无（其他人加入与机器人无关） |
+| 针对**机器人自身**的 `member_left_channel`（有人 `/kick` 了机器人） | 将频道 Session 标记为已关闭 | `<oma_signal kind="session_closed">`（最后一次唤醒；Agent 取消已安排的唤醒后结束本轮） |
+| `channel_archive`（机器人仍在频道中时该频道被归档） | 将频道 Session 标记为已关闭 | `<oma_signal kind="session_closed">` |
+| `channel_unarchive`（频道被恢复） | 重新打开先前的 Session | 带 `reopened=true` 的 `<oma_signal kind="joined_channel">` |
+| `channel_rename` | 更新 scope 行上缓存的频道名 | 无——不会唤醒 Agent |
+| 加在**机器人自己某条消息**上的 `reaction_added` / `reaction_removed` | 恢复频道 Session | `<oma_signal kind="reaction_on_bot_message">`，带有 reaction emoji 与 item ts |
+| 加在其他人消息上的 `reaction_added` / `reaction_removed` | 丢弃 | 无 |
+| `tokens_revoked`、`app_uninstalled` | 将所有频道 Session 标记为已关闭 | 每个 Session 收到最终的 `session_closed` 信号 |
+
+信号信封（`<oma_signal>`）携带每次事件中变化的部分（channel id、thread ts、用户文本等）。稳定的协议词汇——每种 signal kind 的含义、何时发帖、何时保持沉默、回复时调用哪个工具名——放在 Agent 的 system prompt 里，在 Session 创建时注入一次。这样可以保持 prompt 缓存的局部性，也意味着 Agent 在同一次 Session 里不会第二次看到同一段样板文本。
+
+### Agent 如何回复
+
+每一条出站消息都经过类型化的 MCP 工具 **`mcp__slack__chat_postMessage`**（经由 Slack 托管的 MCP 服务器 `mcp.slack.com`）。当该类型化工具可用时，Agent 不会再去 shell 执行 `curl https://slack.com/api/...`——那只是该 App 关闭 Slack MCP 开关时使用的回退。
+
+对于 `direct_invocation`：Agent 必须回复，哪怕只有一行确认。沉默会被理解成「机器人坏了」。耗时较长的工作应先回复一条确认，再用 `scheduleWakeup` 稍后跟进。
+
+对于 `channel_scan_armed`：Agent 不会直接发帖。它安排一次唤醒（延迟 = 信号信封中的防抖窗口，prompt = `scan_channel <channel_id>`），然后静默结束本轮。唤醒触发时，Agent 调用 `mcp__slack__conversations_history(oldest=<last scan timestamp>)`，再决定发帖、加 reaction，还是保持沉默。
+
+
+## 发布权限范围
+
+每个集成都允许你限定 Agent 能做什么。这些限制在 API 网关执行，而不仅仅写在模型的 prompt 里——即使模型决定乱来，发布未授予的权限范围也不会作为工具暴露出来。
+
+| 集成 | 常见能力 |
+|---|---|
+| Linear | `comment.write`、`issue.update`、`issue.create`、`issue.read`、`label.assign`、`triage.read` |
+| GitHub | `pr.read`、`pr.review.write`、`pr.create`、`branch.push`、`issue.read`、`issue.comment.write` |
+| Slack | `message.read`、`message.write`、`thread.reply`、`reaction.add`、`user.read`、`canvas.write` |
+
+## 通用 MCP
+
+除了这三个随产品提供的集成，任何兼容 MCP 的服务器都可以使用。在 **Agent → MCP servers** 字段中添加；openma 会为服务器暴露的每项能力生成 `mcp__<server>__<tool>`（双下划线）。
+
+## 接下来
+
+<LinkCard
+  title="自定义集成"
+  href="/build/integrations/"
+  description="实现 IntegrationProvider，以添加新的第三方平台（Jira、Discord、你的内部工具）。"
+/>
+<LinkCard
+  title="OAuth 应用设置（自托管）"
+  href="/self-host/oauth-apps/"
+  description="在你自己的部署上注册 Linear、GitHub 和 Slack 应用的分步说明。"
+/>

@@ -1,0 +1,135 @@
+---
+title: 术语表
+description: 按字母排序的全部 OpenMA 术语定义——从 agent toolset 到 vault credential——并链接到使用它们的指南。
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+## Agent
+
+可复用的配置：模型、系统提示词、工具、技能、MCP 服务器。有版本。见 [概念 → Agent](/concepts/#agent) 与 [配置 → Agent](/reference/configuration/#agent)。
+
+## API key
+
+用于认证 REST API 与 CLI 调用的令牌（放在 `x-api-key` 请求头里）。在 Console 的 **API Keys** 页面创建。见 [REST API → 认证](/build/api/#authentication)。
+
+## Built-in toolset
+
+随平台发布的工具集（`bash`、`read`、`write`、`edit`、`glob`、`grep`、`web_fetch`、`web_search`），引用名为 `agent_toolset_20260401`。见 [技能与工具 → 内置工具](/build/skills-and-tools/#built-in-tools)。
+
+## Container
+
+Cloudflare Container 实例，每个 Session 一个，用来执行需要真实操作系统的工具。由 Environment 定义。见 [自托管 → 概述](/self-host/overview/)。
+
+## DefaultHarness
+
+随平台发布的 Harness 实现，基于 `ai` SDK。位于 `apps/agent/src/harness/default.ts`。见 [概念 → Harness](/concepts/#harness)。
+
+## Durable Object (DO)
+
+Cloudflare 原语，提供强一致性和按键状态。openma 使用 `SESSION_DO`（每个 Session 一份 SQLite 事件日志）和 `SANDBOX`（每个 Session 一个 Container）。
+
+## Environment
+
+沙箱配置：软件包、网络规则、基础镜像。见 [概念 → Environment](/concepts/#environment)。
+
+## Event log
+
+某个 Session 的只追加事件序列。存在 `SESSION_DO` 的 SQLite 里。这是事实来源。
+
+## Harness
+
+Agent 循环。随平台发布为 `DefaultHarness`；可通过 `HarnessInterface` 替换。见 [概念 → Harness](/concepts/#harness)。
+
+## Hosted
+
+指 [openma.ai](https://app.openma.ai) 上的 openma SaaS，相对于自托管。
+
+## Integration
+
+把 Agent 发布到第三方平台（Linear、GitHub、Slack）的方式。见 [概念 → 集成](/concepts/#integration) 与 [自定义集成](/build/integrations/)。
+
+## IntegrationProvider
+
+每个集成都要实现的接口。定义在 `packages/integrations-core/src/provider.ts`。见 [自定义集成](/build/integrations/)。
+
+## MCP
+
+Model Context Protocol —— 把语言模型连接到工具的开放标准。openma 会为每个已注册的 MCP 服务器自动生成 `mcp__<server>__<tool>`（双下划线）。见 [技能与工具 → MCP 服务器](/build/skills-and-tools/#mcp-servers)。
+
+## Memory store
+
+按 Agent 划分的语义记忆，由 Vectorize 与 Workers AI 嵌入支撑。见 [概念 → Memory Store](/concepts/#memory-store)。
+
+## Model card
+
+按租户划分的可执行 LLM 绑定：稳定的 `model_id`、开放的 Pi provider id、线路模型、可选的 Pi 元数据 / 基础 URL / 自定义请求头，以及 API key。旧的 `ant` / `oai` 标签仍是迁移别名。`api_key` 在行上直接用 `PLATFORM_ROOT_SECRET` 做 AES-GCM 静态加密（不经过 Vault）。Agent 版本上的 `effort`、`speed` 和 `inference_geo` 故意不是 Card 字段。见 [参考 → 模型卡](/reference/api/#model-cards)。
+
+## Outbound proxy
+
+所有沙箱 HTTPS 请求都经过的出站代理。按主机注入 Vault 凭据，使模型永远看不到原始密钥。见 [概念 → Vault](/concepts/#vault)。
+
+## Publication
+
+一条绑定，表示“这个 Agent 通过这个集成、以这些作用域服务这个工作区”。见 [Console → 连接集成](/console/integrations/)。
+
+## Self-host
+
+在你自己的 Cloudflare 账号上运行 openma，相对于托管 SaaS。
+
+## Service binding
+
+Cloudflare 原语，用于 Worker 之间调用且不离开数据面。openma 用它们做 `main → integrations`、`main → agent` 等。
+
+## Session
+
+一次对话，可持久、可恢复。见 [概念 → Session](/concepts/#session)。
+
+## SSE
+
+Server-Sent Events。`/v1/sessions/:id/events` 的传输方式。见 [REST API → 流式 Session 事件](/build/api/#stream-session-events-sse)。
+
+## Skill
+
+可复用的提示词片段，加上挂进沙箱的参考文件。见 [概念 → 技能](/concepts/#skill) 与 [技能与工具 → 自定义技能](/build/skills-and-tools/#custom-skills)。
+
+## Tenant
+
+openma 里的多租户单元。用户首次登录时自动创建。见 [自托管 → 运维 → 多租户](/self-host/operations/#multi-tenancy)。
+
+## Tool
+
+模型可以调用的任何东西。内置、自定义，或由 MCP 生成。见 [概念 → 工具](/concepts/#tool)。
+
+## Trajectory
+
+一次 Session 事件的完整记录，表现为有类型的序列。内部规范见仓库里的 `docs/trajectory-v1-spec.md`。
+
+## Vault
+
+凭据库。绑定到特定主机；由出站代理注入。见 [概念 → Vault](/concepts/#vault)。
+
+## Vectorize
+
+Cloudflare 的托管向量索引。openma 用它支撑 Memory Store。
+
+## Workers AI
+
+Cloudflare 的托管模型服务。openma 用它做记忆嵌入（Agent 循环本身不走这里 —— 循环走你配置的 Model Card）。
+
+## Workspace bucket
+
+存放 Session 范围文件的 R2 存储桶（`/home/user/files/...`）。
+
+## 接下来
+
+<LinkCard
+  title="概念"
+  href="/concepts/"
+  description="每个术语的长篇说明。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="上面每一项的模式。"
+/>

@@ -11,7 +11,7 @@ The REST surface lives under `/v1/*`. Everything the Console does, you can do pr
 
 | Environment | Base URL |
 |---|---|
-| Hosted (production) | `https://app.openma.dev` |
+| Hosted (production) | `https://app.openma.ai` |
 | Hosted (staging) | `https://app.staging.openma.dev` |
 | Self-host | Whatever you set in `apps/main/wrangler.jsonc → routes` |
 
@@ -24,7 +24,7 @@ Two auth schemes:
 **Session cookie** — what the Console UI uses (better-auth-issued). Not normally what you'll integrate against unless you're embedding openma in a browser app.
 
 ```bash
-export OMA_BASE_URL="https://app.openma.dev"
+export OMA_BASE_URL="https://app.openma.ai"
 export OMA_API_KEY="oma_..."
 ```
 

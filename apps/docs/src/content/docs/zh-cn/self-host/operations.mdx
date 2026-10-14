@@ -1,0 +1,371 @@
+---
+title: 运维
+description: 自托管者上线后的运维事项——自定义域名、可观测性、多租户、备份、升级、故障排查。
+---
+
+import { Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+部署跑起来之后，下面是维持它运行需要知道的事。
+
+## 自定义域名
+
+路由声明在每个 `wrangler.jsonc` 里：
+
+```jsonc
+"routes": [
+  { "pattern": "app.yourdomain.com", "custom_domain": true }
+]
+```
+
+当你以 `custom_domain: true` 部署时，Cloudflare 会：
+
+1. 在该 zone 上自动创建一条 DNS 记录。
+2. 签发一张 TLS 证书（首次部署约 1 分钟）。
+3. 把流量路由到该 Worker。
+
+如果证书没有签发，该 zone 可能还没有完全接入 Cloudflare。修好 zone，再重新部署。
+
+staging 的 `[env.staging]` 块指向 `*.staging.yourdomain.com`——同一套机制。
+
+## 可观测性
+
+### 日志
+
+每个 Worker 都设置了 `observability: { enabled: true }`，因此日志默认进入 Cloudflare Logs。实时查看：
+
+```bash
+npx wrangler tail managed-agents
+npx wrangler tail openma-agent
+npx wrangler tail managed-agents-integrations
+```
+
+你想查询的内容（静默捕获、集成分发）使用**结构化 JSON**。临时信息用普通的 `console.log`。
+
+### Analytics Engine
+
+平台把高基数事件写入一个 Analytics Engine 数据集（`oma_events`）：
+
+- 静默捕获（被捕获、但没有呈现给用户的错误）
+- Session 生命周期转换
+- 工具调用的成功 / 失败
+- 集成分发
+
+从仪表盘或 GraphQL API 查询。适合回答“静默失败是不是在飙升？”以及“哪个工具报错最频繁？”。
+
+### 指标
+
+Worker 指标（请求数、CPU 时间、错误）在 Cloudflare 仪表盘里按 Worker 查看。Durable Object 指标（活跃实例、存储）在 Durable Objects 下。
+
+## 成本归因
+
+成本报告是一个 provider Port，不是按 Cloudflare 形状做的核心服务。每个
+适配器都返回同一组证据字段：
+
+| 字段 | 含义 |
+|---|---|
+| `source` | `provider_billed`、`provider_metered`、`openma_metered` 或 `estimated` |
+| `granularity` | 该来源能够证明的最窄范围，例如账号、项目、Environment、运行时或 Session |
+| `is_invoice_grade` | 该结果能否当作已定稿的发票金额 |
+| `data_completeness` | `complete`、`partial` 或 `unavailable`；不可用的数据绝不会被强行当成零 |
+| `reconciled_at` | 最近一次读到 provider 数据的时间 |
+
+Cloudflare 适配器先查询账号的可计费用量 API，并把
+较长的时段拆成 provider 支持的窗口。如果每一行都包含同一种
+货币和一个已计费成本，该值就成为 `total_cost`。Cloudflare 仍把
+这个 API 标为 alpha，因此适配器保持 `is_invoice_grade: false`。
+当成本字段或 API 授权不可用时，适配器回退
+到已配置的 Cloudflare 价格卡，并且只把结果作为
+`total_estimated_cost` 返回。Analytics 数据集失败会使估算变为部分结果，
+因此总额保持为 null，而不是少报。
+
+`GET /v1/oma/cost_report` 及其 `/pricing` 子资源暴露整次部署范围的
+provider 数据。因此它们只接受操作者的 `API_KEY`，通过
+`x-api-key` 或 `Authorization: Bearer`；普通的租户凭据不能
+读取账号支出，也不能修改回退价格卡。价格卡更新是
+严格的：未知的服务 / 费率、负值和非数字值会返回
+`400`，而不是被静默存下来。
+
+这里有两本有意分开的账：
+
+- Provider 成本是基础设施支出的对账来源，范围是
+  provider 所暴露的那个范围。
+- OpenMA 运行时用量是限额和更细粒度
+  租户 / Session 分摊的实时来源。套用费率卡并不会让它变成 provider 的发票数据。
+
+当前适配器状态：
+
+| Provider 家族 | 来源与边界 | 当前状态 |
+|---|---|---|
+| Cloudflare | FOCUS 可计费用量；Analytics 价格卡回退仍为 `estimated` | 已在独立适配器包中实现 |
+| Vercel | FOCUS 1.3 JSONL 计费明细，账号范围，一年的请求会自动拆分 | 已在独立适配器包中实现 |
+| Blaxel | Billing Explorer 的合计与资源行，账号 / 工作区 / 资源范围 | 已在独立适配器包中实现 |
+| Modal | 官方 TypeScript SDK 目前不暴露计费报告 | 未实现；估算够用时使用 OpenMA 运行时账本 |
+| Daytona / E2B / Sprites / Superserve | OpenMA 没有使用稳定、已文档化的已计费成本 API | 使用 OpenMA 运行时账本适配器 |
+| Node / Docker / LiteBox / BoxRun | 基于 OpenMA 运行时事件、带版本的操作者费率卡 | 由运行时账本适配器实现 |
+
+Provider 适配器通过 `CostAttributionRegistry` 注册，因此增加
+或替换一个适配器不会改变 API 的来源形状。仅属于 provider 的
+维度留在适配器载荷里，不会漏进 Port。
+
+每个适配器位于 `packages/cost-attribution-*`。Provider 凭据和
+SDK 停在该包边界；默认工作区不会连带安装
+可选的 provider SDK。Cloudflare 和 Vercel 原样保留它们的 FOCUS
+行。Blaxel 保留其已文档化的原生行，并且不会假装
+这些行符合 FOCUS。
+
+### 提供商边界与失败语义
+
+- Vercel 的响应是流式 JSONL。畸形行会使查询失败；一条
+  成功的空流是完整的、合计为零的 USD 总额。混合货币
+  会产生 `partial`，且 `total_cost: null`。
+- Blaxel 在每个游标页上重复其全窗口摘要。OpenMA 只记录
+  该总额一次，拒绝缺失或重复的游标，并在分页过程中摘要
+  发生变化时失败。工作区过滤 / 分组仅限账号管理员，
+  provider 的 `403` 仍然是失败。
+- 运行时账本只有在每个观测到的指标
+  都在同一种货币下有有效费率时，才返回货币总额。缺失费率和混合货币是
+  部分结果，绝不会用零填上。
+- 这些 API 是只读的，不会创建 provider 资源，因此成功或
+  失败的报告都没有清理副作用。调用方取消会传播
+  到 provider 的 HTTP / SDK 工作；SQL 账本在读取过程中检查取消。
+- `CostAttributionError` 区分无效的查询 / 范围、认证、
+  权限、provider 可用性、畸形响应、分页不变量，
+  以及不完整的费率卡失败。只有可用性 / 限流失败
+  可以重试；没有任何错误包含 provider 凭据。
+
+对于 Node、Docker、LiteBox、BoxRun，或没有已文档化成本 API 的 provider，
+把 `createRuntimeUsageReader(services.usage)` 组合进运行时适配器。
+历史账本包含已确认的行，按租户和
+时间索引，并且在 D1、SQLite 和 Postgres 之间保持存储无关。
+
+把确定性契约套件作为 `pnpm test` 的一部分运行。要探测真实的
+provider 账号并写出一份私有证据产物：
+
+```bash
+pnpm test:certification:cost -- --allow-missing
+```
+
+该命令对每个
+provider 报告 `PASS`、`FAIL` 或 `NOT_RUN_NO_CREDENTIAL` 之一，并写出 `artifacts/certification/cost-attribution-certification.json`，
+模式为 `0600`。作为发布门禁时去掉 `--allow-missing`。预期的密钥
+是 `CLOUDFLARE_API_TOKEN` 加 `CLOUDFLARE_ACCOUNT_ID`、`VERCEL_TOKEN` 加
+`VERCEL_TEAM_ID`，以及 `BL_API_KEY` 加 `BL_ACCOUNT_ID`。报告和
+诊断会打码凭据值。
+
+<h2 id="multi-tenancy">多租户</h2>
+
+默认情况下，openma 是**单个 D1 上的多租户**。每个用户都有一个 `tenant_id`；每个查询都按它限定范围。对大多数团队足够。
+
+代码库里有两种不同的、更严格隔离的机制；它们解决的是不同的问题：
+
+### 按租户的数据库隔离（少见）
+
+用于 B2B SaaS：每个客户需要自己的 D1（合规、“吵闹邻居”隔离、按客户备份）：
+
+```bash
+npx wrangler secret put PER_TENANT_DB_ENABLED   # set to "true"
+npx wrangler secret put STORE_BACKENDS          # JSON config of backends
+```
+
+完整配置 schema 见 `packages/storage/README.md`。这与下面的多分片扩缩容相互独立。
+
+<h3 id="multi-shard">多分片扩缩容</h3>
+
+如果部署超出单个 D1（D1 每个数据库有 10 GB / 5 万行的限制），可以扇出到 N 个 MAIN_DB 分片。分片路由器位于 `ROUTER_DB`；每个租户的数据落到 `tenant_shard` 所标明的、拥有该租户的分片上。
+
+启用只改配置——wrangler 文件带有 `env.production` 叠加层，绑定 4 个分片后的认证 D1（openma.ai 的托管生产环境在用）。要为自己的部署启用：
+
+1. 开通额外的 D1：`wrangler d1 create openma-router`、`wrangler d1 create openma-auth-shard-01..03`
+2. 把 ID 改进 `apps/{main,agent,integrations}/wrangler.jsonc` 的 `env.production` 块（替换 openma.ai 的 ID）
+3. 对每个分片应用迁移：
+   ```bash
+   wrangler d1 migrations apply openma-auth-shard-01 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-auth-shard-02 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-auth-shard-03 --remote --config apps/main/wrangler.jsonc
+   wrangler d1 migrations apply openma-router        --remote --config apps/main/wrangler.jsonc
+   ```
+4. 灌入分片池：
+   ```bash
+   wrangler d1 execute openma-router --remote --command \
+     "INSERT INTO shard_pool (binding_name, status, tenant_count) VALUES \
+      ('AUTH_DB_00', 'open', 0), \
+      ('AUTH_DB_01', 'open', 0), \
+      ('AUTH_DB_02', 'open', 0), \
+      ('AUTH_DB_03', 'open', 0);"
+   ```
+5. 以 `--env production` 部署：
+   ```bash
+   npx wrangler deploy --config apps/main/wrangler.jsonc --env production
+   # repeat for agent, integrations
+   ```
+
+`packages/services/src/index.ts:buildCfTenantDbProvider` 里的自动检测会在 `AUTH_DB_01` 被绑定后立即启用多分片路由器。新注册会被分配到负载最低的开放分片。
+
+已有租户留在被分配的分片上；目前没有自动再平衡工具。
+
+## 数据库备份
+
+D1 在 Workers Paid 上支持时间点恢复。在 Cloudflare 仪表盘 → D1 → 你的数据库 → Backups 中启用。
+
+R2 有版本控制；如果技能文件是可变的、并且你想保留历史，在仪表盘里按存储桶启用。
+
+## 升级
+
+拉取 `main`，安装，重新部署：
+
+```bash
+git pull
+pnpm install
+npx wrangler d1 migrations apply openma-auth         --remote --config apps/main/wrangler.jsonc
+npx wrangler d1 migrations apply openma-integrations --remote --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
+```
+
+按约定，迁移只向前、只做加法；不支持回滚。如果有 staging，先在 staging 上测试。
+
+### 迁移基线（一次性）
+
+迁移历史被压成每个 D1 一份 `0001_consolidated.sql`。已经跑过历史上 0001–0017 文件的旧部署，会在 `d1_migrations` 里留下那些文件名。为了阻止 wrangler 在已有部署上重新应用新的合并文件，运行一次：
+
+```bash
+./scripts/stamp-baseline-existing-deploy.sh production
+# or: ./scripts/stamp-baseline-existing-deploy.sh staging
+```
+
+该脚本把合并后的文件名 INSERT 进每个 D1 的 `d1_migrations` 表，使 wrangler 把它视为已经应用。可以安全地再次运行；使用 `INSERT OR IGNORE`。
+
+**全新的自托管者不运行这个脚本**——`setup-cf.sh` 把合并文件作为第一条迁移应用，wrangler 会按正常方式把它记为已应用。
+
+历史迁移文件保留在 `apps/main/migrations/_archive/`（`migrations-integrations/`、`migrations-router/` 同样如此），供 git-blame 参考。它们不会被应用。
+
+## 沙箱隔离
+
+每个 Session 都通过 `SANDBOX` Durable Object 类得到自己的 Cloudflare Container 实例。Session 之间从不共享容器状态。容器的出站网络经过 openma 的出口代理；密钥（Vault 条目）按主机注入，因此模型看不到原始凭据。
+
+如果要限制出站目的地，编辑 `apps/agent/src/sandbox/proxy.ts` 添加允许列表规则。
+
+## 保留与删除保证
+
+保留按制品类别拆开；provider 的运行时保留从不
+被当作持久存储：
+
+| 制品 | 默认行为 | 策略归谁 |
+|---|---|---|
+| Session 范围的文件元数据与 blob | `DELETE /v1/sessions/:id` 先停掉运行时，再做租户范围的尽力级联；blob 删除失败会被记下来供对账 | OpenMA 清理钩子 + 操作者对账 |
+| Session 输出前缀 | 同一条删除路径会移除租户 / Session 输出前缀下的对象；列举和删除都分页 | OpenMA 清理钩子 + 存储桶生命周期兜底 |
+| 原生 Harness 状态 / workspace 检查点 | 作为不可变的检查点候选发布；恢复时只使用当前被栅栏住的候选 | 所选的托管运行时宿主 provider |
+| 备份对象 | Cloudflare SDK 上传默认带七天 TTL；自托管适配器必须配置等价的对象存储生命周期 | Provider / 操作者 |
+| SessionDO 事件与流的行 | 在 SessionDO 的生命周期内持久；尚未启用自动的行 TTL | 显式维护任务（不是隐含在请求代码里） |
+| Memory 版本 | 每天 03:00 UTC 的保留清扫留下最新版本，并在 30 天后修剪更旧的版本 | 调度器（Node 上用 `croner`，Cloudflare 上用 Wrangler cron） |
+
+删除在 Session 行被移除之后有意做成尽力而为。
+清理钩子限定在租户范围内并且幂等，因此重试 / 对账
+即使不透明的 Session ID 发生碰撞，也不能删掉另一个租户的文件。
+清理开始之前会先停掉运行时；无法证明
+硬停止的 provider 必须继续把该资源栅栏住并报告孤儿，而不是
+复用它。
+
+对自托管部署，调度器随主进程启动，并在
+优雅关闭时停止。对 Cloudflare，main Worker 收到
+每分钟一次的 cron tick，并用 `waitUntil` 分发同样的任务；用
+`wrangler dev --test-scheduled` 在本地演练一次 tick。
+
+## 常见故障排查
+
+### POST 上出现 “1010 Cloudflare Browser Integrity”
+
+Cloudflare 的 Bot Fight Mode 正在拒绝该请求。可以：
+- 在客户端加上一个浏览器形态的 User-Agent 头，或
+- 在仪表盘里降低受影响主机名的 Bot Fight Mode。
+
+使用 `curl` 从自动化打到 `*.openma.ai` 默认值的自托管者会碰到这个；托管用法的 User-Agent 路径记在 [项目记忆](/contribute/) 里。
+
+### 首次部署出现 “Migration failed”
+
+确认在 `pnpm deploy` 之前运行了 `wrangler d1 migrations apply openma-auth --remote`。部署脚本不会重新应用迁移。
+
+### 容器无法启动
+
+用 `wrangler tail openma-agent` 查看实际错误。常见原因：
+- Environment 里列出的基础镜像不存在，或无法拉取。
+- Environment 安装列表里的某个包不存在（`pip` 包名拼错）。
+- 已经超过 Containers 免费配额——在仪表盘里升级。
+
+### OAuth 回调 404
+
+你很可能把第三方上的重定向 URL 设成了一个与 `apps/integrations/wrangler.jsonc → routes` 不一致的主机。它们必须完全一致。
+
+### Webhook 签名校验失败
+
+你的 `LINEAR_WEBHOOK_SECRET` / `GITHUB_WEBHOOK_SECRET` / `SLACK_SIGNING_SECRET` 不对，或者没有设在 integrations Worker 上。用下面的命令核对：
+```bash
+npx wrangler secret list -c apps/integrations/wrangler.jsonc
+```
+
+## 已知的长尾事项
+
+这些不是“用户能看见的故障”意义上的 bug，但值得
+放在视野里，免得长期运行的部署慢慢漂进其中一种。
+
+### SessionDO 内的 SQL 增长
+
+Durable Object 为每个轨迹事件向 `events` 表写一行。大于 500 KB 的事件
+会溢出到 R2 的 `FILES_BUCKET`，并带一个 `_spilled`
+引用，但小事件会在 SQL 里永远累积——没有
+修剪。Cloudflare 的 Durable Object SQLite 配额是每个 Durable Object 10 GB，大约
+能放下 1000 万条、每条约 1 KB 的事件。单个 Session 要跑到大约 10 万个回合才会接近。`streams`
+表是同一形态：`finalize` 翻转该行的状态，并不删除它。数量
+很小（每次 LLM 调用一行），但它同样没有上界。
+
+如果你在生产里运行持续多日的 Session，请计划定期
+修剪早于你实际需要的保留窗口的 `events` 行，并为 `managed-agents-files` 配置一条 R2 生命周期规则，使
+已消亡 Session 溢出的 blob 不会永远占着存储。
+
+### 容器 OOM
+
+沙箱容器默认是 `instance_type: standard-1`（1 个 vCPU、4 GB
+内存、4 GB 磁盘）。重型的机器学习库 `pip install`、载入 pandas 的大数据文件，
+或任何对多 GB blob 做 mmap 的操作都会 OOM。
+容器退出，从而触发 `onActivityExpired` →
+`snapshotWorkspaceNow` → `super.onActivityExpired` → 优雅停止；
+下一次 Session 预热会捡起最近的备份。
+
+如果工作负载经常 OOM，在
+`apps/agent/wrangler.template.jsonc` 里把 `instance_type` 调到 `standard-2`
+（2 个 vCPU、8 GB 内存）或 `standard-4`（4 个 vCPU、16 GB 内存）。在可观测性里看 `containers` 数据集
+中的 `Container exited (code: 137)`（SIGKILL，通常是
+OOM）与 `Container exited (code: 0)`（优雅的 sleepAfter）。
+
+### R2 存储桶生命周期
+
+`managed-agents-backups` 存储桶的逐对象 TTL 由 SDK
+在上传时设置（默认 7 天——`BACKUP_TTL_SEC` 位于
+`apps/agent/src/oma-sandbox.ts`），因此旧备份会干净地过期。
+`managed-agents-files`（事件溢出、Vault 审计 blob）和
+`managed-agents-memory`（memory store 内容）没有自动 TTL。
+对长期运行的部署，按你实际需要的保留期挂一条 R2 生命周期规则——Cloudflare 的 R2 仪表盘可以
+按存储桶配置这些规则，无需改代码。
+
+### 大于 500 KB 的 LLM 流式分片
+
+单个跨过溢出阈值的分片会进 R2
+而不是 SQL，这没问题，但 `chunks_json` 数组仍然必须
+放进一行。如果某个分片超过 SQLite 行大小限制
+（Workers 上约 1 GB），流的 finalize 会失败。我们在实践中
+没见过这种情况——典型的模型输出是逐行的——但如果你
+做一个通过 LLM 流式传输巨大 blob 的工具，请把它们切成片。
+
+## 接下来
+
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="全部环境变量和绑定形状，集中在一处。"
+/>
+<LinkCard
+  title="术语表"
+  href="/reference/glossary/"
+  description="每个术语按字母顺序排列，并带交叉链接。"
+/>

@@ -683,7 +683,7 @@ export class GitHubProvider implements IntegrationProvider {
 
     const manifest = buildManifest({
       name: pub.persona.name,
-      url: this.config.homepageUrl ?? "https://openma.dev",
+      url: this.config.homepageUrl ?? "https://openma.ai",
       webhookUrl: this.dedicatedWebhookUri(form.appOmaId),
       redirectUrl: this.manifestRedirectUri(),
       // Setup URL = our publication-first OAuth callback. After the user

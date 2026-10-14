@@ -452,6 +452,9 @@ export default defineConfig({
       "**/.vercel/**",
       "apps/agent/build-*/**",
       "apps/console/**",
+      // Starlight docs tests use node:test and node:path. The root project
+      // runs in workerd, which cannot load that runner.
+      "apps/docs/**",
       "apps/main-node/**",
       "apps/main-fly/**",
       "apps/main-vercel/**",

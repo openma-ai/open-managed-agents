@@ -8,7 +8,7 @@ export default defineConfig({
   // Apex is canonical. The worker (src/worker.ts) 301-redirects
   // www→apex, so canonical/og:url/sitemap entries must point at apex
   // — otherwise every link Google indexes resolves through a 301.
-  site: "https://openma.dev",
+  site: "https://openma.ai",
   trailingSlash: "always",
   integrations: [
     sitemap({

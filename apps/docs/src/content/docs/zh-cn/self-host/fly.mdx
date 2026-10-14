@@ -1,0 +1,98 @@
+---
+title: 部署到 Fly.io
+description: 在一台 Fly Machine 上运行可移植的 Node 控制面，使用持久卷或 Fly Managed Postgres。
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+OpenMA 在 `apps/main-fly` 提供 Fly 专用的部署适配器、一份已签入的 `fly.toml`，以及一条幂等的安装命令。适配器只把 Fly Machine 元数据翻译成可移植的 Node 契约；存储、Harness、Session 租约和沙箱 provider 驱动保持不变。
+
+## 适配器负责的部分
+
+- 从 `FLY_APP_NAME` 推导 `PUBLIC_BASE_URL` 和 `GATEWAY_ORIGIN`。
+- 把服务绑定到 `0.0.0.0:8080`。
+- 把 SQLite、上传文件、输出、沙箱 workspace 和原生 Harness 状态放在 `/app/data`，即 Fly Volume 挂载点。
+- 仅在这些值规范化之后才启动 `apps/main-node`。
+- 保持一台 Machine 持续运行，这样在 HTTP 流量空闲时，调度器和回退轮询器不会被静默挂起。
+
+它不替换沙箱抽象。通过 Fly 之外使用的同一个 Node Port 选择 E2B、Daytona 或远程 BoxRun 运行时。Fly Machine 托管的是控制面，不是 Agent 沙箱。可部署入口不会回退到宿主机子进程。
+
+## 部署
+
+<Steps>
+
+1. **克隆并认证。**
+
+   ```bash
+   git clone https://github.com/openma-ai/open-managed-agents.git
+   cd open-managed-agents
+   fly auth login
+   ```
+
+   安装命令不会在 Fly 上构建这个 monorepo。它把检出的完整 Git SHA 映射到 `ghcr.io/openma-ai/open-managed-agents:sha-<git-sha>`，并部署该预构建的服务器发布检查点。
+
+2. **运行安装命令。**
+
+   <Tabs>
+     <TabItem label="SQLite + Fly Volume">
+       ```bash
+       E2B_API_KEY=... \
+       OPENMA_FLY_DATA_MODE=sqlite \
+       OPENMA_FLY_SANDBOX_PROVIDER=e2b \
+       pnpm setup:fly
+       ```
+     </TabItem>
+     <TabItem label="Fly Managed Postgres">
+       ```bash
+       E2B_API_KEY=... \
+       OPENMA_FLY_DATA_MODE=postgres \
+       OPENMA_FLY_SANDBOX_PROVIDER=e2b \
+       pnpm setup:fly
+       ```
+     </TabItem>
+   </Tabs>
+
+   对新应用，该命令会对照已签入的配置运行 Fly Launch，暂存本地生成的 `BETTER_AUTH_SECRET` 和 `PLATFORM_ROOT_SECRET`，以及所选沙箱 provider 的配置，以滚动策略部署，并打印已配置的健康检查。已有的应用密钥绝不会被隐式轮换；provider 配置会更新为与显式选择一致。
+
+   若要做可审计的镜像晋级，直接钉住镜像仓库摘要：
+
+   ```bash
+   OPENMA_FLY_IMAGE=ghcr.io/openma-ai/open-managed-agents@sha256:... \
+   E2B_API_KEY=... \
+   OPENMA_FLY_SANDBOX_PROVIDER=e2b \
+   pnpm setup:fly
+   ```
+
+   `latest` 这类可变标签会被拒绝。维护者可以显式设置 `OPENMA_FLY_BUILD_FROM_SOURCE=1`，在开发时演练已签入的 Dockerfile；这条较慢的路径不是一键部署路径。
+
+3. **验证。**
+
+   ```bash
+   fly checks list
+   fly status
+   curl https://YOUR_APP.fly.dev/health
+   ```
+
+</Steps>
+
+## 持久化契约
+
+`fly.toml` 在 `/app/data` 声明了一个 `openma_data` 卷。`initial_size` 允许 Fly Launch 在首次部署时创建第一个 10 GB 卷；定时快照保留 14 天，卷可以自动扩展到最多 50 GB。
+
+<Aside type="caution" title="SQLite 保持单 Machine">
+  Fly Volume 一次只挂到一台 Machine。SQLite 模式保持一台 Machine。若要多个控制面副本，使用 Managed Postgres 加上共享的 S3 兼容对象存储；本地沙箱工作目录仍然不是跨 Machine 的共享文件系统。
+</Aside>
+
+## 安全边界
+
+安装页面永远不会收到凭据。本地安装命令把所选沙箱 provider 的凭据直接发送到 Fly secrets，并且不会打印它；`openma.ai` 看不到这个值。Console 健康之后，再添加租户范围的 Model Card，或者用 `fly secrets` 直接设置模型提供商密钥。Node 的工作范围 HTTP MCP 网关仍然可用。直接的任意 HTTPS 凭据注入仍然需要一个可到达的 `oma-vault` 部署及其 CA；Fly 不会自动加上那层网络拦截。
+
+## 重新部署
+
+```bash
+git pull --ff-only
+pnpm setup:fly
+fly checks list
+```
+
+`main-fly` 包不包含 Fly SDK 依赖。Fly 生命周期留在 `fly.toml` 和 `flyctl` 里，应用行为留在 OpenMA Port 之后。源码 Dockerfile 保留为显式的开发逃生路径；正常的安装命令始终向 `fly deploy` 提供不可变镜像。

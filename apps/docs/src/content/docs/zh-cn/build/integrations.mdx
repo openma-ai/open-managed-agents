@@ -1,0 +1,125 @@
+---
+title: 自定义集成
+description: 通过实现 IntegrationProvider 接口，添加新的第三方集成（Jira、Discord、你的内部工具）。
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+三个随产品提供的集成（Linear、GitHub、Slack）是同一接口的具体实现：**`IntegrationProvider`**，定义于 `packages/integrations-core/src/provider.ts`。实现该接口后，你的集成就会接入同一套安装 / webhook / MCP 工具 / 发布形态。
+
+## 集成提供什么
+
+Provider 是一个小模块，回答四个问题：
+
+1. **用户如何安装？** OAuth 流程或粘贴凭据。
+2. **入站 webhook 如何映射到 Session？** Webhook 载荷 → Session 分发。
+3. **Agent 能做什么？** MCP 工具描述符列表及其执行器。
+4. **发布如何划定范围？** 按工作区、按议题、按用户等。
+
+```ts
+// packages/integrations-core/src/provider.ts (sketch)
+export interface IntegrationProvider {
+  id: string;
+  displayName: string;
+
+  install: {
+    type: 'oauth' | 'credentials';
+    // ...
+  };
+
+  parseWebhook(req: Request): WebhookEvent | null;
+
+  dispatch(event: WebhookEvent, ctx: ProviderContext): Promise<SessionDispatch>;
+
+  tools: McpToolDescriptor[];
+  executeTool(name: string, input: unknown, ctx: PublicationContext): Promise<unknown>;
+
+  publication: {
+    scopes: PublicationScope[];
+  };
+}
+```
+
+## 现有 provider 的结构
+
+完整参考见 `packages/linear/`（provider 逻辑）+ `apps/integrations/src/routes/linear/publications.ts`（薄的 CF 包装）。GitHub 与 Slack 的拆分方式相同：
+
+```text
+packages/<provider>/src/
+├── provider.ts        // implements IntegrationProvider — OAuth/PAT install, publish flow, MCP wiring
+├── webhook/parse.ts   // verify signature, parse event → typed dispatch
+├── config.ts          // capabilities (ALL_*_CAPABILITIES + DEFAULT_*_CAPABILITIES) + MCP URL
+└── oauth/             // OAuth client (where applicable)
+
+apps/integrations/src/routes/<provider>/
+└── publications.ts    // thin CF route that delegates into the provider
+```
+
+Webhook 入口挂载位于 `packages/http-routes/src/integrations/gateway.ts`（CF 与 Node 宿主共享）。真正要设计的是**你暴露哪些能力**以及**如何把 webhook 映射到分发**，而不是管道本身。
+
+## 构建新的 provider
+
+<Steps>
+
+1. **添加一个目录**，位于 `apps/integrations/src/routes/<your-integration>/`。
+
+2. **实现 `IntegrationProvider`。** 从 `id`、`displayName`、OAuth 流程和一项 MCP 工具开始——先让一次 Session 端到端分发成功，再添加更多。
+
+3. **注册它。** `apps/integrations/src/index.ts` 有一个注册表；把你的 provider 加进列表。网关会自动暴露 `/install/<id>` 与 `/webhook/<id>`。
+
+4. **添加界面安装流程**（可选，但建议做）。控制台有一个 `Integrations` 页面，会从 `/v1/oma/integrations` 读取已注册的 provider。
+
+5. **本地测试。** `pnpm dev:integrations` 让网关对着你的本地 main worker 运行。用隧道工具（`cloudflared tunnel`）接收来自第三方服务的 webhook。
+
+</Steps>
+
+## 持久化
+
+使用 `packages/integrations-adapters-cf/` 中的抽象仓库。它们针对共享的 `MAIN_DB` D1 实例，为 `installations`、`oauth_state`、`publications` 和 `webhook_events` 提供类型化 CRUD。不要自己另写一套——这些适配器就是 Linear/GitHub/Slack 在用的，并且会为你处理多租户范围。
+
+## Webhook 安全
+
+基础 provider 使用 `PLATFORM_ROOT_SECRET` 校验出站投递的 webhook 签名，入站则使用按 provider 划分的签名密钥。不要绕过这一点。如果第三方服务有自己的签名方案，在 `parseWebhook` 内校验，失败时返回 `null`。
+
+<Aside type="caution" title="租户隔离">
+  每条 webhook 事件在分发之前都必须解析到某个租户。适配器为此暴露了 `findInstallationByExternalId`——使用它。
+</Aside>
+
+## MCP 工具设计
+
+每个工具是一项能力——宁可多个小工具，也不要少数巨型工具。名称以 `mcp__<provider>__<tool>`（双下划线）作为命名空间。输入 schema 是 JSON Schema。
+
+```ts
+{
+  name: 'mcp__jira__update_issue_status',
+  description: 'Move a Jira issue to a new status.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      issue_key: { type: 'string', description: 'e.g. PROJ-123' },
+      status: { type: 'string', enum: ['Open', 'In Progress', 'Done'] },
+    },
+    required: ['issue_key', 'status'],
+  },
+}
+```
+
+执行器收到 `PublicationContext`，其中包含 OAuth 令牌（已按该发布的权限范围校验）以及发起方 Session 的元数据。
+
+## 接下来
+
+<LinkCard
+  title="接入集成（控制台）"
+  href="/console/integrations/"
+  description="终端用户安装集成时看到的内容。"
+/>
+<LinkCard
+  title="OAuth 应用（自托管）"
+  href="/self-host/oauth-apps/"
+  description="为你自己的部署注册外部 OAuth 应用。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="IntegrationProvider、Publication 以及 webhook 信封的 schema。"
+/>

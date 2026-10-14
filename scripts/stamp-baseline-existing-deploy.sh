@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/stamp-baseline-existing-deploy.sh
 #
-# One-time migration for openma.dev's existing CF prod (and any other
+# One-time migration for openma.ai's existing CF prod (and any other
 # deployment that already has the historical 0001-0017 migration files
 # applied via wrangler).
 #

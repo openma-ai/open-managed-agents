@@ -1,0 +1,306 @@
+---
+title: Node + Docker（不用 Cloudflare）
+description: 把 openma 作为单个 Node 进程或 docker compose 栈运行——不需要 Cloudflare 账号、Workers、Durable Object 或 Containers。后端可选 SQLite、Postgres 或 MySQL；沙箱可以在本地或远程。
+---
+
+import { Aside, Card, CardGrid, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+
+如果你想在没有 Cloudflare 账号的情况下运行 openma——在 VPS、笔记本、
+fly.io、你的 k8s 集群，或任何能跑 Linux/macOS 的地方——走这条路径。**同一套代码。** Harness、事件日志、恢复
+逻辑、API、Console UI：与 Cloudflare 部署相同。
+变的只有 I/O 绑定。
+
+<Aside type="note">
+  本页讲的是 **Node 侧构建**（`apps/main-node`）。Cloudflare 部署见 [部署到 Cloudflare](/self-host/deploy/)。
+  选择与你的托管方式匹配的一条。
+</Aside>
+
+## 多种 SQL 后端，一个镜像
+
+| | SQLite + LocalFs（默认） | Postgres + LocalFs | MySQL + LocalFs |
+|---|---|---|---|
+| 附带的 compose | `docker-compose.yml` | `docker-compose.postgres.yml` | 外部 MySQL 8.x DSN |
+| 适合 | 单实例、Session 不超过 10 GB、开发、演示 | 多实例、大表、共用已有的 PG 集群 | 已有的 MySQL 基础设施 |
+| SQL 并发 | 每个进程一个写入者 | 多个写入者——可做高可用 | 多个写入者——基于 CAS 的认领 |
+| 备份 | `cp ./data/*.db`，或 litestream → S3 | `pg_dump` / 托管 PG 快照 | `mysqldump` / 托管快照 |
+
+**无论哪种，都是同一个 `openma/main-node:dev` 镜像**——运行时的 `DATABASE_URL` 环境变量决定后端。SQLite 只需要 `DATABASE_PATH`；服务器数据库使用
+`DATABASE_URL=postgres://...` 或 `DATABASE_URL=mysql://...`。better-auth
+使用所选的服务器数据库；只有 SQLite 模式才使用单独的
+`auth.db`。
+
+## 快速开始（Docker，SQLite）
+
+```bash
+git clone https://github.com/openma-ai/open-managed-agents.git
+cd open-managed-agents
+cp .env.example .env
+
+# Two secrets are required before first boot — both generated locally:
+#   BETTER_AUTH_SECRET   — signs Console sessions
+#   PLATFORM_ROOT_SECRET — encrypts credentials, model-card API keys, integration tokens
+#                          (lose it and every encrypted row is unreadable — back it up)
+$EDITOR .env
+# BETTER_AUTH_SECRET=$(openssl rand -hex 32)
+# PLATFORM_ROOT_SECRET=$(openssl rand -base64 32)
+# ANTHROPIC_API_KEY is optional — in production, prefer a per-tenant Model Card.
+# SANDBOX_PROVIDER is required; choose an isolated runtime and add its credentials:
+# SANDBOX_PROVIDER=e2b
+# E2B_API_KEY=...
+
+# First time builds the image; subsequent runs skip --build
+docker compose up -d --build
+
+# Sanity
+curl localhost:8787/health
+# → {"status":"ok","backends":{"db":"sqlite ..."},...}
+
+# Console UI on the same port — sign up with email + password,
+# you'll be in the app immediately (no email-OTP gate by default)
+open http://localhost:8787
+```
+
+把 Harness 从头跑到尾：
+
+```bash
+AID=$(curl -s -X POST localhost:8787/v1/agents -H 'content-type: application/json' \
+  -d '{"name":"hello","model":"claude-sonnet-4-6","tools":[{"type":"agent_toolset_20260401"}]}' \
+  | jq -r .id)
+
+SID=$(curl -s -X POST localhost:8787/v1/sessions -H 'content-type: application/json' \
+  -d "{\"agent\":\"$AID\"}" | jq -r .id)
+
+curl -N localhost:8787/v1/sessions/$SID/events/stream &
+
+curl -s -X POST localhost:8787/v1/sessions/$SID/events -H 'content-type: application/json' \
+  -d '{"events":[{"type":"user.message","content":[{"type":"text","text":"Run uname -a"}]}]}'
+```
+
+SSE 流会依次打印 `agent.tool_use` → `agent.tool_result` → `agent.message`
+→ `session.status_idle`。
+
+## Postgres 后端
+
+```bash
+# Same .env (compose sets DATABASE_URL internally to the bundled postgres)
+docker compose -f docker-compose.postgres.yml up -d --build
+
+curl localhost:8787/health
+# → {"backends":{"agents":"postgres","events":"postgres","db":"postgres ..."}, ...}
+```
+
+会在命名卷 `oma-pgdata` 上拉起 `postgres:16-alpine`。不向宿主机
+发布端口——只有 `oma-server` 能在 bridge 网络上访问它。
+若使用托管 PG（RDS / Neon / Supabase / 你的集群），删掉
+`postgres` 服务块，并在 `.env` 里设置 `DATABASE_URL=postgres://user:pw@host:5432/oma`。
+
+## MySQL 后端
+
+使用一个全新的 MySQL 8.x 数据库和同一个镜像：
+
+```bash
+DATABASE_URL=mysql://oma:password@mysql.internal:3306/oma \
+  pnpm --filter @open-managed-agents/main-node start
+
+curl localhost:8787/health
+# → {"auth":"better-auth-mysql","backends":{"agents":"mysql","events":"mysql",...}}
+```
+
+MySQL 适配器负责原生 DDL 以及乐观 CAS / 事务细节；
+v1 存储与 SQLite、Postgres 使用同一套 Port。当已有数据库需要更新的显式迁移时，引导会拒绝启动。
+在配置共享的
+实时适配器之前，只运行一个 main-node 副本，这样 SSE 扇出
+不会被拆到多个进程内 hub 上。
+
+## 登录
+
+默认的自托管**没有邮件服务器**，因此认证路径就是普通的
+邮箱 + 密码——注册会立刻创建会话，没有 OTP 页面。
+
+| 模式 | 何时 | 如何启用 |
+|---|---|---|
+| **邮箱 + 密码**（默认） | 单用户 / 团队 / 开发 / 演示 | 直接 `docker compose up`，通过 Console 注册 |
+| **AUTH_DISABLED=1** | “只有我一个用户，完全跳过认证” | `echo "AUTH_DISABLED=1" >> .env`，然后重启。每个请求都变成 `tenant_id=default`。 |
+| **邮箱 + OTP 门槛** | 真正的生产环境，你已经接好 SMTP | `AUTH_REQUIRE_EMAIL_VERIFY=1`，在 `apps/main-node/src/auth/config.ts` 里覆盖 `sendVerificationOTP`，改为调用 Resend / SES / SMTP / Postmark 等。 |
+| **Google OAuth** | 团队 SSO | 在 `.env` 里设置 `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`。Console 会自动渲染 Google 按钮。 |
+
+<h2 id="sandbox-modes">沙箱模式</h2>
+
+Agent 的 `bash` / `read` / `write` 等工具在沙箱里执行。
+`SANDBOX_PROVIDER` 环境变量选择后端。
+
+| 模式 | 何时选择 | 所需环境变量 |
+|---|---|---|
+| `litebox` | 本地硬件隔离，无需守护进程 | `SANDBOX_PROVIDER=litebox`。主机需要 `/dev/kvm`（Linux）或 Apple Silicon（macOS）。通过 libkrun 提供每虚拟机的 Firecracker 等价隔离。 |
+| `boxrun` | 多主机且具备 KVM，OMA pod 跑在托管 k8s 上 | `SANDBOX_PROVIDER=boxrun BOXRUN_URL=http://host:8100/v1/default`。在单独的 KVM 主机上运行 `boxlite serve`；OMA pod 通过 HTTP 访问它。 |
+| `daytona` | 生产环境 / 不可信代码 | `SANDBOX_PROVIDER=daytona DAYTONA_API_KEY=...`（另可选 `DAYTONA_API_URL`）。由 Daytona 管理的 Linux 虚拟机，每个 Session 一台。 |
+| `e2b` | E2B SaaS / 自托管的 E2B Infra / 阿里云 Agent Sandbox（兼容 e2b） | `SANDBOX_PROVIDER=e2b E2B_API_KEY=...`（兼容端点另可选 `E2B_API_URL`、`E2B_SANDBOX_URL` 和 `E2B_DOMAIN`；`SANDBOX_IMAGE` 选择模板）。Firecracker 微型虚拟机。 |
+
+`SANDBOX_PROVIDER` 没有默认值。缺失、未知以及 `subprocess` 都会
+抛错；无隔离的本地适配器仅作为内部
+测试夹具保留，可部署的 Node 服务器不能选中它。
+
+**远程沙箱**（Daytona、E2B、BoxRun）若要共享 memory 挂载，使用
+`MEMORY_S3_*` 环境变量（任何 S3 兼容存储——AWS / R2 / OSS / MinIO）。
+
+### 在 E2B 中运行 ACP Harness
+
+把 Agent 的 OMA 扩展设为 `harness: "acp-sandbox"`，并在
+`acp.agent` 下提供进程命令。所选的 E2B 模板必须包含该
+二进制：
+
+```json
+{
+  "_oma": {
+    "harness": "acp-sandbox",
+    "acp": {
+      "agent": {
+        "command": "codex-acp",
+        "args": [],
+        "cwd": "/workspace"
+      },
+      "restart": {
+        "mode": "on-crash",
+        "max_restarts": 3,
+        "window_ms": 60000
+      }
+    }
+  }
+}
+```
+
+OpenMA 使用 E2B 的 live-stdin 命令通道承载 ACP JSON-RPC，而不是轮询日志。
+回合运行期间，它每 30 秒续订一次 90 秒租约。
+空闲时，E2B 被配置为内存暂停并自动恢复，而不是杀掉
+ACP 进程。宿主关闭时，OpenMA 保留 ACP session 检查点，
+在 Agent 声明了该能力时请求 `session/close`，然后在拆除沙箱之前
+先拆掉子进程。
+
+部署级栅栏、可移植的 `/workspace` 检查点、不可变的
+Session 输出清单，以及官方 Managed
+Agents worker 与 OpenMA 监督的 Harness 之间的差别，见
+[托管运行时宿主（Managed Runtime Host）](/self-host/managed-runtime-host/)。
+
+## Vault sidecar（出站凭据注入）
+
+`docker compose up` 会在 `oma-server` 旁边拉起一个 `oma-vault` 容器。
+它是一个 mockttp HTTPS MITM 代理——当沙箱向你登记过凭据的主机
+发起出站调用时，代理会
+注入匹配的 `Authorization` 头。**Agent 进程永远
+看不到密钥值**；密钥只存在于代理的查找表里。
+
+按 Vault 启用：
+
+```bash
+# Create a vault
+VID=$(curl -s -X POST localhost:8787/v1/vaults \
+  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
+  -d '{"name":"github-prod"}' | jq -r .id)
+
+# Add a credential bound to api.github.com
+curl -s -X POST localhost:8787/v1/vaults/$VID/credentials \
+  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
+  -d '{
+    "display_name":"github-pat",
+    "auth":{"type":"static_bearer","token":"ghp_xxx","mcp_server_url":"https://api.github.com"}
+  }'
+
+# Bind to a session — agent's `curl https://api.github.com/...` then sees
+# the Authorization header injected at the network layer
+```
+
+如果不需要 sidecar：`docker compose up oma-server`。
+
+## 操作者易错点
+
+- **`AUTH_DISABLED=1` 要写在 `.env` 里，而不是 shell 里。** Compose
+  会从 compose
+  目录下的 `.env` 文件替换 `${AUTH_DISABLED}`——只在 shell 里 export 会被静默忽略。
+- **`docker compose restart` 不会重新读取环境变量。** 改完
+  `.env` 之后，使用 `docker compose up -d --force-recreate oma-server`。
+- **`oma-vault` 和 `oma-server` 必须使用同一个后端。** 如果只在
+  `oma-server` 上把 `DATABASE_URL` 设成 Postgres URL，vault
+  sidecar 会回退到自己的 SQLite，从而永远看不到你写入的凭据。附带的 compose 已经替你处理好；如果自行定制，
+  请让两边的环境变量保持一致。
+- **用旧的 `oma.db` 首次启动。** `main-node` 每次
+  启动都会对统一运行时的回合标记列做幂等的
+  `ALTER TABLE`，因此已有数据库会就地升级。如果看到
+  `no such column: turn_id`，说明你还在迁移前的构建上——拉取
+  更新的镜像。
+
+## 在后端之间迁移
+
+**SQLite → Postgres**（单向）：
+
+```bash
+# Export
+sqlite3 ./data/oma.db ".dump agents agent_versions sessions session_events session_streams \
+  memories memory_stores memory_versions vaults credentials session_memory_stores \
+  tenant membership" > /tmp/oma-dump.sql
+
+# Strip SQLite-specific pragmas
+sed -i '/^PRAGMA\|sqlite_sequence/d' /tmp/oma-dump.sql
+
+# Import into Postgres
+docker exec -i oma-postgres psql -U oma -d oma < /tmp/oma-dump.sql
+```
+
+`agent.id`、`session.id` 是 TEXT，BIGINT 时间戳两边都可用，
+JSON 列是 TEXT 而不是 jsonb——除了去掉 pragma，不需要做 schema 翻译。
+
+## 备份
+
+| | SQLite | Postgres | MySQL |
+|---|---|---|---|
+| 热备份 | litestream 把 `./data/*.db` 持续复制到 S3 | `pg_dump` / 托管 PG 快照 / WAL 流式复制 | `mysqldump` / 托管 MySQL 快照 |
+| 恢复 | 停掉服务器，把数据库拷回去，再启动 | `pg_restore` 到全新的 PG，把 `DATABASE_URL` 指过去 | 恢复到全新的 MySQL，把 `DATABASE_URL` 指过去 |
+| 沙箱工作目录 | 单独备份 `./data/sandboxes/` | 相同 | 相同 |
+| Memory blob | 备份 `./data/memory-blobs/`，或设置 `MEMORY_S3_*` | 相同 | 相同 |
+| 认证 | 单独的 `./data/auth.db` | 在 Postgres 数据库里 | 在 MySQL 数据库里 |
+
+这些后端共享同一套崩溃恢复测试面（适配器、恢复逻辑、真实进程 SIGKILL 引导、Cloudflare Durable Object 驱逐，共 55 个测试）。
+
+## 崩溃恢复演示
+
+`main-node` 在每次写入时都持久化 Session 状态——`kill -9` 不会
+丢掉对话。
+
+```bash
+# 1. Drop a few synthetic events
+SID=$(curl -s -X POST localhost:8787/v1/sessions -d '{}' | jq -r .id)
+for i in 1 2 3; do
+  curl -s -X POST localhost:8787/v1/sessions/$SID/_test_emit \
+    -H 'content-type: application/json' -d "{\"text\":\"event-$i\"}"
+done
+
+# 2. SSE shows ids 1, 2, 3
+curl -N localhost:8787/v1/sessions/$SID/events/stream
+# Ctrl-C
+
+# 3. Hard-kill — no graceful shutdown
+docker kill -s SIGKILL oma-server
+
+# 4. Restart
+docker compose up -d
+
+# 5. Resume from where you left off
+curl -N -H 'Last-Event-ID: 3' localhost:8787/v1/sessions/$SID/events/stream
+```
+
+## 接下来
+
+<LinkCard
+  title="运维"
+  href="/self-host/operations/"
+  description="备份、可观测性、多租户、R2 生命周期、容器 OOM。"
+/>
+<LinkCard
+  title="参考：配置"
+  href="/reference/configuration/"
+  description="全部环境变量、全部开关、全部默认值。"
+/>
+<LinkCard
+  title="部署到 Cloudflare"
+  href="/self-host/deploy/"
+  description="另一条路径——Workers + Durable Object + Containers + D1。"
+/>

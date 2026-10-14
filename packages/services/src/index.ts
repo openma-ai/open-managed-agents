@@ -375,7 +375,7 @@ export const buildCfServices = buildServices;
  *    assume single-D1. Self-hosters omit the shard bindings from
  *    wrangler.jsonc and the mode kicks in without any flag.
  *
- * 2. **Multi-shard mode** (default for openma.dev's `--env production`).
+ * 2. **Multi-shard mode** (default for openma.ai's `--env production`).
  *    Reads `tenant_shard` from `ROUTER_DB` (or MAIN_DB legacy fallback) and
  *    resolves to the named binding. MAIN_DB fallback for unmapped tenants.
  *    Per-isolate cache; no TTL (sharding is sticky).

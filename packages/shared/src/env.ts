@@ -79,7 +79,7 @@ export interface Env {
   BETTER_AUTH_SECRET: string;
   /** When set, the better-auth session cookie is scoped to this domain
    *  (leading dot for cross-subdomain). Typical value on hosted:
-   *  ".openma.dev" so app.openma.dev's auth cookie is also visible from
+   *  ".openma.ai" so app.openma.ai's auth cookie is also visible from
    *  the apex landing site. Self-hosters can leave unset for default
    *  per-host scoping. */
   AUTH_COOKIE_DOMAIN?: string;

@@ -1,0 +1,293 @@
+---
+title: API 端点
+description: openma `/v1/*` 表面的逐端点 REST 参考。
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+除非另行注明，每个端点都需要 `x-api-key: <api_key>` 请求头。请求体和响应体为 JSON。错误形状见 [REST API → 错误](/build/api/#errors)。
+
+## Agent
+
+### `GET /v1/agents`
+列出租户内的全部 Agent。查询参数：`archived`（布尔）、`limit`、`cursor`。
+
+### `POST /v1/agents`
+创建一个 Agent。请求体：`AgentConfig` 去掉平台分配的字段（`id`、`version`、时间戳）。
+
+### `GET /v1/agents/:id`
+获取单个 Agent 的当前版本。
+
+### `GET /v1/agents/:id/versions`
+列出某个 Agent 的全部版本。
+
+### `GET /v1/agents/:id/versions/:version`
+获取某个历史版本。
+
+### `PATCH /v1/agents/:id`
+更新一个 Agent。版本号递增。请求体：部分 `AgentConfig`。
+
+### `DELETE /v1/agents/:id`
+归档一个 Agent（软删除；Session 仍保留钉住的版本）。
+
+## Session
+
+### `POST /v1/sessions`
+创建一个 Session。返回 `SessionMeta`。
+```json
+{
+  "agent": "agent_...",
+  "environment_id": "env_...",
+  "title": "可选"
+}
+```
+之后通过 `POST /v1/sessions/:id/messages` 提交第一轮用户消息（一次请求，流式返回回复），或通过 `POST /v1/sessions/:id/events`（发后即走；需另开一个 SSE 消费者）。
+
+### `GET /v1/sessions`
+列出 Session。查询参数：`agent_id`、`status`、`limit`、`cursor`。
+
+### `GET /v1/sessions/:id`
+获取 Session 元数据与状态。
+
+### `GET /v1/sessions/:id/events`
+JSON 分页的事件日志。查询参数：`limit`（1–1000，默认 100）、`order`（`asc`|`desc`）、`after_seq`。返回 `{ data: SessionEvent[], has_more, next_page }`。
+
+传入 `Accept: text/event-stream` 可切换到 SSE 变体（或直接调用 `/v1/sessions/:id/events/stream`）。默认行为与 Anthropic 规范对齐：不回放历史，只包含规范事件联合（第三方 `@anthropic-ai/sdk` 可以干净解析）。两个可选开关：
+
+- `?include=chunks` —— 放入 OMA 扩展事件（token 分片、生命周期、`system.user_message_*`、`session.warning`，以及 `aux.model_call` 这类额外 span）
+- `?replay=1`（或请求头 `Last-Event-ID: <seq>`）—— 在跟随尾部之前回放已持久化的历史
+
+完整事件表见 [REST API → 流式 Session 事件](/build/api/#stream-session-events-sse)。
+
+### `GET /v1/sessions/:id/log`
+完整事件日志，以 JSON 数组返回（非流式）。
+
+### `GET /v1/sessions/:id/outputs`
+OpenMA 扩展，列出刻意写在 `/mnt/session/outputs` 之下的持久文件。返回 `{ data, has_more: false }`。Node 入口可用；Cloudflare 上需要配置了 `FILES_BUCKET`。它目前不是 `@anthropic-ai/sdk` 生成的方法，所以用普通 HTTP 调用，并带上 `anthropic-beta: managed-agents-2026-04-01`。
+
+### `GET /v1/sessions/:id/outputs/:filename`
+流式返回一份持久输出。文件名是单个路径段；父目录或嵌套穿越会被拒绝。读取底层文件系统或对象存储之前，会先在已认证的工作区里解析 Session。
+
+### `POST /v1/sessions/:id/messages`
+聊天一次往返：在同一次 HTTP 调用里提交用户回合并流式返回响应。请求体：`{ "content": string | ContentBlock[] }`。返回 `text/event-stream`，回合结束（`session.status_idle`）时自动关闭。发后即走的变体（你已经另开了 SSE 消费者）改为 POST `/v1/sessions/:id/events`，把 user.message 包在 `{events:[...]}` 里 —— 返回 `202`。
+
+### `POST /v1/sessions/:id/cancel`
+取消一个正在运行的 Session。
+
+### `DELETE /v1/sessions/:id`
+软删除一个 Session。
+
+## Environment
+
+### `GET /v1/environments`
+列出环境模板。
+
+### `POST /v1/environments`
+创建一个 Environment。请求体：`EnvironmentConfig`。
+
+### `GET /v1/environments/:id`
+获取一个。
+
+### `PATCH /v1/environments/:id`
+更新。
+
+### `DELETE /v1/environments/:id`
+删除（仅当没有 Agent 引用它时）。
+
+## 技能
+
+### `GET /v1/skills`
+列出自定义技能与内置技能。
+
+### `POST /v1/skills`
+上传一个自定义技能。**multipart/form-data**，包含 `id`、`display_title`、`description`，以及一个或多个 `files`。
+
+### `GET /v1/skills/:id`
+获取元数据。
+
+### `GET /v1/skills/:id/files/:filename`
+下载一个技能文件。
+
+### `DELETE /v1/skills/:id`
+删除（内置技能不能删除）。
+
+## Vault
+
+### `GET /v1/vaults`
+列出。返回的对象永远不包含密钥材料。
+
+### `POST /v1/vaults`
+创建。请求体包含密钥；之后的读取不会再返回它。
+
+### `PATCH /v1/vaults/:id`
+更新 —— 包括轮换密钥。
+
+### `DELETE /v1/vaults/:id`
+删除。
+
+## Memory Store
+
+### `GET /v1/memory_stores`
+按 Agent 列出。
+
+### `POST /v1/memory_stores`
+创建。
+
+### `GET /v1/memory_stores/:id/entries`
+列出最近的条目。
+
+### `POST /v1/memory_stores/:id/search`
+语义搜索。请求体：`{ "query": "...", "limit": 10 }`。
+
+### `DELETE /v1/memory_stores/:id`
+删除该存储及其索引。
+
+## 文件
+
+### `POST /v1/files`
+上传。**multipart/form-data**，包含 `session_id` 和 `file`。
+
+### `GET /v1/files/:id`
+下载。
+
+### `DELETE /v1/files/:id`
+删除。
+
+<span id="model-cards"></span>
+
+## 模型卡
+
+Model Card 是按租户划分的可执行模型注册表。一张卡片把稳定句柄（`model_id`）绑定到 Pi provider、其线路级模型 id、端点、元数据，以及加密凭据。密钥在静态存储中用 `PLATFORM_ROOT_SECRET` 做 AES-256-GCM 加密；列表与读取响应只露出预览。
+
+### 两套模型目录
+
+| 端点 | 形状与用途 |
+|---|---|
+| `GET /v1/models` / `GET /v1/models/:id` | 官方 Managed Agents Model 资源。列出该租户可以执行的活跃 Model Card。显示名、token 上限、图像 / 思考 / effort 以及严格输出能力，都从 Pi 元数据保守投影。Provider 凭据永不出现。 |
+| `POST /v1/oma/models/list` | OMA 安装助手。请求体 `{ "provider": "deepseek" }` 返回该 provider 的 Pi 内置目录。以 SDK 为先的路径不发送 provider 凭据。可选的 `api_key` 是已废弃的 0.x 兼容路径，用于 Anthropic/OpenAI 的在线发现。 |
+
+未知的自定义 provider 没有可发现的目录。直接用 `base_url` 和 `pi_config.api` 创建它的 Model Card。
+
+### `GET /v1/oma/model_cards`
+列出已配置的模型卡。
+
+### `POST /v1/oma/model_cards`
+添加一张模型卡。会做 6 秒能力探测，坏密钥会大声失败。请求体：
+```json
+{
+  "model_id": "deepseek-fast",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "custom_headers": { "x-extra": "..." },
+  "api_key": "sk-...",
+  "pi_config": { "reasoning": true }
+}
+```
+
+`provider` 是开放的 Pi provider id，不是 OpenMA 枚举。Pi 内置包括 `anthropic`、`openai`、`deepseek`、`openrouter`、`google`、`minimax` 等。旧别名 `ant`、`oai`、`ant-compatible` 和 `oai-compatible` 仍然接受。`model_id` 是官方 Agent 模型里使用的句柄：
+
+```json
+{
+  "model": {
+    "id": "deepseek-fast",
+    "effort": { "type": "high" },
+    "speed": "standard",
+    "inference_geo": "us"
+  }
+}
+```
+
+这些控制属于 Agent 版本，不属于 Model Card。Session 钉住一个 Agent 版本并继承它们：
+
+| 字段 | 运行时映射 |
+|---|---|
+| `effort` | Pi 的 `thinkingLevel`。Pi 会把请求的级别归一化到已解析模型支持的最近级别。 |
+| `speed: "standard"` | 保持 Pi / provider 默认值不变。 |
+| `speed: "fast"` | Anthropic 快速模式（`speed: fast` 加上它的 beta 请求头），或 OpenAI 优先级服务层级。其他 Pi API 返回明确的不支持错误。 |
+| `inference_geo` | 会校验、存储、纳入版本并返回；当前被运行时路由忽略。 |
+
+`pi_config` 接受 Pi 可序列化的 Model 元数据（`name`、`api`、`reasoning`、`thinkingLevelMap`、`input`、`cost`、`contextWindow`、`maxTokens`、`samplingParams`、`headers` 和 `compat`）。它不能覆盖卡片身份、provider、线路模型、端点或凭据。自定义 provider 必须指定 `pi_config.api`，Pi 才能选择协议实现。
+
+创建会返回一个 `probe` 结果。当前有界的在线探测覆盖旧的 Anthropic/OpenAI 协议。`{"ok":null,"reason":"unsupported_provider"}` 表示探测被跳过；它不是 Pi 运行时拒绝。
+
+### `POST /v1/oma/model_cards/:id`
+轮换 api_key、base_url、请求头或默认模型。请求体形状与 `POST` 相同。进行中的 Session 会保留缓存的密钥，直到下一次凭据解析。
+
+### `DELETE /v1/oma/model_cards/:id`
+删除。
+
+### `GET /v1/oma/model_cards/:id/key` *（内部 — 仅 agent worker）*
+为 agent worker 返回明文凭据。不公开暴露。
+
+## 集成
+
+### `GET /v1/oma/integrations`
+列出随平台发布的集成与活跃集成。
+
+### `GET /v1/oma/integrations/:id/install`
+开始该集成的 OAuth 流程。返回一个重定向 URL。
+
+### `POST /v1/oma/integrations/:id/uninstall`
+撤销安装。
+
+### `GET /v1/oma/integrations/:id/publications`
+列出发布（哪些 Agent 服务哪些工作区）。
+
+### `POST /v1/oma/integrations/:id/publications`
+创建一条发布。
+
+### `DELETE /v1/oma/integrations/:id/publications/:pub_id`
+删除一条发布。
+
+## 评估
+
+### `GET /v1/oma/evals`
+列出评估运行。
+
+### `POST /v1/oma/evals`
+开始一次评估。
+
+### `GET /v1/oma/evals/:id`
+获取某次评估的结果。
+
+## API 密钥
+
+### `GET /v1/oma/api_keys`
+列出你的密钥（实际密钥值不会返回）。
+
+### `POST /v1/oma/api_keys`
+创建。请求体：`{ "name": "..." }`。密钥只返回一次 —— 现在就存好。
+
+### `DELETE /v1/oma/api_keys/:id`
+撤销。
+
+## OAuth（Console 使用）
+
+### `GET /v1/oma/oauth/:provider/authorize`
+开始一次 OAuth 流程（Console 的 Google 登录）。
+
+### `GET /v1/oma/oauth/:provider/callback`
+OAuth 回调处理。
+
+## 健康检查
+
+### `GET /healthz`
+返回 `{"ok": true}`。**不需要认证。**
+
+## 接下来
+
+<LinkCard
+  title="REST API 概览"
+  href="/build/api/"
+  description="模式、认证、错误处理。"
+/>
+<LinkCard
+  title="CLI 与 SDK"
+  href="/build/cli-sdk/"
+  description="不必用 curl：使用 Node CLI。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="上面全部请求体的模式。"
+/>

@@ -24,7 +24,7 @@
 #     --callback-url https://gateway/linear/oauth/app/<APP_ID>/callback \
 #     [--webhook-url https://gateway/linear/webhook/app/<APP_ID>] \
 #     [--webhook-events Comment,Issue,AgentSessionEvent] \
-#     [--developer "OpenMA"] [--developer-url "https://openma.dev"] \
+#     [--developer "OpenMA"] [--developer-url "https://openma.ai"] \
 #     [--description "..."] [--cdp-port 9333]
 #
 # Output (stdout): JSON with appId / clientId / clientSecret / webhookSecret /
@@ -43,7 +43,7 @@ CALLBACK_URL=
 WEBHOOK_URL=
 WEBHOOK_EVENTS="Comment,Issue,AgentSessionEvent"
 DEVELOPER="OpenMA"
-DEVELOPER_URL="https://openma.dev"
+DEVELOPER_URL="https://openma.ai"
 DESCRIPTION=""
 CDP_PORT=9333
 

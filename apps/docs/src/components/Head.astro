@@ -1,0 +1,68 @@
+---
+// Custom <head> renderer: Starlight's default tags (canonical, OG, hreflang —
+// emitted automatically for our multilingual locales) plus a default OG image
+// and page-aware JSON-LD. Pages can still override any meta via frontmatter
+// `head:` — Starlight merges and dedupes by name/property before we render.
+const { head, entry, id, lang } = Astro.locals.starlightRoute;
+
+const site = Astro.site ?? new URL('https://docs.openma.ai');
+const canonicalUrl = new URL(Astro.url.pathname, site);
+const ogImageUrl = new URL('/og-default.png', site);
+const hasOgImage = head.some(
+  ({ tag, attrs }) => tag === 'meta' && attrs?.property === 'og:image',
+);
+
+const isHome = id === 'index' || id === 'index.mdx' || id === 'zh-cn/index' || id === 'zh-cn/index.mdx';
+const description = entry.data.description ?? '';
+
+const organization = {
+  '@type': 'Organization',
+  name: 'OpenMA',
+  url: 'https://openma.ai',
+  logo: 'https://openma.ai/og-default.png',
+  sameAs: ['https://github.com/openma-ai/open-managed-agents'],
+};
+
+const jsonLd: Record<string, unknown>[] = isHome
+  ? [
+      { '@context': 'https://schema.org', ...organization },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareSourceCode',
+        name: 'OpenMA (open-managed-agents)',
+        description,
+        codeRepository: 'https://github.com/openma-ai/open-managed-agents',
+        programmingLanguage: 'TypeScript',
+        runtimePlatform: 'Node.js',
+        license: 'https://www.apache.org/licenses/LICENSE-2.0',
+        url: 'https://openma.ai',
+      },
+    ]
+  : [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'TechArticle',
+        headline: entry.data.title,
+        description,
+        url: canonicalUrl.href,
+        inLanguage: lang,
+        isPartOf: {
+          '@type': 'WebSite',
+          name: 'OpenMA Docs',
+          url: 'https://docs.openma.ai',
+        },
+        publisher: organization,
+      },
+    ];
+---
+
+{head.map(({ tag: Tag, attrs, content }) => <Tag {...attrs} set:html={content} />)}
+{!hasOgImage && (
+  <>
+    <meta property="og:image" content={ogImageUrl.href} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:image" content={ogImageUrl.href} />
+  </>
+)}
+<script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />

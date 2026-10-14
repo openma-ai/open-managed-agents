@@ -1,0 +1,100 @@
+---
+title: 快速开始
+description: 注册账号，拿到 API key，五分钟内跑起你的第一个 Agent Session。
+---
+
+import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+
+本页带你走完**托管路径**——从零到一个正在运行的 Agent 的最快方式。如果想改为自托管，请跳到 [自托管 → 概览](/self-host/overview/)。
+
+## 前置条件
+
+- 一个网页浏览器
+- `curl`（或 Postman，或任意 HTTP 客户端）
+- 大约 5 分钟
+
+## 步骤
+
+<Steps>
+
+1. **创建账号。**
+
+   打开 [app.openma.ai](https://app.openma.ai)，用邮箱、邮箱 OTP 或 Google 注册。首次登录时租户会自动创建——无需手动设置。
+
+2. **创建 API key。**
+
+   在 Console 中打开 **API Keys → New key**。立刻复制；之后不会再显示。
+
+   ```bash
+   export OMA_BASE_URL="https://app.openma.ai"
+   export OMA_API_KEY="oma_..."     # the key you just copied
+   ```
+
+3. **创建你的第一个 Agent。**
+
+   ```bash
+   curl -X POST "$OMA_BASE_URL/v1/agents" \
+     -H "x-api-key: $OMA_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "hello-agent",
+       "model": "claude-sonnet-4-6",
+       "system": "You are a friendly assistant. Keep replies under 3 sentences.",
+       "tools": []
+     }'
+   ```
+
+   保存返回的 `id`——下一步会用到。
+
+4. **启动一个 Session，并流式接收一轮对话。**
+
+   ```bash
+   AGENT_ID="agent_..."   # from previous step
+   ENV_ID="env_..."       # any environment in your tenant; create one in the Console if you don't have one yet
+
+   curl -X POST "$OMA_BASE_URL/v1/sessions" \
+     -H "x-api-key: $OMA_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d "{ \"agent\": \"$AGENT_ID\", \"environment_id\": \"$ENV_ID\", \"title\": \"hello\" }"
+   ```
+
+   响应里包含 Session 的 `id`。一次请求同时提交一轮用户消息，并逐 token 流式接收回复：
+
+   ```bash
+   SESSION_ID="sess_..."
+
+   curl -N -X POST "$OMA_BASE_URL/v1/sessions/$SESSION_ID/messages" \
+     -H "x-api-key: $OMA_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{ "content": "What is 2+2?" }'
+   ```
+
+   你会看到用户回显、每一个模型 token、每一次工具调用和每一次工具结果对应的 Server-Sent Events。本轮结束时连接会自动关闭（`session.status_idle`）。长期存活的 Session 请改用 `GET /v1/sessions/$SESSION_ID/events/stream`——它不会关闭，并在连接时回放历史。
+
+5. **在 Console 里查看。**
+
+   回到 [app.openma.ai](https://app.openma.ai)，打开 **Sessions**，点击新建的 Session。你会看到完整的事件流，包括模型的回复。
+
+</Steps>
+
+<Aside type="tip" title="这就是整个循环">
+  每一种更丰富的能力——沙箱中的代码执行、MCP 服务器、自定义技能、Linear/GitHub/Slack 集成——都走同一套 `agents` + `sessions` 形态。加上工具，加上沙箱 `environment`，接上一个 `integration`，其余的就会跟上。
+</Aside>
+
+## 接下来去哪里
+
+<LinkCard
+  title="概念"
+  href="/concepts/"
+  description="认识这些名词：Agent、Session、Environment、Vault、技能、工具、Harness、集成。"
+/>
+<LinkCard
+  title="使用 Console"
+  href="/console/getting-started/"
+  description="在界面里创建 Agent、Session、Environment 和技能，而不是走 API。"
+/>
+<LinkCard
+  title="用 API 构建"
+  href="/build/api/"
+  description="REST 表面、认证、SSE 流、CLI，以及 SDK 类型包。"
+/>

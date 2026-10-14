@@ -74,7 +74,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
   it("returns v2 file as-is without touching the network", async () => {
     const v2: CredentialsV2 = {
       v: 2,
-      serverUrl: "https://app.openma.dev",
+      serverUrl: "https://app.openma.ai",
       runtimeId: "rt-deadbeef",
       token: "sk_machine_xxx",
       tenants: [
@@ -97,7 +97,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
 
   it("migrates v1 to v2 by fetching /agents/runtime/me and stamps the same legacy key on every tenant", async () => {
     const v1: CredentialsV1 = {
-      serverUrl: "https://app.openma.dev",
+      serverUrl: "https://app.openma.ai",
       runtimeId: "rt-cafe",
       token: "sk_machine_v1",
       agentApiKey: "oma_legacy",
@@ -107,7 +107,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
     await writeFile(credsFile, JSON.stringify(v1), { mode: 0o600 });
 
     const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe("https://app.openma.dev/agents/runtime/me");
+      expect(url).toBe("https://app.openma.ai/agents/runtime/me");
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         "Bearer sk_machine_v1",
       );
@@ -128,7 +128,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(got).toEqual({
       v: 2,
-      serverUrl: "https://app.openma.dev",
+      serverUrl: "https://app.openma.ai",
       runtimeId: "rt-cafe",
       token: "sk_machine_v1",
       tenants: [
@@ -149,7 +149,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
 
   it("falls back to a single __unknown__ tenant when the migration fetch fails", async () => {
     const v1: CredentialsV1 = {
-      serverUrl: "https://app.openma.dev",
+      serverUrl: "https://app.openma.ai",
       runtimeId: "rt-offline",
       token: "sk_machine_v1",
       agentApiKey: "oma_legacy",
@@ -178,7 +178,7 @@ describe("config.ts — CredentialsV2 + v1→v2 inline migration", () => {
 
   it("falls back to __unknown__ when the server replies 5xx during migration", async () => {
     const v1: CredentialsV1 = {
-      serverUrl: "https://app.openma.dev",
+      serverUrl: "https://app.openma.ai",
       runtimeId: "rt-5xx",
       token: "sk_machine_v1",
       agentApiKey: "oma_legacy",

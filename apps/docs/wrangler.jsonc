@@ -14,10 +14,10 @@
   },
 
   // Custom Domain: Cloudflare auto-creates the DNS record + worker route
-  // when this is in place. Requires openma.dev to be on the same Cloudflare
+  // when this is in place. Requires openma.ai to be on the same Cloudflare
   // account.
   "routes": [
-    { "pattern": "docs.openma.dev", "custom_domain": true }
+    { "pattern": "docs.openma.ai", "custom_domain": true }
   ],
 
   "observability": { "enabled": true },

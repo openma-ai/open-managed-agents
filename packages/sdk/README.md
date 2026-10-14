@@ -204,7 +204,7 @@ const stats = await client.oma.request<{ agents: number }>({
 ## Configuration
 
 All official `@anthropic-ai/sdk` client options are accepted. OpenMA defaults
-`baseURL` to `https://openma.dev` and adds one optional workspace header:
+`baseURL` to `https://app.openma.ai` and adds one optional workspace header:
 
 ```ts
 new OpenMA({

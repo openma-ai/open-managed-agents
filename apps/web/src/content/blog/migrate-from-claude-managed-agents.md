@@ -21,7 +21,7 @@ self-host later. The order is the same either way.
 
 ## TL;DR
 
-1. **Pick a target deployment** — hosted (`openma.dev`) or self-host.
+1. **Pick a target deployment** — hosted (`openma.ai`) or self-host.
 2. **Get a platform API key** — sign in, create one in the Console.
 3. **Stash your LLM provider key in a vault** — BYOK is mandatory; the
    platform never bills you for tokens.
@@ -45,7 +45,7 @@ self-host later. The order is the same either way.
 
 ## What changes
 
-- **Base URL.** `api.anthropic.com/v1/agents` → `openma.dev/v1/agents`
+- **Base URL.** `api.anthropic.com/v1/agents` → `openma.ai/v1/agents`
   (hosted) or your self-hosted host.
 - **Auth header.** Anthropic uses `x-api-key` for the model key directly;
   Open Managed Agents uses `x-api-key` for the *platform* key, with the
@@ -66,7 +66,7 @@ self-host later. The order is the same either way.
 If you're not sure, start hosted. Self-host is a deeper commitment;
 prove the API surface works for your code first.
 
-| | Hosted (openma.dev) | Self-host on Cloudflare | Self-host on Postgres + Node |
+| | Hosted (openma.ai) | Self-host on Cloudflare | Self-host on Postgres + Node |
 |---|---|---|---|
 | Time to first session | Minutes | ~30 min initial setup | ~1 hour initial setup |
 | Operational burden | None | Low (one `wrangler deploy`) | Medium (Postgres ops) |
@@ -78,14 +78,14 @@ self-host with a different base URL.
 
 ## Step 2 — Get a platform key
 
-Sign in at [app.openma.dev](https://app.openma.dev). The first sign-in
+Sign in at [app.openma.ai](https://app.openma.ai). The first sign-in
 creates a tenant for you. Go to **Settings → API keys** and create a
 platform key. Stash it as `OPENMA_PLATFORM_KEY` in your secrets
 manager.
 
 ```bash
 export OPENMA_PLATFORM_KEY=opn_live_xxxxxxx
-export BASE=https://openma.dev
+export BASE=https://openma.ai
 ```
 
 ## Step 3 — Move your LLM key into a vault
@@ -183,7 +183,7 @@ In your client code:
 - });
 + const client = new Anthropic({
 +   apiKey: process.env.OPENMA_PLATFORM_KEY,
-+   baseURL: "https://openma.dev",
++   baseURL: "https://openma.ai",
 + });
 ```
 
@@ -296,7 +296,7 @@ for context on where this sits in the broader space.
 ```bash
 # Hosted — fastest path
 export OPENMA_PLATFORM_KEY=opn_live_xxxxxxx
-curl https://openma.dev/v1/agents \
+curl https://openma.ai/v1/agents \
   -H "x-api-key: $OPENMA_PLATFORM_KEY" \
   -d '{"name":"hello","model":"claude-sonnet-4-6","vault_id":"..."}'
 

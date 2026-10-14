@@ -1,15 +1,15 @@
 ---
-title: openma — open-source Claude Managed Agents alternative on Cloudflare
-description: openma is the open-source alternative to Claude Managed Agents. Run Claude agents yourself with durable sessions, sandboxes, tools, memory, and vault-backed credentials — on Cloudflare Workers or Docker.
+title: OpenMA — open-source, self-hosted Claude Managed Agents with pluggable sandboxes
+description: "Run a Claude Managed Agents–compatible control plane on Node, Docker or Cloudflare, and plug in the sandbox you choose: E2B, Daytona, Modal, Fly Sprites, Vercel, Blaxel, Cloudflare, or local Docker."
 template: splash
 head:
   # Starlight's auto-generated <title> would tack on " | openma" (the
   # site title) and produce a redundant brand-after-brand suffix.
   # Override so the keyword-rich page title stands alone for SERP.
   - tag: title
-    content: openma — open-source Claude Managed Agents alternative on Cloudflare
+    content: OpenMA — open-source, self-hosted Claude Managed Agents with pluggable sandboxes
 hero:
-  tagline: Run Claude agents yourself. Durable sessions, sandboxed tools, vault-backed credentials, MCP + Claude Code skills built in. Drop-in compatible API.
+  tagline: Run Claude agents yourself. Durable sessions, sandboxed tools, vault-backed credentials, MCP + Claude Code skills built in. Plug in the sandbox you choose — E2B, Daytona, Modal, Sprites, Vercel, Blaxel, Cloudflare, or local Docker. Drop-in compatible API.
   image:
     file: ../../assets/logo.svg
     alt: 'OpenMA logo'
@@ -30,13 +30,13 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **openma** (Open Managed Agents) is the infrastructure layer for AI agents. You bring the harness — the loop that decides what the model does next — and openma takes care of everything else: durable sessions, sandboxed code execution, tool calls, semantic memory, secret-safe credentials, and crash recovery.
 
-It runs entirely on Cloudflare (Workers, Durable Objects, D1, R2, KV, Vectorize, Containers), and you can either use the **hosted product at [openma.dev](https://app.openma.dev)** or **fork and self-host** to your own Cloudflare account.
+It runs entirely on Cloudflare (Workers, Durable Objects, D1, R2, KV, Vectorize, Containers), and you can either use the **hosted product at [openma.ai](https://app.openma.ai)** or **fork and self-host** to your own Cloudflare account.
 
 ## Choose your path
 
 <CardGrid>
   <LinkCard
-    title="I want to use openma.dev"
+    title="I want to use openma.ai"
     href="/console/getting-started/"
     description="Sign up, create your first agent in the Console, connect Linear or GitHub. No deploy needed."
   />

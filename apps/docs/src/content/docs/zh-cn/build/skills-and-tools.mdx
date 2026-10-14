@@ -1,0 +1,192 @@
+---
+title: 技能与工具
+description: 定义自定义工具、自定义技能，并把 MCP 服务器接入你的 Agent。
+---
+
+import { Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+给 Agent 新能力有三种方式：**工具**、**技能**和 **MCP 服务器**。每种适合不同形态的需求。
+
+| 机制 | 适合 | 运行位置 |
+|---|---|---|
+| 内置工具 | 文件系统、shell、Web | 沙箱容器 |
+| 自定义工具 | 你自己的、带 JSON Schema 的动作 | 沙箱或你的端点 |
+| 自定义技能 | 可复用的 prompt + 参考文件 | 挂载进沙箱 |
+| MCP 服务器 | 任意符合 MCP 规范的能力集 | MCP 服务器所在的任何地方 |
+
+## 内置工具
+
+`agent_toolset_20260401` 工具集随附：`bash`、`read`、`write`、`edit`、`glob`、`grep`、`web_fetch`、`web_search`。把它加到 Agent 上，模型就可以在按 Session 隔离的容器里做文件系统和 shell 工作。
+
+```json
+{
+  "name": "my-agent",
+  "model": "claude-sonnet-4-6",
+  "system": "...",
+  "tools": [
+    { "type": "agent_toolset_20260401" }
+  ]
+}
+```
+
+`web_fetch` 与 `web_search` 经 openma 的出站代理路由，因此沙箱没有直接的互联网访问时它们仍然可用。
+
+## 自定义工具
+
+用 JSON Schema 在 Agent 上内联定义工具：
+
+```json
+{
+  "tools": [
+    {
+      "type": "custom",
+      "name": "lookup_user",
+      "description": "Look up a user by their internal ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string" }
+        },
+        "required": ["user_id"]
+      },
+      "execution": {
+        "type": "http",
+        "endpoint": "https://internal.example.com/api/users/lookup",
+        "method": "POST"
+      }
+    }
+  ]
+}
+```
+
+当模型调用该工具时：
+
+1. 沙箱向你的端点发出出站 HTTPS 请求。
+2. 如果端点主机绑定了 [Vault](/concepts/#vault)，代理会自动注入认证头。模型看不到凭据。
+3. 响应作为工具结果回填。
+
+也可以把 `execution` 设为 `{ type: "sandbox", command: "..." }`，让工具完全在沙箱内执行。
+
+## 自定义技能
+
+技能是一份描述该能力的 `SKILL.md`，加上模型需要的任意参考文件（模板、schema、示例）。平台把全部内容挂载到 `/home/user/.skills/{name}/`（使用 SKILL.md 的 `name`，不是 skill id），并在 Session 开始时**把 SKILL.md 正文直接内联进 system prompt**——没有惰性读取，也不需要再调用 `read` 工具去发现里面有什么。格式与 Anthropic 的 [Claude Code skills](https://github.com/anthropics/skills) 兼容。
+
+### 创建技能
+
+在控制台：**技能 → New skill**。两种 API 形状：
+
+```bash
+# (a) JSON — files inlined
+curl -X POST "$OMA_BASE_URL/v1/skills" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "files": [
+      {
+        "filename": "SKILL.md",
+        "content": "---\nname: invoice-parser\ndescription: Extract structured data from supplier invoices.\n---\n\n# Steps\n1. ..."
+      },
+      { "filename": "schema.json", "content": "{...}" }
+    ]
+  }'
+
+# (b) Multipart — zip upload (use for large skills with binary files)
+curl -X POST "$OMA_BASE_URL/v1/skills/upload" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -F "file=@./invoice-parser.zip"
+```
+
+### `SKILL.md` 里放什么
+
+```md
+# Invoice parser
+
+Use this skill when the user uploads a PDF or image of an invoice.
+
+## How to extract
+
+1. Read `/home/user/.skills/invoice-parser/schema.json` for the target shape.
+2. Use the `pdf` built-in skill to extract text.
+3. Match fields by label (e.g. "Total Due", "Invoice Number").
+4. Return JSON matching the schema.
+
+## Examples
+
+See `/home/user/.skills/invoice-parser/example_invoice.pdf` for a reference layout.
+```
+
+### 挂到 Agent 上
+
+技能以**对象**挂载，**不是裸字符串**（裸字符串数组会静默地不绑定）：
+
+```json
+{ "skills": [{ "skill_id": "skill_abc123", "type": "custom" }] }
+```
+
+Session 开始时 system prompt 会收到：
+
+```text
+<source name="skill:skill_abc123">
+<skill name="invoice-parser">
+{full SKILL.md body}
+</skill>
+</source>
+```
+
+文件则挂载在 `/home/user/.skills/invoice-parser/SKILL.md` 等路径。
+
+### 内置技能
+
+开箱提供四个（`type: "anthropic"`）：`xlsx`、`pdf`、`docx`、`pptx`。在 Agent 上按 id 引用即可——无需上传。
+
+<Aside type="tip" title="技能与工具">
+  技能是模型阅读的*提示指令*加上*文件*。工具是模型用结构化输入调用的*可调用函数*。当价值在于*指引 + 参考数据*时用技能；当价值在于*执行带副作用的动作*时用工具。
+</Aside>
+
+## MCP 服务器
+
+接入任意 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，openma 会为服务器暴露的每项能力自动生成 `mcp__<server>__<tool>`（双下划线）。
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "github",
+      "type": "url",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "authorization_token": "..."
+    }
+  ]
+}
+```
+
+认证模式——凭据绝不进入沙箱：
+
+| 模式 | 方式 |
+|---|---|
+| 无 | 省略 `authorization_token`，且没有匹配的 Vault 凭据 |
+| 内联 bearer | 在服务器条目上写 `authorization_token: "..."` |
+| Vault 静态 bearer | Session Vault 中匹配的 `auth.type: "static_bearer"` 凭据（按 `mcp_server_url` 主机匹配） |
+| Vault OAuth | 匹配的 `auth.type: "mcp_oauth"` 凭据——在 401 **以及 403** 时刷新（Airtable/Asana/Sentry 用 403 表示令牌过期），用 CAS 把新令牌写入 D1，并重试一次 |
+
+宿主侧的 OpenMA Harness 支持基于 URL 的 MCP 服务器。当外部 Worker 或在沙箱内运行的 Harness 拥有子进程并通过 stdin/stdout 说 MCP 时，接受标准 `stdio`（`command`、`args`、`env`）。没有 localhost HTTP 转换。Harness 在沙箱外的运行时会明确拒绝 stdio。每个 URL 服务器的工具发现上限为 15 秒；每个 Agent 最多 20 个服务器。
+
+`stdio` 不会安装任何东西。它的 `command` 必须已经存在于所选 Environment 中，并且该 Environment 拥有全部配套软件包和系统依赖。OpenMA 托管的基础 Environment 保证提供 Node.js/npm（`npx`）和 uv（`uvx`），与沙箱提供商无关；每个内嵌的提供商适配器负责启动对等的 OpenMA 镜像、模板或快照。额外工具属于 Environment 的软件包列表或镜像。自带镜像（BYO）和外部 Worker 必须自行提供运行时内容。缺少可执行文件会报告为 MCP 启动失败。
+
+## 接下来
+
+<LinkCard
+  title="自定义集成"
+  href="/build/integrations/"
+  description="实现 IntegrationProvider，构建新的第三方发布目标（例如 Jira、Discord）。"
+/>
+<LinkCard
+  title="REST API"
+  href="/build/api/"
+  description="用程序管理 Agent、技能、Vault 的端点。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="完整的 Agent / 技能 / Vault schema。"
+/>

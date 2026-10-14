@@ -1,0 +1,146 @@
+---
+title: 部署
+description: 大约五分钟把 OpenMA 部署到 Cloudflare——一个交互式脚本完成 Worker、D1、R2 和队列的开通过程，设置密钥并运行迁移。
+---
+
+import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+
+`scripts/setup-cf.sh` 是一个交互式向导，它会开通每一项 Cloudflare 资源、修补 wrangler 文件、设置密钥、应用迁移，并部署三个 Worker。亲手操作大约 5 分钟，再加上几分钟受网络限制的等待。
+
+## 前提
+
+- Node 22+、`pnpm` 10+
+- Cloudflare 账号处于 **Workers Paid** 套餐（每月 $5——Durable Object 与 R2 需要它）
+- `wrangler` 已登录（`npx wrangler login`）
+- 一把 Anthropic API key（或稍后通过 Model Card 使用 OpenAI / 兼容提供商）
+
+起步阶段**不需要**自定义域名——Worker 默认使用 `*.workers.dev` URL。
+
+## 三条命令
+
+<Steps>
+
+1. **克隆、安装、登录。**
+
+   ```bash
+   git clone https://github.com/openma-ai/open-managed-agents.git
+   cd open-managed-agents
+   pnpm install
+   npx wrangler login
+   ```
+
+2. **运行安装向导。**
+
+   ```bash
+   ./scripts/setup-cf.sh
+   ```
+
+   向导会：
+
+   1. 创建 2 个 D1 数据库（`openma-auth`、`openma-integrations`）
+   2. 创建 1 个 KV 命名空间（`CONFIG_KV`）
+   3. 创建 4 个 R2 存储桶（`managed-agents-files`、`-workspace`、`-memory`、`-backups`）
+   4. 把捕获到的 ID 拼进 `apps/{main,agent,integrations}/wrangler.jsonc`（保留注释）
+   5. 设置密钥——自动生成 `BETTER_AUTH_SECRET`、`API_KEY`、`INTEGRATIONS_INTERNAL_SECRET`、`PLATFORM_ROOT_SECRET`；提示输入 `ANTHROPIC_API_KEY`
+   6. 应用迁移（每个 D1 一份合并后的文件）
+   7. 部署 main + agent + integrations
+   8. 接上 R2 → memory-events 队列通知
+
+   它是幂等的：再次运行时通过 `wrangler d1/kv list` 发现已有资源并复用其 ID。密钥若已设置会被跳过，除非你传入 `--reset-secrets`。
+
+3. **打开 Console。**
+
+   main worker 在部署时会打印它的 `*.workers.dev` URL。注册——你的第一个用户会成为全新租户的所有者。对着 *.workers.dev URL 开箱即可使用。
+
+</Steps>
+
+## 可选的后续步骤
+
+### 自定义域名
+
+如果这个 Cloudflare 账号上有域名，在每个 `apps/*/wrangler.jsonc` 里设置路由：
+
+```jsonc
+"routes": [
+  { "pattern": "app.yourdomain.com", "custom_domain": true }
+]
+```
+
+然后重新部署：
+
+```bash
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
+```
+
+首次以自定义域名部署时，DNS 记录会自动创建（证书签发约 1 分钟）。
+
+### Slack / GitHub / Linear OAuth
+
+如果只需要裸的 Agent 功能，可以跳过。要启用它们：
+
+```bash
+# Per provider — see the dashboard maze in oauth-apps.mdx
+npx wrangler secret put LINEAR_CLIENT_ID --config apps/integrations/wrangler.jsonc
+npx wrangler secret put LINEAR_CLIENT_SECRET --config apps/integrations/wrangler.jsonc
+# ... and so on for GITHUB_*, SLACK_*
+```
+
+然后重新部署 `apps/integrations/`。
+
+各提供商的逐步说明见 [OAuth 应用](/self-host/oauth-apps/)。
+
+### Staging 环境
+
+wrangler 文件包含预先对着 openma.ai 的 staging 数据库 ID 配好的 `env.staging` 叠加层。若要把它们用于**你自己的** staging 部署，需要另建一套并行的 staging 数据库，并把那些 ID 改进去。大多数自托管者不需要这一步——`--env staging` 主要给 openma.ai 自己用。
+
+```bash
+npx wrangler deploy --config apps/main/wrangler.jsonc --env staging
+```
+
+### 多分片扩缩容
+
+默认部署是单个 D1：每个租户都住在同一个 `openma-auth` D1 里。代码通过缺少 `AUTH_DB_01` 绑定来自动识别这一点，并完全跳过分片路由器。如果以后需要水平扩展（1 万以上租户），多分片模式位于 `env.production` 叠加层——见 [运维 → 多分片](/self-host/operations/#multi-shard)。
+
+## 代码变更后重新部署
+
+```bash
+npx wrangler deploy --config apps/main/wrangler.jsonc
+npx wrangler deploy --config apps/agent/wrangler.jsonc
+npx wrangler deploy --config apps/integrations/wrangler.jsonc
+```
+
+可以只跑其中一部分——例如只重新部署 `apps/agent` 来迭代 Agent 代码。
+
+## 故障排查
+
+<Aside type="tip" title="幂等的安装">
+  `scripts/setup-cf.sh` 可以安全地再次运行。如果它中途失败，再跑一次——它会从停下的地方继续。
+</Aside>
+
+<Aside type="caution" title="`<set-by-setup-cf-sh>` 占位符">
+  wrangler 文件出厂时带有 `<set-by-setup-cf-sh>` 占位符。安装向导会填上它们。如果跳过向导直接 `wrangler deploy`，在你手动替换占位符之前，部署会失败。
+</Aside>
+
+<Aside type="caution" title="需要 Workers Paid 套餐">
+  免费套餐账号无法绑定 Durable Object 或 R2 存储桶。这种情况下安装向导会快速失败，并给出明确错误。
+</Aside>
+
+## 接下来
+
+<LinkCard
+  title="OAuth 应用"
+  href="/self-host/oauth-apps/"
+  description="逐步注册 Linear、GitHub、Slack 应用。"
+/>
+<LinkCard
+  title="运维"
+  href="/self-host/operations/"
+  description="自定义域名、可观测性、多分片扩缩容、故障排查。"
+/>
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="环境变量、绑定、schema 的完整列表。"
+/>

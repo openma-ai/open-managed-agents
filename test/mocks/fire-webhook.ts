@@ -8,7 +8,7 @@
 //   tsx test/mocks/fire-webhook.ts linear-assigned <gateway> <pubId> <webhookSecret> [issueTitle]
 //
 // Gateway URL is the integrations gateway origin (e.g.
-// https://integrations.staging.openma.dev — NOT the main app). The second
+// https://integrations.staging.openma.ai — NOT the main app). The second
 // arg's meaning depends on the provider:
 //   - slack / linear: publicationId (from `*_publications` table — webhooks
 //     route on a stable publication-keyed URL)

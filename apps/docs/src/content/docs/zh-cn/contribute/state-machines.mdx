@@ -1,0 +1,214 @@
+---
+title: SessionDO 与沙箱状态机
+description: Session DO（Agent 循环）和沙箱容器的状态与转移，包括各自如何在 Cloudflare 驱逐之后继续存活。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+两台互相配合的状态机驱动 Agent 运行时。SessionDO 拥有对话状态和 Agent 循环；OmaSandbox（容器 DO）拥有 workspace 和执行表面。它们通过 RPC 通信，生命周期彼此独立——弄清哪一台处于哪个状态，是调试“为什么我的 Session 没有恢复”的最快办法。
+
+## SessionDO 状态机
+
+三个状态。状态是**推导出来的**，不是存下来的——没有一个可供各条代码路径不一致地修改的 `state.status` 字段。
+
+```text
+                           +-----------+
+              first /init  |   idle    |
+        ----------------->  |           |  <----------------+
+                           +-----------+                   |
+                                 |                         |
+        user.message arrives,    |                         |
+        drainEventQueue starts   |                         |
+        runFiber INSERT          v                         |
+                           +-----------+                   |
+                           |  running  |                   |
+                           |           |                   |
+                           +-----------+                   |
+                                 |                         |
+        runFiber DELETE          |                         |
+        (turn done OR aborted    +-------------------------+
+         OR onFiberRecovered)
+                                 |
+                       /destroy  |
+                                 v
+                           +-------------+
+                           | terminated  |  (sticks; rejects all events)
+                           +-------------+
+```
+
+### 推导（这条规则）
+
+```ts
+deriveStatus(): "idle" | "running" | "terminated" {
+  if (state.terminated_at != null
+      || state.status === "terminated") return "terminated"; // legacy back-compat
+  if (cf_agents_runs has any row)        return "running";
+  return "idle";
+}
+```
+
+### 转移
+
+| 触发 | 存储里改变了什么 | 推导出的状态 |
+|---|---|---|
+| `POST /init` | 写入 `cf_agents_state` 行，`terminated_at: null` | `idle` |
+| `POST /event user.message` 到达 | 追加 `events` 行。如果 `drain` 进入 `runFiber`，它会向 `cf_agents_runs` INSERT 一行 | `idle` → `running` |
+| 轮次干净结束 | `runFiber.finally` DELETE `cf_agents_runs` 行，并追加 `session.status_idle` 事件 | `running` → `idle` |
+| 轮次出错 | 追加 `session.error` 事件；`runFiber.finally` DELETE 该行 | `running` → `idle` |
+| 轮次中途 DO 被驱逐 | 什么都不写；驱逐本身不做写入 | 推导值继续读到 `running`（那一行还在） |
+| `_checkRunFibers` 发现孤儿 | DELETE 该行，然后调用 `onFiberRecovered` | `running` → `idle`，直到恢复自己的 `runFiber` 再次 INSERT |
+| `recoverAgentTurn` 重新发出这一轮 | 新的 `runFiber` INSERT 新行 | `idle` → `running` |
+| 恢复超过 5 次 | `forceIdle` 回调发出 `session.status_idle` 事件；恢复计数器被清空 | `running` → `idle` |
+| `user.interrupt` | `currentAbortController.abort()` 触发；runFiber 的 `try` 捕获之后，`finally` DELETE 该行 | `running` → `idle` |
+| `DELETE /destroy` | `setState({...state, terminated_at: Date.now()})`；sandbox.snapshotWorkspaceNow + sandbox.destroy | 任意 → `terminated` |
+
+### 为什么不存储 `running`
+
+早先代码会在 `runFiber` 向 `cf_agents_runs` INSERT 自己的行之前写入 `setState({status: "running"})`。这两次写入之间隔着不少于 3 个 await 边界。驱逐如果落在这个窗口里，就会留下 `state.status="running"`，却没有孤儿 fiber 可以恢复，于是 `_checkRunFibers` 无事可做，`drainEventQueue` 看到 “running” 就返回，Session 一直死锁，直到手动 `user.interrupt`。有了推导，这种分叉不可能发生——fiber 那一行就是状态。
+
+### 唤醒触发
+
+被驱逐过的 SessionDO 会在下列任一到达时恢复：
+
+- 进入 DO 的 HTTP fetch（用户消息、Console 事件轮询、verify exec）
+- 来自 `cf_agents_schedules` 的 alarm 派发（下一个到期时间）
+- 来自休眠客户端的 WebSocket 帧
+- 来自另一个 worker 的直接 RPC
+
+唤醒时，构造函数从 SQL 重新加载 `state`。alarm 路径还会在每次触发时运行 `_checkRunFibers`——那就是恢复钩子。
+
+## 沙箱容器状态机
+
+OmaSandbox 是容器 Durable Object（继承 `@cloudflare/sandbox` 的 `Sandbox`）。它的生命周期由 Cloudflare 管理，而不是由 SessionDO 直接管理——SessionDO 只发起 RPC 调用（`exec`、`readFile`、`setOutboundHandler` 等），由平台负责启动、睡眠和销毁。
+
+```text
+                        +---------+
+              first RPC |  cold   |
+              -------->  |  (no    |
+                        | container)|
+                        +---------+
+                              |
+                  spawn       |    container boot
+                  container   v
+                        +---------------+
+                        | warming-up    |
+                        |  - PID 1 boot |
+                        |  - 5s cert    |
+                        |    polling    |
+                        +---------------+
+                              |
+                              | trustRuntimeCert resolves (cert
+                              | pushed within 5s by setOutboundHandler)
+                              v
+                        +---------------+
+              SessionDO |   active      |  <----------------+
+              RPCs      |  /workspace   |                   | renewActivityTimeout
+              hit it,   |  populated by |                   | (each RPC, plus our
+              every RPC |  restore or   |                   |  alarm-driven keepalive
+              resets    |  empty        |                   |  while bg tasks live)
+              the idle  +---------------+                   |
+              timer           |                             |
+                              |                             |
+                  no RPC for  |                             |
+                  sleepAfter  v                             |
+                              | onActivityExpired() override:|
+                              | 1. snapshotWorkspaceNow      |
+                              |    (createBackup → R2 +      |
+                              |    recordBackup → D1)        |
+                              | 2. super.onActivityExpired() |
+                              |    -> super.stop()           |
+                              v
+                        +---------------+
+                        |  stopping     |
+                        +---------------+
+                              |
+                              | onStop({exitCode: 0, reason: "exit"})
+                              v
+                        +---------+
+                        |  cold   |
+                        +---------+
+```
+
+### 证书竞态（已经消失，但值得理解）
+
+当 `interceptHttps = true` 时，容器的 PID 1 在启动时会轮询 `/etc/cloudflare/certs/cloudflare-containers-ca.crt` 达 5 秒。证书只有在 SessionDO 调用 `sandbox.setOutboundHandler(...)` 之后，才会由 Cloudflare 平台推送。如果跳过这次调用，证书永远不会落地，PID 1 会以 “Certificate not found.” 退出。这是修复之前的 @cloudflare/sandbox 版本上被二分定位出来的行为；上游变更请跟踪沙箱 SDK 的发行说明。
+
+SessionDO 的 `warmUpSandbox` 中的预热序列：
+
+1. 探测 `sandbox.exec("true")`，直到容器响应（10 次尝试）。
+2. 探测 `cat /tmp/.oma-warm`——如果存在非空标记，说明容器的 `/workspace` 已经填充；**跳过恢复**。
+3. 否则，按 `(tenant, env, session)` 在 D1 中查找最新备份，若找到则调用 `sandbox.restoreWorkspaceBackup`。
+4. 挂载任何 `memory_store` / `env` / `github_repository` 资源。
+5. 调用 `sandbox.setOutboundContext({tenantId, sessionId})`——触发证书推送，并注册 Vault 注入处理器。
+6. 调用 `sandbox.setBackupContext({tenantId, environmentId, sessionId})`——在 sleepAfter 时刻把 OmaSandbox 需要的三元组交给它。
+7. 写入一个新的 `/tmp/.oma-warm` 标记，让以后的预热能发现这个容器仍然活着。
+
+### 出站流量（active 状态）
+
+```text
+container's libcurl issues HTTPS request
+  -> CF Sandbox MITM
+       -> outboundByHost lookup (static):
+             "*.r2.cloudflarestorage.com"  -> raw fetch (passthrough)
+             other host                    -> catch-all handler
+                                              -> injectVaultCredsHandler
+                                                   -> RPC main worker
+                                                       lookupOutboundCredential
+                                                   -> Authorization injected
+                                                       (or null = passthrough)
+                                                   -> upstream fetch
+```
+
+R2 流量必须绕过兜底处理器，因为“物化再重新 PUT”的路径会损坏 squashfs blob——[cloudflare/sandbox-sdk#619](https://github.com/cloudflare/sandbox-sdk/issues/619)。
+
+### 睡眠与备份
+
+5 分钟空闲计时器（`sleepAfter = "5m"`）会触发 `onActivityExpired`。我们覆盖它，先调用 `snapshotWorkspaceNow`——这是生命周期里、SDK 拆掉容器之前，唯一能保证 /workspace 仍然存在的点。快照写入 R2（`BACKUP_BUCKET`），并把句柄记入 D1 的 `workspace_backups`（键为 `tenant_id + environment_id + source_session_id`）。默认 TTL 为 7 天。
+
+只要 SessionDO 的 alarm 在 `background_tasks` 里看到一行，就会通过 RPC 调用 `renewActivityTimeout`——这让容器在 5 分钟窗口之后仍然活着，以服务 Agent 正在等待的 `bash run_in_background` 任务。每个任务总共封顶 30 分钟（见 `pollBackgroundTasks` 的 `BG_TASK_MAX_LIFETIME_MS`）。
+
+### 显式销毁
+
+`SessionDO.fetch DELETE /destroy` 会调用 `sandbox.snapshotWorkspaceNow()`（必须提前做——否则活不过 `sandbox.destroy()`），然后调用 `sandbox.destroy()`。这是容器消失之前拍摄最终快照的唯一路径。
+
+## 两者如何交互
+
+```text
+SessionDO                                   OmaSandbox (container DO)
+=========                                   =========================
+warmUpSandbox()
+  ├─ sandbox.exec("true")  ─────────────> cold → warming-up → active
+  ├─ sandbox.exec("cat /tmp/.oma-warm")
+  │     marker absent → restore needed
+  ├─ sandbox.restoreWorkspaceBackup(h) ──> mount squashfs into /workspace
+  ├─ sandbox.setOutboundContext()      ──> cert push + register handler
+  ├─ sandbox.setBackupContext()        ──> stash (tenant, env, session)
+  └─ sandbox.exec("echo $gen > /tmp/.oma-warm")
+
+drainEventQueue()
+  └─ runFiber("turn:1")                  ┐
+       └─ streamText                     │ — agent runs tools via
+            └─ sandbox.exec / writeFile  ┘   sandbox RPC; container
+                                              stays active
+
+(turn ends; runFiber DELETEs cf_agents_runs row)
+(no traffic for 5 min)
+
+                           sleepAfter fires
+                           OmaSandbox.onActivityExpired()
+                             ├─ snapshotWorkspaceNow()
+                             │    ├─ createBackup → R2
+                             │    └─ recordBackup  → D1 row
+                             └─ super.onActivityExpired() → stop
+                           OmaSandbox.onStop({exitCode: 0})
+
+(next turn arrives)
+warmUpSandbox()
+  ├─ sandbox.exec("true")  ─────────────> cold → warming-up → active
+  ├─ sandbox.exec("cat /tmp/.oma-warm")
+  │     marker absent (new container, /tmp wiped) → restore needed
+  ├─ findLatestBackup() in D1 (the row sleepAfter just wrote)
+  └─ sandbox.restoreWorkspaceBackup(h) ──> /workspace restored
+```
+
+容器可以独立于 SessionDO 死去，反过来也一样。SessionDO 的 `wrapSandboxWithLazyWarmup` 代理会在每次调用前重新探测 `/tmp/.oma-warm`，以此发现容器已被回收——如果标记没了，缓存的 `sandboxWarmupPromise` 会被重置，下一次调用会重新运行 `warmUpSandbox`。

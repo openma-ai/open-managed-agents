@@ -1,6 +1,6 @@
 ---
 title: Deploy
-description: One command takes you from clone to a working CF deployment in ~5 minutes.
+description: Deploy OpenMA to Cloudflare in about five minutes — one interactive script provisions the workers, D1, R2, and queues, sets secrets, and runs migrations.
 ---
 
 import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
@@ -93,7 +93,7 @@ See [OAuth Apps](/self-host/oauth-apps/) for the per-provider walkthrough.
 
 ### Staging environment
 
-The wrangler files include `env.staging` overlays preconfigured against openma.dev's staging DB IDs. To use these for **your** staging deployment, you'd need to create a parallel set of staging DBs and patch those IDs in. Most self-hosters don't need this — `--env staging` is primarily for openma.dev itself.
+The wrangler files include `env.staging` overlays preconfigured against openma.ai's staging DB IDs. To use these for **your** staging deployment, you'd need to create a parallel set of staging DBs and patch those IDs in. Most self-hosters don't need this — `--env staging` is primarily for openma.ai itself.
 
 ```bash
 npx wrangler deploy --config apps/main/wrangler.jsonc --env staging

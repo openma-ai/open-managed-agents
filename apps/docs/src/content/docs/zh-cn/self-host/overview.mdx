@@ -1,0 +1,126 @@
+---
+title: 自托管概述
+description: 自托管 openma 的两条路径：跑在 Cloudflare Workers 上，或作为单个 Node 进程。同一套代码、同一套 API，I/O 不同。
+---
+
+import { Card, CardGrid, Aside, LinkCard } from '@astrojs/starlight/components';
+
+你可以自己运行 openma 的全部组件：API、Console、集成网关，以及 Agent 运行时。驱动 [openma.ai](https://app.openma.ai) 的代码就是公开仓库里的代码；没有另行保留的部分。
+
+## 两条路径
+
+选择与你的托管方式匹配的一条：
+
+<CardGrid>
+  <Card title="Node + Docker（不用 Cloudflare）" icon="seti:docker">
+    `docker compose up`。单个 Node 进程，SQLite 或 Postgres，显式指定的隔离沙箱 provider。可跑在 VPS、笔记本、fly.io、你的 k8s 集群上——任何有 Linux/macOS 的地方。**不需要 Cloudflare 账号。**
+  </Card>
+  <Card title="Cloudflare Workers" icon="cloudflare">
+    `wrangler deploy`。三个 Worker + Durable Object + Containers + D1 + R2 + KV。边缘分布式，无需管理主机。需要 Cloudflare Workers Paid 套餐。
+  </Card>
+</CardGrid>
+
+**两边的 Harness、业务逻辑、事件日志和崩溃恢复语义相同**——它们共享 `packages/*`（每个存储都位于 port + adapter 之后）。切换时改环境变量，不改代码。
+
+| | Node + Docker | Cloudflare |
+|---|---|---|
+| 运行位置 | 你的 VPS / Mac / k8s / fly.io | Cloudflare Workers + Durable Object + Containers |
+| 存储 | SQLite 或 Postgres + 本地文件系统 | D1 + KV + R2 |
+| 沙箱 | LiteBox / Daytona / E2B / BoxRun | Cloudflare Sandbox（Containers） |
+| 跑起来所需时间 | 约 2 分钟 | 配置完成后约 10 分钟 |
+| 适合 | 开源 / 本地部署 / 没有 Cloudflare 账号 / 数据驻留 | 边缘规模 / 无需管理主机 / 已经在用 Cloudflare |
+| 成本下限 | Hetzner 每月 €5–50，或你自己的硬件 | Workers Paid 套餐（每月 $5）+ 用量 |
+
+## 架构（Cloudflare 部署）
+
+Node + Docker 部署见 [Node + Docker](/self-host/node-docker/)。
+
+Cloudflare 部署是 **四个 Worker**，外加一组绑定：
+
+| Worker | 用途 |
+|---|---|
+| `apps/main` | REST API + Console 静态资源。前门。 |
+| `apps/agent` | Session Durable Object + 沙箱 Container。Agent 实际运行的地方。 |
+| `apps/integrations` | Linear / GitHub / Slack 的 OAuth 回调 + webhook 网关。 |
+| `apps/docs` | 本站点。（可选——仅当你想要自己的文档时。） |
+
+它们通过 **service binding** 互相通信（Worker 到 Worker 调用，不经过公网跳转）。状态存放在：
+
+- **D1** — 认证（用户、租户、会话）、Agent 配置、技能元数据、集成安装。
+- **KV** — 快路径缓存：Agent / Environment / 凭据查找。
+- **R2** — 文件存储：技能文件、Session 文件、workspace。
+- **Durable Object** — `SESSION_DO`（每个 Session 的事件日志 SQLite）、`SANDBOX`（每个 Session 的容器）。
+- **Vectorize** — 语义记忆索引。
+- **Workers AI** — 嵌入生成。
+- **Cloudflare Containers** — 沙箱运行时（`bash` 工具所在的、按 Session 划分的容器）。
+- **Email Service** — 认证用的事务邮件。
+- **Analytics Engine** — 静默捕获与结构化日志的可观测性。
+
+## 要求
+
+<CardGrid>
+  <Card title="Cloudflare Workers Paid 套餐" icon="seti:db">
+    Durable Object 和 Containers 需要它。免费套餐无法使用。
+  </Card>
+  <Card title="一个域名" icon="seti:html">
+    你会把路由指向它。我们的部署用 `openma.ai`；你用自己拥有的域名。
+  </Card>
+  <Card title="一个 LLM 提供商" icon="puzzle">
+    Anthropic、OpenAI、MiniMax，或任何 OpenAI 兼容端点。费用直接付给他们。
+  </Card>
+  <Card title="OAuth 应用" icon="approve-check">
+    你需要注册自己的 GitHub App、Linear OAuth 和 Slack 应用。步骤见 [OAuth 应用](/self-host/oauth-apps/)。
+  </Card>
+</CardGrid>
+
+## 你不需要准备的东西
+
+- **单独的数据库服务器** — D1 是托管的。
+- **队列或任务运行器** — Durable Object alarm 负责调度。
+- **向量数据库服务** — Vectorize 是托管的。
+- **容器基础设施** — Cloudflare Containers 会处理。
+- **手动扩缩容** — Worker 与 Durable Object 按需扩缩。
+
+## 成本形态
+
+大致按成本从高到低：
+
+1. **LLM API 调用** — 你的 Anthropic / OpenAI / MiniMax 账单。最大的变量。
+2. **Containers** — 每个 Session 的运行时。按容器活跃时间计费。
+3. **Workers** — 请求数 + CPU 时间。便宜。
+4. **存储** — D1 / R2 / KV / Vectorize。在你有大量长期 Session 之前，通常可以忽略。
+
+没有 openma 平台费用，因为没有 openma 平台——全部都在你的 Cloudflare 账号里。
+
+## 多租户
+
+单次自托管部署开箱即支持多个租户（与托管产品使用同一条代码路径）。首次注册时，`databaseHooks.user.create.after` 钩子会幂等地创建一行租户。你不需要预先灌入任何数据。
+
+如果需要更严格的隔离（每个租户独立的 D1 数据库），设置 `PER_TENANT_DB_ENABLED=true` 并配置 `STORE_BACKENDS`。见 [运维](/self-host/operations/)。
+
+<Aside type="tip" title="默认就是单租户">
+  如果只有你或你的团队，不需要做任何特殊配置——第一个用户就是第一个租户。
+</Aside>
+
+## 接下来
+
+<LinkCard
+  title="Node + Docker"
+  href="/self-host/node-docker/"
+  description="`docker compose up`。SQLite 或 Postgres。沙箱模式。登录。Vault sidecar。操作者易错点。"
+/>
+<LinkCard
+  title="部署到 Cloudflare"
+  href="/self-host/deploy/"
+  description="逐步操作：克隆、设置绑定、设置密钥、wrangler deploy。"
+/>
+<LinkCard
+  title="OAuth 应用"
+  href="/self-host/oauth-apps/"
+  description="注册你自己的 GitHub App、Linear OAuth 应用、Slack 应用。"
+/>
+<LinkCard
+  title="运维"
+  href="/self-host/operations/"
+  description="自定义域名、可观测性、多租户配置、故障排查。"
+/>

@@ -3,7 +3,7 @@
 # Usage: OMA_API_URL=... OMA_API_KEY=... bash test/eval/observe-async.sh
 set -euo pipefail
 
-API="${OMA_API_URL:-https://openma.dev}"
+API="${OMA_API_URL:-https://openma.ai}"
 KEY="${OMA_API_KEY}"
 H=(-H "x-api-key: $KEY" -H "Content-Type: application/json")
 

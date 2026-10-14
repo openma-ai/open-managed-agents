@@ -1,0 +1,144 @@
+---
+title: 概念
+description: OpenMA 的九个核心概念——Agent、Session、Environment、Vault、Memory Store、Skill、Tool、Harness、Integration——以及每个概念在何处使用。
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+openma 有九个核心概念。把这一页过一遍，后面的文档大多就能读懂。每一节末尾都有链接，指向这个概念被深入使用的地方。
+
+## Agent
+
+一份可复用的配置，定义调用哪个模型、使用哪段系统提示词、有哪些工具和技能可用，以及要连接哪些 MCP 服务器。Agent 有版本：每次更新都会产生一个新版本，因此 Session 始终钉住创建时所使用的那个版本。
+
+存在 D1 中；通过 Console（**Agents** 页面）或 `/v1/agents` REST 端点修改。见 [配置参考](/reference/configuration/)。
+
+## Session
+
+一次对话。Session 是持久的——由 Cloudflare Durable Object 支撑，每个 Session 有自己的 SQLite 数据库，保存**只追加的事件日志**：每一条模型消息、每一次工具调用、每一次工具结果，以及每一个生命周期事件。几天之后再恢复一个 Session，平台会回放这些事件。
+
+通过 `POST /v1/sessions` 创建。用 `GET /v1/sessions/:id/events`（Server-Sent Events）流式接收事件。详细 API 见 [REST API](/build/api/)。
+
+<Aside type="note">
+  事件日志是事实来源。Console 界面、SSE 流，以及将来任何回放工具，读的都是同一份日志。
+</Aside>
+
+## Environment
+
+沙箱配置：要安装哪些包（`pip`、`npm`、`apt`、`cargo`、`gem`、`go`）、网络规则，以及运行哪个容器镜像。当 Session 需要执行代码时（通过 `bash` 工具、自定义工具或 Harness 逻辑），平台会按这个 Environment 拉起一个 Cloudflare Container。
+
+在 Console 的 **Environments** 页面管理，或通过 `/v1/environments`。
+
+## Vault
+
+凭据存储。Vault 保存工具和集成需要的 **bearer token、OAuth token 和环境变量**。
+
+平台的凭据隔离性质：**凭据永远不会离开 main worker**。Agent（云端 DO 或本地 daemon）和沙箱容器都只知道 `(tenantId, sessionId, server-name | hostname)`——它们请 main 去发起真正的上游调用。main 实时查找凭据（没有按 Session 做的快照），注入 bearer，然后转发。被提示词注入的 Agent 没有凭据可泄漏，因为它的地址空间里根本没有凭据。
+
+对于 OAuth 凭据（`mcp_oauth` 类型），平台还会自动处理由 401 触发的刷新，并把轮换后的 token 写回 Vault——Session 可以在 token 轮换后继续存活，无需人工介入。通过 D1 重新读取做并发刷新去重，避免使用轮换 refresh token 的提供方（Linear、Notion）在并发负载下把自己作废。
+
+Vault 在 Console（**Vaults** 页面）和 `/v1/vaults` 中管理。绑定到特定主机，这样泄漏的或恶意的工具无法横向移动。完整架构：[Vault 与 MCP 凭据](/build/vault-and-mcp/)。
+
+<Aside type="caution">
+  任何敏感内容都属于 Vault。不要把凭据放进 Agent 的 `system` 提示词，也不要放进工具输入里。
+</Aside>
+
+## Memory Store
+
+跨 Session 的、按 Agent 划分的语义记忆。记忆条目用 Workers AI 做嵌入，并索引在 Vectorize 中。Agent 可以通过内置的 `memory` 工具回忆更早的对话或事实。
+
+在 Console 的 **Memory** 页面管理，或通过 `/v1/memory_stores`。
+
+## 技能
+
+一段可复用的提示词片段，外加可选的、挂载进沙箱的文件。有两种：
+
+- **内置技能**——处理 `xlsx`、`pdf`、`docx`、`pptx`、`json`、`csv`、`sql`、`image` 等的处理器。
+- **自定义技能**——你自己的。元数据在 D1，文件在 R2。平台把文件挂载到 `/home/user/.skills/{id}/`，并注入一段系统提示词补充，把模型指向这些文件。
+
+在 Console 的 **Skills** 页面管理，或通过 `/v1/skills`。见 [技能与工具](/build/skills-and-tools/)。
+
+## 工具
+
+模型可以调用的任何东西。有三种形态：
+
+- **内置工具**——`bash`、`read`、`write`、`edit`、`glob`、`grep`、`web_fetch`、`web_search`。以 `agent_toolset_20260401` 工具集的形式提供。
+- **自定义工具**——用 JSON schema 内联定义在 Agent 上；平台把调用路由到你的端点，或在沙箱中执行。
+- **MCP 工具**——连接任意 MCP 服务器，平台会自动生成 `mcp_*` 工具。
+
+详细 schema 见 [技能与工具](/build/skills-and-tools/)。
+
+## Harness
+
+Agent 循环本身——根据 Session 事件决定模型下一步做什么的那段代码。openma 拥有这个循环，并在同一套 Harness 接口后面提供三种放置方式：
+
+- **DefaultHarness / PiHarness**——在 OpenMA 宿主里运行循环。
+- **ACP 沙箱 Harness**——在 Session 沙箱内启动一个兼容 ACP 的 agent，例如 Claude Code 或 Codex，同时 OpenMA 继续拥有 Session 生命周期和规范事件。
+- **ACP 代理 Harness**——当 Agent 必须在某台特定设备上运行时，使用用户登记的本地运行时。
+
+你也可以注册一个自定义 Harness，它可以：
+
+- 驱动另一套模型循环
+- 以不同方式处理压缩（`shouldCompact`、`compact`）
+- 自定义系统提示词的组装（`deriveModelContext`）
+- 挂入 Session 生命周期（`onSessionInit`、`run`）
+
+压缩是 Harness 必须具备的能力，不是提供方行为。`PiHarness` 自带一套 Pi 原生策略：按模型上下文窗口触发，经由按租户限定的 `pi-ai` 模型运行时做摘要，持久化一条 `agent.thread_context_compacted` 边界，并在 Pi 识别出提供方返回上下文溢出时，执行一次有界的压缩并重试。默认的 `cc-style` 策略使用一份隔离的、只含摘要的载荷，不含工具，也不含图像字节。显式的 `summarize` 策略则保留当前生效的 system/tools/history 前缀，并把指令追加在末尾，使摘要调用期间提供方的自动前缀缓存仍然有资格命中。用摘要替换旧历史，仍会制造一条有意的主模型冷边界；之后的轮次追加到这条稳定的压缩前缀上，重新变得可缓存。不必替换模型/工具循环，就可以替换这份策略：
+
+```ts
+import { PiHarness } from '@open-managed-agents/agent/harness/pi-loop';
+import type { PiCompactionPolicy } from '@open-managed-agents/agent/harness/pi-compaction';
+
+const policy: PiCompactionPolicy = {
+  name: 'my-policy',
+  shouldCompact: (_events, { messages, contextWindowTokens }) =>
+    estimate(messages) > contextWindowTokens - 16_000,
+  async compact(events, context) {
+    // Use context.models/context.model, another model, or a deterministic reducer.
+    return summarize(events, context);
+  },
+};
+
+const harness = new PiHarness({ compaction: policy });
+```
+
+这项能力不能被关闭。策略可以选择不对某一轮做压缩，但它必须仍然存在，这样溢出恢复和规范历史的语义才不会依赖 `pi-agent-core` 的内部实现。
+
+沙箱放置方式与提供方无关：每个 ACP 进程都使用 `SandboxDuplexProcessPort`，无论底层运行时是 Cloudflare Container、LiteBox 还是 E2B。有状态的 ACP session 跨轮次保留一个子进程，在一轮之内续期提供方租约，并把原生 ACP session id 持久化在 workspace 中，以便恢复后的沙箱可以继续它。
+
+## 集成
+
+把 Agent 发布到第三方平台的方式，让用户在他们已经工作的地方与它交互。今天内置三项集成：
+
+- **Linear**——Agent 成为工作区成员，可以被指派到 issue，也可以在评论里被提及。
+- **GitHub**——Agent 作用于 PR、仓库和 issue。
+- **Slack**——频道和线程里的 Agent。
+
+每项集成自行处理 OAuth 流程和 webhook 投递，并把能力以 MCP 工具的形式暴露给 Agent。实现 `IntegrationProvider` 即可添加你自己的集成（见 [自定义集成](/build/integrations/)）。
+
+---
+
+## 它们在代码中的位置
+
+如果你在读源码，大致对应关系如下：
+
+| 概念 | 源码 |
+|---|---|
+| Agent / Session 等类型 | `packages/api-types` |
+| REST 端点 | `apps/main/src` |
+| Session DO + 沙箱 | `apps/agent/src` |
+| Harness 接口 | `apps/agent/src/harness/interface.ts` |
+| 内置技能 | `apps/agent/src/harness/skills.ts` |
+| 集成核心 | `packages/integrations-core` |
+| Linear / GitHub / Slack | `apps/integrations/src/routes/{linear,github,slack}` |
+
+<LinkCard
+  title="配置参考"
+  href="/reference/configuration/"
+  description="Agent、Environment、技能、Vault 及相关对象的 schema。"
+/>
+<LinkCard
+  title="术语表"
+  href="/reference/glossary/"
+  description="每个术语按字母排序，并带有交叉链接。"
+/>

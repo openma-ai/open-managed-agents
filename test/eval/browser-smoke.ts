@@ -6,7 +6,7 @@
  * browser_navigate + browser_get_text + Claude's text answer mentioning
  * "Example Domain".
  *
- * Run: OMA_API_URL=https://openma.dev OMA_API_KEY=... npx tsx test/eval/browser-smoke.ts
+ * Run: OMA_API_URL=https://openma.ai OMA_API_KEY=... npx tsx test/eval/browser-smoke.ts
  */
 import {
   createAgent,

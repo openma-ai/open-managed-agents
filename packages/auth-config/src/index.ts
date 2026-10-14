@@ -40,7 +40,7 @@ export interface BuildBetterAuthOpts {
   /** When true, sign-up requires email verification before the user is
    *  signed in. Default: false on self-host (no SMTP path), true on CF prod. */
   requireEmailVerify?: boolean;
-  /** Cross-subdomain cookie domain (e.g. ".openma.dev"). Skip for default
+  /** Cross-subdomain cookie domain (e.g. ".openma.ai"). Skip for default
    *  per-host scoping. */
   cookieDomain?: string;
   /** Idempotent ensure-tenant; called from databaseHooks.user.create.after.

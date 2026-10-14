@@ -174,10 +174,10 @@ See `packages/storage/README.md` for the full config schema. This is independent
 
 If your deployment outgrows a single D1 (D1 has a 10 GB / 50K-row limits per database), you can fan out across N MAIN_DB shards. The shard router lives in `ROUTER_DB`; per-tenant data lands on whichever shard `tenant_shard` says owns the tenant.
 
-Activation is config-only — the wrangler files ship with `env.production` overlays that bind 4 sharded auth DBs (used by openma.dev's hosted prod). To enable for your own deployment:
+Activation is config-only — the wrangler files ship with `env.production` overlays that bind 4 sharded auth DBs (used by openma.ai's hosted prod). To enable for your own deployment:
 
 1. Provision the additional D1s: `wrangler d1 create openma-router`, `wrangler d1 create openma-auth-shard-01..03`
-2. Patch the IDs into `env.production` blocks of `apps/{main,agent,integrations}/wrangler.jsonc` (replacing openma.dev's IDs)
+2. Patch the IDs into `env.production` blocks of `apps/{main,agent,integrations}/wrangler.jsonc` (replacing openma.ai's IDs)
 3. Apply migrations to each shard:
    ```bash
    wrangler d1 migrations apply openma-auth-shard-01 --remote --config apps/main/wrangler.jsonc
@@ -281,7 +281,7 @@ CF Bot Fight Mode is rejecting the request. Either:
 - Add a browser-shaped User-Agent header on your client, or
 - Lower Bot Fight Mode for the affected hostname in the dashboard.
 
-This bites self-hosters using `curl` from automation against `*.openma.dev` defaults; the User-Agent path is recorded in the [project memory](/contribute/) for hosted use.
+This bites self-hosters using `curl` from automation against `*.openma.ai` defaults; the User-Agent path is recorded in the [project memory](/contribute/) for hosted use.
 
 ### "Migration failed" on first deploy
 

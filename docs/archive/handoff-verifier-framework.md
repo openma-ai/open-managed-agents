@@ -105,7 +105,7 @@ Do NOT change code based on guesses.
 
 ## Environment config
 
-- API: `https://openma.dev`
+- API: `https://openma.ai`
 - API Key: in `.dev.vars`
 - Model card: `mdl-i8qlcoilr1868fu5` (MiniMax-M2.7)
 - Environment: `env-qisw0fmtm88nqwyk` (eval-env, sandbox-default)

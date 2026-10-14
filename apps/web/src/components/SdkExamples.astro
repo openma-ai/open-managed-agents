@@ -11,7 +11,7 @@ const examples = [
 
 const client = new Anthropic({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "https://app.openma.dev",
+  baseURL: "https://app.openma.ai",
 });
 
 const agent = await client.beta.agents.create({
@@ -40,7 +40,7 @@ await client.beta.sessions.events.send(session.id, {
 
 const client = new OpenAI({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "https://app.openma.dev/openai/v1",
+  baseURL: "https://app.openma.ai/openai/v1",
 });
 
 const session = await client.beta.agents.sessions.create({

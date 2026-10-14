@@ -1,0 +1,397 @@
+---
+title: CLI 与 SDK
+description: open-managed-agents 的 Node CLI，以及用 @anthropic-ai/sdk 对接 openma——不使用 curl 与 API 对话的两条路径。
+---
+
+import { Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+
+openma 可以通过两条路径调用：
+
+- **`@openma/cli`** — 用于针对 API 编写脚本的 Node CLI。
+- **Anthropic 官方 SDK** — TypeScript（[`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk)）、Python（[`anthropic`](https://pypi.org/project/anthropic/)）和 Go（[`anthropic-sdk-go`](https://pkg.go.dev/github.com/anthropics/anthropic-sdk-go)）——把 `baseURL` 指向 openma。openma API 与 Claude Managed Agents API 在线路上兼容，因此同一套 SDK 对两者都可用。
+
+CLI 位于本仓库（`packages/cli`）。
+
+## CLI
+
+### 安装
+
+<Tabs syncKey="pkg-mgr">
+  <TabItem label="npm">
+    ```bash
+    npm i -g @openma/cli
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add -g @openma/cli
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```bash
+    bun add -g @openma/cli
+    ```
+  </TabItem>
+</Tabs>
+
+### 配置
+
+CLI 读取两个环境变量：
+
+```bash
+export OMA_BASE_URL="https://app.openma.ai"
+export OMA_API_KEY="oma_..."
+```
+
+自托管时，把 `OMA_BASE_URL` 指向你自己的部署。
+
+### 常用命令
+
+```bash
+# List agents
+oma agents list
+
+# Create an agent from a JSON file
+oma agents create -f ./my-agent.json
+
+# Start a session
+oma sessions create --agent agent_abc123 --env env_abc123 --title "research"
+
+# Chat — post a turn AND stream the reply token-by-token to your terminal
+oma sessions chat sess_xyz "Summarize the openma docs."
+
+# Fire-and-forget message (no streaming back; useful when something else is tailing)
+oma sessions message sess_xyz "Now also include the integrations."
+
+# Tail a session's full event stream (SSE under the hood)
+oma sessions tail sess_xyz
+
+# Replay a session's full event log
+oma sessions logs sess_xyz
+
+# Show your usage
+oma usage
+```
+
+运行 `oma --help` 或 `oma <command> --help` 查看完整表面。
+
+<Aside type="tip" title="适合管道">
+  CLI 子命令接受 `--json`，并输出机器可读结果。用管道接到 `jq` 做临时分析。
+</Aside>
+
+## SDK
+
+openma API **与 [Claude Managed Agents API](https://docs.anthropic.com/) 在线路上兼容**。标准表面直接使用 Anthropic SDK。同时还要使用 OpenMA 扩展的 TypeScript 应用可以使用 `@openma/sdk`：它组合官方客户端，加上强类型的扩展，并且不会重新实现请求、分页、流式传输或错误。
+
+<Aside type="note" title="Managed API 保持官方实现">
+  `new OpenMA().beta` 就是 `@anthropic-ai/sdk` 的 beta 资源对象本身。标准调用仍然可移植；仅 OpenMA 的 Agent 设置隔离在 `_oma` 下。
+</Aside>
+
+### 安装
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```bash
+    npm i @openma/sdk
+    # or: pnpm add @openma/sdk
+    # or: bun add @openma/sdk
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```bash
+    pip install anthropic
+    # or: uv add anthropic
+    # or: poetry add anthropic
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```bash
+    go get github.com/anthropics/anthropic-sdk-go
+    ```
+  </TabItem>
+</Tabs>
+
+### 快速开始
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```ts
+    import { OpenMA } from "@openma/sdk";
+
+    const client = new OpenMA({
+      baseURL: "https://app.openma.ai",
+      apiKey: process.env.OMA_API_KEY!,
+    });
+
+    // Create an environment.
+    const env = await client.beta.environments.create({
+      name: "my-env",
+      config: {
+        type: "cloud",
+        networking: { type: "unrestricted" },
+        packages: { type: "packages", pip: ["pandas"] },
+      },
+    });
+
+    // List sessions.
+    for await (const sess of client.beta.sessions.list({ limit: 10 })) {
+      console.log(sess.id, sess.title);
+    }
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```python
+    import os
+    from anthropic import Anthropic
+
+    client = Anthropic(
+        base_url="https://app.openma.ai",
+        api_key=os.environ["OMA_API_KEY"],
+    )
+
+    # Create an environment.
+    env = client.beta.environments.create(
+        name="my-env",
+        config={
+            "type": "cloud",
+            "networking": {"type": "unrestricted"},
+            "packages": {"type": "packages", "pip": ["pandas"]},
+        },
+    )
+
+    # List sessions.
+    for sess in client.beta.sessions.list(limit=10):
+        print(sess.id, sess.title)
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```go
+    import (
+        "context"
+        "fmt"
+        "os"
+
+        "github.com/anthropics/anthropic-sdk-go"
+        "github.com/anthropics/anthropic-sdk-go/option"
+    )
+
+    client := anthropic.NewClient(
+        option.WithBaseURL("https://app.openma.ai"),
+        option.WithAPIKey(os.Getenv("OMA_API_KEY")),
+    )
+
+    // Create an environment.
+    env, _ := client.Beta.Environments.New(
+        context.Background(),
+        anthropic.BetaEnvironmentNewParams{
+            Name: anthropic.F("my-env"),
+            // config: see SDK docs for the typed param shape
+        },
+    )
+
+    // List sessions.
+    iter := client.Beta.Sessions.ListAutoPaging(
+        context.Background(),
+        anthropic.BetaSessionListParams{Limit: anthropic.F(int64(10))},
+    )
+    for iter.Next() {
+        sess := iter.Current()
+        fmt.Println(sess.ID, sess.Title)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+### 覆盖的资源
+
+官方 SDK 中的每个命名空间都可以对着 openma 使用：
+
+| 命名空间 | 说明 |
+|---|---|
+| `client.beta.environments` | `list`、`create`、`retrieve`、`update`、`archive`、`delete` |
+| `client.beta.agents` | `list`、`create`、`retrieve`、`update`、`archive`，外加 `versions` 子资源 |
+| `client.beta.sessions` | `list`、`create`、`retrieve`、`update`、`archive`、`delete`，外加 `events`、`resources`、`threads` 子资源 |
+| `client.beta.vaults` | `list`、`create`、`retrieve`、`update`、`archive`、`delete`，外加 `credentials` 子资源 |
+| `client.beta.memoryStores` | `list`、`create`、`retrieve`、`archive`、`delete`，外加 `memories`、`memoryVersions` 子资源（服务端尚未实现 `update`） |
+| `client.beta.files` | 完整的 `list/upload/retrieve/delete` |
+| `client.beta.skills` | 完整覆盖 |
+| `client.beta.models` | 完整覆盖 |
+
+### OMA 专有端点
+
+Anthropic API 中不存在的端点（租户、OAuth、集成、评估、成本报告、运行时等）位于 `/v1/oma/*`。`@openma/sdk` 为已支持的扩展提供类型化资源，其余则使用受路径保护的回退：
+
+```ts
+const usage = await client.oma.request<{
+  total_cost: number | null;
+  total_estimated_cost: number | null;
+  scope: { type: string; id: string };
+  attribution: {
+    provider: string;
+    source: 'provider_billed' | 'provider_metered' | 'openma_metered' | 'estimated';
+    granularity: string;
+    is_invoice_grade: boolean;
+    data_completeness: 'complete' | 'partial' | 'unavailable';
+    warnings: string[];
+  };
+}>({
+  method: "get",
+  path: "/v1/oma/cost_report",
+});
+```
+
+成本报告会明确说明其证据。只有当提供商报告了货币成本时才会填充 `total_cost`；价卡计算留在 `total_estimated_cost`。缺失的提供商数据集是 `partial` 或 `unavailable`，绝不会是零。当前的 Cloudflare 适配器以账户为范围，因此该端点不会声称按租户或按 Session 归属 Cloudflare 账单。账户范围的报告及其 `/pricing` 子资源需要部署的运维方 `API_KEY`；租户范围的 API key 和控制台 cookie 会被拒绝。
+
+`CostAttributionPort` 是可复用的服务端扩展点。随产品提供的 Cloudflare 与 Vercel 适配器保留提供商的 FOCUS 载荷；Blaxel 与 Modal 保留其提供商原生行，同时返回相同的 `scope` 与 `attribution` 信封。OpenMA 运行时账本适配器使用带版本的运维方费率卡，支持按租户和按 Session 分摊。提供商专有凭据是其适配器包的构造参数，绝不会在报告查询中被接受，也不会在报告中返回。
+
+服务端组合可以把 `AbortSignal` 与报告查询一起传入。所有随产品提供的适配器都会把取消传播到其提供商 I/O，并把传输、SDK、授权、范围、响应和分页失败归一化为稳定的 `CostAttributionError` 代码。运行时适配器通过 `createRuntimeUsageReader(services.usage)` 连接到平台账本，并读取已计费与未计费的历史；确认是计费工作流状态，不是删除。
+
+也可以直接用 `fetch`——每个 OMA 端点都是 JSON，不需要额外运行时。
+
+### 仅 OMA 的扩展
+
+一小部分 OMA 专有的 Agent 字段（辅助模型、Harness 选择器、沙箱运行时绑定）在 Agent 创建 / 更新调用中通过请求体字段 `_oma:` 传递。OpenMA 会读取它们；不要把 `_oma` 发给 Anthropic 端点。它们是可选的——省略 `_oma` 的 Agent 使用原样的 Claude Managed Agents 形状。
+
+提供商专有的推理选项是 JSON，并留在它们所影响的模型上：
+
+```ts
+await client.beta.agents.update("agent_abc123", {
+  model: {
+    id: "deepseek-chat",
+    provider_options: {
+      pi: { reasoning: "off", samplingParams: { temperature: 0 } },
+    },
+  },
+  _oma: {
+    aux_model: {
+      id: "deepseek-chat",
+      provider_options: { pi: { reasoning: "off" } },
+    },
+  },
+});
+```
+
+主模型选项会到达主回合与压缩调用。辅助选项会到达工具内部的模型调用，例如 `web_fetch` 摘要。自定义 Agent 扩展放在 `_oma` 下；任意的根字段会被拒绝。
+
+| 字段 | 用途 |
+|---|---|
+| `aux_model` | 用于工具内部 LLM 工作的辅助模型（例如 `web_fetch` 摘要）。未设置时，工具回退为返回原始内容。 |
+| `appendable_prompts` | 追加到 Agent 系统上下文的带版本 prompt ID。 |
+| `harness` | 选择 Agent 循环的 Harness 实现。保留给 OMA 托管的运行时。 |
+| `acp` | 当 `harness` 为 `acp-sandbox` 时使用的进程、重启、空闲超时和每回合超时配置。该命令通过所选沙箱提供商的双工进程 Port 运行。 |
+| `runtime_binding` | 选择哪个沙箱运行时为该 Agent 的 Session 提供服务。保留给 OMA 托管的运行时。 |
+
+TypeScript 从 `@openma/sdk` 获得强类型的请求与响应。Python 与 Go 继续使用各自官方 SDK 的逃生舱：
+
+<Tabs syncKey="lang">
+  <TabItem label="TypeScript">
+    ```ts
+    import { OpenMA } from "@openma/sdk";
+
+    const client = new OpenMA({
+      baseURL: "https://app.openma.ai",
+      apiKey: process.env.OMA_API_KEY!,
+    });
+
+    const agent = await client.beta.agents.create({
+      name: "researcher",
+      model: { id: "claude-opus-4-7" },
+      _oma: {
+        aux_model: { id: "claude-haiku-4-5" },
+        appendable_prompts: ["prompt_review"],
+      },
+    });
+
+    console.log(agent._oma?.aux_model?.id);
+    ```
+  </TabItem>
+  <TabItem label="Python">
+    ```python
+    import os
+    from anthropic import Anthropic
+
+    client = Anthropic(
+        base_url="https://app.openma.ai",
+        api_key=os.environ["OMA_API_KEY"],
+    )
+
+    agent = client.beta.agents.create(
+        name="researcher",
+        model={"id": "claude-opus-4-7"},
+        extra_body={"_oma": {"aux_model": {"id": "claude-haiku-4-5"}}},
+    )
+
+    # Pydantic preserves unknown response fields under model_extra.
+    print(agent.model_extra.get("_oma"))
+    ```
+  </TabItem>
+  <TabItem label="Go">
+    ```go
+    import (
+        "context"
+        "os"
+
+        "github.com/anthropics/anthropic-sdk-go"
+        "github.com/anthropics/anthropic-sdk-go/option"
+    )
+
+    client := anthropic.NewClient(
+        option.WithBaseURL("https://app.openma.ai"),
+        option.WithAPIKey(os.Getenv("OMA_API_KEY")),
+    )
+
+    agent, _ := client.Beta.Agents.New(
+        context.Background(),
+        anthropic.BetaAgentNewParams{
+            Name: anthropic.F("researcher"),
+            Model: anthropic.F(anthropic.BetaModelConfigParam{
+                ID: anthropic.F("claude-opus-4-7"),
+            }),
+        },
+        option.WithJSONSet("_oma", map[string]any{
+            "aux_model": map[string]string{"id": "claude-haiku-4-5"},
+        }),
+    )
+    // Response: agent.JSON.ExtraFields["_oma"].Raw()
+    ```
+  </TabItem>
+</Tabs>
+
+### 错误
+
+服务器返回 Anthropic 标准错误信封，因此 SDK 的类型化错误按文档工作：
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+
+try {
+  await client.beta.sessions.retrieve("sess-bogus");
+} catch (err) {
+  if (err instanceof Anthropic.APIError) {
+    console.error(err.status, err.error); // {error: {type, message}, request_id, type: "error"}
+    if (err.error?.error?.type === "not_found_error") { /* ... */ }
+  }
+}
+```
+
+<Aside type="tip" title="也可以直接调用 fetch">
+  每个端点都是普通 JSON 或 SSE。如果希望零依赖，直接把 `fetch` 指向 [REST API](/build/api/)——SDK 是语法糖，不是必需品。
+</Aside>
+
+## 接下来
+
+<LinkCard
+  title="REST API"
+  href="/build/api/"
+  description="完整的 REST 表面——CLI 与 SDK 在底层调用的就是它。"
+/>
+<LinkCard
+  title="技能与工具"
+  href="/build/skills-and-tools/"
+  description="用程序添加自定义工具和技能。"
+/>
+<LinkCard
+  title="自定义集成"
+  href="/build/integrations/"
+  description="为新的第三方平台实现 IntegrationProvider。"
+/>

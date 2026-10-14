@@ -1,0 +1,219 @@
+---
+title: REST API
+description: openma 在 /v1/* 下提供 REST API，用于管理 Agent、Session、Environment、技能、Vault、集成等。Session 实时事件使用 SSE。
+---
+
+import { Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+
+REST 表面位于 `/v1/*`。控制台能做的一切都可以通过程序完成——控制台本身只是一个 API 消费方。
+
+## 基址
+
+| 环境 | 基址 |
+|---|---|
+| 托管（生产） | `https://app.openma.ai` |
+| 托管（预发） | `https://app.staging.openma.dev` |
+| 自托管 | 你在 `apps/main/wrangler.jsonc → routes` 中设置的地址 |
+
+## 认证
+
+两种认证方案：
+
+**API key** — 用于服务端到服务端以及 CLI。通过 `x-api-key` 头传递（`x-api-key: oma_...`）。在控制台 **API Keys** 页面创建。
+
+**Session cookie** — 控制台界面使用的方式（由 better-auth 签发）。除非你要把 openma 嵌进浏览器应用，否则通常不会对着它做集成。
+
+```bash
+export OMA_BASE_URL="https://app.openma.ai"
+export OMA_API_KEY="oma_..."
+```
+
+## 端点分组
+
+| 分组 | 路径 | 用途 |
+|---|---|---|
+| Agents | `/v1/agents` | 创建 / 读取 / 更新 / 归档 Agent 配置。带版本——每次更新都会提升版本。 |
+| Sessions | `/v1/sessions` | 创建 Session、列出、获取事件日志。实时事件走 SSE。 |
+| Environments | `/v1/environments` | 沙箱模板：软件包、网络规则、基础镜像。 |
+| 技能 | `/v1/skills` | 内置与自定义技能目录。自定义技能文件通过 R2 上传。 |
+| Vaults | `/v1/vaults` | 凭据存储（bearer token、OAuth、环境变量）。 |
+| Memory Stores | `/v1/memory_stores` | 按 Agent 划分的语义记忆。 |
+| Files | `/v1/files` | 按 Session 划分的文件存储。 |
+| Model Cards | `/v1/oma/model_cards` | 自定义模型提供商配置。 |
+| 集成 | `/v1/oma/integrations` | Linear / GitHub / Slack 的安装状态、webhook、发布。 |
+| Evals | `/v1/oma/evals` | 评估框架。 |
+| API Keys | `/v1/oma/api_keys` | 管理个人访问令牌。 |
+| OAuth | `/v1/oma/oauth` | 供控制台界面使用的第三方 OAuth 流程。 |
+
+完整的逐端点参考见 [参考 → API 端点](/reference/api/)。
+
+## 模型、Pi 与运行时控制
+
+`GET /v1/models` 是官方 Managed Agents 目录，列出当前租户可执行的有效 Model Cards。`POST /v1/oma/models/list` 是单独的设置辅助接口，列出某个 Pi 提供商已知的模型；它接受 Pi provider id，并且在以 SDK 为先的路径上不要求提供商凭据。
+
+Agent 通过 `model.id` 引用一张 card。`model.effort` 会按 Pi 支持的思考级别归一化，而 `model.speed=fast` 映射到 Anthropic fast mode 或 OpenAI priority service tier。`model.inference_geo` 会按官方形状往返，但目前不影响区域路由。这三项都是 Agent 版本设置，由 Session 继承，不是 Model Card 配置。
+
+Pi 内置与自定义提供商规则、`pi_config` 以及探测语义见 [API 端点 → Model Cards](/reference/api/#model-cards)。
+
+## 常见模式
+
+### 创建 Agent
+
+```bash
+curl -X POST "$OMA_BASE_URL/v1/agents" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "research-agent",
+    "model": "claude-sonnet-4-6",
+    "system": "You are a research assistant.",
+    "tools": [{"type": "agent_toolset_20260401"}]
+  }'
+```
+
+### 创建 Session
+
+```bash
+curl -X POST "$OMA_BASE_URL/v1/sessions" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "agent_abc123",
+    "environment_id": "env_lvqed06glbi3ent0",
+    "title": "research session"
+  }'
+```
+
+响应包含新 Session 的 `id`（例如 `sess_xyz`）。第一条用户回合要单独发送——见下方「发送一个回合」。
+
+### 流式接收 Session 事件（SSE）
+
+```bash
+curl -N "$OMA_BASE_URL/v1/sessions/sess_xyz/events/stream" \
+  -H "x-api-key: $OMA_API_KEY"
+```
+
+连接保持打开。每一行 `data:` 都是一条 JSON 事件。
+
+**默认行为与 Anthropic 规范对齐**（[Managed Agents events](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)）——只投递在连接打开**之后**发出的事件，并且只出现规范中的事件类型：
+
+| 事件 | 时机 |
+|---|---|
+| `user.message` | 你所提交回合的回显 |
+| `session.status_running` / `_idle` / `_rescheduled` / `_terminated` / `error` | 生命周期 |
+| `agent.thinking` | 扩展思考块（完整） |
+| `agent.message` | 助手消息（完整） |
+| `agent.tool_use` / `agent.mcp_tool_use` / `agent.custom_tool_use` | 工具调用（完整） |
+| `agent.tool_result` / `agent.mcp_tool_result` | 工具执行结果 |
+| `agent.thread_*` / `session.thread_*` | 多智能体协调 |
+| `span.model_request_start` / `_end` / `span.outcome_evaluation_*` | 可观测性 |
+
+直接使用官方 `@anthropic-ai/sdk`——它会原样解析这些事件。
+
+#### `?include=chunks` — OMA 扩展事件
+
+增加更细粒度的流式传输和额外可观测性。逐 token 渲染界面时需要它。
+
+| 事件 | 时机 |
+|---|---|
+| `agent.message_stream_start` / `_chunk` / `_stream_end` | 助手文本的实时增量——chunk 事件携带 `{ message_id, delta }` |
+| `agent.thinking_stream_start` / `_chunk` / `_stream_end` | 扩展思考的实时增量——chunk 事件携带 `{ thinking_id, delta }` |
+| `agent.tool_use_input_stream_start` / `_chunk` / `_stream_end` | 工具输入 JSON 的实时流——chunk 事件携带 `{ tool_use_id, delta }` |
+| `system.user_message_pending` / `_promoted` / `_cancelled` | 待发送队列的生命周期（发件箱体验） |
+| `session.warning` | 恢复扫描在运行时重启后核对了被中断的流 / 孤儿 tool_use |
+| `span.model_first_token` / `span.compaction_summarize_*` / `span.wakeup_scheduled` / `aux.model_call` | 额外可观测性 |
+
+流生命周期事件（`*_stream_start`、`*_chunk`、`*_stream_end`）会在线路上广播，但**不会**持久化到事件日志——带有相同关联 id 的规范事件才是事实来源。回放客户端只看得到规范事件；实时订阅者两者都能看到。
+
+#### `?replay=1` 与 `Last-Event-ID` — 历史回放
+
+默认行为与 Anthropic 一致：不回放，只投递打开之后的事件。要用已持久化的历史引导客户端：
+
+- `?replay=1` — 连接时回放完整的已持久化日志，然后继续尾随
+- `Last-Event-ID: <seq>` — 只回放 `seq > N` 的事件（SSE 原生的续传；浏览器在重连时会自动发送）
+
+两者都可以与 `?include=chunks` 组合。关于先打开、再列出、再去重的模式（Anthropic 推荐的、不使用 `replay` 来恢复历史的方式），见 [`GET /v1/sessions/:id/events`](/reference/api/) 的 JSON 分页历史。
+
+```bash
+# Console-style: full history + token-level streaming
+curl -N "$OMA_BASE_URL/v1/sessions/sess_xyz/events/stream?include=chunks&replay=1" \
+  -H "x-api-key: $OMA_API_KEY"
+```
+
+<Aside type="tip" title="可续传的流">
+  Session DO 在 SQLite 中保存规范事件日志。断开连接，几天后带着 `Last-Event-ID` 重连——会精确地从上次离开的地方继续。如果一次部署或运行时重启在回合中途杀掉了流，冷启动恢复扫描会把已缓冲的 chunk 定稿为一条 `agent.message`，并发出 `session.warning`，让感知 chunk 的客户端可以标记它。没有结果的工具调用会被注入一条占位 `agent.tool_result`，这样下一轮 LLM 不会返回 400。
+</Aside>
+
+### 发送一个回合（聊天一次性）
+
+仅 OMA 的便捷端点（没有对等的 Anthropic 规范）。在一次 HTTP 调用里提交用户消息并流式返回响应。始终发出 chunk 事件。回合结束（`session.status_idle`）时连接自动关闭。
+
+```bash
+curl -N -X POST "$OMA_BASE_URL/v1/sessions/sess_xyz/messages" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "content": "Now also include the integrations." }'
+```
+
+`content` 接受纯字符串（包装为单个文本块）或 `ContentBlock[]` 数组（文本、图像、文档可混合）。返回 `text/event-stream`。
+
+### 向已在别处流式输出的 Session 发送回合
+
+当你想发完即走时（例如另有一个 SSE 消费方）：
+
+```bash
+curl -X POST "$OMA_BASE_URL/v1/sessions/sess_xyz/events" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "Now also include the integrations." }] }] }'
+```
+
+返回 `202`，没有响应体——你已经打开的 SSE 流会收到响应事件。
+
+### 向 Session 上传文件
+
+```bash
+curl -X POST "$OMA_BASE_URL/v1/files" \
+  -H "x-api-key: $OMA_API_KEY" \
+  -F "session_id=sess_xyz" \
+  -F "file=@./report.pdf"
+```
+
+文件进入 R2，并挂载到沙箱的 `/home/user/files/<id>/report.pdf`。
+
+## 错误
+
+标准 HTTP 状态码。响应体形状：
+
+```json
+{
+  "error": {
+    "type": "invalid_request",
+    "message": "agent_id is required"
+  }
+}
+```
+
+常见类型：`invalid_request`、`not_found`、`unauthorized`、`forbidden`、`rate_limited`、`internal_error`。
+
+## 速率限制
+
+按租户。限制与当前用量通过响应头 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`（Unix 纪元秒）给出。
+
+## 接下来
+
+<LinkCard
+  title="CLI 与 SDK"
+  href="/build/cli-sdk/"
+  description="跳过 curl：使用 Node CLI，或导入 @open-managed-agents/api-types 的 DTO。"
+/>
+<LinkCard
+  title="技能与工具"
+  href="/build/skills-and-tools/"
+  description="定义自定义工具、自定义技能，并接入 MCP 服务器。"
+/>
+<LinkCard
+  title="参考：API 端点"
+  href="/reference/api/"
+  description="逐端点列出请求与响应形状。"
+/>

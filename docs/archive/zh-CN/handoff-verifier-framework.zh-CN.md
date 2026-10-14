@@ -109,7 +109,7 @@ verifier 设计完之后，跑全部 22 个任务并产出报告。
 
 ## 环境配置
 
-- API：`https://openma.dev`
+- API：`https://openma.ai`
 - API Key：在 `.dev.vars`
 - Model card：`mdl-i8qlcoilr1868fu5`（MiniMax-M2.7）
 - Environment：`env-qisw0fmtm88nqwyk`（eval-env，sandbox-default）

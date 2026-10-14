@@ -36,10 +36,17 @@
     "sdk",
     "llm",
     "streaming",
-    "sse"
+    "sse",
+    "claude-managed-agents",
+    "anthropic",
+    "agent-sandbox",
+    "self-hosted",
+    "e2b",
+    "daytona",
+    "modal"
   ],
   "license": "Apache-2.0",
-  "homepage": "https://openma.dev",
+  "homepage": "https://openma.ai",
   "repository": {
     "type": "git",
     "url": "https://github.com/openma-ai/open-managed-agents",

@@ -3,7 +3,7 @@
 # webhooks at an OMA integrations gateway, verifies HTTP acceptance.
 #
 # Prerequisites:
-#   - A live integrations gateway URL (e.g. https://integrations.staging.openma.dev)
+#   - A live integrations gateway URL (e.g. https://integrations.staging.openma.ai)
 #   - A `publicationId` row + its raw signing/webhook secret (read from the
 #     wizard's "verify credentials" toast or the model_cards / publications
 #     API after install)

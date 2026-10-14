@@ -12,7 +12,7 @@ import { test, expect, type Page } from "@playwright/test";
  *   npx playwright test test/e2e/console.spec.ts
  */
 
-const TEST_EMAIL = `e2e-${Date.now()}@test.openma.dev`;
+const TEST_EMAIL = `e2e-${Date.now()}@test.openma.ai`;
 const TEST_PASSWORD = "e2e-testpass-123";
 const TEST_NAME = "E2E Tester";
 

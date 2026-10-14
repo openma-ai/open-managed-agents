@@ -1,0 +1,72 @@
+---
+title: 恢复与幂等
+description: SessionDO 在被 Cloudflare 驱逐之后如何恢复、哪些状态会留下来，以及会产生费用的操作必须遵守哪条设计规则，才能在恢复之下保持安全。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+SessionDO 随时可能被 Cloudflare 运行时驱逐。内存中的字段会消失；下一次请求（或已调度的 alarm）会唤醒一个全新的 DO 实例，它必须重建状态并继续 Agent 的这一轮，而用户察觉不到。本页说明这是如何工作的、代价是什么，以及新代码为了保持安全必须遵守的设计规则。
+
+## 驱逐之后什么还在
+
+| 表面 | 位置 | 是否存活 |
+|---|---|---|
+| `this.state`（status、agent_id、vault_ids 等） | `cf_agents_state` SQL 行 | ✅ |
+| 对话历史（events） | `events` SQL 表 + R2 溢出 | ✅ |
+| 部分 LLM 流式分块 | `streams` SQL 表 | ✅ |
+| 后台任务（`bash run_in_background`） | `background_tasks` SQL 表 | ✅ |
+| 调度（alarm） | `cf_agents_schedules` SQL 行 + DO alarm | ✅ |
+| 活跃 fiber（正在执行的 `runFiber`） | `cf_agents_runs` SQL 行 | ✅ |
+| 内存缓存（`sandboxWarmupPromise`、`currentWarmupGen`、内存中的去重集合） | 仅 RAM | ❌ — 重新推导 |
+| 沙箱容器 `/workspace` | 经 `createBackup` / `restoreBackup` 由 R2 支撑 | ✅ 如果已备份 |
+| 沙箱容器 `/tmp`、进程 | 容器内存 | ❌ — sleepAfter 或重启会清掉它们 |
+
+## 恢复路径
+
+1. Cloudflare 驱逐 DO。内存没了；SQL 还在。
+2. 一次请求或 alarm 唤醒一个全新的 DO。构造函数调用 `_loadStateFromSql`，并注册 schema（`ensureSchema`）。
+3. 在 alarm 路径上，`_checkRunFibers` 扫描 `cf_agents_runs`。任何没有被活着的内存 fiber 认领的行，都被当作孤儿。
+4. 对每个孤儿，运行 `onFiberRecovered({ id, name, snapshot })`：
+   - 强制把 `state.status` 从 `running` 改为 `idle`，这样 `drainEventQueue` 不会因为“仍在活跃”而跳过这一轮。
+   - 通过读取 SQL 构建恢复上下文：最后一条 `user.message`、此后发出的全部事件，加上部分流式分块（状态为 `streaming` 或 `interrupted`）。
+   - 调用 `recoverAgentTurn(...)`。它会把先前上下文拼进提示词，重新调用 `streamText`，并带一个去重集合（`broadcastedMessageIds`），这样已经到达客户端的 `agent.message` 事件不会被再次发出。
+   - 发出 `session.status_rescheduled`，让轨迹显示出这次切断。
+5. 恢复决策返回 `continue: true` 之后，`drainEventQueue()` 恢复正常的轮次处理。
+
+恢复循环对每一轮最多尝试五次。第六次会触发 `forceIdle` 并发出 `session.error`，这样卡死的 Session 不会永远烧预算。
+
+## 恢复做不到的事
+
+`recoverAgentTurn` 可以重建对话，但运行时看不见：驱逐发生的那一刻，一次有副作用的调用是否已经执行。模型发出一次工具调用，worker 把它派发到沙箱，结果事件落地之前 DO 被驱逐——恢复之后，下一段提示词看起来像这次工具调用还没发生，于是模型可以再次发出它。
+
+这意味着**跨过驱逐边界执行的工具调用可能会运行不止一次**。对大多数读取（`bash("ls /workspace")`）这无害；对变更（`rm -rf`、`gh pr merge`、付费 API 调用）则不是。
+
+再上一层也一样：如果 `streamText` 已经发出 LLM 请求，而分块还没到齐就被驱逐，恢复会重新发出一次新的模型请求，而不是续上旧的那次——两次计费，两个可能分叉的答案。
+
+<Aside type="caution">
+我们目前接受这个取舍。在下面的设计规则接入更多代码路径之前，把任何有费用或有副作用的操作都当成：跨过驱逐时可能执行零次、一次或两次。
+</Aside>
+
+## 设计规则：费用操作携带隐式幂等键
+
+任何花钱或有外部可见副作用的操作——LLM 请求、沙箱工具执行、携带 Vault 的 HTTPS、第三方 API 变更——都应当设计成：恢复路径能发现它以前运行过，然后要么抑制重放，要么重新挂上先前的结果。
+
+添加这类新操作时要套用的模式：
+
+1. **从规范操作参数和当前轮次位置推导一个稳定的 op id**——`op_id = hash(op_kind || canonical_args || turn_seq)`。
+2. **在发起外部调用之前**，把 `op_started` 写入 SQL（带上 `op_id`）。
+3. **调用成功之后**，写入带结果引用的 `op_completed`。
+4. **在恢复开始时，扫描有 `op_started` 但没有 `op_completed` 的记录**：
+   - 如果上游支持幂等键（Stripe、OpenAI 的 `idempotency-key` 头、GitHub Actions 重跑），传入 `op_id`，让上游合并重复请求。
+   - 对沙箱执行：把结果写到由 `op_id` 作为键的确定性文件路径；恢复时读回来，而不是重新运行。
+   - 对 LLM 流：把部分分块缓存在 `op_id` 下；恢复从最后已知的分块续上，而不是重新发起。
+5. **对于没有上游幂等支持、且重放不安全的操作**（例如 webhook 扇出、不可逆的状态变更），把这种不确定暴露给 Agent：“操作 `op_id` 可能已经执行；重试前请先核实。”不要默默地重新运行。
+
+合并一个新的费用操作之前的编写清单：
+
+- [ ] op id 是什么——什么让两次尝试成为“同一次操作”？
+- [ ] 如果 DO 在发出调用和收到响应之间的那一刻被驱逐，恢复会做什么？
+- [ ] 如果上游两次收到同一个 op id，它会去重吗？
+- [ ] 如果答案是“我们不知道”，Agent 会看到什么？
+
+如果答不上来，这个操作就还没准备好进入一条可能被驱逐的路径。
