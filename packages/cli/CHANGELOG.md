@@ -1,5 +1,11 @@
 # @openma/cli
 
+## 0.6.6
+
+### Patch Changes
+
+- 59d8112: Depend on `@openma/common` from npm (`^0.9.1`) instead of a GitHub commit, so installing the CLI no longer fetches from codeload.github.com.
+
 ## 0.6.5
 
 ### Patch Changes
