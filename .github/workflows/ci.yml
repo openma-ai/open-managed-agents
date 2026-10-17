@@ -55,7 +55,7 @@ jobs:
         run: pnpm test:coverage:harness-web-http
 
       - name: Upload harness web HTTP coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage/harness-web-http/lcov.info,coverage/harness-tools-wiring/lcov.info
           flags: harness_web_http
