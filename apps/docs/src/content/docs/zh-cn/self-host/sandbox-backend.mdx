@@ -1,0 +1,451 @@
+---
+title: 沙箱执行后端接入契约
+description: 第三方或自托管沙箱后端的接入契约。生命周期、客户端、能力、镜像、凭据、配置、可观测与验收，均以当前代码为准。
+---
+
+本页是把计算后端接入 OpenMA 的契约。以后的消费方（例如 boat.dev、Firecracker 或 AgentENV 驱动）实现的是下面这些接缝。本页不新增 provider，也不排期实现某一个。
+
+每一节都受两条事实约束：
+
+- `packages/runtime-resource-contract` 与 `packages/sandbox/src/ports.ts` 里的 TypeScript port 是规范性形状。已发布的适配器只说明这些形状在生产代码里的含义。
+- 某个动词、能力或钩子没有类型、也没有调用方时，该节标为**缺口**。不要为了填表而发明方法。
+
+持久化、栅栏，以及 workspace / output 的划分见
+[Sandbox and persistence contracts](/self-host/sandbox-persistence/)。操作侧的组合方式见
+[Managed Runtime Host](/self-host/managed-runtime-host/)。凭据策略见
+[ADR 0007](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0007-sandbox-credential-egress.md)
+与
+[`docs/mcp-credential-architecture.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/mcp-credential-architecture.md)。
+
+## 当前存在的接缝
+
+OpenMA 有两条计算接缝。它们共享文件与进程方面的想法，由不同的注册表加载。实现其中一条并不能满足另一条。
+
+| 接缝 | 谁调用 | 入口 | 后端要实现什么 |
+|---|---|---|---|
+| 工具沙箱 | Harness 跑在宿主里，工具跑在沙箱里 | `SandboxFactory` / `SandboxProviderPort` | `SandboxPort`，以及该后端能够如实支持的可选 port |
+| 托管运行时 | OpenMA 为一次已认领的 work 拥有计算 | `ManagedRuntimeProviderDriverPort` | `ManagedSandboxPort`，加上 workspace、outputs 和 harness driver |
+
+第三条路径 `external_worker` 提供官方 Managed Agents Work API，并且不启动 OpenMA 沙箱。未经修改的社区 Environment Worker 留在这条路径上。它是兼容边界，不是一种后端实现。
+
+Cloudflare 不由 `SANDBOX_PROVIDER` 选择。Agent worker 绑定一个 `SANDBOX` Durable Object。`apps/agent/src/runtime/sandbox.ts` 里的 `CloudflareSandbox` 是工具沙箱包装。`packages/managed-runtime-cloudflare` 是托管运行时驱动。
+
+### 工具沙箱
+
+`packages/sandbox/src/ports.ts` 是与运行时无关的表面。Node 服务器把 provider 名字解析成一个包，并调用该包的 `sandboxFactory`：
+
+```ts
+export type SandboxFactory = (
+  ctx: SandboxFactoryContext,
+  env: SandboxFactoryEnv,
+) => Promise<SandboxPort>;
+```
+
+`SandboxFactoryContext` 携带 `sessionId`、宿主 `workdir`，以及可选的 memory / output 根目录。`SandboxFactoryEnv` 是进程环境。每个 factory 只读自己的键（`E2B_API_KEY`、`BOXRUN_URL`、`SANDBOX_IMAGE` 等）。宿主不按这些键分支。
+
+`apps/main-node/src/sandbox-provider.ts` 是闭合映射：
+
+| `SANDBOX_PROVIDER` | 包 |
+|---|---|
+| `sprites` | `@open-managed-agents/managed-runtime-sprites` |
+| `litebox`、`boxlite` | `@open-managed-agents/sandbox-adapter-litebox` |
+| `boxrun` | `@open-managed-agents/sandbox-adapter-boxrun` |
+| `daytona` | `@open-managed-agents/sandbox-adapter-daytona` |
+| `e2b` | `@open-managed-agents/sandbox-adapter-e2b` |
+
+空值、未知值或 `subprocess` 会抛错。仅当 `NODE_ENV=test` 时，`OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess` 才加载 `@open-managed-agents/sandbox/adapters/local-subprocess`。该适配器没有隔离边界。
+
+`SandboxProviderPort` 是叠在同一个 `SandboxPort` 上的较新 create / resume / restore 三元组。托管运行时预设会调用它。Node 服务器的生产组合仍然加载 `sandboxFactory`。
+
+`DefaultSandboxOrchestrator`（`packages/sandbox/src/orchestrator.ts`）通过探测方法来接上 vault 出站上下文、memory 挂载、session outputs 和 workspace 备份/恢复。它不认识 provider 名字。
+
+### 托管运行时
+
+`ManagedRuntimeProviderDriverPort` 是可替换的后端：
+
+```ts
+interface ManagedRuntimeProviderDriverPort {
+  descriptor(): ManagedRuntimeProviderDriverDescriptor;
+  create(input: ManagedRuntimeProviderCreateInput): Promise<ManagedRuntimeProviderResources>;
+}
+```
+
+`create()` 只返回 port。SDK 客户端和活的句柄留在适配器内部。
+
+```ts
+interface ManagedRuntimeProviderResources {
+  sandbox: ManagedSandboxPort;
+  workspace: WorkspacePersistencePort;
+  outputs: SessionOutputPort;
+  harnessDriver: SandboxHarnessDriverPort;
+  supervisorTransport?: HarnessSupervisorTransportPort;
+  runtimeCheckpoint?: RuntimeCheckpointPort;
+  credentialEgress?: CredentialEgressPort;
+  sessionInputs?: SessionInputMaterializerPort;
+}
+```
+
+宿主加载一个已安装的包：
+
+```ts
+loadManagedRuntimeProviderDriver({
+  provider,          // 必须等于 descriptor().provider
+  moduleSpecifier,   // 导出 createManagedRuntimeProviderDriver 的包
+  factoryOptions,    // 适配器私有；宿主不解释 SDK 字段
+})
+```
+
+`createManagedRuntimeProviderRegistry` 先按 descriptor、再按活的 port，接纳请求的 `ManagedRuntimeProfile`。广告与 port 不一致会抛出 `ManagedRuntimeCapabilityError`。当 `credentialEgress.requirement === "required"` 时，除非 descriptor 声明 `enforcement: "enforced"`，且 `create()` 返回的 `CredentialEgressPort` 的 `capabilities()` 与之相符，否则拒绝该 profile。
+
+放置方式是 `in_process`、`driver_service` 或 `provider_native`。驱动列出自己实现的那些。`packages/managed-runtime-host/src/environment-worker-installation.ts` 里的安装模式是 `runtime_host`、`provider_dispatch`、`provider_activation` 和 `external_worker`。
+
+已发布的驱动包导出 `createManagedRuntimeProviderDriver`。仓库内的符合性目录（`packages/managed-runtime-host/src/provider-conformance.ts`）列出 `node-docker`、`cloudflare`、`cloudflare-bridge`、`e2b`、`daytona`、`litebox`、`boxrun`、`blaxel`、`sprites`、`vercel`、`modal` 和 `superserve`。当前每一行都是 `managedRuntime: true` 且 `runtimeCheckpoints: []`。`requireManagedRuntimeProvider` 只接受这个联合类型。树外包仍然可以用模块说明符加载；加入该目录，是本仓库把一个预设视为一等公民的方式。
+
+`packages/managed-runtime-sandbox` 把 `SandboxProviderPort` 适配成托管 port。`ProviderManagedRuntimeProviderPort.create/resume/restore` 接受可选的分配上下文，这样创建时的镜像、模板和网络设置就不会进入 `packages/sandbox`。
+
+## 客户端与协议表面
+
+没有公开客户端会创建、寻址或销毁沙箱。客户端只命名 Environment 和 Session。部署选择后端。
+
+| 表面 | 与沙箱相关的契约 | 它不暴露的内容 |
+|---|---|---|
+| `@openma/sdk`（`packages/sdk`） | `OpenMA` 包装 `@anthropic-ai/sdk`。Session 与 environment 是官方 beta 资源。OpenMA 的 agent 扩展增加 `harness`、`acp`，以及 stdio MCP；其 `command` 是沙箱**内部**的绝对路径。 | 没有 sandbox 资源、provider id、镜像摘要或生命周期方法 |
+| `oma` CLI | `oma envs create` 提交 `{ name, config: { type: "cloud" } }`。Session 帮助文档记载 `POST /v1/sessions/:id/files`，把沙箱路径提升为已存储文件。 | 没有 `SANDBOX_PROVIDER` 标志 |
+| REST `/v1/environments` | 存储 `config.packages`、`config.networking`，以及可选的 `config.dockerfile` 字符串。创建时在 Cloudflare 路由和 `packages/http-routes` 上都把 `status` 设为 `"ready"`，`sandboxWorkerName` 设为 `"sandbox-default"`，`imageStrategy` 设为 `null`。 | 不选择后端，也不构建镜像 |
+| REST `/v1/sessions` | 绑定 `environment_id`、`vault_ids` 和资源。文件提升读取沙箱字节。 | 不返回 runtime id 或租约 |
+| Agent `_oma` | `harness: "acp-sandbox"` 要求 `_oma.acp.agent.command`。进程在该 session 的沙箱内启动。`harness: "acp-proxy"` 加上 `runtime_binding` 把循环送到用户登记的本地 daemon。 | `acp-proxy` 不是沙箱后端 |
+| ACP | `SandboxSpawner`（`packages/acp-runtime/src/spawners/sandbox.ts`）需要 `SandboxDuplexProcessPort`。`AcpSandboxHarness` 拥有 initialize / `session/new` / `session/resume` / prompt / cancel / close 以及规范事件日志。 | 后端不说 ACP |
+
+声明在 agent 上的 stdio MCP 服务器会被投影进 ACP session。URL MCP 服务器被改写成 `/v1/oma/mcp-proxy/{session}/{server}`，并带上 Work 的 `sessions_token`。上游 URL 和 vault 密钥留在控制面（`packages/acp-runtime/src/sandbox-agent.ts`）。
+
+`acp-sandbox` 的准备步骤使用 `AcpSandboxAgentStatePort`（只有 `writeFile` 和 `exec`）。原生 session 产物在检查点边界被复制到 `/workspace/.openma/harness-state/…`。这是 ACP session id 的文件系统恢复，不是虚拟机 fork。细节以及保留/删除策略见
+[Sandbox and persistence contracts](/self-host/sandbox-persistence/#acp-native-session-persistence)。
+
+Issue [#262](https://github.com/openma-ai/open-managed-agents/issues/262) 跟踪真实 ACP agent 与 `acp-sandbox` 的覆盖度。它是测试矩阵，不是本契约。
+
+## 生命周期
+
+调用方并不共享同一套动词。把操作映射到你要实现的那个 port。
+
+| 操作 | 托管运行时 | 工具沙箱 | Cloudflare 容器 |
+|---|---|---|---|
+| 创建 | `ManagedSandboxPort.acquire` → `ManagedSandboxLease` `{ provider, runtimeId, metadata? }` | `SandboxProviderPort.create`，或 `sandboxFactory` | `getSandbox(env.SANDBOX, sessionId)` 在首次使用时启动容器 DO。runtime id 就是 session id |
+| 心跳 | `heartbeat` → `{ type: "alive" }` 或 `{ type: "lost" }` | `SandboxRuntimePort.renewLease({ ttlMs })`。`SandboxPort.renewActivityTimeout` 是更早的可选钩子 | `renewLease` 调用 `renewActivityTimeout`，重置容器的 `sleepAfter` 计时器。`runtimeCapabilities().lease` 为 `true` |
+| 停止 / 挂起 | `retained_runtime` 成功发布之后，宿主调用 `suspend`。否则调用 `terminate` | `SandboxRuntimePort.suspend({ kind })` 返回 `SandboxCheckpointHandle` | `suspend` 先写文件系统检查点，再 `destroy`。空闲关闭是平台的 `sleepAfter` 钩子，不是可移植的 stop 方法 |
+| 恢复 | 没有 `resume` 方法。下一次运行重新 `acquire`。保留型适配器可以在 `acquire` 内部按稳定名字重连。可选的 `RuntimeCheckpointPort.restore` 存在但未接线：每个已发布的符合性行都是 `runtimeCheckpoints: []` | `SandboxProviderPort.resume(handle)` 与 `restore(checkpoint)`。`SandboxRuntimePort.resume(checkpoint)` | 通过 `restoreBackup` 做可移植的文件系统恢复。`status()` 不探测就返回 `"unknown"`，因为探测会唤醒睡眠中的容器。符合性记录为 `suspendResume: "unsupported"` |
+| 销毁 | 持有栅栏时 `terminate({ reason })`。`reap({ reason })` 是幂等重试，且不接收栅栏令牌 | 可选的 `SandboxPort.destroy` | `CloudflareSandbox.destroy`。`OmaSandbox.emitSandboxActiveNow` 在销毁前记录用量 |
+| 查看 | `inspect` → `running` \| `suspended` \| `stopped` \| `unknown` | `SandboxRuntimePort.status` | `"unknown"` |
+| Fork | **缺口。** 没有 port、事件或 CLI/API 字段把一个活沙箱克隆到另一个 session | **缺口** | **缺口** |
+
+`ManagedSandboxPort` 的方法是必需的。在 `SandboxPort` 上，`destroy`、`startProcess`、挂载和备份是可选的。缺失即不支持。宿主使用 `supportsSandboxRuntime`、`supportsDuplexProcess`、`supportsWorkspaceBackup`、`supportsSessionOutputMount` 和 `supportsManagedWorkspaceLifecycle`。不得把缺失的方法当成成功。
+
+### `acquire` 周围的宿主顺序
+
+`createManagedRuntimeHost`（`packages/managed-runtime-host/src/host.ts`）是规范性事务：
+
+```text
+claim fence generation
+  → materialize workspace
+  → prepare outputs (when the plan has an output strategy)
+  → prepare credential egress (when the profile asks and a port exists)
+  → try RuntimeCheckpointPort.restore (optional; failure falls through)
+  → sandbox.acquire
+  → workspace.attach
+  → outputs.attach
+  → credential egress.attach
+  → materialize session inputs
+  → harnessDriver.run
+  → on retained_runtime: sandbox.suspend
+  → workspace checkpoint, optional runtime checkpoint, output collect/finalize
+  → fence publish
+  → revoke credential egress
+  → terminate unless a retained runtime was published
+  → on terminate failure: enqueue a token-free orphan for reap
+```
+
+`acquire` 接收 scope、fence、plan、workspace 绑定、output 绑定或 null、一个不透明的 `credentialEgress` 绑定或 null，以及一个 `AbortSignal`。绑定 id 不是密钥，不得写入租约、检查点、日志或 Managed Agents 线上报文。
+
+Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对应一个 work。 [ADR 0006](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0006-session-execution-authority.md) 让子 agent 使用父沙箱和父栅栏。并发的执行 lane 是队列特性，不是沙箱 fork。
+
+终止原因是 `"completed" | "failed" | "lease_lost"`。`reap` 必须可以安全重复。孤儿记录保存租约和打码后的错误。它们不保存栅栏令牌或 API 凭据。
+
+## 能力矩阵
+
+只广告适配器真正实现的能力。注册表会把广告与活的 port 对比。
+
+| 能力 | 所在位置 | 现状 |
+|---|---|---|
+| Exec | `SandboxPort.exec(command, timeout?)`。托管运行时用它做环境就绪探测 | 工具沙箱和 `verifyRuntimeEnvironment` 都需要 |
+| 后台进程 | 可选 `startProcess` → `ProcessHandle`（`kill`、`getLogs`、`getStatus`） | 仅当适配器实现了它才存在 |
+| 实时 stdio | `SandboxDuplexProcessPort.spawnDuplexProcess` → stdin、stdout、stderr、`kill`、`exited` | `acp-sandbox` 需要它；当 supervisor 是子进程时，`openma_supervised` 也需要它。方法缺失时 `SandboxSpawner` 抛出 `SandboxAcpUnsupportedError` |
+| 文件 | `readFile` / `writeFile`。可选 `readFileBytes` / `writeFileBytes` | 共享的 `POST /v1/sessions/:id/files` 调用 `readSandboxFile`，返回 null 时响应 400。在 Node 上，缺少 `readFileBytes` 就是这个 null。Cloudflare 读取沙箱 DO 的 `/file` 端点。托管的 output 收集在缺少 `readFileBytes` 时抛错 |
+| Memory 挂载 | 可选 `mountMemoryStore`，路径为 `/mnt/memory/<storeName>/`；当挂载是拷贝投影时还有 `synchronizeMemoryStores` | Cloudflare 使用 R2 + FUSE。本地 subprocess 符号链接 `memoryRoot`。无法挂载的远程 factory 使用宿主的 `memoryWorkspace` 桥。没有单独的 memory 工具 |
+| Session outputs | `SandboxSessionOutputMountPort`，或托管的 `SessionOutputPort`，路径 `/mnt/session/outputs` | 策略：`durable_mount`、`watch_and_upload`、`final_collect`。会收集的已发布预设使用 `final_collect` |
+| Workspace | 托管的 `WorkspacePersistencePort`，路径 `/workspace` | 策略：`durable_mount`、`retained_runtime`、`checkpoint_restore`、`ephemeral`。提交点见持久化页 |
+| 网络策略 | 公开的 `Environment.config.networking`：`unrestricted` 或 `limited`，带 `allowed_hosts`、`allow_mcp_servers`、`allow_package_managers` | 存在 environment 上，并映射进 Managed Agents 的 networking 对象。强制执行因后端而异（Cloudflare 出站处理器、provider 允许列表、Docker 网络）。存下来的允许列表本身不是包过滤器 |
+| Vault 出站 | `CredentialEgressPort` | 与公开的 networking 对象分开。级别：`enforced`、`advisory`、`unsupported`。`required` 只接受 `enforced` |
+| 浏览器 | `browser` 是可选的 harness 工具（`apps/agent/src/harness/tools.ts`），背后是 Workers 的 `BROWSER` 绑定和 `@open-managed-agents/browser-harness` | **不是沙箱 port。** 新的 VM 后端不会因为实现了 `ManagedSandboxPort` 就获得浏览器。打开页面的计费是 `browser_active_seconds`，由 Cloudflare SessionDO 发出 |
+| GPU | — | **缺口。** `Environment.config`、`SandboxPort`、`ManagedSandboxPort` 和符合性目录上都没有该字段 |
+| 多 session | 每个 `(workspace, environment, session, work)` 一份租约。Cloudflare 用 session id 作为容器键 | 跨 session 共享一个沙箱是**缺口**，把一个沙箱 fork 成第二个 session 也是**缺口**。子 agent 共享父沙箱 |
+| ACP 恢复 | `/workspace/.openma/…` 下的文件，加上 ACP `session/resume` | 需要 `writeFile` 和 `exec`。原生恢复按 agent profile 而定。opaque 适配器不承诺它 |
+| 进程内存检查点 | `RuntimeCheckpointPort` | **每个已发布预设都是缺口。** 在这个 port 接线之前，provider 快照只是 workspace 或 retained-runtime 状态 |
+
+### 双向 stdin 是 ACP 契约的一部分
+
+返回一个 `stdin.write` 会抛错的 `SandboxDuplexProcess`，并不能满足 `acp-sandbox`。当前的例子是 Vercel 驱动：它为分离的 stdout/stderr 暴露 `spawnDuplexProcess`，而 stdin 写入失败，错误是 "Vercel Sandbox command API does not expose streaming stdin"。它的符合性行只列出驱动 lane `ama_worker`，且 `sandboxPortFacts.unavailable` 包含 `streaming_process_stdin`。Cloudflare Bridge 同样只支持 `ama_worker`，原因同类（`interactive_stdin_without_pty`）。
+
+当实现了 `SandboxRuntimePort` 且 `runtimeCapabilities().lease` 为 true 时，`AcpSandboxHarness` 在 `session.prompt` 期间每 30 秒续一次 90 秒租约。空闲会睡眠的后端需要这份租约。没有该 port 的后端仍会把 prompt 跑到 harness 的 abort 信号为止，但没有保活。
+
+## 镜像
+
+没有共享的拉取、缓存或镜像仓库认证 port。每个后端收到一个引用，并证明该镜像能运行选定的 harness 二进制。
+
+### 制品载体
+
+`ProviderRuntimeEnvironmentArtifact`（`packages/managed-runtime-sandbox`）：
+
+| `artifact.type` | `reference` 的含义 | 谁使用 |
+|---|---|---|
+| `preinstalled` | 不向 provider 拉取。运行时里已经有这份契约 | 未传入 artifact 时，`createPreinstalledRuntimeEnvironment` 的默认值 |
+| `image` | 容器镜像引用 | Docker 的 `image` 选项；Vercel 创建可以传 `{ image }` |
+| `template` | Provider 模板 id | E2B 的 `SANDBOX_IMAGE` |
+| `snapshot` | Provider 快照 id | Vercel 可以按 `{ source: { type: "snapshot", snapshotId } }` 启动 |
+| `bootstrap` | 适配器在启动后运行的脚本或包 | 声明在联合类型里。需要它的后端必须实现 `prepare` 并写明 |
+
+`ProviderRuntimeEnvironment.type` 是 `"base"`（有版本的 OpenMA 契约）或 `"custom"`（操作者制品）。自定义制品在租约发布前仍须通过同一套可执行文件检查。`requireRuntimeEnvironmentArtifact` 限制 provider 接受哪些载体。E2B 托管运行时只接受 `template`。
+
+分配之后，`verifyRuntimeEnvironment` 运行 plan 里的 harness 可执行文件（`driver.process.command`，对 `openma_supervised` 则是 supervisor 命令）。绝对路径命令必须可执行（`test -x`）。其他命令必须在 `PATH` 上（`command -v`）。成功时打印 `__OPENMA_RUNTIME_READY__`。预装助手的默认超时是 10 秒。不能 `exec` 的后端无法完成接纳。
+
+### 当前钉死的内容
+
+| 制品 | 钉死方式 |
+|---|---|
+| `apps/agent/Dockerfile` | `FROM docker.io/cloudflare/sandbox:0.12.10`。该文件中的注释要求这个 tag 与 `@cloudflare/sandbox` 锁步，否则容器 HTTP 路由漂移，`exec` 返回 500 |
+| `.github/workflows/build-sandbox-image.yml` | 把该 Dockerfile 构建为 `docker.io/openma/sandbox-base`，打上 `latest`、git SHA、从 Dockerfile 解析出的 `cloudflare/sandbox` 版本，以及 Dockerfile 的 sha256。缓存只属于这个 workflow 的 GitHub Actions cache（`type=gha`）。平台是 `linux/amd64`。触发方式是 `workflow_dispatch`，或推到 `main` 且改动了 `apps/agent/Dockerfile` |
+| `apps/agent/Dockerfile.sandbox` | `FROM docker.io/openma/sandbox-base:<64 字符内容哈希>`。Wrangler 把容器类指向这个文件 |
+| Node 托管运行时 | `createNodeManagedRuntime({ image })` 要求显式的镜像字符串。没有默认值 |
+| E2B 托管运行时 | 必须有 `SANDBOX_IMAGE`。为空时预设抛出 "SDK base fallback is disabled" |
+| Daytona / BoxRun `sandboxFactory` | `SANDBOX_IMAGE`，未设置时默认 `node:22-slim` |
+| LiteBox `sandboxFactory` | `SANDBOX_IMAGE`，未设置时默认 `node:22-bookworm` |
+
+这些 factory 默认值只属于工具沙箱路径。它们并不承诺托管运行时预设会补上一个镜像。
+
+### Environment 包与自定义 Dockerfile
+
+`Environment.config.packages` 列出 `pip`、`npm`、`apt`、`cargo`、`gem` 和 `go`。`config.dockerfile` 是可选字符串，`apps/main/src/lib/limits.ts` 把它限制在 100,000 字符以内。类型注释说平台会前置 `FROM openma/sandbox-base:latest` 并拒绝用户写的 `FROM`。那个构建器已经不在了。
+
+`apps/main/src/routes/environments.ts` 记录了以下移除：按 environment 的 GitHub Actions 镜像构建、`/build-complete` 回调，以及 `image_strategy` 选择。创建立即返回，`status` 为 `"ready"`。environments store 仍有 `image_strategy: "base_snapshot" | "dockerfile" | null`。`base_snapshot` 在那里被记为保留接缝。惰性安装器被撤回，是因为 Cloudflare 在 `blockConcurrencyWhile` 里的 `exec` 大约 10–15 秒就会被取消。
+
+仍在运行的包安装只在 Cloudflare：`apps/agent/src/runtime/setup-on-warmup.ts`，由 SessionDO 预热调用。
+
+- 暖标记 `/tmp/.oma-setup-warm` 匹配 → 无操作。
+- 只有 `/workspace/.oma-setup-restored` 匹配 → 重新跑 apt。语言包放在 `/workspace` 下，所以 workspace 恢复会把它们带回来。Apt 装到 `/usr`，workspace 备份不包含它。
+- 两个标记都没有 → 完整安装。
+- 输入里的 `gem` 会被接受然后跳过（基础镜像没有 Ruby）。
+
+Node、E2B、Daytona 和其他驱动不调用 `setup-on-warmup`。它们的镜像必须已经包含 harness 二进制和该 session 需要的包。**缺口：** `config.packages` 和 `config.dockerfile` 不是新后端可用的可移植镜像构建钩子。
+
+**缺口：** 没有跨后端的镜像仓库凭据、层缓存、摘要强制、多架构拉取或缓存失效约定。自己缓存镜像的后端要写明自己的行为。OpenMA 仍会在每次 acquire 时重新探测 harness 可执行文件。
+
+## 凭据与推理代理
+
+三类凭据保持分开。后端不得把它们收成一把注入的 API key。
+
+| 类别 | 沙箱可以持有 | 控制面持有 |
+|---|---|---|
+| 沙箱内 ACP agent 的模型调用 | `HOSTED_INFERENCE_URL`、`HOSTED_INFERENCE_TOKEN` | 模型卡 API key，在代理转发时使用 |
+| HTTP MCP | 只发往 OpenMA 源站、放在 `Authorization` 里的 Work `sessions_token` | Vault 令牌，由 `/v1/oma/mcp-proxy/{session}/{server}` 替换 |
+| Vault HTTPS（git、包宿主、其他工具） | 不透明的 `CredentialEgressBinding.bindingId`，或 provider 占位符 | 上游密钥，由强制出站路径注入 |
+
+已关闭的 issue [#264](https://github.com/openma-ai/open-managed-agents/issues/264) 是推理代理工作。下面的行为是已经落地的部分。
+
+### `HOSTED_INFERENCE_*`
+
+`packages/inference-proxy` 构造：
+
+```text
+HOSTED_INFERENCE_URL   = {gateway}/v1/oma/inference-proxy/{encodeURIComponent(sessionId)}
+HOSTED_INFERENCE_TOKEN = sessions_token
+```
+
+`applyHostedInferenceToAgentEnv` 在设置这两个托管变量之前，删除 `OPENAI_BASE_URL` 和 `MODEL_PROVIDER_SECRET_ENV_KEYS`（`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY`、`GOOGLE_API_KEY`、`XAI_API_KEY`、`MISTRAL_API_KEY`、`GROQ_API_KEY`、`OPENROUTER_API_KEY`）。
+
+`projectHostedInferenceForAcpAgent` 接着让 `@open-managed-agents/harness-inference-adapters` 写出 harness 原生的环境变量和配置文件。当前已发布的适配器：`pi`、`dsh`、`claude`、`codex`、`gemini`、`opencode`、`kimi`。文件通过 `AcpSandboxAgentStatePort.writeFile` 落盘。代理令牌从环境引用（`proxyTokenEnvVar: "HOSTED_INFERENCE_TOKEN"`），不复制进持久的原生状态允许列表。
+
+网关是 `apps/main` 与 `apps/main-node`（`apps/main-node/src/lib/http-inference-proxy.ts`）上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。`forwardHostedInferenceRequest`：
+
+- 丢弃入站的 `authorization`、`x-api-key`、`api-key`、`x-goog-api-key` 和 `proxy-authorization`；
+- 在宿主上解析该 session 的模型卡；
+- 按线路协议设置上游凭据头（`authorization: Bearer`、Anthropic 的 `x-api-key`，或 Gemini 的 `x-goog-api-key`）；
+- 无法构造上游 URL 时返回 403；请求的协议没有端点时返回 409 `inference_protocol_unsupported`。
+
+`extractHostedInferenceProxyToken` 接受 `Authorization` 或 `x-api-key`。两者都存在且不相等则为 `mismatch`。
+
+`managedHostedInferenceFromWorkEnvironment` 从官方 Work 密钥（`ANTHROPIC_WORK_SECRET`，base64url JSON）读取 `sessions_token` 和 `api_base_url`，网关源站回退到 `ANTHROPIC_BASE_URL`。同一密钥也是 MCP 网关能力。它是短命的、受 claim 栅栏约束的 bearer。它不是上游模型 key，也不是 vault 读取凭据。重新认领会轮换它。后端不得把它放进检查点路径、日志字段、URL 或上游 `Authorization` 头。
+
+后端不实现这个代理。它必须允许沙箱通过 HTTP 或 HTTPS 到达 OpenMA 源站，把投影后的环境传给 ACP 子进程，并且避免记录该令牌。能力存在时，剥掉 provider key 是控制面的工作。向沙箱注入 `OPENAI_API_KEY` 的后端绕过了本契约。
+
+### Vault 出站
+
+`CredentialEgressPort`（`prepare`、`attach`、`revoke`、`release`）已实现，并在 profile 要求时由宿主强制执行。绑定是不透明的。明文 vault 材料不是该 port 上的字段。
+
+`prepare` 在 `acquire` 之前运行，因为若干 provider 在创建时就需要网络策略。`revoke` 在 `terminate` 之前运行。若 revoke 抛错，宿主强制终止并抛出清理错误。没有该 port 即表示不支持。省略 `credentialEgress` 的 profile 保持 `disabled`，这样官方 worker 仍然可用。
+
+已发布实现的强制程度并不一致，按 provider 写在 ADR 0007 和 `docs/mcp-credential-architecture.md` 里。仅有代理环境变量属于 `advisory`。声称 `enforced` 的新后端必须展示一条访客无法绕过的默认拒绝路径，覆盖它列出的协议（`http`、`https`、`tcp`）。其余保持 `unsupported` 或 `advisory`，而 `requirement: "required"` 会使接纳失败。
+
+## 配置
+
+配置是有意拆开的。Provider 选择不属于公开的 Environment 对象（Managed Runtime Host 写明了这一点，创建路由也不读取 provider 字段）。
+
+| 层 | 键 | 谁读取 |
+|---|---|---|
+| 公开 environment | `config.type`、`config.packages`、`config.networking`、`config.dockerfile` | API 校验；仅在 Cloudflare 上，setup-on-warmup 读取 packages |
+| 公开 agent | `harness`、`acp.agent`（`command`、`args`、`env`、`cwd`、可选的注册表 `id`）、`acp.restart`、超时，以及 `acp-proxy` 的 `runtime_binding` | Harness 注册表。`acp-sandbox` 注册在 `apps/agent/src/harness/builtins.ts` |
+| 公开 session | `environment_id`、`vault_ids`、文件/git/memory 资源 | 资源物化器和出站范围。不是后端 id |
+| Node 进程环境 | `SANDBOX_PROVIDER` 加上该 factory 自己的键（`E2B_*`、`DAYTONA_*`、`BOXRUN_URL`、`SANDBOX_IMAGE`、`MEMORY_S3_*`、`FILES_S3_*` 等） | 选中的 `sandboxFactory` 或托管预设。`readS3MemoryBucket` 是共享的 S3 助手 |
+| 托管驱动 | `providerConfig: Readonly<Record<string, unknown>>`，以及传给 `createManagedRuntimeProviderDriver` 的 `factoryOptions` | 适配器。宿主转发它们，不检查 SDK 形状 |
+| 运行时 profile | `ManagedRuntimeProfile` 的 workspace / outputs / checkpoint 要求、`credentialEgress.requirement`、`driver`（`ama_worker` 或 `openma_supervised`） | 注册表接纳，发生在任何 provider 分配之前 |
+| Cloudflare worker | `SANDBOX` Durable Object 绑定、`Dockerfile.sandbox`、可选的 `FILES_BUCKET` / `WORKSPACE_BUCKET` | `CloudflareSandbox` 与 Cloudflare 托管预设 |
+
+`openma_supervised` 说的是 `openma-harness-supervisor-v1`（ready、heartbeat、checkpoint request、drain、stop）。子进程不接收栅栏令牌。若驱动广告了 `openma_supervised`，但其 harness port 没有列出该驱动，注册表会用 `SupervisedSandboxHarnessDriver` 包住 `supervisorTransport`。既没有驱动能力也没有传输却广告该 lane，会使接纳失败。
+
+## 可观测与计费
+
+没有沙箱指标 port。后端不必为了让宿主工作而发出遥测。下面是现有的钩子，以及不存在的钩子。
+
+### 实际记录的内容
+
+| 钩子 | 何时触发 | 后端的职责 |
+|---|---|---|
+| Session 事件日志 | Harness 与 session 生命周期（`agent.tool_use`、`session.status_*`、`session.error` 等） | 无。宿主写事件。后端不得另造一套并行事件协议 |
+| `span.model_request_start` / `span.model_request_end` | 模型 API 调用 | 无。这是推理 span，不是沙箱 span |
+| `span.outcome_evaluation_start` | 结果评估 | 无 |
+| `recordEvent`（`packages/shared/src/metrics.ts`） | 可选的 Workers Analytics Engine 数据集 `oma_events`。Blobs 为 `[op, tenant_id, session_id, agent_id, error_name, error_message]`，double 为 `duration_ms`。绑定缺失时为空操作 | 作为必需的后端钩子是**缺口**。`ManagedSandboxPort` 里没有调用它。Cloudflare 代码把 `[oma-sandbox] onStop exit=… reason=…` 写到 Workers Logs |
+| `UsageStore.recordUsage` | 种类：`session_alive_seconds`、`sandbox_active_seconds`、`browser_active_seconds`。值是整数秒，单次发出最多钳制为 24 小时。托管计费 worker 拉取未计费行；本仓库不定价 | `sandbox_active_seconds` 由 Cloudflare 容器上的 `OmaSandbox.recordSandboxActiveOnStop` / `emitSandboxActiveNow` 发出，尽力而为，且不得阻塞拆卸。**缺口：** Node 和其他驱动不写这个种类 |
+| `BrowserBillingHook` | 浏览器关闭时一次，来自 Cloudflare SessionDO | 沙箱适配器不调用它 |
+| `CostAttributionPort` | 在含首尾的 UTC 日期范围上 `capabilities()` + `report(query)`。`CostAttributionRegistry` 按 provider id 分发。FOCUS 形状的行在 `packages/cost-attribution` 中归一化 | 可选的拉取适配器。仓库内实现：`cost-attribution-cloudflare`、`cost-attribution-vercel`、`cost-attribution-blaxel`，以及 `cost-attribution-runtime`（OpenMA 用量账本）。**缺口：** acquire/terminate 上没有计费回调；新的 provider id 在有包注册之前没有报表 |
+
+能报告 provider 成本的后端在自己的包里实现 `CostAttributionPort`，把 provider 凭据留在那里，并向 `CostAttributionRegistry` 注册该 port。它不向 `ManagedSandboxLease` 增加字段。用量行上的 `runtimeId` 已经在运行时读取器的记录类型里；Cloudflare 的用量插入路径写入 tenant、session、agent、kind 和 value。
+
+若 terminate 失败，宿主把一条孤儿记录入队。该行是操作信号（`provider`、`runtimeId`、scope、generation、reason、尝试次数、打码后的错误）。它不是计费事件。
+
+## 注册一个后端
+
+仓库内的托管预设：
+
+1. 增加一个导出 `createManagedRuntimeProviderDriver` 的包。
+2. `descriptor().provider` 是稳定 id。`version` 是适配器版本。
+3. `create()` 返回资源 port。不要返回 SDK 对象。
+4. 如实列出放置方式。在 `create()` 内拒绝任何其他放置方式。
+5. 实现 `ManagedSandboxPort`，`terminate` 与 `reap` 必须幂等。
+6. 为你广告的策略实现 workspace 与 output port。`checkpoint_restore` 是持久化页上的可移植基线。`retained_runtime` 是可继续的、provider 本地状态，不是可移植检查点。
+7. 为 `ama_worker` 实现 `SandboxHarnessDriverPort`；广告 `openma_supervised` 时实现 `HarnessSupervisorTransportPort` 或原生的 supervised 驱动。
+8. 若要支持 `acp-sandbox`，实现 `spawnDuplexProcess`，且 stdin 能接受字节。
+9. 在 `MANAGED_RUNTIME_PROVIDER_CONFORMANCE` 增加一行，并写边界测试，对你没有的能力失败关闭。在 `RuntimeCheckpointPort` 真正接线之前，把 `runtimeCheckpoints` 设为 `[]`。
+10. 只在你能证明的强制级别上传递 `credentialEgress`。
+
+仓库内的工具沙箱（harness 在沙箱外，Node 服务器）：
+
+1. 导出 `sandboxFactory`。
+2. 把名字加进 `SANDBOX_PROVIDER_PATHS`。
+3. 在 factory 内部从 `SandboxFactoryEnv` 读取 provider 密钥。
+4. 这次注册不会使该 provider 变成托管运行时。
+
+树外：
+
+- 发布一个带有同样 `createManagedRuntimeProviderDriver` 导出的包。
+- 部署调用 `loadManagedRuntimeProviderDriver` 并传入该模块说明符。宿主对 provider SDK 没有编译期依赖。
+- 只有要成为本仓库里的命名预设时，才需要修改 `ManagedRuntimeProviderId`。
+
+## 验收清单
+
+后端只对它作出的声明负责。未勾选的行是缺口，必须写进符合性的 `reason` / `sandboxPortFacts`，而不是默认为已支持。
+
+**接纳**
+
+- [ ] `descriptor().provider` 与配置的 provider 字符串一致。
+- [ ] 注册表拒绝重复的 provider id。
+- [ ] 广告的 workspace、output、checkpoint 和 harness 能力与活的 port 一致（`provider-driver-registry` 测试覆盖这种漂移）。
+- [ ] 除非强制级别为 `enforced` 且 port 存在，否则 `credentialEgress: required` 失败。
+- [ ] `RuntimeCheckpointPort` 缺失时，`runtimeCheckpoint: required` 失败。
+- [ ] harness driver 和 `supervisorTransport` 都不能运行它时，`openma_supervised` 失败。
+
+**生命周期**
+
+- [ ] `acquire` 返回 JSON 安全的租约。`metadata` 里没有 SDK 句柄、令牌或密钥。
+- [ ] provider 已删除该运行时时，`heartbeat` 报告 `lost`。
+- [ ] `terminate` 对 `completed`、`failed` 和 `lease_lost` 幂等。
+- [ ] `reap` 能从一份没有栅栏令牌的序列化租约成功，包括第二次调用。
+- [ ] 失败的 `terminate` 可以从孤儿记录重试。
+- [ ] 仅当广告了 `suspendResume: "supported"` 时才实现 `suspend`。Cloudflare 的文件系统检查点然后销毁，对运行时恢复是 `unsupported`，必须保持这个标签。
+- [ ] Fork 被记为不支持。
+
+**进程与文件**
+
+- [ ] `exec` 返回就绪探测能匹配的合并输出；harness 二进制缺失时包含非零退出。
+- [ ] `readFile` / `writeFile` 遵守宿主挂上的 workspace 路径。
+- [ ] 实现了 `readFileBytes`，或者把文件提升和 output 收集记为不可用。在 Node 上，`readSandboxFile` 返回 null 会使提升变成 400。托管的 output 收集会抛错。Cloudflare 的提升使用沙箱 DO 的 `/file` 路由。
+- [ ] 声称支持 `acp-sandbox` 时，包含双向 stdin/stdout/stderr、`kill` 和 `exited`。日志轮询不能替代（`SandboxAcpUnsupportedError`）。
+
+**凭据**
+
+- [ ] 启用托管推理时，provider API key 不被复制进访客环境。
+- [ ] 访客发往模型 provider 的流量走 `HOSTED_INFERENCE_URL`，并带 `HOSTED_INFERENCE_TOKEN`。
+- [ ] 令牌不被写入检查点、URL 或日志字段。
+- [ ] Vault 密钥不是租约上的字段。`required` 出站对声明的协议默认拒绝。
+- [ ] MCP URL 改写留在控制面。后端只需要能出站到 OpenMA 源站。
+
+**镜像**
+
+- [ ] 对任何托管预设，启动的制品是显式引用（image、template、snapshot、preinstalled 或 bootstrap），不是隐式的 SDK 默认值。
+- [ ] harness 可执行文件探测打印出 `__OPENMA_RUNTIME_READY__` 之前，acquire 不发布租约。
+- [ ] 自定义镜像标记为 `custom`，并通过同一探测。
+- [ ] 镜像缓存和仓库认证行为由后端自己写明。OpenMA 不提供它们。
+
+**持久化**
+
+- [ ] `/workspace` 遵循持久化页上广告的一种策略。
+- [ ] `/mnt/session/outputs` 遵循广告的一种 output 策略，或者 profile 里 outputs 为 `disabled`。
+- [ ] 保留的文件系统不被广告成可移植检查点。
+- [ ] 不广告进程内存。在 `RuntimeCheckpointPort` 存在之前，`runtimeCheckpoints` 保持为空。
+
+**可观测与计费**
+
+- [ ] 宿主保存的 provider 日志里不出现密钥。
+- [ ] 只有后端真的记录了开始和停止，才发出 `sandbox_active_seconds`。Cloudflare 的 `OmaSandbox` 路径是现有的发出方。其他后端让该种类缺席，而不是写入一个猜出来的时长。
+- [ ] 若有 provider 账单适配器，它是按 provider id 区分的单独 `CostAttributionPort`。
+
+**与现有预设一致的测试**
+
+- [ ] 针对能力漂移和缺失出站的注册表接纳测试。
+- [ ] 在 resume/restore 上拒绝外来 `provider` 的边界测试（见 `packages/sandbox-adapter-e2b/test/e2b-boundaries.test.ts` 以及托管运行时的 `*-boundaries.test.ts`）。
+- [ ] 后端声称支持 `acp-sandbox` 时，有 ACP 双向通道测试。
+- [ ] 带凭据的厂商端到端保持 opt-in。可移植套件（`pnpm test:chaos:runtime`、`pnpm test:coverage:runtime`、`pnpm test:integration:runtime`）不需要第三方凭据。Issue #262 是真实 ACP 覆盖度跟踪，独立于本清单。
+
+## 缺口（不要掩盖）
+
+| 表面 | 状态 |
+|---|---|
+| 沙箱 fork | 没有 API |
+| GPU | 没有 API |
+| 任意后端内部的浏览器 | 仅 Cloudflare Workers 绑定 |
+| 多个 session 共享一个沙箱 | 不是 port。子 agent 共享父沙箱 |
+| `ManagedSandboxPort.resume` | 不是方法。恢复是一次新的 `acquire`、provider 本地重连，或工具沙箱接缝上的 `SandboxProviderPort.resume` |
+| 进程内存检查点 | Port 存在。没有已发布预设设置 `runtimeCheckpoints` |
+| 从 `config.dockerfile` / `config.packages` 做可移植镜像构建 | 存在 environment 上。构建流水线已移除。包安装只在 Cloudflare setup-on-warmup 中运行 |
+| 跨后端的镜像拉取与层缓存 | 没有 port。`openma/sandbox-base` 的缓存是一个 workflow 的 GitHub Actions cache |
+| 非 Cloudflare 后端的 `sandbox_active_seconds` | 不发出 |
+| acquire/terminate 上的计费回调 | 不是方法。成本报表是可选的拉取 port |
+| 来自后端的 Analytics Engine 事件 | Workers 有助手。没有沙箱 port 调用它 |
+| `base_snapshot` 镜像策略 | 列和类型还在。安装器已移除 |
+| `SANDBOX_PROVIDER` 列表与符合性列表 | 是不同的集合。Vercel、Modal、Blaxel、Superserve、node-docker 和 cloudflare-bridge 是托管驱动。它们不是 `SANDBOX_PROVIDER_PATHS` 的键 |
+| 作为 OpenMA provider id 的 Firecracker | 不存在。E2B 和 LiteBox 各自与自己的微虚拟机控制面通信 |
+| boat.dev / AgentENV | 不存在。它们会是针对本契约的新驱动 |
+
+## 不属于本页的相关工作
+
+- [#262](https://github.com/openma-ai/open-managed-agents/issues/262) — 真实 ACP 兼容性与 `acp-sandbox` 覆盖度。
+- [#264](https://github.com/openma-ai/open-managed-agents/issues/264) — 已关闭。上文描述的托管推理代理。
+- [Sandbox and persistence contracts](/self-host/sandbox-persistence/) — workspace、outputs、栅栏、ACP 原生文件。
+- [Managed Runtime Host](/self-host/managed-runtime-host/) — 操作侧组合与符合性表。
+- [Node + Docker](/self-host/node-docker/#sandbox-modes) — `SANDBOX_PROVIDER` 的操作环境。

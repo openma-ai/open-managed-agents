@@ -1,0 +1,672 @@
+---
+title: Sandbox execution backend contract
+description: Integration contract for a third-party or self-hosted sandbox backend. Lifecycle, clients, capabilities, images, credentials, configuration, observability, and acceptance — as the code implements them today.
+---
+
+This page is the contract for plugging a compute backend into OpenMA. A later
+consumer (for example a boat.dev, Firecracker, or AgentENV driver) would
+implement the seams below. This page does not add a provider, and it does not
+schedule one.
+
+Two facts bound every section:
+
+- The TypeScript ports in `packages/runtime-resource-contract` and
+  `packages/sandbox/src/ports.ts` are the normative shapes. Shipped adapters
+  are evidence of what those shapes mean in production code.
+- Where a verb, capability, or hook has no type and no caller, the section
+  marks it as a **gap**. Do not invent a method to fill the table.
+
+Persistence, fencing, and the workspace/output split are specified in
+[Sandbox and persistence contracts](/self-host/sandbox-persistence/). Operator
+composition is in [Managed Runtime Host](/self-host/managed-runtime-host/).
+Credential policy is in
+[ADR 0007](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0007-sandbox-credential-egress.md)
+and
+[`docs/mcp-credential-architecture.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/mcp-credential-architecture.md).
+
+## Seams that exist today
+
+OpenMA has two compute seams. They share file and process ideas. They are
+loaded by different registries, and implementing one does not satisfy the
+other.
+
+| Seam | Who calls it | Entry | What a backend implements |
+|---|---|---|---|
+| Tool sandbox | Harness runs in the host; tools run in the box | `SandboxFactory` / `SandboxProviderPort` | `SandboxPort`, plus the optional ports the backend can honestly support |
+| Managed runtime | OpenMA owns compute for a claimed work item | `ManagedRuntimeProviderDriverPort` | `ManagedSandboxPort` plus workspace, outputs, and a harness driver |
+
+A third path, `external_worker`, serves the official Managed Agents Work API
+and starts no OpenMA sandbox. An unmodified community Environment Worker stays
+on that path. It is a compatibility boundary, not a backend implementation.
+
+Cloudflare is not selected by `SANDBOX_PROVIDER`. The agent worker binds a
+`SANDBOX` Durable Object. `apps/agent/src/runtime/sandbox.ts`
+(`CloudflareSandbox`) is the tool-sandbox wrapper. `packages/managed-runtime-cloudflare`
+is the managed-runtime driver.
+
+### Tool sandbox
+
+`packages/sandbox/src/ports.ts` is the runtime-agnostic surface. The Node
+server resolves a provider name to a package and calls the package's
+`sandboxFactory`:
+
+```ts
+export type SandboxFactory = (
+  ctx: SandboxFactoryContext,
+  env: SandboxFactoryEnv,
+) => Promise<SandboxPort>;
+```
+
+`SandboxFactoryContext` carries `sessionId`, a host `workdir`, and optional
+memory/output roots. `SandboxFactoryEnv` is the process environment. Each
+factory reads only its own keys (`E2B_API_KEY`, `BOXRUN_URL`, `SANDBOX_IMAGE`,
+…). The host does not branch on those keys.
+
+`apps/main-node/src/sandbox-provider.ts` is the closed map:
+
+| `SANDBOX_PROVIDER` | Package |
+|---|---|
+| `sprites` | `@open-managed-agents/managed-runtime-sprites` |
+| `litebox`, `boxlite` | `@open-managed-agents/sandbox-adapter-litebox` |
+| `boxrun` | `@open-managed-agents/sandbox-adapter-boxrun` |
+| `daytona` | `@open-managed-agents/sandbox-adapter-daytona` |
+| `e2b` | `@open-managed-agents/sandbox-adapter-e2b` |
+
+An empty, unknown, or `subprocess` value throws. `OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess`
+loads `@open-managed-agents/sandbox/adapters/local-subprocess` only when
+`NODE_ENV=test`. That adapter has no isolation boundary.
+
+`SandboxProviderPort` is the newer create/resume/restore trio on top of the
+same `SandboxPort`. Managed-runtime presets call it. The Node server's
+production composition still loads `sandboxFactory`.
+
+`DefaultSandboxOrchestrator` (`packages/sandbox/src/orchestrator.ts`) wires
+vault outbound context, memory mounts, session outputs, and workspace
+backup/restore by probing methods. It does not know provider names.
+
+### Managed runtime
+
+`ManagedRuntimeProviderDriverPort` is the swappable backend:
+
+```ts
+interface ManagedRuntimeProviderDriverPort {
+  descriptor(): ManagedRuntimeProviderDriverDescriptor;
+  create(input: ManagedRuntimeProviderCreateInput): Promise<ManagedRuntimeProviderResources>;
+}
+```
+
+`create()` returns only ports. SDK clients and live handles stay inside the
+adapter.
+
+```ts
+interface ManagedRuntimeProviderResources {
+  sandbox: ManagedSandboxPort;
+  workspace: WorkspacePersistencePort;
+  outputs: SessionOutputPort;
+  harnessDriver: SandboxHarnessDriverPort;
+  supervisorTransport?: HarnessSupervisorTransportPort;
+  runtimeCheckpoint?: RuntimeCheckpointPort;
+  credentialEgress?: CredentialEgressPort;
+  sessionInputs?: SessionInputMaterializerPort;
+}
+```
+
+The host loads one installed package:
+
+```ts
+loadManagedRuntimeProviderDriver({
+  provider,          // must equal descriptor().provider
+  moduleSpecifier,   // package that exports createManagedRuntimeProviderDriver
+  factoryOptions,    // adapter-owned; the host does not interpret SDK fields
+})
+```
+
+`createManagedRuntimeProviderRegistry` admits the requested
+`ManagedRuntimeProfile` against the descriptor, then against the live ports.
+Drift between the advertisement and the ports throws
+`ManagedRuntimeCapabilityError`. A profile with
+`credentialEgress.requirement === "required"` is rejected unless the descriptor
+says `enforcement: "enforced"` and `create()` returns a `CredentialEgressPort`
+whose `capabilities()` agrees.
+
+Placements are `in_process`, `driver_service`, or `provider_native`. A driver
+lists the ones it implements. Installation modes in
+`packages/managed-runtime-host/src/environment-worker-installation.ts` are
+`runtime_host`, `provider_dispatch`, `provider_activation`, and
+`external_worker`.
+
+Shipped driver packages export `createManagedRuntimeProviderDriver`. The
+in-repo conformance catalog
+(`packages/managed-runtime-host/src/provider-conformance.ts`) lists
+`node-docker`, `cloudflare`, `cloudflare-bridge`, `e2b`, `daytona`, `litebox`,
+`boxrun`, `blaxel`, `sprites`, `vercel`, `modal`, and `superserve`. Every
+current row has `managedRuntime: true` and `runtimeCheckpoints: []`.
+`requireManagedRuntimeProvider` only accepts that union. An out-of-tree
+package can still be loaded by module specifier; joining the catalog is how
+this repository treats a preset as first-class.
+
+`packages/managed-runtime-sandbox` adapts a `SandboxProviderPort` into the
+managed ports. `ProviderManagedRuntimeProviderPort.create/resume/restore`
+accept an optional acquisition context so create-time image, template, and
+network settings stay out of `packages/sandbox`.
+
+## Client and protocol surfaces
+
+No public client creates, addresses, or destroys a sandbox. Clients name an
+Environment and a Session. The deployment chooses the backend.
+
+| Surface | Sandbox-related contract | What it does not expose |
+|---|---|---|
+| `@openma/sdk` (`packages/sdk`) | `OpenMA` wraps `@anthropic-ai/sdk`. Sessions and environments are the official beta resources. OpenMA agent extensions add `harness`, `acp`, and stdio MCP whose `command` is an absolute path **inside** the sandbox. | No sandbox resource, provider id, image digest, or lifecycle method |
+| `oma` CLI | `oma envs create` posts `{ name, config: { type: "cloud" } }`. Session help documents `POST /v1/sessions/:id/files` to promote a sandbox path into a stored file. | No `SANDBOX_PROVIDER` flag |
+| REST `/v1/environments` | Stores `config.packages`, `config.networking`, and an optional `config.dockerfile` string. Create sets `status: "ready"`, `sandboxWorkerName: "sandbox-default"`, and `imageStrategy: null` on both the Cloudflare route and `packages/http-routes`. | Does not select a backend or build an image |
+| REST `/v1/sessions` | Binds `environment_id`, `vault_ids`, and resources. File promotion reads sandbox bytes. | Does not return a runtime id or lease |
+| Agent `_oma` | `harness: "acp-sandbox"` requires `_oma.acp.agent.command`. The process is spawned in the session sandbox. `harness: "acp-proxy"` plus `runtime_binding` sends the loop to a user-registered local daemon. | `acp-proxy` is not a sandbox backend |
+| ACP | `SandboxSpawner` (`packages/acp-runtime/src/spawners/sandbox.ts`) needs `SandboxDuplexProcessPort`. `AcpSandboxHarness` owns initialize / `session/new` / `session/resume` / prompt / cancel / close and the canonical event log. | The backend does not speak ACP |
+
+Stdio MCP servers declared on the agent are projected into the ACP session.
+URL MCP servers are rewritten to `/v1/oma/mcp-proxy/{session}/{server}` with
+the Work `sessions_token`. The upstream URL and vault secret stay on the
+control plane (`packages/acp-runtime/src/sandbox-agent.ts`).
+
+`acp-sandbox` preparation uses `AcpSandboxAgentStatePort` (`writeFile` and
+`exec` only). Native session artifacts are copied into
+`/workspace/.openma/harness-state/…` at a checkpoint boundary. That is
+filesystem resume of an ACP session id, not a VM fork. Details and the
+retain/delete policy are in
+[Sandbox and persistence contracts](/self-host/sandbox-persistence/#acp-native-session-persistence).
+
+Issue [#262](https://github.com/openma-ai/open-managed-agents/issues/262) tracks
+live ACP-agent and `acp-sandbox` coverage. It is a test matrix, not this
+contract.
+
+## Lifecycle
+
+Callers do not share one verb set. Map an operation onto the port you
+implement.
+
+| Operation | Managed runtime | Tool sandbox | Cloudflare container |
+|---|---|---|---|
+| Create | `ManagedSandboxPort.acquire` → `ManagedSandboxLease` `{ provider, runtimeId, metadata? }` | `SandboxProviderPort.create`, or `sandboxFactory` | `getSandbox(env.SANDBOX, sessionId)` starts the container DO on first use. The runtime id is the session id |
+| Heartbeat | `heartbeat` → `{ type: "alive" }` or `{ type: "lost" }` | `SandboxRuntimePort.renewLease({ ttlMs })`. `SandboxPort.renewActivityTimeout` is the older optional hook | `renewLease` calls `renewActivityTimeout`, which resets the container `sleepAfter` timer. `runtimeCapabilities().lease` is `true` |
+| Stop / suspend | After a successful `retained_runtime` publish, the host calls `suspend`. Otherwise it `terminate`s | `SandboxRuntimePort.suspend({ kind })` returns a `SandboxCheckpointHandle` | `suspend` writes a filesystem checkpoint, then `destroy`. Idle shutdown is the platform `sleepAfter` hook, not a portable stop method |
+| Resume | No `resume` method. The next run `acquire`s again. A retained adapter may reconnect by stable name inside `acquire`. Optional `RuntimeCheckpointPort.restore` exists and is unwired: every shipped conformance row has `runtimeCheckpoints: []` | `SandboxProviderPort.resume(handle)` and `restore(checkpoint)`. `SandboxRuntimePort.resume(checkpoint)` | Portable filesystem restore through `restoreBackup`. `status()` returns `"unknown"` without probing, because a probe would wake a sleeping container. Conformance records `suspendResume: "unsupported"` |
+| Destroy | `terminate({ reason })` while the fence is held. `reap({ reason })` is the idempotent retry and receives no fence token | Optional `SandboxPort.destroy` | `CloudflareSandbox.destroy`. `OmaSandbox.emitSandboxActiveNow` records usage before destroy |
+| Inspect | `inspect` → `running` \| `suspended` \| `stopped` \| `unknown` | `SandboxRuntimePort.status` | `"unknown"` |
+| Fork | **Gap.** No port, event, or CLI/API field clones a live sandbox into another session | **Gap** | **Gap** |
+
+`ManagedSandboxPort` methods are required. On `SandboxPort`, `destroy`,
+`startProcess`, mounts, and backups are optional. Missing means unsupported.
+Hosts use `supportsSandboxRuntime`, `supportsDuplexProcess`,
+`supportsWorkspaceBackup`, `supportsSessionOutputMount`, and
+`supportsManagedWorkspaceLifecycle`. They must not treat a missing method as
+success.
+
+### Host order around `acquire`
+
+`createManagedRuntimeHost` (`packages/managed-runtime-host/src/host.ts`) is
+the normative transaction:
+
+```text
+claim fence generation
+  → materialize workspace
+  → prepare outputs (when the plan has an output strategy)
+  → prepare credential egress (when the profile asks and a port exists)
+  → try RuntimeCheckpointPort.restore (optional; failure falls through)
+  → sandbox.acquire
+  → workspace.attach
+  → outputs.attach
+  → credential egress.attach
+  → materialize session inputs
+  → harnessDriver.run
+  → on retained_runtime: sandbox.suspend
+  → workspace checkpoint, optional runtime checkpoint, output collect/finalize
+  → fence publish
+  → revoke credential egress
+  → terminate unless a retained runtime was published
+  → on terminate failure: enqueue a token-free orphan for reap
+```
+
+`acquire` receives the scope, fence, plan, workspace binding, output binding
+or null, an opaque `credentialEgress` binding or null, and an `AbortSignal`.
+The binding id is not a secret and must not be written into the lease,
+checkpoint, logs, or the Managed Agents wire body.
+
+Scope is `{ workspaceId, environmentId, sessionId, workId }`. One lease is one
+work item. [ADR 0006](https://github.com/openma-ai/open-managed-agents/blob/main/docs/adr/0006-session-execution-authority.md)
+gives sub-agents the parent sandbox and the parent fence. Concurrent execution
+lanes are a queue feature. They are not sandbox forks.
+
+Termination reasons are `"completed" | "failed" | "lease_lost"`. `reap` must
+be safe to repeat. Orphan records store the lease and a redacted error. They
+do not store the fence token or API credentials.
+
+## Capability matrix
+
+Advertise only what the adapter implements. The registry compares the
+advertisement with the live ports.
+
+| Capability | Where it lives | Today |
+|---|---|---|
+| Exec | `SandboxPort.exec(command, timeout?)`. Managed runtimes use it for the environment readiness probe | Required for the tool sandbox and for `verifyRuntimeEnvironment` |
+| Background process | Optional `startProcess` → `ProcessHandle` (`kill`, `getLogs`, `getStatus`) | Present only when the adapter implements it |
+| Live stdio | `SandboxDuplexProcessPort.spawnDuplexProcess` → stdin, stdout, stderr, `kill`, `exited` | Required for `acp-sandbox` and for `openma_supervised` when the supervisor is a child process. `SandboxSpawner` throws `SandboxAcpUnsupportedError` when the method is absent |
+| Files | `readFile` / `writeFile`. Optional `readFileBytes` / `writeFileBytes` | Shared `POST /v1/sessions/:id/files` calls `readSandboxFile` and returns 400 when that returns null. On Node, a missing `readFileBytes` is that null. Cloudflare reads the sandbox DO `/file` endpoint. Managed output collection throws if `readFileBytes` is missing |
+| Memory mount | Optional `mountMemoryStore` at `/mnt/memory/<storeName>/`, plus `synchronizeMemoryStores` when the mount is a copied projection | Cloudflare uses R2 + FUSE. Local subprocess symlinks `memoryRoot`. Remote factories that cannot mount use the host `memoryWorkspace` bridge. There is no separate memory tool |
+| Session outputs | `SandboxSessionOutputMountPort` or managed `SessionOutputPort` at `/mnt/session/outputs` | Strategies: `durable_mount`, `watch_and_upload`, `final_collect`. Shipped presets that collect do `final_collect` |
+| Workspace | Managed `WorkspacePersistencePort` at `/workspace` | Strategies: `durable_mount`, `retained_runtime`, `checkpoint_restore`, `ephemeral`. See the persistence page for commit points |
+| Network policy | Public `Environment.config.networking`: `unrestricted` or `limited`, with `allowed_hosts`, `allow_mcp_servers`, `allow_package_managers` | Stored on the environment and mapped into the Managed Agents networking object. Enforcement is per backend (Cloudflare outbound handler, provider allowlists, Docker network). A stored allowlist is not itself a packet filter |
+| Vault egress | `CredentialEgressPort` | Separate from the public networking object. Levels: `enforced`, `advisory`, `unsupported`. `required` accepts only `enforced` |
+| Browser | `browser` is an opt-in harness tool (`apps/agent/src/harness/tools.ts`) backed by the Workers `BROWSER` binding and `@open-managed-agents/browser-harness` | **Not a sandbox port.** A new VM backend does not gain a browser by implementing `ManagedSandboxPort`. Billing for an open page is `browser_active_seconds`, fired from the Cloudflare SessionDO |
+| GPU | — | **Gap.** No field on `Environment.config`, `SandboxPort`, `ManagedSandboxPort`, or the conformance catalog |
+| Multi-session | One lease per `(workspace, environment, session, work)`. Cloudflare keys the container by session id | **Gap** for sharing one box across sessions, and **gap** for forking one box into a second session. Sub-agents share the parent box |
+| ACP resume | Files under `/workspace/.openma/…` plus ACP `session/resume` | Requires `writeFile` and `exec`. Native resume is per agent profile. An opaque adapter does not promise it |
+| Process-memory checkpoint | `RuntimeCheckpointPort` | **Gap in every shipped preset.** Provider snapshots are workspace or retained-runtime state until this port is wired |
+
+### Duplex stdin is part of the ACP contract
+
+Returning a `SandboxDuplexProcess` whose `stdin.write` throws does not
+satisfy `acp-sandbox`. The Vercel driver is the current example: it exposes
+`spawnDuplexProcess` for detached stdout/stderr, and stdin writes fail with
+"Vercel Sandbox command API does not expose streaming stdin". Its conformance
+row lists driver lane `ama_worker` only, and `sandboxPortFacts.unavailable`
+includes `streaming_process_stdin`. Cloudflare Bridge is `ama_worker` only for
+the same class of reason (`interactive_stdin_without_pty`).
+
+When `SandboxRuntimePort` is implemented and `runtimeCapabilities().lease` is
+true, `AcpSandboxHarness` renews a 90s lease every 30s for the duration of
+`session.prompt`. Backends that sleep on idle need that lease. Backends
+without the port still run the prompt until the harness abort signal; they
+get no keepalive.
+
+## Images
+
+There is no shared pull, cache, or registry-auth port. Each backend receives
+a reference and proves the image can run the selected harness binary.
+
+### Artifact carriers
+
+`ProviderRuntimeEnvironmentArtifact` (`packages/managed-runtime-sandbox`):
+
+| `artifact.type` | `reference` means | Who uses it |
+|---|---|---|
+| `preinstalled` | No provider pull. The runtime already contains the contract | Default of `createPreinstalledRuntimeEnvironment` when no artifact is passed |
+| `image` | Container image reference | Docker `image` option; Vercel create can pass `{ image }` |
+| `template` | Provider template id | E2B `SANDBOX_IMAGE` |
+| `snapshot` | Provider snapshot id | Vercel can boot `{ source: { type: "snapshot", snapshotId } }` |
+| `bootstrap` | A script or package the adapter runs after boot | Declared in the union. A backend that needs it must implement `prepare` and say so |
+
+`ProviderRuntimeEnvironment.type` is `"base"` (versioned OpenMA contract) or
+`"custom"` (operator artifact). Custom still has to pass the same executable
+check before a lease is published. `requireRuntimeEnvironmentArtifact`
+restricts which carriers a provider accepts. E2B managed runtime accepts
+`template` only.
+
+After allocation, `verifyRuntimeEnvironment` runs the plan's harness
+executable (`driver.process.command`, or the supervisor command for
+`openma_supervised`). An absolute command must be executable (`test -x`).
+Anything else must be on `PATH` (`command -v`). Success prints
+`__OPENMA_RUNTIME_READY__`. Timeout default on the preinstalled helper is
+10s. A backend that cannot `exec` cannot complete admission.
+
+### What is pinned today
+
+| Artifact | Pin |
+|---|---|
+| `apps/agent/Dockerfile` | `FROM docker.io/cloudflare/sandbox:0.12.10`. Comment in that file: keep the tag lock-step with `@cloudflare/sandbox`, or container HTTP routes drift and `exec` returns 500 |
+| `.github/workflows/build-sandbox-image.yml` | Builds that Dockerfile as `docker.io/openma/sandbox-base`, tags `latest`, the git SHA, the `cloudflare/sandbox` version parsed from the Dockerfile, and the Dockerfile's sha256. Cache is GitHub Actions cache (`type=gha`) for this workflow only. Platform is `linux/amd64`. Trigger is `workflow_dispatch` or a push to `main` that changes `apps/agent/Dockerfile` |
+| `apps/agent/Dockerfile.sandbox` | `FROM docker.io/openma/sandbox-base:<64-char content hash>`. Wrangler points the container class at this file |
+| Node managed runtime | `createNodeManagedRuntime({ image })` requires an explicit image string. No default |
+| E2B managed runtime | `SANDBOX_IMAGE` is required. The preset throws "SDK base fallback is disabled" when it is empty |
+| Daytona / BoxRun `sandboxFactory` | `SANDBOX_IMAGE`, default `node:22-slim` when unset |
+| LiteBox `sandboxFactory` | `SANDBOX_IMAGE`, default `node:22-bookworm` when unset |
+
+Those factory defaults apply to the tool-sandbox path. They are not a promise
+that the managed-runtime preset will fill in an image.
+
+### Environment packages and custom Dockerfiles
+
+`Environment.config.packages` lists `pip`, `npm`, `apt`, `cargo`, `gem`, and
+`go`. `config.dockerfile` is an optional string, capped at 100,000 characters
+by `apps/main/src/lib/limits.ts`. The type comment says the platform would
+prepend `FROM openma/sandbox-base:latest` and reject a user `FROM`. That
+builder is gone.
+
+`apps/main/src/routes/environments.ts` records the removal of the GitHub
+Actions per-environment image build, the `/build-complete` callback, and
+`image_strategy` selection. Create returns immediately with `status: "ready"`.
+The environments store still has `image_strategy: "base_snapshot" | "dockerfile" | null`.
+`base_snapshot` is documented there as a reserved seam. The lazy installer
+was reverted because Cloudflare `exec` inside `blockConcurrencyWhile` was
+canceled around 10–15s.
+
+Package install that still runs is Cloudflare-only:
+`apps/agent/src/runtime/setup-on-warmup.ts`, called from SessionDO warmup.
+
+- Warm marker `/tmp/.oma-setup-warm` matches → no-op.
+- Only `/workspace/.oma-setup-restored` matches → re-run apt. Language
+  packages live under `/workspace` so a workspace restore brings them back.
+  Apt installs into `/usr`, which the workspace backup does not include.
+- Both markers missing → full setup.
+- `gem` is accepted in the input and skipped (the base image has no Ruby).
+
+Node, E2B, Daytona, and the other drivers do not call `setup-on-warmup`.
+Their images have to already contain the harness binary and the packages the
+session needs. **Gap:** `config.packages` and `config.dockerfile` are not a
+portable image-build hook for a new backend.
+
+**Gap:** no cross-backend convention for registry credentials, layer cache,
+digest enforcement, multi-arch pulls, or cache invalidation. A backend that
+caches images documents its own behavior. OpenMA will still re-probe the
+harness executable on each acquire.
+
+## Credentials and the inference proxy
+
+Three credential classes stay apart. A backend must not collapse them into
+one injected API key.
+
+| Class | Sandbox is allowed to hold | Control plane holds |
+|---|---|---|
+| Model calls from an in-sandbox ACP agent | `HOSTED_INFERENCE_URL`, `HOSTED_INFERENCE_TOKEN` | Model-card API key, applied when the proxy forwards |
+| HTTP MCP | Work `sessions_token` in `Authorization` to the OpenMA origin only | Vault token, substituted by `/v1/oma/mcp-proxy/{session}/{server}` |
+| Vault HTTPS (git, package hosts, other tools) | An opaque `CredentialEgressBinding.bindingId`, or a provider placeholder | Upstream secret, injected by an enforced egress path |
+
+Closed issue [#264](https://github.com/openma-ai/open-managed-agents/issues/264)
+is the inference-proxy work. The behavior below is what landed.
+
+### `HOSTED_INFERENCE_*`
+
+`packages/inference-proxy` builds:
+
+```text
+HOSTED_INFERENCE_URL   = {gateway}/v1/oma/inference-proxy/{encodeURIComponent(sessionId)}
+HOSTED_INFERENCE_TOKEN = sessions_token
+```
+
+`applyHostedInferenceToAgentEnv` deletes `OPENAI_BASE_URL` and
+`MODEL_PROVIDER_SECRET_ENV_KEYS` (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`,
+`MISTRAL_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) before setting the
+two hosted variables.
+
+`projectHostedInferenceForAcpAgent` then asks
+`@open-managed-agents/harness-inference-adapters` to write harness-native env
+and config files. Adapters shipped today: `pi`, `dsh`, `claude`, `codex`,
+`gemini`, `opencode`, `kimi`. Files are materialized with
+`AcpSandboxAgentStatePort.writeFile`. The proxy token is referenced from the
+environment (`proxyTokenEnvVar: "HOSTED_INFERENCE_TOKEN"`), not copied into
+the durable native-state allowlist.
+
+The gateway is `POST` (and other methods) on
+`/v1/oma/inference-proxy/:sessionId/*` in both `apps/main` and
+`apps/main-node` (`apps/main-node/src/lib/http-inference-proxy.ts`).
+`forwardHostedInferenceRequest`:
+
+- drops inbound `authorization`, `x-api-key`, `api-key`, `x-goog-api-key`,
+  and `proxy-authorization`;
+- resolves the session's model card on the host;
+- sets the upstream credential header for the wire protocol
+  (`authorization: Bearer`, Anthropic `x-api-key`, or Gemini `x-goog-api-key`);
+- returns 403 when no upstream URL can be built, and 409
+  `inference_protocol_unsupported` when the requested protocol has no
+  endpoint.
+
+`extractHostedInferenceProxyToken` accepts `Authorization` or `x-api-key`.
+Both present and unequal is `mismatch`.
+
+`managedHostedInferenceFromWorkEnvironment` reads `sessions_token` and
+`api_base_url` from the official Work secret (`ANTHROPIC_WORK_SECRET`,
+base64url JSON), falling back to `ANTHROPIC_BASE_URL` for the gateway origin.
+The same secret is the MCP gateway capability. It is a short-lived, claim-fenced
+bearer. It is not an upstream model key and not a vault read credential.
+Reclaim rotates it. A backend must not put it in a checkpoint path, a log
+field, a URL, or an upstream `Authorization` header.
+
+A backend does not implement the proxy. It must allow the sandbox to reach
+the OpenMA origin over HTTP or HTTPS, pass the projected env through to the
+ACP child, and avoid logging the token. Stripping provider keys is the
+control plane's job when the capability is present. A backend that injects
+`OPENAI_API_KEY` into the box bypasses the contract.
+
+### Vault egress
+
+`CredentialEgressPort` (`prepare`, `attach`, `revoke`, `release`) is
+implemented and enforced by the host when the profile requires it. The
+binding is opaque. Plaintext vault material is not a field on the port.
+
+`prepare` runs before `acquire` because several providers need network policy
+at creation. `revoke` runs before `terminate`. If revoke throws, the host
+forces termination and surfaces the cleanup error. Absence of the port means
+unsupported. Profiles that omit `credentialEgress` stay `disabled` so an
+official worker remains usable.
+
+Shipped enforcement is uneven and is documented per provider in ADR 0007 and
+`docs/mcp-credential-architecture.md`. Proxy environment variables alone are
+`advisory`. A new backend that claims `enforced` has to show a
+deny-by-default path the guest cannot bypass for the protocols it lists
+(`http`, `https`, `tcp`). Anything else stays `unsupported` or `advisory`,
+and `requirement: "required"` will fail admission.
+
+## Configuration
+
+Configuration is split on purpose. Provider selection is not part of the
+public Environment object (Managed Runtime Host states this, and the create
+route does not read a provider field).
+
+| Layer | Keys | Who reads them |
+|---|---|---|
+| Public environment | `config.type`, `config.packages`, `config.networking`, `config.dockerfile` | API validation and, on Cloudflare only, setup-on-warmup for packages |
+| Public agent | `harness`, `acp.agent` (`command`, `args`, `env`, `cwd`, optional registry `id`), `acp.restart`, timeouts, `runtime_binding` for `acp-proxy` | Harness registry. `acp-sandbox` is registered in `apps/agent/src/harness/builtins.ts` |
+| Public session | `environment_id`, `vault_ids`, file/git/memory resources | Resource materializer and egress scope. Not a backend id |
+| Node process env | `SANDBOX_PROVIDER` plus that factory's keys (`E2B_*`, `DAYTONA_*`, `BOXRUN_URL`, `SANDBOX_IMAGE`, `MEMORY_S3_*`, `FILES_S3_*`, …) | The selected `sandboxFactory` or managed preset. `readS3MemoryBucket` is the shared S3 helper |
+| Managed driver | `providerConfig: Readonly<Record<string, unknown>>` and `factoryOptions` passed to `createManagedRuntimeProviderDriver` | The adapter. The host forwards them and does not inspect SDK shapes |
+| Runtime profile | `ManagedRuntimeProfile` workspace/outputs/checkpoint requirements, `credentialEgress.requirement`, `driver` (`ama_worker` or `openma_supervised`) | Registry admission, before any provider allocation |
+| Cloudflare worker | `SANDBOX` Durable Object binding, `Dockerfile.sandbox`, optional `FILES_BUCKET` / `WORKSPACE_BUCKET` | `CloudflareSandbox` and the Cloudflare managed preset |
+
+`openma_supervised` speaks `openma-harness-supervisor-v1` (ready, heartbeat,
+checkpoint request, drain, stop). The child does not receive the fence token.
+If a driver advertises `openma_supervised` but its harness port does not list
+that driver, the registry wraps `supervisorTransport` with
+`SupervisedSandboxHarnessDriver`. Advertising the lane without either the
+driver capability or the transport fails admission.
+
+## Observability and billing
+
+There is no sandbox metrics port. A backend is not required to emit telemetry
+for the host to function. These are the hooks that exist, and the ones that
+do not.
+
+### What is recorded
+
+| Hook | When it fires | Backend duty |
+|---|---|---|
+| Session event log | Harness and session lifecycle (`agent.tool_use`, `session.status_*`, `session.error`, …) | None. The host writes events. A backend must not invent a parallel event protocol |
+| `span.model_request_start` / `span.model_request_end` | Model API calls | None. These are inference spans, not sandbox spans |
+| `span.outcome_evaluation_start` | Outcome evaluation | None |
+| `recordEvent` (`packages/shared/src/metrics.ts`) | Optional Workers Analytics Engine dataset `oma_events`. Blobs are `[op, tenant_id, session_id, agent_id, error_name, error_message]`, double is `duration_ms`. No-op when the binding is missing | **Gap** as a required backend hook. Nothing in `ManagedSandboxPort` calls it. Cloudflare code logs `[oma-sandbox] onStop exit=… reason=…` to Workers Logs |
+| `UsageStore.recordUsage` | Kinds: `session_alive_seconds`, `sandbox_active_seconds`, `browser_active_seconds`. Values are integer seconds, clamped to 24h per emit. The hosted billing worker pulls unbilled rows; this repository does not price them | `sandbox_active_seconds` is emitted by `OmaSandbox.recordSandboxActiveOnStop` / `emitSandboxActiveNow` on the Cloudflare container, best-effort, and must not block teardown. **Gap:** Node and the other drivers do not write this kind |
+| `BrowserBillingHook` | Once on browser close, from the Cloudflare SessionDO | Not invoked by a sandbox adapter |
+| `CostAttributionPort` | `capabilities()` + `report(query)` over an inclusive UTC date range. `CostAttributionRegistry` dispatches by provider id. FOCUS-shaped rows are normalized in `packages/cost-attribution` | Optional pull adapter. In-repo implementations: `cost-attribution-cloudflare`, `cost-attribution-vercel`, `cost-attribution-blaxel`, and `cost-attribution-runtime` (the OpenMA usage ledger). **Gap:** acquire/terminate has no billing callback, and a new provider id has no report until a package registers one |
+
+A backend that can report provider cost implements `CostAttributionPort` in
+its own package, keeps provider credentials there, and registers the port
+with `CostAttributionRegistry`. It does not add fields to `ManagedSandboxLease`.
+`runtimeId` on a usage row is already on the runtime reader's record type;
+the Cloudflare usage insert path writes tenant, session, agent, kind, and
+value.
+
+If terminate fails, the host enqueues an orphan. That row is an operator
+signal (`provider`, `runtimeId`, scope, generation, reason, attempt count,
+redacted error). It is not a billing event.
+
+## Registering a backend
+
+In-tree managed preset:
+
+1. Add a package that exports `createManagedRuntimeProviderDriver`.
+2. `descriptor().provider` is a stable id. `version` is the adapter version.
+3. `create()` returns the resource ports. Do not return SDK objects.
+4. List placements honestly. Reject any other placement inside `create()`.
+5. Implement `ManagedSandboxPort` with idempotent `terminate` and `reap`.
+6. Implement workspace and output ports for the strategies you advertise.
+   `checkpoint_restore` is the portable baseline on the persistence page.
+   `retained_runtime` is continuable provider-local state, not a portable
+   checkpoint.
+7. Implement `SandboxHarnessDriverPort` for `ama_worker`, and
+   `HarnessSupervisorTransportPort` or a native supervised driver when you
+   advertise `openma_supervised`.
+8. For `acp-sandbox`, implement `spawnDuplexProcess` with a stdin that
+   accepts bytes.
+9. Add a row to `MANAGED_RUNTIME_PROVIDER_CONFORMANCE` and a boundary test
+   that fails closed on the capabilities you do not have. Set
+   `runtimeCheckpoints: []` until `RuntimeCheckpointPort` is actually wired.
+10. Pass `credentialEgress` only at the enforcement level you can prove.
+
+In-tree tool sandbox (harness outside the box, Node server):
+
+1. Export `sandboxFactory`.
+2. Add the name to `SANDBOX_PROVIDER_PATHS`.
+3. Read provider secrets from `SandboxFactoryEnv` inside the factory.
+4. This registration does not make the provider a managed runtime.
+
+Out of tree:
+
+- Ship a package with the same `createManagedRuntimeProviderDriver` export.
+- The deployment calls `loadManagedRuntimeProviderDriver` with that module
+  specifier. The host has no compile-time dependency on the provider SDK.
+- Editing `ManagedRuntimeProviderId` is required only to become a named
+  preset inside this repository.
+
+## Acceptance checklist
+
+A backend is acceptable for the claims it makes. Unchecked rows are gaps that
+must be written down in the conformance `reason` / `sandboxPortFacts`, not
+silently treated as supported.
+
+**Admission**
+
+- [ ] `descriptor().provider` matches the configured provider string.
+- [ ] Duplicate provider ids are rejected by the registry.
+- [ ] Advertised workspace, output, checkpoint, and harness capabilities match
+      the live ports (`provider-driver-registry` tests cover this drift).
+- [ ] `credentialEgress: required` fails unless enforcement is `enforced` and
+      the port is present.
+- [ ] `runtimeCheckpoint: required` fails when `RuntimeCheckpointPort` is
+      absent.
+- [ ] `openma_supervised` fails when neither the harness driver nor
+      `supervisorTransport` can run it.
+
+**Lifecycle**
+
+- [ ] `acquire` returns a JSON-safe lease. No SDK handle, token, or secret in
+      `metadata`.
+- [ ] `heartbeat` reports `lost` when the provider has deleted the runtime.
+- [ ] `terminate` is idempotent for `completed`, `failed`, and `lease_lost`.
+- [ ] `reap` succeeds from a serialized lease with no fence token, including
+      a second call.
+- [ ] A failed `terminate` can be retried from the orphan record.
+- [ ] `suspend` is implemented only when `suspendResume: "supported"` is
+      advertised. Cloudflare's filesystem checkpoint-and-destroy is
+      `unsupported` for runtime resume and must stay labeled that way.
+- [ ] Fork is documented as unsupported.
+
+**Processes and files**
+
+- [ ] `exec` returns combined output the readiness probe can match, including
+      a non-zero exit when the harness binary is missing.
+- [ ] `readFile` / `writeFile` honor the workspace path the host attached.
+- [ ] `readFileBytes` is implemented, or file promotion and output
+      collection are documented as unavailable. On Node, promotion becomes
+      400 because `readSandboxFile` returns null. Managed output collection
+      throws. Cloudflare promotion uses the sandbox DO `/file` route.
+- [ ] `acp-sandbox` claims include a duplex stdin/stdout/stderr channel,
+      `kill`, and `exited`. Log polling is not a substitute
+      (`SandboxAcpUnsupportedError`).
+
+**Credentials**
+
+- [ ] Provider API keys are not copied into the guest environment when hosted
+      inference is enabled.
+- [ ] Guest traffic to the model provider goes to `HOSTED_INFERENCE_URL` with
+      `HOSTED_INFERENCE_TOKEN`.
+- [ ] The token is not written into checkpoints, URLs, or log fields.
+- [ ] Vault secrets are not fields on the lease. `required` egress is
+      deny-by-default for the declared protocols.
+- [ ] MCP URL rewriting stays on the control plane. The backend only needs
+      egress to the OpenMA origin.
+
+**Images**
+
+- [ ] The booted artifact is an explicit reference (image, template, snapshot,
+      preinstalled, or bootstrap), not an implicit SDK default, for any
+      managed preset.
+- [ ] Acquire does not publish a lease until the harness executable probe
+      prints `__OPENMA_RUNTIME_READY__`.
+- [ ] Custom images are labeled `custom` and pass that same probe.
+- [ ] Image cache and registry auth behavior is documented by the backend.
+      OpenMA does not supply it.
+
+**Persistence**
+
+- [ ] `/workspace` follows one advertised strategy on the persistence page.
+- [ ] `/mnt/session/outputs` follows one advertised output strategy, or
+      outputs are `disabled` in the profile.
+- [ ] A retained filesystem is not advertised as a portable checkpoint.
+- [ ] Process memory is not advertised. `runtimeCheckpoints` stays empty
+      until `RuntimeCheckpointPort` exists.
+
+**Observability and billing**
+
+- [ ] Secrets do not appear in provider logs that the host stores.
+- [ ] `sandbox_active_seconds` is emitted only if the backend actually
+      records a start and stop. Cloudflare's `OmaSandbox` path is the
+      existing emitter. Other backends leave the kind absent rather than
+      writing a guessed duration.
+- [ ] A provider invoice adapter, if any, is a separate `CostAttributionPort`
+      keyed by provider id.
+
+**Tests that match existing presets**
+
+- [ ] Registry admission tests for capability drift and missing egress.
+- [ ] Boundary tests that reject a foreign `provider` on resume/restore
+      (see `packages/sandbox-adapter-e2b/test/e2b-boundaries.test.ts` and the
+      managed-runtime `*-boundaries.test.ts` files).
+- [ ] An ACP duplex test when the backend claims `acp-sandbox`.
+- [ ] Credentialed vendor E2E stays opt-in. The portable suite
+      (`pnpm test:chaos:runtime`, `pnpm test:coverage:runtime`,
+      `pnpm test:integration:runtime`) does not require third-party
+      credentials. Issue #262 is the live ACP coverage tracker and is
+      independent of this checklist.
+
+## Gaps (do not paper over)
+
+| Surface | Status |
+|---|---|
+| Sandbox fork | No API |
+| GPU | No API |
+| Browser inside an arbitrary backend | Cloudflare Workers binding only |
+| One sandbox shared by multiple sessions | Not a port. Sub-agents share the parent |
+| `ManagedSandboxPort.resume` | Not a method. Resume is a new `acquire`, a provider-local reconnect, or `SandboxProviderPort.resume` on the tool-sandbox seam |
+| Process-memory checkpoint | Port exists. No shipped preset sets `runtimeCheckpoints` |
+| Portable image build from `config.dockerfile` / `config.packages` | Stored on the environment. Build pipeline removed. Package install runs in Cloudflare setup-on-warmup only |
+| Cross-backend image pull and layer cache | No port. `openma/sandbox-base` cache is the GitHub Actions cache of one workflow |
+| `sandbox_active_seconds` for non-Cloudflare backends | Not emitted |
+| Billing callback on acquire/terminate | Not a method. Cost reports are optional pull ports |
+| Analytics Engine events from a backend | Helper exists for Workers. No sandbox port calls it |
+| `base_snapshot` image strategy | Column and type remain. Installer was removed |
+| `SANDBOX_PROVIDER` list vs conformance list | Different sets. Vercel, Modal, Blaxel, Superserve, node-docker, and cloudflare-bridge are managed drivers. They are not keys in `SANDBOX_PROVIDER_PATHS` |
+| Firecracker as an OpenMA provider id | Not present. E2B and LiteBox talk to their own microVM control planes |
+| boat.dev / AgentENV | Not present. They would be new drivers against this contract |
+
+## Related work that is not this page
+
+- [#262](https://github.com/openma-ai/open-managed-agents/issues/262) — live
+  ACP compatibility and `acp-sandbox` coverage.
+- [#264](https://github.com/openma-ai/open-managed-agents/issues/264) —
+  closed. Hosted inference proxy described above.
+- [Sandbox and persistence contracts](/self-host/sandbox-persistence/) —
+  workspace, outputs, fence, ACP native files.
+- [Managed Runtime Host](/self-host/managed-runtime-host/) — operator
+  composition and the conformance table.
+- [Node + Docker](/self-host/node-docker/#sandbox-modes) — `SANDBOX_PROVIDER`
+  operator env.
