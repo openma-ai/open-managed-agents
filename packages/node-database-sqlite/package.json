@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.5",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "vitest": "^4.1.3"
