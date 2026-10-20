@@ -301,7 +301,14 @@ export interface Messages {
       use: string;
       enabledLabel: string;
       sectionBondHint: string;
-      sectionAgentHint: string;
+      sectionSession: string;
+      sectionSessionHint: string;
+      environment: string;
+      environmentDefault: string;
+      environmentHint: string;
+      vaults: string;
+      vaultsHint: string;
+      noVaults: string;
       sectionOptions: string;
       sectionOptionsHint: string;
       notFound: string;
@@ -363,7 +370,7 @@ export interface Messages {
     fields: Record<string, { title: string; description?: string }>;
     /** Enum option labels, by value. */
     options: Record<string, string>;
-    /** `freshness: "thread"` reads differently from `sessionScope: "thread"`. */
+    /** The label of `freshness: "thread"`. */
     freshnessThread: string;
   };
 }

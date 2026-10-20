@@ -40,6 +40,11 @@ import {
  */
 
 type Agent = { id: string; name: string };
+/** An environment or vault, as the session settings list it. */
+type Choice = { id: string; name: string };
+
+/** The Environment option that keeps the service's default. */
+const DEFAULT_ENVIRONMENT = "__default";
 
 function useLoopData() {
   const errorText = useMatterError();
@@ -48,6 +53,8 @@ function useLoopData() {
   const [loops, setLoops] = useState<Loop[]>([]);
   const [bonds, setBonds] = useState<Bond[]>([]);
   const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [environments, setEnvironments] = useState<Choice[] | null>(null);
+  const [vaults, setVaults] = useState<Choice[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,12 +92,20 @@ function useLoopData() {
       .list({ limit: 200 })
       .then((r) => live && setAgents(r.data.map((a) => ({ id: a.id, name: a.name || a.id }))))
       .catch(() => live && setAgents([]));
+    managedApi.environments
+      .list({ limit: 200 })
+      .then((r) => live && setEnvironments(r.data.map((e) => ({ id: e.id, name: e.name || e.id }))))
+      .catch(() => live && setEnvironments([]));
+    managedApi.vaults
+      .list({ limit: 200 })
+      .then((r) => live && setVaults(r.data.map((v) => ({ id: v.id, name: v.display_name || v.id }))))
+      .catch(() => live && setVaults([]));
     return () => {
       live = false;
     };
   }, [managedApi]);
 
-  return { templates, loops, bonds, agents, loading, error, reload, reloadBonds };
+  return { templates, loops, bonds, agents, environments, vaults, loading, error, reload, reloadBonds };
 }
 
 type LoopState = "running" | "starting" | "error" | "disabled";
@@ -408,6 +423,8 @@ export function LoopEditPage() {
         loop={loop}
         bonds={data.bonds}
         agents={data.agents}
+        environments={data.environments}
+        vaults={data.vaults}
         reload={data.reload}
         reloadBonds={data.reloadBonds}
         initialBond={params.get("bond") ?? undefined}
@@ -429,6 +446,8 @@ function LoopForm(props: {
   loop?: Loop;
   bonds: Bond[];
   agents: Agent[] | null;
+  environments: Choice[] | null;
+  vaults: Choice[] | null;
   reload: () => Promise<void>;
   reloadBonds: () => Promise<void>;
   /** Preselected Bond, from `/loops/new?bond=…` (the Bond page links here). */
@@ -454,7 +473,14 @@ function LoopForm(props: {
 
   const bondKey = fields.find(([, f]) => f["x-oma-widget"] === "bond")?.[0];
   const agentKey = fields.find(([, f]) => f["x-oma-widget"] === "agent")?.[0];
-  const options = fields.filter(([key]) => key !== bondKey && key !== agentKey);
+  const session = (key: string) => fields.some(([k, f]) => k === key && f["x-oma-section"] === "session");
+  const options = fields.filter(([key, f]) => key !== bondKey && key !== agentKey && f["x-oma-section"] !== "session");
+  // Session settings a template adds itself, such as `sessionScope`.
+  const sessionOptions = fields.filter(
+    ([key, f]) => f["x-oma-section"] === "session" && key !== "environmentId" && key !== "vaultIds" && key !== agentKey,
+  );
+  const environment = typeof values.environmentId === "string" && values.environmentId !== "" ? values.environmentId : "";
+  const chosenVaults = Array.isArray(values.vaultIds) ? (values.vaultIds as string[]) : [];
   const required = (key: string) => template.configSchema.required.includes(key);
 
   const fail = (err: unknown) =>
@@ -523,22 +549,95 @@ function LoopForm(props: {
       )}
 
       {agentKey && (
-        <MatterSection title={m.loops.agent} hint={m.loops.sectionAgentHint}>
-          <Select
-            value={typeof values[agentKey] === "string" ? (values[agentKey] as string) : ""}
-            onValueChange={(v) => set(agentKey, v)}
-          >
-            <SelectTrigger aria-label={m.loops.agent} className="w-full sm:w-80">
-              <SelectValue placeholder={props.agents === null ? t.common.loading : m.choose} />
-            </SelectTrigger>
-            <SelectContent>
-              {(props.agents ?? []).map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <MatterSection title={m.loops.sectionSession} hint={m.loops.sectionSessionHint}>
+          <div className="space-y-5">
+            <div className="space-y-1.5">
+              <Label htmlFor="loop-agent">
+                {m.loops.agent}
+                <span className="text-danger"> *</span>
+              </Label>
+              <Select
+                value={typeof values[agentKey] === "string" ? (values[agentKey] as string) : ""}
+                onValueChange={(v) => set(agentKey, v)}
+              >
+                <SelectTrigger id="loop-agent" aria-label={m.loops.agent} className="w-full sm:w-80">
+                  <SelectValue placeholder={props.agents === null ? t.common.loading : m.choose} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(props.agents ?? []).map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {sessionOptions.map(([key, field]) => (
+              <ConfigField
+                key={key}
+                name={key}
+                field={field}
+                required={required(key)}
+                value={values[key]}
+                bond={bondKey && typeof values[bondKey] === "string" ? (values[bondKey] as string) : ""}
+                onChange={(v) => set(key, v)}
+              />
+            ))}
+            {session("environmentId") && (
+              <div className="space-y-1.5">
+                <Label htmlFor="loop-environment">{m.loops.environment}</Label>
+                <Select
+                  value={environment || DEFAULT_ENVIRONMENT}
+                  onValueChange={(v) => set("environmentId", v === DEFAULT_ENVIRONMENT ? undefined : v)}
+                >
+                  <SelectTrigger id="loop-environment" aria-label={m.loops.environment} className="w-full sm:w-80">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={DEFAULT_ENVIRONMENT}>{m.loops.environmentDefault}</SelectItem>
+                    {(props.environments ?? []).map((e) => (
+                      <SelectItem key={e.id} value={e.id}>
+                        {e.name}
+                      </SelectItem>
+                    ))}
+                    {environment !== "" && !(props.environments ?? []).some((e) => e.id === environment) && (
+                      <SelectItem value={environment}>{environment}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-fg-subtle">{m.loops.environmentHint}</p>
+              </div>
+            )}
+            {session("vaultIds") && (
+              <div className="space-y-1.5">
+                <Label>{m.loops.vaults}</Label>
+                {props.vaults === null ? (
+                  <p className="text-sm text-fg-muted">{t.common.loading}</p>
+                ) : props.vaults.length === 0 ? (
+                  <p className="text-sm text-fg-muted">{m.loops.noVaults}</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {props.vaults.map((v) => (
+                      <Label key={v.id} className="flex items-center gap-2 text-sm font-normal text-fg">
+                        <Checkbox
+                          aria-label={v.name}
+                          checked={chosenVaults.includes(v.id)}
+                          onCheckedChange={(on) =>
+                            set(
+                              "vaultIds",
+                              on === true ? [...chosenVaults, v.id] : chosenVaults.filter((id) => id !== v.id),
+                            )
+                          }
+                        />
+                        {v.name}
+                      </Label>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-fg-subtle">{m.loops.vaultsHint}</p>
+              </div>
+            )}
+          </div>
         </MatterSection>
       )}
 

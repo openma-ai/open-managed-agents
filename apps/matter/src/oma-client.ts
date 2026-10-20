@@ -102,6 +102,10 @@ export interface OmaClient {
   ): Promise<{ readonly id: string }>;
   createSession(input: CreateSessionInput): Promise<OmaSession>;
   getSession(sessionId: string): Promise<OmaSession | null>;
+  /** One environment, or null when the workspace has none with this id. */
+  getEnvironment(environmentId: string): Promise<{ readonly id: string; readonly archived_at?: string | null } | null>;
+  /** One vault, or null when the workspace has none with this id. */
+  getVault(vaultId: string): Promise<{ readonly id: string; readonly archived_at?: string | null } | null>;
   /** The workspace's environments, newest first. */
   listEnvironments(): Promise<readonly { readonly id: string; readonly name?: string; readonly archived_at?: string | null }[]>;
   /** Sessions of one Agent whose title matches `query` (server-side search). */
@@ -169,6 +173,14 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
       ((await json<{ data?: { id: string; name?: string; archived_at?: string | null }[] }>(
         await request("/v1/environments?limit=100"),
       ))?.data ?? []),
+    getEnvironment: async (environmentId) =>
+      json<{ id: string; archived_at?: string | null }>(
+        await request(`/v1/environments/${encodeURIComponent(environmentId)}`, { allow404: true }),
+      ),
+    getVault: async (vaultId) =>
+      json<{ id: string; archived_at?: string | null }>(
+        await request(`/v1/vaults/${encodeURIComponent(vaultId)}`, { allow404: true }),
+      ),
     getAgent: async (agentId) =>
       json<OmaAgent>(
         await request(`/v1/agents/${encodeURIComponent(agentId)}`, {

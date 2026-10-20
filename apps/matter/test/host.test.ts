@@ -7,7 +7,7 @@ import type {
 } from "@openma/matter-feishu/long-connection";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isSafeConnectionKey } from "../src/adapter.js";
-import { ensureAgentMcpServer } from "../src/host.js";
+import { ensureAgentMcpServer, loopDrivers } from "../src/host.js";
 import { defineLoop } from "@openma/matter-loop";
 import { LoopConfigError, loopTemplate, registerLoopTemplates, resetLoopTemplates } from "../src/loops.js";
 import { createOmaClient } from "../src/oma-client.js";
@@ -336,7 +336,7 @@ describe("Matter service", () => {
       template: "feishu-agent",
       provider: "feishu",
       enabled: true,
-      config: { bond, agentId: "agent-1", acknowledge: "Get", sessionScope: "thread", chats: [] },
+      config: { bond, agentId: "agent-1", acknowledge: "Get", sessionScope: "work-item", chats: [] },
       state: { running: true },
     });
     expect(service.host.running()).toEqual([APP_ID]);
@@ -357,6 +357,83 @@ describe("Matter service", () => {
     expect(service.host.running()).toEqual([]);
     expect((await call("DELETE", `/bonds/${encodeURIComponent(bond)}`)).status).toBe(204);
     expect((await read(await call("GET", "/bonds"))).data).toEqual([]);
+  });
+
+  it("opens the Loop's session in its environment with its vaults", async () => {
+    const service = await start();
+    const call = (method: string, path: string, body?: unknown) =>
+      service.fetch(
+        new Request(`https://matter.test${path}`, {
+          method,
+          headers: {
+            "x-matter-proxy-secret": "proxy-secret",
+            "x-oma-tenant-id": "default",
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    const bond = `feishu:${APP_ID}`;
+    await service.connectFeishu({ ...connection, agentId: undefined });
+    oma.environments.push({ id: "env_report" });
+    oma.vaults.set("vlt_user", { name: "Analytics keys", credentials: [] });
+
+    // Every template offers the session fields after its own.
+    const templates = ((await (await call("GET", "/loop-templates")).json()) as {
+      data: { id: string; configSchema: { properties: Record<string, { "x-oma-section"?: string }> } }[];
+    }).data;
+    const properties = templates.find((t) => t.id === "feishu-agent")!.configSchema.properties;
+    expect(Object.keys(properties).slice(-2)).toEqual(["environmentId", "vaultIds"]);
+    expect(properties.vaultIds?.["x-oma-section"]).toBe("session");
+
+    // Unknown environments and vaults are refused.
+    const config = { bond, agentId: "agent-1" };
+    expect((await call("POST", "/loops", { template: "feishu-agent", config: { ...config, environmentId: "env_nope" } })).status).toBe(404);
+    expect((await call("POST", "/loops", { template: "feishu-agent", config: { ...config, vaultIds: ["vlt_nope"] } })).status).toBe(404);
+
+    const created = await call("POST", "/loops", {
+      template: "feishu-agent",
+      config: { ...config, environmentId: "env_report", vaultIds: ["vlt_user"] },
+    });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { config: unknown }).config).toMatchObject({
+      agentId: "agent-1",
+      environmentId: "env_report",
+      vaultIds: ["vlt_user"],
+    });
+
+    await ws[0]!.invoke!(mention("ev_1", "om_1"));
+    await waitFor(() => oma.sessions.size > 0 || undefined);
+    const sessions = [...oma.sessions.values()];
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ agent: "agent-1", environment_id: "env_report" });
+    // Matter's own vault (the MCP bearer) comes first, then the Loop's.
+    expect(sessions[0]?.vault_ids).toHaveLength(2);
+    expect(sessions[0]?.vault_ids[1]).toBe("vlt_user");
+  });
+
+  it("renames the session scopes OpenMatter 0.2.6 renamed, on start", async () => {
+    const first = await start();
+    await first.db.apps.save({ ...connection, agentId: undefined });
+    const saved = (sessionScope: string) => ({
+      tenantId: "default",
+      bondKind: "feishu",
+      bondKey: APP_ID,
+      template: "feishu-agent",
+      config: { agentId: "agent-1", sessionScope, chats: [], acknowledge: "Get", freshness: "thread", vaultIds: [] },
+      enabled: true,
+    });
+    await first.db.loops.save({ id: "loop-thread", ...saved("thread") });
+    await first.db.loops.save({ id: "loop-chat", ...saved("chat") });
+    await first.db.loops.save({ id: "loop-user", ...saved("chat_user") });
+    await first.close();
+    services.splice(services.indexOf(first), 1);
+    const service = await start();
+    const scopes = Object.fromEntries((await service.db.loops.list()).map((l) => [l.id, l.config.sessionScope]));
+    expect(scopes).toEqual({ "loop-thread": "work-item", "loop-chat": "global", "loop-user": "chat_user" });
+    // The migrated Loops install with the new template.
+    await service.host.start();
+    expect(service.host.running()).toEqual([APP_ID]);
   });
 
   it("turns a connection saved with an Agent into a Loop on start, once", async () => {
@@ -575,5 +652,52 @@ describe("deployment Loops", () => {
         { provider: "gitlab", loop: custom("twice") },
       ]),
     ).toThrow(/twice: a template with this id already exists/);
+  });
+});
+
+describe("Loop sessions", () => {
+  const record = (id: string, config: Record<string, unknown>) => ({
+    id,
+    tenantId: "default",
+    bondKind: "feishu",
+    bondKey: APP_ID,
+    template: "feishu-agent",
+    config,
+    enabled: true,
+    createdAt: "",
+    updatedAt: "",
+  });
+
+  it("keys a Loop without session settings by its Agent, so its Sessions continue", () => {
+    const { loops, drivers } = loopDrivers([
+      record("a", { agentId: "agent-1", vaultIds: [] }),
+      record("b", { agentId: "agent-1", environmentId: "env_report", vaultIds: ["vlt_2", "vlt_1"] }),
+      record("c", { agentId: "agent-1", environmentId: "env_report", vaultIds: ["vlt_1", "vlt_2"] }),
+    ]);
+    expect(loops[0]?.config).toEqual({ agentId: "agent-1" });
+    const key = loops[1]?.config.agentId as string;
+    expect(key).toMatch(/^agent-1#[0-9a-f]{12}$/);
+    // The same settings in another order share one driver; the template never sees them.
+    expect(loops[2]?.config).toEqual({ agentId: key });
+    expect([...drivers.keys()]).toEqual(["agent-1", key]);
+    expect(drivers.get(key)).toEqual({
+      agentId: "agent-1",
+      session: { environmentId: "env_report", vaultIds: ["vlt_2", "vlt_1"] },
+    });
+  });
+
+  it("refuses a template that defines a host field", () => {
+    const base = loopTemplate("feishu-agent")!.loop;
+    const schema = base.definition.configSchema as { properties: Record<string, unknown> };
+    const loop = defineLoop(
+      {
+        ...base.definition,
+        id: "own-vaults",
+        configSchema: { ...schema, properties: { ...schema.properties, vaultIds: { type: "array", items: { type: "string" } } } },
+      } as unknown as typeof base.definition,
+      base.install,
+    );
+    expect(() => registerLoopTemplates([{ provider: "feishu", loop }])).toThrow(/vaultIds is a host field/);
+    resetLoopTemplates();
   });
 });

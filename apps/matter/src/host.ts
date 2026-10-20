@@ -17,10 +17,12 @@ import { makeConnectorAgentDriver } from "@openma/matter/agent";
 import { createOpenMatter } from "@openma/matter/runtime";
 import { makeLocalLongConnectionRuntime } from "@openma/matter-host-local/runtime";
 import { Effect } from "effect";
+import { createHash } from "node:crypto";
 import { isSafeConnectionKey, type MatterAdapter, type MatterConnection } from "./adapter.js";
 import { createOpenMAConnector, isOmaSessionUnavailable } from "./connector.js";
 import type { OmaClient, OmaMcpServer } from "./oma-client.js";
-import type { MatterDatabase } from "./persistence.js";
+import { splitLoopConfig, type LoopSession } from "./loops.js";
+import type { LoopRecord, MatterDatabase } from "./persistence.js";
 import { withImages } from "./images.js";
 import { sessionVaults } from "./session-tokens.js";
 import type { OperationCallBridge } from "./tool-bridge.js";
@@ -68,12 +70,53 @@ export interface MatterHost {
   /** Give an Agent the Matter MCP server before a connection uses it.
    * Throws when this service cannot act in the tenant. */
   prepareAgent(tenantId: string, agentId: string): Promise<void>;
+  /** Throws a "not found" error unless the session's environment and vaults exist. */
+  checkSession(tenantId: string, session: LoopSession): Promise<void>;
   /** Keys of the connections currently running. */
   running(): readonly string[];
   /** Whether this replica runs `key`, and its last error. */
   state(key: string): ConnectionState;
   stop(): Promise<void>;
 }
+
+const hasSession = (session: LoopSession): boolean =>
+  session.environmentId !== undefined || session.vaultIds.length > 0;
+
+const sessionMetadata = (session: LoopSession) => ({
+  ...(session.environmentId === undefined ? {} : { environmentId: session.environmentId }),
+  vaultIds: [...session.vaultIds],
+});
+
+/**
+ * One Agent driver per Agent and session settings. A Loop without session
+ * settings uses the Agent id as its driver key, as before, so its Sessions
+ * continue; one with settings gets a key of its own, and the Loop's
+ * `agentId` names that key. The session fields never reach the template.
+ */
+export const loopDrivers = (
+  records: readonly LoopRecord[],
+): {
+  readonly loops: readonly LoopRecord[];
+  readonly drivers: ReadonlyMap<string, { readonly agentId: string; readonly session: LoopSession }>;
+} => {
+  const drivers = new Map<string, { agentId: string; session: LoopSession }>();
+  const loops = records.map((record) => {
+    const { config, session } = splitLoopConfig(record.config);
+    const agentId = config.agentId;
+    if (typeof agentId !== "string" || agentId === "") return { ...record, config };
+    let key = agentId;
+    if (hasSession(session)) {
+      const digest = createHash("sha256")
+        .update(JSON.stringify([session.environmentId ?? null, [...session.vaultIds].sort()]))
+        .digest("hex")
+        .slice(0, 12);
+      key = `${agentId}#${digest}`;
+    }
+    if (!drivers.has(key)) drivers.set(key, { agentId, session });
+    return { ...record, config: { ...config, agentId: key } };
+  });
+  return { loops, drivers };
+};
 
 /**
  * Add the Matter MCP server (and the `mcp_toolset` OpenMA requires for it)
@@ -161,13 +204,7 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       lastErrors.delete(key);
       return;
     }
-    const agentIds = [
-      ...new Set(
-        connection.loops
-          .map((loop) => loop.config.agentId)
-          .filter((id): id is string => typeof id === "string" && id !== ""),
-      ),
-    ];
+    const { loops, drivers } = loopDrivers(connection.loops);
     const client = options.clientFor(connection.tenantId);
     if (client === null) {
       report(new Error(`No OpenMA access for tenant ${connection.tenantId}`), key);
@@ -195,13 +232,18 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       store,
       integrations: wiring.integrations,
       agents: Object.fromEntries(
-        agentIds.map((agentId) => [
-          agentId,
-          makeConnectorAgentDriver({ connector, agentId, isSessionUnavailable: isOmaSessionUnavailable }),
+        [...drivers].map(([key, { agentId, session }]) => [
+          key,
+          makeConnectorAgentDriver({
+            connector,
+            agentId,
+            isSessionUnavailable: isOmaSessionUnavailable,
+            ...(hasSession(session) ? { session: { metadata: sessionMetadata(session) } } : {}),
+          }),
         ]),
       ),
     });
-    wiring.install(application, connection.loops);
+    wiring.install(application, loops);
     const runtime = makeLocalLongConnectionRuntime({
       source: wiring.source,
       application,
@@ -300,6 +342,20 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
         name: mcpServerName,
         url: options.mcpServerUrl,
       });
+    },
+    checkSession: async (tenantId, session) => {
+      const client = options.clientFor(tenantId);
+      if (client === null) throw new Error(`No OpenMA access for tenant ${tenantId}`);
+      if (session.environmentId !== undefined) {
+        const environment = await client.getEnvironment(session.environmentId);
+        if (environment === null || environment.archived_at) {
+          throw new Error(`Environment ${session.environmentId} not found`);
+        }
+      }
+      for (const vaultId of session.vaultIds) {
+        const vault = await client.getVault(vaultId);
+        if (vault === null || vault.archived_at) throw new Error(`Vault ${vaultId} not found`);
+      }
     },
     running: () => [...running.keys()],
     state: (key) => {

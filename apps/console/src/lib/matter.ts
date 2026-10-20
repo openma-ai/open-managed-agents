@@ -61,6 +61,8 @@ export interface FieldSchema {
   minItems?: number;
   items?: FieldSchema;
   "x-oma-widget"?: string;
+  /** "session": an OpenMA session setting the host adds to every template. */
+  "x-oma-section"?: string;
   "x-bond-provider"?: string;
 }
 

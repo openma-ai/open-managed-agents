@@ -102,6 +102,18 @@ export class FakeOma {
     if (parts[0] === "v1" && parts[1] === "environments" && parts.length === 2 && method === "GET") {
       return Response.json({ data: this.environments });
     }
+    if (parts[0] === "v1" && parts[1] === "environments" && parts.length === 3 && method === "GET") {
+      const environment = this.environments.find((e) => e.id === parts[2]);
+      return environment === undefined
+        ? Response.json({ error: "Environment not found" }, { status: 404 })
+        : Response.json(environment);
+    }
+    if (parts[0] === "v1" && parts[1] === "vaults" && parts.length === 3 && method === "GET") {
+      const vault = this.vaults.get(parts[2] ?? "");
+      return vault === undefined
+        ? Response.json({ error: "Vault not found" }, { status: 404 })
+        : Response.json({ id: parts[2], display_name: vault.name });
+    }
     if (parts[0] === "v1" && parts[1] === "vaults" && method === "POST") {
       if (parts.length === 2) {
         const displayName = (body as { display_name?: unknown }).display_name;

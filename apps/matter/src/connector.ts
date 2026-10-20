@@ -185,12 +185,21 @@ export const createOpenMAConnector = (
       (session) => session.title === title && !session.archived_at,
     );
     if (existing !== undefined) return handleFor(existing.id);
-    const vaultIds = (await options.vaultIds?.(input)) ?? [];
+    // The Loop's session settings, when it has any (see loopDrivers).
+    const metadata = input.metadata ?? {};
+    const loopVaults = Array.isArray(metadata.vaultIds)
+      ? metadata.vaultIds.filter((id): id is string => typeof id === "string" && id !== "")
+      : [];
+    const vaultIds = [...((await options.vaultIds?.(input)) ?? []), ...loopVaults];
     const created = await client.createSession({
       agentId: input.agentId,
       title,
       environmentId:
-        typeof options.environmentId === "string" ? options.environmentId : await options.environmentId(),
+        typeof metadata.environmentId === "string" && metadata.environmentId !== ""
+          ? metadata.environmentId
+          : typeof options.environmentId === "string"
+            ? options.environmentId
+            : await options.environmentId(),
       vaultIds,
     });
     return handleFor(created.id);

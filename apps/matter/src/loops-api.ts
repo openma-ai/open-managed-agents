@@ -25,7 +25,14 @@ import { FEISHU_ADAPTER_KIND } from "./feishu-adapter.js";
 import type { FeishuConnectPrincipal, FeishuConnectService } from "./feishu-connect.js";
 import { GITLAB_ADAPTER_KIND } from "./gitlab-adapter.js";
 import type { MatterHost } from "./host.js";
-import { LoopConfigError, loopTemplate, loopTemplates, normalizeLoopConfig } from "./loops.js";
+import {
+  LoopConfigError,
+  loopTemplate,
+  loopTemplates,
+  normalizeLoopConfig,
+  SESSION_FIELDS,
+  splitLoopConfig,
+} from "./loops.js";
 import type { LoopRecord, MatterDatabase } from "./persistence.js";
 
 type Provider = "feishu" | "gitlab";
@@ -99,6 +106,7 @@ const templates = () =>
         properties: {
           bond: { type: "string", minLength: 1, title: "Bond", "x-oma-widget": "bond", "x-bond-provider": provider },
           ...(schema.properties ?? {}),
+          ...SESSION_FIELDS,
         },
         required: ["bond", ...(schema.required ?? [])],
       },
@@ -158,6 +166,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
     if (typeof config.agentId === "string") {
       try {
         await host.prepareAgent(principal.tenantId, config.agentId);
+        await host.checkSession(principal.tenantId, splitLoopConfig(config).session);
       } catch (error) {
         if (error instanceof Error && /not found/.test(error.message)) throw new ApiError(404, error.message);
         throw error;
@@ -383,4 +392,16 @@ export const migrateConnectionsToLoops = async (db: MatterDatabase): Promise<voi
     });
     await db.gitlab.forgetAgent(c.id);
   }
+  // OpenMatter 0.2.6 names session scopes the same in every template.
+  // The WorkThread ids did not change, so the Loops keep their Sessions.
+  for (const loop of await db.loops.list()) {
+    const renamed = LEGACY_SESSION_SCOPES[loop.template]?.[String(loop.config.sessionScope)];
+    if (renamed === undefined) continue;
+    await db.loops.save({ ...loop, config: { ...loop.config, sessionScope: renamed } });
+  }
+};
+
+/** Session scope values renamed by OpenMatter 0.2.6, per template. */
+const LEGACY_SESSION_SCOPES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "feishu-agent": { thread: "work-item", chat: "global" },
 };

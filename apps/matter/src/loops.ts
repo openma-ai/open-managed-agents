@@ -54,6 +54,12 @@ export const registerLoopTemplates = (entries: readonly LoopTemplateEntry[]): vo
       problems.push(`${id}: provider must be feishu or gitlab`);
     }
     if (ids.has(id)) problems.push(`${id}: a template with this id already exists`);
+    const properties = Object.keys(
+      ((entry.loop.definition.configSchema ?? {}) as ObjectSchema).properties ?? {},
+    );
+    for (const name of properties.filter((p) => RESERVED_FIELDS.has(p))) {
+      problems.push(`${id}: ${name} is a host field; the template cannot define it`);
+    }
     ids.add(id);
   }
   if (problems.length > 0) throw new LoopConfigError(problems);
@@ -63,6 +69,55 @@ export const registerLoopTemplates = (entries: readonly LoopTemplateEntry[]): vo
 /** For tests: forget the registered templates. */
 export const resetLoopTemplates = (): void => {
   registered = [];
+};
+
+/**
+ * The OpenMA session a Loop opens, next to the Agent: the environment it runs
+ * in (its sandbox image, packages and network) and the vaults attached to it
+ * (credentials, including environment variables). The host adds these fields
+ * to every template; a template never sees them. Empty keeps the service's
+ * default environment and only the vault Matter makes for each session.
+ */
+export const SESSION_FIELDS = {
+  environmentId: {
+    type: "string",
+    title: "Environment",
+    "x-oma-widget": "environment",
+    "x-oma-section": "session",
+  },
+  vaultIds: {
+    type: "array",
+    items: { type: "string", minLength: 1 },
+    default: [],
+    title: "Vaults",
+    "x-oma-widget": "vault",
+    "x-oma-section": "session",
+  },
+} as const;
+
+/** Configuration fields the host owns; a template cannot define them. */
+const RESERVED_FIELDS: ReadonlySet<string> = new Set(["bond", ...Object.keys(SESSION_FIELDS)]);
+
+/** The session settings of a Loop's saved configuration. */
+export interface LoopSession {
+  readonly environmentId?: string;
+  readonly vaultIds: readonly string[];
+}
+
+/** Splits a saved configuration into the template's part and the session. */
+export const splitLoopConfig = (
+  config: Readonly<Record<string, unknown>>,
+): { readonly config: Record<string, unknown>; readonly session: LoopSession } => {
+  const { environmentId, vaultIds, ...rest } = config;
+  return {
+    config: rest,
+    session: {
+      ...(typeof environmentId === "string" && environmentId !== "" ? { environmentId } : {}),
+      vaultIds: Array.isArray(vaultIds)
+        ? vaultIds.filter((id): id is string => typeof id === "string" && id !== "")
+        : [],
+    },
+  };
 };
 
 /** Defaults this service applies on top of a template's own. */
@@ -141,7 +196,8 @@ export const normalizeLoopConfig = (template: string, input: unknown): Record<st
   const given = input as Record<string, unknown>;
   const config: Record<string, unknown> = {};
   const problems: string[] = [];
-  for (const [name, property] of Object.entries(schema.properties ?? {})) {
+  const properties: Record<string, PropertySchema> = { ...(schema.properties ?? {}), ...SESSION_FIELDS };
+  for (const [name, property] of Object.entries(properties)) {
     const value =
       given[name] !== undefined ? given[name] : (HOST_DEFAULTS[template]?.[name] ?? property.default);
     if (value === undefined) {
