@@ -26,6 +26,7 @@ import {
   createGitLabAdapter,
   createGitLabConnectHandler,
   createGitLabWebhookHandler,
+  parseBaseUrl,
 } from "./gitlab-adapter.js";
 import { createMatterHost, type MatterHost, type MatterHostOptions } from "./host.js";
 import { createLoopApiHandler, migrateConnectionsToLoops } from "./loops-api.js";
@@ -70,6 +71,9 @@ export interface MatterConfig {
   /** Where providers that call in (GitLab webhooks) reach this service;
    * unset, "Connect GitLab" returns the webhook path only. */
   readonly publicUrl?: string;
+  /** GitLab instances offered when linking a Bond (`MATTER_GITLAB_URLS`,
+   * comma-separated); users can still enter another address. */
+  readonly gitlabUrls?: readonly string[];
 }
 
 export class MatterConfigError extends Error {
@@ -120,6 +124,15 @@ export const loadMatterConfig = (env: NodeJS.ProcessEnv): MatterConfig => {
   if (!Number.isInteger(reconcileMs) || reconcileMs < 1000) {
     problems.push(`MATTER_RECONCILE_MS must be at least 1000; received ${JSON.stringify(reconcileRaw)}`);
   }
+  const gitlabUrls = (env.MATTER_GITLAB_URLS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "")
+    .map((value) => {
+      const parsed = parseBaseUrl(value);
+      if (parsed === undefined) problems.push(`MATTER_GITLAB_URLS has an invalid URL: ${JSON.stringify(value)}`);
+      return parsed ?? "";
+    });
   const config: MatterConfig = {
     host,
     port,
@@ -134,6 +147,7 @@ export const loadMatterConfig = (env: NodeJS.ProcessEnv): MatterConfig => {
     mcpUrl: url("MATTER_MCP_URL", `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}/mcp`),
     ...(env.OMA_ENVIRONMENT_ID ? { environmentId: env.OMA_ENVIRONMENT_ID } : {}),
     ...(env.MATTER_PUBLIC_URL ? { publicUrl: url("MATTER_PUBLIC_URL") } : {}),
+    ...(gitlabUrls.length > 0 ? { gitlabUrls } : {}),
   };
   if (problems.length > 0) throw new MatterConfigError(problems);
   return config;
@@ -169,7 +183,7 @@ export const openConfiguredDatabase = async (
 /** Everything but the listener, so tests drive it with plain Requests. */
 export const createMatterService = async (
   config: MatterConfig,
-  overrides: Partial<Pick<MatterHostOptions, "onError" | "onStarted">> & {
+  overrides: Partial<Pick<MatterHostOptions, "onError" | "onStarted" | "scheduleTimers">> & {
     /** Reaches the providers (Feishu, GitLab); tests pass a fake. */
     readonly fetch?: typeof fetch;
     readonly createWsClient?: FeishuLongConnectionOptions["createClient"];
@@ -233,6 +247,7 @@ export const createMatterService = async (
       ((error, key) =>
         console.error(`[matter] ${key}:`, error instanceof Error ? error.message : error)),
     onStarted: overrides.onStarted ?? ((_key, label) => console.log(`[matter] ${label}: started`)),
+    ...(overrides.scheduleTimers === undefined ? {} : { scheduleTimers: overrides.scheduleTimers }),
   });
   const connectFeishu = connectFeishuApp(host, { db, ...providerFetch });
   const proxied = trustedProxyPrincipal(config.proxySecret);
@@ -256,6 +271,7 @@ export const createMatterService = async (
       ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
     }),
     db,
+    ...(config.gitlabUrls === undefined ? {} : { presets: config.gitlabUrls }),
     authorize: async (request) => {
       const principal = await proxied(request);
       return principal !== null && accepts(principal.tenantId) ? principal : null;

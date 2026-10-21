@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { FeishuIcon, GitLabIcon } from "../../components/icons";
 import { useI18n } from "../../i18n";
@@ -157,12 +158,33 @@ export function FeishuLinker({ onLinked }: { onLinked: (bond: string) => Promise
   );
 }
 
+const OTHER = "__other__";
+
 /** Link a GitLab instance with a bot token; shows the webhook to add, once. */
 export function GitLabLinker({ onLinked }: { onLinked: (bond: string) => Promise<void> | void }) {
   const { t } = useI18n();
   const b = t.matter.bonds;
+  // Instances the deployment offers plus the ones this workspace linked
+  // before; "other" switches to a free URL.
+  const [instances, setInstances] = useState<string[]>([]);
+  const [instance, setInstance] = useState(OTHER);
   const [baseUrl, setBaseUrl] = useState("https://gitlab.com");
   const [token, setToken] = useState("");
+  useEffect(() => {
+    let live = true;
+    matter<{ instances?: string[] }>("/connect/gitlab")
+      .then((r) => {
+        const known = r.instances ?? [];
+        if (!live || known.length === 0) return;
+        setInstances(known);
+        setInstance(known[0]!);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const url = instance === OTHER ? baseUrl : instance;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ id: string; webhookUrl: string; webhookSecret: string } | null>(null);
@@ -178,7 +200,7 @@ export function GitLabLinker({ onLinked }: { onLinked: (bond: string) => Promise
       setResult(
         await matter<{ id: string; webhookUrl: string; webhookSecret: string }>("/connect/gitlab", {
           method: "POST",
-          body: JSON.stringify({ baseUrl, token }),
+          body: JSON.stringify({ baseUrl: url, token }),
         }),
       );
     } catch (err) {
@@ -204,8 +226,30 @@ export function GitLabLinker({ onLinked }: { onLinked: (bond: string) => Promise
   }
   return (
     <div className="space-y-2 text-sm">
-      <Label htmlFor="gitlab-url">{b.gitlabUrl}</Label>
-      <Input id="gitlab-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+      <Label htmlFor={instances.length > 0 ? "gitlab-instance" : "gitlab-url"}>{b.gitlabUrl}</Label>
+      {instances.length > 0 && (
+        <Select value={instance} onValueChange={setInstance}>
+          <SelectTrigger id="gitlab-instance" aria-label={b.gitlabUrl} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {instances.map((value) => (
+              <SelectItem key={value} value={value}>
+                {value}
+              </SelectItem>
+            ))}
+            <SelectItem value={OTHER}>{b.otherInstance}</SelectItem>
+          </SelectContent>
+        </Select>
+      )}
+      {instance === OTHER && (
+        <Input
+          id="gitlab-url"
+          aria-label={b.gitlabUrl}
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+      )}
       <Label htmlFor="gitlab-token">{b.gitlabToken}</Label>
       <Input id="gitlab-token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
       {error && (

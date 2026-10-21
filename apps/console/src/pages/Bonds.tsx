@@ -303,14 +303,23 @@ export function BondDetailPage() {
   );
 }
 
-/** `/bonds/new?provider=feishu|gitlab`: link an app. */
+/** A same-app path to return to, or undefined for anything else. */
+const returnPath = (value: string | null): string | undefined =>
+  value !== null && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : undefined;
+
+/**
+ * `/bonds/new?provider=feishu|gitlab[&return=/path]`: link an app. With
+ * `return` (a Loop form), go back there with the new Bond chosen.
+ */
 export function BondLinkPage() {
   const { t } = useI18n();
   const m = t.matter;
   const nav = useNavigate();
   const [params] = useSearchParams();
   const provider: Provider = params.get("provider") === "gitlab" ? "gitlab" : "feishu";
-  const done = (id: string) => nav(bondPath(id));
+  const back = returnPath(params.get("return"));
+  const done = (id: string) =>
+    nav(back === undefined ? bondPath(id) : `${back}${back.includes("?") ? "&" : "?"}bond=${encodeURIComponent(id)}`);
   return (
     <BondPageShell>
       <MatterTitle provider={provider} title={provider === "feishu" ? m.bonds.linkFeishu : m.bonds.linkGitLab} />
@@ -318,7 +327,7 @@ export function BondLinkPage() {
         {provider === "feishu" ? <FeishuLinker onLinked={done} /> : <GitLabLinker onLinked={done} />}
       </MatterSection>
       <div className="console-settings-actions">
-        <Button variant="ghost" onClick={() => nav("/bonds")}>
+        <Button variant="ghost" onClick={() => nav(back ?? "/bonds")}>
           {t.common.cancel}
         </Button>
       </div>

@@ -16,6 +16,7 @@
  *   DELETE /bonds/:bond              only when no Loop uses it
  */
 
+import { issueJson, MissingReferenceError, type LoopIssue } from "./issues.js";
 import { randomUUID } from "node:crypto";
 import type { ProviderAppConfig } from "@openma/matter/bond";
 import { makeFeishuResourceCatalog, mintTenantAccessToken } from "@openma/matter-feishu/bond";
@@ -30,9 +31,10 @@ import {
   loopTemplate,
   loopTemplates,
   normalizeLoopConfig,
-  SESSION_FIELDS,
+  hostFields,
   splitLoopConfig,
 } from "./loops.js";
+import { isScheduled } from "./schedule.js";
 import type { LoopRecord, MatterDatabase } from "./persistence.js";
 
 type Provider = "feishu" | "gitlab";
@@ -55,6 +57,7 @@ class ApiError extends Error {
     readonly status: number,
     message: string,
     readonly problems?: readonly string[],
+    readonly issues?: readonly LoopIssue[],
   ) {
     super(message);
   }
@@ -106,14 +109,14 @@ const templates = () =>
         properties: {
           bond: { type: "string", minLength: 1, title: "Bond", "x-oma-widget": "bond", "x-bond-provider": provider },
           ...(schema.properties ?? {}),
-          ...SESSION_FIELDS,
+          ...hostFields(loop),
         },
-        required: ["bond", ...(schema.required ?? [])],
+        required: ["bond", ...(schema.required ?? []), ...(isScheduled(loop) ? ["schedule"] : [])],
       },
     };
   });
 
-const loopView = (loop: LoopRecord, host: MatterHost) => ({
+const loopView = async (loop: LoopRecord, host: MatterHost) => ({
   id: loop.id,
   template: loop.template,
   provider: loopTemplate(loop.template)?.provider,
@@ -121,7 +124,7 @@ const loopView = (loop: LoopRecord, host: MatterHost) => ({
   enabled: loop.enabled,
   createdAt: loop.createdAt,
   updatedAt: loop.updatedAt,
-  state: host.state(loop.bondKey),
+  state: await host.sharedState(loop.bondKey),
 });
 
 export const createLoopApiHandler = (options: LoopApiOptions) => {
@@ -160,7 +163,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
     try {
       config = normalizeLoopConfig(input.template, rest);
     } catch (error) {
-      if (error instanceof LoopConfigError) throw new ApiError(400, error.message, error.problems);
+      if (error instanceof LoopConfigError) throw new ApiError(400, error.message, error.problems, error.issues);
       throw error;
     }
     if (typeof config.agentId === "string") {
@@ -168,6 +171,9 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
         await host.prepareAgent(principal.tenantId, config.agentId);
         await host.checkSession(principal.tenantId, splitLoopConfig(config).session);
       } catch (error) {
+        if (error instanceof MissingReferenceError) {
+          throw new ApiError(404, error.message, [error.message], [error.issue]);
+        }
         if (error instanceof Error && /not found/.test(error.message)) throw new ApiError(404, error.message);
         throw error;
       }
@@ -210,7 +216,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
               provider: "feishu" as const,
               label: app.appId,
               connectedAt: app.connectedAt,
-              ...host.state(app.appId),
+              ...(await host.sharedState(app.appId)),
               loops: used(FEISHU_ADAPTER_KIND, app.appId),
               ...(setup === undefined ? {} : { setup }),
               details: { appId: app.appId, brand: app.brand },
@@ -227,7 +233,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
           provider: "gitlab",
           label: `${c.username}@${new URL(c.baseUrl).host}`,
           connectedAt: c.connectedAt,
-          ...host.state(c.id),
+          ...(await host.sharedState(c.id)),
           loops: used(GITLAB_ADAPTER_KIND, c.id),
           details: {
             baseUrl: c.baseUrl,
@@ -295,7 +301,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
       }
       if (collection === "loops" && id === undefined && method === "GET") {
         const loops = (await db.loops.list()).filter((l) => l.tenantId === principal.tenantId);
-        return json({ data: loops.map((l) => loopView(l, host)) });
+        return json({ data: await Promise.all(loops.map((l) => loopView(l, host))) });
       }
       if (collection === "loops" && id === undefined && method === "POST") {
         const input = await body();
@@ -306,7 +312,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
           config: input.config,
           enabled: input.enabled !== false,
         });
-        return json(loopView(saved, host), 201);
+        return json(await loopView(saved, host), 201);
       }
       if (collection === "loops" && id !== undefined && sub === undefined && method === "PATCH") {
         const loop = await tenantLoop(principal.tenantId, id);
@@ -320,7 +326,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
               : input.config,
           enabled: typeof input.enabled === "boolean" ? input.enabled : loop.enabled,
         });
-        return json(loopView(saved, host));
+        return json(await loopView(saved, host));
       }
       if (collection === "loops" && id !== undefined && sub === undefined && method === "DELETE") {
         const loop = await tenantLoop(principal.tenantId, id);
@@ -349,7 +355,14 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
       return json({ error: "method not allowed" }, 405);
     } catch (error) {
       if (error instanceof ApiError) {
-        return json({ error: error.message, ...(error.problems === undefined ? {} : { problems: error.problems }) }, error.status);
+        return json(
+          {
+            error: error.message,
+            ...(error.problems === undefined ? {} : { problems: error.problems }),
+            ...(error.issues === undefined ? {} : { issues: error.issues.map(issueJson) }),
+          },
+          error.status,
+        );
       }
       throw error;
     }

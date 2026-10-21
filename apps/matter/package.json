@@ -23,6 +23,7 @@
     "@openma/matter-loop": "0.2.6",
     "@openma/matter-store-mysql": "0.2.6",
     "@openma/matter-store-sqlite": "0.2.6",
+    "cron-parser": "5.10.2",
     "effect": "3.22.1",
     "mysql2": "3.15.3",
     "qrcode": "^1.5.4"

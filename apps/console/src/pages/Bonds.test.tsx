@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import { I18nProvider } from "../i18n";
-import { BondDetailPage, BondsPage } from "./Bonds";
+import { BondDetailPage, BondLinkPage, BondsPage } from "./Bonds";
 
 const managedApi = {
   agents: { list: vi.fn(async () => ({ data: [{ id: "agent-1", name: "Helpdesk" }] })) },
@@ -85,6 +85,7 @@ const open = (path = "/bonds") =>
       <I18nProvider>
         <Routes>
           <Route path="/bonds" element={<BondsPage />} />
+          <Route path="/bonds/new" element={<BondLinkPage />} />
           <Route path="/bonds/:id" element={<BondDetailPage />} />
         </Routes>
       </I18nProvider>
@@ -125,5 +126,25 @@ describe("BondsPage", () => {
     expect(calls.find((c) => c.method === "DELETE")?.url).toBe("/matter/bonds/gitlab%3Agitlab-1");
     // Back on the list afterwards.
     expect(await screen.findByText(/No apps linked yet|还没有连接应用/)).toBeTruthy();
+  });
+
+  it("links GitLab on an instance it knows without asking for the URL again", async () => {
+    routes["GET /matter/connect/gitlab"] = () => json(200, { instances: ["https://git.corp.example"], data: [] });
+    routes["POST /matter/connect/gitlab"] = () =>
+      json(201, { id: "gitlab-2", webhookUrl: "https://matter.example/webhooks/gitlab/gitlab-2", webhookSecret: "s" });
+    open("/bonds/new?provider=gitlab");
+    expect((await screen.findByRole("combobox", { name: /GitLab URL|GitLab 地址/ })).textContent).toContain("https://git.corp.example");
+    expect(screen.queryByRole("textbox", { name: /GitLab URL|GitLab 地址/ })).toBeNull();
+    fireEvent.change(document.getElementById("gitlab-token")!, { target: { value: "glpat-x" } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Link|连接)$/ }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ baseUrl: "https://git.corp.example", token: "glpat-x" });
+  });
+
+  it("asks for the URL when no instance is known", async () => {
+    routes["GET /matter/connect/gitlab"] = () => json(200, { instances: [], data: [] });
+    open("/bonds/new?provider=gitlab");
+    expect(((await screen.findByRole("textbox", { name: /GitLab URL|GitLab 地址/ })) as HTMLInputElement).value).toBe("https://gitlab.com");
+    expect(screen.queryByRole("combobox", { name: /GitLab URL|GitLab 地址/ })).toBeNull();
   });
 });

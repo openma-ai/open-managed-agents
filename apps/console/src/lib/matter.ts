@@ -5,15 +5,26 @@ import { getActiveTenantId } from "./api";
  * proxies at `/matter/*` after authenticating the user.
  */
 
+/** One Loop configuration problem: the config key, the rule it breaks and its parameters. */
+export interface MatterIssue {
+  readonly field?: string;
+  readonly code: string;
+  readonly params?: Readonly<Record<string, string | number>>;
+}
+
 export class MatterError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | undefined,
     readonly problems: readonly string[] = [],
+    readonly issues: readonly MatterIssue[] = [],
   ) {
     super(code ?? `HTTP ${status}`);
   }
 }
+
+const isIssue = (v: unknown): v is MatterIssue =>
+  typeof v === "object" && v !== null && typeof (v as { code?: unknown }).code === "string";
 
 export async function matter<T>(path: string, init?: RequestInit): Promise<T> {
   const tenant = getActiveTenantId();
@@ -26,11 +37,12 @@ export async function matter<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: unknown; problems?: unknown };
+    const body = (await res.json().catch(() => ({}))) as { error?: unknown; problems?: unknown; issues?: unknown };
     throw new MatterError(
       res.status,
       typeof body.error === "string" ? body.error : undefined,
       Array.isArray(body.problems) ? body.problems.filter((p): p is string => typeof p === "string") : [],
+      Array.isArray(body.issues) ? body.issues.filter(isIssue) : [],
     );
   }
   return (res.status === 204 ? undefined : await res.json()) as T;

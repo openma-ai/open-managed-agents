@@ -131,6 +131,11 @@ export interface LoopRecord {
 
 export type LoopInput = Omit<LoopRecord, "createdAt" | "updatedAt">;
 
+export interface ConnectionError {
+  readonly message: string;
+  readonly at: string;
+}
+
 export interface MatterDatabase {
   readonly apps: {
     /** Insert or replace: connecting the same app again moves it. */
@@ -162,6 +167,14 @@ export interface MatterDatabase {
   };
   readonly tokens: SessionTokenStore;
   readonly registrations: RegistrationStore;
+  /** The last error of each connection, shared by every replica: the
+   * replica that hit it (a failed start or a failed delivery) writes it, and
+   * any replica can show it. */
+  readonly errors: {
+    get(key: string): Promise<ConnectionError | undefined>;
+    set(key: string, error: ConnectionError): Promise<void>;
+    clear(key: string): Promise<void>;
+  };
   /** Operation calls an Agent made through MCP, shared by every replica:
    * the replica running the Turn announces and answers them; the replica
    * that received the MCP request claims one and waits for its answer. */
@@ -224,6 +237,8 @@ const tables = (kind: "sqlite" | "mysql"): string[] => {
       id ${key} PRIMARY KEY, tenant_id ${key} NOT NULL, bond_kind ${key} NOT NULL, bond_key ${key} NOT NULL,
       template ${key} NOT NULL, config_json ${text} NOT NULL, enabled ${int} NOT NULL,
       created_at ${key} NOT NULL, updated_at ${key} NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS openmatter_connection_errors (
+      connection_key ${key} PRIMARY KEY, message ${text} NOT NULL, failed_at ${key} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS openmatter_session_tokens (
       digest ${key} PRIMARY KEY, session_id ${key} NOT NULL, issued_at ${key} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS openmatter_registrations (
@@ -545,6 +560,24 @@ const createMatterDatabase = (
           [digest.toString("hex")],
         );
         return row !== undefined && timingSafeEqual(Buffer.from(row.digest, "hex"), digest) ? row.session_id : null;
+      },
+    },
+    errors: {
+      get: async (key) => {
+        const [row] = await sql.rows<{ message: string; failed_at: string }>(
+          `SELECT message, failed_at FROM openmatter_connection_errors WHERE connection_key = ?`,
+          [key],
+        );
+        return row === undefined ? undefined : { message: row.message, at: row.failed_at };
+      },
+      set: async (key, error) => {
+        await sql.run(
+          upsert(sql.kind, "openmatter_connection_errors", ["connection_key", "message", "failed_at"], "connection_key"),
+          [key, error.message, error.at],
+        );
+      },
+      clear: async (key) => {
+        await sql.run(`DELETE FROM openmatter_connection_errors WHERE connection_key = ?`, [key]);
       },
     },
     registrations: {

@@ -20,7 +20,7 @@ import {
   type MatterAdapter,
   type MatterConnection,
 } from "./adapter.js";
-import { loopTemplate, normalizeLoopConfig } from "./loops.js";
+import { installLoops, normalizeLoopConfig } from "./loops.js";
 import type { FeishuConnectPrincipal } from "./feishu-connect.js";
 import type { MatterHost } from "./host.js";
 import type { GitLabConnectionRecord, LoopRecord, MatterDatabase } from "./persistence.js";
@@ -85,13 +85,7 @@ export const createGitLabAdapter = (options: {
             ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           }),
         },
-        install: (application, loops) => {
-          for (const loop of loops) {
-            const template = loopTemplate(loop.template);
-            if (template?.provider !== "gitlab") throw new Error(`Loop ${loop.id}: ${loop.template} does not run on GitLab`);
-            application.loop(template.loop, loop.config as Parameters<typeof application.loop>[1]);
-          }
-        },
+        install: (application, loops) => installLoops(application, loops, "gitlab"),
         source: {
           start: async (onEnvelope) => {
             deliver = onEnvelope;
@@ -181,7 +175,7 @@ const parseProjectIds = (value: unknown): number[] | undefined => {
     : undefined;
 };
 
-const parseBaseUrl = (value: unknown): string | undefined => {
+export const parseBaseUrl = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
   try {
     const url = new URL(value);
@@ -303,6 +297,8 @@ export const createGitLabConnectHandler = (options: {
   readonly connect: ReturnType<typeof connectGitLab>;
   readonly db: MatterDatabase;
   readonly authorize: (request: Request) => Promise<FeishuConnectPrincipal | null>;
+  /** Instances the deployment offers every workspace (`MATTER_GITLAB_URLS`). */
+  readonly presets?: readonly string[];
 }) =>
   async (request: Request): Promise<Response | undefined> => {
     const path = new URL(request.url).pathname.replace(/\/+$/, "");
@@ -310,11 +306,13 @@ export const createGitLabConnectHandler = (options: {
     const principal = await options.authorize(request);
     if (principal === null) return Response.json({ error: "unauthorized" }, { status: 401 });
     if (request.method === "GET") {
+      const mine = (await options.db.gitlab.list()).filter((c) => c.tenantId === principal.tenantId);
       return Response.json(
         {
-          data: (await options.db.gitlab.list())
-            .filter((c) => c.tenantId === principal.tenantId)
-            .map((c) => ({
+          // The deployment's instances first, then the ones this workspace
+          // linked before, so the form can offer them instead of a blank URL.
+          instances: [...new Set([...(options.presets ?? []), ...mine.map((c) => c.baseUrl)])],
+          data: mine.map((c) => ({
               id: c.id,
               baseUrl: c.baseUrl,
               username: c.username,

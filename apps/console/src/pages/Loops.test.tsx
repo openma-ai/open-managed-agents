@@ -3,7 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import { I18nProvider } from "../i18n";
-import { LoopEditPage, LoopsPage, LoopTemplatesPage } from "./Loops";
+import { en } from "../i18n/en";
+import { zhCN } from "../i18n/zh-CN";
+import { issueText, LoopEditPage, LoopsPage, LoopTemplatesPage } from "./Loops";
+import { BondLinkPage } from "./Bonds";
 
 const managedApi = {
   agents: { list: vi.fn(async () => ({ data: [{ id: "agent-1", name: "Helpdesk" }] })) },
@@ -93,6 +96,7 @@ const open = (path = "/loops") =>
           <Route path="/loops/new" element={<LoopEditPage />} />
           <Route path="/loops/templates" element={<LoopTemplatesPage />} />
           <Route path="/loops/:id" element={<LoopEditPage />} />
+          <Route path="/bonds/new" element={<BondLinkPage />} />
         </Routes>
       </I18nProvider>
     </MemoryRouter>,
@@ -131,7 +135,7 @@ describe("LoopsPage", () => {
   });
 
 
-  it("links a new Feishu app from the Bond field, then saves the Loop on it", async () => {
+  it("links a new Feishu app on the Bond page, then comes back and saves the Loop on it", async () => {
     routes["GET /matter/loops"] = () => json(200, { data: [] });
     routes["GET /matter/bonds"] = () => json(200, { data: [] });
     routes["POST /matter/connect/feishu/registrations"] = () =>
@@ -145,15 +149,21 @@ describe("LoopsPage", () => {
 
     // Old Feishu links redirect here with the template preselected.
     open("/loops?template=feishu-agent");
+    // The Loop form only picks a Bond; linking one is the Bond page's job.
+    const link = await screen.findByRole("link", { name: /Link a Feishu app|连接飞书应用/ });
+    expect(link.getAttribute("href")).toBe("/bonds/new?provider=feishu&return=%2Floops%2Fnew%3Ftemplate%3Dfeishu-agent");
+    expect(screen.queryByRole("button", { name: /Show QR code|生成二维码/ })).toBeNull();
+    fireEvent.click(link);
+
     fireEvent.click(await screen.findByRole("button", { name: /Show QR code|生成二维码/ }));
     await waitFor(() => expect(calls.some((c) => c.url === "/matter/connect/feishu/registrations")).toBe(true));
     expect(calls.find((c) => c.url === "/matter/connect/feishu/registrations")?.body).toEqual({});
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3100);
     });
-    expect(await screen.findByText("New bot")).toBeTruthy();
 
+    // Back on the Loop form with the new Bond chosen.
+    expect(await screen.findByText("New bot")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^(Save|保存)$/ }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/matter/loops")).toBe(true));
     expect(calls.find((c) => c.method === "POST" && c.url === "/matter/loops")?.body).toEqual({
@@ -175,6 +185,39 @@ describe("LoopsPage", () => {
     expect(await screen.findByText("Helpdesk")).toBeTruthy();
   });
 
+  it("schedules a report Loop in the browser's time zone", async () => {
+    const reportTemplate = {
+      id: "feishu-scheduled-report",
+      version: "1.0.0",
+      provider: "feishu",
+      description: "Report",
+      configSchema: {
+        properties: {
+          bond: { type: "string", title: "Runs on", "x-oma-widget": "bond", "x-bond-provider": "feishu" },
+          agentId: { type: "string", title: "Agent", "x-oma-widget": "agent" },
+          task: { type: "string", title: "Task" },
+          schedule: { type: "string", title: "Schedule", "x-oma-widget": "cron", "x-oma-section": "trigger" },
+          timezone: { type: "string", title: "Time zone", default: "UTC", "x-oma-widget": "timezone", "x-oma-section": "trigger" },
+        },
+        required: ["bond", "agentId", "task", "schedule"],
+      },
+    };
+    routes["GET /matter/loop-templates"] = () => json(200, { data: [feishuTemplate, reportTemplate] });
+    routes["POST /matter/loops"] = () => json(201, loop);
+    open("/loops/new?template=feishu-scheduled-report&bond=feishu:cli_old");
+    expect(await screen.findByText(/^(Schedule|运行时间)$/)).toBeTruthy();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect((screen.getByLabelText(/^(Time zone|时区)/) as HTMLInputElement).value).toBe(zone);
+    fireEvent.change(screen.getByLabelText(/^(Time|时间)\s*\*?$/), { target: { value: "0 10 * * 1-5" } });
+    fireEvent.change(screen.getByLabelText(/^(Task|任务)/), { target: { value: "Daily metrics" } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Save|保存)$/ }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/matter/loops")).toBe(true));
+    expect(calls.find((c) => c.method === "POST")?.body).toMatchObject({
+      template: "feishu-scheduled-report",
+      config: { bond: "feishu:cli_old", schedule: "0 10 * * 1-5", timezone: zone, task: "Daily metrics" },
+    });
+  });
+
   it("sets the Loop's session: the default environment and the checked vaults", async () => {
     routes["PATCH /matter/loops/loop-1"] = () => json(200, loop);
     open("/loops/loop-1");
@@ -190,3 +233,23 @@ describe("LoopsPage", () => {
     expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ config: { ...loop.config, vaultIds: ["vlt_user"] } });
   });
 });
+
+describe("issueText", () => {
+  it("says a configuration problem in the user's language", () => {
+    expect(issueText(zhCN.matter, { field: "agentId", code: "required" })).toBe(`请填写${zhCN.matter.fields.agentId!.title}`);
+    expect(issueText(en.matter, { field: "task", code: "max_length", params: { max: 8000 } })).toBe(
+      `${en.matter.fields.task!.title} must be at most 8000 characters`,
+    );
+    expect(issueText(zhCN.matter, { field: "chats", code: "type", params: { expected: "string", item: 2 } })).toBe(
+      `${zhCN.matter.fields.chats?.title ?? "chats"}必须是文本（第 2 项）`,
+    );
+    expect(issueText(zhCN.matter, { field: "sessionScope", code: "enum", params: { options: "request, global" } })).toContain(
+      zhCN.matter.options.request!,
+    );
+    expect(issueText(zhCN.matter, { field: "timezone", code: "timezone_unknown", params: { timezone: "Mars/Base" } })).toBe(
+      "未知时区 Mars/Base",
+    );
+    expect(issueText(en.matter, { code: "something_new" })).toBeUndefined();
+  });
+});
+

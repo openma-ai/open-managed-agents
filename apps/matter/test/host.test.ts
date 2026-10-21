@@ -19,6 +19,7 @@ import {
   type MatterService,
 } from "../src/server.js";
 import { FakeOma, type FakeEvent } from "./fake-oma.js";
+import type { ScheduleTimers } from "../src/schedule.js";
 
 const APP_ID = "cli_0123456789abcdef";
 const APP_SECRET = "app-secret-value";
@@ -43,7 +44,10 @@ class FakeWsClient implements FeishuWsClient {
 class FakeFeishu {
   readonly replies: { messageId: string; body: Record<string, unknown> }[] = [];
   readonly reactions: { messageId: string; emoji: unknown }[] = [];
+  readonly sent: { chatId: string | null; body: Record<string, unknown> }[] = [];
   readonly calls: string[] = [];
+  /** Chats the bot is not in: sending there fails as Feishu does. */
+  readonly notIn = new Set<string>();
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     this.calls.push(url.pathname);
@@ -64,6 +68,14 @@ class FakeFeishu {
       const body = JSON.parse(String(init?.body)) as { reaction_type: { emoji_type: unknown } };
       this.reactions.push({ messageId: reactionPath[1], emoji: body.reaction_type.emoji_type });
       return reply({ code: 0, data: { reaction_id: "r_1" } });
+    }
+    if (url.pathname === "/open-apis/im/v1/messages" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      if (this.notIn.has(String(body.receive_id))) {
+        return reply({ code: 230002, msg: "Bot/User can NOT be out of the chat." });
+      }
+      this.sent.push({ chatId: url.searchParams.get("receive_id_type") === "chat_id" ? String(body.receive_id) : null, body });
+      return reply({ code: 0, data: { message_id: `om_sent_${this.sent.length}` } });
     }
     const replyPath = /^\/open-apis\/im\/v1\/messages\/([^/]+)\/reply$/.exec(url.pathname);
     if (replyPath?.[1] !== undefined) {
@@ -117,8 +129,9 @@ let services: MatterService[];
 let config: MatterConfig;
 let started: string[];
 
-const start = async () => {
+const start = async (extra: { scheduleTimers?: ScheduleTimers } = {}) => {
   const service = await createMatterService(config, {
+    ...extra,
     omaFetch: oma.fetch as typeof fetch,
     fetch: feishu.fetch,
     feishuConnectFetch: feishu.fetch,
@@ -323,7 +336,9 @@ describe("Matter service", () => {
     // Bad configurations are refused with the reasons.
     const missing = await call("POST", "/loops", { template: "feishu-agent", config: { bond } });
     expect(missing.status).toBe(400);
-    expect((await read(missing)).problems).toEqual(["Agent is required"]);
+    const missingBody = await read(missing);
+    expect(missingBody.problems).toEqual(["Agent is required"]);
+    expect(missingBody.issues).toEqual([{ field: "agentId", code: "required" }]);
     expect((await call("POST", "/loops", { template: "feishu-agent", config: { bond: "feishu:cli_nope", agentId: "agent-1" } })).status).toBe(404);
     expect((await call("POST", "/loops", { template: "gitlab-mention", config: { bond, agentId: "agent-1" } })).status).toBe(400);
     expect((await call("POST", "/loops", { template: "feishu-agent", config: { bond, agentId: "agent-1" } }, "other")).status).toBe(401);
@@ -388,8 +403,14 @@ describe("Matter service", () => {
 
     // Unknown environments and vaults are refused.
     const config = { bond, agentId: "agent-1" };
-    expect((await call("POST", "/loops", { template: "feishu-agent", config: { ...config, environmentId: "env_nope" } })).status).toBe(404);
-    expect((await call("POST", "/loops", { template: "feishu-agent", config: { ...config, vaultIds: ["vlt_nope"] } })).status).toBe(404);
+    const noEnvironment = await call("POST", "/loops", { template: "feishu-agent", config: { ...config, environmentId: "env_nope" } });
+    expect(noEnvironment.status).toBe(404);
+    expect(((await noEnvironment.json()) as { issues: unknown }).issues).toEqual([
+      { field: "environmentId", code: "not_found", params: { id: "env_nope" } },
+    ]);
+    const noVault = await call("POST", "/loops", { template: "feishu-agent", config: { ...config, vaultIds: ["vlt_nope"] } });
+    expect(noVault.status).toBe(404);
+    expect(((await noVault.json()) as { issues: unknown }).issues).toEqual([{ field: "vaultIds", code: "not_found", params: { id: "vlt_nope" } }]);
 
     const created = await call("POST", "/loops", {
       template: "feishu-agent",
@@ -410,6 +431,110 @@ describe("Matter service", () => {
     // Matter's own vault (the MCP bearer) comes first, then the Loop's.
     expect(sessions[0]?.vault_ids).toHaveLength(2);
     expect(sessions[0]?.vault_ids[1]).toBe("vlt_user");
+  });
+
+  it("runs a scheduled Loop at its times and posts the report to its chats, once per time", async () => {
+    // Timers the test fires by hand, at a clock it sets.
+    let now = Date.parse("2026-10-20T01:00:00Z");
+    const pending: { callback: () => void; at: number }[] = [];
+    const timers: ScheduleTimers = {
+      now: () => now,
+      setTimeout: (callback, ms) => {
+        const entry = { callback, at: now + ms };
+        pending.push(entry);
+        return entry;
+      },
+      clearTimeout: (handle) => {
+        const i = pending.indexOf(handle as (typeof pending)[number]);
+        if (i >= 0) pending.splice(i, 1);
+      },
+    };
+    const service = await start({ scheduleTimers: timers });
+    const call = (method: string, path: string, body?: unknown) =>
+      service.fetch(
+        new Request(`https://matter.test${path}`, {
+          method,
+          headers: {
+            "x-matter-proxy-secret": "proxy-secret",
+            "x-oma-tenant-id": "default",
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    const bond = `feishu:${APP_ID}`;
+    await service.connectFeishu({ ...connection, agentId: undefined });
+
+    // The template gets the schedule fields; a bad schedule is refused.
+    const templates = ((await (await call("GET", "/loop-templates")).json()) as {
+      data: { id: string; configSchema: { properties: Record<string, unknown>; required: string[] } }[];
+    }).data;
+    const report = templates.find((t) => t.id === "feishu-scheduled-report")!;
+    expect(Object.keys(report.configSchema.properties)).toEqual(
+      expect.arrayContaining(["schedule", "timezone", "task", "chats"]),
+    );
+    expect(report.configSchema.required).toContain("schedule");
+    const config = {
+      bond,
+      agentId: "agent-1",
+      chats: ["chat:oc_eng"],
+      task: "Summarize yesterday's metrics.",
+      timezone: "Asia/Shanghai",
+    };
+    const bad = await call("POST", "/loops", { template: "feishu-scheduled-report", config: { ...config, schedule: "every day" } });
+    expect(bad.status).toBe(400);
+    expect((await call("POST", "/loops", { template: "feishu-scheduled-report", config: { ...config, schedule: "0 10 * * *", timezone: "Mars/Base" } })).status).toBe(400);
+
+    const created = await call("POST", "/loops", {
+      template: "feishu-scheduled-report",
+      config: { ...config, schedule: "0 10 * * *" },
+    });
+    expect(created.status).toBe(201);
+    // 10:00 in Shanghai is 02:00 UTC.
+    expect(pending.map((p) => new Date(p.at).toISOString())).toEqual(["2026-10-20T02:00:00.000Z"]);
+
+    oma.responder = (sessionId, event) => {
+      if (event.type !== "user.message") return undefined;
+      setTimeout(() => {
+        oma.append(sessionId, { type: "agent.message", id: "msg_1", content: [{ type: "text", text: "# Daily report\nAll green." }] } as FakeEvent);
+        oma.append(sessionId, { type: "session.status_idle", stop_reason: { type: "end_turn" } } as FakeEvent);
+      }, 5);
+      return undefined;
+    };
+
+    // At 02:00 the tick fires; another replica fires the same time too.
+    now = Date.parse("2026-10-20T02:00:00Z");
+    const tick = pending.shift()!;
+    tick.callback();
+    tick.callback();
+    const sent = await waitFor(() => feishu.sent[0]);
+    expect(sent.chatId).toBe("oc_eng");
+    expect(sent.body.msg_type).toBe("interactive");
+    expect(String(sent.body.content)).toContain("All green.");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(feishu.sent).toHaveLength(1);
+    expect(oma.sessions.size).toBe(1);
+    // The next run is armed for the next day.
+    expect(pending.some((p) => new Date(p.at).toISOString() === "2026-10-21T02:00:00.000Z")).toBe(true);
+    const loopState = async () =>
+      ((await (await call("GET", "/loops")).json()) as { data: { state: { lastError?: { message: string } } }[] }).data[0]!
+        .state;
+    expect((await loopState()).lastError).toBeUndefined();
+
+    // The bot left the chat: the next report cannot be posted, and the Loop
+    // says so instead of looking healthy.
+    feishu.notIn.add("oc_eng");
+    now = Date.parse("2026-10-21T02:00:00Z");
+    pending.find((p) => new Date(p.at).toISOString() === "2026-10-21T02:00:00.000Z")!.callback();
+    let failed: { message: string } | undefined;
+    for (let i = 0; i < 400 && failed === undefined; i++) {
+      failed = (await loopState()).lastError;
+      if (failed === undefined) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (failed === undefined) throw new Error("the Loop never reported the failed delivery");
+    expect(failed.message).toMatch(/message\.send failed/);
+    expect(failed.message).toMatch(/out of the chat|230002/);
+    expect(feishu.sent).toHaveLength(1);
   });
 
   it("renames the session scopes OpenMatter 0.2.6 renamed, on start", async () => {

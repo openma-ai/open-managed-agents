@@ -83,6 +83,28 @@ its display name in the Console (the id otherwise). Matter refuses to start
 (exit code 2) if an entry is not a Loop, names another provider, or reuses a
 template id. Every replica must register the same templates.
 
+## Scheduled Loops
+
+OpenMatter leaves timers to the host. A template that lists `schedule.tick`
+in `spec.sources` (import `SCHEDULE_TICK` from `./schedule.js`) and handles
+it is a scheduled template: the Console shows two more fields, `schedule` (a
+five-field cron expression) and `timezone` (IANA, `UTC` by default), and the
+host checks them when the Loop is saved.
+
+Every replica that runs the Bond arms a timer per scheduled Loop. At each
+time the cron names, it puts a tick into the Bond's inbox under the key
+`schedule:<loopId>:<time>`, so the shared inbox runs it once however many
+replicas fired. The tick becomes a `schedule.<loopId>.tick` WorkEvent, and
+the Loop is installed with `schedule.tick` renamed to that type, so several
+scheduled Loops on one Bond each see only their own ticks. A time missed
+while no replica ran is not made up. Ticks are unattended, so a scheduled
+Loop runs as the app.
+
+The built-in `feishu-scheduled-report` template is one: on each tick it runs
+the Agent on the configured task and posts its final answer to the chosen
+Feishu chats as a card. What the Agent can reach (data, repositories,
+credentials) comes from the Agent and the Loop's session settings.
+
 ## Operation calls over MCP
 
 The Agent reaches OpenMatter operations, such as the Feishu reply tool, through

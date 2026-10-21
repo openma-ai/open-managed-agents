@@ -225,7 +225,8 @@ describe("GitLab connections", () => {
 
     // The tenant's connections are listed without secrets.
     const listed = await service.fetch(new Request("https://matter.test/connect/gitlab", { headers: proxied }));
-    const list = (await listed.json()) as { data: Record<string, unknown>[] };
+    const list = (await listed.json()) as { instances: string[]; data: Record<string, unknown>[] };
+    expect(list.instances).toEqual([BASE]);
     expect(list.data).toEqual([
       expect.objectContaining({ id: result.id, baseUrl: BASE, username: "oma-bot" }),
     ]);
@@ -241,6 +242,21 @@ describe("GitLab connections", () => {
     expect((await webhook(again, path, result.webhookSecret, note("@oma-bot and timeouts?"))).status).toBe(202);
     const second = await waitFor(() => gitlab.notes[1]);
     expect(second.path).toBe("/api/v4/projects/42/merge_requests/7/notes");
+  });
+
+  it("offers the deployment's instances, then the ones the workspace linked before", async () => {
+    config = loadMatterConfig({ ...baseEnv, MATTER_GITLAB_URLS: " https://git.corp.test/ ,https://gitlab.test" });
+    expect(config.gitlabUrls).toEqual(["https://git.corp.test", BASE]);
+    expect(() => loadMatterConfig({ ...baseEnv, MATTER_GITLAB_URLS: "git.corp.test" })).toThrow(/MATTER_GITLAB_URLS/);
+    const service = await start();
+    const list = async () =>
+      ((await (await service.fetch(new Request("https://matter.test/connect/gitlab", { headers: proxied }))).json()) as {
+        instances: string[];
+      }).instances;
+    expect(await list()).toEqual(["https://git.corp.test", BASE]);
+    expect((await connect(service, valid)).status).toBe(201);
+    // Linking an instance already offered does not repeat it.
+    expect(await list()).toEqual(["https://git.corp.test", BASE]);
   });
 
   it("authenticates every webhook with the connection's own secret", async () => {

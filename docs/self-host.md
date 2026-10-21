@@ -410,7 +410,11 @@ Matter checks the token against `/api/v4/user` (the bot's username decides
 which comments mention it) and returns the webhook URL and secret **once**. In each project,
 add a webhook with that URL, the secret as its token, and **Comments** events
 (plus **Merge request events** for `gitlab-mr-review`).
-`GET /matter/connect/gitlab` lists the connections without secrets.
+`GET /matter/connect/gitlab` lists the connections without secrets, and
+`instances`: the GitLab URLs the Console offers when linking, so users do not
+type them again. These are the instances in `MATTER_GITLAB_URLS`
+(comma-separated, for the deployment's own GitLab), then the ones the
+workspace has linked before; users can still enter another address.
 
 Unlike Feishu, GitLab calls in: `POST /webhooks/gitlab/<id>` must be reachable
 from the GitLab instance, directly on the Matter service (not through the

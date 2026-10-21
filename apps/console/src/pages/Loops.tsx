@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -16,11 +16,19 @@ import { FilterChip } from "../components/FilterChip";
 import { Page } from "../components/Page";
 import type { RowAction } from "../components/RowContextMenu";
 import { useI18n } from "../i18n";
-import { matter, MatterError, type Bond, type BondResource, type FieldSchema, type Loop, type LoopTemplate } from "../lib/matter";
+import type { Messages } from "../i18n/types";
+import {
+  matter,
+  MatterError,
+  type Bond,
+  type BondResource,
+  type FieldSchema,
+  type Loop,
+  type LoopTemplate,
+  type MatterIssue,
+} from "../lib/matter";
 import { useManagedApi } from "../lib/useManagedApi";
 import {
-  FeishuLinker,
-  GitLabLinker,
   loopPath,
   MatterNotice,
   MatterSection,
@@ -463,6 +471,8 @@ function LoopForm(props: {
     const initial: Record<string, unknown> = {};
     for (const [key, field] of fields) if (field.default !== undefined) initial[key] = field.default;
     if (template.id === "feishu-agent") initial.acknowledge = "Get";
+    // A schedule is read in the browser's time zone unless changed.
+    if (fields.some(([key]) => key === "timezone")) initial.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const bondField = fields.find(([, f]) => f["x-oma-widget"] === "bond")?.[0];
     if (bondField && props.initialBond && props.bonds.some((b) => b.id === props.initialBond)) initial[bondField] = props.initialBond;
     return initial;
@@ -474,7 +484,10 @@ function LoopForm(props: {
   const bondKey = fields.find(([, f]) => f["x-oma-widget"] === "bond")?.[0];
   const agentKey = fields.find(([, f]) => f["x-oma-widget"] === "agent")?.[0];
   const session = (key: string) => fields.some(([k, f]) => k === key && f["x-oma-section"] === "session");
-  const options = fields.filter(([key, f]) => key !== bondKey && key !== agentKey && f["x-oma-section"] !== "session");
+  const options = fields.filter(
+    ([key, f]) => key !== bondKey && key !== agentKey && f["x-oma-section"] !== "session" && f["x-oma-section"] !== "trigger",
+  );
+  const trigger = fields.filter(([, f]) => f["x-oma-section"] === "trigger");
   // Session settings a template adds itself, such as `sessionScope`.
   const sessionOptions = fields.filter(
     ([key, f]) => f["x-oma-section"] === "session" && key !== "environmentId" && key !== "vaultIds" && key !== agentKey,
@@ -484,7 +497,15 @@ function LoopForm(props: {
   const required = (key: string) => template.configSchema.required.includes(key);
 
   const fail = (err: unknown) =>
-    setProblems(err instanceof MatterError ? (err.problems.length ? [...err.problems] : [err.message]) : [String(err)]);
+    setProblems(
+      err instanceof MatterError
+        ? err.issues.length === err.problems.length && err.issues.length > 0
+          ? err.issues.map((issue, i) => issueText(m, issue) ?? err.problems[i]!)
+          : err.problems.length
+            ? [...err.problems]
+            : [err.message]
+        : [String(err)],
+    );
 
   async function save() {
     setBusy(true);
@@ -543,8 +564,25 @@ function LoopForm(props: {
             value={typeof values[bondKey] === "string" ? (values[bondKey] as string) : ""}
             onChange={(v) => set(bondKey, v)}
             bonds={props.bonds}
-            reloadBonds={props.reloadBonds}
           />
+        </MatterSection>
+      )}
+
+      {trigger.length > 0 && (
+        <MatterSection title={m.loops.sectionTrigger} hint={m.loops.sectionTriggerHint}>
+          <div className="space-y-5">
+            {trigger.map(([key, field]) => (
+              <ConfigField
+                key={key}
+                name={key}
+                field={field}
+                required={required(key) || key === "schedule"}
+                value={values[key]}
+                bond=""
+                onChange={(v) => set(key, v)}
+              />
+            ))}
+          </div>
         </MatterSection>
       )}
 
@@ -691,6 +729,27 @@ function LoopForm(props: {
   );
 }
 
+const fill = (text: string, values: Readonly<Record<string, string | number>>) =>
+  text.replace(/\{(\w+)\}/g, (all, key: string) => (values[key] === undefined ? all : String(values[key])));
+
+/** A Loop configuration problem in the user's language, or undefined for an unknown code. */
+export function issueText(m: Messages["matter"], issue: MatterIssue): string | undefined {
+  const template = (m.issues as Record<string, string | undefined>)[issue.code];
+  if (template === undefined || issue.code === "item") return undefined;
+  const params = issue.params ?? {};
+  const field = issue.field === undefined ? "" : (m.fields[issue.field]?.title ?? issue.field);
+  const expected = typeof params.expected === "string" ? (m.issueTypes as Record<string, string>)[params.expected] ?? params.expected : "";
+  const options =
+    typeof params.options === "string"
+      ? params.options
+          .split(", ")
+          .map((o) => m.options[o] ?? o)
+          .join(" / ")
+      : "";
+  const text = fill(template, { ...params, field, expected, options });
+  return params.item === undefined ? text : text + fill(m.issues.item, { item: params.item });
+}
+
 /** One template option, rendered from its JSON Schema. */
 function ConfigField(props: {
   name: string;
@@ -741,7 +800,7 @@ function ConfigField(props: {
             ))}
           </SelectContent>
         </Select>
-      ) : name === "instructions" ? (
+      ) : name === "instructions" || name === "task" ? (
         <Textarea id={id} rows={4} value={text} onChange={(e) => onChange(e.target.value)} />
       ) : (
         <Input id={id} className="sm:w-80" value={text} onChange={(e) => onChange(e.target.value)} />
@@ -751,33 +810,28 @@ function ConfigField(props: {
   );
 }
 
-/** Which linked app the Loop runs on, or link a new one right here. */
-function BondField(props: {
-  provider: Provider;
-  value: string;
-  onChange: (value: string) => void;
-  bonds: Bond[];
-  reloadBonds: () => Promise<void>;
-}) {
+/**
+ * Which linked app the Loop runs on. Linking a new one happens on the Bond
+ * page, which brings the user back here with the new Bond chosen.
+ */
+function BondField(props: { provider: Provider; value: string; onChange: (value: string) => void; bonds: Bond[] }) {
   const { t } = useI18n();
   const m = t.matter;
   const { provider } = props;
+  const location = useLocation();
   const choices = props.bonds.filter((b) => b.provider === provider);
-  const [linking, setLinking] = useState(choices.length === 0);
   const selected = choices.find((b) => b.id === props.value);
-
-  async function linked(id: string) {
-    await props.reloadBonds();
-    props.onChange(id);
-    setLinking(false);
-  }
+  const back = new URLSearchParams(location.search);
+  back.delete("bond");
+  const query = back.toString();
+  const linkTo = `/bonds/new?${new URLSearchParams({ provider, return: `${location.pathname}${query ? `?${query}` : ""}` })}`;
 
   return (
     <div className="space-y-3">
-      {choices.length > 0 && (
-        <Select value={props.value} onValueChange={props.onChange}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Select value={props.value} onValueChange={props.onChange} disabled={choices.length === 0}>
           <SelectTrigger aria-label={m.loops.bond} className="w-full sm:w-80">
-            <SelectValue placeholder={m.choose} />
+            <SelectValue placeholder={choices.length === 0 ? m.loops.noBond : m.choose} />
           </SelectTrigger>
           <SelectContent>
             {choices.map((b) => (
@@ -787,18 +841,11 @@ function BondField(props: {
             ))}
           </SelectContent>
         </Select>
-      )}
-      {choices.length === 0 && !linking && <p className="text-sm text-fg-muted">{m.loops.noBond}</p>}
-      {selected?.provider === "feishu" && <SetupResult setup={selected.setup} />}
-      {linking ? (
-        <div className="rounded-md border border-border p-3">
-          {provider === "feishu" ? <FeishuLinker onLinked={linked} /> : <GitLabLinker onLinked={linked} />}
-        </div>
-      ) : (
-        <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setLinking(true)}>
-          + {provider === "feishu" ? m.bonds.linkFeishu : m.bonds.linkGitLab}
+        <Button asChild variant="link" size="sm" className="h-auto px-0">
+          <Link to={linkTo}>+ {provider === "feishu" ? m.bonds.linkFeishu : m.bonds.linkGitLab}</Link>
         </Button>
-      )}
+      </div>
+      {selected?.provider === "feishu" && <SetupResult setup={selected.setup} />}
     </div>
   );
 }
