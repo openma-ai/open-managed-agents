@@ -1,5 +1,11 @@
 # @openma/sdk
 
+## 1.0.3
+
+### Patch Changes
+
+- 30f388d: Document how deferred MCP tools are called when the model cannot declare tools mid-conversation: the tool list stays fixed and found tools are called through `mcp_invoke`. Document `tool_search_deferred_hints`, whose default now follows that mode.
+
 ## 1.0.2
 
 ### Patch Changes
