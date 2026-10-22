@@ -1,34 +1,40 @@
 /**
- * GitLab as a Matter adapter. A connection is one GitLab instance and the
- * bot user whose token posts the replies; GitLab sends project webhooks to
- * `POST /webhooks/gitlab/<id>`, checked against the connection's own secret,
- * and the `gitlab-mention` Loop answers merge request comments that mention
- * the bot. A webhook is answered 202 only once it is in the durable inbox, so
+ * GitLab as a Matter adapter. A connection (a GitLab Bond) is one GitLab
+ * instance and the bot user whose token posts the replies; GitLab sends
+ * project webhooks to `POST /webhooks/gitlab/<id>`, checked against the
+ * connection's own secret, and the Loops users configured on it
+ * (`gitlab-mention`, `gitlab-mr-review`) act on them. A webhook is answered 202 only once it is in the durable inbox, so
  * GitLab retries anything that was not.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { ReceivedEnvelope } from "@openma/matter-host-local/runtime";
 import {
   decodeGitLabHttpRequest,
-  gitlabMention,
   makeGitLabIntegration,
 } from "@openma/matter-gitlab/bond";
 import { Effect } from "effect";
-import type { MatterAdapter, MatterConnection } from "./adapter.js";
+import {
+  connectionRevision,
+  enabledLoopsByBond,
+  type MatterAdapter,
+  type MatterConnection,
+} from "./adapter.js";
+import { loopTemplate, normalizeLoopConfig } from "./loops.js";
 import type { FeishuConnectPrincipal } from "./feishu-connect.js";
 import type { MatterHost } from "./host.js";
-import type { GitLabConnectionRecord, MatterDatabase } from "./persistence.js";
+import type { GitLabConnectionRecord, LoopRecord, MatterDatabase } from "./persistence.js";
 
 export type GitLabConnection = GitLabConnectionRecord & MatterConnection;
 
 export const GITLAB_ADAPTER_KIND = "gitlab";
 
-const asConnection = (record: GitLabConnectionRecord): GitLabConnection => ({
+const asConnection = (record: GitLabConnectionRecord, loops: readonly LoopRecord[]): GitLabConnection => ({
   ...record,
   key: record.id,
   label: `GitLab ${record.username}@${new URL(record.baseUrl).host}`,
-  revision: record.connectedAt,
+  loops,
+  revision: connectionRevision(record.connectedAt, loops),
 });
 
 /** Accepts webhooks for the connections that are running. */
@@ -47,10 +53,15 @@ export const createGitLabAdapter = (options: {
   const submitters = new Map<string, Submit>();
   return {
     kind: GITLAB_ADAPTER_KIND,
-    list: async () => (await options.db.gitlab.list()).map(asConnection),
+    list: async () => {
+      const loops = enabledLoopsByBond(await options.db.loops.list(), GITLAB_ADAPTER_KIND);
+      return (await options.db.gitlab.list()).map((r) => asConnection(r, loops.get(r.id) ?? []));
+    },
     get: async (key) => {
       const record = await options.db.gitlab.get(key);
-      return record === undefined ? undefined : asConnection(record);
+      if (record === undefined) return undefined;
+      const loops = (await options.db.loops.listForBond(GITLAB_ADAPTER_KIND, key)).filter((l) => l.enabled);
+      return asConnection(record, loops);
     },
     submit: async (key, envelope) => (await submitters.get(key)?.(envelope)) ?? false,
     wire: (connection) => {
@@ -74,12 +85,13 @@ export const createGitLabAdapter = (options: {
             ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           }),
         },
-        install: (application) =>
-          application.loop(gitlabMention, {
-            agentId: connection.agentId,
-            projects: connection.projectIds.map((id) => `project:${id}`),
-            username: connection.username,
-          }),
+        install: (application, loops) => {
+          for (const loop of loops) {
+            const template = loopTemplate(loop.template);
+            if (template?.provider !== "gitlab") throw new Error(`Loop ${loop.id}: ${loop.template} does not run on GitLab`);
+            application.loop(template.loop, loop.config as Parameters<typeof application.loop>[1]);
+          }
+        },
         source: {
           start: async (onEnvelope) => {
             deliver = onEnvelope;
@@ -184,8 +196,10 @@ const parseBaseUrl = (value: unknown): string | undefined => {
 };
 
 /**
- * Connect a GitLab instance: check the bot token against `/api/v4/user`,
- * give the Agent the Matter MCP server, save the connection, and start it.
+ * Link a GitLab instance (a Bond): check the bot token against
+ * `/api/v4/user` and save it. Loops configured on it later choose the
+ * projects and the Agent; a request that names an Agent (the one-step flow)
+ * also gets a `gitlab-mention` Loop for it.
  */
 export const connectGitLab =
   (
@@ -211,10 +225,8 @@ export const connectGitLab =
     if (typeof input.token !== "string" || input.token.trim() === "") {
       throw new GitLabConnectError("token is required", 400);
     }
-    if (typeof input.agentId !== "string" || input.agentId === "") {
-      throw new GitLabConnectError("agentId is required", 400);
-    }
-    const projectIds = parseProjectIds(input.projectIds);
+    const agentId = typeof input.agentId === "string" && input.agentId !== "" ? input.agentId : undefined;
+    const projectIds = input.projectIds === undefined && agentId === undefined ? [] : parseProjectIds(input.projectIds);
     if (projectIds === undefined) {
       throw new GitLabConnectError("projectIds must be a non-empty list of project ids", 400);
     }
@@ -235,13 +247,15 @@ export const connectGitLab =
     if (!response.ok || typeof user?.username !== "string" || user.username === "") {
       throw new GitLabConnectError("GitLab did not return the token's user", 502);
     }
-    try {
-      await host.prepareAgent(principal.tenantId, input.agentId);
-    } catch (error) {
-      if (error instanceof Error && /not found/.test(error.message)) {
-        throw new GitLabConnectError(error.message, 404);
+    if (agentId !== undefined) {
+      try {
+        await host.prepareAgent(principal.tenantId, agentId);
+      } catch (error) {
+        if (error instanceof Error && /not found/.test(error.message)) {
+          throw new GitLabConnectError(error.message, 404);
+        }
+        throw error;
       }
-      throw error;
     }
     const id = `gitlab-${randomBytes(8).toString("hex")}`;
     const record = await options.db.gitlab.save({
@@ -253,8 +267,23 @@ export const connectGitLab =
       projectIds,
       tenantId: principal.tenantId,
       ...(principal.userId === undefined ? {} : { userId: principal.userId }),
-      agentId: input.agentId,
+      agentId: "",
     });
+    if (agentId !== undefined) {
+      await options.db.loops.save({
+        id: `loop-${randomUUID()}`,
+        tenantId: principal.tenantId,
+        bondKind: GITLAB_ADAPTER_KIND,
+        bondKey: id,
+        template: "gitlab-mention",
+        config: normalizeLoopConfig("gitlab-mention", {
+          agentId,
+          projects: projectIds.map((p) => `project:${p}`),
+          username: user.username,
+        }),
+        enabled: true,
+      });
+    }
     await host.restart(GITLAB_ADAPTER_KIND, id);
     const path = `/webhooks/gitlab/${id}`;
     return {
@@ -289,8 +318,6 @@ export const createGitLabConnectHandler = (options: {
               id: c.id,
               baseUrl: c.baseUrl,
               username: c.username,
-              projectIds: c.projectIds,
-              agentId: c.agentId,
               webhookPath: `/webhooks/gitlab/${c.id}`,
               connectedAt: c.connectedAt,
             })),

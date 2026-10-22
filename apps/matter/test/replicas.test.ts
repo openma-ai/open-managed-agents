@@ -196,7 +196,19 @@ describe.skipIf(ROOT_URL === undefined)("replicas sharing MySQL", () => {
       webhookSecret: "s".repeat(32),
       projectIds: [42],
       tenantId: "default",
-      agentId: "agent-1",
+      agentId: "",
+    });
+    // A Bond runs once a Loop uses it.
+    await b.host.reconcile();
+    expect(b.host.running()).toEqual([]);
+    await a.db.loops.save({
+      id: "loop-1",
+      tenantId: "default",
+      bondKind: "gitlab",
+      bondKey: saved.id,
+      template: "gitlab-mention",
+      config: { agentId: "agent-1", projects: ["project:42"], username: "oma-bot" },
+      enabled: true,
     });
     await b.host.reconcile();
     expect(b.host.running()).toEqual([saved.id]);

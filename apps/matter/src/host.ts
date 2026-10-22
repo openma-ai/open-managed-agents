@@ -43,6 +43,15 @@ export interface MatterHostOptions {
   /** Every kind of connection the service runs. Keys must not collide. */
   readonly adapters: readonly MatterAdapter<MatterConnection>[];
   readonly onError?: (error: unknown, key: string) => void;
+  /** A connection started on this replica (for logs). */
+  readonly onStarted?: (key: string, label: string) => void;
+}
+
+/** One connection as this replica sees it. */
+export interface ConnectionState {
+  readonly running: boolean;
+  /** The last error the connection reported since it last started. */
+  readonly lastError?: { readonly message: string; readonly at: string };
 }
 
 export interface MatterHost {
@@ -61,6 +70,8 @@ export interface MatterHost {
   prepareAgent(tenantId: string, agentId: string): Promise<void>;
   /** Keys of the connections currently running. */
   running(): readonly string[];
+  /** Whether this replica runs `key`, and its last error. */
+  state(key: string): ConnectionState;
   stop(): Promise<void>;
 }
 
@@ -123,7 +134,14 @@ interface Running {
 export const createMatterHost = (options: MatterHostOptions): MatterHost => {
   const mcpServerName = options.mcpServerName ?? DEFAULT_MCP_SERVER_NAME;
   const running = new Map<string, Running>();
-  const report = (error: unknown, key: string) => options.onError?.(error, key);
+  const lastErrors = new Map<string, { message: string; at: string }>();
+  const report = (error: unknown, key: string) => {
+    lastErrors.set(key, {
+      message: error instanceof Error ? error.message : String(error),
+      at: new Date().toISOString(),
+    });
+    options.onError?.(error, key);
+  };
   const adapterOf = (kind: string) => {
     const adapter = options.adapters.find((a) => a.kind === kind);
     if (adapter === undefined) throw new Error(`No adapter for ${kind}`);
@@ -138,6 +156,18 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
     if (!isSafeConnectionKey(key)) throw new Error(`Unsafe connection key ${JSON.stringify(key)}`);
     await running.get(key)?.stop();
     running.delete(key);
+    // A Bond no Loop uses stays idle.
+    if (connection.loops.length === 0) {
+      lastErrors.delete(key);
+      return;
+    }
+    const agentIds = [
+      ...new Set(
+        connection.loops
+          .map((loop) => loop.config.agentId)
+          .filter((id): id is string => typeof id === "string" && id !== ""),
+      ),
+    ];
     const client = options.clientFor(connection.tenantId);
     if (client === null) {
       report(new Error(`No OpenMA access for tenant ${connection.tenantId}`), key);
@@ -164,15 +194,14 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
     const application = createOpenMatter({
       store,
       integrations: wiring.integrations,
-      agents: {
-        [connection.agentId]: makeConnectorAgentDriver({
-          connector,
-          agentId: connection.agentId,
-          isSessionUnavailable: isOmaSessionUnavailable,
-        }),
-      },
+      agents: Object.fromEntries(
+        agentIds.map((agentId) => [
+          agentId,
+          makeConnectorAgentDriver({ connector, agentId, isSessionUnavailable: isOmaSessionUnavailable }),
+        ]),
+      ),
     });
-    wiring.install(application);
+    wiring.install(application, connection.loops);
     const runtime = makeLocalLongConnectionRuntime({
       source: wiring.source,
       application,
@@ -187,6 +216,8 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       await Effect.runPromise(Effect.either(store.close));
       throw error;
     }
+    lastErrors.delete(key);
+    options.onStarted?.(key, connection.label);
     running.set(key, {
       kind: adapter.kind,
       revision: connection.revision,
@@ -271,6 +302,10 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       });
     },
     running: () => [...running.keys()],
+    state: (key) => {
+      const lastError = lastErrors.get(key);
+      return { running: running.has(key), ...(lastError === undefined ? {} : { lastError }) };
+    },
     stop: () =>
       serial(async () => {
         const all = [...running.values()];

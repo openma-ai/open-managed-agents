@@ -57,6 +57,8 @@ export interface DataTableProps<T> {
   onLoadMore?: () => void;
   loadingMore?: boolean;
   children?: ReactNode;
+  /** Content below the rows that scrolls with them, such as suggestions. */
+  footer?: ReactNode;
 }
 
 /** Canonical list layout: a frozen toolbar/header stack followed by a scrolling
@@ -86,6 +88,7 @@ export function DataTable<T>({
   onLoadMore,
   loadingMore,
   children,
+  footer,
 }: DataTableProps<T>) {
   const { pathname } = useLocation();
   const storageKey = `dt-cols:${pathname}`;
@@ -220,6 +223,7 @@ export function DataTable<T>({
         <div
           className="console-data-grid-viewport"
           data-grid-viewport
+          data-has-footer={footer ? true : undefined}
           data-testid="data-grid-viewport"
           onScroll={(event) => {
             if (headerScrollRef.current) {
@@ -304,6 +308,7 @@ export function DataTable<T>({
               </Table>
             </div>
           )}
+          {footer && <div className="console-list-footer">{footer}</div>}
         </div>
       </section>
       {children}

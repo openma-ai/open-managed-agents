@@ -55,6 +55,34 @@ inbox, the OpenMA connector and the intake runtime. Two adapters exist:
   persisted before the `202`, and run the `gitlab-mention` Loop. See
   docs/self-host.md.
 
+## Deployment Loops
+
+Loop templates are code. The built-in ones come from the provider packages
+(`feishuTemplates`, `gitlabTemplates`); a deployment adds its own at
+startup and the Console lists them next to the built-in ones. Nothing is loaded
+from users at runtime.
+
+Write each template with `defineLoop` from `@openma/matter-loop`, then start
+Matter from your own entry point instead of `main.ts`:
+
+```ts
+import { defineLoop } from "@openma/matter-loop";
+import { runMatter, type LoopTemplateEntry } from "./run.js";
+
+const standup = defineLoop(
+  { id: "team-standup", version: "1.0.0", description: "…", configSchema: { … } },
+  (ctx) => { /* register handlers */ },
+);
+
+const loops: LoopTemplateEntry[] = [{ provider: "feishu", loop: standup, name: "Team standup" }];
+void runMatter({ loopTemplates: loops });
+```
+
+`provider` is the Bond the Loop runs on (`feishu` or `gitlab`); `name` is
+its display name in the Console (the id otherwise). Matter refuses to start
+(exit code 2) if an entry is not a Loop, names another provider, or reuses a
+template id. Every replica must register the same templates.
+
 ## Operation calls over MCP
 
 The Agent reaches OpenMatter operations, such as the Feishu reply tool, through

@@ -68,6 +68,8 @@ export interface Messages {
     apiKeys: string;
     localRuntimes: string;
     integrations: string;
+    loops: string;
+    bonds: string;
   };
 
   // Login page
@@ -265,30 +267,103 @@ export interface Messages {
     noMatchingRuntimes: string;
     noRuntimesYet: string;
   };
-  // Connect Feishu (OpenMatter)
-  feishuConnect: {
-    title: string;
-    intro: string;
-    agent: string;
-    chooseAgent: string;
-    noAgents: string;
-    start: string;
-    restart: string;
-    starting: string;
-    qrAlt: string;
-    openIn: string;
-    waiting: string;
-    created: string;
-    checking: string;
-    checkUnavailable: string;
-    ready: string;
-    fixes: string;
-    expired: string;
-    denied: string;
-    failed: string;
-    statusFailed: string;
-    startFailed: string;
+
+  // Matter: Loops (automations) and Bonds (linked apps)
+  matter: {
     notConfigured: string;
-    unavailable: string;
+    loadFailed: string;
+    choose: string;
+    enable: string;
+    disable: string;
+    running: string;
+    starting: string;
+    stopped: string;
+    error: string;
+    disabled: string;
+    lastError: string;
+    back: string;
+    providers: { feishu: string; gitlab: string };
+    loops: {
+      newLoop: string;
+      empty: string;
+      emptyBody: string;
+      template: string;
+      bond: string;
+      agent: string;
+      newTitle: string;
+      editTitle: string;
+      confirmDelete: string;
+      pickBondFirst: string;
+      noResources: string;
+      noBond: string;
+      mine: string;
+      templatesTitle: string;
+      use: string;
+      enabledLabel: string;
+      sectionBondHint: string;
+      sectionAgentHint: string;
+      sectionOptions: string;
+      sectionOptionsHint: string;
+      notFound: string;
+      saved: string;
+      searchTemplates: string;
+      noTemplates: string;
+      suggested: string;
+      searchLoops: string;
+      noMatch: string;
+      viewAllTemplates: string;
+      all: string;
+    };
+    bonds: {
+      linkApp: string;
+      linkFeishu: string;
+      linkGitLab: string;
+      empty: string;
+      emptyBody: string;
+      app: string;
+      provider: string;
+      loops: string;
+      connected: string;
+      setupNeeded: string;
+      setupReady: string;
+      setupFixes: string;
+      setupUnknown: string;
+      linkScopes: string;
+      linkEvents: string;
+      linkBot: string;
+      linkPublish: string;
+      usedBy: string;
+      noLoops: string;
+      inUse: string;
+      confirmDelete: string;
+      scan: string;
+      showQr: string;
+      openInFeishu: string;
+      waiting: string;
+      expired: string;
+      denied: string;
+      linkFailed: string;
+      gitlabUrl: string;
+      gitlabToken: string;
+      link: string;
+      webhookHint: string;
+      webhookUrl: string;
+      webhookSecret: string;
+      done: string;
+      sectionInfo: string;
+      sectionSetup: string;
+      sectionSetupHint: string;
+      gitlabHint: string;
+      notFound: string;
+      detail: { appId: string; baseUrl: string; username: string; webhookUrl: string };
+    };
+    /** Template names and descriptions, by template id. */
+    templates: Record<string, { name: string; description: string }>;
+    /** Config field labels, by field key. */
+    fields: Record<string, { title: string; description?: string }>;
+    /** Enum option labels, by value. */
+    options: Record<string, string>;
+    /** `freshness: "thread"` reads differently from `sessionScope: "thread"`. */
+    freshnessThread: string;
   };
 }

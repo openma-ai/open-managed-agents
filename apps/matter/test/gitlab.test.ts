@@ -227,7 +227,7 @@ describe("GitLab connections", () => {
     const listed = await service.fetch(new Request("https://matter.test/connect/gitlab", { headers: proxied }));
     const list = (await listed.json()) as { data: Record<string, unknown>[] };
     expect(list.data).toEqual([
-      expect.objectContaining({ id: result.id, baseUrl: BASE, username: "oma-bot", projectIds: [42], agentId: "agent-1" }),
+      expect.objectContaining({ id: result.id, baseUrl: BASE, username: "oma-bot" }),
     ]);
     expect(JSON.stringify(list)).not.toContain(TOKEN);
     expect(JSON.stringify(list)).not.toContain(result.webhookSecret);
@@ -300,7 +300,6 @@ describe("GitLab connections", () => {
     expect(await problem({ ...valid, baseUrl: "ftp://gitlab.test" })).toEqual([400, expect.stringContaining("baseUrl")]);
     expect(await problem({ ...valid, baseUrl: "https://u:p@gitlab.test" })).toEqual([400, expect.stringContaining("baseUrl")]);
     expect(await problem({ ...valid, token: " " })).toEqual([400, "token is required"]);
-    expect(await problem({ ...valid, agentId: undefined })).toEqual([400, "agentId is required"]);
     expect(await problem({ ...valid, projectIds: [] })).toEqual([400, expect.stringContaining("projectIds")]);
     expect(await problem({ ...valid, projectIds: [0] })).toEqual([400, expect.stringContaining("projectIds")]);
     expect(await problem({ ...valid, token: "wrong" })).toEqual([400, "GitLab rejected the token"]);

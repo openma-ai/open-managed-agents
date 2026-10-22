@@ -28,6 +28,7 @@ import {
   createGitLabWebhookHandler,
 } from "./gitlab-adapter.js";
 import { createMatterHost, type MatterHost, type MatterHostOptions } from "./host.js";
+import { createLoopApiHandler, migrateConnectionsToLoops } from "./loops-api.js";
 import { createMatterMcpHandler } from "./mcp-server.js";
 import { createOmaClient, type OmaClient } from "./oma-client.js";
 import {
@@ -168,7 +169,7 @@ export const openConfiguredDatabase = async (
 /** Everything but the listener, so tests drive it with plain Requests. */
 export const createMatterService = async (
   config: MatterConfig,
-  overrides: Partial<Pick<MatterHostOptions, "onError">> & {
+  overrides: Partial<Pick<MatterHostOptions, "onError" | "onStarted">> & {
     /** Reaches the providers (Feishu, GitLab); tests pass a fake. */
     readonly fetch?: typeof fetch;
     readonly createWsClient?: FeishuLongConnectionOptions["createClient"];
@@ -179,6 +180,7 @@ export const createMatterService = async (
   } = {},
 ): Promise<MatterService> => {
   const db = overrides.db ?? (await openConfiguredDatabase(config));
+  await migrateConnectionsToLoops(db);
   const omaFetch = overrides.omaFetch === undefined ? {} : { fetch: overrides.omaFetch };
   const accepts = (tenantId: string) => config.omaTenantId === undefined || tenantId === config.omaTenantId;
   const clients = new Map<string, OmaClient>();
@@ -230,6 +232,7 @@ export const createMatterService = async (
       overrides.onError ??
       ((error, key) =>
         console.error(`[matter] ${key}:`, error instanceof Error ? error.message : error)),
+    onStarted: overrides.onStarted ?? ((_key, label) => console.log(`[matter] ${label}: started`)),
   });
   const connectFeishu = connectFeishuApp(host, { db, ...providerFetch });
   const proxied = trustedProxyPrincipal(config.proxySecret);
@@ -258,6 +261,17 @@ export const createMatterService = async (
       return principal !== null && accepts(principal.tenantId) ? principal : null;
     },
   });
+  const loopApi = createLoopApiHandler({
+    db,
+    host,
+    feishuConnect,
+    authorize: async (request) => {
+      const principal = await proxied(request);
+      return principal !== null && accepts(principal.tenantId) ? principal : null;
+    },
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+    ...providerFetch,
+  });
   const gitlabWebhooks = createGitLabWebhookHandler(gitlab, (key) => host.ensure(gitlab.kind, key));
   const mcp = createMatterMcpHandler({ bridge, tokens: db.tokens });
 
@@ -270,6 +284,7 @@ export const createMatterService = async (
     return (
       (await gitlabWebhooks(request)) ??
       (await connectGitLabHandler(request)) ??
+      (await loopApi(request)) ??
       (await connect(request)) ??
       Response.json({ error: "not found" }, { status: 404 })
     );

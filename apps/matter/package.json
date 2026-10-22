@@ -20,6 +20,7 @@
     "@openma/matter-host-local": "0.2.5",
     "@openma/matter-inbox-mysql": "0.2.5",
     "@openma/matter-inbox-sqlite": "0.2.5",
+    "@openma/matter-loop": "0.2.5",
     "@openma/matter-store-mysql": "0.2.5",
     "@openma/matter-store-sqlite": "0.2.5",
     "effect": "3.22.1",
