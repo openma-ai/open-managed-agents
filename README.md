@@ -150,7 +150,7 @@ cp .env.example .env
 Edit `.env` before starting:
 
 - Generate `BETTER_AUTH_SECRET` with `openssl rand -hex 32` and `PLATFORM_ROOT_SECRET` with `openssl rand -base64 32`. Store both securely; back up the encryption root with your data.
-- Select an isolated `SANDBOX_PROVIDER` and supply its configuration. The deployment does not fall back to running agent commands in an unisolated host subprocess.
+- Select an isolated `SANDBOX_PROVIDER` (`litebox`, `boxrun`, `daytona`, `e2b`, or [OpenSandbox](packages/sandbox-adapter-opensandbox/README.md)) and supply its configuration. The deployment does not fall back to running agent commands in an unisolated host subprocess.
 - Configure the provider's network, storage, and credential-proxy requirements. Remote sandboxes need reachable services; a private Docker hostname alone is not enough.
 - Set `PUBLIC_BASE_URL` for your deployment. Leave authentication enabled. Configure model access through Console Model Cards, or the documented environment fallback.
 

@@ -46,6 +46,7 @@
     "@open-managed-agents/sandbox-adapter-daytona": "workspace:*",
     "@open-managed-agents/sandbox-adapter-e2b": "workspace:*",
     "@open-managed-agents/sandbox-adapter-litebox": "workspace:*",
+    "@open-managed-agents/sandbox-adapter-opensandbox": "workspace:*",
     "@open-managed-agents/schema": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
