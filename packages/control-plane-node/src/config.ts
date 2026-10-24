@@ -140,6 +140,13 @@ export interface NodeConfig {
      * default (`SANDBOX_IMAGE`) exists and any selection is rejected.
      */
     images?: SandboxImageCatalog;
+    /**
+     * SANDBOX_PREPARED_BASE=1: after a cold start, build a clean sandbox with
+     * the Environment setup in the background and snapshot it, so later
+     * Sessions with the same setup start from that snapshot. Providers that
+     * cannot snapshot are unaffected. Absent/false: current behaviour.
+     */
+    preparedBase?: boolean;
   };
 }
 

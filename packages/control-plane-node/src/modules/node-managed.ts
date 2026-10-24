@@ -21,6 +21,8 @@ import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/infe
 import { resolveManagedSubagentSession } from "../lib/node-managed-subagents.js";
 import { installEnvironmentPackages } from "../lib/environment-packages";
 import { createManagedSandboxBuilder } from "../lib/node-managed-sandbox-builder";
+import { createPreparedSandboxBases } from "../lib/prepared-sandbox-bases";
+import { SqlKvStore } from "@open-managed-agents/kv-store/adapters/sql";
 import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { injectVaultEnvironment, vaultEnvironmentVariables } from "../lib/vault-environment";
 import { resolveSessionSandboxMode, readManagedSessionMappingMetadata } from "@open-managed-agents/openai-agents-compat";
@@ -391,6 +393,12 @@ export async function createManagedNodeRuntime(
       })
     : undefined;
   await workspaceCheckpoints?.ensureSchema();
+  const preparedSandboxBases = createPreparedSandboxBases(config.sandbox, {
+    kvFor: (workspaceId) => new SqlKvStore({ db: foundation.drizzleDb, tenantId: workspaceId }),
+    createBuilderSandbox: (sessionId, scope) =>
+      foundation.buildPreparedBaseSandbox(sessionId, join(config.paths.sandboxWorkdir, sessionId), scope),
+    logger,
+  });
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     ...(workspaceCheckpoints === undefined ? {} : { workspaceCheckpoints }),
@@ -452,6 +460,7 @@ export async function createManagedNodeRuntime(
       images: config.sandbox.images,
       workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
       build: buildSandbox,
+      ...(preparedSandboxBases === undefined ? {} : { preparedBases: preparedSandboxBases }),
     }),
     ...(sharedSessionOutputs === undefined ? {} : {
       isSandboxCurrent: ({ workspaceId, session, runtimeGeneration }: { workspaceId: string; session: { id: string }; runtimeGeneration: string }) =>

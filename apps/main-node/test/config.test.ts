@@ -169,6 +169,12 @@ describe("loadNodeConfig", () => {
       .toThrow(/SANDBOX_IMAGES\["analytics"\]\.reference must be a non-empty string/);
   });
 
+  it("keeps prepared sandbox bases off unless SANDBOX_PREPARED_BASE=1", () => {
+    expect(loadNodeConfig(minimal).sandbox.preparedBase).toBe(false);
+    expect(loadNodeConfig({ ...minimal, SANDBOX_PREPARED_BASE: "true" }).sandbox.preparedBase).toBe(false);
+    expect(loadNodeConfig({ ...minimal, SANDBOX_PREPARED_BASE: "1" }).sandbox.preparedBase).toBe(true);
+  });
+
   it("keeps the serverless-mode requirements", () => {
     expect(() => loadNodeConfig({ ...minimal, OPENMA_PROCESS_MODE: "serverless", DATABASE_URL: "mysql://u:p@h/db" }))
       .toThrow(/DATABASE_URL must be PostgreSQL in serverless mode/);

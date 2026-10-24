@@ -13,6 +13,7 @@
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@larksuiteoapi/node-sdk": "^1.73.0",
+    "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/agent": "workspace:*",
     "@open-managed-agents/agents-store": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",

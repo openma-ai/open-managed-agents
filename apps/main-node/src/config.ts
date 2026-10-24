@@ -235,7 +235,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       webhookEventsRetention: cron("WEBHOOK_EVENTS_RETENTION_CRON", "* * * * *"),
       linearDispatch: cron("LINEAR_DISPATCH_CRON", "* * * * *"),
     },
-    sandbox: { environment: env, images: sandboxImages },
+    sandbox: { environment: env, images: sandboxImages, preparedBase: flag("SANDBOX_PREPARED_BASE") },
   };
 
   if (problems.length > 0) throw new NodeConfigError(problems);
