@@ -27,6 +27,8 @@ import type {
   SandboxFactoryContext,
   SandboxFactoryEnv,
   SandboxPort,
+  SandboxPreparedBaseHandle,
+  SandboxPreparedBasePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
@@ -109,6 +111,9 @@ export interface E2BSandboxOptions {
    *   Template().fromImage("ubuntu:latest").aptInstall(["s3fs"])
    */
   templateId?: string;
+  /** E2B snapshot id to create the sandbox from instead of `templateId`
+   * (a prepared base captured by {@link E2BSandboxExecutor.capturePreparedBase}). */
+  preparedBaseId?: string;
   /** Default per-command timeout in ms. */
   defaultTimeoutMs?: number;
   /**
@@ -145,7 +150,7 @@ export async function createE2BSandbox(
 ): Promise<E2BSandboxExecutor> {
   const mod = await loadE2BModule();
   const sb = await mod.Sandbox.create(
-    opts.templateId ?? "base",
+    opts.preparedBaseId ?? opts.templateId ?? "base",
     creationOptions(opts),
   );
   if (opts.readiness !== false) {
@@ -182,7 +187,7 @@ async function waitForSandboxReady(
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxPreparedBasePort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -287,6 +292,19 @@ export class E2BSandboxExecutor
       kind: "memory",
       scope: "portable",
     };
+  }
+
+  /** Snapshot this sandbox as a reusable creation source. Reusing a name
+   * appends a new build under it; the returned id pins this exact build. */
+  async capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle> {
+    if (typeof this.sandbox.createSnapshot !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.createSnapshot");
+    }
+    const snapshot = await this.sandbox.createSnapshot({ name: input.name });
+    if (!snapshot.snapshotId) {
+      throw new Error("E2B SDK did not return a snapshotId for the prepared base");
+    }
+    return { provider: "e2b", id: snapshot.snapshotId };
   }
 
   async exec(command: string, timeout?: number): Promise<string> {
@@ -865,8 +883,14 @@ function parseCreateMetadata(value: string | undefined): Record<string, string> 
 
 function optionsFromFactory(
   env: SandboxFactoryEnv,
-  ctx?: Pick<SandboxFactoryContext, "image">,
+  ctx?: Pick<SandboxFactoryContext, "image" | "preparedBase">,
 ): E2BSandboxOptions {
+  const preparedBase = ctx?.preparedBase;
+  if (preparedBase !== undefined && (preparedBase.provider !== "e2b" || !preparedBase.id)) {
+    throw new Error(
+      `E2B provider cannot create a sandbox from a ${preparedBase.provider} prepared base`,
+    );
+  }
   return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
@@ -876,6 +900,8 @@ function optionsFromFactory(
     lifetimeMs: parseLifetime(env.E2B_SANDBOX_TIMEOUT_MS),
     // An Environment-selected catalog image overrides the process default.
     templateId: ctx?.image?.reference ?? env.SANDBOX_IMAGE,
+    // A prepared base was built from that same image, so it wins over it.
+    ...(preparedBase === undefined ? {} : { preparedBaseId: preparedBase.id }),
     memoryBucket: readS3MemoryBucket(env),
   };
 }

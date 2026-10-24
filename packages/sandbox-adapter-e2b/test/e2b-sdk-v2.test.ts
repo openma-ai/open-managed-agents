@@ -402,4 +402,54 @@ describe("E2B SDK v2 adapter", () => {
       runtimeId: "created:snap_portable_01",
     });
   });
+
+  describe("prepared sandbox base", () => {
+    it("captures a named snapshot and returns a serializable handle", async () => {
+      const executor = await sandboxFactory(
+        { sessionId: "builder", workdir: "/tmp/unused" },
+        { E2B_API_KEY: "local" },
+      ) as E2BSandboxExecutor;
+      const raw = await sdk.create.mock.results.at(-1)!.value as ReturnType<typeof makeSdkSandbox>;
+      raw.createSnapshot.mockResolvedValueOnce({ snapshotId: "snap_base_01", names: ["oma-base-abc"] });
+
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .resolves.toEqual({ provider: "e2b", id: "snap_base_01" });
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+    });
+
+    it("refuses to capture when the SDK has no createSnapshot", async () => {
+      const raw = makeSdkSandbox("sb_old") as Partial<ReturnType<typeof makeSdkSandbox>>;
+      delete raw.createSnapshot;
+      const executor = new E2BSandboxExecutor(raw as never, {});
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .rejects.toThrow("E2B SDK does not expose sandbox.createSnapshot");
+    });
+
+    it("creates from the base instead of the template, keeping lifetime and metadata", async () => {
+      const executor = await sandboxFactory(
+        {
+          sessionId: "session_hit",
+          workdir: "/tmp/unused",
+          image: { alias: "analytics", reference: "analytics-template" },
+          preparedBase: { provider: "e2b", id: "snap_base_01" },
+        },
+        { E2B_API_KEY: "local", SANDBOX_IMAGE: "code-interpreter", E2B_CREATE_METADATA: '{"team":"a"}' },
+      ) as E2BSandboxExecutor;
+
+      expect(sdk.create).toHaveBeenCalledTimes(1);
+      expect(sdk.create).toHaveBeenCalledWith("snap_base_01", expect.objectContaining({
+        metadata: { team: "a" },
+        timeoutMs: 30 * 60_000,
+      }));
+      expect(executor.runtimeHandle()).toEqual({ provider: "e2b", runtimeId: "created:snap_base_01" });
+    });
+
+    it("rejects a prepared base of another provider before calling E2B", async () => {
+      await expect(sandboxFactory(
+        { sessionId: "s", workdir: "/tmp/unused", preparedBase: { provider: "daytona", id: "x" } },
+        { E2B_API_KEY: "local" },
+      )).rejects.toThrow("E2B provider cannot create a sandbox from a daytona prepared base");
+      expect(sdk.create).not.toHaveBeenCalled();
+    });
+  });
 });
