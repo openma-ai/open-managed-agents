@@ -143,6 +143,10 @@ export class PreparedSandboxBases {
   readonly #inflight = new Map<string, Promise<void>>();
   /** When each key's last in-process build settled. */
   readonly #settled = new Map<string, number>();
+  /** When each key last failed in this process. Backs up the KV failed
+   * entry, so a failure is not retried per Session even if recording it in
+   * KV failed too. */
+  readonly #failedAt = new Map<string, number>();
 
   constructor(dependencies: PreparedSandboxBasesDependencies) {
     this.#deps = dependencies;
@@ -184,20 +188,23 @@ export class PreparedSandboxBases {
       return createSandbox();
     }
 
-    if (entry?.state === "ready") {
+    const failedLocally = this.#now() - (this.#failedAt.get(kvKey) ?? -Infinity) < this.#backoffMs();
+    if (entry?.state === "ready" && !failedLocally) {
       try {
         const sandbox = await createSandbox(entry.handle);
         this.#deps.logger.info({ ...fields, path: "hit", baseId: entry.handle.id, durationMs: this.#now() - startMs }, "Sandbox created from prepared base");
         return sandbox;
       } catch (error) {
         const text = errorText(error);
+        this.#failedAt.set(kvKey, this.#now());
         this.#deps.logger.warn({ ...fields, path: "hit_failed", baseId: entry.handle.id, err: error, error: text, durationMs: this.#now() - startMs }, "Creating a sandbox from the prepared base failed; creating a cold sandbox");
         await this.#write(kv, kvKey, { state: "failed", error: `create_from_base_failed: ${text}`, failedAtMs: this.#now() }, fields);
         return createSandbox();
       }
     }
 
-    const backoff = entry?.state === "failed" && this.#now() - entry.failedAtMs < this.#backoffMs();
+    const backoff = failedLocally
+      || (entry?.state === "failed" && this.#now() - entry.failedAtMs < this.#backoffMs());
     const sandbox = await createSandbox();
     const capturable = supportsPreparedBase(sandbox);
     // Checked after the create: a build may have started or finished while
@@ -262,9 +269,11 @@ export class PreparedSandboxBases {
       await prepare(builder, request, builderSessionId);
       const handle = await builder.capturePreparedBase({ name: `oma-base-${key.slice(0, 32)}` });
       await kv.put(kvKey, JSON.stringify({ state: "ready", handle, createdAtMs: this.#now() } satisfies PreparedBaseEntry));
+      this.#failedAt.delete(kvKey);
       this.#deps.logger.info({ ...fields, path: "build_ok", baseId: handle.id, durationMs: this.#now() - startMs }, "Prepared sandbox base built");
     } catch (error) {
       const text = redact(errorText(error), this.#deps.pipIndexUrl);
+      this.#failedAt.set(kvKey, this.#now());
       this.#deps.logger.warn({ ...fields, path: "build_failed", error: text, durationMs: this.#now() - startMs }, "Building the prepared sandbox base failed");
       await this.#write(kv, kvKey, { state: "failed", error: text, failedAtMs: this.#now() }, fields);
     } finally {

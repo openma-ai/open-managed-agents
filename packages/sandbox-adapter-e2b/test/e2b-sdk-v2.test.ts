@@ -417,6 +417,21 @@ describe("E2B SDK v2 adapter", () => {
       expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
     });
 
+    it("surfaces a provider that has no snapshot route as a capture failure", async () => {
+      // e2b@2.46.1 SandboxError from an E2B-compatible API without /sandboxes/{id}/snapshots.
+      class SandboxError extends Error {
+        override name = "SandboxError";
+      }
+      const raw = makeSdkSandbox("sb_no_snapshots");
+      raw.createSnapshot.mockRejectedValueOnce(new SandboxError("404: route not found"));
+      const executor = new E2BSandboxExecutor(raw as never, {});
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .rejects.toMatchObject({ name: "SandboxError", message: "404: route not found" });
+      expect(raw.createSnapshot).toHaveBeenCalledTimes(1);
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+      expect(raw.kill).not.toHaveBeenCalled();
+    });
+
     it("refuses to capture when the SDK has no createSnapshot", async () => {
       const raw = makeSdkSandbox("sb_old") as Partial<ReturnType<typeof makeSdkSandbox>>;
       delete raw.createSnapshot;

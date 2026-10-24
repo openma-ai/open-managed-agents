@@ -253,6 +253,54 @@ describe("PreparedSandboxBases", () => {
     expect(h.builders).toHaveLength(2);
   });
 
+  it("records a 404 from a provider without snapshot routes once, and never retries it per session", async () => {
+    // What e2b@2.46.1 throws when an E2B-compatible provider lacks /sandboxes/{id}/snapshots.
+    class SandboxError extends Error {
+      override name = "SandboxError";
+    }
+    const h = harness({}, { builder: () => fakeSandbox("builder", { captureError: new SandboxError("404: route not found") }) });
+    const sessions = await Promise.all([1, 2].map(() => h.bases.create(scope, request, h.createSession())));
+    await h.bases.idle();
+    expect(sessions.map((sandbox) => (sandbox as FakeSandbox).id)).toEqual(["session_1", "session_2"]);
+    expect(h.builders).toHaveLength(1);
+    expect(h.builders[0]!.sandbox.destroyed).toBe(1);
+    expect(h.store.writes.at(-1)!.value).toMatchObject({ state: "failed", error: "404: route not found" });
+
+    for (let index = 0; index < 5; index += 1) {
+      h.advance(5 * 60_000);
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+    }
+    expect(h.builders).toHaveLength(1);
+    expect(h.created.every((base) => base === undefined)).toBe(true);
+    const failures = h.log.entries.filter((entry) => entry.fields.path === "build_failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.level).toBe("warn");
+    expect(h.log.entries.filter((entry) => entry.level === "warn")).toHaveLength(1);
+    expect(h.log.entries.filter((entry) => entry.fields.build === "backoff")).toHaveLength(5);
+  });
+
+  it("keeps the backoff in process when the failure cannot be recorded in KV", async () => {
+    const h = harness({}, { builder: () => fakeSandbox("builder", { captureError: new Error("404: route not found") }) });
+    const put = h.store.kv.put;
+    h.store.kv.put = async () => { throw new Error("database is locked"); };
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    expect(h.log.paths()).toEqual(["miss", "build_failed", "record_failed"]);
+
+    h.advance(10 * 60_000);
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    expect(h.builders).toHaveLength(1);
+    expect(h.log.entries.at(-1)!.fields).toMatchObject({ path: "miss", build: "backoff" });
+
+    h.store.kv.put = put;
+    h.advance(51 * 60_000);
+    await h.bases.create(scope, request, h.createSession());
+    await h.bases.idle();
+    expect(h.builders).toHaveLength(2);
+  });
+
   it("destroys the builder when the setup itself fails", async () => {
     const h = harness({ prepareBuilder: async () => { throw new Error("Environment env_pb setup failed at fresh: apt"); } });
     await h.bases.create(scope, request, h.createSession());
