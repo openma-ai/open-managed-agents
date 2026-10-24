@@ -51,4 +51,27 @@ describe("sandbox persistence capability ports", () => {
       mountSessionOutputs: async () => {},
     })).toBe(false);
   });
+
+  it("recognizes prepared-base capture only from the capture primitive", () => {
+    const supportsPreparedBase = exportedGuard("supportsPreparedBase");
+
+    expect(supportsPreparedBase(null)).toBe(false);
+    expect(supportsPreparedBase({})).toBe(false);
+    expect(supportsPreparedBase({ capturePreparedBase: "nope" })).toBe(false);
+    expect(supportsPreparedBase({
+      capturePreparedBase: async () => ({ provider: "x", id: "base_1" }),
+    })).toBe(true);
+  });
+
+  it("lets adapters without prepared bases reject a requested one", async () => {
+    expect(() => sandboxExports.rejectPreparedBase("x", undefined)).not.toThrow();
+    expect(() => sandboxExports.rejectPreparedBase("sprites", { provider: "e2b", id: "snap_1" })).toThrow(
+      "SANDBOX_PROVIDER=sprites cannot create a sandbox from a prepared base (requested e2b:snap_1)",
+    );
+    const { sandboxFactory } = await import("../src/adapters/local-subprocess");
+    await expect(sandboxFactory(
+      { sessionId: "s", workdir: "/tmp/psb-unused", preparedBase: { provider: "e2b", id: "snap_1" } },
+      {},
+    )).rejects.toThrow(/local-subprocess cannot create a sandbox from a prepared base/);
+  });
 });

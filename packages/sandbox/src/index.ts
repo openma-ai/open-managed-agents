@@ -7,6 +7,8 @@ export type {
   SandboxCheckpointKind,
   SandboxCheckpointScope,
   SandboxPort,
+  SandboxPreparedBaseHandle,
+  SandboxPreparedBasePort,
   SandboxExecutor,
   SandboxFactory,
   SandboxFactoryContext,
@@ -24,6 +26,8 @@ export type {
 export {
   supportsDuplexProcess,
   supportsManagedWorkspaceLifecycle,
+  supportsPreparedBase,
+  rejectPreparedBase,
   supportsSandboxRuntime,
   supportsSessionOutputMount,
   supportsWorkspaceBackup,
