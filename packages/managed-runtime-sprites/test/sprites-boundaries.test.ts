@@ -154,6 +154,13 @@ describe("Sprites provider boundary contracts", () => {
     )).rejects.toThrow('SANDBOX_PROVIDER=sprites does not support per-environment sandbox images (environment selected "analytics")');
   });
 
+  it("rejects a prepared sandbox base at the Node sandbox factory", async () => {
+    await expect(sandboxFactory(
+      { sessionId: scope.sessionId, workdir: "/workspace", preparedBase: { provider: "e2b", id: "snap_1" } },
+      {},
+    )).rejects.toThrow("SANDBOX_PROVIDER=sprites cannot create a sandbox from a prepared base");
+  });
+
   it("adapts the official SDK constructor and environment options", async () => {
     spritesFixtureCalls.length = 0;
     const provider = createSpritesProvider({ token: "token", baseURL: "https://sprites", timeoutMs: 123 });

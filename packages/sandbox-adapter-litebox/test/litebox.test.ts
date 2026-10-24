@@ -289,6 +289,13 @@ describe("LiteBoxSandbox", () => {
     await defaults.destroy();
   });
 
+  it("factory rejects a prepared sandbox base", async () => {
+    await expect(sandboxFactory(
+      { sessionId: "session", preparedBase: { provider: "litebox", id: "base_1" } } as never,
+      { SANDBOX_IMAGE: "image" },
+    )).rejects.toThrow("SANDBOX_PROVIDER=litebox cannot create a sandbox from a prepared base");
+  });
+
   it("factory prefers an Environment-selected catalog image over SANDBOX_IMAGE", async () => {
     const selected = await sandboxFactory(
       { sessionId: "session", image: { alias: "analytics", reference: "registry.example/analytics:1" } } as never,

@@ -30,7 +30,7 @@
 // safer choice for production / untrusted agents vs LocalSubprocessSandbox.
 
 import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
-import { readS3MemoryBucket } from "@open-managed-agents/sandbox";
+import { readS3MemoryBucket, rejectPreparedBase } from "@open-managed-agents/sandbox";
 import { promises as fs } from "node:fs";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
@@ -429,6 +429,9 @@ function shellEscape(s: string): string {
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
 export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+  // This adapter targets the legacy client surface, which has no supported
+  // sandbox-to-snapshot capture; a requested base must not be ignored.
+  rejectPreparedBase("daytona", ctx.preparedBase);
   return new DaytonaSandbox({
     sessionId: ctx.sessionId,
     apiKey: env.DAYTONA_API_KEY,

@@ -68,6 +68,13 @@ describe("BoxRunSandbox", () => {
     expect((fallback as unknown as { opts: { image?: string } }).opts.image).toBe("custom:1");
   });
 
+  it("factory rejects a prepared sandbox base", async () => {
+    await expect(sandboxFactory(
+      { sessionId: "session", workdir: "/w", preparedBase: { provider: "boxrun", id: "base_1" } },
+      { BOXRUN_URL: "http://boxrun" },
+    )).rejects.toThrow("SANDBOX_PROVIDER=boxrun cannot create a sandbox from a prepared base");
+  });
+
   it("creates once, forwards auth/env/resources, and decodes streamed output", async () => {
     const calls = installFetch((url, init) => {
       if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
