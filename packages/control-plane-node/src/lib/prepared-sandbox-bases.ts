@@ -41,6 +41,7 @@ export const PREPARED_BASE_SETUP_VERSION = "2026-10-24.1";
 
 const KEY_PREFIX = "sandbox_prepared_base:v1";
 const DEFAULT_FAILURE_BACKOFF_MS = 60 * 60_000;
+const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60_000;
 const MAX_ERROR_LENGTH = 500;
 
 export type PreparedBaseScope = Pick<SandboxFactoryContext, "environmentId" | "workspaceId" | "image">;
@@ -65,7 +66,8 @@ export interface PreparedBaseKeyInput {
   provider: string;
   /** Provider default image (SANDBOX_IMAGE), used when no catalog image is selected. */
   defaultImage?: string;
-  image?: { reference: string };
+  /** Catalog image; the alias counts too, since the setup markers carry it. */
+  image?: { alias?: string; reference: string };
   packages?: EnvironmentPackages;
   pipIndexUrl?: string;
   acp: PreparedBaseAcpInstall | null;
@@ -87,6 +89,7 @@ export function preparedBaseKey(input: PreparedBaseKeyInput): string | null {
     v: 1,
     provider: input.provider,
     image: input.image?.reference ?? input.defaultImage ?? null,
+    alias: input.image?.alias ?? null,
     packages: {
       apt: [...(packages?.apt ?? [])],
       pip: [...(packages?.pip ?? [])],
@@ -132,6 +135,8 @@ export interface PreparedSandboxBasesDependencies {
   logger: PreparedBaseLogger;
   clock?: { now(): number };
   failureBackoffMs?: number;
+  /** Overall builder deadline (create + setup + capture); default 30 min. */
+  buildTimeoutMs?: number;
   setupVersion?: string;
   /** Builder setup steps; defaults to the exact Session setup steps. */
   prepareBuilder?(sandbox: SandboxExecutor, request: PreparedBaseRequest, builderSessionId: string): Promise<void>;
@@ -147,9 +152,21 @@ export class PreparedSandboxBases {
    * entry, so a failure is not retried per Session even if recording it in
    * KV failed too. */
   readonly #failedAt = new Map<string, number>();
+  /** Aborts an in-flight build (deadline or shutdown). */
+  readonly #abort = new Map<string, (error: Error) => void>();
+  /** Malformed KV entries already reported, so each is logged once. */
+  readonly #malformedLogged = new Set<string>();
+  #disposed = false;
 
   constructor(dependencies: PreparedSandboxBasesDependencies) {
     this.#deps = dependencies;
+  }
+
+  /** Stop starting builds, abort in-flight ones and destroy their builders. */
+  async dispose(): Promise<void> {
+    this.#disposed = true;
+    for (const abort of this.#abort.values()) abort(new BuildAborted("prepared-base build aborted by shutdown"));
+    await this.idle();
   }
 
   /** Resolves when every background build started so far has settled. */
@@ -171,7 +188,7 @@ export class PreparedSandboxBases {
       key = this.#key(request);
     } catch (error) {
       // An unpinned ACP reference: the Session fails on it later, clearly.
-      this.#deps.logger.warn({ op: "main-node.prepared_base", path: "miss", workspaceId: scope.workspaceId, environmentId: scope.environmentId, error: errorText(error) }, "Prepared sandbox base key could not be computed; creating a cold sandbox");
+      this.#deps.logger.warn({ op: "main-node.prepared_base", path: "miss", workspaceId: scope.workspaceId, environmentId: scope.environmentId, error: this.#errorText(error) }, "Prepared sandbox base key could not be computed; creating a cold sandbox");
       return createSandbox();
     }
     if (key === null || scope.workspaceId === undefined) return createSandbox();
@@ -180,31 +197,46 @@ export class PreparedSandboxBases {
     const startMs = this.#now();
     const fields = { op: "main-node.prepared_base", key, workspaceId: scope.workspaceId, environmentId: scope.environmentId };
 
-    let entry: PreparedBaseEntry | null;
+    let raw: string | null;
     try {
-      entry = await this.#read(kv, kvKey);
+      raw = await kv.get(kvKey);
     } catch (error) {
-      this.#deps.logger.warn({ ...fields, path: "miss", err: error, error: errorText(error) }, "Prepared sandbox base lookup failed; creating a cold sandbox");
+      // The store is unavailable: stay cold and do not build into it.
+      this.#deps.logger.warn({ ...fields, path: "miss", error: this.#errorText(error) }, "Prepared sandbox base lookup failed; creating a cold sandbox");
       return createSandbox();
+    }
+    const entry = this.#parse(raw);
+    if (entry === "malformed") {
+      // Treated as a miss, so a build can overwrite it.
+      if (!this.#malformedLogged.has(kvKey)) {
+        this.#malformedLogged.add(kvKey);
+        this.#deps.logger.warn({ ...fields, path: "miss", reason: "malformed_entry" }, "Prepared sandbox base entry is malformed; treating it as a miss");
+      }
     }
 
     const failedLocally = this.#now() - (this.#failedAt.get(kvKey) ?? -Infinity) < this.#backoffMs();
-    if (entry?.state === "ready" && !failedLocally) {
+    if (entry !== null && entry !== "malformed" && entry.state === "ready" && !failedLocally) {
       try {
         const sandbox = await createSandbox(entry.handle);
         this.#deps.logger.info({ ...fields, path: "hit", baseId: entry.handle.id, durationMs: this.#now() - startMs }, "Sandbox created from prepared base");
         return sandbox;
       } catch (error) {
-        const text = errorText(error);
+        const text = this.#errorText(error);
+        const gone = isPreparedBaseGone(error);
         this.#failedAt.set(kvKey, this.#now());
-        this.#deps.logger.warn({ ...fields, path: "hit_failed", baseId: entry.handle.id, err: error, error: text, durationMs: this.#now() - startMs }, "Creating a sandbox from the prepared base failed; creating a cold sandbox");
-        await this.#write(kv, kvKey, { state: "failed", error: `create_from_base_failed: ${text}`, failedAtMs: this.#now() }, fields);
+        this.#deps.logger.warn({ ...fields, path: "hit_failed", baseId: entry.handle.id, baseGone: gone, error: text, durationMs: this.#now() - startMs }, "Creating a sandbox from the prepared base failed; creating a cold sandbox");
+        // Only a base that is gone is marked failed for every replica; a
+        // transient error backs off in this process and keeps the entry.
+        if (gone) {
+          await this.#write(kv, kvKey, { state: "failed", error: `create_from_base_failed: ${text}`, failedAtMs: this.#now() }, fields);
+        }
         return createSandbox();
       }
     }
 
     const backoff = failedLocally
-      || (entry?.state === "failed" && this.#now() - entry.failedAtMs < this.#backoffMs());
+      || (entry !== null && entry !== "malformed" && entry.state === "failed"
+        && this.#now() - entry.failedAtMs < this.#backoffMs());
     const sandbox = await createSandbox();
     const capturable = supportsPreparedBase(sandbox);
     // Checked after the create: a build may have started or finished while
@@ -216,12 +248,15 @@ export class PreparedSandboxBases {
       durationMs: this.#now() - startMs,
       build: backoff ? "backoff" : !capturable ? "unsupported" : building ? "in_progress" : "started",
     }, "Sandbox created without a prepared base");
-    if (!backoff && capturable && !building) {
+    if (!backoff && capturable && !building && !this.#disposed) {
       const build = this.#build(kv, kvKey, key, scope, request)
+        .catch(() => undefined)
         .finally(() => {
           this.#inflight.delete(kvKey);
           this.#settled.set(kvKey, this.#now());
         });
+      // Never an unhandled rejection, whatever happens inside the build.
+      void build.catch(() => undefined);
       this.#inflight.set(kvKey, build);
     }
     return sandbox;
@@ -241,7 +276,8 @@ export class PreparedSandboxBases {
     });
   }
 
-  /** Never rejects: every outcome is recorded and logged. */
+  /** Never rejects: every outcome is recorded and logged, and the builder
+   * is destroyed on success, failure, deadline and shutdown alike. */
   async #build(
     kv: KvStore,
     kvKey: string,
@@ -253,56 +289,111 @@ export class PreparedSandboxBases {
     const builderSessionId = `prepared_base_${randomUUID()}`;
     const fields = { op: "main-node.prepared_base", key, workspaceId: scope.workspaceId, environmentId: scope.environmentId, builderSessionId };
     let builder: SandboxExecutor | undefined;
-    try {
-      builder = await this.#deps.createBuilderSandbox(builderSessionId, {
+    let aborted: Error | undefined;
+    let abortBuild!: (error: Error) => void;
+    const abortedPromise = new Promise<never>((_, reject) => {
+      abortBuild = (error) => {
+        aborted ??= error;
+        reject(error);
+      };
+    });
+    void abortedPromise.catch(() => undefined);
+    this.#abort.set(kvKey, abortBuild);
+    const timeoutMs = this.#deps.buildTimeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS;
+    const timer = setTimeout(
+      () => abortBuild(new Error(`prepared-base build exceeded its ${timeoutMs} ms deadline`)),
+      timeoutMs,
+    );
+    const destroy = async (sandbox: SandboxExecutor) => {
+      await Promise.resolve()
+        .then(() => sandbox.destroy?.())
+        .catch((error: unknown) => {
+          this.#deps.logger.warn({ ...fields, path: "build_cleanup_failed", error: this.#errorText(error) }, "Destroying the prepared-base builder sandbox failed");
+        });
+    };
+    const steps = (async () => {
+      const created = await this.#deps.createBuilderSandbox(builderSessionId, {
         ...(scope.workspaceId === undefined ? {} : { workspaceId: scope.workspaceId }),
         ...(scope.environmentId === undefined ? {} : { environmentId: scope.environmentId }),
         ...(scope.image === undefined ? {} : { image: scope.image }),
       });
-      if (!supportsPreparedBase(builder)) {
+      if (aborted !== undefined) {
+        // Created after the deadline/shutdown already settled the build.
+        await destroy(created);
+        throw aborted;
+      }
+      builder = created;
+      if (!supportsPreparedBase(created)) {
         throw new Error(`SANDBOX_PROVIDER=${this.#deps.provider} builder sandbox cannot capture a prepared base`);
       }
       const prepare = this.#deps.prepareBuilder
         ?? ((sandbox, req, id) => prepareBuilderSandbox(sandbox, req, id, {
           ...(this.#deps.pipIndexUrl === undefined ? {} : { pipIndexUrl: this.#deps.pipIndexUrl }),
         }));
-      await prepare(builder, request, builderSessionId);
-      const handle = await builder.capturePreparedBase({ name: `oma-base-${key.slice(0, 32)}` });
+      await prepare(created, request, builderSessionId);
+      if (aborted !== undefined) throw aborted;
+      return created.capturePreparedBase({ name: preparedBaseName(scope.workspaceId ?? "", key) });
+    })();
+    void steps.catch(() => undefined);
+    try {
+      const handle = await Promise.race([steps, abortedPromise]);
       await kv.put(kvKey, JSON.stringify({ state: "ready", handle, createdAtMs: this.#now() } satisfies PreparedBaseEntry));
       this.#failedAt.delete(kvKey);
       this.#deps.logger.info({ ...fields, path: "build_ok", baseId: handle.id, durationMs: this.#now() - startMs }, "Prepared sandbox base built");
     } catch (error) {
-      const text = redact(errorText(error), this.#deps.pipIndexUrl);
-      this.#failedAt.set(kvKey, this.#now());
-      this.#deps.logger.warn({ ...fields, path: "build_failed", error: text, durationMs: this.#now() - startMs }, "Building the prepared sandbox base failed");
-      await this.#write(kv, kvKey, { state: "failed", error: text, failedAtMs: this.#now() }, fields);
+      const text = this.#errorText(error);
+      if (error instanceof BuildAborted) {
+        // Shutdown is not a setup failure: nothing is recorded for other replicas.
+        this.#deps.logger.warn({ ...fields, path: "build_failed", reason: "shutdown", error: text, durationMs: this.#now() - startMs }, "Prepared sandbox base build aborted by shutdown");
+      } else {
+        this.#failedAt.set(kvKey, this.#now());
+        this.#deps.logger.warn({ ...fields, path: "build_failed", error: text, durationMs: this.#now() - startMs }, "Building the prepared sandbox base failed");
+        await this.#write(kv, kvKey, { state: "failed", error: text, failedAtMs: this.#now() }, fields);
+      }
     } finally {
-      await builder?.destroy?.().catch((error: unknown) => {
-        this.#deps.logger.warn({ ...fields, path: "build_cleanup_failed", error: errorText(error) }, "Destroying the prepared-base builder sandbox failed");
-      });
+      clearTimeout(timer);
+      this.#abort.delete(kvKey);
+      if (builder !== undefined) await destroy(builder);
     }
   }
 
-  async #read(kv: KvStore, kvKey: string): Promise<PreparedBaseEntry | null> {
-    const raw = await kv.get(kvKey);
+  /** An unparsable entry, an unknown state or another provider's handle is
+   * "malformed": a miss that a build may overwrite. */
+  #parse(raw: string | null): PreparedBaseEntry | null | "malformed" {
     if (raw === null) return null;
-    const parsed = JSON.parse(raw) as Partial<PreparedBaseEntry>;
-    if (parsed.state === "ready" && typeof parsed.handle?.id === "string" && parsed.handle.provider === this.#deps.provider) {
+    let parsed: Partial<PreparedBaseEntry>;
+    try {
+      parsed = JSON.parse(raw) as Partial<PreparedBaseEntry>;
+    } catch {
+      return "malformed";
+    }
+    if (typeof parsed !== "object" || parsed === null) return "malformed";
+    if (parsed.state === "ready" && typeof parsed.handle?.id === "string" && parsed.handle.id.length > 0
+      && parsed.handle.provider === this.#deps.provider) {
       return parsed as PreparedBaseEntry;
     }
     if (parsed.state === "failed" && typeof parsed.failedAtMs === "number") return parsed as PreparedBaseEntry;
-    throw new Error(`Malformed prepared sandbox base entry ${kvKey}`);
+    return "malformed";
   }
 
   async #write(kv: KvStore, kvKey: string, entry: PreparedBaseEntry, fields: Record<string, unknown>): Promise<void> {
     const value = entry.state === "failed"
-      ? { ...entry, error: redact(entry.error, this.#deps.pipIndexUrl).slice(0, MAX_ERROR_LENGTH) }
+      ? { ...entry, error: this.#redact(entry.error) }
       : entry;
     try {
       await kv.put(kvKey, JSON.stringify(value));
     } catch (error) {
-      this.#deps.logger.warn({ ...fields, path: "record_failed", error: errorText(error) }, "Recording the prepared sandbox base state failed");
+      this.#deps.logger.warn({ ...fields, path: "record_failed", error: this.#errorText(error) }, "Recording the prepared sandbox base state failed");
     }
+  }
+
+  /** Redacted, then bounded: a credential is never cut in half first. */
+  #redact(text: string): string {
+    return redact(redact(text, this.#deps.pipIndexUrl).slice(0, MAX_ERROR_LENGTH), this.#deps.pipIndexUrl);
+  }
+
+  #errorText(error: unknown): string {
+    return this.#redact(error instanceof Error ? error.message : String(error));
   }
 
   #backoffMs(): number {
@@ -350,13 +441,39 @@ export async function prepareBuilderSandbox(
   }
 }
 
-function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_LENGTH);
+class BuildAborted extends Error {}
+
+/** Provider snapshot name: per workspace, because KV entries are. */
+export function preparedBaseName(workspaceId: string, key: string): string {
+  return `oma-base-${sha256(`${workspaceId}\u0000${key}`).slice(0, 32)}`;
 }
 
-/** Drop credentials an error message could echo back. */
+/**
+ * Whether a create-from-base error says the base no longer exists, rather
+ * than a transient provider problem. Deliberately small: a 404 status, a
+ * not-found error class, or a message saying the snapshot/template/base is
+ * not found (or a bare "404"). Anything else is treated as transient.
+ */
+export function isPreparedBaseGone(error: unknown): boolean {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as { status?: unknown; statusCode?: unknown; name?: unknown };
+    if (candidate.status === 404 || candidate.statusCode === 404) return true;
+    if (typeof candidate.name === "string" && /NotFound/.test(candidate.name)) return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b404\b/.test(message)
+    || /\b(snapshot|template|base)\b[^\n]{0,80}\bnot found\b/i.test(message)
+    || /\bnot found\b[^\n]{0,80}\b(snapshot|template)\b/i.test(message);
+}
+
+/** Drop credentials an error message could echo back: the configured pip
+ * index, `scheme://user:secret@` userinfo, and a userinfo-looking
+ * `scheme://user:secret` with no `@` (e.g. cut by a truncation). A plain
+ * `host:port` is left alone. */
 function redact(text: string, pipIndexUrl: string | undefined): string {
   const index = pipIndexUrl?.trim();
   const withoutIndex = index ? text.split(index).join("<pip-index-url>") : text;
-  return withoutIndex.replace(/(\w+:\/\/)[^\s/@]+@/g, "$1***@");
+  return withoutIndex
+    .replace(/(\w+:\/\/)[^\s/@]+@/g, "$1***@")
+    .replace(/(\w+:\/\/)[^\s/@:]+:(?!\d+(?:[/\s]|$))[^\s/@]*(?=\s|$)/g, "$1***");
 }

@@ -399,6 +399,9 @@ export async function createManagedNodeRuntime(
       foundation.buildPreparedBaseSandbox(sessionId, join(config.paths.sandboxWorkdir, sessionId), scope),
     logger,
   });
+  if (preparedSandboxBases !== undefined) {
+    disposables.add("prepared_sandbox_bases", () => preparedSandboxBases.dispose());
+  }
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
     ...(workspaceCheckpoints === undefined ? {} : { workspaceCheckpoints }),

@@ -9,6 +9,8 @@ import {
 import type { Environment, Session } from "@open-managed-agents/managed-agents-application";
 import {
   createPreparedSandboxBases,
+  isPreparedBaseGone,
+  preparedBaseName,
   preparedBaseAcpInstall,
   preparedBaseKey,
   prepareBuilderSandbox,
@@ -122,10 +124,10 @@ function harness(overrides: Partial<PreparedSandboxBasesDependencies> = {}, opti
     ...overrides,
   });
   const created: Array<SandboxPreparedBaseHandle | undefined> = [];
-  const createSession = (fail?: (base?: SandboxPreparedBaseHandle) => boolean) =>
+  const createSession = (fail?: (base?: SandboxPreparedBaseHandle) => boolean, error = new Error("snapshot snap_1 not found")) =>
     (base?: SandboxPreparedBaseHandle) => {
       created.push(base);
-      if (fail?.(base)) return Promise.reject(new Error("snapshot snap_1 not found"));
+      if (fail?.(base)) return Promise.reject(error);
       return Promise.resolve(fakeSandbox(`session_${created.length}`));
     };
   return { bases, store, log, builders, created, createSession, advance: (ms: number) => { nowMs += ms; } };
@@ -150,6 +152,8 @@ describe("preparedBaseKey", () => {
     const variants = [
       { ...base, provider: "daytona" },
       { ...base, image: { reference: "registry.example/analytics:1" } },
+      { ...base, image: { alias: "analytics", reference: "registry.example/analytics:1" } },
+      { ...base, image: { alias: "web", reference: "registry.example/analytics:1" } },
       { ...base, defaultImage: "code-interpreter" },
       { ...base, packages: { apt: ["jq"], pip: ["pandas", "pyodps"] } },
       { ...base, packages: { apt: ["jq", "curl"], pip: ["pyodps", "pandas"] } },
@@ -224,7 +228,7 @@ describe("PreparedSandboxBases", () => {
     expect(builder!.sessionId).toMatch(/^prepared_base_/);
     expect(builder!.scope).toEqual({ workspaceId: "ws_pb", environmentId: "env_pb", image });
     const key = kvKeyOf(h.store).split(":").at(-1)!;
-    expect(builder!.sandbox.commands).toEqual(["setup", `capture:oma-base-${key.slice(0, 32)}`]);
+    expect(builder!.sandbox.commands).toEqual(["setup", `capture:${preparedBaseName("ws_pb", key)}`]);
     expect(builder!.sandbox.destroyed).toBe(1);
     expect(kvKeyOf(h.store)).toMatch(/^sandbox_prepared_base:v1:e2b:[0-9a-f]{64}$/);
   });
@@ -359,6 +363,171 @@ describe("PreparedSandboxBases", () => {
     expect(install).toContain("npm exec --yes --package=");
     expect(install).toMatch(/env (-u \w+ )+npm exec/);
     expect(builder.commands.at(-1)).toMatch(/^capture:oma-base-/);
+  });
+
+  describe("robustness", () => {
+    it("redacts before truncating, including a credential cut before its @", async () => {
+      const secret = "s3cr3t-token-value";
+      const padding = "x".repeat(480);
+      const message = `${padding} https://user:${secret}@mirror.example/simple/ failed`;
+      const h = harness({ pipIndexUrl: "https://other.example/simple/" }, { builder: () => fakeSandbox("builder", { captureError: new Error(message) }) });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const logged = JSON.stringify(h.log.entries);
+      const stored = JSON.stringify(h.store.writes);
+      expect(logged).not.toContain("s3cr3t");
+      expect(stored).not.toContain("s3cr3t");
+      expect(logged).not.toContain("user:");
+      expect((h.store.writes.at(-1)!.value as { error: string }).error.length).toBeLessThanOrEqual(500);
+    });
+
+    it("masks a userinfo tail without @ and leaves host:port alone", async () => {
+      const h = harness({}, { builder: () => fakeSandbox("builder", { captureError: new Error("cannot reach https://user:hunter2 or https://registry.example:8443/v2") }) });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const error = (h.store.writes.at(-1)!.value as { error: string }).error;
+      expect(error).not.toContain("hunter2");
+      expect(error).toContain("https://***");
+      expect(error).toContain("https://registry.example:8443/v2");
+    });
+
+    it("logs only redacted strings on hit_failed and lookup failures, never raw error objects", async () => {
+      const h = harness();
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      await h.bases.create(scope, request, h.createSession((base) => base !== undefined, new Error("404 for https://user:topsecret@api.example")));
+      const get = h.store.kv.get;
+      h.store.kv.get = async () => { throw new Error("connect https://db:dbsecret@db.example failed"); };
+      await h.bases.create(scope, request, h.createSession());
+      h.store.kv.get = get;
+      for (const entry of h.log.entries) {
+        expect(entry.fields).not.toHaveProperty("err");
+        for (const value of Object.values(entry.fields)) expect(value instanceof Error).toBe(false);
+      }
+      const logged = JSON.stringify(h.log.entries);
+      expect(logged).not.toContain("topsecret");
+      expect(logged).not.toContain("dbsecret");
+    });
+
+    it("heals a malformed entry: logged once as a miss, then a build overwrites it", async () => {
+      const bads = ["{not json", JSON.stringify({ state: "weird" }), JSON.stringify({ state: "ready", handle: { provider: "daytona", id: "x" } })];
+      for (const bad of bads) {
+        const h = harness();
+        const kvKey = `sandbox_prepared_base:v1:e2b:${preparedBaseKey({ provider: "e2b", packages: environment.config.packages, acp: null })}`;
+        h.store.data.set(kvKey, bad);
+        await h.bases.create(scope, request, h.createSession());
+        await h.bases.create(scope, request, h.createSession());
+        await h.bases.idle();
+        expect(h.builders).toHaveLength(1);
+        expect(JSON.parse(h.store.data.get(kvKey)!)).toMatchObject({ state: "ready" });
+        const malformed = h.log.entries.filter((entry) => entry.fields.reason === "malformed_entry");
+        expect(malformed).toHaveLength(1);
+        expect(malformed[0]!.level).toBe("warn");
+        expect(malformed[0]!.fields.path).toBe("miss");
+        await h.bases.create(scope, request, h.createSession());
+        expect(h.created.at(-1)).toEqual({ provider: "e2b", id: "snap_1" });
+      }
+    });
+
+    it("keeps a KV read error cold and does not build", async () => {
+      const h = harness();
+      h.store.kv.get = async () => { throw new Error("database is locked"); };
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      expect(h.builders).toEqual([]);
+    });
+
+    it("keeps the ready entry on a transient create-from-base error and backs off only in process", async () => {
+      const h = harness();
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const writes = h.store.writes.length;
+      await h.bases.create(scope, request, h.createSession((base) => base !== undefined, new Error("503 Service Unavailable")));
+      expect(h.store.writes).toHaveLength(writes);
+      expect(JSON.parse([...h.store.data.values()][0]!)).toMatchObject({ state: "ready" });
+      expect(h.log.entries.find((entry) => entry.fields.path === "hit_failed")!.fields.baseGone).toBe(false);
+      // This process backs off; another replica (fresh instance, same KV) still hits.
+      await h.bases.create(scope, request, h.createSession());
+      expect(h.created.at(-1)).toBeUndefined();
+      const replica = new PreparedSandboxBases({ provider: "e2b", kvFor: () => h.store.kv, createBuilderSandbox: async () => fakeSandbox("b"), logger: logs().logger });
+      const created: Array<SandboxPreparedBaseHandle | undefined> = [];
+      await replica.create(scope, request, async (base) => { created.push(base); return fakeSandbox("r"); });
+      expect(created).toEqual([{ provider: "e2b", id: "snap_1" }]);
+    });
+
+    it("classifies only a missing base as gone", () => {
+      class NotFoundError extends Error { override name = "NotFoundError"; }
+      expect(isPreparedBaseGone(new Error("404: route not found"))).toBe(true);
+      expect(isPreparedBaseGone(Object.assign(new Error("x"), { status: 404 }))).toBe(true);
+      expect(isPreparedBaseGone(new NotFoundError("gone"))).toBe(true);
+      expect(isPreparedBaseGone(new Error("snapshot snap_1 not found"))).toBe(true);
+      expect(isPreparedBaseGone(new Error("Template 'oma-base-1' not found"))).toBe(true);
+      expect(isPreparedBaseGone(new Error("503 Service Unavailable"))).toBe(false);
+      expect(isPreparedBaseGone(new Error("socket hang up"))).toBe(false);
+      expect(isPreparedBaseGone(new Error("rate limited"))).toBe(false);
+    });
+
+    it("fails a hung build at its deadline, destroys the builder and frees the key", async () => {
+      let resolveHang!: () => void;
+      const hang = new Promise<void>((resolve) => { resolveHang = resolve; });
+      const h = harness({ buildTimeoutMs: 20, prepareBuilder: async () => hang });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      expect(h.builders[0]!.sandbox.destroyed).toBe(1);
+      expect(h.store.writes.at(-1)!.value).toMatchObject({ state: "failed", error: "prepared-base build exceeded its 20 ms deadline" });
+      expect(h.log.entries.at(-1)!.fields).toMatchObject({ path: "build_failed" });
+      resolveHang();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // The late setup completion never captures.
+      expect(h.builders[0]!.sandbox.commands.some((command) => command.startsWith("capture:"))).toBe(false);
+    });
+
+    it("destroys a builder whose creation finished after the deadline", async () => {
+      let release!: () => void;
+      const late = fakeSandbox("late");
+      const h = harness({
+        buildTimeoutMs: 10,
+        createBuilderSandbox: async () => {
+          await new Promise<void>((resolve) => { release = resolve; });
+          return late;
+        },
+      });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(late.destroyed).toBe(1);
+      expect(late.commands).toEqual([]);
+    });
+
+    it("dispose() aborts in-flight builds, destroys builders, records nothing and starts no new builds", async () => {
+      const h = harness({ prepareBuilder: async () => new Promise<void>(() => undefined) });
+      await h.bases.create(scope, request, h.createSession());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await h.bases.dispose();
+      expect(h.builders[0]!.sandbox.destroyed).toBe(1);
+      expect(h.store.writes).toEqual([]);
+      expect(h.log.entries.at(-1)!.fields).toMatchObject({ path: "build_failed", reason: "shutdown" });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      expect(h.builders).toHaveLength(1);
+    });
+
+    it("survives a destroy() that throws synchronously", async () => {
+      const box = fakeSandbox("sync-throw");
+      box.destroy = (() => { throw new Error("not a promise"); }) as unknown as FakeSandbox["destroy"];
+      const h = harness({}, { builder: () => box });
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      expect(h.log.paths()).toEqual(["miss", "build_ok", "build_cleanup_failed"]);
+    });
+
+    it("names the provider snapshot per workspace", () => {
+      const key = "a".repeat(64);
+      expect(preparedBaseName("ws_a", key)).toMatch(/^oma-base-[0-9a-f]{32}$/);
+      expect(preparedBaseName("ws_a", key)).not.toBe(preparedBaseName("ws_b", key));
+      expect(preparedBaseName("ws_a", key)).not.toContain(key.slice(0, 32));
+    });
   });
 });
 
