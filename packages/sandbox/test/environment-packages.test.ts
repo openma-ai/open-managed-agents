@@ -184,6 +184,41 @@ describe("environment packages", () => {
     expect((await ensureEnvironmentPackages(sandbox, { pip: ["pyodps", "pandas"] })).path).toBe("fresh");
   });
 
+  describe("warm requires both markers (prepared-base snapshots)", () => {
+    const packages = { apt: ["jq"], pip: ["pyodps"] };
+    async function installed() {
+      const box = fakeSandbox();
+      await ensureEnvironmentPackages(box.sandbox, packages);
+      box.commands.length = 0;
+      return box;
+    }
+
+    it("is warm only when /tmp and /workspace markers both match", async () => {
+      const { sandbox, commands } = await installed();
+      expect((await ensureEnvironmentPackages(sandbox, packages)).path).toBe("warm");
+      expect(commands.filter((c) => !c.startsWith("WARM="))).toEqual([]);
+    });
+
+    it("runs the full setup when /tmp matches but /workspace lost its marker", async () => {
+      // Snapshot carries the builder's /tmp marker; a checkpoint replaced /workspace.
+      const { sandbox, commands, files } = await installed();
+      files.delete("rest");
+      expect((await ensureEnvironmentPackages(sandbox, packages)).path).toBe("fresh");
+      expect(commands.filter((c) => c.startsWith("(\nset -e"))).toHaveLength(1);
+    });
+
+    it("reinstalls only apt when /tmp is stale but /workspace still matches the langs", async () => {
+      const { sandbox, commands, files } = await installed();
+      // /tmp records an older apt list (full differs), /workspace lang hash still matches.
+      const before = fakeSandbox();
+      await ensureEnvironmentPackages(before.sandbox, { apt: ["curl"], pip: ["pyodps"] });
+      files.set("warm", before.files.get("warm")!);
+      expect((await ensureEnvironmentPackages(sandbox, packages)).path).toBe("restored");
+      expect(commands.some((c) => c.startsWith("apt-get update"))).toBe(true);
+      expect(commands.some((c) => c.startsWith("(\nset -e"))).toBe(false);
+    });
+  });
+
   it("reports a failed install and leaves no marker, so the next start retries", async () => {
     const { sandbox, files } = fakeSandbox(true);
     const result = await ensureEnvironmentPackages(sandbox, { pip: ["pyodps"] });

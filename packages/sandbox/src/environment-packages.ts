@@ -3,7 +3,7 @@
 // Shared by the Cloudflare SessionDO warmup and the Node managed runtime.
 // Three paths, decided by two markers:
 //
-//   warm     → markers in /tmp + /workspace match → no-op
+//   warm     → markers in /tmp + /workspace both match → no-op
 //   restored → /tmp marker gone but /workspace marker survived backup
 //              → only re-install apt (lang packages already in /workspace
 //              came back with the workspace)
@@ -246,7 +246,10 @@ async function probeSetupState(
     const { stdout } = parseExecResult(raw);
     const warm = (stdout.match(/WARM=(\S+)/)?.[1] ?? "MISSING").trim();
     const rest = (stdout.match(/REST=(\S+)/)?.[1] ?? "MISSING").trim();
-    if (warm === full) return { path: "warm", restoredMarker: rest };
+    // Warm needs both markers: a sandbox created from a prepared-base snapshot
+    // carries the builder's /tmp marker even after a workspace checkpoint
+    // replaced /workspace underneath it.
+    if (warm === full && rest === lang) return { path: "warm", restoredMarker: rest };
     if (rest === lang) return { path: "restored", restoredMarker: rest };
     return { path: "fresh", restoredMarker: rest };
   } catch {
