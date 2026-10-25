@@ -594,6 +594,34 @@ describe("PreparedSandboxBases", () => {
       expect(late.commands).toEqual([]);
     });
 
+    it("dispose() does not wait for a setup whose builder it already destroyed", async () => {
+      const h = harness({ disposeTimeoutMs: 5_000, prepareBuilder: async () => new Promise<void>(() => undefined) });
+      await h.bases.create(scope, request, h.createSession());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const started = Date.now();
+      await h.bases.dispose();
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(h.builders[0]!.sandbox.destroyed).toBe(1);
+    });
+
+    it("counts unrecognised failures per base, so a replacement base starts from zero", async () => {
+      const h = harness();
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const forbidden = new Error("403: forbidden");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        h.advance(60 * 60_000 + 1);
+        await h.bases.create(scope, request, h.createSession((base) => base !== undefined, forbidden));
+      }
+      // Another server replaced the base meanwhile.
+      const key = kvKeyOf(h.store);
+      await h.store.kv.put(key, JSON.stringify({ state: "ready", handle: { provider: "e2b", id: "snap_2" }, createdAtMs: 1 }));
+      h.advance(60 * 60_000 + 1);
+      await h.bases.create(scope, request, h.createSession((base) => base !== undefined, forbidden));
+      expect(h.store.writes.filter((write) => (write.value as { state: string }).state === "failed")).toHaveLength(0);
+      expect(h.log.entries.filter((entry) => entry.fields.path === "hit_failed").at(-1)!.fields).toMatchObject({ consecutiveFailures: 1, baseGone: false });
+    });
+
     it("names the provider snapshot per workspace", () => {
       const key = "a".repeat(64);
       expect(preparedBaseName("ws_a", key)).toMatch(/^oma-base-[0-9a-f]{32}$/);

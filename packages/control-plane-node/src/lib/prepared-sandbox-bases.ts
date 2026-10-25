@@ -163,9 +163,9 @@ export class PreparedSandboxBases {
   readonly #malformedLogged = new Set<string>();
   /** Consecutive create-from-base failures per key that the classifier did
    * not call "gone"; enough of them in a row count as gone. */
-  readonly #hitFailures = new Map<string, number>();
-  /** Builder setup chains still running, including a builder creation that
-   * outlived its build's deadline or shutdown. */
+  readonly #hitFailures = new Map<string, { baseId: string; count: number }>();
+  /** Builder creations still pending, including one that outlived its
+   * build's deadline or shutdown. */
   readonly #steps = new Set<Promise<unknown>>();
   #disposed = false;
 
@@ -244,12 +244,14 @@ export class PreparedSandboxBases {
         return sandbox;
       } catch (error) {
         const text = this.#errorText(error);
-        const failures = (this.#hitFailures.get(local) ?? 0) + 1;
+        // Counted per base: a replacement base starts from zero.
+        const previous = this.#hitFailures.get(local);
+        const failures = (previous?.baseId === entry.handle.id ? previous.count : 0) + 1;
         // A permanent error the classifier does not recognise (403, invalid
         // reference, …) would otherwise keep a dead base forever.
         const gone = isPreparedBaseGone(error) || failures >= HIT_FAILURES_BEFORE_GONE;
         if (gone) this.#hitFailures.delete(local);
-        else this.#hitFailures.set(local, failures);
+        else this.#hitFailures.set(local, { baseId: entry.handle.id, count: failures });
         this.#failedAt.set(local, this.#now());
         this.#deps.logger.warn({ ...fields, path: "hit_failed", baseId: entry.handle.id, baseGone: gone, consecutiveFailures: failures, error: text, durationMs: this.#now() - startMs }, "Creating a sandbox from the prepared base failed; creating a cold sandbox");
         // Only a base that is gone is marked failed for every replica; a
@@ -339,18 +341,29 @@ export class PreparedSandboxBases {
           this.#deps.logger.warn({ ...fields, path: "build_cleanup_failed", error: this.#errorText(error) }, "Destroying the prepared-base builder sandbox failed");
         });
     };
+    // Only the builder creation can outlive the race with nothing to destroy
+    // it; dispose() waits for this phase (bounded), not for the whole setup.
+    let creationDone!: () => void;
+    const creation = new Promise<void>((resolve) => { creationDone = resolve; });
+    this.#steps.add(creation);
+    void creation.finally(() => this.#steps.delete(creation));
     const steps = (async () => {
-      const created = await this.#deps.createBuilderSandbox(builderSessionId, {
-        ...(scope.workspaceId === undefined ? {} : { workspaceId: scope.workspaceId }),
-        ...(scope.environmentId === undefined ? {} : { environmentId: scope.environmentId }),
-        ...(scope.image === undefined ? {} : { image: scope.image }),
-      });
-      if (aborted !== undefined) {
-        // Created after the deadline/shutdown already settled the build.
-        await destroy(created);
-        throw aborted;
+      let created: SandboxExecutor;
+      try {
+        created = await this.#deps.createBuilderSandbox(builderSessionId, {
+          ...(scope.workspaceId === undefined ? {} : { workspaceId: scope.workspaceId }),
+          ...(scope.environmentId === undefined ? {} : { environmentId: scope.environmentId }),
+          ...(scope.image === undefined ? {} : { image: scope.image }),
+        });
+        if (aborted !== undefined) {
+          // Created after the deadline/shutdown already settled the build.
+          await destroy(created);
+          throw aborted;
+        }
+        builder = created;
+      } finally {
+        creationDone();
       }
-      builder = created;
       if (!supportsPreparedBase(created)) {
         throw new Error(`SANDBOX_PROVIDER=${this.#deps.provider} builder sandbox cannot capture a prepared base`);
       }
@@ -363,10 +376,6 @@ export class PreparedSandboxBases {
       return created.capturePreparedBase({ name: preparedBaseName(scope.workspaceId ?? "", key) });
     })();
     void steps.catch(() => undefined);
-    // Outlives the race on deadline/shutdown; dispose() waits for it so a
-    // builder still being created is destroyed before the process exits.
-    const tracked = steps.catch(() => undefined).finally(() => this.#steps.delete(tracked));
-    this.#steps.add(tracked);
     try {
       const handle = await Promise.race([steps, abortedPromise]);
       await kv.put(kvKey, JSON.stringify({ state: "ready", handle, createdAtMs: this.#now() } satisfies PreparedBaseEntry));
