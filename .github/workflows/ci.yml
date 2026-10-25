@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Full repository tests plus browser, storage and MySQL integration now
     # approach 20 minutes on GitHub runners; allow cleanup to finish.
     timeout-minutes: 30
@@ -90,7 +90,7 @@ jobs:
   # not use the Litebox /dev/kvm action. Checkout plus a Node script only.
   release-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout
