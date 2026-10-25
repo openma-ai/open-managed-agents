@@ -522,6 +522,78 @@ describe("PreparedSandboxBases", () => {
       expect(h.log.paths()).toEqual(["miss", "build_ok", "build_cleanup_failed"]);
     });
 
+    it("keeps in-process build state per workspace", async () => {
+      const kvs = new Map([["ws_a", recordingKv()], ["ws_b", recordingKv()]]);
+      let release!: () => void;
+      const hang = new Promise<void>((resolve) => { release = resolve; });
+      const builders: string[] = [];
+      const log = logs();
+      const bases = new PreparedSandboxBases({
+        provider: "e2b",
+        kvFor: (workspaceId) => kvs.get(workspaceId)!.kv,
+        createBuilderSandbox: async (_id, builderScope) => {
+          builders.push(builderScope.workspaceId!);
+          return fakeSandbox(`builder_${builderScope.workspaceId}`);
+        },
+        logger: log.logger,
+        prepareBuilder: async () => hang,
+      });
+      const cold = () => Promise.resolve(fakeSandbox("session"));
+      await bases.create({ workspaceId: "ws_a", environmentId: "env_pb" }, request, cold);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // A's build is still running; B has its own KV and must build its own base.
+      await bases.create({ workspaceId: "ws_b", environmentId: "env_pb" }, request, cold);
+      expect(log.entries.filter((entry) => entry.fields.path === "miss").map((entry) => entry.fields.build)).toEqual(["started", "started"]);
+      release();
+      await bases.idle();
+      expect(builders.sort()).toEqual(["ws_a", "ws_b"]);
+    });
+
+    it("treats repeated unrecognised create-from-base failures as a gone base", async () => {
+      const h = harness();
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const forbidden = new Error("403: forbidden");
+      expect(isPreparedBaseGone(forbidden)).toBe(false);
+      const failedWrites = () => h.store.writes.filter((write) => (write.value as { state: string }).state === "failed");
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        h.advance(60 * 60_000 + 1);
+        await h.bases.create(scope, request, h.createSession((base) => base !== undefined, forbidden));
+        expect(failedWrites()).toHaveLength(attempt < 3 ? 0 : 1);
+      }
+      expect(h.log.entries.filter((entry) => entry.fields.path === "hit_failed").map((entry) => entry.fields.baseGone)).toEqual([false, false, true]);
+    });
+
+    it("resets the failure count after a successful hit", async () => {
+      const h = harness();
+      await h.bases.create(scope, request, h.createSession());
+      await h.bases.idle();
+      const forbidden = new Error("403: forbidden");
+      for (const fail of [true, true, false, true, true]) {
+        h.advance(60 * 60_000 + 1);
+        await h.bases.create(scope, request, h.createSession((base) => fail && base !== undefined, forbidden));
+      }
+      expect(h.store.writes.filter((write) => (write.value as { state: string }).state === "failed")).toHaveLength(0);
+    });
+
+    it("dispose() waits for a builder still being created and destroys it", async () => {
+      let release!: () => void;
+      const late = fakeSandbox("late");
+      const h = harness({
+        disposeTimeoutMs: 5_000,
+        createBuilderSandbox: async () => {
+          await new Promise<void>((resolve) => { release = resolve; });
+          return late;
+        },
+      });
+      await h.bases.create(scope, request, h.createSession());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      setTimeout(() => release(), 20);
+      await h.bases.dispose();
+      expect(late.destroyed).toBe(1);
+      expect(late.commands).toEqual([]);
+    });
+
     it("names the provider snapshot per workspace", () => {
       const key = "a".repeat(64);
       expect(preparedBaseName("ws_a", key)).toMatch(/^oma-base-[0-9a-f]{32}$/);
