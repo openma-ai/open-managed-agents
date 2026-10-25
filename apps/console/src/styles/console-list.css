@@ -261,6 +261,16 @@
   text-align: center;
 }
 
+/* A list with a footer lets the rows take only the height they need. */
+.console-data-grid-viewport[data-has-footer] .console-data-grid-cushion,
+.console-data-grid-viewport[data-has-footer] .console-list-empty {
+  min-height: auto;
+}
+
+.console-list-footer {
+  padding: var(--list-frame-inset);
+}
+
 .console-list-empty {
   display: flex;
   min-height: 100%;

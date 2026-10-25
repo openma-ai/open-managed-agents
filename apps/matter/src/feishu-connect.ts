@@ -355,14 +355,15 @@ export class FeishuConnectService {
     }
   }
 
-  private async check(
-    id: string,
-    registered: Extract<FeishuConnectStatus, { status: "registered" }>,
-    app: RegisteredFeishuApp,
-  ): Promise<void> {
-    let status: FeishuConnectStatus;
+  /** Check a connected app against what the `feishu-agent` Loop needs;
+   * undefined when Feishu could not be asked. */
+  async checkSetup(app: {
+    readonly baseUrl: string;
+    readonly appId: string;
+    readonly appSecret: string;
+  }): Promise<FeishuAppSetupReport | undefined> {
     try {
-      const setup = await Effect.runPromise(
+      return await Effect.runPromise(
         checkFeishuAppSetup(
           {
             baseUrl: app.baseUrl,
@@ -373,10 +374,19 @@ export class FeishuConnectService {
           this.setup.requirements,
         ),
       );
-      status = { ...registered, setup };
     } catch {
-      status = { ...registered, setupUnavailable: true };
+      return undefined;
     }
+  }
+
+  private async check(
+    id: string,
+    registered: Extract<FeishuConnectStatus, { status: "registered" }>,
+    app: RegisteredFeishuApp,
+  ): Promise<void> {
+    const setup = await this.checkSetup(app);
+    const status: FeishuConnectStatus =
+      setup === undefined ? { ...registered, setupUnavailable: true } : { ...registered, setup };
     await this.store.patchStatus(id, status).catch(() => undefined);
   }
 }

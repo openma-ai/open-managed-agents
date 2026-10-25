@@ -83,6 +83,7 @@ export interface FeishuAppRecord {
   readonly baseUrl: string;
   readonly tenantId: string;
   readonly userId?: string;
+  /** The Agent saved before Loops existed; empty once migrated. */
   readonly agentId: string;
   readonly botOpenId?: string;
   readonly connectedAt: string;
@@ -110,21 +111,54 @@ export interface GitLabConnectionRecord {
 
 export type GitLabConnectionInput = Omit<GitLabConnectionRecord, "connectedAt">;
 
+/**
+ * One Loop instance: a template (`feishu-agent`, `gitlab-mention`, …) with
+ * its configuration, running on one Bond (a connected Feishu app or GitLab
+ * instance). The answering Agent is part of the configuration.
+ */
+export interface LoopRecord {
+  readonly id: string;
+  readonly tenantId: string;
+  /** The Bond's adapter kind and connection key. */
+  readonly bondKind: string;
+  readonly bondKey: string;
+  readonly template: string;
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly enabled: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export type LoopInput = Omit<LoopRecord, "createdAt" | "updatedAt">;
+
 export interface MatterDatabase {
   readonly apps: {
     /** Insert or replace: connecting the same app again moves it. */
-    save(
-      connection: FeishuConnection & { readonly agentId: string },
-      extra?: { readonly botOpenId?: string },
-    ): Promise<FeishuAppRecord>;
+    save(connection: FeishuConnection, extra?: { readonly botOpenId?: string }): Promise<FeishuAppRecord>;
     list(): Promise<readonly FeishuAppRecord[]>;
     get(appId: string): Promise<FeishuAppRecord | undefined>;
+    delete(appId: string): Promise<boolean>;
+    /** Clear the Agent saved before Loops existed, once it became a Loop. */
+    forgetAgent(appId: string): Promise<void>;
   };
   readonly gitlab: {
     /** Insert or replace by id. */
     save(connection: GitLabConnectionInput): Promise<GitLabConnectionRecord>;
     list(): Promise<readonly GitLabConnectionRecord[]>;
     get(id: string): Promise<GitLabConnectionRecord | undefined>;
+    delete(id: string): Promise<boolean>;
+    forgetAgent(id: string): Promise<void>;
+  };
+  readonly loops: {
+    list(): Promise<readonly LoopRecord[]>;
+    listForBond(bondKind: string, bondKey: string): Promise<readonly LoopRecord[]>;
+    get(id: string): Promise<LoopRecord | undefined>;
+    /** Insert or replace by id; keeps the creation time. */
+    save(loop: LoopInput): Promise<LoopRecord>;
+    /** Insert unless the id exists (for idempotent migrations). */
+    saveIfAbsent(loop: LoopInput): Promise<void>;
+    delete(id: string): Promise<boolean>;
+    deleteForBond(bondKind: string, bondKey: string): Promise<void>;
   };
   readonly tokens: SessionTokenStore;
   readonly registrations: RegistrationStore;
@@ -186,6 +220,10 @@ const tables = (kind: "sqlite" | "mysql"): string[] => {
       id ${key} PRIMARY KEY, base_url ${text} NOT NULL, token ${text} NOT NULL, username ${key} NOT NULL,
       webhook_secret ${text} NOT NULL, project_ids ${text} NOT NULL, tenant_id ${key} NOT NULL,
       user_id ${key}, agent_id ${key} NOT NULL, connected_at ${key} NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS openmatter_loops (
+      id ${key} PRIMARY KEY, tenant_id ${key} NOT NULL, bond_kind ${key} NOT NULL, bond_key ${key} NOT NULL,
+      template ${key} NOT NULL, config_json ${text} NOT NULL, enabled ${int} NOT NULL,
+      created_at ${key} NOT NULL, updated_at ${key} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS openmatter_session_tokens (
       digest ${key} PRIMARY KEY, session_id ${key} NOT NULL, issued_at ${key} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS openmatter_registrations (
@@ -355,6 +393,54 @@ const createMatterDatabase = (
     const [row] = await sql.rows<GitLabRow>(`SELECT * FROM openmatter_gitlab_connections WHERE id = ?`, [id]);
     return row === undefined ? undefined : toGitLab(row);
   };
+  type LoopRow = {
+    id: string;
+    tenant_id: string;
+    bond_kind: string;
+    bond_key: string;
+    template: string;
+    config_json: string;
+    enabled: Num;
+    created_at: string;
+    updated_at: string;
+  };
+  const toLoop = (row: LoopRow): LoopRecord => ({
+    id: row.id,
+    tenantId: row.tenant_id,
+    bondKind: row.bond_kind,
+    bondKey: row.bond_key,
+    template: row.template,
+    config: JSON.parse(row.config_json) as Record<string, unknown>,
+    enabled: Number(row.enabled) === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+  const loopColumns = [
+    "id",
+    "tenant_id",
+    "bond_kind",
+    "bond_key",
+    "template",
+    "config_json",
+    "enabled",
+    "created_at",
+    "updated_at",
+  ];
+  const getLoop = async (id: string) => {
+    const [row] = await sql.rows<LoopRow>(`SELECT * FROM openmatter_loops WHERE id = ?`, [id]);
+    return row === undefined ? undefined : toLoop(row);
+  };
+  const loopValues = (loop: LoopInput, createdAt: string, updatedAt: string) => [
+    loop.id,
+    loop.tenantId,
+    loop.bondKind,
+    loop.bondKey,
+    loop.template,
+    JSON.stringify(loop.config),
+    loop.enabled ? 1 : 0,
+    createdAt,
+    updatedAt,
+  ];
   const getRegistration = async (id: string) => {
     const [row] = await sql.rows<RegistrationRow>(`SELECT * FROM openmatter_registrations WHERE id = ?`, [id]);
     return row === undefined ? undefined : toRegistration(row);
@@ -372,7 +458,7 @@ const createMatterDatabase = (
           app.baseUrl,
           connection.tenantId,
           connection.userId ?? null,
-          connection.agentId,
+          connection.agentId ?? "",
           extra.botOpenId ?? null,
           now().toISOString(),
         ]);
@@ -381,6 +467,10 @@ const createMatterDatabase = (
       list: async () =>
         (await sql.rows<AppRow>(`SELECT * FROM openmatter_feishu_apps ORDER BY connected_at, app_id`)).map(toApp),
       get: getApp,
+      delete: async (appId) => (await sql.run(`DELETE FROM openmatter_feishu_apps WHERE app_id = ?`, [appId])) > 0,
+      forgetAgent: async (appId) => {
+        await sql.run(`UPDATE openmatter_feishu_apps SET agent_id = '' WHERE app_id = ?`, [appId]);
+      },
     },
     gitlab: {
       save: async (c) => {
@@ -403,6 +493,39 @@ const createMatterDatabase = (
           toGitLab,
         ),
       get: getGitLab,
+      delete: async (id) => (await sql.run(`DELETE FROM openmatter_gitlab_connections WHERE id = ?`, [id])) > 0,
+      forgetAgent: async (id) => {
+        await sql.run(`UPDATE openmatter_gitlab_connections SET agent_id = '' WHERE id = ?`, [id]);
+      },
+    },
+    loops: {
+      list: async () =>
+        (await sql.rows<LoopRow>(`SELECT * FROM openmatter_loops ORDER BY created_at, id`)).map(toLoop),
+      listForBond: async (bondKind, bondKey) =>
+        (
+          await sql.rows<LoopRow>(
+            `SELECT * FROM openmatter_loops WHERE bond_kind = ? AND bond_key = ? ORDER BY created_at, id`,
+            [bondKind, bondKey],
+          )
+        ).map(toLoop),
+      get: getLoop,
+      save: async (loop) => {
+        const stamp = now().toISOString();
+        const createdAt = (await getLoop(loop.id))?.createdAt ?? stamp;
+        await sql.run(upsert(sql.kind, "openmatter_loops", loopColumns, "id"), loopValues(loop, createdAt, stamp));
+        return (await getLoop(loop.id))!;
+      },
+      saveIfAbsent: async (loop) => {
+        const stamp = now().toISOString();
+        await sql.run(
+          `${insertIgnore(sql.kind)} openmatter_loops (${loopColumns.join(", ")}) VALUES (${loopColumns.map(() => "?").join(", ")})`,
+          loopValues(loop, stamp, stamp),
+        );
+      },
+      delete: async (id) => (await sql.run(`DELETE FROM openmatter_loops WHERE id = ?`, [id])) > 0,
+      deleteForBond: async (bondKind, bondKey) => {
+        await sql.run(`DELETE FROM openmatter_loops WHERE bond_kind = ? AND bond_key = ?`, [bondKind, bondKey]);
+      },
     },
     tokens: {
       issue: async (sessionId) => {

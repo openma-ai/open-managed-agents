@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { ComponentType } from "react";
-import { SearchIcon, UsersIcon } from "lucide-react";
+import { LinkIcon, RepeatIcon, SearchIcon, UsersIcon } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import { useScrollFade } from "@/hooks/useScrollFade";
 
@@ -13,15 +13,11 @@ import {
   RuntimesIcon,
   DashboardIcon,
   EnvIcon,
-  FeishuIcon,
   FilesIcon,
-  GitHubIcon,
-  LinearIcon,
   MemoryIcon,
   ModelCardsIcon,
   SessionsIcon,
   SkillsIcon,
-  SlackIcon,
   VaultIcon,
 } from "./icons";
 import { consolePlugins } from "../plugins/registry";
@@ -76,10 +72,9 @@ function useNavGroups(): NavGroup[] {
     {
       label: t.nav.integrations,
       items: [
-        { to: "/integrations/linear", label: "Linear", icon: LinearIcon },
-        { to: "/integrations/github", label: "GitHub", icon: GitHubIcon },
-        { to: "/integrations/slack", label: "Slack", icon: SlackIcon },
-        { to: "/integrations/feishu", label: "Feishu", icon: FeishuIcon },
+        // Linear, GitHub and Slack keep their routes; Matter replaces them here.
+        { to: "/loops", label: t.nav.loops, icon: RepeatIcon },
+        { to: "/bonds", label: t.nav.bonds, icon: LinkIcon },
       ],
     },
   ];

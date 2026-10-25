@@ -299,9 +299,17 @@ adapter / recovery-logic / SIGKILL bootstrap / CF DO eviction).
 
 ## Feishu (OpenMatter)
 
-The Console's **Integrations → Feishu** page connects an Agent to Feishu by
-scanning a QR code. It talks to the OpenMatter service (`apps/matter`) through
-the control plane, which proxies `/matter/*` to it after signing the user in:
+The Console's **Matter → Loops** page puts Agents to
+work in Feishu and GitLab. A Loop is made from a template (`feishu-agent`,
+`gitlab-mention`, `gitlab-mr-review`) plus its settings; two of them are the
+app it runs on (`bond`, e.g. `feishu:cli_xxx`) and the Agent that answers
+(`agentId`). Apps are linked from the Loop form itself — a QR code for Feishu,
+a bot token for GitLab — or on the **Matter → Bonds** page, which lists the
+linked apps; one app can run several Loops. The form is built
+from each template's config schema; for a Feishu app it also lists missing
+permissions and events with links to fix them. The page talks to the OpenMatter
+service (`apps/matter`) through the control plane, which proxies `/matter/*`
+to it after signing the user in:
 
 ```bash
 # .env of the control plane
@@ -369,29 +377,39 @@ on any replica (the call and its answer meet in the database). A replica picks
 up connections saved by another within `MATTER_RECONCILE_MS`, or at once when
 a GitLab webhook for one arrives.
 
-Connecting an app adds an `openmatter` MCP server (URL `MATTER_MCP_URL`) and
-its `mcp_toolset` to the chosen Agent, with `always_allow`: no one is there to
+Saving a Loop adds an `openmatter` MCP server (URL `MATTER_MCP_URL`) and
+its `mcp_toolset` to the Loop's Agent, with `always_allow`: no one is there to
 approve a tool call made from a chat. Each chat gets a session whose Vault
 holds the bearer for that server; replies go out as the bot.
 
 ### GitLab merge request mentions
 
 The same Matter process answers GitLab merge request comments that mention a
-bot user (the `gitlab-mention` Loop). There is no Console page yet; connect an
-instance through the API (behind the control plane's `/matter/*` proxy):
+bot user (the `gitlab-mention` Loop) and reviews merge requests
+(`gitlab-mr-review`). In the Console, pick one of those templates on the
+Loops page and link the instance from its form. Through the API (behind the
+control plane's `/matter/*` proxy), link the instance, then create the Loop:
 
 ```bash
 curl -X POST "$OMA/matter/connect/gitlab" -H "x-api-key: $KEY" \
   -H 'content-type: application/json' \
-  -d '{"baseUrl":"https://gitlab.example.com","token":"<bot token, api scope>",
-       "agentId":"<agent id>","projectIds":[42]}'
+  -d '{"baseUrl":"https://gitlab.example.com","token":"<bot token, api scope>"}'
 # → {"id":"gitlab-…","username":"<bot>","webhookUrl":"…","webhookSecret":"…"}
+curl -X POST "$OMA/matter/loops" -H "x-api-key: $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"template":"gitlab-mention",
+       "config":{"bond":"gitlab:gitlab-…","agentId":"<agent id>","projects":["project:42"]}}'
 ```
 
+`GET /matter/loop-templates` lists the templates with their config schemas,
+`GET /matter/bonds` the linked apps, and `/matter/loops` (`GET`, `POST`,
+`PATCH /:id`, `DELETE /:id`) the Loops. Connections saved before Loops
+existed, with an Agent on them, become one Loop each on start.
+
 Matter checks the token against `/api/v4/user` (the bot's username decides
-which comments mention it), adds the `openmatter` MCP server to the Agent as
-for Feishu, and returns the webhook URL and secret **once**. In each project,
-add a webhook with that URL, the secret as its token, and **Comments** events.
+which comments mention it) and returns the webhook URL and secret **once**. In each project,
+add a webhook with that URL, the secret as its token, and **Comments** events
+(plus **Merge request events** for `gitlab-mr-review`).
 `GET /matter/connect/gitlab` lists the connections without secrets.
 
 Unlike Feishu, GitLab calls in: `POST /webhooks/gitlab/<id>` must be reachable

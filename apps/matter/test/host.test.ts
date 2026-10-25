@@ -8,6 +8,8 @@ import type {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isSafeConnectionKey } from "../src/adapter.js";
 import { ensureAgentMcpServer } from "../src/host.js";
+import { defineLoop } from "@openma/matter-loop";
+import { LoopConfigError, loopTemplate, registerLoopTemplates, resetLoopTemplates } from "../src/loops.js";
 import { createOmaClient } from "../src/oma-client.js";
 import { createSecretBox, openSqliteMatterDatabase } from "../src/persistence.js";
 import {
@@ -41,8 +43,10 @@ class FakeWsClient implements FeishuWsClient {
 class FakeFeishu {
   readonly replies: { messageId: string; body: Record<string, unknown> }[] = [];
   readonly reactions: { messageId: string; emoji: unknown }[] = [];
+  readonly calls: string[] = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
+    this.calls.push(url.pathname);
     const reply = (body: unknown) =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
     if (url.pathname === "/open-apis/auth/v3/tenant_access_token/internal") {
@@ -111,17 +115,20 @@ let feishu: FakeFeishu;
 let ws: FakeWsClient[];
 let services: MatterService[];
 let config: MatterConfig;
+let started: string[];
 
 const start = async () => {
   const service = await createMatterService(config, {
     omaFetch: oma.fetch as typeof fetch,
     fetch: feishu.fetch,
+    feishuConnectFetch: feishu.fetch,
     createWsClient: (params) => {
       const client = new FakeWsClient(params);
       ws.push(client);
       return client;
     },
     onError: () => {},
+    onStarted: (key) => started.push(key),
   });
   services.push(service);
   return service;
@@ -139,6 +146,7 @@ beforeEach(() => {
   feishu = new FakeFeishu();
   ws = [];
   services = [];
+  started = [];
   config = loadMatterConfig({
     MATTER_DATA_DIR: dir,
     MATTER_PROXY_SECRET: "proxy-secret",
@@ -270,10 +278,116 @@ describe("Matter service", () => {
     expect(health).toEqual({ status: "ok", apps: 1 });
   });
 
+  it("links an app as a Bond, then runs it through a Loop that names the Agent", async () => {
+    const service = await start();
+    const call = (method: string, path: string, body?: unknown, tenant = "default") =>
+      service.fetch(
+        new Request(`https://matter.test${path}`, {
+          method,
+          headers: {
+            "x-matter-proxy-secret": "proxy-secret",
+            "x-oma-tenant-id": tenant,
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    const read = async (response: Response) => (await response.json()) as Record<string, unknown> & { data: never[] };
+    const bond = `feishu:${APP_ID}`;
+
+    // Linking alone stores the app; nothing answers yet.
+    await service.connectFeishu({ ...connection, agentId: undefined });
+    expect(service.host.running()).toEqual([]);
+    expect(ws).toHaveLength(0);
+
+    // Templates carry `bond` as their first, required configuration field.
+    const templates = (await read(await call("GET", "/loop-templates"))).data as {
+      id: string;
+      provider: string;
+      configSchema: { properties: Record<string, unknown>; required: string[] };
+    }[];
+    const feishuAgent = templates.find((t) => t.id === "feishu-agent")!;
+    expect(feishuAgent.provider).toBe("feishu");
+    expect(Object.keys(feishuAgent.configSchema.properties)[0]).toBe("bond");
+    expect(feishuAgent.configSchema.required).toEqual(["bond", "agentId"]);
+    expect(templates.map((t) => t.id)).toEqual(expect.arrayContaining(["gitlab-mention", "gitlab-mr-review"]));
+
+    // The Bond is a choice for that field, without its secret.
+    const bondsResponse = await call("GET", "/bonds?provider=feishu");
+    const bondsText = await bondsResponse.text();
+    expect(bondsText).not.toContain(APP_SECRET);
+    expect(JSON.parse(bondsText).data).toEqual([
+      expect.objectContaining({ id: bond, provider: "feishu", running: false, loops: 0 }),
+    ]);
+
+    // Bad configurations are refused with the reasons.
+    const missing = await call("POST", "/loops", { template: "feishu-agent", config: { bond } });
+    expect(missing.status).toBe(400);
+    expect((await read(missing)).problems).toEqual(["Agent is required"]);
+    expect((await call("POST", "/loops", { template: "feishu-agent", config: { bond: "feishu:cli_nope", agentId: "agent-1" } })).status).toBe(404);
+    expect((await call("POST", "/loops", { template: "gitlab-mention", config: { bond, agentId: "agent-1" } })).status).toBe(400);
+    expect((await call("POST", "/loops", { template: "feishu-agent", config: { bond, agentId: "agent-1" } }, "other")).status).toBe(401);
+
+    // A Loop names the Bond and the Agent; the app starts answering.
+    const created = await call("POST", "/loops", { template: "feishu-agent", config: { bond, agentId: "agent-1" } });
+    expect(created.status).toBe(201);
+    const loop = await read(created);
+    expect(loop).toMatchObject({
+      template: "feishu-agent",
+      provider: "feishu",
+      enabled: true,
+      config: { bond, agentId: "agent-1", acknowledge: "Get", sessionScope: "thread", chats: [] },
+      state: { running: true },
+    });
+    expect(service.host.running()).toEqual([APP_ID]);
+    expect(started).toEqual([APP_ID]);
+    expect(oma.agents.get("agent-1")?.mcp_servers?.map((s) => s.name)).toContain("openmatter");
+    expect((await read(await call("GET", "/loops"))).data).toHaveLength(1);
+
+    // Disabling the only Loop stops the app; enabling starts it again.
+    expect((await call("PATCH", `/loops/${loop.id as string}`, { enabled: false })).status).toBe(200);
+    expect(service.host.running()).toEqual([]);
+    const enabled = await read(await call("PATCH", `/loops/${loop.id as string}`, { enabled: true }));
+    expect(enabled.config).toMatchObject({ bond, agentId: "agent-1" });
+    expect(service.host.running()).toEqual([APP_ID]);
+
+    // A Bond in use cannot be deleted; once its Loop is gone it can.
+    expect((await call("DELETE", `/bonds/${encodeURIComponent(bond)}`)).status).toBe(409);
+    expect((await call("DELETE", `/loops/${loop.id as string}`)).status).toBe(204);
+    expect(service.host.running()).toEqual([]);
+    expect((await call("DELETE", `/bonds/${encodeURIComponent(bond)}`)).status).toBe(204);
+    expect((await read(await call("GET", "/bonds"))).data).toEqual([]);
+  });
+
+  it("turns a connection saved with an Agent into a Loop on start, once", async () => {
+    const first = await start();
+    await first.db.apps.save({ ...connection });
+    await first.close();
+    services.splice(services.indexOf(first), 1);
+    const service = await start();
+    const loops = await service.db.loops.list();
+    expect(loops).toEqual([
+      expect.objectContaining({
+        id: `loop-legacy-feishu-${APP_ID}`,
+        bondKind: "feishu",
+        bondKey: APP_ID,
+        template: "feishu-agent",
+        config: expect.objectContaining({ agentId: "agent-1", acknowledge: "Get" }),
+      }),
+    ]);
+    expect((await service.db.apps.get(APP_ID))?.agentId).toBe("");
+    await service.host.start();
+    expect(service.host.running()).toEqual([APP_ID]);
+    // Deleting the Loop is final: a restart does not bring it back.
+    await service.db.loops.delete(loops[0]!.id);
+    await service.close();
+    services.splice(services.indexOf(service), 1);
+    expect(await (await start()).db.loops.list()).toEqual([]);
+  });
+
   it("refuses apps of a workspace it cannot act in", async () => {
     const service = await start();
     await expect(service.connectFeishu({ ...connection, tenantId: "other" })).rejects.toThrow(/No OpenMA access/);
-    await expect(service.connectFeishu({ ...connection, agentId: undefined as never })).rejects.toThrow(/Choose an Agent/);
     expect(await service.db.apps.list()).toEqual([]);
     expect(ws).toHaveLength(0);
     const page = await service.fetch(
@@ -423,5 +537,43 @@ describe("isSafeConnectionKey", () => {
     for (const key of ["", "..", "a..b", "../x", "a/b", ".hidden", "a b", "x".repeat(129)]) {
       expect(isSafeConnectionKey(key)).toBe(false);
     }
+  });
+});
+
+describe("deployment Loops", () => {
+  afterEach(() => resetLoopTemplates());
+
+  const feishuAgent = () => loopTemplate("feishu-agent")!.loop;
+  const custom = (id: string) =>
+    defineLoop({ ...feishuAgent().definition, id, description: "Posts the team standup." }, feishuAgent().install);
+
+  it("lists a registered template next to the built-in ones, with its name", async () => {
+    registerLoopTemplates([{ provider: "feishu", loop: custom("team-standup"), name: "Team standup" }]);
+    const service = await start();
+    const response = await service.fetch(
+      new Request("https://matter.test/loop-templates", {
+        headers: { "x-matter-proxy-secret": "proxy-secret", "x-oma-tenant-id": "default" },
+      }),
+    );
+    const templates = ((await response.json()) as { data: { id: string; name?: string; provider: string }[] }).data;
+    expect(templates.find((t) => t.id === "team-standup")).toMatchObject({ name: "Team standup", provider: "feishu" });
+    expect(templates.find((t) => t.id === "feishu-agent")).not.toHaveProperty("name");
+  });
+
+  it("rejects a reused id or an unknown provider, adding none", () => {
+    expect(() => registerLoopTemplates([{ provider: "feishu", loop: custom("feishu-agent") }])).toThrow(LoopConfigError);
+    expect(() =>
+      registerLoopTemplates([
+        { provider: "feishu", loop: custom("ok-one") },
+        { provider: "slack" as "feishu", loop: custom("bad-one") },
+      ]),
+    ).toThrow(/bad-one: provider must be feishu or gitlab/);
+    expect(loopTemplate("ok-one")).toBeUndefined();
+    expect(() =>
+      registerLoopTemplates([
+        { provider: "gitlab", loop: custom("twice") },
+        { provider: "gitlab", loop: custom("twice") },
+      ]),
+    ).toThrow(/twice: a template with this id already exists/);
   });
 });

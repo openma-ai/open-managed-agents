@@ -993,6 +993,9 @@ importers:
       '@openma/matter-inbox-sqlite':
         specifier: 0.2.5
         version: 0.2.5(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-loop':
+        specifier: 0.2.5
+        version: 0.2.5
       '@openma/matter-store-mysql':
         specifier: 0.2.5
         version: 0.2.5(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

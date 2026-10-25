@@ -60,7 +60,8 @@ import {
   IntegrationsSlackWorkspace,
   IntegrationsSlackPublishPage,
 } from "./pages/IntegrationsSlack";
-import { IntegrationsFeishuConnect } from "./pages/IntegrationsFeishuConnect";
+import { LoopEditPage, LoopsPage, LoopTemplatesPage } from "./pages/Loops";
+import { BondDetailPage, BondLinkPage, BondsPage } from "./pages/Bonds";
 import { consolePlugins } from "./plugins/registry";
 
 /**
@@ -173,6 +174,34 @@ const protectedRoutes: RouteObject[] = [
   { path: "api-keys", element: <ApiKeysList />, handle: { crumb: "API Keys" } },
   { path: "runtimes", element: <RuntimesList />, handle: { crumb: "Local Runtimes" } },
   {
+    path: "loops",
+    handle: { crumb: "Loops" },
+    children: [
+      { index: true, element: <LoopsPage /> },
+      { path: "new", element: <LoopEditPage />, handle: { crumb: "New" } },
+      { path: "templates", element: <LoopTemplatesPage />, handle: { crumb: "Templates" } },
+      { path: ":id", element: <LoopEditPage />, handle: { crumb: "Loop" } },
+    ],
+  },
+  {
+    path: "bonds",
+    handle: { crumb: "Bonds" },
+    children: [
+      { index: true, element: <BondsPage /> },
+      { path: "new", element: <BondLinkPage />, handle: { crumb: "New" } },
+      {
+        path: ":id",
+        element: <BondDetailPage />,
+        handle: {
+          crumb: (m: UIMatch) => {
+            const id = (m.params.id as string | undefined) ?? "Bond";
+            return id.slice(id.indexOf(":") + 1);
+          },
+        },
+      },
+    ],
+  },
+  {
     path: "integrations",
     handle: { crumb: "Integrations" },
     children: [
@@ -233,15 +262,9 @@ const protectedRoutes: RouteObject[] = [
         ],
       },
       {
-        path: "feishu",
-        handle: { crumb: "Feishu" },
-        children: [
-          { index: true, element: <IntegrationsFeishuConnect /> },
-          // Old links land on the QR-code flow that replaced them;
-          // `publish?agent_id=` keeps preselecting the Agent.
-          { path: "publish", element: <IntegrationsFeishuConnect /> },
-          { path: "*", element: <Navigate to="/integrations/feishu" replace /> },
-        ],
+        // Feishu now lives under Loops: link the app from a Loop's Bond field.
+        path: "feishu/*",
+        element: <Navigate to="/loops?template=feishu-agent" replace />,
       },
     ],
   },
