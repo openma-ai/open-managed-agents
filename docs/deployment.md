@@ -63,7 +63,7 @@ optional sidecar (`oma-vault`) for outbound credential injection.
 | KV | not used at the API layer — agents/env config lives in the SQL `agents`/`environments` tables |
 | Blob store | `LocalFsBlobStore` (`./data/memory-blobs/<storeId>/<path>`); operator can swap in an S3 adapter when scaling |
 | Event log | `SqlEventLog` (per-session events in shared `session_events` table) + `InProcessEventStreamHub` (sqlite mode) or `PgEventStreamHub` (pg mode, LISTEN/NOTIFY-backed) for SSE fan-out |
-| Sandbox | Required `SANDBOX_PROVIDER`: `litebox` (local Firecracker μVM), `boxrun`, `daytona`, or `e2b`; no non-isolated fallback |
+| Sandbox | Required `SANDBOX_PROVIDER`: `litebox` (local Firecracker μVM), `boxrun`, `daytona`, `opensandbox`, or `e2b`; no non-isolated fallback |
 | Auth | `better-auth`; separate `auth.db` in SQLite mode, same server DB in Postgres/MySQL mode. `AUTH_DISABLED=1` bypasses for local demos |
 | Vault credential injection | Work-scoped HTTP MCP gateway for managed sandbox MCP; optional legacy `apps/oma-vault` sidecar is single-operator/advisory only |
 | Memory mount | sandbox symlinks `/mnt/memory/<storeName>` → `<MEMORY_BLOB_DIR>/<storeId>/`. chokidar watcher reflects fs writes back into the SQL `memories` index |
