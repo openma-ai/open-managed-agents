@@ -137,9 +137,11 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     return result;
   }
 
-  async run(command: string, timeout = 120_000, background = false): Promise<CommandExecution> {
+  // `extraEnv` travels in the execd request body (SDK RunCommandOpts.envs),
+  // never in the command string/argv.
+  async run(command: string, timeout = 120_000, background = false, extraEnv?: Record<string, string>): Promise<CommandExecution> {
     const execution = await this.call(() => this.client.commands.run(command, {
-      workingDirectory: "/workspace", background, envs: this.commandEnv(command),
+      workingDirectory: "/workspace", background, envs: { ...this.commandEnv(command), ...extraEnv },
       ...(background ? {} : { timeoutSeconds: timeout / 1000 }),
     }, undefined, AbortSignal.timeout(timeout + 30_000)));
     // Nonzero exits can finish with an SDK error and exitCode, without a
@@ -167,15 +169,6 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     await this.call(() => this.client.files.createDirectories([{ path: target.slice(0, target.lastIndexOf("/")) || "/", mode: 755 }]));
     await this.call(() => this.client.files.writeFiles([{ path: target, data: bytes, mode: 644 }]));
     return target;
-  }
-  /** Writes owner-only files (dir 0700, files 0600) for data that must stay off argv. */
-  async writePrivateFiles(dir: string, files: Record<string, Uint8Array>): Promise<void> {
-    const target = normalise(dir);
-    await this.call(() => this.client.files.createDirectories([{ path: target, mode: 700 }]));
-    await this.call(() => this.client.files.writeFiles(Object.entries(files).map(([name, data]) => ({ path: `${target}/${name}`, data, mode: 600 }))));
-  }
-  async removeDirectory(dir: string): Promise<void> {
-    await this.call(() => this.client.files.deleteDirectories([normalise(dir)]));
   }
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec) {
     return spawnBridge(this, spec, randomInt(45000, 65000));
