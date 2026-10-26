@@ -168,6 +168,15 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     await this.call(() => this.client.files.writeFiles([{ path: target, data: bytes, mode: 644 }]));
     return target;
   }
+  /** Writes owner-only files (dir 0700, files 0600) for data that must stay off argv. */
+  async writePrivateFiles(dir: string, files: Record<string, Uint8Array>): Promise<void> {
+    const target = normalise(dir);
+    await this.call(() => this.client.files.createDirectories([{ path: target, mode: 700 }]));
+    await this.call(() => this.client.files.writeFiles(Object.entries(files).map(([name, data]) => ({ path: `${target}/${name}`, data, mode: 600 }))));
+  }
+  async removeDirectory(dir: string): Promise<void> {
+    await this.call(() => this.client.files.deleteDirectories([normalise(dir)]));
+  }
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec) {
     return spawnBridge(this, spec, randomInt(45000, 65000));
   }

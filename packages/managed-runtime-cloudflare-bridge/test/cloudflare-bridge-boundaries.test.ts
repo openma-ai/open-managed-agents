@@ -108,6 +108,30 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
     await consumeProcess(processWithEnv);
   });
 
+  it("cleans up the per-process env session when session creation or exec fails", async () => {
+    const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${String(url).replace(/.*\/v1\/sandbox\/[^/]+/, "")}`);
+    const createFails = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response("nope", { status: 502 }))
+      .mockResolvedValue(Response.json({ success: true }));
+    await expect(runtime(createFails).spawnDuplexProcess({ command: "x", env: { KEY: "value" } })).rejects.toThrow("502: nope");
+    expect(urls(createFails)).toEqual(["POST /session", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
+
+    const execFails = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json({ id: "s" }))
+      .mockResolvedValueOnce(new Response("bad", { status: 500 }))
+      .mockResolvedValue(Response.json({ success: true }));
+    await expect(runtime(execFails).spawnDuplexProcess({ command: "x", env: { KEY: "value" } })).rejects.toThrow("500: bad");
+    expect(urls(execFails)).toEqual(["POST /session", "POST /exec", expect.stringMatching(/^DELETE \/session\/oma-spawn-/)]);
+    expect(String(execFails.mock.calls[1]?.[1]?.body)).not.toContain("value");
+
+    const execThrows = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json({ id: "s" }))
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockRejectedValue(new Error("still down"));
+    await expect(runtime(execThrows).spawnDuplexProcess({ command: "x", env: { KEY: "value" } })).rejects.toThrow("network down");
+    expect(execThrows).toHaveBeenCalledTimes(3);
+  });
+
   it("reports lifecycle status, renewal, suspension, and response failures", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(Response.json({ running: false }))
