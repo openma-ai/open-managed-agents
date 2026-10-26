@@ -25,6 +25,10 @@ import {
   type ProviderRuntimeEnvironment,
 } from "@open-managed-agents/managed-runtime-sandbox";
 
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 const providerName = "cloudflare-sandbox-bridge";
 const defaultMaxHydrateBytes = 32 * 1024 * 1024;
 
@@ -116,7 +120,9 @@ function safeOutputPath(path: string): string {
 }
 
 function encodeWorkspacePath(path: string): string {
-  return safeWorkspacePath(path).split("/").map(encodeURIComponent).join("/");
+  // The Bridge resolves `/file/<rest>` as the absolute path `/<rest>`, so the
+  // `workspace/` segment must be kept (a bare relative path is rejected 403).
+  return `workspace/${safeWorkspacePath(path).split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -348,19 +354,50 @@ export class CloudflareBridgeRuntime
     const env = Object.entries(spec.env ?? {})
       .filter((entry): entry is [string, string] => entry[1] !== undefined)
       .sort(([left], [right]) => left.localeCompare(right));
-    const argv = env.length === 0
-      ? [spec.command, ...(spec.args ?? [])]
-      : ["env", ...env.map(([key, value]) => `${key}=${value}`), spec.command, ...(spec.args ?? [])];
-    const response = await this.#request("/exec", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        argv,
-        cwd: safeWorkspaceDirectory(spec.cwd),
-      }),
-      signal: abort.signal,
-    });
-    if (!response.ok || response.body === null) throw await responseError(response);
+    const cwd = safeWorkspaceDirectory(spec.cwd);
+    // Env values (which can include registered secrets) must never be put in
+    // argv: the Bridge joins argv into the container command line. Instead
+    // they go in the body of a per-process Bridge session (`POST /session`,
+    // applied to the session shell's process env), and the exec runs in it.
+    const sessionId = env.length === 0 ? null : `oma-spawn-${randomHex(16)}`;
+    const deleteSession = async () => {
+      if (sessionId === null) return;
+      await this.#request(`/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" })
+        .then((r) => { void r.body?.cancel().catch(() => undefined); })
+        .catch(() => undefined);
+    };
+    if (sessionId !== null) {
+      const created = await this.#request("/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: sessionId, cwd, env: Object.fromEntries(env) }),
+      });
+      if (!created.ok) {
+        const error = await responseError(created);
+        await deleteSession();
+        throw error;
+      }
+      void created.body?.cancel().catch(() => undefined);
+    }
+    let response: Response;
+    try {
+      response = await this.#request("/exec", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(sessionId === null ? {} : { "session-id": sessionId }),
+        },
+        body: JSON.stringify({ argv: [spec.command, ...(spec.args ?? [])], cwd }),
+        signal: abort.signal,
+      });
+    } catch (error) {
+      await deleteSession();
+      throw error;
+    }
+    if (!response.ok || response.body === null) {
+      await deleteSession();
+      throw await responseError(response);
+    }
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
       throw new Error("Cloudflare Bridge exec did not return an SSE stream");
     }
@@ -400,6 +437,7 @@ export class CloudflareBridgeRuntime
         await Promise.allSettled([
           stdoutWriter.close(),
           stderrWriter.close(),
+          deleteSession(),
         ]);
       }
     })();
