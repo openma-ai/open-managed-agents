@@ -42,8 +42,19 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # `--with-deps` runs apt-get against azure.archive.ubuntu.com. On
+      # 2026-10-26 that mirror served ~39 kB/s and this step took 11 min while
+      # the Playwright CDN download took ~6 s. Bound apt with per-request
+      # timeouts and retries, and cap the whole step so a slow mirror fails
+      # fast instead of eating the job budget. (The official Playwright
+      # container image is not used because this job also needs host /dev/kvm
+      # for Litebox and the host database integration setup.)
       - name: Install browser for Console E2E
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 5
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "20";' 'Acquire::https::Timeout "20";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-retries >/dev/null
+          pnpm exec playwright install --with-deps chromium
 
       - name: Console Agent editor E2E
         run: pnpm test:e2e:agent-editor
