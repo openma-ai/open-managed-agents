@@ -24,7 +24,7 @@ describe("OpenSandbox official SDK adapter", () => {
     server.commands = [{ type: "stdout", text: "hello\n" }, { type: "stderr", text: "warning\n" }, completed];
     const sandbox = await create();
     expect(sandbox.runtimeHandle()).toEqual({ provider: "opensandbox", runtimeId: "sb-1" });
-    expect(sandbox.runtimeCapabilities()).toEqual({ lease: true, suspend: [], checkpoint: [] });
+    expect(sandbox.runtimeCapabilities()).toEqual({ lease: true, suspend: ["filesystem", "memory"], checkpoint: ["filesystem"] });
     await sandbox.setEnvVars({ COMMON: "yes" });
     sandbox.registerCommandSecrets("git", { TOKEN: "scoped-secret" });
     expect(await sandbox.exec("git status", 1234)).toBe("hello\nwarning");
@@ -84,17 +84,90 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(sandbox.commandEnv("git status", { EXTRA: "value", OMIT: undefined })).toEqual({ COMMON: "yes", TOKEN: "private", EXTRA: "value" });
   });
 
-  it("reattaches an existing runtime with the SDK and refuses unsupported lifecycle operations", async () => {
+  it("reattaches an existing runtime with the SDK and validates lifecycle handles", async () => {
     const server = mockSdkServer();
     const sandbox = await sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env);
     allocations.push(sandbox);
     expect(await sandbox.status()).toBe("running");
     expect(server.calls.some(call => call.method === "POST" && call.url.pathname.endsWith("/sandboxes"))).toBe(false);
-    await expect(sandbox.suspend()).rejects.toThrow("not supported");
-    await expect(sandbox.checkpoint()).rejects.toThrow("not supported");
-    await expect(sandbox.resume()).rejects.toThrow("not supported");
+    const own = { provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" } as const;
+    await expect(sandbox.resume({ ...own, checkpointId: "other" })).rejects.toThrow("own runtime-scoped");
+    await expect(sandbox.resume({ ...own, scope: "portable" })).rejects.toThrow("own runtime-scoped");
+    await expect(sandbox.checkpoint({ kind: "memory" })).rejects.toThrow("filesystem state only");
+    await sandbox.resume(own);
+    expect(server.calls.some(call => call.url.pathname.endsWith("/resume"))).toBe(false);
+    server.state = "Failed";
+    await expect(sandbox.resume(own)).rejects.toThrow("cannot be resumed from state stopped");
     await expect(sandboxProvider.resume({ provider: "e2b", runtimeId: "x" }, ctx, env)).rejects.toThrow("Incompatible");
-    await expect(sandboxProvider.restore({ provider: "opensandbox", checkpointId: "x", sourceRuntimeId: "x", scope: "portable", kind: "filesystem" }, ctx, env)).rejects.toThrow("not supported");
+    for (const bad of [{ provider: "e2b" }, { scope: "runtime" }, { kind: "memory" }, { checkpointId: "" }] as const) {
+      await expect(sandboxProvider.restore({ provider: "opensandbox", checkpointId: "x", sourceRuntimeId: "x", scope: "portable", kind: "filesystem", ...bad }, ctx, env)).rejects.toThrow("incompatible portable checkpoint");
+    }
+  });
+
+  it("pauses and resumes the same runtime through the SDK lifecycle API", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create();
+    const checkpoint = await sandbox.suspend({ kind: "memory" });
+    expect(checkpoint).toEqual({ provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" });
+    expect(server.calls.some(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/pause")).toBe(true);
+    server.state = "Paused";
+    expect(await sandbox.status()).toBe("suspended");
+    server.override = call => {
+      if (call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/resume") { server.state = "Running"; return new Response(null, { status: 204 }); }
+      return undefined;
+    };
+    await sandbox.resume(checkpoint);
+    expect(await sandbox.status()).toBe("running");
+    expect(await sandbox.readFileBytes("x")).toEqual(Uint8Array.of(0, 255, 1));
+  });
+
+  it("resumes a paused retained runtime when attaching by handle", async () => {
+    const server = mockSdkServer();
+    server.state = "Paused";
+    server.override = call => {
+      if (call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/resume") { server.state = "Running"; return new Response(null, { status: 204 }); }
+      return undefined;
+    };
+    const sandbox = await sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env);
+    allocations.push(sandbox);
+    expect(server.calls.some(call => call.url.pathname === "/v1/sandboxes/sb-1/resume")).toBe(true);
+    expect(await sandbox.status()).toBe("running");
+  });
+
+  it("creates a filesystem snapshot, waits until ready, and restores from it", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_SNAPSHOT_POLL_MS: "1" });
+    let polls = 0;
+    const snapshot = (state: string) => Response.json({ id: "snap-1", sandboxId: "sb-1", name: "ckpt", status: { state }, createdAt: "2026-10-26T08:00:00Z" });
+    server.override = call => {
+      if (call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/snapshots") return snapshot("Creating");
+      if (call.method === "GET" && call.url.pathname === "/v1/snapshots/snap-1") return snapshot(++polls < 2 ? "Creating" : "Ready");
+      return undefined;
+    };
+    const checkpoint = await sandbox.checkpoint({ kind: "filesystem", name: "ckpt" });
+    expect(checkpoint).toEqual({ provider: "opensandbox", checkpointId: "snap-1", sourceRuntimeId: "sb-1", kind: "filesystem", scope: "portable" });
+    expect(server.calls.find(call => call.url.pathname === "/v1/sandboxes/sb-1/snapshots")!.body).toEqual({ name: "ckpt" });
+    expect(polls).toBe(2);
+    server.calls.length = 0;
+    const restored = await sandboxProvider.restore(checkpoint, ctx, env);
+    allocations.push(restored);
+    const creation = server.calls.find(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes");
+    expect(creation!.body).toMatchObject({ snapshotId: "snap-1" });
+    expect(creation!.body).not.toHaveProperty("image");
+  });
+
+  it("reports failed and timed-out snapshots without SDK error details", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_SNAPSHOT_POLL_MS: "1", OPENSANDBOX_SNAPSHOT_TIMEOUT_MS: "1" });
+    const snapshot = (state: string) => Response.json({ id: "snap-1", sandboxId: "sb-1", status: { state, message: "provider-secret" }, createdAt: "2026-10-26T08:00:00Z" });
+    server.override = call => call.url.pathname.endsWith("/snapshots") ? snapshot("Failed") : undefined;
+    await expect(sandbox.checkpoint({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox snapshot failed$/);
+    server.override = call => call.url.pathname.includes("snap") ? snapshot("Creating") : undefined;
+    await expect(sandbox.checkpoint({ kind: "filesystem" })).rejects.toThrow("did not become ready");
+    server.override = call => call.url.pathname.endsWith("/snapshots") ? new Response("provider-secret", { status: 501 }) : undefined;
+    await expect(sandbox.checkpoint({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox snapshot failed \(HTTP 501\)$/);
+    server.override = call => call.url.pathname.endsWith("/pause") ? new Response("provider-secret", { status: 409 }) : undefined;
+    await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
   });
 
   it("configures the SDK lifecycle API using only domain and protocol", async () => {
@@ -140,7 +213,6 @@ describe("OpenSandbox official SDK adapter", () => {
     server.override = undefined;
     server.state = "Paused";
     expect(await sandbox.status()).toBe("suspended");
-    await expect(sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env)).rejects.toThrow("paused");
     server.state = "Failed";
     expect(await sandbox.status()).toBe("stopped");
     await expect(sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env)).rejects.toThrow("stopped");

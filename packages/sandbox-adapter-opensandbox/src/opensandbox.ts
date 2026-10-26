@@ -4,7 +4,7 @@ import { randomInt } from "node:crypto";
 import { Buffer } from "node:buffer";
 import type { CommandExecution, Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
 import type {
-  SandboxCheckpointHandle, SandboxDuplexProcessPort, SandboxDuplexProcessSpec,
+  SandboxCheckpointHandle, SandboxCheckpointKind, SandboxDuplexProcessPort, SandboxDuplexProcessSpec,
   SandboxFactory, SandboxFactoryEnv, SandboxPort, SandboxProviderPort,
   SandboxRuntimeHandle, SandboxRuntimePort, SandboxRuntimeStatus,
 } from "@open-managed-agents/sandbox";
@@ -19,6 +19,8 @@ export interface OpenSandboxOptions {
   readyTimeoutMs: number;
   cpu: string;
   memory: string;
+  snapshotTimeoutMs: number;
+  snapshotPollMs: number;
 }
 
 function positive(value: string | undefined, fallback: number, name: string, min = 1): number {
@@ -46,6 +48,8 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptio
     readyTimeoutMs: positive(env.OPENSANDBOX_READY_TIMEOUT_MS, 120_000, "OPENSANDBOX_READY_TIMEOUT_MS"),
     cpu: env.OPENSANDBOX_CPU ?? "1",
     memory: env.OPENSANDBOX_MEMORY ?? "1Gi",
+    snapshotTimeoutMs: positive(env.OPENSANDBOX_SNAPSHOT_TIMEOUT_MS, 600_000, "OPENSANDBOX_SNAPSHOT_TIMEOUT_MS"),
+    snapshotPollMs: positive(env.OPENSANDBOX_SNAPSHOT_POLL_MS, 1_000, "OPENSANDBOX_SNAPSHOT_POLL_MS"),
   };
 }
 
@@ -82,7 +86,7 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   private destroyed = false;
   readonly id: string;
 
-  constructor(private readonly client: SdkSandbox, private readonly options: OpenSandboxOptions) {
+  constructor(private client: SdkSandbox, private readonly options: OpenSandboxOptions) {
     this.id = client.id;
   }
 
@@ -103,7 +107,10 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
 
   runtimeHandle(): SandboxRuntimeHandle { return { provider: "opensandbox", runtimeId: this.id }; }
-  runtimeCapabilities() { return { lease: true, suspend: [], checkpoint: [] }; }
+  // Docker/Kubernetes pause keeps the same resource (container freeze keeps
+  // memory and processes). Snapshots are filesystem images: restoring one
+  // creates a new runtime and does not carry process or memory state.
+  runtimeCapabilities() { return { lease: true, suspend: ["filesystem", "memory"] as const, checkpoint: ["filesystem"] as const }; }
   async status(signal?: AbortSignal): Promise<SandboxRuntimeStatus> {
     if (this.destroyed) return "stopped";
     signal?.throwIfAborted();
@@ -124,9 +131,46 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error("ttlMs must be a positive integer");
     await this.call(() => this.client.renew(ttlMs / 1000));
   }
-  async suspend(): Promise<SandboxCheckpointHandle> { throw new Error("OpenSandbox suspend is not supported by this adapter"); }
-  async resume(): Promise<void> { throw new Error("OpenSandbox checkpoint resume is not supported by this adapter"); }
-  async checkpoint(): Promise<SandboxCheckpointHandle> { throw new Error("OpenSandbox checkpoints are not supported by this adapter"); }
+  async suspend({ kind }: { kind: SandboxCheckpointKind }): Promise<SandboxCheckpointHandle> {
+    if (kind !== "filesystem" && kind !== "memory") throw new Error("Unsupported OpenSandbox suspend kind");
+    await this.call(() => this.client.pause());
+    return { provider: "opensandbox", checkpointId: this.id, sourceRuntimeId: this.id, kind, scope: "runtime" };
+  }
+  async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
+    if (checkpoint.provider !== "opensandbox" || checkpoint.scope !== "runtime"
+      || checkpoint.checkpointId !== this.id || checkpoint.sourceRuntimeId !== this.id) {
+      throw new Error("OpenSandbox runtime can only resume its own runtime-scoped checkpoint");
+    }
+    const state = await this.status();
+    if (state === "running") return;
+    if (state !== "suspended") throw new Error(`OpenSandbox runtime cannot be resumed from state ${state}`);
+    const previous = this.client;
+    const resumed = await this.call(() => previous.resume({ readyTimeoutSeconds: this.options.readyTimeoutMs / 1000 }));
+    this.client = resumed;
+    await previous.close().catch(() => undefined);
+  }
+  async checkpoint({ kind, name }: { kind: SandboxCheckpointKind; name?: string }): Promise<SandboxCheckpointHandle> {
+    if (kind !== "filesystem") throw new Error("OpenSandbox snapshots capture filesystem state only");
+    if (this.destroyed) throw new Error("OpenSandbox has been destroyed");
+    const sdk = await loadSdk();
+    const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, this.options) });
+    try {
+      let snapshot = await manager.createSnapshot(this.id, name === undefined ? {} : { name })
+        .catch((error: unknown) => { throw providerError("snapshot", error); });
+      const deadline = Date.now() + this.options.snapshotTimeoutMs;
+      while (snapshot.status.state !== "Ready") {
+        if (snapshot.status.state === "Failed") throw new Error("OpenSandbox snapshot failed");
+        if (Date.now() >= deadline) throw new Error("OpenSandbox snapshot did not become ready in time");
+        await new Promise(resolve => setTimeout(resolve, this.options.snapshotPollMs));
+        snapshot = await manager.getSnapshot(snapshot.id)
+          .catch((error: unknown) => { throw providerError("snapshot", error); });
+      }
+      return {
+        provider: "opensandbox", checkpointId: snapshot.id, sourceRuntimeId: this.id,
+        kind: "filesystem", scope: "portable",
+      };
+    } finally { await manager.close(); }
+  }
 
   async setEnvVars(env: Record<string, string>): Promise<void> { Object.assign(this.env, env); }
   registerCommandSecrets(prefix: string, values: Record<string, string>): void { this.secrets.push({ prefix, values }); }
@@ -182,30 +226,37 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
 
 function normalise(path: string): string { return path.startsWith("/") ? path : `/workspace/${path}`; }
 
+async function allocate(
+  ctx: Parameters<SandboxProviderPort["create"]>[0], env: SandboxFactoryEnv, snapshotId?: string,
+): Promise<OpenSandbox> {
+  const options = optionsFromEnvironment(env);
+  const sdk = await loadSdk();
+  const operation = snapshotId === undefined ? "create" : "restore";
+  let client: SdkSandbox;
+  try {
+    client = await sdk.Sandbox.create({
+      connectionConfig: configuration(sdk, options),
+      // The server treats image and snapshotId as mutually exclusive.
+      ...(snapshotId === undefined ? { image: options.image } : { snapshotId }),
+      timeoutSeconds: options.timeoutSeconds,
+      resource: { cpu: options.cpu, memory: options.memory },
+      entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId },
+      readyTimeoutSeconds: options.readyTimeoutMs / 1000,
+      signal: AbortSignal.timeout(options.readyTimeoutMs),
+    });
+  } catch (error) { throw providerError(operation, error); }
+  const sandbox = new OpenSandbox(client, options);
+  try {
+    await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
+    return sandbox;
+  } catch (error) {
+    await sandbox.destroy().catch(() => undefined);
+    throw providerError("request", error);
+  }
+}
+
 export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
-  async create(ctx, env) {
-    const options = optionsFromEnvironment(env);
-    const sdk = await loadSdk();
-    let client: SdkSandbox;
-    try {
-      client = await sdk.Sandbox.create({
-        connectionConfig: configuration(sdk, options),
-        image: options.image, timeoutSeconds: options.timeoutSeconds,
-        resource: { cpu: options.cpu, memory: options.memory },
-        entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId },
-        readyTimeoutSeconds: options.readyTimeoutMs / 1000,
-        signal: AbortSignal.timeout(options.readyTimeoutMs),
-      });
-    } catch (error) { throw providerError("create", error); }
-    const sandbox = new OpenSandbox(client, options);
-    try {
-      await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
-      return sandbox;
-    } catch (error) {
-      await sandbox.destroy().catch(() => undefined);
-      throw providerError("request", error);
-    }
-  },
+  create: (ctx, env) => allocate(ctx, env),
   async resume(handle, _ctx, env) {
     if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox runtime handle");
     const options = optionsFromEnvironment(env);
@@ -215,14 +266,15 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
     try { state = (await manager.getSandboxInfo(handle.runtimeId)).status.state.toLowerCase(); }
     catch (error) { throw providerError("resume", error); }
     finally { await manager.close(); }
-    if (state === "paused") throw new Error("OpenSandbox runtime is paused; resume it on the server before attaching");
-    if (["terminated", "failed", "deleted"].includes(state)) throw new Error("OpenSandbox runtime is stopped; cannot attach");
+    if (["terminated", "failed", "deleted", "error"].includes(state)) throw new Error("OpenSandbox runtime is stopped; cannot attach");
     let client: SdkSandbox | undefined;
     try {
-      client = await sdk.Sandbox.connect({
+      const connect = {
         sandboxId: handle.runtimeId, connectionConfig: configuration(sdk, options),
         readyTimeoutSeconds: options.readyTimeoutMs / 1000, signal: AbortSignal.timeout(options.readyTimeoutMs),
-      });
+      };
+      // A retained runtime suspended by this adapter is resumed in place.
+      client = state === "paused" ? await sdk.Sandbox.resume(connect) : await sdk.Sandbox.connect(connect);
       await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
     } catch (error) {
       await client?.close();
@@ -230,6 +282,12 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
     }
     return new OpenSandbox(client, options);
   },
-  async restore() { throw new Error("OpenSandbox portable restore is not supported by this adapter"); },
+  async restore(checkpoint, ctx, env) {
+    if (checkpoint.provider !== "opensandbox" || checkpoint.scope !== "portable"
+      || checkpoint.kind !== "filesystem" || !checkpoint.checkpointId) {
+      throw new Error("OpenSandbox provider received an incompatible portable checkpoint");
+    }
+    return allocate(ctx, env, checkpoint.checkpointId);
+  },
 };
 export const sandboxFactory: SandboxFactory = (ctx, env) => sandboxProvider.create(ctx, env);
