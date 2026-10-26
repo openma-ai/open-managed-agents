@@ -331,10 +331,15 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
       timeout_ms: 2_000,
       cwd: "/workspace",
     });
-    expect(execCalls[1]?.body).toEqual({
-      argv: ["env", "A_FIRST=a", "Z_LAST=z", "worker", "--once"],
-      cwd: "/workspace/project",
-    });
+    const spawnBody = execCalls[1]?.body as { argv: string[]; cwd: string };
+    expect(spawnBody.cwd).toBe("/workspace/project");
+    expect(spawnBody.argv.slice(0, 2)).toEqual(["sh", "-c"]);
+    expect(spawnBody.argv[4]).toMatch(/^\/workspace\/\.openma-env-[0-9a-f]{32}$/);
+    expect(spawnBody.argv.slice(5)).toEqual(["worker", "--once"]);
+    // No env value (or KEY=value pair) is in argv; it went to the env file.
+    for (const argument of spawnBody.argv) expect(argument).not.toMatch(/(^|=)(a|z)$/);
+    expect(new TextDecoder().decode(fake.files.get(spawnBody.argv[4]!.replace("/workspace/", ""))))
+      .toBe("export A_FIRST='a'\nexport Z_LAST='z'\n");
   });
 
   it("composes the Bridge as an ama worker with the canonical output mount", async () => {

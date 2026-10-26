@@ -25,6 +25,35 @@ import {
   type ProviderRuntimeEnvironment,
 } from "@open-managed-agents/managed-runtime-sandbox";
 
+const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Builds a launcher whose argv carries only the env file path. The shell
+ * reads the file into memory, deletes it, then exports the values and execs
+ * the child, so no env value appears in any process argv.
+ */
+export function envFileLaunch(
+  file: string, env: ReadonlyArray<readonly [string, string]>, command: string, args: readonly string[],
+): { argv: string[]; content: string } {
+  for (const [key] of env) {
+    if (!envKeyPattern.test(key)) throw new Error(`Cloudflare Bridge env name is not a valid identifier: ${key}`);
+  }
+  const content = env.map(([key, value]) => `export ${key}=${shellQuote(value)}\n`).join("");
+  return {
+    argv: [
+      "sh", "-c",
+      'f=$1; shift; e=$(cat -- "$f") || { rm -f -- "$f"; exit 127; }; rm -f -- "$f"; eval "$e"; exec "$@"',
+      "openma-env", file, command, ...args,
+    ],
+    content,
+  };
+}
+
 const providerName = "cloudflare-sandbox-bridge";
 const defaultMaxHydrateBytes = 32 * 1024 * 1024;
 
@@ -348,19 +377,42 @@ export class CloudflareBridgeRuntime
     const env = Object.entries(spec.env ?? {})
       .filter((entry): entry is [string, string] => entry[1] !== undefined)
       .sort(([left], [right]) => left.localeCompare(right));
-    const argv = env.length === 0
-      ? [spec.command, ...(spec.args ?? [])]
-      : ["env", ...env.map(([key, value]) => `${key}=${value}`), spec.command, ...(spec.args ?? [])];
-    const response = await this.#request("/exec", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        argv,
-        cwd: safeWorkspaceDirectory(spec.cwd),
-      }),
-      signal: abort.signal,
-    });
-    if (!response.ok || response.body === null) throw await responseError(response);
+    // Env values (which can include registered secrets) never go into argv:
+    // the Bridge /exec API has no env field and its argv becomes a shell
+    // command string inside the container (visible in /proc/*/cmdline).
+    // They travel in a one-shot file that the launcher reads and deletes
+    // before exec'ing the child.
+    let envFile: string | null = null;
+    let argv = [spec.command, ...(spec.args ?? [])];
+    if (env.length > 0) {
+      envFile = `/workspace/.openma-env-${randomHex(16)}`;
+      const launch = envFileLaunch(envFile, env, spec.command, spec.args ?? []);
+      argv = launch.argv;
+      await this.writeFileBytes(envFile, new TextEncoder().encode(launch.content));
+    }
+    const removeEnvFile = async () => {
+      if (envFile === null) return;
+      await this.#execute(["rm", "-f", envFile], { cwd: "/workspace", timeoutMs: 10_000 }).catch(() => undefined);
+    };
+    let response: Response;
+    try {
+      response = await this.#request("/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          argv,
+          cwd: safeWorkspaceDirectory(spec.cwd),
+        }),
+        signal: abort.signal,
+      });
+    } catch (error) {
+      await removeEnvFile();
+      throw error;
+    }
+    if (!response.ok || response.body === null) {
+      await removeEnvFile();
+      throw await responseError(response);
+    }
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
       throw new Error("Cloudflare Bridge exec did not return an SSE stream");
     }
