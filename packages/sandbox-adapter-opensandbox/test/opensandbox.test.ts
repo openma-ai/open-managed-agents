@@ -1,34 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OpenSandbox, optionsFromEnvironment, sandboxFactory, sandboxProvider } from "../src/index";
+import { Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
+import { OpenSandbox, optionsFromEnvironment, sandboxProvider } from "../src/index";
+import { completed, mockSdkServer } from "./sdk-http";
 
 const ctx = { sessionId: "session-test", workdir: "/workspace" };
 const env = { OPENSANDBOX_DOMAIN: "control.test:8080", OPENSANDBOX_API_KEY: "provider-secret" };
-const info = (state = "Running") => ({ id: "sb-1", status: { state } });
-const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
-const sse = (events: unknown[], fragmented = false) => {
-  const text = events.map((event) => `data: ${JSON.stringify(event)}\r\n\r\n`).join("");
-  const bytes = new TextEncoder().encode(text);
-  return new Response(fragmented ? new ReadableStream({
-    start(c) { for (const byte of bytes) c.enqueue(Uint8Array.of(byte)); c.close(); },
-  }) : text, { headers: { "Content-Type": "text/event-stream" } });
-};
-const done = { type: "execution_complete", exit_code: 0 };
-function mockServer(commandEvents: unknown[] = [done]) {
-  return vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
-    if (url === "http://control.test:8080/v1/sandboxes" && init.method === "POST") return response(info());
-    if (url.endsWith("/endpoints/44772")) return response({ endpoint: "exec.test:44772", headers: { "X-EXECD-ACCESS-TOKEN": "runtime-token" } });
-    if (url === "http://exec.test:44772/command") return sse(commandEvents, true);
-    if (url.startsWith("http://exec.test:44772/files/download")) return new Response(Uint8Array.of(0, 255, 1));
-    if (url.endsWith("/sb-1") && !init.method) return response(info());
-    return response({});
-  }));
+const allocations: OpenSandbox[] = [];
+async function create(extra = {}) {
+  const sandbox = await sandboxProvider.create(ctx, { ...env, ...extra });
+  allocations.push(sandbox);
+  return sandbox;
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+  await Promise.all(allocations.splice(0).map(sandbox => sandbox.destroy().catch(() => undefined)));
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
-describe("OpenSandbox native HTTP adapter", () => {
-  it("creates, executes, transfers binary files and destroys through the provider port", async () => {
-    mockServer([{ type: "stdout", text: "hello\n" }, { type: "stderr", text: "warning\n" }, done]);
-    const sandbox = await sandboxFactory(ctx, env) as OpenSandbox;
+describe("OpenSandbox official SDK adapter", () => {
+  it("creates, executes and transfers binary files through the real SDK", async () => {
+    const server = mockSdkServer();
+    server.commands = [{ type: "stdout", text: "hello\n" }, { type: "stderr", text: "warning\n" }, completed];
+    const sandbox = await create();
     expect(sandbox.runtimeHandle()).toEqual({ provider: "opensandbox", runtimeId: "sb-1" });
     expect(sandbox.runtimeCapabilities()).toEqual({ lease: true, suspend: [], checkpoint: [] });
     await sandbox.setEnvVars({ COMMON: "yes" });
@@ -39,35 +33,63 @@ describe("OpenSandbox native HTTP adapter", () => {
     expect(await sandbox.readFileBytes("raw.bin")).toEqual(Uint8Array.of(0, 255, 1));
     expect(await sandbox.readFile("raw.bin")).toBe("\0�\x01");
     await sandbox.renewLease({ ttlMs: 60_000 });
-    await sandbox.destroy();
-    await sandbox.destroy();
-    expect(await sandbox.status()).toBe("stopped");
-    await expect(sandbox.exec("true")).rejects.toThrow("destroyed");
-    const calls = vi.mocked(fetch).mock.calls;
-    const creation = calls.find(([url]) => url === "http://control.test:8080/v1/sandboxes")![1]!;
-    expect(JSON.parse(creation.body as string)).toEqual({
-      image: { uri: "node:22-slim" }, timeout: 1800, resourceLimits: { cpu: "1", memory: "1Gi" },
+    const creation = server.calls.find(call => call.url.pathname.endsWith("/sandboxes") && call.method === "POST")!;
+    expect(creation.body).toMatchObject({
+      image: { uri: "node:22-slim" }, timeout: 1800,
+      resourceLimits: { cpu: "1", memory: "1Gi" },
       entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": "session-test" },
+      env: {},
     });
-    expect(creation.headers).toHaveProperty("OPEN-SANDBOX-API-KEY", "provider-secret");
-    const command = calls.find(([url]) => String(url).endsWith("/command"))![1]!;
-    expect(JSON.parse(command.body as string)).toEqual({ command: "git status", timeout: 1234, background: false, cwd: "/workspace", envs: { COMMON: "yes", TOKEN: "scoped-secret" } });
-    for (const [url, init] of calls.filter(([url]) => String(url).startsWith("http://exec.test"))) {
-      expect(init!.headers).not.toHaveProperty("OPEN-SANDBOX-API-KEY");
-      expect(init!.headers).toHaveProperty("X-EXECD-ACCESS-TOKEN", "runtime-token");
-      expect(String(init!.body)).not.toContain("provider-secret");
+    expect(creation.headers.get("OPEN-SANDBOX-API-KEY")).toBe("provider-secret");
+    expect(server.calls.find(call => call.url.pathname === "/command")!.body).toEqual({
+      command: "git status", timeout: 1234, background: false, cwd: "/workspace", envs: { COMMON: "yes", TOKEN: "scoped-secret" },
+    });
+    for (const call of server.calls.filter(call => call.url.hostname === "exec.test")) {
+      expect(call.headers.has("OPEN-SANDBOX-API-KEY")).toBe(false);
+      expect(call.headers.get("X-EXECD-ACCESS-TOKEN")).toBe("runtime-token");
+      expect(JSON.stringify(call.body) ?? "").not.toContain("provider-secret");
     }
-    const upload = calls.filter(([url]) => String(url).endsWith("/files/upload")).at(-1)![1]!.body as FormData;
-    expect(JSON.parse(upload.get("metadata") as string)).toEqual({ path: "/workspace/raw.bin", mode: 644 });
+    const upload = server.calls.filter(call => call.url.pathname === "/files/upload").at(-1)!.body as FormData;
+    const metadata = upload.get("metadata") as File;
+    expect(metadata).toBeInstanceOf(Blob);
+    expect(metadata.name).toBeTruthy();
+    expect(metadata.type).toBe("application/json");
+    expect(JSON.parse(await metadata.text())).toEqual({ path: "/workspace/raw.bin", mode: 644 });
     expect(new Uint8Array(await (upload.get("file") as Blob).arrayBuffer())).toEqual(Uint8Array.of(0, 255, 1));
-    expect(calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+    expect(server.calls.some(call => call.url.pathname.endsWith("/renew-expiration"))).toBe(true);
   });
 
-  it("reattaches a live runtime and refuses unsupported lifecycle operations", async () => {
-    mockServer();
+  it.each(["sse", "json"] as const)("delegates fragmented %s command streams to the SDK and still rejects truncation", async format => {
+    const server = mockSdkServer();
+    server.format = format;
+    server.commands = [{ type: "stdout", text: "héllo\n" }, completed];
+    const sandbox = await create();
+    expect(await sandbox.exec("printf hello")).toBe("héllo");
+    server.commands = [{ type: "stdout", text: "partial" }];
+    await expect(sandbox.exec("true")).rejects.toThrow("before execution_complete");
+  });
+
+  it("preserves nonzero exits, command startup errors and scoped command environment", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create();
+    for (const code of [2, 3, 7]) {
+      server.commands = [{ type: "error", error: { ename: "CommandExecError", evalue: String(code) } }];
+      expect(await sandbox.exec("false")).toBe(`\n[exit ${code}]`);
+    }
+    server.commands = [{ type: "error", error: { evalue: "cannot start" } }, completed];
+    await expect(sandbox.exec("missing")).rejects.toThrow("failed to execute");
+    await sandbox.setEnvVars({ COMMON: "yes" });
+    sandbox.registerCommandSecrets("git", { TOKEN: "private" });
+    expect(sandbox.commandEnv("echo hello")).toEqual({ COMMON: "yes" });
+    expect(sandbox.commandEnv("git status", { EXTRA: "value", OMIT: undefined })).toEqual({ COMMON: "yes", TOKEN: "private", EXTRA: "value" });
+  });
+
+  it("reattaches an existing runtime with the SDK and refuses unsupported lifecycle operations", async () => {
+    const server = mockSdkServer();
     const sandbox = await sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env);
+    allocations.push(sandbox);
     expect(await sandbox.status()).toBe("running");
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => String(init?.body).includes('"image"'))).toBe(false);
+    expect(server.calls.some(call => call.method === "POST" && call.url.pathname.endsWith("/sandboxes"))).toBe(false);
     await expect(sandbox.suspend()).rejects.toThrow("not supported");
     await expect(sandbox.checkpoint()).rejects.toThrow("not supported");
     await expect(sandbox.resume()).rejects.toThrow("not supported");
@@ -75,92 +97,86 @@ describe("OpenSandbox native HTTP adapter", () => {
     await expect(sandboxProvider.restore({ provider: "opensandbox", checkpointId: "x", sourceRuntimeId: "x", scope: "portable", kind: "filesystem" }, ctx, env)).rejects.toThrow("not supported");
   });
 
-  it.each([
-    [[{ type: "error", error: { exit_code: 3, evalue: "3" } }, done], "\n[exit 3]"],
-    [[{ type: "error", error: { evalue: "2" } }, done], "\n[exit 2]"],
-  ])("reports nonzero command exits", async (events, expected) => {
-    mockServer(events);
-    expect(await (await sandboxProvider.create(ctx, env)).exec("false")).toBe(expected);
+  it("configures the SDK lifecycle API using only domain and protocol", async () => {
+    const server = mockSdkServer();
+    await create({ OPENSANDBOX_DOMAIN: "control.test:8443", OPENSANDBOX_PROTOCOL: "https" });
+    expect(server.calls[0]!.url.href).toBe("https://control.test:8443/v1/sandboxes");
   });
 
-  it("rejects command startup failures and truncated streams", async () => {
-    mockServer([{ type: "error", error: { evalue: "cannot start" } }, done]);
-    const sandbox = await sandboxProvider.create(ctx, env);
-    await expect(sandbox.exec("missing")).rejects.toThrow("failed to execute");
-    mockServer([{ type: "stdout", text: "partial" }]);
-    await expect(sandbox.exec("true")).rejects.toThrow("before execution_complete");
-  });
-
-  it("cleans up an allocation whose provisioning fails", async () => {
-    mockServer();
-    const original = vi.mocked(fetch).getMockImplementation()!;
-    vi.mocked(fetch).mockImplementation(async (url, init) => String(url).endsWith("/sb-1") && !init?.method ? response(info("Failed")) : original(url, init));
-    await expect(sandboxProvider.create(ctx, env)).rejects.toThrow("stopped during provisioning");
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true);
-  });
-
-  it("waits for lifecycle Running before touching execd", async () => {
-    mockServer();
-    const original = vi.mocked(fetch).getMockImplementation()!;
-    let count = 0;
-    vi.mocked(fetch).mockImplementation(async (url, init) => String(url).endsWith("/sb-1") && !init?.method && count++ === 0 ? response(info("Pending")) : original(url, init));
-    await sandboxProvider.create(ctx, env);
-    expect(count).toBe(2);
-  });
-
-  it("does not disclose response bodies or credentials in HTTP errors", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("secret-key", { status: 401 })));
-    await expect(sandboxProvider.create(ctx, env)).rejects.toThrow("OpenSandbox create failed (HTTP 401)");
-    const sandbox = new OpenSandbox("sb-1", optionsFromEnvironment(env));
-    await expect(sandbox.readFile("x")).rejects.toThrow("OpenSandbox request failed (HTTP 401)");
-  });
-
-  it("retries a failed delete and treats an already deleted runtime as destroyed", async () => {
-    const sandbox = new OpenSandbox("sb-1", optionsFromEnvironment(env));
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(null, { status: 500 })).mockResolvedValueOnce(new Response(null, { status: 404 })));
+  it("closes the SDK transport on idempotent destruction and leaves failed deletion retryable", async () => {
+    const server = mockSdkServer();
+    const close = vi.spyOn(SdkSandbox.prototype, "close");
+    const sandbox = await create();
+    let deletes = 0;
+    server.override = call => call.method === "DELETE" && call.url.pathname.endsWith("/sb-1")
+      ? new Response(null, { status: ++deletes === 1 ? 500 : 404 }) : undefined;
     await expect(sandbox.destroy()).rejects.toThrow("HTTP 500");
+    expect(close).not.toHaveBeenCalled();
     await sandbox.destroy();
+    await sandbox.destroy();
+    expect(close).toHaveBeenCalledOnce();
+    expect(deletes).toBe(2);
     expect(await sandbox.status()).toBe("stopped");
+    await expect(sandbox.exec("true")).rejects.toThrow("destroyed");
   });
 
-  it("reports a missing runtime as stopped and rejects attaching a paused one", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })));
-    const sandbox = new OpenSandbox("sb-1", optionsFromEnvironment(env));
+  it("does not disclose SDK error bodies or credentials", async () => {
+    const server = mockSdkServer();
+    server.override = () => new Response("provider-secret", { status: 401 });
+    await expect(create()).rejects.toThrow(/^OpenSandbox create failed \(HTTP 401\)$/);
+    server.override = undefined;
+    const sandbox = await create();
+    server.override = call => call.url.pathname.endsWith("/files/download") ? new Response("provider-secret", { status: 403 }) : undefined;
+    await expect(sandbox.readFile("private")).rejects.toThrow(/^OpenSandbox request failed \(HTTP 403\)$/);
+    server.override = () => new Response("provider-secret", { status: 401 });
+    await expect(sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env)).rejects.toThrow(/^OpenSandbox resume failed \(HTTP 401\)$/);
+  });
+
+  it("maps missing and paused runtimes without exposing SDK errors", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create();
+    server.override = call => call.url.pathname.endsWith("/sb-1") ? new Response(null, { status: 404 }) : undefined;
     expect(await sandbox.status()).toBe("stopped");
-    vi.mocked(fetch).mockResolvedValue(response(info("Paused")));
+    server.override = undefined;
+    server.state = "Paused";
+    expect(await sandbox.status()).toBe("suspended");
     await expect(sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env)).rejects.toThrow("paused");
+    server.state = "Failed";
+    expect(await sandbox.status()).toBe("stopped");
+    await expect(sandboxProvider.resume({ provider: "opensandbox", runtimeId: "sb-1" }, ctx, env)).rejects.toThrow("stopped");
   });
 
-  it("retries execd readiness without leaking the provider key", async () => {
-    mockServer();
-    const original = vi.mocked(fetch).getMockImplementation()!;
-    let pings = 0;
-    vi.mocked(fetch).mockImplementation(async (url, init) => String(url).endsWith("/ping") && pings++ === 0 ? new Response(null, { status: 503 }) : original(url, init));
-    await sandboxProvider.create(ctx, env);
-    expect(pings).toBe(2);
+  it("cleans up a newly created allocation when SDK readiness fails", async () => {
+    const server = mockSdkServer();
+    server.override = call => call.url.pathname.endsWith("/ping") ? new Response(null, { status: 503 }) : undefined;
+    await expect(create({ OPENSANDBOX_READY_TIMEOUT_MS: "20" })).rejects.toThrow("OpenSandbox create failed");
+    expect(server.calls.some(call => call.method === "DELETE" && call.url.pathname.endsWith("/sb-1"))).toBe(true);
   });
 
-  it("bounds provisioning waits and deletes a timed-out allocation", async () => {
-    mockServer();
-    const original = vi.mocked(fetch).getMockImplementation()!;
-    vi.mocked(fetch).mockImplementation(async (url, init) => String(url).endsWith("/sb-1") && !init?.method ? response(info("Pending")) : original(url, init));
-    await expect(sandboxProvider.create(ctx, { ...env, OPENSANDBOX_READY_TIMEOUT_MS: "20" })).rejects.toThrow();
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true);
+  it("cleans up an allocation if workspace preparation fails", async () => {
+    const server = mockSdkServer();
+    server.override = call => call.url.pathname.endsWith("/directories") ? new Response(null, { status: 500 }) : undefined;
+    await expect(create()).rejects.toThrow("HTTP 500");
+    expect(server.calls.some(call => call.method === "DELETE" && call.url.pathname.endsWith("/sb-1"))).toBe(true);
   });
 
-  it("rejects invalid service endpoints and invalid lease durations", async () => {
-    const sandbox = new OpenSandbox("sb-1", optionsFromEnvironment(env));
-    vi.stubGlobal("fetch", vi.fn(async () => response({ endpoint: "file:///etc/passwd" })));
-    await expect(sandbox.readFile("x")).rejects.toThrow("invalid service endpoint");
+  it("validates endpoint schemes and lease durations", async () => {
+    mockSdkServer();
+    const endpoint = vi.spyOn(SdkSandbox.prototype, "getEndpoint").mockResolvedValue({ endpoint: "file:///etc/passwd" });
+    const sandbox = await create();
+    await expect(sandbox.serviceEndpoint(1234)).rejects.toThrow("invalid service endpoint");
+    expect(endpoint).toHaveBeenCalled();
     await expect(sandbox.renewLease({ ttlMs: 0 })).rejects.toThrow("positive integer");
   });
 
-  it("uses Harbor connection names, explicit API base URLs, and validates time units", () => {
-    expect(optionsFromEnvironment({})).toMatchObject({ baseUrl: "http://localhost:8080/v1", timeoutSeconds: 1800 });
-    expect(optionsFromEnvironment({ OPENSANDBOX_BASE_URL: "https://api.test/prefix/v1/", OPEN_SANDBOX_API_KEY: "sdk-alias", SANDBOX_IMAGE: "custom", OPENSANDBOX_TIMEOUT_SECONDS: "60" })).toMatchObject({ baseUrl: "https://api.test/prefix/v1", apiKey: "sdk-alias", image: "custom", timeoutSeconds: 60 });
-    expect(optionsFromEnvironment({ OPENSANDBOX_PROTOCOL: "https", OPENSANDBOX_DOMAIN: "host" }).baseUrl).toBe("https://host/v1");
+  it("uses existing connection variables and validates configured time units", () => {
+    expect(optionsFromEnvironment({})).toMatchObject({ domain: "localhost:8080", protocol: "http", timeoutSeconds: 1800 });
+    expect(optionsFromEnvironment({ OPENSANDBOX_DOMAIN: "api.test:8443", OPEN_SANDBOX_API_KEY: "sdk-alias", SANDBOX_IMAGE: "custom", OPENSANDBOX_TIMEOUT_SECONDS: "60" })).toMatchObject({ domain: "api.test:8443", apiKey: "sdk-alias", image: "custom", timeoutSeconds: 60 });
+    expect(optionsFromEnvironment({ OPENSANDBOX_PROTOCOL: "https", OPENSANDBOX_DOMAIN: "host" })).toMatchObject({ domain: "host", protocol: "https" });
     for (const value of ["-1", "0", "59", "1.5", "bad"]) expect(() => optionsFromEnvironment({ OPENSANDBOX_TIMEOUT_SECONDS: value })).toThrow("OPENSANDBOX_TIMEOUT_SECONDS");
-    expect(() => optionsFromEnvironment({ OPENSANDBOX_BASE_URL: "file:///tmp/key" })).toThrow("HTTP(S)");
-    expect(() => optionsFromEnvironment({ OPENSANDBOX_BASE_URL: "http://user:pass@host/v1" })).toThrow("credentials");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_PROTOCOL: "file" })).toThrow("OPENSANDBOX_PROTOCOL");
+    for (const domain of ["", "https://host/v1", "user:pass@host", "host/v1", "host?key=value", "host#fragment"]) {
+      expect(() => optionsFromEnvironment({ OPENSANDBOX_DOMAIN: domain })).toThrow("OPENSANDBOX_DOMAIN");
+    }
   });
 });
