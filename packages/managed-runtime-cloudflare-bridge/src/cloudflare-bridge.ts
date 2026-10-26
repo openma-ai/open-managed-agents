@@ -25,33 +25,8 @@ import {
   type ProviderRuntimeEnvironment,
 } from "@open-managed-agents/managed-runtime-sandbox";
 
-const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
-
 function randomHex(bytes: number): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/**
- * Builds a launcher whose argv carries only the env file path. The shell
- * reads the file into memory, deletes it, then exports the values and execs
- * the child, so no env value appears in any process argv.
- */
-export function envFileLaunch(
-  file: string, env: ReadonlyArray<readonly [string, string]>, command: string, args: readonly string[],
-): { argv: string[]; content: string } {
-  for (const [key] of env) {
-    if (!envKeyPattern.test(key)) throw new Error(`Cloudflare Bridge env name is not a valid identifier: ${key}`);
-  }
-  const content = env.map(([key, value]) => `export ${key}=${shellQuote(value)}\n`).join("");
-  return {
-    argv: [
-      "sh", "-c",
-      'f=$1; shift; e=$(cat -- "$f") || { rm -f -- "$f"; exit 127; }; rm -f -- "$f"; eval "$e"; exec "$@"',
-      "openma-env", file, command, ...args,
-    ],
-    content,
-  };
 }
 
 const providerName = "cloudflare-sandbox-bridge";
@@ -145,7 +120,9 @@ function safeOutputPath(path: string): string {
 }
 
 function encodeWorkspacePath(path: string): string {
-  return safeWorkspacePath(path).split("/").map(encodeURIComponent).join("/");
+  // The Bridge resolves `/file/<rest>` as the absolute path `/<rest>`, so the
+  // `workspace/` segment must be kept (a bare relative path is rejected 403).
+  return `workspace/${safeWorkspacePath(path).split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -377,40 +354,48 @@ export class CloudflareBridgeRuntime
     const env = Object.entries(spec.env ?? {})
       .filter((entry): entry is [string, string] => entry[1] !== undefined)
       .sort(([left], [right]) => left.localeCompare(right));
-    // Env values (which can include registered secrets) never go into argv:
-    // the Bridge /exec API has no env field and its argv becomes a shell
-    // command string inside the container (visible in /proc/*/cmdline).
-    // They travel in a one-shot file that the launcher reads and deletes
-    // before exec'ing the child.
-    let envFile: string | null = null;
-    let argv = [spec.command, ...(spec.args ?? [])];
-    if (env.length > 0) {
-      envFile = `/workspace/.openma-env-${randomHex(16)}`;
-      const launch = envFileLaunch(envFile, env, spec.command, spec.args ?? []);
-      argv = launch.argv;
-      await this.writeFileBytes(envFile, new TextEncoder().encode(launch.content));
-    }
-    const removeEnvFile = async () => {
-      if (envFile === null) return;
-      await this.#execute(["rm", "-f", envFile], { cwd: "/workspace", timeoutMs: 10_000 }).catch(() => undefined);
+    const cwd = safeWorkspaceDirectory(spec.cwd);
+    // Env values (which can include registered secrets) must never be put in
+    // argv: the Bridge joins argv into the container command line. Instead
+    // they go in the body of a per-process Bridge session (`POST /session`,
+    // applied to the session shell's process env), and the exec runs in it.
+    const sessionId = env.length === 0 ? null : `oma-spawn-${randomHex(16)}`;
+    const deleteSession = async () => {
+      if (sessionId === null) return;
+      await this.#request(`/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" })
+        .then((r) => { void r.body?.cancel().catch(() => undefined); })
+        .catch(() => undefined);
     };
+    if (sessionId !== null) {
+      const created = await this.#request("/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: sessionId, cwd, env: Object.fromEntries(env) }),
+      });
+      if (!created.ok) {
+        const error = await responseError(created);
+        await deleteSession();
+        throw error;
+      }
+      void created.body?.cancel().catch(() => undefined);
+    }
     let response: Response;
     try {
       response = await this.#request("/exec", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          argv,
-          cwd: safeWorkspaceDirectory(spec.cwd),
-        }),
+        headers: {
+          "content-type": "application/json",
+          ...(sessionId === null ? {} : { "session-id": sessionId }),
+        },
+        body: JSON.stringify({ argv: [spec.command, ...(spec.args ?? [])], cwd }),
         signal: abort.signal,
       });
     } catch (error) {
-      await removeEnvFile();
+      await deleteSession();
       throw error;
     }
     if (!response.ok || response.body === null) {
-      await removeEnvFile();
+      await deleteSession();
       throw await responseError(response);
     }
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
@@ -452,6 +437,7 @@ export class CloudflareBridgeRuntime
         await Promise.allSettled([
           stdoutWriter.close(),
           stderrWriter.close(),
+          deleteSession(),
         ]);
       }
     })();

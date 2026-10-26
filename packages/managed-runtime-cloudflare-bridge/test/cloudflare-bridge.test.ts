@@ -18,20 +18,22 @@ function bridgeFetch() {
   const files = new Map<string, Uint8Array>();
   let nextId = 0;
   const running = new Set<string>();
-  const calls: Array<{ method: string; path: string; auth: string | null; body?: unknown }> = [];
+  const sessions = new Map<string, Record<string, string>>();
+  const calls: Array<{ method: string; path: string; auth: string | null; sessionId?: string | null; body?: unknown }> = [];
   const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const request = input instanceof Request
       ? new Request(input, init)
       : new Request(input.toString(), init);
     const url = new URL(request.url);
     let body: unknown;
-    if (request.method === "POST" && url.pathname.endsWith("/exec")) {
+    if (request.method === "POST" && (url.pathname.endsWith("/exec") || url.pathname.endsWith("/session"))) {
       body = await request.json();
     }
     calls.push({
       method: request.method,
       path: `${url.pathname}${url.search}`,
       auth: request.headers.get("authorization"),
+      ...(request.headers.has("session-id") ? { sessionId: request.headers.get("session-id") } : {}),
       ...(body === undefined ? {} : { body }),
     });
     if (request.method === "POST" && url.pathname === "/v1/sandbox") {
@@ -49,6 +51,15 @@ function bridgeFetch() {
     if (request.method === "DELETE" && operation === "") {
       running.delete(id);
       return new Response(null, { status: 204 });
+    }
+    if (request.method === "POST" && operation === "/session") {
+      const session = body as { id: string; env?: Record<string, string> };
+      sessions.set(session.id, session.env ?? {});
+      return Response.json({ id: session.id });
+    }
+    if (request.method === "DELETE" && operation.startsWith("/session/")) {
+      sessions.delete(decodeURIComponent(operation.slice("/session/".length)));
+      return Response.json({ success: true });
     }
     if (request.method === "POST" && operation === "/exec") {
       const argv = (body as { argv?: string[] } | undefined)?.argv ?? [];
@@ -88,7 +99,7 @@ function bridgeFetch() {
     }
     return new Response("not found", { status: 404 });
   });
-  return { calls, fetch, files, running };
+  return { calls, fetch, files, running, sessions };
 }
 
 async function streamText(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -323,7 +334,7 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
       restored.destroy?.(),
     ]);
     await restored.destroy?.();
-    expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "DELETE" && !call.path.includes("/session/"))).toHaveLength(1);
     expect(fake.calls.every((call) => call.auth === "Bearer bridge-secret")).toBe(true);
     const execCalls = fake.calls.filter((call) => call.path.endsWith("/exec"));
     expect(execCalls[0]?.body).toEqual({
@@ -331,15 +342,23 @@ describe("Cloudflare Sandbox Bridge managed runtime provider package", () => {
       timeout_ms: 2_000,
       cwd: "/workspace",
     });
-    const spawnBody = execCalls[1]?.body as { argv: string[]; cwd: string };
-    expect(spawnBody.cwd).toBe("/workspace/project");
-    expect(spawnBody.argv.slice(0, 2)).toEqual(["sh", "-c"]);
-    expect(spawnBody.argv[4]).toMatch(/^\/workspace\/\.openma-env-[0-9a-f]{32}$/);
-    expect(spawnBody.argv.slice(5)).toEqual(["worker", "--once"]);
-    // No env value (or KEY=value pair) is in argv; it went to the env file.
-    for (const argument of spawnBody.argv) expect(argument).not.toMatch(/(^|=)(a|z)$/);
-    expect(new TextDecoder().decode(fake.files.get(spawnBody.argv[4]!.replace("/workspace/", ""))))
-      .toBe("export A_FIRST='a'\nexport Z_LAST='z'\n");
+    // Env goes in a per-process session body, never in argv; the session is
+    // removed once the process exits.
+    expect(execCalls[1]?.body).toEqual({ argv: ["worker", "--once"], cwd: "/workspace/project" });
+    const sessionCreate = fake.calls.find((call) => call.method === "POST" && call.path.endsWith("/session"));
+    expect(sessionCreate?.body).toEqual({
+      id: expect.stringMatching(/^oma-spawn-[0-9a-f]{32}$/),
+      cwd: "/workspace/project",
+      env: { A_FIRST: "a", Z_LAST: "z" },
+    });
+    const sessionId = (sessionCreate?.body as { id: string }).id;
+    expect(execCalls[1]?.sessionId).toBe(sessionId);
+    expect(JSON.stringify(execCalls.map((call) => call.body))).not.toMatch(/A_FIRST|Z_LAST|"a"|"z"/);
+    expect(fake.calls.some((call) => call.method === "DELETE" && call.path.endsWith(`/session/${sessionId}`))).toBe(true);
+    expect(fake.sessions.size).toBe(0);
+    // File routes keep the `workspace/` segment (the real Bridge resolves `/file/<rest>` as `/<rest>`).
+    expect(fake.calls.filter((call) => call.path.includes("/file/")).map((call) => call.path))
+      .toContain("/v1/sandbox/sandbox-1/file/workspace/a%20b.bin");
   });
 
   it("composes the Bridge as an ama worker with the canonical output mount", async () => {
