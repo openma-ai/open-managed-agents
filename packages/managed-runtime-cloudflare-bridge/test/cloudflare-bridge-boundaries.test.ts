@@ -376,6 +376,47 @@ describe("Cloudflare Sandbox Bridge boundary contracts", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("never probes /running for a sandbox destroyed through another attachment", async () => {
+    const store = new InMemoryBlobStore();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/sandbox") && init?.method === "POST") return Response.json({ id: "sb-1" });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/running")) return Response.json({ running: true });
+      return new Response("unexpected", { status: 500 });
+    });
+    const provider = createCloudflareBridgeProvider({
+      baseUrl: "https://bridge.example.test", apiKey: "secret", checkpointStore: store, fetch,
+    });
+    const original = await provider.create({ sessionId: "s", workdir: "/workspace" } as never, {});
+    await expect(original.status()).resolves.toBe("running");
+    const attached = await provider.resume(original.runtimeHandle(), { sessionId: "s", workdir: "/workspace" } as never, {});
+    await original.destroy();
+    const runningCalls = () => fetch.mock.calls.filter(([url]) => String(url).endsWith("/running")).length;
+    expect(runningCalls()).toBe(1);
+    await expect(attached.status()).resolves.toBe("stopped");
+    await expect(attached.renewLease()).rejects.toThrow("not running");
+    const fresh = await provider.resume(original.runtimeHandle(), { sessionId: "s", workdir: "/workspace" } as never, {});
+    await expect(fresh.status()).resolves.toBe("stopped");
+    expect(runningCalls()).toBe(1);
+    await expect(attached.destroy()).resolves.toBeUndefined();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("does not delete the sandbox when the destroy tombstone cannot be written", async () => {
+    const store = new InMemoryBlobStore();
+    vi.spyOn(store, "put").mockRejectedValueOnce(new Error("store down"));
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(Response.json({ running: true }));
+    const instance = runtime(fetch, { checkpointStore: store });
+    await expect(instance.destroy()).rejects.toThrow("store down");
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(instance.destroy()).resolves.toBeUndefined();
+    await expect(instance.status()).resolves.toBe("stopped");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("validates provider creation, resume, and cleans up failed restores", async () => {
     const store = new InMemoryBlobStore();
     const valid = await checkpoint(store);

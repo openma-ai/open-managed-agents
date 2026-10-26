@@ -30,13 +30,26 @@ OpenEnv 管的是环境怎么被训和评调用：外面统一是 `reset` / `ste
 
 Open Managed Agents（OpenMA）有自己的 sandbox 契约：`SandboxProviderPort`、租约、fence、harness 监督、workspace、credential egress。这条契约比「创建容器再 exec」厚得多，我们不会拿 OpenSandbox 的 API 去替换它。
 
-做法和接 E2B、Daytona 一样：OpenSandbox 做成一个 provider adapter。运维侧设 `SANDBOX_PROVIDER=opensandbox`，指到你的 OpenSandbox 服务，会话和 Environment Work 仍走 OpenMA 原来的控制面。密钥继续留在控制面一侧，和 Harbor 风格的 inference / credential proxy 同一思路，盒子里尽量只拿短时凭证。
+做法和接 E2B、Daytona 一样：OpenSandbox 做成一个 provider adapter。运维侧设 `SANDBOX_PROVIDER=opensandbox`，指到你的 OpenSandbox 服务，会话和 Environment Work 仍走 OpenMA 原来的控制面。OpenSandbox 服务端的 API key 留在控制面的连接配置里，不会注入盒子的环境变量。
+
+更正说明：第一版 adapter（[#353](https://github.com/openma-ai/open-managed-agents/pull/353)）是手写的 HTTP 客户端，只对着 mock 测过。外部贡献者 [@jwx0925](https://github.com/jwx0925) 在真实 OpenSandbox 服务上跑出了问题：命令流的格式和上传接口的 multipart 字段都和 mock 不一致，请求直接失败。本文最初发布时说「已支持」，说早了。[#364](https://github.com/openma-ai/open-managed-agents/pull/364) 把 adapter 换成了官方 TypeScript SDK `@alibaba-group/opensandbox`，并在真实服务上验证过，感谢 @jwx0925。
+
+目前的边界：adapter 支持创建、重连、命令执行、文件读写、租约续期和 harness 的 stdio 通道；suspend、checkpoint 和跨运行时 restore 还不支持。
 
 对自托管、要控数据出境、或者不想把沙箱绑在某一家 SaaS 上的团队，这一下把平台内核和执行底座拆开了。内核还是 OpenMA，底座可以换成自己机房里的 OpenSandbox。
 
 ## 怎么开
 
-自托管起好 OpenSandbox 之后，在 OpenMA 里选 opensandbox provider，配上服务地址和 API key（具体环境变量以文档为准）。需要跑 Harbor 评测时，也可以直接 `harbor run -e opensandbox`，和 OpenMA 这条线并行。
+自托管起好 OpenSandbox 之后，在 OpenMA 的部署里安装 SDK（`@alibaba-group/opensandbox`，可选依赖，只在选这个 provider 时需要），然后配置：
+
+```bash
+SANDBOX_PROVIDER=opensandbox
+OPENSANDBOX_DOMAIN=localhost:8080   # 只写 host[:port]，不带协议和路径
+OPENSANDBOX_PROTOCOL=http           # 服务走 TLS 时改成 https
+OPENSANDBOX_API_KEY=...             # 服务端开了鉴权才需要
+```
+
+旧的 `OPENSANDBOX_BASE_URL` 已经不用了。完整选项（资源、生命周期、镜像要求）见 [adapter README](https://github.com/openma-ai/open-managed-agents/blob/main/packages/sandbox-adapter-opensandbox/README.md)。需要跑 Harbor 评测时，也可以直接 `harbor run -e opensandbox`，和 OpenMA 这条线并行。
 
 ## 参考
 
@@ -45,4 +58,5 @@ Open Managed Agents（OpenMA）有自己的 sandbox 契约：`SandboxProviderPor
 3. [OpenSandbox API](https://open-sandbox.ai/api/)
 4. [Harbor × OpenSandbox 评测示例](https://open-sandbox.ai/examples/harbor-evaluation)
 5. [Open Managed Agents](https://github.com/openma-ai/open-managed-agents)
-6. [PR #353：OpenSandbox provider adapter](https://github.com/openma-ai/open-managed-agents/pull/353)
+6. [PR #353：OpenSandbox provider adapter（初版）](https://github.com/openma-ai/open-managed-agents/pull/353)
+7. [PR #364：改用官方 SDK，真实服务验证](https://github.com/openma-ai/open-managed-agents/pull/364)

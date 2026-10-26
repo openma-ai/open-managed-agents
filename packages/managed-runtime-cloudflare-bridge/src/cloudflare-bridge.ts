@@ -256,8 +256,22 @@ export class CloudflareBridgeRuntime
     return response;
   }
 
+  // The Bridge has no side-effect-free status route: every
+  // `/v1/sandbox/:id/*` request (including `GET /running`, which runs
+  // `exec("true")`) assigns and starts a container for that id. Probing a
+  // destroyed sandbox would therefore start a fresh, empty one. A destroy
+  // tombstone in the checkpoint store lets every attachment (not only the
+  // instance that destroyed it) answer "stopped" without touching the Bridge.
+  get #tombstoneKey(): string {
+    return `${this.#prefix}/${encodeURIComponent(this.#runtimeId)}.destroyed`;
+  }
+
   async status(): Promise<SandboxRuntimeStatus> {
     if (this.#destroyed) return "stopped";
+    if (await this.#store.head(this.#tombstoneKey) !== null) {
+      this.#destroyed = true;
+      return "stopped";
+    }
     const response = await this.#request("/running");
     if (!response.ok) throw await responseError(response);
     const body = await response.json() as { running?: unknown };
@@ -553,6 +567,9 @@ export class CloudflareBridgeRuntime
     if (this.#destroyed) return;
     if (this.#destroyPromise !== null) return this.#destroyPromise;
     const operation = (async () => {
+      // Written before the DELETE so a failed write leaves the sandbox
+      // untouched, and a failed DELETE fails closed (reported as stopped).
+      await this.#store.put(this.#tombstoneKey, "destroyed");
       const response = await this.#request("", { method: "DELETE" });
       if (!response.ok && response.status !== 404) throw await responseError(response);
       this.#destroyed = true;
