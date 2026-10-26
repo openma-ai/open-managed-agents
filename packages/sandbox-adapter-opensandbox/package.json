@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:certification": "OMA_OPENSANDBOX_CERTIFICATION=1 vitest run --config vitest.config.ts test/opensandbox-certification.e2e.test.ts"
   },
   "dependencies": {
     "@open-managed-agents/sandbox": "workspace:*"
@@ -16,6 +17,15 @@
   "devDependencies": {
     "@types/node": "^26.6.3",
     "vitest": "^4.1.3",
-    "@open-managed-agents/managed-runtime-sandbox": "workspace:*"
+    "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
+    "@alibaba-group/opensandbox": "1.1.1"
+  },
+  "peerDependencies": {
+    "@alibaba-group/opensandbox": "^1.1.1"
+  },
+  "peerDependenciesMeta": {
+    "@alibaba-group/opensandbox": {
+      "optional": true
+    }
   }
 }

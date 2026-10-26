@@ -1,8 +1,8 @@
-// Native OpenSandbox lifecycle + execd OpenAPI adapter. Provider credentials
-// are used only on lifecycle requests, never in the sandbox environment.
+// OpenMA ports backed by the official OpenSandbox SDK. Provider credentials
+// stay in the control-plane connection config, never in the sandbox environment.
 import { randomInt } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { setTimeout as delay } from "node:timers/promises";
+import type { CommandExecution, Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
 import type {
   SandboxCheckpointHandle, SandboxDuplexProcessPort, SandboxDuplexProcessSpec,
   SandboxFactory, SandboxFactoryEnv, SandboxPort, SandboxProviderPort,
@@ -10,21 +10,9 @@ import type {
 } from "@open-managed-agents/sandbox";
 import { spawnBridge } from "./stdio-bridge";
 
-class OpenSandboxHttpError extends Error {
-  constructor(readonly status: number) { super(`OpenSandbox request failed (HTTP ${status})`); }
-}
-
-interface Endpoint { endpoint: string; headers?: Record<string, string> }
-interface SandboxInfo { id: string; status: { state: string } }
-interface StreamEvent {
-  type: string;
-  text?: string;
-  exit_code?: number;
-  error?: { evalue?: string; exit_code?: number };
-}
-
 export interface OpenSandboxOptions {
-  baseUrl: string;
+  domain: string;
+  protocol: "http" | "https";
   apiKey?: string;
   image: string;
   timeoutSeconds: number;
@@ -41,14 +29,17 @@ function positive(value: string | undefined, fallback: number, name: string, min
 }
 
 export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptions {
-  const baseUrl = env.OPENSANDBOX_BASE_URL
-    ?? `${env.OPENSANDBOX_PROTOCOL ?? "http"}://${env.OPENSANDBOX_DOMAIN ?? "localhost:8080"}/v1`;
-  const url = new URL(baseUrl);
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-    throw new Error("OPENSANDBOX_BASE_URL must be an HTTP(S) API base URL without credentials, query or fragment");
+  const domain = env.OPENSANDBOX_DOMAIN ?? "localhost:8080";
+  const protocol = env.OPENSANDBOX_PROTOCOL ?? "http";
+  if (protocol !== "http" && protocol !== "https") throw new Error("OPENSANDBOX_PROTOCOL must be http or https");
+  let url: URL;
+  try { url = new URL(`${protocol}://${domain}`); }
+  catch { throw new Error("OPENSANDBOX_DOMAIN must be a server host[:port]"); }
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("OPENSANDBOX_DOMAIN must be a server host[:port] without credentials, path, query or fragment");
   }
   return {
-    baseUrl: baseUrl.replace(/\/+$/, ""),
+    domain, protocol,
     apiKey: env.OPENSANDBOX_API_KEY ?? env.OPEN_SANDBOX_API_KEY,
     image: env.SANDBOX_IMAGE ?? "node:22-slim",
     timeoutSeconds: positive(env.OPENSANDBOX_TIMEOUT_SECONDS, 1800, "OPENSANDBOX_TIMEOUT_SECONDS", 60),
@@ -58,85 +49,71 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptio
   };
 }
 
+async function loadSdk() {
+  return import(/* @vite-ignore */ "@alibaba-group/opensandbox" as string)
+    .catch(() => { throw new Error("OpenSandbox provider requires '@alibaba-group/opensandbox'; install it in the selected deployment"); }) as Promise<typeof import("@alibaba-group/opensandbox")>;
+}
+
+function statusCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("statusCode" in error)) return undefined;
+  return typeof error.statusCode === "number" ? error.statusCode : undefined;
+}
+
+function providerError(operation: string, error: unknown): Error {
+  const status = statusCode(error);
+  // SDK exceptions can include upstream bodies, URLs and headers. Keep those
+  // out of Session events, including when an upstream gateway echoes a key.
+  return new Error(`OpenSandbox ${operation} failed${status === undefined ? "" : ` (HTTP ${status})`}`);
+}
+
+function configuration(sdk: Awaited<ReturnType<typeof loadSdk>>, options: OpenSandboxOptions) {
+  return new sdk.ConnectionConfig({
+    domain: options.domain,
+    protocol: options.protocol,
+    apiKey: options.apiKey,
+    requestTimeoutSeconds: 60,
+    disableMetrics: true,
+  });
+}
+
 export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDuplexProcessPort {
   private env: Record<string, string> = {};
   private secrets: Array<{ prefix: string; values: Record<string, string> }> = [];
-  private endpoint?: Endpoint;
   private destroyed = false;
+  readonly id: string;
 
-  constructor(readonly id: string, private readonly options: OpenSandboxOptions) {}
-
-  private async request(url: string, headers: Record<string, string>, init: RequestInit = {}): Promise<Response> {
-    const response = await fetch(url, {
-      ...init,
-      headers: { ...headers, ...init.headers },
-      signal: init.signal ?? AbortSignal.timeout(60_000),
-    });
-    if (!response.ok) {
-      // Do not echo response bodies, URLs or headers: gateways may include credentials.
-      await response.body?.cancel();
-      throw new OpenSandboxHttpError(response.status);
-    }
-    return response;
+  constructor(private readonly client: SdkSandbox, private readonly options: OpenSandboxOptions) {
+    this.id = client.id;
   }
 
-  async lifecycle(path = "", init: RequestInit = {}): Promise<Response> {
-    return this.request(`${this.options.baseUrl}/sandboxes/${encodeURIComponent(this.id)}${path}`, {
-      ...(this.options.apiKey ? { "OPEN-SANDBOX-API-KEY": this.options.apiKey } : {}),
-    }, init);
+  private async call<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.destroyed) throw new Error("OpenSandbox has been destroyed");
+    try { return await operation(); }
+    catch (error) { throw providerError("request", error); }
   }
 
-  async serviceEndpoint(port: number): Promise<Endpoint> {
-    const endpoint = await (await this.lifecycle(`/endpoints/${port}`)).json() as Endpoint;
+  async serviceEndpoint(port: number) {
+    const endpoint = await this.call(() => this.client.getEndpoint(port));
     const url = new URL(endpoint.endpoint.includes("://")
-      ? endpoint.endpoint : `${new URL(this.options.baseUrl).protocol}//${endpoint.endpoint}`);
+      ? endpoint.endpoint : `${this.options.protocol}://${endpoint.endpoint}`);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
       throw new Error("OpenSandbox returned an invalid service endpoint");
     }
-    return { ...endpoint, endpoint: url.href.replace(/\/$/, "") };
-  }
-
-  async execd(path: string, init: RequestInit = {}): Promise<Response> {
-    if (this.destroyed) throw new Error("OpenSandbox has been destroyed");
-    this.endpoint ??= await this.serviceEndpoint(44772);
-    return this.request(`${this.endpoint.endpoint}${path}`, this.endpoint.headers ?? {}, init);
-  }
-
-  async waitUntilReady(): Promise<void> {
-    const deadline = Date.now() + this.options.readyTimeoutMs;
-    const signal = AbortSignal.timeout(this.options.readyTimeoutMs);
-    while (true) {
-      const state = await this.status(signal);
-      if (state === "running") break;
-      if (state === "suspended") throw new Error("OpenSandbox runtime is paused; resume it on the server before attaching");
-      if (state === "stopped") throw new Error("OpenSandbox stopped during provisioning");
-      if (Date.now() >= deadline) throw new Error("OpenSandbox provisioning timed out");
-      await delay(250, undefined, { signal });
-    }
-    // Lifecycle Running precedes execd readiness on some runtimes.
-    while (true) {
-      try { await this.execd("/ping", { signal }); break; }
-      catch (error) {
-        if (Date.now() >= deadline) throw error;
-        this.endpoint = undefined;
-        await delay(250, undefined, { signal });
-      }
-    }
-    await this.execd("/directories", { ...json({ "/workspace": { mode: 755 } }), signal });
+    return { endpoint: url.href.replace(/\/$/, ""), headers: endpoint.headers };
   }
 
   runtimeHandle(): SandboxRuntimeHandle { return { provider: "opensandbox", runtimeId: this.id }; }
   runtimeCapabilities() { return { lease: true, suspend: [], checkpoint: [] }; }
   async status(signal?: AbortSignal): Promise<SandboxRuntimeStatus> {
     if (this.destroyed) return "stopped";
-    let response: Response;
-    try { response = await this.lifecycle("", { signal }); }
+    signal?.throwIfAborted();
+    let state: string;
+    try { state = (await this.client.getInfo()).status.state.toLowerCase(); }
     catch (error) {
-      if (error instanceof OpenSandboxHttpError && error.status === 404) return "stopped";
-      throw error;
+      if (statusCode(error) === 404) return "stopped";
+      throw providerError("request", error);
     }
-    const info = await response.json() as SandboxInfo;
-    switch (info.status.state.toLowerCase()) {
+    switch (state) {
       case "running": return "running";
       case "paused": return "suspended";
       case "terminated": case "failed": case "deleted": return "stopped";
@@ -145,7 +122,7 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
   async renewLease({ ttlMs }: { ttlMs: number }): Promise<void> {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error("ttlMs must be a positive integer");
-    await this.lifecycle("/renew-expiration", json({ expiresAt: new Date(Date.now() + ttlMs).toISOString() }));
+    await this.call(() => this.client.renew(ttlMs / 1000));
   }
   async suspend(): Promise<SandboxCheckpointHandle> { throw new Error("OpenSandbox suspend is not supported by this adapter"); }
   async resume(): Promise<void> { throw new Error("OpenSandbox checkpoint resume is not supported by this adapter"); }
@@ -160,114 +137,107 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     return result;
   }
 
-  async run(command: string, timeout = 120_000, background = false): Promise<StreamEvent[]> {
-    const response = await this.execd("/command", {
-      ...json({ command, cwd: "/workspace", ...(background ? {} : { timeout }), background, envs: this.commandEnv(command) }),
-      signal: AbortSignal.timeout(timeout + 30_000),
-    });
-    return readEvents(response);
+  async run(command: string, timeout = 120_000, background = false): Promise<CommandExecution> {
+    const execution = await this.call(() => this.client.commands.run(command, {
+      workingDirectory: "/workspace", background, envs: this.commandEnv(command),
+      ...(background ? {} : { timeoutSeconds: timeout / 1000 }),
+    }, undefined, AbortSignal.timeout(timeout + 30_000)));
+    // Nonzero exits can finish with an SDK error and exitCode, without a
+    // separate execution_complete event. An empty/truncated stream is neither.
+    if (!execution.complete && !execution.error) throw new Error("OpenSandbox command stream ended before execution_complete");
+    return execution;
   }
   async exec(command: string, timeout?: number): Promise<string> {
-    const events = await this.run(command, timeout);
-    let stdout = "", stderr = "", exitCode = 0;
-    for (const event of events) {
-      if (event.type === "stdout") stdout += event.text ?? "";
-      if (event.type === "stderr") stderr += event.text ?? "";
-      if (event.exit_code !== undefined && event.exit_code !== 0) exitCode = event.exit_code;
-      if (event.error) {
-        const code = event.error.exit_code ?? Number(event.error.evalue);
-        if (!Number.isInteger(code) || code === 0) throw new Error("OpenSandbox command failed to execute");
-        exitCode = code;
-      }
-    }
+    const result = await this.run(command, timeout);
+    const stdout = result.logs.stdout.map((message) => message.text).join("");
+    const stderr = result.logs.stderr.map((message) => message.text).join("");
+    const exitCode = result.exitCode ?? 0;
+    if (result.error && !exitCode) throw new Error("OpenSandbox command failed to execute");
     const combined = (stdout + (stderr ? `${stdout && !stdout.endsWith("\n") ? "\n" : ""}${stderr}` : "")).trimEnd();
     return combined + (exitCode ? `\n[exit ${exitCode}]` : "");
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
-    return new Uint8Array(await (await this.execd(`/files/download?path=${encodeURIComponent(normalise(path))}`)).arrayBuffer());
+    return this.call(() => this.client.files.readBytes(normalise(path)));
   }
   async readFile(path: string): Promise<string> { return Buffer.from(await this.readFileBytes(path)).toString("utf8"); }
   async writeFile(path: string, content: string): Promise<string> { return this.writeFileBytes(path, Buffer.from(content)); }
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
     const target = normalise(path);
-    await this.execd("/directories", json({ [target.slice(0, target.lastIndexOf("/")) || "/"]: { mode: 755 } }));
-    const form = new FormData();
-    form.append("metadata", JSON.stringify({ path: target, mode: 644 }));
-    form.append("file", new Blob([new Uint8Array(bytes)]), "file");
-    await this.execd("/files/upload", { method: "POST", body: form });
+    await this.call(() => this.client.files.createDirectories([{ path: target.slice(0, target.lastIndexOf("/")) || "/", mode: 755 }]));
+    await this.call(() => this.client.files.writeFiles([{ path: target, data: bytes, mode: 644 }]));
     return target;
+  }
+  /** Writes owner-only files (dir 0700, files 0600) for data that must stay off argv. */
+  async writePrivateFiles(dir: string, files: Record<string, Uint8Array>): Promise<void> {
+    const target = normalise(dir);
+    await this.call(() => this.client.files.createDirectories([{ path: target, mode: 700 }]));
+    await this.call(() => this.client.files.writeFiles(Object.entries(files).map(([name, data]) => ({ path: `${target}/${name}`, data, mode: 600 }))));
+  }
+  async removeDirectory(dir: string): Promise<void> {
+    await this.call(() => this.client.files.deleteDirectories([normalise(dir)]));
   }
   async spawnDuplexProcess(spec: SandboxDuplexProcessSpec) {
     return spawnBridge(this, spec, randomInt(45000, 65000));
   }
   async destroy(): Promise<void> {
     if (this.destroyed) return;
-    try { await this.lifecycle("", { method: "DELETE" }); }
-    catch (error) {
-      if (!(error instanceof OpenSandboxHttpError && error.status === 404)) throw error;
-    }
+    try { await this.client.kill(); }
+    catch (error) { if (statusCode(error) !== 404) throw providerError("request", error); }
+    await this.client.close();
     this.destroyed = true;
   }
 }
 
 function normalise(path: string): string { return path.startsWith("/") ? path : `/workspace/${path}`; }
-function json(body: unknown): RequestInit { return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }; }
-
-/** Parse incrementally: SSE records may cross network chunks or contain multiple data lines. */
-async function readEvents(response: Response): Promise<StreamEvent[]> {
-  if (!response.body) throw new Error("OpenSandbox returned an empty command stream");
-  const events: StreamEvent[] = [];
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let pending = "";
-  const record = (value: string) => {
-    const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-    if (data) events.push(JSON.parse(data) as StreamEvent);
-  };
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      pending += value;
-      pending = pending.replace(/\r\n/g, "\n");
-      let boundary: number;
-      while ((boundary = pending.indexOf("\n\n")) >= 0) {
-        record(pending.slice(0, boundary)); pending = pending.slice(boundary + 2);
-      }
-    }
-    if (pending.trim()) record(pending);
-  } finally { reader.releaseLock(); }
-  if (!events.some((event) => event.type === "execution_complete")) {
-    throw new Error("OpenSandbox command stream ended before execution_complete");
-  }
-  return events;
-}
 
 export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
   async create(ctx, env) {
     const options = optionsFromEnvironment(env);
-    const response = await fetch(`${options.baseUrl}/sandboxes`, {
-      ...json({ image: { uri: options.image }, timeout: options.timeoutSeconds,
-        resourceLimits: { cpu: options.cpu, memory: options.memory },
-        entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId } }),
-      headers: { "Content-Type": "application/json", ...(options.apiKey ? { "OPEN-SANDBOX-API-KEY": options.apiKey } : {}) },
-      signal: AbortSignal.timeout(options.readyTimeoutMs),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`OpenSandbox create failed (HTTP ${response.status})`);
+    const sdk = await loadSdk();
+    let client: SdkSandbox;
+    try {
+      client = await sdk.Sandbox.create({
+        connectionConfig: configuration(sdk, options),
+        image: options.image, timeoutSeconds: options.timeoutSeconds,
+        resource: { cpu: options.cpu, memory: options.memory },
+        entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId },
+        readyTimeoutSeconds: options.readyTimeoutMs / 1000,
+        signal: AbortSignal.timeout(options.readyTimeoutMs),
+      });
+    } catch (error) { throw providerError("create", error); }
+    const sandbox = new OpenSandbox(client, options);
+    try {
+      await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
+      return sandbox;
+    } catch (error) {
+      await sandbox.destroy().catch(() => undefined);
+      throw providerError("request", error);
     }
-    const info = await response.json() as SandboxInfo;
-    if (!info.id) throw new Error("OpenSandbox create response has no sandbox id");
-    const sandbox = new OpenSandbox(info.id, options);
-    try { await sandbox.waitUntilReady(); return sandbox; }
-    catch (error) { await sandbox.destroy().catch(() => undefined); throw error; }
   },
   async resume(handle, _ctx, env) {
     if (handle.provider !== "opensandbox" || !handle.runtimeId) throw new Error("Incompatible OpenSandbox runtime handle");
-    const sandbox = new OpenSandbox(handle.runtimeId, optionsFromEnvironment(env));
-    await sandbox.waitUntilReady();
-    return sandbox;
+    const options = optionsFromEnvironment(env);
+    const sdk = await loadSdk();
+    const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, options) });
+    let state: string;
+    try { state = (await manager.getSandboxInfo(handle.runtimeId)).status.state.toLowerCase(); }
+    catch (error) { throw providerError("resume", error); }
+    finally { await manager.close(); }
+    if (state === "paused") throw new Error("OpenSandbox runtime is paused; resume it on the server before attaching");
+    if (["terminated", "failed", "deleted"].includes(state)) throw new Error("OpenSandbox runtime is stopped; cannot attach");
+    let client: SdkSandbox | undefined;
+    try {
+      client = await sdk.Sandbox.connect({
+        sandboxId: handle.runtimeId, connectionConfig: configuration(sdk, options),
+        readyTimeoutSeconds: options.readyTimeoutMs / 1000, signal: AbortSignal.timeout(options.readyTimeoutMs),
+      });
+      await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
+    } catch (error) {
+      await client?.close();
+      throw providerError("resume", error);
+    }
+    return new OpenSandbox(client, options);
   },
   async restore() { throw new Error("OpenSandbox portable restore is not supported by this adapter"); },
 };

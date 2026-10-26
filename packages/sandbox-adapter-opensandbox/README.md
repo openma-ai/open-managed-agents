@@ -1,9 +1,20 @@
 # OpenSandbox adapter
 
-Native [OpenSandbox lifecycle](https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/sandbox-lifecycle.yml)
-and [execd](https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/execd-api.yaml)
-HTTP implementation of OpenMA's `SandboxProviderPort` and `SandboxFactory`.
-The package is private and needs no provider SDK installation.
+Implementation of OpenMA's `SandboxProviderPort` and `SandboxFactory` backed by
+the official [`@alibaba-group/opensandbox`](https://github.com/opensandbox-group/OpenSandbox/tree/main/sdks/sandbox/javascript)
+TypeScript SDK. The SDK owns lifecycle requests, readiness, command streams,
+file transfer, lease renewal and endpoint discovery. The package is private.
+
+The SDK is an optional peer dependency, matching the other provider adapters.
+Source installs include version `1.1.1` as a development dependency for tests;
+production-only packaging must install the selected provider's peer SDK:
+
+```sh
+npm install @alibaba-group/opensandbox@^1.1.1
+```
+
+SDK creation telemetry is disabled. API keys remain in the SDK's control-plane
+connection configuration and are not forwarded as sandbox environment variables.
 
 Start a Docker-backed server as in the upstream
 [Harbor example](https://github.com/opensandbox-group/OpenSandbox/blob/main/docs/examples/harbor-evaluation.md):
@@ -28,22 +39,22 @@ SANDBOX_IMAGE=node:22-slim
 | `OPENSANDBOX_DOMAIN` | `localhost:8080` | Server `host[:port]`, matching Harbor. |
 | `OPENSANDBOX_API_KEY` | unset | Lifecycle API key; optional for a no-auth development server. `OPEN_SANDBOX_API_KEY` is the official SDK-compatible fallback name. |
 | `OPENSANDBOX_PROTOCOL` | `http` | `http` or `https` for domain and scheme-less service endpoints. |
-| `OPENSANDBOX_BASE_URL` | derived from protocol/domain + `/v1` | OpenMA override for the complete lifecycle API base URL, e.g. `https://sandbox.example.com/v1`. Takes precedence over domain/protocol. Include any reverse-proxy prefix and `/v1`. |
 | `OPENSANDBOX_TIMEOUT_SECONDS` | `1800` | Initial sandbox lifetime, integer seconds, minimum `60`. OpenMA renews active runtime leases via `renew-expiration`. |
 | `OPENSANDBOX_READY_TIMEOUT_MS` | `120000` | Provisioning and execd readiness deadline in milliseconds. |
 | `OPENSANDBOX_CPU` | `1` | OpenSandbox `resourceLimits.cpu` quantity. |
 | `OPENSANDBOX_MEMORY` | `1Gi` | OpenSandbox `resourceLimits.memory` quantity. |
 | `SANDBOX_IMAGE` | `node:22-slim` | Prebuilt container image. Must provide Node.js, `sh`, `tail`, and any selected harness/runtime executables. |
 
-The domain/key names follow Harbor. Base URL, resource, and timeout variables
-are OpenMA adapter configuration, mapped to the upstream OpenAPI fields.
+The domain/key names follow Harbor. Configure the address with
+`OPENSANDBOX_DOMAIN=host[:port]`; the SDK constructs its lifecycle API URL.
+Resource and timeout variables are OpenMA adapter configuration, mapped to the upstream OpenAPI fields.
 The OpenMA host must reach endpoints returned by the server for execd (44772)
 and stdio relays (random ports 45000–64999). Configure Docker host addressing or the
 OpenSandbox gateway accordingly; endpoint response headers are honored.
 
 Commands run in `/workspace`; relative file paths are rooted there. Files are
 binary safe. `sandboxProvider.resume` attaches an existing running runtime by
-its persisted handle. Creation waits for Running and execd `/ping`; failed
+its persisted handle. Creation uses the SDK's endpoint and execd health checks; failed
 provisioning deletes the allocation. Destroy is idempotent and retries remain
 possible after an HTTP failure.
 
@@ -75,3 +86,14 @@ Run the default tests without an OpenSandbox server:
 pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox test
 pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox typecheck
 ```
+
+These tests run the real SDK against an HTTP test double, and run the stdio
+relay as a real local child process. To opt into the live lifecycle, file,
+command, renewal, reattachment and binary stdio check, configure the connection
+variables above and run:
+
+```sh
+pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox test:certification
+```
+
+The live check creates a temporary remote sandbox and deletes it in cleanup.
