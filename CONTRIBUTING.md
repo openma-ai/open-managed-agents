@@ -121,6 +121,28 @@ Dependabot 和手工 lockfile 更新都要做兼容性检查。CI 变绿只是�
 - Martty 的 `npm/package.json` 依赖 `@openma/deepseek-harness-acp`。CHANGELOG 记录过随 0.4.29、0.4.31 的升级；#135 跟上了 0.4.35 的打包修复。
 - openma-common 打 tag 并发布到 npm 之后，消费仓库把 `@openma/common` 改到新版本并提交 lockfile（该仓库 `CONTRIBUTING.md` 的 release checklist）。
 
+## 沙箱 provider 适配器 / Sandbox provider adapters
+
+### 反例：#353 OpenSandbox adapter / Anti-pattern
+
+[#353](https://github.com/openma-ai/open-managed-agents/pull/353) 是我们自己的反例。
+
+**做了什么。** 手写了一套 lifecycle / execd HTTP 客户端，把厂商协议重新实现了一遍。测试只对着我们自己写的 HTTP 替身跑，替身是照我们对文档的理解写的。合并后还发了博客，说 OpenMA 已经支持 OpenSandbox。
+
+**真实服务上坏在哪。** 外部贡献者 @jwx0925 在真实服务器上跑出了下面的问题：
+
+- 命令流是空行分隔的 JSON 记录，不带 `data:` 前缀。我们按 SSE 解析，`execution_complete` 被丢掉。
+- 上传时 `metadata` 被当成普通文本字段发出去，服务端要求它是 multipart 的文件 part，于是返回 HTTP 400 `INVALID_FILE_METADATA`。重启后恢复 session 输出也要走上传，所以这一条也坏了。
+
+[#363](https://github.com/openma-ai/open-managed-agents/pull/363) 在手写客户端上打了补丁（已关闭）。[#364](https://github.com/openma-ai/open-managed-agents/pull/364) 换成了官方 SDK。
+
+**规则。**
+
+- 厂商有官方 SDK 就用 SDK。按本仓库的 provider 依赖边界（`scripts/provider-package-boundaries.test.mjs`）声明成可选 peer dependency，并且懒加载。
+- 测试替身只能来自真实服务上抓到的流量，或者直接用 SDK 本身。不能照我们自己对文档的理解来写。
+- 合并前，必须对真实服务跑过一次 live 认证测试。测试默认不跑、需要显式开启，写法参照 #364 的 `test:certification`。PR 的验证证据里写明跑的是哪个服务、哪个版本。
+- live 验证之前，博客、docs、README 里都不能说支持。
+
 ## 发布 / Release
 
 以该仓库的 workflow 为准。组织里实际有两种。
