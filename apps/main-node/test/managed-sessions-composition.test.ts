@@ -16,15 +16,15 @@ import {
 import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
 
 const SCHEMA = `
-CREATE TABLE managed_agent_versions (
-  agent_id text NOT NULL, workspace_id text NOT NULL, version integer NOT NULL,
-  document text NOT NULL, created_at integer NOT NULL,
-  PRIMARY KEY (agent_id, version)
-);
-CREATE TABLE managed_agents (
-  id text PRIMARY KEY NOT NULL, workspace_id text NOT NULL, document text NOT NULL,
+CREATE TABLE agents (
+  id text PRIMARY KEY NOT NULL, tenant_id text NOT NULL, config text NOT NULL,
   version integer NOT NULL, created_at integer NOT NULL,
-  updated_at integer NOT NULL, archived_at integer
+  updated_at integer, archived_at integer
+);
+CREATE TABLE agent_versions (
+  agent_id text NOT NULL, tenant_id text NOT NULL, version integer NOT NULL,
+  snapshot text NOT NULL, created_at integer NOT NULL,
+  PRIMARY KEY (agent_id, version)
 );
 CREATE TABLE managed_sessions (
   id text PRIMARY KEY NOT NULL, workspace_id text NOT NULL, document text NOT NULL,
