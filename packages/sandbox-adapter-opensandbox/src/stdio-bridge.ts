@@ -8,22 +8,27 @@ import type { OpenSandbox } from "./opensandbox";
 // stdio (unlike a PTY) over an authenticated OpenSandbox service endpoint.
 // OpenMA's worker/supervisor protocol passes through unchanged.
 //
-// The source never inlines env values or the auth token: both arrive via the
-// execd request body (`envs`), so the command string / argv stay secret-free.
-// The relay drops its token from process.env before spawning the child.
-// Tradeoff: the relay's /proc/<pid>/environ holds the child env for its
-// lifetime (readable by same-uid processes), the same as the child's own.
-export const TOKEN_ENV = "OPENMA_STDIO_TOKEN";
-export function bridgeSource(spec: Omit<SandboxDuplexProcessSpec, "env">, port: number): string {
-  return `
+// The relay script is static. The child env (which can include registered
+// command secrets), the relay auth token and the port travel in an owner-only
+// (0600) spec file in a private (0700) temp dir. The relay reads and unlinks
+// it (and itself) before spawning the child, so neither the execd command
+// string nor any process argv (/proc/*/cmdline) carries secret values.
+// Passing them via the relay's own env instead would expose them in
+// /proc/<pid>/environ for the relay's whole lifetime.
+export const BRIDGE_SOURCE = `
+const fs = require('node:fs');
+const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const spec = ${JSON.stringify({ command: spec.command, args: spec.args, cwd: spec.cwd })};
-const token = process.env.${TOKEN_ENV};
-delete process.env.${TOKEN_ENV};
-if (!token) process.exit(1);
+const specPath = process.argv[2];
+let spec;
+try { spec = JSON.parse(fs.readFileSync(specPath, 'utf8')); }
+finally {
+  try { fs.rmSync(path.dirname(specPath), { recursive: true, force: true }); } catch {}
+}
+const token = spec.token;
 const child = spawn(spec.command, spec.args || [], {
-  cwd: spec.cwd || '/workspace', env: process.env, detached: true,
+  cwd: spec.cwd || '/workspace', env: { ...process.env, ...spec.env }, detached: true,
   stdio: ['pipe', 'pipe', 'pipe']
 });
 let outcome, waiter;
@@ -69,9 +74,8 @@ server.on('error', () => {
   process.exit(1);
 });
 server.requestTimeout = 0;
-server.listen(${port}, '0.0.0.0');
+server.listen(spec.port, '0.0.0.0');
 `;
-}
 
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 
@@ -79,12 +83,24 @@ export async function spawnBridge(
   sandbox: OpenSandbox, spec: SandboxDuplexProcessSpec, port: number,
 ): Promise<SandboxDuplexProcess> {
   const token = Buffer.from(randomBytes(32)).toString("hex");
-  const { env: _env, ...rest } = spec;
-  const source = bridgeSource(rest, port);
-  const execution = await sandbox.run(`node -e ${quote(source)}`, 120_000, true, {
-    ...sandbox.commandEnv(spec.command, spec.env), [TOKEN_ENV]: token,
-  });
-  if (execution.error) throw new Error("OpenSandbox stdio relay failed to start");
+  const dir = `/tmp/openma-stdio-${Buffer.from(randomBytes(12)).toString("hex")}`;
+  const config = {
+    command: spec.command, args: spec.args, cwd: spec.cwd,
+    env: sandbox.commandEnv(spec.command, spec.env), port, token,
+  };
+  const cleanup = () => sandbox.removeDirectory(dir).catch(() => undefined);
+  try {
+    await sandbox.writePrivateFiles(dir, {
+      "relay.js": Buffer.from(BRIDGE_SOURCE),
+      "spec.json": Buffer.from(JSON.stringify(config)),
+    });
+    // Only non-secret file paths appear in the command (and so in argv/execd logs).
+    const execution = await sandbox.run(`node ${quote(`${dir}/relay.js`)} ${quote(`${dir}/spec.json`)}`, 120_000, true);
+    if (execution.error) throw new Error("OpenSandbox stdio relay failed to start");
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
   const endpoint = await sandbox.serviceEndpoint(port);
   const request = async (path: string, init: RequestInit = {}, stream = false) => {
     const response = await fetch(`${endpoint.endpoint}${path}`, {
@@ -97,7 +113,7 @@ export async function spawnBridge(
   const deadline = Date.now() + 30_000;
   while (true) {
     try { await request("/ready"); break; }
-    catch (error) { if (Date.now() >= deadline) throw error; await delay(100); }
+    catch (error) { if (Date.now() >= deadline) { await cleanup(); throw error; } await delay(100); }
   }
   try {
     const [stdout, stderr] = await Promise.all([
