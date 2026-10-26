@@ -82,8 +82,15 @@ Lifecycle hooks map to the official SDK only:
 - `suspend({ kind })` → `Sandbox.pause()`. Returns a `runtime`-scoped handle
   for the same sandbox id. On the Docker runtime this freezes the container, so
   files, memory and running processes are retained.
-- `resume(handle)` → `Sandbox.resume()` (fresh execd endpoint); a no-op when the
-  sandbox is already running.
+  OpenSandbox's expiry timer keeps running while a sandbox is paused and
+  deletes it on expiry (Docker and Kubernetes). Suspend therefore first renews
+  the expiration to `OPENSANDBOX_SUSPENDED_TTL_SECONDS` (default 86400, min 60)
+  and only pauses if that renewal succeeded. This is the retention window for a
+  retained runtime.
+- `resume(handle)` → `Sandbox.resume()` (fresh execd endpoint), then renews the
+  expiration back to `OPENSANDBOX_TIMEOUT_SECONDS`; a no-op when the sandbox is
+  already running. Attaching a paused runtime via `sandboxProvider.resume` does
+  the same.
 - `checkpoint({ kind: "filesystem", name })` → `SandboxManager.createSnapshot`,
   polled with `getSnapshot` until `Ready` (`OPENSANDBOX_SNAPSHOT_TIMEOUT_MS`,
   default 600000; `OPENSANDBOX_SNAPSHOT_POLL_MS`, default 1000). Returns a

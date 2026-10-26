@@ -109,15 +109,24 @@ describe("OpenSandbox official SDK adapter", () => {
     const sandbox = await create();
     const checkpoint = await sandbox.suspend({ kind: "memory" });
     expect(checkpoint).toEqual({ provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" });
-    expect(server.calls.some(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/pause")).toBe(true);
+    const pauseAt = server.calls.findIndex(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/pause");
+    const extendAt = server.calls.findIndex(call => call.url.pathname === "/v1/sandboxes/sb-1/renew-expiration");
+    expect(extendAt).toBeGreaterThanOrEqual(0);
+    expect(pauseAt).toBeGreaterThan(extendAt);
+    const extended = Date.parse((server.calls[extendAt]!.body as { expiresAt: string }).expiresAt) - Date.now();
+    expect(extended).toBeGreaterThan(86_300_000);
+    expect(extended).toBeLessThanOrEqual(86_400_000);
     server.state = "Paused";
     expect(await sandbox.status()).toBe("suspended");
     server.override = call => {
       if (call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/resume") { server.state = "Running"; return new Response(null, { status: 204 }); }
       return undefined;
     };
+    server.calls.length = 0;
     await sandbox.resume(checkpoint);
     expect(await sandbox.status()).toBe("running");
+    const restored = server.calls.find(call => call.url.pathname === "/v1/sandboxes/sb-1/renew-expiration");
+    expect(Date.parse((restored!.body as { expiresAt: string }).expiresAt) - Date.now()).toBeLessThanOrEqual(1_800_000);
     expect(await sandbox.readFileBytes("x")).toEqual(Uint8Array.of(0, 255, 1));
   });
 
@@ -168,6 +177,11 @@ describe("OpenSandbox official SDK adapter", () => {
     await expect(sandbox.checkpoint({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox snapshot failed \(HTTP 501\)$/);
     server.override = call => call.url.pathname.endsWith("/pause") ? new Response("provider-secret", { status: 409 }) : undefined;
     await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
+    server.calls.length = 0;
+    server.override = call => call.url.pathname.endsWith("/renew-expiration") ? new Response("provider-secret", { status: 409 }) : undefined;
+    await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
+    expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(false);
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_SUSPENDED_TTL_SECONDS: "59" })).toThrow(">= 60");
   });
 
   it("configures the SDK lifecycle API using only domain and protocol", async () => {

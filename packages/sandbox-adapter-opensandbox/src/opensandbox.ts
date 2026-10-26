@@ -21,6 +21,7 @@ export interface OpenSandboxOptions {
   memory: string;
   snapshotTimeoutMs: number;
   snapshotPollMs: number;
+  suspendedTtlSeconds: number;
 }
 
 function positive(value: string | undefined, fallback: number, name: string, min = 1): number {
@@ -50,6 +51,9 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptio
     memory: env.OPENSANDBOX_MEMORY ?? "1Gi",
     snapshotTimeoutMs: positive(env.OPENSANDBOX_SNAPSHOT_TIMEOUT_MS, 600_000, "OPENSANDBOX_SNAPSHOT_TIMEOUT_MS"),
     snapshotPollMs: positive(env.OPENSANDBOX_SNAPSHOT_POLL_MS, 1_000, "OPENSANDBOX_SNAPSHOT_POLL_MS"),
+    // OpenSandbox expiry deletes paused sandboxes too, and the last lease
+    // renewal (host heartbeat TTL) is usually short. Suspend extends it.
+    suspendedTtlSeconds: positive(env.OPENSANDBOX_SUSPENDED_TTL_SECONDS, 86_400, "OPENSANDBOX_SUSPENDED_TTL_SECONDS", 60),
   };
 }
 
@@ -133,6 +137,9 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
   async suspend({ kind }: { kind: SandboxCheckpointKind }): Promise<SandboxCheckpointHandle> {
     if (kind !== "filesystem" && kind !== "memory") throw new Error("Unsupported OpenSandbox suspend kind");
+    // The server's expiry timer keeps running while paused and deletes the
+    // sandbox. Extend first so a failed renewal never leaves a doomed pause.
+    await this.call(() => this.client.renew(this.options.suspendedTtlSeconds));
     await this.call(() => this.client.pause());
     return { provider: "opensandbox", checkpointId: this.id, sourceRuntimeId: this.id, kind, scope: "runtime" };
   }
@@ -148,6 +155,7 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     const resumed = await this.call(() => previous.resume({ readyTimeoutSeconds: this.options.readyTimeoutMs / 1000 }));
     this.client = resumed;
     await previous.close().catch(() => undefined);
+    await this.call(() => resumed.renew(this.options.timeoutSeconds));
   }
   async checkpoint({ kind, name }: { kind: SandboxCheckpointKind; name?: string }): Promise<SandboxCheckpointHandle> {
     if (kind !== "filesystem") throw new Error("OpenSandbox snapshots capture filesystem state only");
@@ -275,6 +283,7 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
       };
       // A retained runtime suspended by this adapter is resumed in place.
       client = state === "paused" ? await sdk.Sandbox.resume(connect) : await sdk.Sandbox.connect(connect);
+      if (state === "paused") await client.renew(options.timeoutSeconds);
       await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
     } catch (error) {
       await client?.close();
