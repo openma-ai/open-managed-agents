@@ -40,6 +40,8 @@ SANDBOX_IMAGE=node:22-slim
 | `OPENSANDBOX_API_KEY` | unset | Lifecycle API key; optional for a no-auth development server. `OPEN_SANDBOX_API_KEY` is the official SDK-compatible fallback name. |
 | `OPENSANDBOX_PROTOCOL` | `http` | `http` or `https` for domain and scheme-less service endpoints. |
 | `OPENSANDBOX_TIMEOUT_SECONDS` | `1800` | Initial sandbox lifetime, integer seconds, minimum `60`. OpenMA renews active runtime leases via `renew-expiration`. |
+| `OPENSANDBOX_SUSPENDED_TTL_SECONDS` | `86400` | Expiration set right before `suspend` pauses the sandbox (paused sandboxes still expire), minimum `60`. Resume restores `OPENSANDBOX_TIMEOUT_SECONDS`. |
+| `OPENSANDBOX_SNAPSHOT_TIMEOUT_MS` / `OPENSANDBOX_SNAPSHOT_POLL_MS` | `600000` / `1000` | Wait for a snapshot to become `Ready`. |
 | `OPENSANDBOX_READY_TIMEOUT_MS` | `120000` | Provisioning and execd readiness deadline in milliseconds. |
 | `OPENSANDBOX_CPU` | `1` | OpenSandbox `resourceLimits.cpu` quantity. |
 | `OPENSANDBOX_MEMORY` | `1Gi` | OpenSandbox `resourceLimits.memory` quantity. |
