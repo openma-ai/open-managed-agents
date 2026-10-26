@@ -118,7 +118,6 @@ describe("Node service resume applies published MCP tools", () => {
       MEMORY_BLOB_DIR: join(dir, "memory"),
       FILES_BLOB_DIR: join(dir, "files"),
       SESSION_OUTPUTS_DIR: join(dir, "outputs"),
-      ANTHROPIC_API_KEY: "test-key-not-used",
       PLATFORM_ROOT_SECRET: "test-platform-root-secret-padded-to-thirtytwo",
     });
     const components = await nodeDefaults(config);
@@ -142,6 +141,14 @@ describe("Node service resume applies published MCP tools", () => {
     await runtime.sql.prepare(
       `INSERT INTO membership (user_id, tenant_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
     ).bind(USER, TENANT, now).run();
+
+    // Even a deterministic harness resolves credentials in its own workspace.
+    await runtime.modelCardsService.create({
+      tenantId: TENANT,
+      modelId: "claude-sonnet-4-6",
+      provider: "ant",
+      apiKey: "test-key-not-used",
+    });
 
     const agent = await runtime.agentsService.create({
       tenantId: TENANT,

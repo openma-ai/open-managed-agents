@@ -71,6 +71,7 @@ test("root Cloudflare test discovery excludes generated and Node-only trees", ()
       path === "scripts/release-check.test.mjs" ||
       path === "scripts/release-check.history.test.mjs" ||
       path === "scripts/setup-cf.test.mjs" ||
+      path === "scripts/bootstrap-model-card.test.mjs" ||
       path === "scripts/live-certification.test.mjs" ||
       path === "scripts/offline-certification.test.mjs" ||
       path === "scripts/cost-attribution-certification.test.mjs" ||

@@ -3,7 +3,8 @@
  * ACP agents without placing provider API keys in the sandbox address space.
  *
  * Auth: workspace API key or current Work sessions_token via Bearer or x-api-key.
- * Upstream credentials resolve from the session agent's model card on the host.
+ * Upstream credentials resolve only from the session agent's model card on the
+ * host; there is no platform-key fallback.
  */
 
 import { Hono } from "hono";
@@ -11,7 +12,10 @@ import type { AgentConfig, Env } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import {
-  bindStoredModelCardCredentials,
+  ModelCardNotConfiguredError,
+  resolveWorkspaceModelCredentials,
+} from "@open-managed-agents/model-cards-store";
+import {
   extractHostedInferenceProxyToken,
   forwardHostedInferenceRequest,
   resolveProtocolEndpointsFromModelCard,
@@ -35,7 +39,6 @@ export async function resolveSessionModelUpstream(
   services: Services,
   tenantId: string,
   sessionId: string,
-  env: Env,
   sessionSource?: InferenceProxySessionSource,
 ): Promise<{
   wireModel: string;
@@ -70,41 +73,31 @@ export async function resolveSessionModelUpstream(
         : managedShape.agent?.model?.id;
   if (!handle) return null;
 
-  const fallback = {
-    wireModel: handle,
-    apiKey: env.ANTHROPIC_API_KEY,
-    baseURL: env.ANTHROPIC_BASE_URL,
-  };
+  // No platform key: only the workspace's own model card can pay for a
+  // proxied call. A missing card is a 403, never an operator-funded fallback.
   try {
-    const card = await services.modelCards.findByModelId({ tenantId, modelId: handle });
-    if (card && !card.archived_at) {
-      const key = await services.modelCards.getApiKey({ tenantId, cardId: card.id });
-      if (key) {
-        const bound = bindStoredModelCardCredentials(fallback, card, key);
-        const protocolEndpoints = resolveProtocolEndpointsFromModelCard({
-          providerId: card.provider,
-          baseUrl: card.base_url,
-        });
-        return {
-          wireModel: bound.wireModel,
-          apiKey: bound.apiKey,
-          baseURL: bound.baseURL,
-          provider: bound.provider,
-          providerId: card.provider,
-          protocolEndpoints,
-          customHeaders: bound.customHeaders,
-        };
-      }
+    const bound = await resolveWorkspaceModelCredentials(services.modelCards, tenantId, handle);
+    const protocolEndpoints = resolveProtocolEndpointsFromModelCard({
+      providerId: bound.provider,
+      baseUrl: bound.baseURL ?? null,
+    });
+    return {
+      wireModel: bound.wireModel,
+      apiKey: bound.apiKey,
+      baseURL: bound.baseURL,
+      provider: bound.provider,
+      providerId: bound.provider,
+      protocolEndpoints,
+      customHeaders: bound.customHeaders,
+    };
+  } catch (error) {
+    if (!(error instanceof ModelCardNotConfiguredError)) {
+      console.warn(
+        `[inference-proxy] model card lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  } catch {
-    // fall through to env fallback
+    return null;
   }
-  if (!fallback.apiKey) return null;
-  return {
-    wireModel: fallback.wireModel,
-    apiKey: fallback.apiKey,
-    baseURL: fallback.baseURL,
-  };
 }
 
 export async function forwardHttpInferenceProxyRequest(input: {
@@ -120,7 +113,6 @@ export async function forwardHttpInferenceProxyRequest(input: {
     input.services,
     input.tenantId,
     input.sessionId,
-    input.env,
     input.sessionSource,
   );
   if (!upstream) {

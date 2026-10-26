@@ -69,8 +69,12 @@ export function projectHostFixtureUrlForSandbox(value, provider) {
 
 export function buildLocalReleaseEnvironment(baseEnv, options) {
   const root = resolve(options.root);
+  // Certification lanes install workspace model cards instead of platform keys.
+  const inherited = Object.fromEntries(Object.entries(baseEnv).filter(([key]) =>
+    !["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"].includes(key),
+  ));
   return {
-    ...baseEnv,
+    ...inherited,
     HOST: "127.0.0.1",
     PORT: String(options.port),
     AUTH_DISABLED: "1",
@@ -82,8 +86,6 @@ export function buildLocalReleaseEnvironment(baseEnv, options) {
     MEMORY_BLOB_DIR: join(root, "memory-blobs"),
     SESSION_OUTPUTS_DIR: join(root, "session-outputs"),
     FILES_BLOB_DIR: join(root, "files-blobs"),
-    ANTHROPIC_API_KEY: "openma-local-release-model-key",
-    ANTHROPIC_BASE_URL: options.llmBaseUrl.replace(/\/$/, ""),
     SANDBOX_PROVIDER: "litebox",
     SANDBOX_IMAGE: "node:22-bookworm",
     DREAM_CURATOR_MODE: "dedup",

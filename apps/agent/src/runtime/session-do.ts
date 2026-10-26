@@ -85,8 +85,10 @@ import {
 } from "../harness/pi-provider";
 import {
   bindStoredModelCardCredentials,
+  delegationCredentials,
   type ResolvedModelCardCredentials,
 } from "../harness/model-card-credentials";
+import { resolveWorkspaceModelCredentials } from "@open-managed-agents/model-cards-store";
 import type { LanguageModel } from "ai";
 import { generateText } from "ai";
 import { extractTextFromContent } from "@open-managed-agents/shared";
@@ -4099,44 +4101,25 @@ export class SessionDO extends DurableObject<Env> {
    * Resolve credentials and the wire-level model string for an agent's
    * `model` value (which is a card.model_id handle, not the LLM API model).
    *
-   * Lookup order:
-   *   1. Card whose `model_id` (handle) matches the requested handle
-   *   2. Env-var fallback (ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL)
-   *
-   * Returns:
-   *   - `model` — the LLM string to send to the provider. card.model when a
-   *     card is found; otherwise the input handle (env-only path assumes
-   *     the user wrote a real LLM model name in agent.model).
-   *   - `apiKey`, `baseURL`, `provider`, `customHeaders` — Pi model runtime
-   *     inputs whose source depends on whether a card was matched.
+   * The only source is the session tenant's own model card. There is no
+   * platform-key fallback: a workspace that has not configured `handle`
+   * gets ModelCardNotConfiguredError, which fails the turn with a message
+   * pointing at Console → Models.
    */
   private async resolveModelCardCredentials(
     handle: string,
   ): Promise<ResolvedModelCardCredentials> {
-    const fallback: ResolvedModelCardCredentials = {
-      model: handle,
-      apiKey: this.env.ANTHROPIC_API_KEY,
-      baseURL: this.env.ANTHROPIC_BASE_URL,
-    };
+    const tenantId = this.state.tenant_id;
+    const services = await getCfServicesForTenant(this.env, tenantId);
+    const card = await resolveWorkspaceModelCredentials(services.modelCards, tenantId, handle);
+    console.log(`[model-card] resolved from D1: id=${card.cardId} model_id=${handle} model=${card.wireModel} baseURL=${card.baseURL ?? "(default)"} provider=${card.provider}`);
+    return bindStoredModelCardCredentials(card);
+  }
 
-    if (this.env.MAIN_DB) {
-      try {
-        const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
-        const tenantId = this.state.tenant_id;
-        const card = await services.modelCards.findByModelId({ tenantId, modelId: handle });
-        if (card && !card.archived_at) {
-          const key = await services.modelCards.getApiKey({ tenantId, cardId: card.id });
-          if (key) {
-            console.log(`[model-card] resolved from D1: id=${card.id} model_id=${card.model_id} model=${card.model} baseURL=${card.base_url ?? "(default)"} provider=${card.provider}`);
-            return bindStoredModelCardCredentials(fallback, card, key);
-          }
-        }
-      } catch (err) {
-        console.warn(`[model-card] D1 lookup failed, falling back to env: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    return fallback;
+  /** The main model handle for `agent`, matching every turn path. */
+  private agentModelHandle(agent: AgentConfig): string {
+    const handle = typeof agent.model === "string" ? agent.model : agent.model?.id;
+    return handle || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
   }
 
   /**
@@ -4225,11 +4208,12 @@ export class SessionDO extends DurableObject<Env> {
         // mount failures must stop the confirmation continuation.
         await this.warmUpSandbox();
 
-        // Build tools with execute functions intact (not stripped for always_ask)
+        // Build tools with execute functions intact (not stripped for always_ask).
+        // Sub-agent tools run on this session's own model-card credentials.
         const auxResolved = await this.resolveAuxModel(agent);
+        const confirmationCreds = await this.resolveModelCardCredentials(this.agentModelHandle(agent));
         const allTools = await buildTools(agent, sandbox, {
-          ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-          ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
+          ...delegationCredentials(confirmationCreds),
           TAVILY_API_KEY: this.env.TAVILY_API_KEY,
           toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
           environmentConfig,
@@ -4615,9 +4599,13 @@ export class SessionDO extends DurableObject<Env> {
       ? await this.getEnvConfig(this.state.environment_id)
       : null;
     const subAuxResolved = await this.resolveAuxModel(subAgent);
+    // The child runs on its own model card in this session's workspace; its
+    // nested delegation tools inherit those credentials, never an env key.
+    const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
+    if (!subModelId) throw new Error("Incomplete runtime agent snapshot: missing model");
+    const subCreds = await this.resolveModelCardCredentials(subModelId);
     const subTools = await buildTools(subAgent, childSandbox, {
-      ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-      ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
+      ...delegationCredentials(subCreds),
       TAVILY_API_KEY: this.env.TAVILY_API_KEY,
       toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
       environmentConfig: subEnvironment?.config,
@@ -4649,10 +4637,6 @@ export class SessionDO extends DurableObject<Env> {
         return this.runSubAgent(nestedAgentId, nestedMessage, parentHistory, childSandbox, threadId, childSignal);
       },
     });
-    const subModelId = typeof subAgent.model === "string" ? subAgent.model : subAgent.model?.id;
-    if (!subModelId) throw new Error("Incomplete runtime agent snapshot: missing model");
-    const subHandle = subModelId;
-    const subCreds = await this.resolveModelCardCredentials(subHandle);
     const subPiRuntime = createPiModelRuntime({
       model: subCreds.model,
       apiKey: subCreds.apiKey,
@@ -4702,8 +4686,7 @@ export class SessionDO extends DurableObject<Env> {
       // symmetric and ready when richer sub-turns land.
       fileFetcher: this.buildFileFetcher(this.state.tenant_id),
       env: {
-        ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-        ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
+        ...delegationCredentials(subCreds),
         ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
         TAVILY_API_KEY: this.env.TAVILY_API_KEY,
         // Sub-agent LLM calls share the same logging plumbing — span
@@ -4961,11 +4944,17 @@ export class SessionDO extends DurableObject<Env> {
       turnThreadId,
     );
 
+    // Resolve model — `agent.model` is a card.model_id handle. The card
+    // contains the wire-level LLM string we actually send to the provider.
+    // Resolved before tools so delegation tools carry this session's own
+    // model-card credentials rather than any platform key.
+    const effectiveHandle = this.agentModelHandle(agent);
+    const creds = await this.resolveModelCardCredentials(effectiveHandle);
+
     // Build tools from agent config
     const auxResolved = await this.resolveAuxModel(agent);
     const allTools = await buildTools(agent, sandbox, {
-      ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-      ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
+      ...delegationCredentials(creds),
       TAVILY_API_KEY: this.env.TAVILY_API_KEY,
       toMarkdown: cfWorkersAiToMarkdown(this.env.AI),
       environmentConfig,
@@ -5002,11 +4991,6 @@ export class SessionDO extends DurableObject<Env> {
       memoryStoreService = (await getCfServicesForTenant(this.env, this.state.tenant_id)).memory;
     }
 
-    // Resolve model — `agent.model` is a card.model_id handle. The card
-    // contains the wire-level LLM string we actually send to the provider.
-    const handle = typeof agent.model === "string" ? agent.model : agent.model?.id;
-    const effectiveHandle = handle || this.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
-    const creds = await this.resolveModelCardCredentials(effectiveHandle);
     const piRuntime = createPiModelRuntime({
       model: creds.model,
       apiKey: creds.apiKey,
@@ -5232,8 +5216,7 @@ export class SessionDO extends DurableObject<Env> {
       // placeholder text part instead of crashing the turn.
       fileFetcher: this.buildFileFetcher(this.state.tenant_id),
       env: {
-        ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
-        ANTHROPIC_BASE_URL: this.env.ANTHROPIC_BASE_URL,
+        ...delegationCredentials(creds),
         ANTHROPIC_MODEL: this.env.ANTHROPIC_MODEL,
         TAVILY_API_KEY: this.env.TAVILY_API_KEY,
         CONFIG_KV: this.env.CONFIG_KV,

@@ -32,6 +32,10 @@ describe("loadNodeConfig", () => {
     expect(config.email).toBeNull();
     expect(config.feishuWsRunner).toBe(false);
     expect(config.dreamCurator).toBe("model");
+    // There is no platform model key: model credentials live only on
+    // workspace model cards, never in the runtime config.
+    expect(config).not.toHaveProperty("model");
+    expect(loadNodeConfig({ ...minimal, ANTHROPIC_API_KEY: "sk-ant-platform" })).not.toHaveProperty("model");
     expect(config.cron).toEqual({
       evalTick: "* * * * *",
       memoryRetention: "* * * * *",
@@ -113,7 +117,6 @@ describe("loadNodeConfig", () => {
       ...minimal,
       AUTH_DISABLED: "1", AUTH_REQUIRE_EMAIL_VERIFY: "1", FEISHU_WS_RUNNER: "1", MEMORY_QUEUE: "disabled",
       DREAM_CURATOR_MODE: "dedup", OMA_SESSION_EXECUTION_CONCURRENCY: "3", OMA_SESSION_EXECUTION_OWNER_ID: "replica-a",
-      ANTHROPIC_CUSTOM_HEADERS: "X-A: 1, X-B: two:parts",
       SMTP_HOST: "smtp", SMTP_PORT: "465", SMTP_USER: "u", SMTP_PASS: "p", SMTP_FROM: "noreply@x",
       GATEWAY_ORIGIN: "https://gw", PUBLIC_BASE_URL: "https://pub",
     });
@@ -123,7 +126,6 @@ describe("loadNodeConfig", () => {
     expect(config.memoryQueue).toBe("disabled");
     expect(config.dreamCurator).toBe("dedup");
     expect(config.execution).toEqual({ concurrency: 3, ownerId: "replica-a" });
-    expect(config.model.customHeaders).toEqual({ "X-A": "1", "X-B": "two:parts" });
     expect(config.email).toEqual({ host: "smtp", port: 465, secure: true, user: "u", pass: "p", fromAddress: "noreply@x" });
     expect(config.http.gatewayOrigin).toBe("https://gw");
     expect(config.http.publicBaseUrl).toBe("https://pub");
@@ -180,7 +182,6 @@ describe("redactNodeConfig", () => {
       DATABASE_URL: "mysql://qa:supersecret@db.internal:3306/openma",
       BETTER_AUTH_SECRET: "auth-secret", PLATFORM_ROOT_SECRET: "root-secret", API_KEY: "static-key",
       GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret",
-      ANTHROPIC_API_KEY: "sk-ant", ANTHROPIC_BASE_URL: "https://llm",
       MEMORY_S3_ENDPOINT: "http://s3", MEMORY_S3_BUCKET: "mem", MEMORY_S3_ACCESS_KEY: "ak", MEMORY_S3_SECRET_KEY: "sk",
       SMTP_HOST: "smtp", SMTP_PASS: "smtp-pass",
       METRICS_BIND_TOKEN: "mt", INTEGRATIONS_INTERNAL_TOKEN: "it", OMA_MANAGED_AGENTS_WEBHOOK_SIGNING_KEY: "wk",
@@ -190,11 +191,10 @@ describe("redactNodeConfig", () => {
 
     const redacted = JSON.stringify(redactNodeConfig(config));
 
-    for (const secret of ["supersecret", "auth-secret", "root-secret", "static-key", "gsecret", "sk-ant", "\"sk\"", "smtp-pass", "\"mt\"", "\"it\"", "\"wk\"", "e2b-secret", "matter-proxy-secret"]) {
+    for (const secret of ["supersecret", "auth-secret", "root-secret", "static-key", "gsecret", "\"sk\"", "smtp-pass", "\"mt\"", "\"it\"", "\"wk\"", "e2b-secret", "matter-proxy-secret"]) {
       expect(redacted).not.toContain(secret);
     }
     expect(redacted).toContain("mysql://qa:***@db.internal:3306/openma");
-    expect(redacted).toContain("https://llm");
     expect(redacted).toContain("http://matter:4720");
     expect(redacted).toContain("\"bucket\":\"mem\"");
     expect(redacted).toContain("\"gid\"");

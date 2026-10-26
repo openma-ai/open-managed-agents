@@ -275,6 +275,7 @@ export async function createNodeRuntime(
     hub,
     realtimeDescription,
     sessionRegistry,
+    resolveDreamModelCredentials: foundation.resolveDreamModelCredentials,
     resolveNodeMcpProxyTarget,
     resolveNodeInferenceUpstream,
     managedAcpCapabilities,

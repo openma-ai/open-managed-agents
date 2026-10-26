@@ -205,7 +205,7 @@ Workflow `CI`（`.github/workflows/ci.yml`，PR 与 `main`，job `verify`，`run
 
 **KVM。** 步骤注释写明：ubuntu-24.04 runner 上有 `/dev/kvm`，属主 `root:kvm`，模式 `0660`，runner 用户不在 `kvm` 组。`Enable KVM for Litebox` 在 MySQL 之前执行。设备不存在就报错并让 job 失败，MySQL 不会跑。它写入 udev 规则，再 `chmod 666 /dev/kvm`。`chmod` 失败，或当前用户最终不是既可读又可写，同样失败。
 
-`pnpm test:integration:mysql` 里，`apps/main-node/test/persistence.mysql.integration.ts` 的 “runs official /v1/sessions on two real Node owners…”（#237）会启动两个真实 Node owner，`SANDBOX_PROVIDER=litebox`。在 Linux 上它要求 `/dev/kvm` 可读可写。真实的是 Litebox 沙箱。模型不是上游 LLM：两个 owner 的 `ANTHROPIC_API_KEY` 是 `fixture`，`ANTHROPIC_BASE_URL` 指向测试进程在 `127.0.0.1` 上起的 SSE 服务器，按脚本回放 `tool_use` 和文本。这不是 Haven，不是托管环境，也不是 boxrun（另一台机器上的 `boxlite serve`）。同一文件里其余用例是 MySQL + MinIO 上的独立 actor 进程，不起 microVM。`main-node.mysql.integration.ts` 把被测服务的 `OPENMA_TEST_SANDBOX_PROVIDER` 设为 `local-subprocess`，也不是 Litebox。
+`pnpm test:integration:mysql` 里，`apps/main-node/test/persistence.mysql.integration.ts` 的 “runs official /v1/sessions on two real Node owners…”（#237）会启动两个真实 Node owner，`SANDBOX_PROVIDER=litebox`。在 Linux 上它要求 `/dev/kvm` 可读可写。真实的是 Litebox 沙箱。模型不是上游 LLM：测试用 `scripts/bootstrap-model-card.mjs` 给工作区建一张 model card（key 是 `fixture`，`base_url` 指向测试进程在 `127.0.0.1` 上起的 SSE 服务器），按脚本回放 `tool_use` 和文本；两个 owner 从共享 MySQL 读同一张卡，进程环境里没有模型 key。这不是 Haven，不是托管环境，也不是 boxrun（另一台机器上的 `boxlite serve`）。同一文件里其余用例是 MySQL + MinIO 上的独立 actor 进程，不起 microVM。`main-node.mysql.integration.ts` 把被测服务的 `OPENMA_TEST_SANDBOX_PROVIDER` 设为 `local-subprocess`，也不是 Litebox。
 
 `packages/sandbox-adapter-litebox` 的单测仍然 `vi.mock("@boxlite-ai/boxlite")`，不打开 `/dev/kvm`。`pnpm test` 里这份通过，不能当成 microVM 已经跑过。`Release` 的 `version-pr` 见下面的表。
 

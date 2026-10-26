@@ -441,6 +441,8 @@ export default defineConfig({
       "scripts/release-check.history.test.mjs",
       "scripts/setup-cf.test.mjs",
       "scripts/setup-fly.test.mjs",
+      // Self-host bootstrap script; node:test, run by test:self-host.
+      "scripts/bootstrap-model-card.test.mjs",
       // Credential certification orchestrates real Node child processes and
       // is run explicitly by test:certification:runner.
       "scripts/live-certification.test.mjs",

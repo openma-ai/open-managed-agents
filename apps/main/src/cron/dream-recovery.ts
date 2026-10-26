@@ -5,6 +5,7 @@ import {
 } from "@open-managed-agents/shared";
 import { forEachShardServices } from "@open-managed-agents/services";
 import { pickCurator, runDream } from "@open-managed-agents/dreams-pipeline";
+import { cfLegacyDreamCredentialResolver } from "../lib/workspace-model-credentials";
 
 // Wall-clock window after which a `running` dream is considered orphaned.
 // 5 minutes is a deliberate trade-off:
@@ -31,7 +32,10 @@ const STALENESS_MS = 5 * 60 * 1000;
  * dreams are re-kicked in parallel within the shard.
  */
 export async function dreamRecoveryTick(env: Env): Promise<void> {
-  const curator = pickCurator(env);
+  const curator = pickCurator({
+    DREAM_CURATOR_MODE: env.DREAM_CURATOR_MODE,
+    resolveCredentials: cfLegacyDreamCredentialResolver(env),
+  });
   try {
     const perShard = await forEachShardServices(env, async (services, shardName) => {
       try {

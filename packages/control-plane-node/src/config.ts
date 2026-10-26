@@ -70,11 +70,7 @@ export interface NodeConfig {
   /** MEMORY_QUEUE: "disabled" turns off the SQL-backed memory ingestion queue. */
   memoryQueue: "auto" | "disabled";
   realtime: RealtimeFanoutConfig;
-  model: {
-    apiKey: string | undefined;
-    baseUrl: string | undefined;
-    customHeaders: Record<string, string> | undefined;
-  };
+  /** "model" curates with the Dream workspace's own model card; "dedup" is offline. */
   dreamCurator: "model" | "dedup";
   execution: { ownerId: string; concurrency: number };
   workspace: {
@@ -180,7 +176,6 @@ export function redactNodeConfig(config: NodeConfig): Record<string, unknown> {
     },
     platformRootSecret: mask(config.platformRootSecret),
     blobs: { memory: blob(config.blobs.memory), files: blob(config.blobs.files) },
-    model: { ...config.model, apiKey: mask(config.model.apiKey) },
     managedWebhooks: { ...config.managedWebhooks, signingKey: mask(config.managedWebhooks.signingKey) },
     http: {
       ...config.http,

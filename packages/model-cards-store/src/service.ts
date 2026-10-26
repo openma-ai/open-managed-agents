@@ -227,8 +227,9 @@ export class ModelCardService {
    *     when it can't read MAIN_DB directly — staging today, prod TBD).
    *   - The agent worker's resolveModelCardCredentials path.
    * Returns null when the card doesn't exist OR the cipher decrypt fails
-   * (logged as a warning); callers should treat null as "fall back to env
-   * vars" exactly like the legacy KV path did.
+   * (logged as a warning). Callers resolve through
+   * resolveWorkspaceModelCredentials, which turns null into a user-facing
+   * "re-enter the key" error; there is no environment-key fallback.
    */
   async getApiKey(opts: {
     tenantId: string;

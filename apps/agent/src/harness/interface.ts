@@ -297,6 +297,8 @@ export interface HarnessContext {
   fileFetcher?: FileResolver;
 
   env: {
+    /** The session's own resolved model-card key and endpoint. Runtimes
+     *  never populate these from a platform environment variable. */
     ANTHROPIC_API_KEY: string;
     ANTHROPIC_BASE_URL?: string;
     /** Official Environment Work secret (base64url JSON). Only its

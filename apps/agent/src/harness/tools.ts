@@ -369,6 +369,8 @@ export async function buildTools(
   agentConfig: AgentConfig,
   sandbox: SandboxPort,
   env?: {
+    /** The calling session's own resolved model-card key and endpoint
+     *  (never a platform env key). Gates and powers callable_agents. */
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_BASE_URL?: string;
     TAVILY_API_KEY?: string;
@@ -1250,7 +1252,8 @@ export async function buildTools(
 
 
 
-  // Multi-agent tools — create a call tool for each callable agent
+  // Multi-agent tools — create a call tool for each callable agent. Sub-agents
+  // are billed to the same workspace model card, never to a platform key.
   const subagents = agentConfig.multiagent?.subagents;
   if (subagents?.type === "enabled" && env?.delegateToAgent) {
     for (const ca of subagents.predefined_agents) {

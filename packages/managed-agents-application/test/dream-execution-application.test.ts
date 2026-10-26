@@ -100,6 +100,7 @@ describe("Dream execution application", () => {
         curator: {
           curate: async (input) => {
             expect(input).toEqual({
+              workspaceId: "workspace_01",
               inputMemories: [
                 { path: "/decision.md", content: "Keep API stable" },
               ],
@@ -207,5 +208,42 @@ describe("Dream execution application", () => {
     const result = await service.executeDream({ dreamId: pendingDream.id });
     expect(result).toEqual({ type: "skipped", dream: current.dream });
     expect(current.dream.status).toBe("canceled");
+  });
+
+  it("fails the Dream with the curator's reason when the workspace has no model card", async () => {
+    let current = { dream: pendingDream, revision: 1 };
+    const service = new DreamExecutionApplicationService(
+      dependencies({
+        store: {
+          find: async () => current,
+          replace: async (input) => {
+            current = { dream: input.next, revision: current.revision + 1 };
+            return { type: "replaced", record: current };
+          },
+        },
+        memories: {
+          createOutput: async () => ({
+            type: "created",
+            memoryStoreId: "memstore_output",
+          }),
+          readAll: async () => ({ type: "found", memories: [] }),
+        },
+        curator: {
+          curate: async (input) => {
+            throw new Error(
+              `Model "${input.model.modelId}" is not configured for this workspace ${input.workspaceId}.`,
+            );
+          },
+        },
+      }),
+    );
+
+    const result = await service.executeDream({ dreamId: pendingDream.id });
+    expect(result.type).toBe("failed");
+    expect(current.dream.status).toBe("failed");
+    expect(current.dream.error).toEqual({
+      type: "execution_error",
+      message: 'Model "claude-opus-5" is not configured for this workspace workspace_01.',
+    });
   });
 });

@@ -13,6 +13,7 @@ import {
   createCloudflareManagedRuntimeHost,
 } from "../../apps/agent/src/runtime/managed-runtime";
 import { buildTools } from "../../apps/agent/src/harness/tools";
+import { delegationCredentials } from "../../apps/agent/src/harness/model-card-credentials";
 import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
 import type { AgentConfig, SessionEvent, SessionThreadCreatedEvent, SessionThreadIdleEvent, AgentThreadMessageEvent, AgentMessageEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
@@ -256,6 +257,45 @@ describe("Multi-agent predefined subagents", () => {
     // No env / delegateToAgent provided
     const tools = await buildTools(agentConfig as any, sandbox, undefined);
     expect(tools.call_agent_agent_worker1).toBeUndefined();
+  });
+
+  it("subagents delegate with the parent session's resolved model-card credentials", async () => {
+    const agentConfig = {
+      id: "agent_coord_card",
+      name: "Coordinator Card",
+      model: "claude-prod",
+      system: "You coordinate.",
+      tools: [{ type: "agent_toolset_20260401" }],
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inline_agents: { type: "disabled" },
+          predefined_agents: [{ type: "agent", id: "agent_worker1", version: 1 }],
+        },
+        workflows: { type: "disabled" },
+      },
+      version: 1,
+      created_at: new Date().toISOString(),
+    } as unknown as AgentConfig;
+    const parentCreds = {
+      model: "claude-sonnet-4-6",
+      apiKey: "sk-parent-workspace-card",
+      baseURL: "https://parent.example",
+      provider: "ant",
+    };
+    const delegated: Array<[string, string]> = [];
+    const tools = await buildTools(agentConfig, new TestSandbox(), {
+      ...delegationCredentials(parentCreds),
+      delegateToAgent: async (agentId, message) => {
+        delegated.push([agentId, message]);
+        return "child done";
+      },
+    });
+    const call = tools.call_agent_agent_worker1 as { execute: (input: { message: string }, options: object) => Promise<string> };
+    await expect(call.execute({ message: "do it" }, { toolCallId: "c1", messages: [] })).resolves.toBe("child done");
+    expect(delegated).toEqual([["agent_worker1", "do it"]]);
   });
 
   it("thread event types are valid SessionEvent variants", () => {

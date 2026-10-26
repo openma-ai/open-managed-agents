@@ -135,6 +135,7 @@ import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { authMiddleware } from "./auth";
 import { rateLimitMiddleware, authRateLimitMiddleware } from "./rate-limit";
 import { cfRouteServices } from "./lib/cf-route-services";
+import { cfDreamCredentialResolver } from "./lib/workspace-model-credentials";
 import { cfApiKeyStorage } from "./lib/cf-api-key-storage";
 import { CfSessionRouter } from "./lib/cf-session-router";
 import { CfManagedRuntimeFetcher } from "./lib/cf-managed-runtime-fetcher";
@@ -1081,19 +1082,12 @@ const managedEnvironmentWorkRoutes = new Hono<{
 });
 
 function managedDreamCuratorFor(ctx: AppCtx) {
-  const environment = ctx.env as Env & {
-    ANTHROPIC_API_KEY?: string;
-    ANTHROPIC_BASE_URL?: string;
-    DREAM_CURATOR_MODE?: string;
-  };
-  return environment.DREAM_CURATOR_MODE === "dedup" ||
-      environment.ANTHROPIC_API_KEY === undefined
+  // No platform model key: each curation resolves the Dream workspace's own
+  // model card for dream.model, exactly like a Session turn.
+  return ctx.env.DREAM_CURATOR_MODE === "dedup"
     ? new DeduplicatingDreamCurator()
     : new AnthropicMessagesDreamCurator({
-        apiKey: environment.ANTHROPIC_API_KEY,
-        ...(environment.ANTHROPIC_BASE_URL !== undefined && {
-          baseUrl: environment.ANTHROPIC_BASE_URL,
-        }),
+        resolveCredentials: cfDreamCredentialResolver(ctx.env),
       });
 }
 function managedDreamsApplicationFor(ctx: AppCtx) {

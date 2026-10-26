@@ -10,8 +10,8 @@ declare namespace Cloudflare {
      *  See packages/shared/src/metrics.ts for the schema convention. */
     ANALYTICS?: AnalyticsEngineDataset;
     API_KEY: string;
-    ANTHROPIC_API_KEY: string;
-    ANTHROPIC_BASE_URL?: string;
+    /** Default model_id handle for agents that omit `model`. It names a
+     *  workspace model card; there is no platform model key. */
     ANTHROPIC_MODEL?: string;
     TAVILY_API_KEY?: string;
     CLOUDFLARE_API_TOKEN?: string;

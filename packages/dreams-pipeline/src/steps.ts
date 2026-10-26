@@ -290,6 +290,7 @@ export async function curateMemories(
   inputSessions: ReadonlyArray<{ id: string; title: string | null }>,
 ): Promise<DreamCuratorOutput> {
   return curator.curate({
+    tenantId: dream.tenant_id,
     inputMemories,
     inputSessions,
     instructions: dream.instructions,

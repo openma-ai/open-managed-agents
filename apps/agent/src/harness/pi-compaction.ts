@@ -151,6 +151,10 @@ export class PiSummaryCompactionPolicy implements PiCompactionPolicy {
             model.maxTokens || 2_000,
           ),
           signal: abortSignal ?? requestOptions?.signal,
+          // Isolated compaction is a one-shot summary request. Do not create
+          // prompt-cache state that no later request can reuse. The explicit
+          // `summarize` strategy intentionally keeps the main-prefix cache.
+          ...(!cacheAware ? { cacheRetention: "none" as const } : {}),
           ...(sessionId
             ? { sessionId: cacheAware ? sessionId : `${sessionId}:compaction` }
             : {}),

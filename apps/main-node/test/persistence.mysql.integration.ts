@@ -19,6 +19,7 @@ import { NodeSharedSessionOutputs } from "../../../packages/control-plane-node/s
 import { openNodeDatabase } from "../src/database.js";
 import { S3BlobStore } from "@open-managed-agents/blob-store";
 import { detachedProcessOptions, killProcessTree } from "./helpers/process-tree";
+import { bootstrapModelCards, parseBootstrapConfig } from "../../../scripts/bootstrap-model-card.mjs";
 
 type ActorConfig = {
   action: "upload" | "upload-outputs" | "restore" | "read-outputs"; databaseUrl: string;
@@ -152,7 +153,13 @@ describe.sequential("real MySQL + MinIO, independent process and sandbox storage
       try {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(chunk);
-        const input = JSON.parse(Buffer.concat(chunks).toString()) as { messages?: Array<{ role: string; content: any }> };
+        const input = JSON.parse(Buffer.concat(chunks).toString()) as { messages?: Array<{ role: string; content: any }>; stream?: boolean; max_tokens?: number };
+        // Model-card capability probe (non-streaming, max_tokens=1) is not a turn.
+        if (input.stream !== true && input.max_tokens === 1) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ id: "msg_probe", type: "message", role: "assistant", content: [{ type: "text", text: "" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+          return;
+        }
         modelRequests.push(JSON.stringify(input.messages ?? []).slice(-1000));
         const latestUser = [...(input.messages ?? [])].reverse().find((message) => message.role === "user" &&
           JSON.stringify(message.content).includes("_MARKER"));
@@ -199,7 +206,6 @@ describe.sequential("real MySQL + MinIO, independent process and sandbox storage
         env: { ...inherited, NODE_ENV: "test", AUTH_DISABLED: "1", PORT: String(port), HOST: "127.0.0.1",
           DATABASE_URL: base.databaseUrl, PLATFORM_ROOT_SECRET: "persistence-integration-secret-32-characters",
           BETTER_AUTH_SECRET: "persistence-integration-auth-secret-32-chars", MEMORY_QUEUE: "disabled",
-          ANTHROPIC_API_KEY: "fixture", ANTHROPIC_BASE_URL: `http://127.0.0.1:${modelPort}`,
           SANDBOX_PROVIDER: "litebox", SANDBOX_WORKDIR: join(scratch, owner, "sandboxes"),
           SESSION_OUTPUTS_DIR: join(scratch, owner, "outputs"), MEMORY_BLOB_DIR: join(scratch, owner, "memory"),
           OMA_SESSION_EXECUTION_OWNER_ID: owner, OMA_REALTIME_FANOUT: "sql-poll",
@@ -251,6 +257,14 @@ describe.sequential("real MySQL + MinIO, independent process and sandbox storage
     };
     try {
       const a = await launch("owner_a");
+      // No platform model key: both owners read this workspace card from the
+      // shared MySQL, installed through the self-host bootstrap script.
+      await bootstrapModelCards(parseBootstrapConfig({
+        OMA_BASE_URL: a.url,
+        ANTHROPIC_API_KEY: "fixture",
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${modelPort}`,
+        OMA_MODEL_CARDS: "claude-sonnet-4-20250514",
+      }));
       const client = new Anthropic({ apiKey: "test", baseURL: a.url, maxRetries: 0 });
       const suffix = randomUUID().slice(0, 8);
       const env = await client.beta.environments.create({ name: `checkpoint-${suffix}`, scope: "organization",

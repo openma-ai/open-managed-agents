@@ -18,6 +18,10 @@ import type {
 } from "@open-managed-agents/managed-agents-application";
 
 export { AnthropicMessagesDreamCurator } from "./anthropic-messages-dream-curator";
+export type {
+  AnthropicMessagesDreamCuratorDependencies,
+  DreamCuratorModelCredentials,
+} from "./anthropic-messages-dream-curator";
 export { ApplicationDreamMemoryWorkspace } from "./application-dream-memory-workspace";
 export { ConfiguredModelCatalogSource } from "./configured-model-catalog";
 export { ModelCardCatalogSource } from "./model-card-catalog";

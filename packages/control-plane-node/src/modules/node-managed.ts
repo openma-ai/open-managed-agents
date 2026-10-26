@@ -128,6 +128,7 @@ export async function createManagedNodeRuntime(
     filesBlob,
     buildSandbox,
     resolveNodeModelCreds,
+    resolveDreamModelCredentials,
     buildNodeLanguageModel,
   } = foundation;
   // ─── Official Managed Sessions composition ─────────────────────────────
@@ -992,15 +993,12 @@ export async function createManagedNodeRuntime(
         .port(managedAgentsPortTokens.environmentWork),
   );
 
-  const managedDreamCurator =
-    config.dreamCurator === "dedup" ||
-      config.model.apiKey === undefined
+  // No platform model key: each curation resolves the Dream workspace's own
+  // model card for dream.model, exactly like a Session turn.
+  const managedDreamCurator = config.dreamCurator === "dedup"
     ? new DeduplicatingDreamCurator()
     : new AnthropicMessagesDreamCurator({
-        apiKey: config.model.apiKey,
-        ...(config.model.baseUrl !== undefined && {
-          baseUrl: config.model.baseUrl,
-        }),
+        resolveCredentials: resolveDreamModelCredentials,
       });
   const managedDreamsRoutes = buildManagedDreamRoutes((context) =>
     managedPlatform

@@ -1,7 +1,8 @@
 // DreamCurator — the LLM-driven memory curation step inside the dream
 // pipeline. Pulled out as a port so the runner can be unit-tested with a
 // deterministic in-memory curator (test-fakes) while production wires an
-// Anthropic-Messages-backed implementation against env.ANTHROPIC_API_KEY.
+// Anthropic-Messages-backed implementation that resolves credentials from
+// the dream's own workspace model card on every call.
 //
 // Why this is a port and not a method on DreamService:
 //   - It's I/O-shaped (HTTP call to Anthropic) and we don't want the pure
@@ -25,6 +26,8 @@ export interface CuratedMemory {
 }
 
 export interface DreamCuratorInput {
+  /** Workspace that owns the dream; model credentials resolve against it. */
+  tenantId: string;
   /** Pre-existing memories from the input store, content included. */
   inputMemories: ReadonlyArray<{ path: string; content: string }>;
   /** Surface info on the input sessions. The transcript itself is not always
@@ -49,6 +52,21 @@ export interface DreamCurator {
 // Anthropic Messages-backed implementation (production)
 // ============================================================
 
+/** Credentials for one curation call, taken from the workspace's model card. */
+export interface DreamCuratorCredentials {
+  /** Wire-level model string sent to the provider. */
+  wireModel: string;
+  apiKey: string;
+  baseUrl?: string;
+  customHeaders?: Record<string, string>;
+}
+
+/** Resolve `modelId` for `tenantId` through the model-card policy Sessions use. */
+export type DreamCuratorCredentialResolver = (input: {
+  tenantId: string;
+  modelId: string;
+}) => Promise<DreamCuratorCredentials>;
+
 /**
  * Real Anthropic Messages call. Single-shot — no tool use, no streaming.
  * The LLM is prompted to emit a JSON object `{"memories": [{path, content},
@@ -56,31 +74,31 @@ export interface DreamCurator {
  * input store untouched (dedup-only mode) so the pipeline can still
  * complete rather than blowing up the whole dream.
  *
- * `env.ANTHROPIC_API_KEY` is required at construction; the factory in
- * apps/main/src/dreams/index.ts pulls it off the Worker env. Missing key
- * raises at construction so the route handler returns 500 immediately,
- * not after the dream is already in `running`.
+ * There is no platform key: credentials are resolved per call from the
+ * dream's workspace. A workspace without a matching model card makes the
+ * resolver throw, and the runner records that reason on the failed dream.
  */
 export class AnthropicDreamCurator implements DreamCurator {
-  constructor(
-    private readonly apiKey: string,
-    private readonly baseUrl: string = "https://api.anthropic.com",
-  ) {
-    if (!apiKey) throw new Error("AnthropicDreamCurator: ANTHROPIC_API_KEY required");
-  }
+  constructor(private readonly resolveCredentials: DreamCuratorCredentialResolver) {}
 
   async curate(input: DreamCuratorInput): Promise<DreamCuratorOutput> {
+    const credentials = await this.resolveCredentials({
+      tenantId: input.tenantId,
+      modelId: input.model,
+    });
+    const baseUrl = (credentials.baseUrl ?? "https://api.anthropic.com").replace(/\/+$/, "");
     const prompt = buildCurationPrompt(input);
     const body = {
-      model: input.model,
+      model: credentials.wireModel,
       max_tokens: 8192,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user" as const, content: prompt }],
     };
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
+    const res = await fetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
-        "x-api-key": this.apiKey,
+        ...(credentials.customHeaders ?? {}),
+        "x-api-key": credentials.apiKey,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
       },

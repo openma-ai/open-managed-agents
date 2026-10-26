@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   buildChaosPlan,
   buildClusterEnv,
+  CHAOS_MODEL_ID,
+  chaosModelCardConfig,
   createMockLlmServer,
   findNewProviderResources,
   parseProviderConfig,
@@ -29,9 +31,9 @@ test("provider config fails closed when a remote provider is not configured", ()
   );
 });
 
-test("cluster env isolates persistence and always points model traffic at the fixture", () => {
+test("cluster env isolates persistence and carries no platform model key", () => {
   const result = buildClusterEnv(
-    { ANTHROPIC_API_KEY: "secret", DAYTONA_API_KEY: "daytona-secret" },
+    { ANTHROPIC_API_KEY: "secret", ANTHROPIC_BASE_URL: "https://real.example", DAYTONA_API_KEY: "daytona-secret" },
     {
       root: "/tmp/openma-chaos-123",
       port: 9876,
@@ -43,12 +45,20 @@ test("cluster env isolates persistence and always points model traffic at the fi
   assert.equal(result.PORT, "9876");
   assert.equal(result.AUTH_DISABLED, "1");
   assert.equal(result.SANDBOX_PROVIDER, "daytona");
-  assert.equal(result.ANTHROPIC_BASE_URL, "http://127.0.0.1:4321");
+  assert.equal(result.ANTHROPIC_API_KEY, undefined);
+  assert.equal(result.ANTHROPIC_BASE_URL, undefined);
   assert.equal(result.DATABASE_PATH, "/tmp/openma-chaos-123/oma.db");
   assert.equal(result.SANDBOX_WORKDIR, "/tmp/openma-chaos-123/sandboxes");
   assert.equal(result.DAYTONA_API_KEY, "daytona-secret");
   assert.equal(redactEnvironment(result).DAYTONA_API_KEY, "<redacted>");
-  assert.equal(redactEnvironment(result).ANTHROPIC_API_KEY, "<redacted>");
+  assert.equal(redactEnvironment({ ANTHROPIC_API_KEY: "x" }).ANTHROPIC_API_KEY, "<redacted>");
+});
+
+test("the lab routes model traffic to the fixture through a workspace model card", () => {
+  const card = chaosModelCardConfig("http://127.0.0.1:9876", "http://127.0.0.1:4321/");
+  assert.equal(card.omaBaseUrl, "http://127.0.0.1:9876");
+  assert.equal(card.providerBaseUrl, "http://127.0.0.1:4321");
+  assert.deepEqual(card.models, [CHAOS_MODEL_ID]);
 });
 
 test("chaos plan covers crash recovery and provider-specific optional faults", () => {

@@ -14,6 +14,7 @@
 export * from "./types";
 export * from "./errors";
 export * from "./ports";
+export * from "./resolve-credentials";
 export { ModelCardService } from "./service";
 export type { ModelCardServiceDeps } from "./service";
 

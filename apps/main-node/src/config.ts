@@ -193,11 +193,6 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     blobs: { memory, files },
     memoryQueue,
     realtime,
-    model: {
-      apiKey: env.ANTHROPIC_API_KEY,
-      baseUrl: env.ANTHROPIC_BASE_URL,
-      customHeaders: parseCustomHeaders(env.ANTHROPIC_CUSTOM_HEADERS),
-    },
     dreamCurator: env.DREAM_CURATOR_MODE === "dedup" ? "dedup" : "model",
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
@@ -245,15 +240,4 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
 
   if (problems.length > 0) throw new NodeConfigError(problems);
   return config;
-}
-
-function parseCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
-  if (!raw) return undefined;
-  const out: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [name, ...rest] = part.split(":");
-    if (!name || rest.length === 0) continue;
-    out[name.trim()] = rest.join(":").trim();
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

@@ -108,8 +108,8 @@ export interface Env {
   CLICKUP_OAUTH_CLIENT_SECRET?: string;
   SLACK_OAUTH_CLIENT_ID?: string;
   SLACK_OAUTH_CLIENT_SECRET?: string;
-  ANTHROPIC_API_KEY: string;
-  ANTHROPIC_BASE_URL?: string;
+  /** Default model_id handle for agents that omit `model`. It names a
+   *  workspace model card; there is no platform model key. */
   ANTHROPIC_MODEL?: string;
   /** Dream pipeline curator mode override. `"dedup"` uses a deterministic
    *  no-network curator for tests and offline development. */

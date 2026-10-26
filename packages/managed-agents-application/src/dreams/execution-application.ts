@@ -84,6 +84,7 @@ export class DreamExecutionApplicationService
     }
     const inputSessions = await this.inputSessions(started.record.dream);
     const curated = await this.dependencies.curator.curate({
+      workspaceId: this.dependencies.workspaceId,
       inputMemories: inputMemories.memories,
       inputSessions,
       instructions: started.record.dream.instructions,

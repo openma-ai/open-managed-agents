@@ -165,6 +165,7 @@ describe("Pi compaction policy", () => {
     expect(requestContext.messages.at(-1)?.content).toBe("summary request");
     expect(requestOptions.maxTokens).toBe(4_096);
     expect(requestOptions.sessionId).toBe("session-1:compaction");
+    expect(requestOptions.cacheRetention).toBe("none");
     expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
       type: "span.compaction_summarize_end",
       final_text_length: 12,
@@ -191,9 +192,28 @@ describe("Pi compaction policy", () => {
     expect(JSON.stringify(requestContext.messages)).toContain("KEEP-ME");
     expect(requestContext.messages.at(-1)?.content).toBe("cache-aware summary request");
     expect(requestOptions.sessionId).toBe("session-1");
+    expect(requestOptions.cacheRetention).toBeUndefined();
     // Pi completeSimple never executes tools. Leaving toolChoice unset keeps
     // tool declarations byte-identical for provider prefix caching.
     expect(requestOptions.toolChoice).toBeUndefined();
+  });
+
+  it.each([
+    ["cc-style", "none"],
+    ["opencode-style", "none"],
+    ["summarize", "long"],
+  ] as const)("applies the cache policy for %s without mutating caller defaults", async (strategy, expected) => {
+    const completeSimple = vi.fn(async () => fauxAssistantMessage("summary"));
+    const { ctx } = context(completeSimple as Models["completeSimple"]);
+    const defaults = { cacheRetention: "long" as const };
+
+    await new PiSummaryCompactionPolicy(strategy).compact([], {
+      ...ctx,
+      requestOptions: defaults,
+    });
+
+    expect(completeSimple.mock.calls[0][2].cacheRetention).toBe(expected);
+    expect(defaults.cacheRetention).toBe("long");
   });
 
   it("does not create a boundary result from empty model text", async () => {

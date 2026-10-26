@@ -116,6 +116,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     hub,
     realtimeDescription,
     sessionRegistry,
+    resolveDreamModelCredentials,
     resolveNodeMcpProxyTarget,
     resolveNodeInferenceUpstream,
     managedAcpCapabilities,
@@ -340,7 +341,9 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
 
   // Mount route bundles. Same paths CF uses; behavior preserved. Once a tenant
   // has configured model cards, agent model handles must resolve to an active
-  // card; an empty card set keeps the legacy ANTHROPIC_API_KEY fallback usable.
+  // card. A tenant with no cards may still save agents (so onboarding can add
+  // the card afterwards), but every model call fails until a card exists:
+  // there is no platform key fallback.
   v1.route("/agents", buildManagedAgentRoutes((context) =>
     managedPlatform
       .app({
@@ -448,8 +451,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     services,
     curatorEnv: {
       DREAM_CURATOR_MODE: config.dreamCurator === "dedup" ? "dedup" : undefined,
-      ANTHROPIC_API_KEY: config.model.apiKey,
-      ANTHROPIC_BASE_URL: config.model.baseUrl,
+      resolveCredentials: ({ tenantId, modelId }) =>
+        resolveDreamModelCredentials({ workspaceId: tenantId, modelId }),
     },
   }));
   v1.route("/tunnels", managedTunnelsRoutes);

@@ -13,6 +13,7 @@ import {
   SUPPORTED_DREAM_MODELS,
 } from "@open-managed-agents/dreams-store";
 import { pickCurator, runDream } from "@open-managed-agents/dreams-pipeline";
+import { cfLegacyDreamCredentialResolver } from "../lib/workspace-model-credentials";
 import {
   DREAMING_BETA,
   MANAGED_AGENTS_BETA,
@@ -87,7 +88,10 @@ app.post("/", async (c) => {
   // `running` past the staleness window. Steps are idempotent so re-runs
   // are safe.
   //
-  const curator = pickCurator(c.env);
+  const curator = pickCurator({
+    DREAM_CURATOR_MODE: c.env.DREAM_CURATOR_MODE,
+    resolveCredentials: cfLegacyDreamCredentialResolver(c.env),
+  });
   c.executionCtx.waitUntil(
     runDream({
       services: c.var.services,

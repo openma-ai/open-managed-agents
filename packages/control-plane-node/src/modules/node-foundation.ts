@@ -30,7 +30,7 @@ import { createSqliteSessionService } from "@open-managed-agents/sessions-store"
 import { createSqliteFileService } from "@open-managed-agents/files-store";
 import { createSqliteEvalRunService } from "@open-managed-agents/evals-store";
 import { createSqliteEnvironmentService } from "@open-managed-agents/environments-store";
-import { createSqliteModelCardService } from "@open-managed-agents/model-cards-store";
+import { createSqliteModelCardService, resolveWorkspaceModelCredentials } from "@open-managed-agents/model-cards-store";
 
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
@@ -292,8 +292,9 @@ export async function createNodeFoundation(
 
   // ─── Session registry ───────────────────────────────────────────────────
 
-  /** Resolve agent.model (a model_id handle) → wire model + credentials.
-   *  Prefer a matching model card; fall back to ANTHROPIC_* env vars. */
+  /** Resolve agent.model (a model_id handle) → wire model + credentials from
+   *  the workspace's own model card. There is no platform key fallback: a
+   *  workspace without a matching card gets ModelCardNotConfiguredError. */
   async function resolveNodeModelCreds(
     tenantId: string,
     agentModel: string | {
@@ -310,39 +311,34 @@ export async function createNodeFoundation(
     piConfig?: PiModelConfig;
   }> {
     const handle = typeof agentModel === "string" ? agentModel : agentModel.id;
-    try {
-      const card = await modelCardsService.findByModelId({ tenantId, modelId: handle });
-      if (card && !card.archived_at) {
-        const key = await modelCardsService.getApiKey({ tenantId, cardId: card.id });
-        if (key) {
-          return {
-            wireModel: card.model,
-            apiKey: key,
-            baseURL: card.base_url ?? undefined,
-            provider: card.provider,
-            customHeaders: card.custom_headers ?? undefined,
-            piConfig: card.pi_config
-              ? card.pi_config as PiModelConfig
-              : undefined,
-          };
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[model-card] lookup failed, falling back to env: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    const apiKey = config.model.apiKey;
-    if (!apiKey) {
-      throw new Error(
-        "No model card matched and ANTHROPIC_API_KEY is unset — configure a model card or set the env var",
-      );
-    }
+    const creds = await resolveWorkspaceModelCredentials(modelCardsService, tenantId, handle);
     return {
-      wireModel: handle,
-      apiKey,
-      baseURL: config.model.baseUrl,
-      customHeaders: config.model.customHeaders,
+      wireModel: creds.wireModel,
+      apiKey: creds.apiKey,
+      baseURL: creds.baseURL,
+      provider: creds.provider,
+      customHeaders: creds.customHeaders,
+      piConfig: creds.piConfig as PiModelConfig | undefined,
+    };
+  }
+
+  /** Dream curation credentials: the same model-card resolution Sessions
+   *  use, keyed by the Dream's workspace and its requested model. */
+  async function resolveDreamModelCredentials(input: {
+    workspaceId: string;
+    modelId: string;
+  }): Promise<{
+    wireModel: string;
+    apiKey: string;
+    baseUrl?: string;
+    customHeaders?: Record<string, string>;
+  }> {
+    const creds = await resolveNodeModelCreds(input.workspaceId, input.modelId);
+    return {
+      wireModel: creds.wireModel,
+      apiKey: creds.apiKey,
+      ...(creds.baseURL !== undefined && { baseUrl: creds.baseURL }),
+      ...(creds.customHeaders !== undefined && { customHeaders: creds.customHeaders }),
     };
   }
 
@@ -521,6 +517,7 @@ export async function createNodeFoundation(
     realtimeDescription,
     buildSandbox,
     resolveNodeModelCreds,
+    resolveDreamModelCredentials,
     buildNodeLanguageModel,
     sessionRegistry,
   };

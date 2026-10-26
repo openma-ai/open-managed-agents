@@ -13,7 +13,12 @@ import {
 test("local release environment isolates durable state and serves the built console", () => {
   const root = resolve("/tmp/openma-local-release-fixture");
   const environment = buildLocalReleaseEnvironment(
-    { PATH: "/usr/bin", SHOULD_SURVIVE: "yes" },
+    {
+      PATH: "/usr/bin", SHOULD_SURVIVE: "yes",
+      ANTHROPIC_API_KEY: "fixture-key",
+      ANTHROPIC_BASE_URL: "https://fixture.example",
+      ANTHROPIC_CUSTOM_HEADERS: "x-test: fixture",
+    },
     {
       root,
       port: 19433,
@@ -28,7 +33,9 @@ test("local release environment isolates durable state and serves the built cons
   assert.equal(environment.AUTH_DISABLED, "1");
   assert.equal(environment.SANDBOX_PROVIDER, "litebox");
   assert.equal(environment.SANDBOX_IMAGE, "node:22-bookworm");
-  assert.equal(environment.ANTHROPIC_BASE_URL, "http://127.0.0.1:19434");
+  assert.equal(environment.ANTHROPIC_API_KEY, undefined);
+  assert.equal(environment.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(environment.ANTHROPIC_CUSTOM_HEADERS, undefined);
   assert.equal(environment.CONSOLE_DIR, "/repo/apps/console/dist");
   assert.equal(environment.DATABASE_PATH, join(root, "oma.db"));
   assert.equal(environment.SANDBOX_WORKDIR, join(root, "sandboxes"));
