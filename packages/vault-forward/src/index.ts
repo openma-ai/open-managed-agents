@@ -1,13 +1,9 @@
 // Pure functions for credential resolution + outbound injection.
 //
-// Three call sites today:
-//   - apps/main/src/routes/mcp-proxy.ts (CF MCP proxy + outbound RPC)
-//   - apps/main-node /v1/oma/mcp-proxy/* if it ever grows one
-//   - apps/oma-vault MITM proxy (self-host outbound for sandbox)
-//
-// All three share: hostname-match a credential, build the right header,
-// and on 401 with mcp_oauth refresh and retry once. Pulling the logic
-// here means each caller is ~20 lines of "fetch credentials, call us".
+// Callers: the Node MCP proxy (packages/control-plane-node) and the vault
+// routes (packages/http-routes). They share: hostname-match a credential,
+// build the right header, and on 401 with mcp_oauth refresh and retry
+// once. The HTTP hop itself is the caller's (`ForwardOpts.send`).
 
 import type { CredentialAuth, CredentialConfig } from "@open-managed-agents/shared";
 
@@ -184,20 +180,17 @@ export async function refreshMcpOAuth(
 }
 
 /**
- * Forward a request to upstream with auth injection, refresh on 401 once
- * if the credential supports it. Pluggable transport (`fetcher`) so CF
- * can pass a service-binding-backed fetch and Node can pass globalThis.fetch.
+ * Run one upstream attempt with the credential's access token and, on a
+ * 401 from a refreshable credential, refresh once and retry with the
+ * rotated token. The caller owns the HTTP hop (`send`): this package
+ * decides *when* to retry and with which token, never *how* to send, so
+ * header hygiene lives in one place (the HTTP route layer).
  *
- * `body` MUST be pre-buffered (string | ArrayBuffer | null) so we can
- * replay it on the retry. CF's MCP proxy already pre-buffers via
- * c.req.text(); the oma-vault proxy already has the raw bytes in
- * memory from mockttp's CompletedRequest.
+ * `send` is called more than once, so it must replay a buffered body.
  */
 export interface ForwardOpts {
-  upstreamUrl: string;
-  method: string;
-  inboundHeaders: Headers;
-  body: string | ArrayBuffer | Uint8Array | null;
+  /** One upstream attempt with `accessToken` injected. */
+  send: (accessToken: string) => Promise<Response>;
   /** Active access token from the credential (or `auth.token`). Used as
    *  the first attempt. */
   accessToken: string;
@@ -207,7 +200,7 @@ export interface ForwardOpts {
   /** Called after a successful refresh so the runtime can persist the
    *  new tokens (re-encrypted) back to the canonical credential row. */
   onRefreshed?: (t: RefreshedTokens) => Promise<void>;
-  /** Pluggable transport. Defaults to globalThis.fetch. */
+  /** Transport for the token endpoint. Defaults to globalThis.fetch. */
   fetcher?: typeof fetch;
   /** Called with the final upstream response, after a refresh attempt. */
   onFinal?: (info: {
@@ -217,62 +210,11 @@ export interface ForwardOpts {
     refreshFailed: boolean;
     refreshFailureCode: string | null;
   }) => Promise<void>;
-  /** Headers to scrub from the upstream request. Default: edge-injected
-   *  CF headers + host (caller may want to override on Node). */
-  scrubHeaders?: string[];
-}
-
-const DEFAULT_SCRUB = [
-  "host",
-  "cf-connecting-ip",
-  "cf-ray",
-  "x-forwarded-for",
-  "x-forwarded-proto",
-  "x-real-ip",
-  // Control-plane and proxy credentials authenticate the caller to OpenMA,
-  // never the upstream MCP server.
-  "x-api-key",
-  "proxy-authorization",
-  "cookie",
-  "x-active-tenant",
-  // Internal routing metadata belongs to the OpenMA proxy boundary and must
-  // never be disclosed to an upstream MCP server.
-  "x-oma-tenant",
-  "x-oma-session",
-  "x-oma-mcp-server",
-  "x-oma-agent-id",
-  "x-oma-agent-version",
-];
-
-function buildUpstreamHeaders(
-  inbound: Headers,
-  bearer: string,
-  scrub: string[],
-): Headers {
-  const out = new Headers(inbound);
-  out.set("authorization", `Bearer ${bearer}`);
-  for (const h of scrub) out.delete(h);
-  return out;
 }
 
 export async function forwardWithRefresh(opts: ForwardOpts): Promise<Response> {
   const fetcher = opts.fetcher ?? fetch;
-  const scrub = opts.scrubHeaders ?? DEFAULT_SCRUB;
-
-  const send = async (token: string): Promise<Response> => {
-    const headers = buildUpstreamHeaders(opts.inboundHeaders, token, scrub);
-    const isGetHead = ["GET", "HEAD"].includes(opts.method.toUpperCase());
-    const init: RequestInit = {
-      method: opts.method,
-      headers,
-      body: isGetHead ? undefined : (opts.body as BodyInit | null | undefined),
-      // Never replay a Vault bearer to a redirect target. The caller may
-      // resolve/authorize the new destination explicitly if redirects are a
-      // required part of a provider protocol.
-      redirect: "manual",
-    };
-    return fetcher(opts.upstreamUrl, init);
-  };
+  const send = opts.send;
 
   const finish = async (
     response: Response,

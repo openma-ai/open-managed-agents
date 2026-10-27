@@ -17,10 +17,10 @@ import {
 } from "@open-managed-agents/model-cards-store";
 import {
   extractHostedInferenceProxyToken,
-  forwardHostedInferenceRequest,
   resolveProtocolEndpointsFromModelCard,
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
+import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 
@@ -122,7 +122,7 @@ export async function forwardHttpInferenceProxyRequest(input: {
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.arrayBuffer();
-  return forwardHostedInferenceRequest({
+  return sendHostedInference({
     upstream,
     method,
     subPath: input.subPath,

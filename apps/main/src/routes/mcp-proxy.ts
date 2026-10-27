@@ -55,6 +55,7 @@ import {
 } from "@open-managed-agents/mcp-access-loss";
 import type { Env, CredentialConfig, RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/shared";
 import { log, logWarn } from "@open-managed-agents/shared";
+import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
@@ -660,10 +661,9 @@ export async function resolveOutboundCredentialByHost(
 }
 
 /**
- * Forward an MCP request to the upstream server, swapping the authorization
- * header for the resolved upstream token. Strips any session-/proxy-specific
- * CF headers so the upstream sees only what it would have if the agent had
- * called it directly with the real credential.
+ * Forward an MCP request to the upstream server with the resolved upstream
+ * token. Header hygiene (hop-by-hop, caller credentials, edge and OpenMA
+ * routing headers) is the shared HTTP hop's, `sendMcpUpstream`.
  *
  * Streams the response back as-is — MCP-over-HTTP clients expect to read
  * the body progressively (SSE / chunked NDJSON). Both the HTTP endpoint
@@ -675,29 +675,13 @@ export async function forwardToUpstream(
   inboundHeaders: Headers,
   body: BodyInit | null,
 ): Promise<Response> {
-  const upstreamHeaders = new Headers(inboundHeaders);
-  upstreamHeaders.set("authorization", `Bearer ${target.upstreamToken}`);
-  upstreamHeaders.delete("host");
-  upstreamHeaders.delete("cf-connecting-ip");
-  upstreamHeaders.delete("cf-ray");
-  upstreamHeaders.delete("x-forwarded-for");
-  upstreamHeaders.delete("x-forwarded-proto");
-  upstreamHeaders.delete("x-real-ip");
-  upstreamHeaders.delete("x-api-key");
-  upstreamHeaders.delete("proxy-authorization");
-  upstreamHeaders.delete("cookie");
-  upstreamHeaders.delete("x-active-tenant");
-
-  const upstreamReq = new Request(target.upstreamUrl, {
+  return sendMcpUpstream({
+    upstreamUrl: target.upstreamUrl,
     method,
-    headers: upstreamHeaders,
-    body: ["GET", "HEAD"].includes(method) ? undefined : body,
-    // A redirect is a new destination and must be re-authorized explicitly;
-    // never let fetch replay a Vault bearer automatically.
-    redirect: "manual",
+    headers: inboundHeaders,
+    body,
+    accessToken: target.upstreamToken,
   });
-
-  return fetch(upstreamReq);
 }
 
 /**

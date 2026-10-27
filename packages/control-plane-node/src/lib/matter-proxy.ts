@@ -1,5 +1,6 @@
 import { timingSafeEqual, createHash } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
+import { proxyUpstream } from "@open-managed-agents/http-routes/proxy";
 
 /**
  * `/matter/*` → the OpenMatter service (apps/matter), for the Console.
@@ -15,31 +16,16 @@ export const MATTER_PROXY_HEADERS = {
   user: "x-oma-user-id",
 } as const;
 
-/** Never forwarded: the caller's credentials, hop-by-hop headers, and any
- * identity headers a caller may try to set itself. */
-const DROPPED_REQUEST_HEADERS = new Set<string>([
+/** Never forwarded: the caller's credentials and any identity headers a
+ * caller may try to set itself. Hop-by-hop headers are `proxyUpstream`'s. */
+const WITHHELD_REQUEST_HEADERS: readonly string[] = [
   "cookie",
   "authorization",
   "x-api-key",
   "x-active-tenant",
-  "host",
-  "connection",
-  "keep-alive",
-  "transfer-encoding",
-  "upgrade",
   "proxy-authorization",
-  "content-length",
   ...Object.values(MATTER_PROXY_HEADERS),
-]);
-
-const DROPPED_RESPONSE_HEADERS = new Set([
-  "set-cookie",
-  "connection",
-  "keep-alive",
-  "transfer-encoding",
-  "content-encoding",
-  "content-length",
-]);
+];
 
 export interface MatterProxyOptions {
   /** Matter's origin (and optional base path), without a trailing slash. */
@@ -49,38 +35,37 @@ export interface MatterProxyOptions {
 }
 
 export function buildMatterProxyRoutes(options: MatterProxyOptions) {
-  const fetcher = options.fetcher ?? fetch;
   const routes = new Hono<{ Variables: { tenant_id: string; user_id?: string } }>();
   routes.all("/*", async (c) => {
     const incoming = new URL(c.req.url);
     const rest = incoming.pathname.replace(/^\/matter(?=\/|$)/, "") || "/";
     const target = `${options.url}${rest}${incoming.search}`;
 
-    const headers = new Headers();
-    c.req.raw.headers.forEach((value, name) => {
-      if (!DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) headers.set(name, value);
-    });
-    headers.set(MATTER_PROXY_HEADERS.secret, options.proxySecret);
-    headers.set(MATTER_PROXY_HEADERS.tenant, c.var.tenant_id);
+    const set: Record<string, string> = {
+      [MATTER_PROXY_HEADERS.secret]: options.proxySecret,
+      [MATTER_PROXY_HEADERS.tenant]: c.var.tenant_id,
+    };
     const userId = c.var.user_id;
-    if (userId) headers.set(MATTER_PROXY_HEADERS.user, userId);
+    if (userId) set[MATTER_PROXY_HEADERS.user] = userId;
 
     const method = c.req.method.toUpperCase();
     let upstream: Response;
     try {
-      upstream = await fetcher(target, {
+      upstream = await proxyUpstream({
+        url: target,
         method,
-        headers,
-        body: method === "GET" || method === "HEAD" ? undefined : await c.req.raw.arrayBuffer(),
-        redirect: "manual",
+        headers: c.req.raw.headers,
+        body: method === "GET" || method === "HEAD" ? null : await c.req.raw.arrayBuffer(),
+        set,
+        drop: WITHHELD_REQUEST_HEADERS,
+        ...(options.fetcher ? { fetcher: options.fetcher } : {}),
       });
     } catch {
       return c.json({ error: "matter_unavailable" }, 502);
     }
-    const out = new Headers();
-    upstream.headers.forEach((value, name) => {
-      if (!DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) out.set(name, value);
-    });
+    // Matter's session cookies belong to Matter's origin, not the Console's.
+    const out = new Headers(upstream.headers);
+    out.delete("set-cookie");
     return new Response(upstream.body, { status: upstream.status, headers: out });
   });
   return routes;
@@ -119,21 +104,18 @@ export function matterTrustedAuth(
  * (`X-Gitlab-Token`). Credentials and Matter's trust headers are dropped.
  */
 export function buildMatterWebhookRoutes(options: MatterProxyOptions) {
-  const fetcher = options.fetcher ?? fetch;
   const routes = new Hono();
   routes.post("/*", async (c) => {
     const incoming = new URL(c.req.url);
-    const headers = new Headers();
-    c.req.raw.headers.forEach((value, name) => {
-      if (!DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) headers.set(name, value);
-    });
     let upstream: Response;
     try {
-      upstream = await fetcher(`${options.url}${incoming.pathname}${incoming.search}`, {
+      upstream = await proxyUpstream({
+        url: `${options.url}${incoming.pathname}${incoming.search}`,
         method: "POST",
-        headers,
+        headers: c.req.raw.headers,
         body: await c.req.raw.arrayBuffer(),
-        redirect: "manual",
+        drop: WITHHELD_REQUEST_HEADERS,
+        ...(options.fetcher ? { fetcher: options.fetcher } : {}),
       });
     } catch {
       return c.json({ error: "matter_unavailable" }, 502);

@@ -332,6 +332,7 @@ export default defineConfig({
       { find: "@open-managed-agents/linear", replacement: "./packages/linear/src/index.ts" },
       { find: "@open-managed-agents/github", replacement: "./packages/github/src/index.ts" },
       { find: "@open-managed-agents/schema", replacement: "./packages/schema/src/index.ts" },
+      { find: "@open-managed-agents/http-routes/proxy", replacement: "./packages/http-routes/src/proxy/index.ts" },
       { find: "@open-managed-agents/http-routes", replacement: "./packages/http-routes/src/index.ts" },
       { find: "@open-managed-agents/integrations-core", replacement: "./packages/integrations-core/src/index.ts" },
       { find: "@open-managed-agents/integrations-adapters-cf", replacement: "./packages/integrations-adapters-cf/src/index.ts" },
@@ -497,6 +498,8 @@ export default defineConfig({
       "packages/sandbox-adapter-e2b/**",
       "packages/sandbox-adapter-opensandbox/**",
       "packages/sandbox-adapter-litebox/**",
+      // Real Node fetch (undici) behaviour of the shared proxy hop.
+      "packages/http-routes/test/node/**",
       "packages/harness-supervisor/**",
       "packages/harness-runtime-acp/**",
       "packages/runtime-resource-fence-sql/**",

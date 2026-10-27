@@ -186,28 +186,17 @@ export function resolveUpstreamInferenceUrl(input: {
   return `${root}/${relative}`;
 }
 
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailers",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-  "content-length",
-]);
-
 const INBOUND_CREDENTIAL_HEADERS = new Set(
   INBOUND_CREDENTIAL_HEADER_NAMES.map((name) => name.toLowerCase()),
 );
 
+/** The caller's headers minus its credentials and OpenMA routing headers.
+ * Hop-by-hop hygiene belongs to the HTTP hop that sends the plan. */
 export function copyInboundHeadersForUpstream(inboundHeaders: Headers): Headers {
   const outbound = new Headers();
   for (const [name, value] of inboundHeaders.entries()) {
     const lower = name.toLowerCase();
-    if (HOP_BY_HOP.has(lower) || INBOUND_CREDENTIAL_HEADERS.has(lower) || lower.startsWith("x-oma-")) continue;
+    if (INBOUND_CREDENTIAL_HEADERS.has(lower) || lower.startsWith("x-oma-")) continue;
     outbound.set(name, value);
   }
   return outbound;
@@ -265,15 +254,32 @@ export function applyUpstreamCredentialsForProtocol(
   headers.set("authorization", `Bearer ${apiKey}`);
 }
 
-/** Forward an OpenAI-compatible inference call using host-resolved credentials. */
-export async function forwardHostedInferenceRequest(input: {
+export interface HostedInferenceRequestInput {
   upstream: ResolvedSessionModelUpstream;
   method: string;
   subPath: string;
   inboundHeaders: Headers;
   body: ArrayBuffer | null;
-  fetcher?: typeof fetch;
-}): Promise<Response> {
+}
+
+/** The upstream request a hosted inference call becomes: pinned model,
+ * host-resolved credentials, no caller credentials. */
+export interface HostedInferencePlan {
+  url: string;
+  method: string;
+  headers: Headers;
+  body: string | ArrayBuffer | null;
+}
+
+/**
+ * Plan an OpenAI/Anthropic/Gemini-compatible inference call using
+ * host-resolved credentials. Returns the upstream request to send, or the
+ * error `Response` to return to the caller. Sending is the HTTP route
+ * layer's job.
+ */
+export function planHostedInferenceRequest(
+  input: HostedInferenceRequestInput,
+): HostedInferencePlan | Response {
   const parsed = parseHostedInferenceSubPath(input.subPath);
   const queryIndex = parsed.relativeSubPath.indexOf("?");
   const path = queryIndex < 0 ? parsed.relativeSubPath : parsed.relativeSubPath.slice(0, queryIndex);
@@ -334,33 +340,28 @@ export async function forwardHostedInferenceRequest(input: {
       outbound.set(name, value);
     }
   }
-  const fetcher = input.fetcher ?? fetch;
-  const init: RequestInit = {
-    method: input.method,
-    headers: outbound,
-    redirect: "manual",
-  };
+  let body: string | ArrayBuffer | null = null;
   if (input.method.toUpperCase() === "POST") {
     // All supported inference endpoints use JSON. Do not let a caller bypass
     // model pinning by omitting or forging Content-Type.
     try {
       if (input.body === null) throw new Error("missing body");
-      const body: unknown = JSON.parse(new TextDecoder().decode(input.body));
-      if (body === null || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid body");
+      const parsedBody: unknown = JSON.parse(new TextDecoder().decode(input.body));
+      if (parsedBody === null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) throw new Error("invalid body");
       if (gemini?.[2] === "countTokens") {
         // CountTokensRequest embeds a GenerateContentRequest. Proto JSON
         // accepts both field spellings; pin both rather than only the URL.
-        const record = body as Record<string, unknown>;
+        const record = parsedBody as Record<string, unknown>;
         for (const field of ["generateContentRequest", "generate_content_request"]) {
           const nested = record[field];
           if (nested === undefined || nested === null) continue;
           if (typeof nested !== "object" || Array.isArray(nested)) throw new Error("invalid nested request");
           record[field] = { ...nested, model: `models/${input.upstream.wireModel.replace(/^models\//, "")}` };
         }
-        init.body = JSON.stringify(record);
+        body = JSON.stringify(record);
       } else {
-        init.body = jsonModelEndpoint
-          ? JSON.stringify({ ...body, model: input.upstream.wireModel })
+        body = jsonModelEndpoint
+          ? JSON.stringify({ ...parsedBody, model: input.upstream.wireModel })
           : input.body;
       }
       outbound.set("content-type", "application/json");
@@ -368,5 +369,5 @@ export async function forwardHostedInferenceRequest(input: {
       return Response.json({ error: "invalid_inference_body" }, { status: 400 });
     }
   }
-  return fetcher(upstreamUrl, init);
+  return { url: upstreamUrl, method: input.method, headers: outbound, body };
 }

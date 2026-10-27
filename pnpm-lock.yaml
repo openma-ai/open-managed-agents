@@ -2193,6 +2193,9 @@ importers:
       '@open-managed-agents/event-log':
         specifier: workspace:*
         version: link:../event-log
+      '@open-managed-agents/inference-proxy':
+        specifier: workspace:*
+        version: link:../inference-proxy
       '@open-managed-agents/integrations-core':
         specifier: workspace:*
         version: link:../integrations-core

@@ -68,33 +68,22 @@ describe("@open-managed-agents/vault-forward", () => {
   });
 
   it("forwardWithRefresh refreshes on 401 + onRefreshed fires", async () => {
-    let calls = 0;
-    const fakeFetch: typeof fetch = async (input, init) => {
-      calls++;
-      const headers = new Headers(init?.headers);
-      const auth = headers.get("authorization");
-      if (calls === 1) {
-        // First call: 401
-        return new Response("nope", { status: 401 });
-      }
-      if (calls === 2) {
-        // Token-endpoint refresh (POST refresh_token)
-        return new Response(
-          JSON.stringify({ access_token: "new-tok", refresh_token: "new-r", expires_in: 3600 }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      // Retry with new token
-      expect(auth).toBe("Bearer new-tok");
-      return new Response("ok", { status: 200 });
+    const sent: string[] = [];
+    const send = async (token: string) => {
+      sent.push(token);
+      return new Response(token === "new-tok" ? "ok" : "nope", {
+        status: token === "new-tok" ? 200 : 401,
+      });
     };
+    const tokenEndpoint: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ access_token: "new-tok", refresh_token: "new-r", expires_in: 3600 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
 
     let persisted: { access_token: string; refresh_token: string } | null = null;
     const res = await forwardWithRefresh({
-      upstreamUrl: "https://api.example/api",
-      method: "POST",
-      inboundHeaders: new Headers({ "content-type": "application/json" }),
-      body: '{"x":1}',
+      send,
       accessToken: "stale",
       refresh: {
         refreshToken: "old-r",
@@ -104,58 +93,46 @@ describe("@open-managed-agents/vault-forward", () => {
       onRefreshed: async (t) => {
         persisted = { access_token: t.access_token, refresh_token: t.refresh_token };
       },
-      fetcher: fakeFetch,
+      fetcher: tokenEndpoint,
     });
     expect(res.status).toBe(200);
+    expect(sent).toEqual(["stale", "new-tok"]);
     expect(persisted).toEqual({ access_token: "new-tok", refresh_token: "new-r" });
   });
 
-  it("never follows an upstream redirect with the injected bearer", async () => {
-    const fakeFetch: typeof fetch = async (_input, init) => {
-      expect(init?.redirect).toBe("manual");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer vault-token");
-      return new Response(null, {
-        status: 302,
-        headers: { location: "https://attacker.example/collect" },
-      });
-    };
-
-    const response = await forwardWithRefresh({
-      upstreamUrl: "https://mcp.example/rpc",
-      method: "POST",
-      inboundHeaders: new Headers(),
-      body: "{}",
-      accessToken: "vault-token",
-      fetcher: fakeFetch,
+  it("does not refresh without refresh metadata", async () => {
+    const sent: string[] = [];
+    const res = await forwardWithRefresh({
+      send: async (token) => {
+        sent.push(token);
+        return new Response("nope", { status: 401 });
+      },
+      accessToken: "only",
+      fetcher: async () => {
+        throw new Error("token endpoint must not be called");
+      },
     });
-
-    expect(response.status).toBe(302);
+    expect(res.status).toBe(401);
+    expect(sent).toEqual(["only"]);
   });
 
-  it("scrubs OpenMA and proxy authentication headers before forwarding", async () => {
-    const fakeFetch: typeof fetch = async (_input, init) => {
-      const headers = new Headers(init?.headers);
-      expect(headers.get("authorization")).toBe("Bearer vault-token");
-      expect(headers.has("x-api-key")).toBe(false);
-      expect(headers.has("proxy-authorization")).toBe(false);
-      expect(headers.has("cookie")).toBe(false);
-      expect(headers.has("x-active-tenant")).toBe(false);
-      return new Response("ok");
-    };
-
-    await forwardWithRefresh({
-      upstreamUrl: "https://mcp.example/rpc",
-      method: "POST",
-      inboundHeaders: new Headers({
-        authorization: "Bearer work-token",
-        "x-api-key": "openma-api-key",
-        "proxy-authorization": "Basic local-proxy-capability",
-        cookie: "openma-session=cookie",
-        "x-active-tenant": "tenant-1",
-      }),
-      body: "{}",
-      accessToken: "vault-token",
-      fetcher: fakeFetch,
+  it("re-sends with the original token when the refresh is rejected", async () => {
+    const sent: string[] = [];
+    let final: { status: number; refreshFailed: boolean; refreshFailureCode: string | null } | null = null;
+    const res = await forwardWithRefresh({
+      send: async (token) => {
+        sent.push(token);
+        return new Response("nope", { status: 401 });
+      },
+      accessToken: "stale",
+      refresh: { refreshToken: "r", tokenEndpoint: "https://api.example/token" },
+      fetcher: async () => Response.json({ error: "invalid_grant" }, { status: 400 }),
+      onFinal: async (info) => {
+        final = { status: info.status, refreshFailed: info.refreshFailed, refreshFailureCode: info.refreshFailureCode };
+      },
     });
+    expect(res.status).toBe(401);
+    expect(sent).toEqual(["stale", "stale"]);
+    expect(final).toEqual({ status: 401, refreshFailed: true, refreshFailureCode: "invalid_grant" });
   });
 });
