@@ -29,7 +29,12 @@ export function createNodeManagedAcpCapabilities(dependencies: {
       }
       const execution = await dependencies.findExecution({ workspaceId: input.workspaceId, executionId: fence.executionId });
       const session = await dependencies.findSession({ workspaceId: input.workspaceId, sessionId: input.session.id });
-      if (!session || session.archivedAt !== null || session.environmentId !== input.environment.id || session.agent.id !== input.session.agent.id || session.agent.version !== input.session.agent.version) {
+      if (!session) throw new Error(`Session ${input.session.id} was not found`);
+      if (session.archivedAt !== null) throw new Error(`Session ${input.session.id} is archived and cannot receive new events`);
+      if (session.environmentId !== input.environment.id) {
+        throw new Error("Node ACP sandbox requires the Session environment (child ACP capabilities are not supported)");
+      }
+      if (session.agent.id !== input.session.agent.id || session.agent.version !== input.session.agent.version) {
         throw new Error("Node ACP sandbox requires the pinned Session agent (child ACP capabilities are not supported)");
       }
       if (execution?.state !== "running" || execution.sessionId !== fence.sessionId || execution.attempt?.id !== fence.attemptId || execution.attempt.ownerId !== fence.ownerId || execution.attempt.generation !== fence.generation || !(Date.parse(execution.attempt.leaseExpiresAt) > dependencies.now().getTime())) {

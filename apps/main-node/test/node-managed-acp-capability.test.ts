@@ -44,6 +44,19 @@ describe("Node execution-scoped ACP capability", () => {
     if (reason === "environment") f.input.environment.id = "other";
     await expect(f.capabilities.issue(f.input)).rejects.toThrow();
   });
+  it.each([
+    ["missing", /Session session was not found/],
+    ["archived", /Session session is archived and cannot receive new events/],
+    ["environment", /requires the Session environment/],
+    ["agent", /requires the pinned Session agent/],
+  ] as const)("names the %s Session failure instead of a generic agent mismatch", async (reason, message) => {
+    const f = fixture();
+    if (reason === "missing") f.deps.findSession = async () => null;
+    if (reason === "archived") f.session.archivedAt = "2026-10-23T08:00:01Z";
+    if (reason === "environment") f.session.environmentId = "other";
+    if (reason === "agent") f.session.agent.version++;
+    await expect(createNodeManagedAcpCapabilities(f.deps).issue(f.input)).rejects.toThrow(message);
+  });
   it.each(["crypto", "url", "fence"])("reports missing %s without minting a bearer", async missing => {
     const f = fixture();
     const caps = createNodeManagedAcpCapabilities({ ...f.deps, ...(missing === "crypto" ? { crypto: null } : {}), ...(missing === "url" ? { gatewayBaseUrl: undefined } : {}) });

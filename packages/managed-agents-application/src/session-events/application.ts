@@ -209,6 +209,11 @@ export class SessionEventsApplicationService
           return { type: "accepted", events: events.map(event => byId.get(event.id)! as SentSessionEvent) };
         }
       }
+      // An archived Session is read-only. Reject new input here instead of
+      // accepting it and failing the turn later in the runtime.
+      if (execution.session.archivedAt != null) {
+        return { type: "invalid_request", message: `Session ${command.sessionId} is archived and cannot receive new events` };
+      }
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
         return { type: "version_conflict", message: "Session changed after input validation; retrieve the session before retrying" };
       }
