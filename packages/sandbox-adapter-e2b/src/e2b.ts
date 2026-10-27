@@ -938,6 +938,9 @@ export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
   },
 };
 
+/** Declares no capabilities: many E2B-compatible services cannot snapshot.
+ * A composition that knows its service can opts in with
+ * `withSandboxFactoryCapabilities(sandboxFactory, { preparedBase: true })`. */
 export const sandboxFactory: SandboxFactory = (
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,

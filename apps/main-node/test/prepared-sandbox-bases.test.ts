@@ -640,7 +640,7 @@ describe("prepareBuilderSandbox", () => {
   });
 });
 
-describe("SANDBOX_PREPARED_BASE wiring", () => {
+describe("prepared base wiring from the composed sandbox factory", () => {
   const session = { id: "session_pb", agent: { openma: { harness: "acp-sandbox", acp: { agent: { registry: "claude-acp@0.94.0" } } } } } as unknown as Session;
   const managedEnvironment = {
     id: "env_pb",
@@ -659,7 +659,8 @@ describe("SANDBOX_PREPARED_BASE wiring", () => {
     const store = recordingKv();
     const contexts: SandboxFactoryContext[] = [];
     const bases = createPreparedSandboxBases(
-      { preparedBase, environment: { SANDBOX_PROVIDER: "E2B" } },
+      { environment: { SANDBOX_PROVIDER: "E2B" } },
+      preparedBase ? { capabilities: { preparedBase: true } } : {},
       {
         kvFor: () => store.kv,
         createBuilderSandbox: async () => fakeSandbox("builder"),
@@ -679,7 +680,7 @@ describe("SANDBOX_PREPARED_BASE wiring", () => {
     return { bases, store, contexts, build };
   }
 
-  it("is off by default: no KV access and the factory context is unchanged", async () => {
+  it("is off when the factory does not declare the capability: no KV access and the factory context is unchanged", async () => {
     const { bases, store, contexts, build } = builderWith(false);
     expect(bases).toBeUndefined();
     await build({ workspaceId: "ws_pb", session, environment: managedEnvironment });
@@ -693,7 +694,7 @@ describe("SANDBOX_PREPARED_BASE wiring", () => {
     }]);
   });
 
-  it("when on, keys on the Session's setup and hands the base to the factory on the next start", async () => {
+  it("when the factory declares it, keys on the Session's setup and hands the base to the factory on the next start", async () => {
     const { bases, store, contexts, build } = builderWith(true);
     await build({ workspaceId: "ws_pb", session, environment: managedEnvironment });
     await bases!.idle();

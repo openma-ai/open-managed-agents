@@ -20,7 +20,7 @@ export interface ManagedSandboxBuilderDependencies {
   workdir(sessionId: string): string;
   /** The foundation's factory call: shared memory/outputs ctx plus scope. */
   build(sessionId: string, workdir: string, scope: SandboxScope): Promise<SandboxExecutor>;
-  /** SANDBOX_PREPARED_BASE cache; absent leaves creation untouched. */
+  /** Prepared-base cache; absent leaves creation untouched. */
   preparedBases?: PreparedSandboxBases;
 }
 

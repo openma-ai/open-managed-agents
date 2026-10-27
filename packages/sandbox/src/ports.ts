@@ -352,10 +352,31 @@ export interface SandboxMemoryWorkspacePort {
  *  (e.g. BoxRun reads `BOXRUN_URL`, E2B reads `E2B_API_KEY`). */
 export type SandboxFactoryEnv = Readonly<Record<string, string | undefined>>;
 
-export type SandboxFactory = (
+/** What a factory's sandboxes can do, declared by whoever composes it. The
+ * control plane enables optional features from these declarations instead of
+ * from deployment switches. */
+export interface SandboxFactoryCapabilities {
+  /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
+   * creates from {@link SandboxFactoryContext.preparedBase}. */
+  preparedBase?: boolean;
+}
+
+export type SandboxFactory = ((
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
-) => Promise<SandboxPort>;
+) => Promise<SandboxPort>) & {
+  readonly capabilities?: SandboxFactoryCapabilities;
+};
+
+/** Declare capabilities on a factory, e.g. a custom composition that wraps an
+ * adapter: `withSandboxFactoryCapabilities(factory, { preparedBase: true })`. */
+export function withSandboxFactoryCapabilities(
+  factory: (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => Promise<SandboxPort>,
+  capabilities: SandboxFactoryCapabilities,
+): SandboxFactory {
+  const wrapped = (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => factory(ctx, env);
+  return Object.assign(wrapped, { capabilities: { ...capabilities } });
+}
 
 /** SDK-style provider composition. `SandboxFactory` remains the v0 create
  * adapter; new runtime hosts use this Port when resources must survive the

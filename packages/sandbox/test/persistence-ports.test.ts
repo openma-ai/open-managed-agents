@@ -75,3 +75,18 @@ describe("sandbox persistence capability ports", () => {
     )).rejects.toThrow(/local-subprocess cannot create a sandbox from a prepared base/);
   });
 });
+
+describe("sandbox factory capabilities", () => {
+  it("attaches declared capabilities without changing what the factory creates", async () => {
+    const created = { exec: async () => "" };
+    const calls: unknown[] = [];
+    const factory = sandboxExports.withSandboxFactoryCapabilities(async (ctx, env) => {
+      calls.push([ctx, env]);
+      return created as never;
+    }, { preparedBase: true });
+
+    expect(factory.capabilities).toEqual({ preparedBase: true });
+    await expect(factory({ sessionId: "s", workdir: "/w" }, { A: "1" })).resolves.toBe(created);
+    expect(calls).toEqual([[{ sessionId: "s", workdir: "/w" }, { A: "1" }]]);
+  });
+});

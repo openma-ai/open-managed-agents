@@ -29,6 +29,7 @@ import {
   supportsPreparedBase,
   type EnvironmentPackages,
   type SandboxExecutor,
+  type SandboxFactory,
   type SandboxFactoryContext,
   type SandboxPreparedBaseHandle,
 } from "@open-managed-agents/sandbox";
@@ -447,13 +448,14 @@ export class PreparedSandboxBases {
   }
 }
 
-/** The SANDBOX_PREPARED_BASE switch: undefined (and nothing touched, not even
- * KV) unless the operator turned the feature on. */
+/** Enabled by the composed sandbox factory: undefined (and nothing touched,
+ * not even KV) unless the factory declares `capabilities.preparedBase`. */
 export function createPreparedSandboxBases(
-  sandbox: { preparedBase?: boolean; environment: Readonly<Record<string, string | undefined>> },
+  sandbox: { environment: Readonly<Record<string, string | undefined>> },
+  factory: Pick<SandboxFactory, "capabilities">,
   dependencies: Omit<PreparedSandboxBasesDependencies, "provider" | "defaultImage" | "pipIndexUrl">,
 ): PreparedSandboxBases | undefined {
-  if (sandbox.preparedBase !== true) return undefined;
+  if (factory.capabilities?.preparedBase !== true) return undefined;
   const env = sandbox.environment;
   const defaultImage = env.SANDBOX_IMAGE?.trim();
   const pipIndexUrl = env.SANDBOX_PIP_INDEX_URL;

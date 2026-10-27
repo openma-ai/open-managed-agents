@@ -393,7 +393,7 @@ export async function createManagedNodeRuntime(
       })
     : undefined;
   await workspaceCheckpoints?.ensureSchema();
-  const preparedSandboxBases = createPreparedSandboxBases(config.sandbox, {
+  const preparedSandboxBases = createPreparedSandboxBases(config.sandbox, components.sandbox, {
     kvFor: (workspaceId) => new SqlKvStore({ db: foundation.drizzleDb, tenantId: workspaceId }),
     createBuilderSandbox: (sessionId, scope) =>
       foundation.buildPreparedBaseSandbox(sessionId, join(config.paths.sandboxWorkdir, sessionId), scope),

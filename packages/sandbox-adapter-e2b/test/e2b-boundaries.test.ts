@@ -434,6 +434,10 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(sdk.create).toHaveBeenLastCalledWith("template", expect.objectContaining({ apiUrl: "api", sandboxUrl: "sandbox", domain: "domain" }));
   });
 
+  it("declares no prepared-base capability; compositions opt in explicitly", () => {
+    expect(sandboxFactory.capabilities).toBeUndefined();
+  });
+
   it("uses an Environment-selected catalog image as the template instead of SANDBOX_IMAGE", async () => {
     sdk.create.mockResolvedValue(remote({ sandboxId: "selected" }));
     await sandboxFactory(
