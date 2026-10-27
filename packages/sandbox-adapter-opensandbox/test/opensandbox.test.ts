@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
-import { OpenSandbox, optionsFromEnvironment, sandboxProvider } from "../src/index";
+import { OpenSandbox, openSandboxDurableMount, openSandboxVolumeIdentity, optionsFromEnvironment, sandboxProvider } from "../src/index";
 import { completed, mockSdkServer } from "./sdk-http";
 
 const ctx = { sessionId: "session-test", workdir: "/workspace" };
@@ -24,7 +24,7 @@ describe("OpenSandbox official SDK adapter", () => {
     server.commands = [{ type: "stdout", text: "hello\n" }, { type: "stderr", text: "warning\n" }, completed];
     const sandbox = await create();
     expect(sandbox.runtimeHandle()).toEqual({ provider: "opensandbox", runtimeId: "sb-1" });
-    expect(sandbox.runtimeCapabilities()).toEqual({ lease: true, suspend: ["filesystem", "memory"], checkpoint: ["filesystem"] });
+    expect(sandbox.runtimeCapabilities()).toEqual({ lease: true, suspend: ["filesystem"], checkpoint: ["filesystem"] });
     await sandbox.setEnvVars({ COMMON: "yes" });
     sandbox.registerCommandSecrets("git", { TOKEN: "scoped-secret" });
     expect(await sandbox.exec("git status", 1234)).toBe("hello\nwarning");
@@ -106,7 +106,8 @@ describe("OpenSandbox official SDK adapter", () => {
 
   it("pauses and resumes the same runtime through the SDK lifecycle API", async () => {
     const server = mockSdkServer();
-    const sandbox = await create();
+    const sandbox = await create({ OPENSANDBOX_RUNTIME: "docker" });
+    expect(sandbox.runtimeCapabilities().suspend).toEqual(["filesystem", "memory"]);
     const checkpoint = await sandbox.suspend({ kind: "memory" });
     expect(checkpoint).toEqual({ provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" });
     const pauseAt = server.calls.findIndex(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes/sb-1/pause");
@@ -114,8 +115,9 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(extendAt).toBeGreaterThanOrEqual(0);
     expect(pauseAt).toBeGreaterThan(extendAt);
     const extended = Date.parse((server.calls[extendAt]!.body as { expiresAt: string }).expiresAt) - Date.now();
-    expect(extended).toBeGreaterThan(86_300_000);
-    expect(extended).toBeLessThanOrEqual(86_400_000);
+    // Hot pause: renewed to the normal active window, not a long retention TTL.
+    expect(extended).toBeGreaterThan(1_700_000);
+    expect(extended).toBeLessThanOrEqual(1_800_000);
     server.state = "Paused";
     expect(await sandbox.status()).toBe("suspended");
     server.override = call => {
@@ -181,7 +183,51 @@ describe("OpenSandbox official SDK adapter", () => {
     server.override = call => call.url.pathname.endsWith("/renew-expiration") ? new Response("provider-secret", { status: 409 }) : undefined;
     await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
     expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(false);
-    expect(() => optionsFromEnvironment({ OPENSANDBOX_SUSPENDED_TTL_SECONDS: "59" })).toThrow(">= 60");
+  });
+
+  it("refuses memory suspend unless the operator declares a memory-retaining backend", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_RUNTIME: "kubernetes" });
+    expect(sandbox.runtimeCapabilities().suspend).toEqual(["filesystem"]);
+    await expect(sandbox.suspend({ kind: "memory" })).rejects.toThrow("memory suspend requires");
+    expect(server.calls.some(call => /\/(pause|renew-expiration)$/.test(call.url.pathname))).toBe(false);
+    expect(optionsFromEnvironment({}).suspendKind).toBe("filesystem");
+    expect(optionsFromEnvironment({ OPENSANDBOX_RUNTIME: "fast" }).suspendKind).toBe("memory");
+    expect(optionsFromEnvironment({ OPENSANDBOX_RUNTIME: "docker", OPENSANDBOX_SUSPEND_KIND: "filesystem" }).suspendKind).toBe("filesystem");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_SUSPEND_KIND: "memory" })).toThrow("requires OPENSANDBOX_RUNTIME");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_RUNTIME: "kubernetes", OPENSANDBOX_SUSPEND_KIND: "memory" })).toThrow("requires OPENSANDBOX_RUNTIME");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_RUNTIME: "vm" })).toThrow("OPENSANDBOX_RUNTIME");
+    await sandbox.suspend({ kind: "filesystem" });
+    expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(true);
+  });
+
+  it("passes official SDK volumes to create and exposes a credential-free durable mount", async () => {
+    const server = mockSdkServer();
+    const volumes = [
+      { name: "ws", pvc: { claimName: "oma-ws" }, mountPath: "/workspace", subPath: "sessions/a" },
+      { name: "out", ossfs: { bucket: "b", endpoint: "oss-cn-hangzhou.aliyuncs.com", accessKeyId: "AKID-secret", accessKeySecret: "SK-secret" }, mountPath: "/mnt/outputs", subPath: "prefix" },
+    ];
+    const volEnv = { OPENSANDBOX_VOLUMES: JSON.stringify(volumes) };
+    const sandbox = await create(volEnv);
+    const creation = server.calls.find(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes");
+    expect((creation!.body as { volumes: unknown[] }).volumes).toHaveLength(2);
+    expect(JSON.stringify((creation!.body as { volumes: unknown }).volumes)).toContain("oma-ws");
+    const mount = openSandboxDurableMount({ ...env, ...volEnv }, "/mnt/outputs");
+    expect(mount.identity()).toBe("opensandbox:ossfs://b@oss-cn-hangzhou.aliyuncs.com/prefix#/mnt/outputs");
+    expect(mount.identity()).not.toMatch(/secret/);
+    expect(openSandboxVolumeIdentity(volumes[0]!)).toBe("opensandbox:pvc://oma-ws/sessions/a#/workspace");
+    const signal = new AbortController().signal;
+    await mount.attach({ runtime: sandbox, signal });
+    await expect(mount.attach({ runtime: await create(), signal })).rejects.toThrow("missing durable volume");
+    expect(() => openSandboxDurableMount(volEnv, "/nope")).toThrow("no volume mounted");
+    for (const bad of ["{", "{}", '[{"name":"x","mountPath":"/a"}]', '[{"name":"x","mountPath":"rel","host":{"path":"/h"}}]',
+      '[{"name":"x","mountPath":"/a","host":{"path":"/h"},"pvc":{"claimName":"c"}}]',
+      '[{"name":"x","mountPath":"/a","ossfs":{"bucket":"b","endpoint":"e","accessKeyId":"AKID-secret"}}]']) {
+      let message = "";
+      try { optionsFromEnvironment({ OPENSANDBOX_VOLUMES: bad }); } catch (error) { message = (error as Error).message; }
+      expect(message).toMatch(/OPENSANDBOX_VOLUMES/);
+      expect(message).not.toMatch(/secret/);
+    }
   });
 
   it("configures the SDK lifecycle API using only domain and protocol", async () => {
