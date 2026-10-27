@@ -78,11 +78,17 @@ function agentFixture(): JsonObject {
       { type: "custom", skill_id: "skill_custom", version: "v3" },
     ],
     multiagent: {
-      type: "coordinator",
-      agents: [
-        { type: "agent", id: "agent_helper", version: 4 },
-        { type: "advisor", model: "deepseek-advisor" },
-      ],
+      type: "multiagent_20261001",
+      advisor: { type: "disabled" },
+      workflows: { type: "disabled" },
+      subagents: {
+        type: "enabled",
+        inline_agents: { type: "disabled" },
+        predefined_agents: [
+          { type: "agent", id: "agent_helper", version: 4 },
+          { type: "self" },
+        ],
+      },
     },
   };
 }
@@ -205,6 +211,21 @@ async function installConsoleFixture(page: Page) {
       });
       return;
     }
+    if (path === "/v1/oma/harnesses") {
+      await fulfillJson(route, {
+        object: "list",
+        default_harness_id: "pi",
+        data: [{
+          id: "pi",
+          label: "Pi",
+          description: "Built-in host harness",
+          execution: { placement: "host" },
+          capabilities: { runtime_binding: false },
+          requirements: [],
+        }],
+      });
+      return;
+    }
     if (path === "/v1/oma/me/tenants") {
       await fulfillJson(route, {
         data: [{ id: "tenant_console_e2e", name: "Console E2E", role: "owner" }],
@@ -317,7 +338,7 @@ test.describe("Agent config editor lossless browser contract", () => {
     await dialog.locator("#mcp-url-0").fill("https://docs-v2.example.test/mcp");
 
     await dialog.getByRole("tab", { name: /^Multi-Agent/ }).click();
-    await dialog.locator("#callable-version-0").fill("9");
+    await dialog.locator("#subagent-version-0").fill("9");
     await dialog.getByRole("button", { name: "Save changes" }).click();
     await expect.poll(() => fixture.updates.length).toBe(1);
 
@@ -335,11 +356,14 @@ test.describe("Agent config editor lossless browser contract", () => {
       { name: "docs-v2", type: "url", url: "https://docs-v2.example.test/mcp" },
     ]);
     expect(after.multiagent).toEqual({
-      type: "coordinator",
-      agents: [
-        { type: "agent", id: "agent_helper", version: 9 },
-        { type: "advisor", model: "deepseek-advisor" },
-      ],
+      ...before.multiagent,
+      subagents: {
+        ...before.multiagent.subagents,
+        predefined_agents: [
+          { type: "agent", id: "agent_helper", version: 9 },
+          { type: "self" },
+        ],
+      },
     });
     expect(after.model).toEqual(before.model);
     expect(after._oma).toEqual(before._oma);
