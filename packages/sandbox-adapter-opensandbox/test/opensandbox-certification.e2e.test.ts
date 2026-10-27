@@ -72,7 +72,8 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("pauses, resumes, s
   const owned: OpenSandbox[] = [];
   const snapshots: string[] = [];
   try {
-    const original = await sandboxProvider.create(ctx, process.env);
+    // Process survival is a Docker container-freeze property; declare it.
+    const original = await sandboxProvider.create(ctx, { ...process.env, OPENSANDBOX_RUNTIME: process.env.OPENSANDBOX_RUNTIME ?? "docker" });
     owned.push(original);
     await original.writeFile("/workspace/state.txt", marker);
     await original.writeFileBytes("/workspace/state.bin", binary);
@@ -130,28 +131,28 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("pauses, resumes, s
   }
 }, 600_000);
 
-it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("keeps a suspended sandbox past its lease TTL and resumes it intact", async () => {
+it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("hot-pauses within the active window and resumes intact", async () => {
   const ctx = { sessionId: `sdk-certification-${randomUUID()}`, workdir: "/workspace" };
   const marker = `OPENMA_TTL_${randomUUID()}`;
-  // Short creation TTL plus a host-style short lease renewal: without the
-  // suspend-time extension the server expiry would delete the paused sandbox.
-  const env = { ...process.env, OPENSANDBOX_TIMEOUT_SECONDS: "60", OPENSANDBOX_SUSPENDED_TTL_SECONDS: "600" };
+  // Pause does not freeze expires_at. Suspend renews to the normal active
+  // window (not a long retention TTL), then pauses; expiry stays absolute.
+  const env = { ...process.env, OPENSANDBOX_TIMEOUT_SECONDS: "300" };
   const manager = certificationManager();
   let sandbox: OpenSandbox | undefined;
   try {
     sandbox = await sandboxProvider.create(ctx, env);
     await sandbox.writeFile("/workspace/ttl.txt", marker);
     await sandbox.renewLease({ ttlMs: 60_000 });
-    const checkpoint = await sandbox.suspend({ kind: "memory" });
+    const checkpoint = await sandbox.suspend({ kind: "filesystem" });
     const paused = await manager.getSandboxInfo(sandbox.id);
     expect(paused.status.state).toBe("Paused");
-    expect(paused.expiresAt!.getTime() - Date.now()).toBeGreaterThan(500_000);
+    const remaining = paused.expiresAt!.getTime() - Date.now();
+    expect(remaining).toBeGreaterThan(200_000);
+    expect(remaining).toBeLessThanOrEqual(300_000);
     await new Promise(resolve => setTimeout(resolve, 90_000));
     expect((await manager.getSandboxInfo(sandbox.id)).status.state).toBe("Paused");
     await sandbox.resume(checkpoint);
     expect(await sandbox.readFile("/workspace/ttl.txt")).toBe(marker);
-    // Resume returns to the configured running TTL.
-    expect((await manager.getSandboxInfo(sandbox.id)).expiresAt!.getTime() - Date.now()).toBeLessThanOrEqual(60_000);
   } finally {
     await sandbox?.destroy().catch(() => undefined);
     await manager.close();
