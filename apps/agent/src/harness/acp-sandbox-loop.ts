@@ -8,6 +8,7 @@ import {
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
+import { answerAcpPermission } from "./acp-permission";
 import { AcpTranslator } from "./acp-translate";
 import type {
   HarnessContext,
@@ -220,6 +221,11 @@ export class AcpSandboxHarness implements HarnessInterface {
             ? { resumeAcpSessionId: this.#resumeAcpSessionId }
             : {}),
           ...(mcpServers.length === 0 ? {} : { mcpServers }),
+          // Without this callback ACP cancels every permission request, so
+          // the agent could not run any tool that asks (e.g. Claude's Bash).
+          clientCallbacks: {
+            requestPermission: async (params) => answerAcpPermission(ctx.agent, params),
+          },
         });
         this.#configKey = configKey;
         this.#preparation = preparation;
