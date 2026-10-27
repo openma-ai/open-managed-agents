@@ -2,7 +2,10 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 registerTestHarnesses();
 

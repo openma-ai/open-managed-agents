@@ -1,8 +1,11 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 import { toAnthropicMessages } from "@open-managed-agents/shared";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 registerTestHarnesses();
 

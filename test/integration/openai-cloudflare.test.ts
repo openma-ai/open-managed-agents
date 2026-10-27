@@ -2,7 +2,10 @@ import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 const headers = { Authorization: "Bearer test-key", "OpenAI-Beta": "agents=v1", "Content-Type": "application/json" };
 const request = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`http://localhost/openai/v1${path}`, { ...init, headers: init?.headers ?? headers }));

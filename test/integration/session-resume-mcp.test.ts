@@ -4,7 +4,8 @@
 // A non-idle session fails fast and does not receive the event.
 
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import type { HarnessContext } from "../../apps/agent/src/harness/interface";
@@ -16,6 +17,8 @@ import {
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+
+beforeAll(() => ensureModelCards(["resume-mcp-mock", "claude-sonnet-4-6"]));
 
 const SECRET = "test-internal-secret";
 const H = { "x-api-key": "test-key", "content-type": "application/json" };

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import { getCfServicesForTenant } from "@open-managed-agents/services";
@@ -12,6 +13,8 @@ import {
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+
+beforeAll(() => ensureModelCards(["managed-turn-model"]));
 
 const HEADERS = {
   "x-api-key": "test-key",

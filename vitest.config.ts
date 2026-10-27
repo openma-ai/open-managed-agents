@@ -65,7 +65,6 @@ const cfWorkerOptions = {
   miniflare: {
     bindings: {
       API_KEY: "test-key",
-      ANTHROPIC_API_KEY: "sk-ant-test-key",
       DREAM_CURATOR_MODE: "dedup",
       BETTER_AUTH_SECRET: "test-auth-secret-for-vitest",
       // Required by buildServices for at-rest encryption of credentials.auth

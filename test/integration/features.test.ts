@@ -1,7 +1,10 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6", "claude-opus-4-6"]));
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
