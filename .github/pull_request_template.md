@@ -1,7 +1,14 @@
 <!--
 合并前写全下面六段。放在本描述或一条评论里均可，但必须对应当前 head SHA。
 不适用的段落写「不适用」并说明原因。填写说明见 CONTRIBUTING.md「证据报告」。
+修复或实现某个 issue 时，还必须关联该 issue（见 CONTRIBUTING.md「Issue 关联」）。
 -->
+
+## 关联 issue / Linked issues
+
+<!-- 修复或实现某个未关闭 issue 时必填。单独一行写关闭关键词；分支名带编号不够。也可用 GitHub Development 侧栏关联。多个 issue 各占一行。无关联写「不适用」。 -->
+
+Closes #
 
 ## 问题 / 动机
 

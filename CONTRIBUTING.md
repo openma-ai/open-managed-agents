@@ -1,6 +1,6 @@
 # 贡献指南
 
-**English.** Canonical contribution guide for the openma-ai org. It lives in `open-managed-agents` first; copy it to other org repos or an org `.github` repo and replace only **本仓库**. Shared rules: conventional-commit titles, squash merge, small PRs, green CI with a root cause for failures, a compatibility check on dependency bumps plus a follow-up bump downstream after release, private security reports, and an evidence report on every PR before merge.
+**English.** Canonical contribution guide for the openma-ai org. It lives in `open-managed-agents` first; copy it to other org repos or an org `.github` repo and replace only **本仓库**. Shared rules: conventional-commit titles, squash merge, small PRs, green CI with a root cause for failures, a compatibility check on dependency bumps plus a follow-up bump downstream after release, private security reports, an evidence report on every PR before merge, and linking fixed issues with `Closes`/`Fixes` (or the Development sidebar) so they auto-close on merge into `main`.
 
 以下各节是组织约定。「本仓库」只适用于 `open-managed-agents`。复制到别的仓库时换掉「本仓库」一节，并改掉文中指向本仓库文件的链接。
 
@@ -12,7 +12,7 @@
 <type>/<kebab-summary>
 ```
 
-`type` 与 PR 标题类型一致。近期合并：`fix/ci-minio-image`（#227）、`feat/sql-realtime-fanout`（#222）、`refactor/split-node-assembly`（#234）、`docs/discord-community`（#197）。关联 issue 时把编号放进名字，例如 `fix/196-session-update-idle`。
+`type` 与 PR 标题类型一致。近期合并：`fix/ci-minio-image`（#227）、`feat/sql-realtime-fanout`（#222）、`refactor/split-node-assembly`（#234）、`docs/discord-community`（#197）。关联 issue 时把编号放进名字，例如 `fix/196-session-update-idle`（分支名方便人读；自动关闭还要在 PR 描述里写 `Closes #N`，见「Issue 关联」）。
 
 工具前缀保持原样：`dependabot/…`、`codex/…`、`cursor/…`。deepseek-harness-acp 的 dsh 升级分支是 `codex/bump-dsh-<version>`。
 
@@ -38,11 +38,35 @@
 
 lockfile 冲突时可以把多篇依赖更新合成一篇，跑一次完整 CI（#202 包含 #201–#206）。描述里列出被包含的 PR。
 
+## Issue 关联 / Linking issues
+
+**English.** Fixing or implementing an open issue **requires** linking it on the PR before merge. Preferred: put a closing keyword on its own line in the PR description (`Closes #123`, `Fixes #123`, or `Resolves #123`). A branch name that contains the number is **not** enough for auto-close. Linking via the GitHub PR Development / linked issues UI has the same effect when merging to the default branch. Auto-close only runs when the PR merges into the repo default branch (`main`). Do not manually close a linked issue; let merge close it.
+
+修复或实现某个未关闭的 issue 时，**合并前必须把 PR 和该 issue 关联起来**。否则合并后 issue 会继续开着（例如 Backchat #66 在相关 PR 合入后仍未关闭）。
+
+**推荐写法。** 在 PR 描述里单独一行写关闭关键词（不要埋进句子中间）：
+
+```text
+Closes #123
+```
+
+也可用 `Fixes #123` 或 `Resolves #123`。多个 issue 时每个关键词各占一行。
+
+**分支名不够。** 分支名里带编号（如 `fix/196-…`）方便人读，但 **不能** 触发 GitHub 的自动关闭。
+
+**替代做法。** 在 GitHub PR 右侧 Development / linked issues 里把 issue 挂上，效果相同（合并进默认分支时关闭）。
+
+**只对默认分支生效。** 自动关闭只在 PR 合并进仓库默认分支（本组织是 `main`）时运行。合进其他分支不会关 issue。
+
+**不要手工关。** PR 已经关联了就不要手动 Close issue；让合并去关。若过去有 PR 已合并但没写关键词、issue 仍开着，维护者可以用 completed 原因关闭，并在关闭说明里写上落地的 PR（可选；以后以模板为准，避免再漏）。
+
+证据报告里有关联 issue 时，加上一行「关联 issue」：`Closes #N` / `Fixes #N`，或写明已通过 Development 侧栏关联。
+
 ## 证据报告 / Evidence report
 
 **合并前，PR 描述或一条评论里必须有证据报告，并且对应当前 head SHA。** 缺段，或证据还停在旧 SHA 上，就不合并。仓库没有把这件事做成 status check：作者填写，维护者核对。模板是 `.github/pull_request_template.md`。
 
-六段都要出现。没有内容就写「不适用」并给一句原因。
+六段都要出现。没有内容就写「不适用」并给一句原因。若本 PR 修复或实现某个 issue，描述顶部还要有「关联 issue」行（见「Issue 关联」）；模板里预留了 `Closes #`。
 
 ### 问题 / 动机
 
