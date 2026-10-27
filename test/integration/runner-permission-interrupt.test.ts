@@ -40,7 +40,7 @@ describe("interrupting a runner while its proxy is waiting for permission", () =
       });
       const actions = [action("primary-request"), action("sibling-request", "sthr_sibling")];
       room.setState({ ...room.state, session_id: sessionId, tenant_id: "workspace", agent_id: "runner-agent",
-        agent_snapshot: { id: "runner-agent", version: 1, name: "Runner", harness: "acp-proxy", runtime_binding: { runtime_id: "machine", acp_agent_id: "codex-acp" } },
+        agent_snapshot: { id: "runner-agent", version: 1, name: "Runner", model: "codex", system: "", tools: [], mcp_servers: [], skills: [], harness: "acp-proxy", runtime_binding: { runtime_id: "machine", acp_agent_id: "codex-acp" } },
         pending_tool_calls: actions.map((event) => ({ toolCallId: event.id, toolName: event.name, args: event.input })),
       });
       room._ensurePrimaryThread();

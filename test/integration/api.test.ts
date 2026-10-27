@@ -143,7 +143,7 @@ describe("Agent CRUD", () => {
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    expect(agent.id).toMatch(/^agent-/);
+    expect(agent.id).toMatch(/^agent_/);
     expect(agent.version).toBe(1);
     expect(agent.created_at).toBeTruthy();
 
@@ -154,14 +154,14 @@ describe("Agent CRUD", () => {
     expect(fetched.system).toBe("Be helpful.");
   });
 
-  it("defaults tools when omitted", async () => {
+  it("returns no tools when omitted", async () => {
     const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Minimal", model: "claude-sonnet-4-6" }),
     });
     const agent = (await res.json()) as any;
-    expect(agent.tools).toEqual([{ type: "agent_toolset_20260401" }]);
+    expect(agent.tools).toEqual([]);
   });
 
   it("stores custom harness field", async () => {
@@ -235,7 +235,7 @@ describe("Agent CRUD", () => {
     });
     const agent = (await res.json()) as any;
     expect(agent.tools[0].default_config.enabled).toBe(false);
-    expect(agent.tools[0].configs[0]).toEqual({ name: "read", enabled: true });
+    expect(agent.tools[0].configs[0]).toMatchObject({ name: "read", enabled: true });
   });
 
   it("rejects agent without name", async () => {
@@ -282,9 +282,10 @@ describe("Agent CRUD", () => {
     const versionsRes = await api(`/v1/oma/agents/${agent.id}/versions`, { headers: HEADERS });
     expect(versionsRes.status).toBe(200);
     const versions = (await versionsRes.json()) as any;
-    expect(versions.data.length).toBe(1);
-    expect(versions.data[0].version).toBe(1);
-    expect(versions.data[0].system).toBe("v1 system");
+    // The list includes the current version, newest first.
+    expect(versions.data.map((v: any) => v.version)).toEqual([2, 1]);
+    expect(versions.data[0].system).toBe("v2 system");
+    expect(versions.data[1].system).toBe("v1 system");
 
     // Get specific version
     const v1Res = await api(`/v1/oma/agents/${agent.id}/versions/1`, { headers: HEADERS });

@@ -363,9 +363,8 @@ describe("Edge cases - concurrent and complex operations", () => {
     expect(fetched.vault_ids).toEqual(["vlt_abc", "vlt_def"]);
   });
 
-  it("agent created with callable_agents is stored via buildTools", async () => {
-    // The API doesn't store callable_agents directly, but buildTools uses them
-    // Test that buildTools creates call_agent tools from config
+  it("agent with predefined subagents gets call_agent tools via buildTools", async () => {
+    // buildTools creates one call_agent tool per predefined multiagent subagent
     const { buildTools } = await import("../../apps/agent/src/harness/tools");
     const { TestSandbox } = await import("../../apps/agent/src/runtime/sandbox");
     const sandbox = new TestSandbox();
@@ -375,13 +374,22 @@ describe("Edge cases - concurrent and complex operations", () => {
       model: "claude-sonnet-4-6",
       system: "",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [
-        { type: "agent", id: "agent_w1", version: 1 },
-        { type: "agent", id: "agent_w2", version: 2 },
-      ],
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inline_agents: { type: "disabled" },
+          predefined_agents: [
+            { type: "agent", id: "agent_w1", version: 1 },
+            { type: "agent", id: "agent_w2", version: 2 },
+          ],
+        },
+        workflows: { type: "disabled" },
+      },
       version: 1,
       created_at: new Date().toISOString(),
-    }, sandbox, { ANTHROPIC_API_KEY: "sk-test" });
+    } as any, sandbox, { ANTHROPIC_API_KEY: "sk-test", delegateToAgent: async () => "ok" });
     expect(tools.call_agent_agent_w1).toBeDefined();
     expect(tools.call_agent_agent_w2).toBeDefined();
   });
@@ -423,7 +431,7 @@ describe("Edge cases - concurrent and complex operations", () => {
       model: "claude-sonnet-4-6",
       tools: [
         { type: "agent_toolset_20260401" },
-        { type: "custom", name: "get_weather", description: "Get weather forecast", input_schema: {} },
+        { type: "custom", name: "get_weather", description: "Get weather forecast", input_schema: { type: "object", properties: {} } },
       ],
     });
     expect(res.status).toBe(201);
@@ -443,8 +451,8 @@ describe("Edge cases - concurrent and complex operations", () => {
           default_config: { enabled: false },
           configs: [{ name: "bash", enabled: true }],
         },
-        { type: "custom", name: "deploy", description: "Deploy app" },
-        { type: "custom", name: "rollback", description: "Rollback deploy" },
+        { type: "custom", name: "deploy", description: "Deploy app", input_schema: { type: "object", properties: {} } },
+        { type: "custom", name: "rollback", description: "Rollback deploy", input_schema: { type: "object", properties: {} } },
       ],
     });
     expect(res.status).toBe(201);

@@ -16,6 +16,18 @@ import { buildTools } from "../../apps/agent/src/harness/tools";
 import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
 import type { AgentConfig, SessionEvent, SessionThreadCreatedEvent, SessionThreadIdleEvent, AgentThreadMessageEvent, AgentMessageEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
+
+/** Multiagent config with pinned predefined subagents (replaces callable_agents). */
+function predefinedSubagents(refs: Array<{ type: "agent"; id: string; version: number }>) {
+  return {
+    type: "multiagent_20261001" as const,
+    advisor: { type: "disabled" as const },
+    subagents: { type: "enabled" as const, inline_agents: { type: "disabled" as const }, predefined_agents: refs },
+    workflows: { type: "disabled" as const },
+  };
+}
+const noopDelegate = async () => "ok";
+
 // ============================================================
 // Helpers
 // ============================================================
@@ -169,51 +181,54 @@ describe("Compaction", () => {
 });
 
 // ============================================================
-// 3. Multi-agent callable_agents
+// 3. Multi-agent predefined subagents
 // ============================================================
-describe("Multi-agent callable_agents", () => {
-  it("stores callable_agents in AgentConfig and builds tools", async () => {
-    const agentConfig: AgentConfig = {
+describe("Multi-agent predefined subagents", () => {
+  it("stores predefined subagents in AgentConfig and builds tools", async () => {
+    const agentConfig = {
       id: "agent_coord_api",
       name: "Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [{ type: "agent", id: "agent_worker1", version: 1 }],
+      multiagent: predefinedSubagents([{ type: "agent", id: "agent_worker1", version: 1 }]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
-    expect(agentConfig.callable_agents).toHaveLength(1);
-    expect(agentConfig.callable_agents![0].id).toBe("agent_worker1");
-    expect(agentConfig.callable_agents![0].type).toBe("agent");
+    const refs = agentConfig.multiagent.subagents.predefined_agents;
+    expect(refs).toHaveLength(1);
+    expect(refs[0].id).toBe("agent_worker1");
+    expect(refs[0].type).toBe("agent");
 
     // Verify tools are created from this config
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
+      delegateToAgent: noopDelegate,
     });
     expect(tools.call_agent_agent_worker1).toBeDefined();
   });
 
-  it("agent with callable_agents creates call tools via buildTools", async () => {
-    const agentConfig: AgentConfig = {
+  it("agent with predefined subagents creates call tools via buildTools", async () => {
+    const agentConfig = {
       id: "agent_coord",
       name: "Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [
+      multiagent: predefinedSubagents([
         { type: "agent", id: "agent_worker1", version: 1 },
         { type: "agent", id: "agent_worker2", version: 1 },
-      ],
+      ]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
+      delegateToAgent: noopDelegate,
     });
 
     // Should have call_agent tools for each callable agent
@@ -225,21 +240,21 @@ describe("Multi-agent callable_agents", () => {
     expect(typeof tools.call_agent_agent_worker2).toBe("object");
   });
 
-  it("callable_agents tools are NOT created without ANTHROPIC_API_KEY", async () => {
-    const agentConfig: AgentConfig = {
+  it("call_agent tools are NOT created without a delegateToAgent runtime", async () => {
+    const agentConfig = {
       id: "agent_coord_nokey",
       name: "Coordinator No Key",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [{ type: "agent", id: "agent_worker1", version: 1 }],
+      multiagent: predefinedSubagents([{ type: "agent", id: "agent_worker1", version: 1 }]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
-    // No env.ANTHROPIC_API_KEY provided
-    const tools = await buildTools(agentConfig, sandbox, undefined);
+    // No env / delegateToAgent provided
+    const tools = await buildTools(agentConfig as any, sandbox, undefined);
     expect(tools.call_agent_agent_worker1).toBeUndefined();
   });
 
@@ -263,25 +278,26 @@ describe("Multi-agent callable_agents", () => {
     expect((threadMessage as AgentThreadMessageEvent).content[0].text).toBe("sub-agent response");
   });
 
-  it("callable_agents with multiple agents produces multiple tools", async () => {
-    const agentConfig: AgentConfig = {
+  it("multiple predefined subagents produce multiple tools", async () => {
+    const agentConfig = {
       id: "agent_multi_coord",
       name: "Multi Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate multiple agents.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [
+      multiagent: predefinedSubagents([
         { type: "agent", id: "agent_alpha", version: 1 },
         { type: "agent", id: "agent_beta", version: 1 },
         { type: "agent", id: "agent_gamma", version: 1 },
-      ],
+      ]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
+      delegateToAgent: noopDelegate,
     });
 
     expect(tools.call_agent_agent_alpha).toBeDefined();
@@ -937,7 +953,7 @@ describe("Sandbox lifecycle", () => {
 // ============================================================
 describe("buildTools integration", () => {
   it("builds all default tools when agent_toolset is specified", async () => {
-    const agentConfig: AgentConfig = {
+    const agentConfig = {
       id: "agent_full",
       name: "Full Tools Agent",
       model: "claude-sonnet-4-6",
@@ -945,9 +961,9 @@ describe("buildTools integration", () => {
       tools: [{ type: "agent_toolset_20260401" }],
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox);
+    const tools = await buildTools(agentConfig as any, sandbox);
 
     expect(tools.bash).toBeDefined();
     expect(tools.read).toBeDefined();
@@ -960,7 +976,7 @@ describe("buildTools integration", () => {
   });
 
   it("selective tool config disables non-listed tools", async () => {
-    const agentConfig: AgentConfig = {
+    const agentConfig = {
       id: "agent_selective",
       name: "Selective Agent",
       model: "claude-sonnet-4-6",
@@ -977,9 +993,9 @@ describe("buildTools integration", () => {
       ],
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox);
+    const tools = await buildTools(agentConfig as any, sandbox);
 
     expect(tools.bash).toBeDefined();
     expect(tools.read).toBeDefined();
@@ -1111,16 +1127,16 @@ describe("Thread model — delegateToAgent", () => {
   it("call_agent tool uses delegateToAgent when provided", async () => {
     const delegateCalls: Array<{ agentId: string; message: string }> = [];
 
-    const agentConfig: AgentConfig = {
+    const agentConfig = {
       id: "agent_coord_thread",
       name: "Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [{ type: "agent", id: "agent_worker1", version: 1 }],
+      multiagent: predefinedSubagents([{ type: "agent", id: "agent_worker1", version: 1 }]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
     const mockDelegate = async (agentId: string, message: string) => {
@@ -1128,7 +1144,7 @@ describe("Thread model — delegateToAgent", () => {
       return "sub-agent response from thread";
     };
 
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
       delegateToAgent: mockDelegate,
     });
@@ -1147,46 +1163,41 @@ describe("Thread model — delegateToAgent", () => {
     expect(delegateCalls[0].message).toBe("analyze this code");
   });
 
-  it("call_agent tool returns fallback when delegateToAgent is not provided", async () => {
-    const agentConfig: AgentConfig = {
+  it("call_agent tool is absent when delegateToAgent is not provided", async () => {
+    const agentConfig = {
       id: "agent_coord_no_delegate",
       name: "Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [{ type: "agent", id: "agent_worker1", version: 1 }],
+      multiagent: predefinedSubagents([{ type: "agent", id: "agent_worker1", version: 1 }]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
       // No delegateToAgent
     });
 
-    const result = await tools.call_agent_agent_worker1.execute(
-      { message: "do something" },
-      { toolCallId: "tc_1", messages: [], abortSignal: undefined as any }
-    );
-
-    expect(result).toContain("not available");
+    expect(tools.call_agent_agent_worker1).toBeUndefined();
   });
 
   it("call_agent tool catches delegateToAgent errors gracefully", async () => {
-    const agentConfig: AgentConfig = {
+    const agentConfig = {
       id: "agent_coord_error",
       name: "Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [{ type: "agent", id: "agent_flaky", version: 1 }],
+      multiagent: predefinedSubagents([{ type: "agent", id: "agent_flaky", version: 1 }]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
       delegateToAgent: async () => {
         throw new Error("sub-agent harness crashed");
@@ -1242,19 +1253,19 @@ describe("Thread model — delegateToAgent", () => {
   it("multiple call_agent tools each delegate to their own agent ID", async () => {
     const delegateCalls: Array<{ agentId: string; message: string }> = [];
 
-    const agentConfig: AgentConfig = {
+    const agentConfig = {
       id: "agent_multi_coord",
       name: "Multi Coordinator",
       model: "claude-sonnet-4-6",
       system: "You coordinate.",
       tools: [{ type: "agent_toolset_20260401" }],
-      callable_agents: [
+      multiagent: predefinedSubagents([
         { type: "agent", id: "agent_alpha", version: 1 },
         { type: "agent", id: "agent_beta", version: 1 },
-      ],
+      ]),
       version: 1,
       created_at: new Date().toISOString(),
-    };
+    }
 
     const sandbox = new TestSandbox();
     const mockDelegate = async (agentId: string, message: string) => {
@@ -1262,7 +1273,7 @@ describe("Thread model — delegateToAgent", () => {
       return `response from ${agentId}`;
     };
 
-    const tools = await buildTools(agentConfig, sandbox, {
+    const tools = await buildTools(agentConfig as any, sandbox, {
       ANTHROPIC_API_KEY: "sk-ant-test",
       delegateToAgent: mockDelegate,
     });

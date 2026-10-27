@@ -198,7 +198,7 @@ describe("Agent + Session snapshot", () => {
       _oma: { harness: "cross-noop" },
       description: "A fully configured agent",
       metadata: { team: "platform", tier: "premium" },
-      skills: [{ skill_id: "web_research" }],
+      skills: [{ type: "anthropic", skill_id: "web_research" }],
     });
     expect(a.status).toBe(201);
     const agent = (await a.json()) as any;
@@ -616,7 +616,7 @@ describe("Cross-entity lifecycle", () => {
     expect(delRes2.status).toBe(200);
   });
 
-  it("agent version history across 3 updates saves 2 versions", async () => {
+  it("agent version history across 3 updates lists all 3 versions", async () => {
     const aRes = await post("/v1/oma/agents", {
       name: "VersionChain", model: "claude-sonnet-4-6", system: "ver-1", _oma: { harness: "cross-noop" },
     });
@@ -628,11 +628,9 @@ describe("Cross-entity lifecycle", () => {
 
     const versionsRes = await get(`/v1/oma/agents/${agent.id}/versions`);
     const versions = (await versionsRes.json()) as any;
-    expect(versions.data.length).toBe(2);
-    expect(versions.data[0].version).toBe(1);
-    expect(versions.data[0].system).toBe("ver-1");
-    expect(versions.data[1].version).toBe(2);
-    expect(versions.data[1].system).toBe("ver-2");
+    // The list includes the current version, newest first.
+    expect(versions.data.map((v: any) => v.version)).toEqual([3, 2, 1]);
+    expect(versions.data.map((v: any) => v.system)).toEqual(["ver-3", "ver-2", "ver-1"]);
 
     const currentRes = await get(`/v1/oma/agents/${agent.id}`);
     const current = (await currentRes.json()) as any;

@@ -112,6 +112,22 @@ class MemoryAgentStore implements AgentStore {
   }
 }
 
+describe("agent update no-op detection", () => {
+  it("returns the current version when an update changes nothing", async () => {
+    let id = 0;
+    const store = new MemoryAgentStore();
+    const service = new AgentsApplicationService({ workspaceId: "workspace_01", store,
+      clock: { now: () => new Date(Date.UTC(2026, 7, 26, 0, 0, id)) },
+      ids: { nextAgentId: () => `agent_${++id}` } });
+    const created = await service.createAgent({ name: "same", model: "m", system: "stable", metadata: { team: "a" } });
+    if (created.type !== "created") throw Error("create failed");
+    const noop = await service.updateAgent({ agentId: "agent_1", system: "stable", name: "same", metadata: { team: "a" } });
+    expect(noop).toMatchObject({ type: "updated", agent: { version: 1, updatedAt: created.agent.updatedAt } });
+    expect(await service.updateAgent({ agentId: "agent_1" })).toMatchObject({ type: "updated", agent: { version: 1 } });
+    expect(await service.updateAgent({ agentId: "agent_1", system: "changed" })).toMatchObject({ type: "updated", agent: { version: 2, system: "changed" } });
+  });
+});
+
 describe("multiagent reference integrity", () => {
   function setup(workspaceId = "workspace_01", store = new MemoryAgentStore()) {
     let id = 0;

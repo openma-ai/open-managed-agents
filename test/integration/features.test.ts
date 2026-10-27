@@ -146,9 +146,8 @@ describe("Agent version history", () => {
     const res = await get(`/v1/oma/agents/${agentId}/versions`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.data.length).toBe(2); // v1 and v2 saved, v3 is current
-    expect(body.data[0].version).toBe(1);
-    expect(body.data[1].version).toBe(2);
+    // Includes the current version, newest first.
+    expect(body.data.map((v: any) => v.version)).toEqual([3, 2, 1]);
   });
 
   it("gets a specific version", async () => {
@@ -195,11 +194,11 @@ describe("Agent list filters", () => {
     expect(body.data.length).toBe(2);
   });
 
-  it("orders ascending", async () => {
-    const res = await get("/v1/oma/agents?order=asc&limit=50");
+  it("orders newest first", async () => {
+    const res = await get("/v1/oma/agents?limit=50");
     const body = (await res.json()) as any;
     for (let i = 1; i < body.data.length; i++) {
-      expect(body.data[i].created_at >= body.data[i - 1].created_at).toBe(true);
+      expect(body.data[i].created_at <= body.data[i - 1].created_at).toBe(true);
     }
   });
 });

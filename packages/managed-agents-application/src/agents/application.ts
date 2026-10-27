@@ -652,6 +652,12 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       return { type: "invalid_request", message: invalidModel };
     }
 
+    // No-op detection (official contract): an update that changes nothing
+    // relative to the current version returns that version unchanged.
+    if (sameAgentDefinition(current, next)) {
+      return { type: "updated", agent: current };
+    }
+
     const result = await this.dependencies.store.replaceCurrent({
       workspaceId: this.dependencies.workspaceId,
       agentId: command.agentId,
@@ -761,4 +767,22 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       },
     };
   }
+}
+
+/** Compare two agent definitions ignoring version bookkeeping and key order. */
+function sameAgentDefinition(left: AgentView, right: AgentView): boolean {
+  const definition = ({ version: _version, updatedAt: _updatedAt, ...rest }: AgentView) => rest;
+  return canonicalJson(definition(left)) === canonicalJson(definition(right));
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item !== null && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.entries(item as Record<string, unknown>)
+            .filter(([, entry]) => entry !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : item,
+  );
 }

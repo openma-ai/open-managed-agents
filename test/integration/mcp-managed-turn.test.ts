@@ -345,14 +345,17 @@ describe("managed turn MCP E2E", () => {
         name: `Managed MCP turn ${crypto.randomUUID()}`,
         model: "managed-turn-model",
         system: "Use the MCP echo tool.",
-        tools: [{ type: "agent_toolset_20260401" }],
+        tools: [
+          { type: "agent_toolset_20260401" },
+          { type: "mcp_toolset", mcp_server_name: "broken" },
+          { type: "mcp_toolset", mcp_server_name: "fake" },
+        ],
         _oma: { harness: HARNESS_NAME },
         mcp_servers: [
           {
             name: "broken",
             type: "url",
             url: `${BROKEN_MCP_ORIGIN}/rpc`,
-            authorization_token: "broken-token",
           },
           { name: "fake", type: "url", url: `${MCP_ORIGIN}/rpc` },
         ],

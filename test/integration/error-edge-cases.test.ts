@@ -55,7 +55,7 @@ async function createSession(agentId: string, envId: string, extra?: Record<stri
 // API validation
 // ============================================================
 describe("API validation", () => {
-  it("agent with extra unknown fields is accepted (201)", async () => {
+  it("agent with extra unknown fields is rejected (400)", async () => {
     const res = await post("/v1/oma/agents", {
       name: "ExtraFields",
       model: "claude-sonnet-4-6",
@@ -63,10 +63,9 @@ describe("API validation", () => {
       unknown_field: "should be ignored or stored",
       another_random: 42,
     });
-    expect(res.status).toBe(201);
-    const agent = (await res.json()) as any;
-    expect(agent.id).toMatch(/^agent-/);
-    expect(agent.name).toBe("ExtraFields");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.type).toBe("invalid_request_error");
   });
 
   it("session without title is created with no title", async () => {
@@ -146,7 +145,7 @@ describe("Concurrent operations", () => {
     expect(getRes.status).toBe(404);
   });
 
-  it("two PUT updates to same agent simultaneously both succeed, last wins", async () => {
+  it("two simultaneous PUT updates: one wins, a stale writer gets 409", async () => {
     const agent = await createAgent({ system: "concurrent-v0" });
 
     const [res1, res2] = await Promise.all([
@@ -154,13 +153,19 @@ describe("Concurrent operations", () => {
       put(`/v1/oma/agents/${agent.id}`, { system: "concurrent-v2" }),
     ]);
 
-    expect(res1.status).toBe(200);
-    expect(res2.status).toBe(200);
+    // Version compare-and-swap, no locking: a writer that read a stale
+    // version is rejected with 409 instead of silently overwriting.
+    const statuses = [res1.status, res2.status];
+    expect(statuses).toContain(200);
+    for (const status of statuses) expect([200, 409]).toContain(status);
 
-    // The final state should be one of the two updates
+    const winners = [
+      [res1, "concurrent-v1"],
+      [res2, "concurrent-v2"],
+    ].filter(([res]) => (res as Response).status === 200).map(([, system]) => system);
     const getRes = await get(`/v1/oma/agents/${agent.id}`);
     const final = (await getRes.json()) as any;
-    expect(["concurrent-v1", "concurrent-v2"]).toContain(final.system);
+    expect(winners).toContain(final.system);
   });
 
   it("create session + POST event rapidly, event accepted", async () => {
@@ -316,7 +321,7 @@ describe("Boundary conditions", () => {
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    expect(agent.system).toBeNull();
+    expect(agent.system).toBe("");
   });
 
   it("multiple rapid creates (20 agents) all produce unique IDs", async () => {

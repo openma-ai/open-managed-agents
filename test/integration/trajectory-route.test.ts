@@ -86,7 +86,7 @@ describe("GET /v1/oma/sessions/:id/trajectory", () => {
     expect(t.schema_version).toBe("oma.trajectory.v1");
     expect(t.session_id).toBe(session.id);
     expect(t.trajectory_id).toMatch(/^tr-/);
-    expect(t.agent_config?.id).toMatch(/^agent-/);
+    expect(t.agent_config?.id).toMatch(/^agent_/);
     expect(t.environment_config?.id).toMatch(/^env-/);
     expect(Array.isArray(t.events)).toBe(true);
     expect(t.events.length).toBeGreaterThan(0);

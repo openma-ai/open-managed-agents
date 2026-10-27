@@ -57,6 +57,31 @@ async function createAgent(overrides?: Record<string, unknown>) {
   return (await res.json()) as any;
 }
 
+/** MCP servers must be referenced by an mcp_toolset (official v1 contract). */
+function withMcp(servers: Array<{ name: string; url: string }>) {
+  return {
+    mcp_servers: servers.map((server) => ({ type: "url", ...server })),
+    tools: [
+      { type: "agent_toolset_20260401" },
+      ...servers.map((server) => ({ type: "mcp_toolset", mcp_server_name: server.name })),
+    ],
+  };
+}
+
+/** Multiagent roster pinning real predefined subagents. */
+function subagents(refs: Array<{ id: string; version: number }>) {
+  return {
+    type: "multiagent_20261001",
+    advisor: { type: "disabled" },
+    subagents: {
+      type: "enabled",
+      inline_agents: { type: "disabled" },
+      predefined_agents: refs.map((ref) => ({ type: "agent", ...ref })),
+    },
+    workflows: { type: "disabled" },
+  };
+}
+
 async function createEnv(overrides?: Record<string, unknown>) {
   const res = await post("/v1/oma/environments", {
     name: "constraint-env",
@@ -99,7 +124,7 @@ describe("Constraint validations", () => {
       headers: HEADERS,
     });
     const versions = (await versionsRes.json()) as any;
-    expect(versions.data.length).toBe(0);
+    expect(versions.data.map((v: any) => v.version)).toEqual([1]);
   });
 
   // ----------------------------------------------------------
@@ -350,11 +375,12 @@ describe("Constraint validations", () => {
     // mcp_servers
     // ----------------------------------------------------------
     it("agent with mcp_servers is stored and retrieved", async () => {
-      const mcpServers = [
-        { name: "github", type: "sse", url: "https://mcp.github.com/sse" },
-        { name: "slack", type: "sse", url: "https://mcp.slack.com/sse" },
-      ];
-      const agent = await createAgent({ mcp_servers: mcpServers });
+      const config = withMcp([
+        { name: "github", url: "https://mcp.github.com/mcp" },
+        { name: "slack", url: "https://mcp.slack.com/mcp" },
+      ]);
+      const mcpServers = config.mcp_servers;
+      const agent = await createAgent(config);
       expect(agent.mcp_servers).toEqual(mcpServers);
 
       const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
@@ -371,34 +397,40 @@ describe("Constraint validations", () => {
         { type: "custom", skill_id: "my_custom_skill", version: "1.2.0" },
       ];
       const agent = await createAgent({ skills });
-      expect(agent.skills).toEqual(skills);
+      const normalized = [
+        { type: "anthropic", skill_id: "web_research", version: "latest" },
+        { type: "custom", skill_id: "my_custom_skill", version: "1.2.0" },
+      ];
+      expect(agent.skills).toEqual(normalized);
 
       const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
-      expect(fetched.skills).toEqual(skills);
+      expect(fetched.skills).toEqual(normalized);
     });
 
     // ----------------------------------------------------------
     // callable_agents
     // ----------------------------------------------------------
-    it("agent with callable_agents is stored and retrieved", async () => {
-      const callableAgents = [
-        { type: "agent", id: "agent_abc123", version: 1 },
-        { type: "agent", id: "agent_def456", version: 2 },
-      ];
-      const agent = await createAgent({ callable_agents: callableAgents });
-      expect(agent.callable_agents).toEqual(callableAgents);
+    it("agent with predefined subagents is stored and retrieved", async () => {
+      const workerA = await createAgent({ name: "Worker A" });
+      const workerB = await createAgent({ name: "Worker B" });
+      const roster = subagents([
+        { id: workerA.id, version: 1 },
+        { id: workerB.id, version: 1 },
+      ]);
+      const agent = await createAgent({ multiagent: roster });
+      expect(agent.multiagent).toEqual(roster);
 
       const getRes = await api(`/v1/oma/agents/${agent.id}`, { headers: HEADERS });
       const fetched = (await getRes.json()) as any;
-      expect(fetched.callable_agents).toEqual(callableAgents);
+      expect(fetched.multiagent).toEqual(roster);
     });
 
     // ----------------------------------------------------------
     // metadata
     // ----------------------------------------------------------
     it("agent with metadata is stored and retrieved", async () => {
-      const metadata = { team: "research", priority: "high", tags: ["v2", "beta"] };
+      const metadata = { team: "research", priority: "high", tags: "v2,beta" };
       const agent = await createAgent({ metadata });
       expect(agent.metadata).toEqual(metadata);
 
@@ -427,11 +459,11 @@ describe("Constraint validations", () => {
       const agent = await createAgent();
       expect(agent.mcp_servers).toEqual([]);
 
-      const mcpServers = [{ name: "jira", type: "sse", url: "https://mcp.jira.com/sse" }];
-      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { mcp_servers: mcpServers });
+      const config = withMcp([{ name: "jira", url: "https://mcp.jira.com/mcp" }]);
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, config);
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
-      expect(updated.mcp_servers).toEqual(mcpServers);
+      expect(updated.mcp_servers).toEqual(config.mcp_servers);
       expect(updated.version).toBe(2);
     });
 
@@ -446,22 +478,23 @@ describe("Constraint validations", () => {
       const updateRes = await put(`/v1/oma/agents/${agent.id}`, { skills });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
-      expect(updated.skills).toEqual(skills);
+      expect(updated.skills).toEqual([{ type: "anthropic", skill_id: "data_analysis", version: "latest" }]);
       expect(updated.version).toBe(2);
     });
 
     // ----------------------------------------------------------
     // PUT adds callable_agents
     // ----------------------------------------------------------
-    it("agent update adds callable_agents", async () => {
+    it("agent update adds predefined subagents", async () => {
       const agent = await createAgent();
-      expect(agent.callable_agents).toEqual([]);
+      expect(agent.multiagent).toBeNull();
 
-      const callableAgents = [{ type: "agent", id: "agent_xyz789", version: 3 }];
-      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { callable_agents: callableAgents });
+      const worker = await createAgent({ name: "Worker" });
+      const roster = subagents([{ id: worker.id, version: 1 }]);
+      const updateRes = await put(`/v1/oma/agents/${agent.id}`, { multiagent: roster });
       expect(updateRes.status).toBe(200);
       const updated = (await updateRes.json()) as any;
-      expect(updated.callable_agents).toEqual(callableAgents);
+      expect(updated.multiagent).toEqual(roster);
       expect(updated.version).toBe(2);
     });
 
@@ -501,26 +534,29 @@ describe("Constraint validations", () => {
     // ----------------------------------------------------------
     // Version history preserves extended fields
     // ----------------------------------------------------------
-    it("version history preserves mcp_servers/skills/callable_agents", async () => {
-      const originalMcp = [{ name: "github", type: "sse", url: "https://mcp.github.com/sse" }];
-      const originalSkills = [{ type: "anthropic", skill_id: "web_research" }];
-      const originalCallable = [{ type: "agent", id: "agent_old", version: 1 }];
+    it("version history preserves mcp_servers/skills/multiagent", async () => {
+      const oldWorker = await createAgent({ name: "Old worker" });
+      const newWorker = await createAgent({ name: "New worker" });
+      const originalConfig = withMcp([{ name: "github", url: "https://mcp.github.com/mcp" }]);
+      const originalRoster = subagents([{ id: oldWorker.id, version: 1 }]);
 
       const agent = await createAgent({
         description: "v1 agent",
-        mcp_servers: originalMcp,
-        skills: originalSkills,
-        callable_agents: originalCallable,
+        ...originalConfig,
+        skills: [{ type: "anthropic", skill_id: "web_research" }],
+        multiagent: originalRoster,
         metadata: { release: "v1" },
       });
       expect(agent.version).toBe(1);
 
       // Update all extended fields to new values
+      const nextConfig = withMcp([{ name: "slack", url: "https://mcp.slack.com/mcp" }]);
+      const nextRoster = subagents([{ id: newWorker.id, version: 1 }]);
       const updateRes = await put(`/v1/oma/agents/${agent.id}`, {
         description: "v2 agent",
-        mcp_servers: [{ name: "slack", type: "sse", url: "https://mcp.slack.com/sse" }],
+        ...nextConfig,
         skills: [{ type: "custom", skill_id: "custom_skill", version: "2.0" }],
-        callable_agents: [{ type: "agent", id: "agent_new", version: 5 }],
+        multiagent: nextRoster,
         metadata: { release: "v2" },
       });
       expect(updateRes.status).toBe(200);
@@ -533,9 +569,9 @@ describe("Constraint validations", () => {
       const v1 = (await v1Res.json()) as any;
       expect(v1.version).toBe(1);
       expect(v1.description).toBe("v1 agent");
-      expect(v1.mcp_servers).toEqual(originalMcp);
-      expect(v1.skills).toEqual(originalSkills);
-      expect(v1.callable_agents).toEqual(originalCallable);
+      expect(v1.mcp_servers).toEqual(originalConfig.mcp_servers);
+      expect(v1.skills).toEqual([{ type: "anthropic", skill_id: "web_research", version: "latest" }]);
+      expect(v1.multiagent).toEqual(originalRoster);
       expect(v1.metadata).toEqual({ release: "v1" });
 
       // Verify current version has updated fields
@@ -543,9 +579,9 @@ describe("Constraint validations", () => {
       const current = (await currentRes.json()) as any;
       expect(current.version).toBe(2);
       expect(current.description).toBe("v2 agent");
-      expect(current.mcp_servers).toEqual([{ name: "slack", type: "sse", url: "https://mcp.slack.com/sse" }]);
+      expect(current.mcp_servers).toEqual(nextConfig.mcp_servers);
       expect(current.skills).toEqual([{ type: "custom", skill_id: "custom_skill", version: "2.0" }]);
-      expect(current.callable_agents).toEqual([{ type: "agent", id: "agent_new", version: 5 }]);
+      expect(current.multiagent).toEqual(nextRoster);
       expect(current.metadata).toEqual({ release: "v2" });
     });
   });

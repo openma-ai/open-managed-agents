@@ -497,8 +497,7 @@ describe("Stress tests", () => {
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    // system defaults to "" when falsy but is stored as ""
-    expect(agent.system).toBeNull();
+    expect(agent.system).toBe("");
     // Also verify empty title on session is preserved
     const envRes = await post("/v1/oma/environments", {
       name: "empty-env",
