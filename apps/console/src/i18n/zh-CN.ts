@@ -252,6 +252,8 @@ export const zhCN: Messages = {
     choose: "请选择…",
     enable: "启用",
     disable: "停用",
+    runNow: "立即运行",
+    runStarted: "已开始运行，Agent 完成后报告会发到所选群聊。",
     running: "运行中",
     starting: "启动中",
     stopped: "未运行",

@@ -10,7 +10,9 @@
  * Loop is installed with `schedule.tick` renamed to that type, so two
  * scheduled Loops on one Bond each see only their own ticks.
  *
- * A tick missed while no replica ran is not made up.
+ * A tick missed while no replica ran is not made up. A run requested by hand
+ * (`fire`) is one more tick with its own run id, so it never collides with a
+ * scheduled time and each request runs once.
  */
 
 import type { LoopIssue } from "./issues.js";
@@ -20,6 +22,7 @@ import { IntegrationError } from "@openma/matter/integration";
 import { defineLoop, type Loop, type LoopApp } from "@openma/matter-loop";
 import { CronExpressionParser } from "cron-parser";
 import { Effect } from "effect";
+import { randomUUID } from "node:crypto";
 
 /** The Event type a template subscribes to for its schedule. */
 export const SCHEDULE_TICK = "schedule.tick";
@@ -106,6 +109,20 @@ interface TickBody {
   readonly loopId: string;
   readonly scheduledAt: string;
   readonly authority: string;
+  /** Set for a run requested by hand; keys the tick instead of the time. */
+  readonly manualRunId?: string;
+}
+
+const tickKey = (body: TickBody) =>
+  body.manualRunId === undefined
+    ? `schedule:${body.loopId}:${body.scheduledAt}`
+    : `schedule:${body.loopId}:manual:${body.manualRunId}`;
+
+/** A schedule source that can also run one of its Loops now. */
+export interface ScheduleSource extends LongConnectionSource {
+  /** Delivers a tick for `loopId` now; resolves with its time once it is in
+   * the inbox. Throws when the source is stopped or does not run the Loop. */
+  fire(loopId: string): Promise<string>;
 }
 
 const tickType = (loopId: string) => `schedule.${loopId}.tick`;
@@ -134,7 +151,7 @@ export const makeScheduleSource = (options: {
   readonly authority: string;
   readonly timers?: ScheduleTimers;
   readonly onError?: (error: unknown) => void;
-}): LongConnectionSource => {
+}): ScheduleSource => {
   const timers = options.timers ?? realTimers;
   const handles = new Map<string, unknown>();
   let deliver: ((envelope: ReceivedEnvelope) => Promise<void>) | undefined;
@@ -153,7 +170,7 @@ export const makeScheduleSource = (options: {
             const body: TickBody = { loopId: entry.loopId, scheduledAt, authority: options.authority };
             void deliver({
               integrationId: SCHEDULE_INTEGRATION_ID,
-              idempotencyKey: `schedule:${entry.loopId}:${scheduledAt}`,
+              idempotencyKey: tickKey(body),
               eventType: tickType(entry.loopId),
               body,
             }).catch((error) => options.onError?.(error));
@@ -176,6 +193,21 @@ export const makeScheduleSource = (options: {
       deliver = undefined;
       for (const handle of handles.values()) timers.clearTimeout(handle);
       handles.clear();
+    },
+    fire: async (loopId) => {
+      if (deliver === undefined) throw new Error("The schedule is not running");
+      if (!options.schedules.some((entry) => entry.loopId === loopId)) {
+        throw new Error(`Loop ${loopId} is not scheduled on this connection`);
+      }
+      const scheduledAt = new Date(timers.now()).toISOString();
+      const body: TickBody = { loopId, scheduledAt, authority: options.authority, manualRunId: randomUUID() };
+      await deliver({
+        integrationId: SCHEDULE_INTEGRATION_ID,
+        idempotencyKey: tickKey(body),
+        eventType: tickType(loopId),
+        body,
+      });
+      return scheduledAt;
     },
   };
 };
@@ -201,7 +233,10 @@ export const combineSources = (a: LongConnectionSource, b: LongConnectionSource)
 const isTick = (value: unknown): value is TickBody => {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.loopId === "string" && typeof v.scheduledAt === "string" && typeof v.authority === "string";
+  return (
+    typeof v.loopId === "string" && typeof v.scheduledAt === "string" && typeof v.authority === "string" &&
+    (v.manualRunId === undefined || typeof v.manualRunId === "string")
+  );
 };
 
 /** Turns a tick envelope into its WorkEvent. It delivers nothing. */
@@ -217,13 +252,13 @@ export const makeScheduleIntegration = (): WorkIntegration => ({
       ? Effect.succeed([
           {
             schemaVersion: "0.1",
-            id: `schedule:${input.loopId}:${input.scheduledAt}`,
+            id: tickKey(input),
             type: tickType(input.loopId),
             occurredAt: input.scheduledAt,
             receivedAt: new Date().toISOString(),
-            idempotencyKey: `schedule:${input.loopId}:${input.scheduledAt}`,
+            idempotencyKey: tickKey(input),
             source: { provider: SCHEDULE_INTEGRATION_ID, authority: input.authority },
-            payload: { scheduledAt: input.scheduledAt },
+            payload: { scheduledAt: input.scheduledAt, ...(input.manualRunId === undefined ? {} : { manual: true }) },
           },
         ])
       : Effect.fail(new IntegrationError({ message: "Invalid schedule tick", retryable: false })),

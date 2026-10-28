@@ -521,11 +521,36 @@ describe("Matter service", () => {
         .state;
     expect((await loopState()).lastError).toBeUndefined();
 
+    // Run now: one more report at once, each request once, the schedule kept.
+    const loopId = ((await created.clone().json()) as { id: string }).id;
+    now = Date.parse("2026-10-20T03:30:00Z");
+    const run = await call("POST", `/loops/${loopId}/run`);
+    expect(run.status).toBe(202);
+    expect(await run.json()).toEqual({ loopId, scheduledAt: "2026-10-20T03:30:00.000Z" });
+    await waitFor(() => feishu.sent[1]);
+    expect((await call("POST", `/loops/${loopId}/run`)).status).toBe(202);
+    await waitFor(() => feishu.sent[2]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(feishu.sent).toHaveLength(3);
+    expect(pending.some((p) => new Date(p.at).toISOString() === "2026-10-21T02:00:00.000Z")).toBe(true);
+    // Only scheduled, enabled Loops of the tenant can be run.
+    const answering = await call("POST", "/loops", { template: "feishu-agent", config: { bond, agentId: "agent-1" } });
+    const answeringId = ((await answering.json()) as { id: string }).id;
+    expect((await call("POST", `/loops/${answeringId}/run`)).status).toBe(400);
+    expect((await call("DELETE", `/loops/${answeringId}`)).status).toBe(204);
+    expect((await call("PATCH", `/loops/${loopId}`, { enabled: false })).status).toBe(200);
+    expect((await call("POST", `/loops/${loopId}/run`)).status).toBe(409);
+    expect((await call("PATCH", `/loops/${loopId}`, { enabled: true })).status).toBe(200);
+    expect((await call("POST", "/loops/loop-nope/run")).status).toBe(404);
+    feishu.sent.splice(1);
+
     // The bot left the chat: the next report cannot be posted, and the Loop
     // says so instead of looking healthy.
     feishu.notIn.add("oc_eng");
     now = Date.parse("2026-10-21T02:00:00Z");
-    pending.find((p) => new Date(p.at).toISOString() === "2026-10-21T02:00:00.000Z")!.callback();
+    // The connection restarted above, so the timer to fire is the one it armed
+    // last (the double tick left a stale one from the stopped connection).
+    pending.filter((p) => new Date(p.at).toISOString() === "2026-10-21T02:00:00.000Z").at(-1)!.callback();
     let failed: { message: string } | undefined;
     for (let i = 0; i < 400 && failed === undefined; i++) {
       failed = (await loopState()).lastError;

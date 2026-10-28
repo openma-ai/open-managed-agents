@@ -255,6 +255,8 @@ export const en: Messages = {
     choose: "Choose…",
     enable: "Enable",
     disable: "Disable",
+    runNow: "Run now",
+    runStarted: "Started. The report goes to its chats when the Agent finishes.",
     running: "Running",
     starting: "Starting",
     stopped: "Stopped",

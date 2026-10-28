@@ -1,6 +1,8 @@
 import type { ReceivedEnvelope } from "@openma/matter-host-local/runtime";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
+  makeScheduleIntegration,
   makeScheduleSource,
   nextFire,
   SCHEDULE_TICK,
@@ -100,6 +102,56 @@ describe("schedules", () => {
     expect(pending.map((p) => new Date(p.at).toISOString())).toEqual(["2026-10-21T10:00:00.000Z"]);
     await source.stop();
     expect(pending).toEqual([]);
+  });
+
+  it("runs a Loop now with a tick of its own, once per request, and keeps the schedule", async () => {
+    const now = Date.parse("2026-10-20T03:30:00Z");
+    const pending: unknown[] = [];
+    const timers: ScheduleTimers = {
+      now: () => now,
+      setTimeout: (callback) => {
+        const entry = { callback };
+        pending.push(entry);
+        return entry;
+      },
+      clearTimeout: (handle) => {
+        const i = pending.indexOf(handle);
+        if (i >= 0) pending.splice(i, 1);
+      },
+    };
+    const source = makeScheduleSource({
+      schedules: [{ loopId: "loop-1", schedule: "0 10 * * *", timezone: "UTC" }],
+      authority: "cli_1",
+      timers,
+    });
+    await expect(source.fire("loop-1")).rejects.toThrow(/not running/);
+    const envelopes: ReceivedEnvelope[] = [];
+    await source.start(async (envelope) => {
+      envelopes.push(envelope);
+    });
+    await expect(source.fire("loop-2")).rejects.toThrow(/not scheduled/);
+
+    expect(await source.fire("loop-1")).toBe("2026-10-20T03:30:00.000Z");
+    expect(await source.fire("loop-1")).toBe("2026-10-20T03:30:00.000Z");
+    expect(envelopes).toHaveLength(2);
+    const [first, second] = envelopes as [ReceivedEnvelope, ReceivedEnvelope];
+    expect(first.eventType).toBe("schedule.loop-1.tick");
+    expect(first.idempotencyKey).toMatch(/^schedule:loop-1:manual:[0-9a-f-]{36}$/);
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+    // Never the key of a scheduled time, so a replica's tick cannot swallow it.
+    expect(first.idempotencyKey).not.toBe("schedule:loop-1:2026-10-20T03:30:00.000Z");
+    expect(pending).toHaveLength(1);
+
+    const [event] = await Effect.runPromise(makeScheduleIntegration().ingest(first.body));
+    expect(event).toMatchObject({
+      id: first.idempotencyKey,
+      idempotencyKey: first.idempotencyKey,
+      type: "schedule.loop-1.tick",
+      occurredAt: "2026-10-20T03:30:00.000Z",
+      payload: { scheduledAt: "2026-10-20T03:30:00.000Z", manual: true },
+    });
+    await source.stop();
+    await expect(source.fire("loop-1")).rejects.toThrow(/not running/);
   });
 });
 

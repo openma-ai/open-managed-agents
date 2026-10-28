@@ -83,6 +83,12 @@ export interface MatterHost {
   prepareAgent(tenantId: string, agentId: string): Promise<void>;
   /** Throws a "not found" error unless the session's environment and vaults exist. */
   checkSession(tenantId: string, session: LoopSession): Promise<void>;
+  /**
+   * Runs a scheduled Loop now, as if its time had come: starts the connection
+   * on this replica if needed and puts one tick in its shared inbox. Resolves
+   * with the tick's time; throws when the Loop is not scheduled or not running.
+   */
+  runNow(kind: string, key: string, loopId: string): Promise<string>;
   /** Keys of the connections currently running. */
   running(): readonly string[];
   /** Whether this replica runs `key`, and its last error. */
@@ -191,6 +197,8 @@ interface Running {
   readonly kind: string;
   readonly revision: string;
   readonly stop: () => Promise<void>;
+  /** Runs a scheduled Loop of the connection now (see `runNow`). */
+  readonly fire?: (loopId: string) => Promise<string>;
 }
 
 export const createMatterHost = (options: MatterHostOptions): MatterHost => {
@@ -295,19 +303,17 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       ),
     });
     wiring.install(application, loops);
+    const scheduleSource =
+      schedules.length === 0
+        ? undefined
+        : makeScheduleSource({
+            schedules,
+            authority: key,
+            ...(options.scheduleTimers === undefined ? {} : { timers: options.scheduleTimers }),
+            onError: (error) => report(error, key),
+          });
     const runtime = makeLocalLongConnectionRuntime({
-      source:
-        schedules.length === 0
-          ? wiring.source
-          : combineSources(
-              wiring.source,
-              makeScheduleSource({
-                schedules,
-                authority: key,
-                ...(options.scheduleTimers === undefined ? {} : { timers: options.scheduleTimers }),
-                onError: (error) => report(error, key),
-              }),
-            ),
+      source: scheduleSource === undefined ? wiring.source : combineSources(wiring.source, scheduleSource),
       application,
       inbox,
       connectionLabel: connection.label,
@@ -326,6 +332,7 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
     running.set(key, {
       kind: adapter.kind,
       revision: connection.revision,
+      ...(scheduleSource === undefined ? {} : { fire: scheduleSource.fire }),
       stop: async () => {
         await runtime.stop();
         await Effect.runPromise(Effect.either(inbox.close));
@@ -398,6 +405,17 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
         }
         return running.has(key);
       }),
+    runNow: async (kind, key, loopId) => {
+      const adapter = adapterOf(kind);
+      await serial(async () => {
+        const connection = await adapter.get(key);
+        if (connection === undefined) throw new Error("The Loop's Bond is gone");
+        if (running.get(key)?.revision !== connection.revision) await startConnection(adapter, connection);
+      });
+      const fire = running.get(key)?.fire;
+      if (fire === undefined) throw new Error("The Loop is not running; enable it and check its Bond");
+      return fire(loopId);
+    },
     prepareAgent: async (tenantId, agentId) => {
       const client = options.clientFor(tenantId);
       if (client === null) throw new Error(`No OpenMA access for tenant ${tenantId}`);

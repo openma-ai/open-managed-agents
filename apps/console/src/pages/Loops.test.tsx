@@ -58,6 +58,23 @@ const loop = {
   state: { running: true },
 };
 
+  const reportTemplate = {
+    id: "feishu-scheduled-report",
+    version: "1.0.0",
+    provider: "feishu",
+    description: "Report",
+    configSchema: {
+      properties: {
+        bond: { type: "string", title: "Runs on", "x-oma-widget": "bond", "x-bond-provider": "feishu" },
+        agentId: { type: "string", title: "Agent", "x-oma-widget": "agent" },
+        task: { type: "string", title: "Task" },
+        schedule: { type: "string", title: "Schedule", "x-oma-widget": "cron", "x-oma-section": "trigger" },
+        timezone: { type: "string", title: "Time zone", default: "UTC", "x-oma-widget": "timezone", "x-oma-section": "trigger" },
+      },
+      required: ["bond", "agentId", "task", "schedule"],
+    },
+  };
+
 type Handler = (init?: RequestInit) => Response;
 let calls: { method: string; url: string; body?: unknown }[];
 let routes: Record<string, Handler>;
@@ -186,22 +203,6 @@ describe("LoopsPage", () => {
   });
 
   it("schedules a report Loop in the browser's time zone", async () => {
-    const reportTemplate = {
-      id: "feishu-scheduled-report",
-      version: "1.0.0",
-      provider: "feishu",
-      description: "Report",
-      configSchema: {
-        properties: {
-          bond: { type: "string", title: "Runs on", "x-oma-widget": "bond", "x-bond-provider": "feishu" },
-          agentId: { type: "string", title: "Agent", "x-oma-widget": "agent" },
-          task: { type: "string", title: "Task" },
-          schedule: { type: "string", title: "Schedule", "x-oma-widget": "cron", "x-oma-section": "trigger" },
-          timezone: { type: "string", title: "Time zone", default: "UTC", "x-oma-widget": "timezone", "x-oma-section": "trigger" },
-        },
-        required: ["bond", "agentId", "task", "schedule"],
-      },
-    };
     routes["GET /matter/loop-templates"] = () => json(200, { data: [feishuTemplate, reportTemplate] });
     routes["POST /matter/loops"] = () => json(201, loop);
     open("/loops/new?template=feishu-scheduled-report&bond=feishu:cli_old");
@@ -216,6 +217,30 @@ describe("LoopsPage", () => {
       template: "feishu-scheduled-report",
       config: { bond: "feishu:cli_old", schedule: "0 10 * * 1-5", timezone: zone, task: "Daily metrics" },
     });
+  });
+
+  it("runs a scheduled Loop now from its page", async () => {
+    const report = { ...loop, id: "loop-2", template: "feishu-scheduled-report", config: { ...loop.config, task: "t", schedule: "0 10 * * *" } };
+    routes["GET /matter/loop-templates"] = () => json(200, { data: [feishuTemplate, reportTemplate] });
+    routes["GET /matter/loops"] = () => json(200, { data: [loop, report] });
+    routes["POST /matter/loops/loop-2/run"] = () => json(202, { loopId: "loop-2", scheduledAt: "2026-10-20T03:30:00.000Z" });
+    open("/loops/loop-2");
+    fireEvent.click(await screen.findByRole("button", { name: /^(Run now|立即运行)$/ }));
+    expect(await screen.findByRole("status")).toBeTruthy();
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.url)).toEqual(["/matter/loops/loop-2/run"]);
+
+    // A refusal shows in the problems box.
+    routes["POST /matter/loops/loop-2/run"] = () => json(409, { error: "Enable the Loop to run it" });
+    fireEvent.click(screen.getByRole("button", { name: /^(Run now|立即运行)$/ }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Enable the Loop to run it/);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("offers no run now for a Loop that runs on events", async () => {
+    routes["GET /matter/loop-templates"] = () => json(200, { data: [feishuTemplate, reportTemplate] });
+    open("/loops/loop-1");
+    expect(await screen.findByRole("button", { name: /^(Save|保存)$/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^(Run now|立即运行)$/ })).toBeNull();
   });
 
   it("sets the Loop's session: the default environment and the checked vaults", async () => {

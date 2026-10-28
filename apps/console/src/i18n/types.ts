@@ -275,6 +275,8 @@ export interface Messages {
     choose: string;
     enable: string;
     disable: string;
+    runNow: string;
+    runStarted: string;
     running: string;
     starting: string;
     stopped: string;

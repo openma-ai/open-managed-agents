@@ -282,7 +282,7 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
   return async (request: Request): Promise<Response | undefined> => {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "");
-    const route = /^\/(loop-templates|loops|bonds)(?:\/([^/]+))?(?:\/(resources))?$/.exec(path);
+    const route = /^\/(loop-templates|loops|bonds)(?:\/([^/]+))?(?:\/(resources|run))?$/.exec(path);
     if (route === null) return undefined;
     const [, collection, rawId, sub] = route;
     const id = rawId === undefined ? undefined : decodeURIComponent(rawId);
@@ -327,6 +327,21 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
           enabled: typeof input.enabled === "boolean" ? input.enabled : loop.enabled,
         });
         return json(await loopView(saved, host));
+      }
+      if (collection === "loops" && id !== undefined && sub === "run" && method === "POST") {
+        const loop = await tenantLoop(principal.tenantId, id);
+        const template = loopTemplate(loop.template);
+        if (template === undefined || !isScheduled(template.loop)) {
+          throw new ApiError(400, "Only a scheduled Loop can be run now; other Loops run on their events");
+        }
+        if (!loop.enabled) throw new ApiError(409, "Enable the Loop to run it");
+        let scheduledAt: string;
+        try {
+          scheduledAt = await host.runNow(loop.bondKind, loop.bondKey, loop.id);
+        } catch (error) {
+          throw new ApiError(409, error instanceof Error ? error.message : String(error));
+        }
+        return json({ loopId: loop.id, scheduledAt }, 202);
       }
       if (collection === "loops" && id !== undefined && sub === undefined && method === "DELETE") {
         const loop = await tenantLoop(principal.tenantId, id);
