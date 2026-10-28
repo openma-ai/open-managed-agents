@@ -78,7 +78,9 @@ function toSessionResourceInputs(
       case "github_repository":
         return {
           type: resource.type,
-          authorizationToken: resource.authorization_token,
+          ...(resource.authorization_token !== undefined && {
+            authorizationToken: resource.authorization_token,
+          }),
           url: resource.url,
           ...(resource.checkout !== undefined && {
             checkout: resource.checkout,

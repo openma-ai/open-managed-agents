@@ -136,7 +136,7 @@ export class SessionResourceResolverService
           message: "GitHub repository URL must be an HTTP(S) repository URL",
         };
       }
-      if (input.authorizationToken.length === 0) {
+      if (input.authorizationToken !== undefined && input.authorizationToken.length === 0) {
         return {
           type: "invalid_request",
           message: "GitHub authorization token must not be empty",
@@ -160,12 +160,16 @@ export class SessionResourceResolverService
           updatedAt: context.createdAt,
           url: input.url,
           ...(input.checkout !== undefined && { checkout: input.checkout }),
+          ...(input.authorizationToken === undefined && { credentialSource: "bond" as const }),
         },
-        secret: {
-          type: "github_token",
-          resourceId,
-          authorizationToken: input.authorizationToken,
-        },
+        // A Bond credential is resolved when a sandbox is prepared, not stored.
+        ...(input.authorizationToken !== undefined && {
+          secret: {
+            type: "github_token" as const,
+            resourceId,
+            authorizationToken: input.authorizationToken,
+          },
+        }),
       };
     }
 

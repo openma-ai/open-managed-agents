@@ -74,6 +74,7 @@ import { resolveFeishuAgentTools } from "../lib/feishu-agent-tools.js";
 import { NodeManagedSessionOutputCollector } from "../lib/node-managed-session-outputs.js";
 import { NodeManagedWorkspaceCheckpoints } from "../lib/node-managed-workspace-checkpoints.js";
 import { nodeSessionLifecycle } from "../lib/node-session-lifecycle.js";
+import { matterRepositoryCredentials } from "../lib/matter-repository-credentials.js";
 import { SqlSessionResourceSecretSource } from "@open-managed-agents/session-resource-store-sql";
 
 import { rm } from "node:fs/promises";
@@ -485,6 +486,9 @@ export async function createManagedNodeRuntime(
           .app({ workspaceId })
           .port(managedAgentsPortTokens.skillVersions),
         repositoryCredentials: managedSessionResourceSecrets,
+        ...(config.http.matter === undefined
+          ? {}
+          : { repositoryBonds: matterRepositoryCredentials(config.http.matter) }),
         memorySnapshots: new NodeManagedMemorySnapshotMaterializer(
           managedMemoriesApplicationForWorkspace(workspaceId)
             .port(managedAgentsPortTokens.memories),
