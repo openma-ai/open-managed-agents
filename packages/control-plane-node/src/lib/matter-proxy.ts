@@ -14,7 +14,14 @@ export const MATTER_PROXY_HEADERS = {
   secret: "x-matter-proxy-secret",
   tenant: "x-oma-tenant-id",
   user: "x-oma-user-id",
+  /** The control plane itself calling Matter's `/internal/*` routes, which
+   * return credentials. The proxy never sets it (a signed-in user must not
+   * reach them through `/matter/*`) and never forwards a caller's copy. */
+  internal: "x-matter-internal-secret",
 } as const;
+
+/** Matter routes only the control plane itself may call; never proxied. */
+export const MATTER_INTERNAL_PREFIX = "/internal";
 
 /** Never forwarded: the caller's credentials and any identity headers a
  * caller may try to set itself. Hop-by-hop headers are `proxyUpstream`'s. */
@@ -39,6 +46,13 @@ export function buildMatterProxyRoutes(options: MatterProxyOptions) {
   routes.all("/*", async (c) => {
     const incoming = new URL(c.req.url);
     const rest = incoming.pathname.replace(/^\/matter(?=\/|$)/, "") || "/";
+    // Matter answers `/internal/*` only with the internal secret, which this
+    // proxy never sends; refusing the path here keeps it unreachable even if
+    // a URL normalizes differently upstream.
+    const normalized = new URL(rest, "http://matter.invalid").pathname.toLowerCase();
+    if (normalized === MATTER_INTERNAL_PREFIX || normalized.startsWith(`${MATTER_INTERNAL_PREFIX}/`)) {
+      return c.json({ error: "not_found" }, 404);
+    }
     const target = `${options.url}${rest}${incoming.search}`;
 
     const set: Record<string, string> = {

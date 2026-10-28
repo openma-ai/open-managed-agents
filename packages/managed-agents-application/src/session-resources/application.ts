@@ -151,6 +151,12 @@ export class SessionResourcesApplicationService
         message: "Only GitHub repository resources support token rotation",
       };
     }
+    if (existing.credentialSource === "bond") {
+      return {
+        type: "invalid_request",
+        message: "This repository is cloned with the workspace's Bond credential and has no token to rotate",
+      };
+    }
     if (command.authorizationToken.length === 0) {
       return {
         type: "invalid_request",
