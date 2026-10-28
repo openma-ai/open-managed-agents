@@ -72,10 +72,22 @@ export interface PrepareNodeManagedSessionInputs {
   runtimeGeneration?: string;
 }
 
+/**
+ * The workspace's Bond credential for a repository URL, for resources added
+ * without a token (`credentialSource: "bond"`). Asked each time a sandbox is
+ * prepared, so a rotated or revoked Bond takes effect then. Throws when no
+ * Bond of the workspace covers the URL.
+ */
+export interface RepositoryBondCredentialSource {
+  repositoryToken(input: { workspaceId: string; url: string }): Promise<string>;
+}
+
 export interface NodeManagedSessionInputPreparerDependencies {
   files: FileSource;
   skillVersions: SkillVersionSource;
   repositoryCredentials: Pick<SessionResourceSecretSource, "findGithubToken">;
+  /** Unset: repositories without a token cannot be prepared. */
+  repositoryBonds?: RepositoryBondCredentialSource;
   memorySnapshots: NodeManagedMemorySnapshotPort;
   /** Shared OSS collection uses provider-local outputs, not a FUSE mount. */
   sharedOutputs?: boolean;
@@ -290,11 +302,7 @@ export class NodeManagedSessionInputPreparer {
         GIT_CONFIG_COUNT: String(repositories.length),
       };
       for (const [index, resource] of repositories.entries()) {
-        const token = await this.dependencies.repositoryCredentials.findGithubToken({
-          workspaceId: input.workspaceId,
-          sessionId: input.session.id,
-          resourceId: resource.id,
-        });
+        const token = await this.repositoryToken(input, resource);
         if (token === null) {
           throw new Error(
             `Managed Session GitHub credential for resource ${resource.id} was not found`,
@@ -377,6 +385,28 @@ export class NodeManagedSessionInputPreparer {
     }
   }
 
+  private async repositoryToken(
+    input: PrepareNodeManagedSessionInputs,
+    resource: Extract<Session["resources"][number], { type: "github_repository" }>,
+  ): Promise<string | null> {
+    if (resource.credentialSource !== "bond") {
+      return this.dependencies.repositoryCredentials.findGithubToken({
+        workspaceId: input.workspaceId,
+        sessionId: input.session.id,
+        resourceId: resource.id,
+      });
+    }
+    if (this.dependencies.repositoryBonds === undefined) {
+      throw new Error(
+        `Managed Session repository ${resource.url} has no token, and this deployment has no Bonds to clone it with`,
+      );
+    }
+    return this.dependencies.repositoryBonds.repositoryToken({
+      workspaceId: input.workspaceId,
+      url: resource.url,
+    });
+  }
+
   private async materializeRepository(
     sandbox: SandboxExecutor,
     resource: Extract<Session["resources"][number], { type: "github_repository" }>,
@@ -408,6 +438,13 @@ export class NodeManagedSessionInputPreparer {
         commitCommand,
         await sandbox.exec(commitCommand, 30_000),
       );
+    }
+    // A Bond-backed repository outlives a token: a long-lived Session sees
+    // tags and branches pushed since it was cloned. The working tree is not
+    // touched, so the Agent's edits stay.
+    if (resource.credentialSource === "bond") {
+      const fetchCommand = `git -C ${repositoryDir} fetch --quiet --tags --force --prune origin`;
+      assertCommandSucceeded(fetchCommand, await sandbox.exec(fetchCommand, 120_000));
     }
   }
 
