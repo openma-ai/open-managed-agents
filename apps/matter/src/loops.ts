@@ -77,13 +77,17 @@ export const resetLoopTemplates = (): void => {
   registered = [];
 };
 
+/** The most Memory Stores OpenMA mounts in one Session. */
+const MAX_MEMORY_STORES = 8;
+
 /**
  * The OpenMA session a Loop opens, next to the Agent: the environment it runs
  * in (its sandbox image, packages and network), the vaults attached to it
- * (credentials, including environment variables) and the git repositories
- * cloned into it. The host adds these fields to every template; a template
- * never sees them. Empty keeps the service's default environment, only the
- * vault Matter makes for each session, and no repository.
+ * (credentials, including environment variables), the git repositories
+ * cloned into it and the Memory Stores mounted in it. The host adds these
+ * fields to every template; a template never sees them. Empty keeps the
+ * service's default environment, only the vault Matter makes for each
+ * session, no repository and no Memory Store.
  */
 export const SESSION_FIELDS = {
   environmentId: {
@@ -111,6 +115,26 @@ export const SESSION_FIELDS = {
     "x-oma-widget": "repositories",
     "x-oma-section": "session",
   },
+  memoryStores: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        id: { type: "string", minLength: 1, maxLength: 256, title: "Memory Store" },
+        access: { type: "string", enum: ["read_write", "read_only"], default: "read_write", title: "Access" },
+      },
+      required: ["id"],
+    },
+    // OpenMA mounts at most 8 Memory Stores in one Session.
+    maxItems: MAX_MEMORY_STORES,
+    default: [],
+    title: "Memory Stores",
+    description:
+      "Memory Stores mounted in each Session at /mnt/memory/<store name>/, read-write unless read-only. " +
+      "What the Agent writes there outlives the Session.",
+    "x-oma-widget": "memory-stores",
+    "x-oma-section": "session",
+  },
 } as const;
 
 /** Configuration fields the host owns; a template cannot define them. */
@@ -132,7 +156,26 @@ export interface LoopSession {
   readonly vaultIds: readonly string[];
   /** Repository URLs, each cloned with the workspace's GitLab Bond for it. */
   readonly repositories: readonly string[];
+  /** Memory Stores mounted in the session, at `/mnt/memory/<store name>/`. */
+  readonly memoryStores: readonly LoopMemoryStore[];
 }
+
+/** One Memory Store a Loop mounts in its sessions. */
+export interface LoopMemoryStore {
+  readonly id: string;
+  readonly access: "read_write" | "read_only";
+}
+
+/** The Memory Stores of a saved configuration; a store without `access` is read-write. */
+const readMemoryStores = (value: unknown): LoopMemoryStore[] =>
+  Array.isArray(value)
+    ? value.flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const { id, access } = entry as { id?: unknown; access?: unknown };
+        if (typeof id !== "string" || id === "") return [];
+        return [{ id, access: access === "read_only" ? ("read_only" as const) : ("read_write" as const) }];
+      })
+    : [];
 
 /** Splits a saved configuration into the template's part, the session and the schedule. */
 export const splitLoopConfig = (
@@ -142,7 +185,7 @@ export const splitLoopConfig = (
   readonly session: LoopSession;
   readonly schedule?: { readonly schedule: string; readonly timezone: string };
 } => {
-  const { environmentId, vaultIds, repositories, schedule, timezone, ...rest } = config;
+  const { environmentId, vaultIds, repositories, memoryStores, schedule, timezone, ...rest } = config;
   return {
     config: rest,
     ...(typeof schedule === "string" && schedule !== ""
@@ -156,6 +199,7 @@ export const splitLoopConfig = (
       repositories: Array.isArray(repositories)
         ? repositories.filter((r): r is string => typeof r === "string" && r !== "")
         : [],
+      memoryStores: readMemoryStores(memoryStores),
     },
   };
 };
@@ -185,7 +229,10 @@ interface PropertySchema {
   readonly minLength?: number;
   readonly maxLength?: number;
   readonly minItems?: number;
+  readonly maxItems?: number;
   readonly items?: PropertySchema;
+  readonly properties?: Readonly<Record<string, PropertySchema>>;
+  readonly required?: readonly string[];
   readonly default?: unknown;
   readonly title?: string;
 }
@@ -229,10 +276,28 @@ const checkValue = (
       if (schema.minItems !== undefined && value.length < schema.minItems) {
         add("min_items", `${label} needs at least ${schema.minItems}`, { min: schema.minItems });
       }
+      if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+        add("max_items", `${label} takes at most ${schema.maxItems}`, { max: schema.maxItems });
+      }
       if (schema.items !== undefined) {
         value.forEach((entry, i) => checkValue(field, `${label}[${i}]`, schema.items!, entry, issues, i + 1));
       }
       break;
+    case "object": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        add("type", `${label} must be an object`, { expected: "object" });
+        return;
+      }
+      const entry = value as Record<string, unknown>;
+      for (const [key, property] of Object.entries(schema.properties ?? {})) {
+        if (entry[key] === undefined) {
+          if (schema.required?.includes(key)) add("required", `${label}.${key} is required`);
+          continue;
+        }
+        checkValue(field, `${label}.${key}`, property, entry[key], issues, item);
+      }
+      break;
+    }
   }
   if (schema.enum !== undefined && !schema.enum.includes(value)) {
     add("enum", `${label} must be one of ${schema.enum.join(", ")}`, { options: schema.enum.join(", ") });
@@ -266,6 +331,27 @@ export const normalizeLoopConfig = (template: string, input: unknown): Record<st
     }
     checkValue(name, property.title ?? name, property, value, problems);
     config[name] = value;
+  }
+  if (Array.isArray(config.memoryStores)) {
+    // Fill each store's defaults (read-write) and drop unknown keys, so the
+    // saved configuration says what the Session gets.
+    const stores = config.memoryStores as unknown[];
+    if (stores.every((s) => typeof s === "object" && s !== null && !Array.isArray(s))) {
+      config.memoryStores = stores.map((s) => {
+        const { id, access } = s as { id?: unknown; access?: unknown };
+        return { id, access: access ?? "read_write" };
+      });
+    }
+    const ids = stores.map((s) => (s as { id?: unknown } | null)?.id).filter((id) => typeof id === "string");
+    const repeated = ids.find((id, i) => ids.indexOf(id) !== i);
+    if (repeated !== undefined) {
+      problems.push({
+        field: "memoryStores",
+        code: "duplicate",
+        params: { id: repeated },
+        message: `Memory Store ${repeated} is listed twice`,
+      });
+    }
   }
   if (isScheduled(entry.loop) && config.schedule !== undefined) {
     const problem = scheduleIssue(config.schedule, config.timezone);

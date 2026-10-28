@@ -82,8 +82,9 @@ export interface MatterHost {
   /** Give an Agent the Matter MCP server before a connection uses it.
    * Throws when this service cannot act in the tenant. */
   prepareAgent(tenantId: string, agentId: string): Promise<void>;
-  /** Throws a "not found" error unless the session's environment and vaults
-   * exist and one GitLab Bond of the tenant serves each repository. */
+  /** Throws a "not found" error unless the session's environment, vaults and
+   * Memory Stores exist and one GitLab Bond of the tenant serves each
+   * repository. */
   checkSession(tenantId: string, session: LoopSession): Promise<void>;
   /**
    * Runs a scheduled Loop now, as if its time had come: starts the connection
@@ -107,23 +108,37 @@ const errorMessage = (error: unknown): string =>
     : String(error);
 
 const hasSession = (session: LoopSession): boolean =>
-  session.environmentId !== undefined || session.vaultIds.length > 0 || session.repositories.length > 0;
+  session.environmentId !== undefined ||
+  session.vaultIds.length > 0 ||
+  session.repositories.length > 0 ||
+  session.memoryStores.length > 0;
 
 const sessionMetadata = (session: LoopSession) => ({
   ...(session.environmentId === undefined ? {} : { environmentId: session.environmentId }),
   vaultIds: [...session.vaultIds],
   ...(session.repositories.length === 0 ? {} : { repositories: [...session.repositories] }),
+  ...(session.memoryStores.length === 0
+    ? {}
+    : { memoryStores: session.memoryStores.map(({ id, access }) => ({ id, access })) }),
 });
 
-/** The driver key suffix of a Loop's session settings. Repositories join it
- * only when set, so Loops saved before them keep their Sessions. */
+/** The driver key suffix of a Loop's session settings. Repositories and
+ * Memory Stores join it only when set, so Loops saved before them keep their
+ * Sessions. */
 const sessionDigest = (session: LoopSession): string =>
   createHash("sha256")
     .update(
       JSON.stringify([
         session.environmentId ?? null,
         [...session.vaultIds].sort(),
-        ...(session.repositories.length === 0 ? [] : [[...session.repositories].sort()]),
+        // Positional: Memory Stores keep the (possibly empty) repositories
+        // slot before them, so the two lists never read as each other.
+        ...(session.repositories.length === 0 && session.memoryStores.length === 0
+          ? []
+          : [[...session.repositories].sort()]),
+        ...(session.memoryStores.length === 0
+          ? []
+          : [session.memoryStores.map((s) => `${s.id}:${s.access}`).sort()]),
       ]),
     )
     .digest("hex")
@@ -459,6 +474,10 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
           }
           throw error;
         }
+      }
+      for (const { id } of session.memoryStores) {
+        const store = await client.getMemoryStore(id);
+        if (store === null || store.archived_at) throw new MissingReferenceError("memoryStores", "Memory Store", id);
       }
     },
     running: () => [...running.keys()],

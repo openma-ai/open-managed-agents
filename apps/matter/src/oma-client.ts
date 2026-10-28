@@ -7,6 +7,8 @@
 
 /** The OpenMA Managed Agents API beta this client speaks. */
 export const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
+/** The beta the Memory Store routes additionally require. */
+export const AGENT_MEMORY_BETA = "agent-memory-2026-07-22";
 
 export interface OmaClientOptions {
   /** OpenMA API origin, for example `https://openma.example.com`. */
@@ -55,6 +57,8 @@ export interface CreateSessionInput {
   /** Repositories cloned into the session. No token: OpenMA asks this
    * Matter service for the workspace's Bond credential (OMA extension). */
   readonly repositoryUrls?: readonly string[];
+  /** Memory Stores mounted in the session at `/mnt/memory/<store name>/`. */
+  readonly memoryStores?: readonly { readonly id: string; readonly access: "read_write" | "read_only" }[];
 }
 
 export interface CreateBearerCredentialInput {
@@ -109,6 +113,8 @@ export interface OmaClient {
   getEnvironment(environmentId: string): Promise<{ readonly id: string; readonly archived_at?: string | null } | null>;
   /** One vault, or null when the workspace has none with this id. */
   getVault(vaultId: string): Promise<{ readonly id: string; readonly archived_at?: string | null } | null>;
+  /** One Memory Store, or null when the workspace has none with this id. */
+  getMemoryStore(memoryStoreId: string): Promise<{ readonly id: string; readonly archived_at?: string | null } | null>;
   /** The workspace's environments, newest first. */
   listEnvironments(): Promise<readonly { readonly id: string; readonly name?: string; readonly archived_at?: string | null }[]>;
   /** Sessions of one Agent whose title matches `query` (server-side search). */
@@ -141,14 +147,14 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
 
   const request = async (
     path: string,
-    init: RequestInit & { readonly allow404?: boolean } = {},
+    init: RequestInit & { readonly allow404?: boolean; readonly betas?: readonly string[] } = {},
   ): Promise<Response | null> => {
     const headers = new Headers(init.headers);
     for (const [name, value] of Object.entries(options.headers ?? {})) headers.set(name, value);
     if (options.apiKey !== undefined) headers.set("x-api-key", options.apiKey);
     // Managed Agents routes (agents, environments, …) require the beta flag;
     // the rest ignore it.
-    headers.set("anthropic-beta", MANAGED_AGENTS_BETA);
+    headers.set("anthropic-beta", [MANAGED_AGENTS_BETA, ...(init.betas ?? [])].join(","));
     if (init.body !== undefined && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
@@ -183,6 +189,13 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
     getVault: async (vaultId) =>
       json<{ id: string; archived_at?: string | null }>(
         await request(`/v1/vaults/${encodeURIComponent(vaultId)}`, { allow404: true }),
+      ),
+    getMemoryStore: async (memoryStoreId) =>
+      json<{ id: string; archived_at?: string | null }>(
+        await request(`/v1/memory_stores/${encodeURIComponent(memoryStoreId)}`, {
+          allow404: true,
+          betas: [AGENT_MEMORY_BETA],
+        }),
       ),
     getAgent: async (agentId) =>
       json<OmaAgent>(
@@ -222,6 +235,14 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
         ),
       )) as { id: string },
     createSession: async (input) => {
+      const resources = [
+        ...(input.repositoryUrls ?? []).map((url) => ({ type: "github_repository", url })),
+        ...(input.memoryStores ?? []).map((store) => ({
+          type: "memory_store",
+          memory_store_id: store.id,
+          access: store.access,
+        })),
+      ];
       const session = await json<OmaSession>(
         await request("/v1/sessions", {
           method: "POST",
@@ -232,9 +253,7 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
             ...(input.vaultIds === undefined || input.vaultIds.length === 0
               ? {}
               : { vault_ids: input.vaultIds }),
-            ...(input.repositoryUrls === undefined || input.repositoryUrls.length === 0
-              ? {}
-              : { resources: input.repositoryUrls.map((url) => ({ type: "github_repository", url })) }),
+            ...(resources.length === 0 ? {} : { resources }),
           }),
         }),
       );

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import { I18nProvider } from "../i18n";
@@ -12,6 +12,15 @@ const managedApi = {
   agents: { list: vi.fn(async () => ({ data: [{ id: "agent-1", name: "Helpdesk" }] })) },
   environments: { list: vi.fn(async () => ({ data: [{ id: "env_report", name: "Analytics" }] })) },
   vaults: { list: vi.fn(async () => ({ data: [{ id: "vlt_user", display_name: "Analytics keys" }] })) },
+  memoryStores: {
+    list: vi.fn(async () => ({
+      data: [
+        { id: "memstore_kb", name: "report-kb" },
+        { id: "memstore_ref", name: "reference" },
+        { id: "memstore_old", name: "retired", archived_at: "2026-10-01T00:00:00Z" },
+      ],
+    })),
+  },
 };
 vi.mock("../lib/useManagedApi", () => ({ useManagedApi: () => managedApi }));
 
@@ -231,6 +240,47 @@ describe("LoopsPage", () => {
     ]);
   });
 
+  it("mounts the checked Memory Stores in the Loop's sessions, read-write unless set read-only", async () => {
+    const withMemory = {
+      ...feishuTemplate,
+      configSchema: {
+        ...feishuTemplate.configSchema,
+        properties: {
+          ...feishuTemplate.configSchema.properties,
+          memoryStores: { type: "array", default: [], title: "Memory Stores", "x-oma-widget": "memory-stores", "x-oma-section": "session" },
+        },
+      },
+    };
+    const saved = { ...loop, config: { ...loop.config, memoryStores: [{ id: "memstore_gone", access: "read_only" }] } };
+    routes["GET /matter/loop-templates"] = () => json(200, { data: [withMemory] });
+    routes["GET /matter/loops"] = () => json(200, { data: [saved] });
+    routes["PATCH /matter/loops/loop-1"] = () => json(200, saved);
+    open("/loops/loop-1");
+
+    const group = await screen.findByRole("group", { name: /^(Memory Stores|记忆存储)$/ });
+    const kb = await within(group).findByRole("checkbox", { name: "report-kb" });
+    // Archived stores are not offered; a saved store the list lacks still shows, checked.
+    expect(within(group).queryByRole("checkbox", { name: "retired" })).toBeNull();
+    const gone = within(group).getByRole("checkbox", { name: "memstore_gone" });
+    expect(gone.getAttribute("aria-checked")).toBe("true");
+    // Access is offered only for a checked store.
+    expect(within(group).queryByRole("radiogroup", { name: /report-kb/ })).toBeNull();
+
+    fireEvent.click(kb);
+    const kbAccess = within(group).getByRole("radiogroup", { name: /report-kb/ });
+    expect(within(kbAccess).getByRole("radio", { name: /^(Read-write|读写)$/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(group).getByRole("checkbox", { name: "reference" }));
+    fireEvent.click(within(within(group).getByRole("radiogroup", { name: /reference/ })).getByRole("radio", { name: /^(Read-only|只读)$/ }));
+    fireEvent.click(gone);
+
+    fireEvent.click(screen.getByRole("button", { name: /^(Save|保存)$/ }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
+    expect((calls.find((c) => c.method === "PATCH")?.body as { config: { memoryStores: unknown } }).config.memoryStores).toEqual([
+      { id: "memstore_kb", access: "read_write" },
+      { id: "memstore_ref", access: "read_only" },
+    ]);
+  });
+
   it("schedules a report Loop in the browser's time zone", async () => {
     routes["GET /matter/loop-templates"] = () => json(200, { data: [feishuTemplate, reportTemplate] });
     routes["POST /matter/loops"] = () => json(201, loop);
@@ -289,6 +339,13 @@ describe("LoopsPage", () => {
 });
 
 describe("issueText", () => {
+  it("names a repeated or one-too-many Memory Store", () => {
+    expect(issueText(en.matter, { field: "memoryStores", code: "duplicate", params: { id: "memstore_kb" } })).toBe(
+      "Memory Stores: memstore_kb is listed twice",
+    );
+    expect(issueText(zhCN.matter, { field: "memoryStores", code: "max_items", params: { max: 8 } })).toBe("记忆存储最多 8 项");
+  });
+
   it("says a configuration problem in the user's language", () => {
     expect(issueText(zhCN.matter, { field: "agentId", code: "required" })).toBe(`请填写${zhCN.matter.fields.agentId!.title}`);
     expect(issueText(en.matter, { field: "task", code: "max_length", params: { max: 8000 } })).toBe(

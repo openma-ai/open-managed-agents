@@ -313,6 +313,13 @@ export interface Messages {
       vaults: string;
       vaultsHint: string;
       noVaults: string;
+      memoryStores: string;
+      memoryStoresHint: string;
+      noMemoryStores: string;
+      /** The access choice of one chosen store; {store} is its name. */
+      memoryStoreAccess: string;
+      readWrite: string;
+      readOnly: string;
       sectionOptions: string;
       sectionOptionsHint: string;
       notFound: string;
@@ -413,6 +420,8 @@ export interface Messages {
       type: string;
       max_length: string;
       min_items: string;
+      max_items: string;
+      duplicate: string;
       enum: string;
       schedule_fields: string;
       schedule_invalid: string;
@@ -421,6 +430,6 @@ export interface Messages {
       /** Appended when the problem is in one entry of a list: {item} is its position. */
       item: string;
     };
-    issueTypes: { string: string; boolean: string; list: string };
+    issueTypes: { string: string; boolean: string; list: string; object: string };
   };
 }

@@ -9,7 +9,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isSafeConnectionKey } from "../src/adapter.js";
 import { ensureAgentMcpServer, loopDrivers } from "../src/host.js";
 import { defineLoop } from "@openma/matter-loop";
-import { LoopConfigError, loopTemplate, registerLoopTemplates, resetLoopTemplates } from "../src/loops.js";
+import {
+  hostFields,
+  LoopConfigError,
+  loopTemplate,
+  loopTemplates,
+  normalizeLoopConfig,
+  registerLoopTemplates,
+  resetLoopTemplates,
+  splitLoopConfig,
+} from "../src/loops.js";
 import { createOmaClient } from "../src/oma-client.js";
 import { createSecretBox, openSqliteMatterDatabase } from "../src/persistence.js";
 import {
@@ -398,8 +407,9 @@ describe("Matter service", () => {
       data: { id: string; configSchema: { properties: Record<string, { "x-oma-section"?: string }> } }[];
     }).data;
     const properties = templates.find((t) => t.id === "feishu-agent")!.configSchema.properties;
-    expect(Object.keys(properties).slice(-3)).toEqual(["environmentId", "vaultIds", "repositories"]);
+    expect(Object.keys(properties).slice(-4)).toEqual(["environmentId", "vaultIds", "repositories", "memoryStores"]);
     expect(properties.repositories?.["x-oma-section"]).toBe("session");
+    expect(properties.memoryStores?.["x-oma-section"]).toBe("session");
     expect(properties.vaultIds?.["x-oma-section"]).toBe("session");
 
     // Unknown environments and vaults are refused.
@@ -432,6 +442,56 @@ describe("Matter service", () => {
     // Matter's own vault (the MCP bearer) comes first, then the Loop's.
     expect(sessions[0]?.vault_ids).toHaveLength(2);
     expect(sessions[0]?.vault_ids[1]).toBe("vlt_user");
+  });
+
+  it("mounts the Loop's Memory Stores in its session, read-write unless read-only", async () => {
+    const service = await start();
+    const call = (method: string, path: string, body?: unknown) =>
+      service.fetch(
+        new Request(`https://matter.test${path}`, {
+          method,
+          headers: {
+            "x-matter-proxy-secret": "proxy-secret",
+            "x-oma-tenant-id": "default",
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      );
+    await service.connectFeishu({ ...connection, agentId: undefined });
+    oma.memoryStores.set("memstore_kb", { name: "report-kb" });
+    oma.memoryStores.set("memstore_ref", { name: "reference" });
+    oma.memoryStores.set("memstore_old", { name: "old", archived_at: "2026-10-01T00:00:00Z" });
+    const config = { bond: `feishu:${APP_ID}`, agentId: "agent-1" };
+
+    // Unknown and archived Memory Stores are refused.
+    for (const id of ["memstore_nope", "memstore_old"]) {
+      const refused = await call("POST", "/loops", { template: "feishu-agent", config: { ...config, memoryStores: [{ id }] } });
+      expect(refused.status, id).toBe(404);
+      expect(((await refused.json()) as { issues: unknown }).issues).toEqual([
+        { field: "memoryStores", code: "not_found", params: { id } },
+      ]);
+    }
+
+    const created = await call("POST", "/loops", {
+      template: "feishu-agent",
+      config: { ...config, memoryStores: [{ id: "memstore_kb" }, { id: "memstore_ref", access: "read_only" }] },
+    });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { config: unknown }).config).toMatchObject({
+      memoryStores: [
+        { id: "memstore_kb", access: "read_write" },
+        { id: "memstore_ref", access: "read_only" },
+      ],
+    });
+
+    await ws[0]!.invoke!(mention("ev_1", "om_1"));
+    await waitFor(() => oma.sessions.size > 0 || undefined);
+    const session = [...oma.sessions.values()][0]!;
+    expect(session.resources).toEqual([
+      { type: "memory_store", memory_store_id: "memstore_kb", access: "read_write" },
+      { type: "memory_store", memory_store_id: "memstore_ref", access: "read_only" },
+    ]);
   });
 
   it("clones the Loop's repositories with the workspace's GitLab Bond, never handing out its token", async () => {
@@ -904,8 +964,70 @@ describe("Loop sessions", () => {
     expect([...drivers.keys()]).toEqual(["agent-1", key]);
     expect(drivers.get(key)).toEqual({
       agentId: "agent-1",
-      session: { environmentId: "env_report", vaultIds: ["vlt_2", "vlt_1"], repositories: [] },
+      session: { environmentId: "env_report", vaultIds: ["vlt_2", "vlt_1"], repositories: [], memoryStores: [] },
     });
+  });
+
+  it("keys a Loop by its Memory Stores and their access, and passes them to its Sessions", () => {
+    const { loops, drivers } = loopDrivers([
+      record("a", { agentId: "agent-1", vaultIds: ["vlt_1"] }),
+      record("b", { agentId: "agent-1", vaultIds: ["vlt_1"], memoryStores: [{ id: "memstore_kb", access: "read_write" }] }),
+      record("c", { agentId: "agent-1", vaultIds: ["vlt_1"], memoryStores: [{ id: "memstore_kb", access: "read_only" }] }),
+      // A repository URL never reads as a Memory Store, or the other way round.
+      record("d", { agentId: "agent-1", vaultIds: ["vlt_1"], repositories: ["memstore_kb:read_write"] }),
+    ]);
+    const keys = loops.map((l) => l.config.agentId);
+    expect(new Set(keys).size).toBe(4);
+    expect(drivers.get(keys[1] as string)?.session.memoryStores).toEqual([{ id: "memstore_kb", access: "read_write" }]);
+    expect(drivers.get(keys[2] as string)?.session.memoryStores).toEqual([{ id: "memstore_kb", access: "read_only" }]);
+    // The digest of a Loop without Memory Stores is the one it had before them.
+    expect(keys[0]).toBe(loopDrivers([record("a", { agentId: "agent-1", vaultIds: ["vlt_1"] })]).loops[0]?.config.agentId);
+  });
+
+  it("checks a Loop's Memory Stores and saves each with its access, read-write by default", () => {
+    const base = { bond: `feishu:${APP_ID}`, agentId: "agent-1" };
+    // Every template, the scheduled report included, takes Memory Stores.
+    for (const entry of loopTemplates()) {
+      expect(Object.keys(hostFields(entry.loop)), entry.loop.definition.id).toContain("memoryStores");
+    }
+    const saved = normalizeLoopConfig("feishu-scheduled-report", {
+      ...base,
+      task: "Weekly report",
+      chats: ["oc_1"],
+      schedule: "0 9 * * 1",
+      memoryStores: [{ id: "memstore_kb" }, { id: "memstore_ref", access: "read_only", extra: true }],
+    });
+    expect(saved.memoryStores).toEqual([
+      { id: "memstore_kb", access: "read_write" },
+      { id: "memstore_ref", access: "read_only" },
+    ]);
+    expect(splitLoopConfig(saved).session.memoryStores).toEqual([
+      { id: "memstore_kb", access: "read_write" },
+      { id: "memstore_ref", access: "read_only" },
+    ]);
+    expect(normalizeLoopConfig("feishu-agent", base).memoryStores).toEqual([]);
+
+    const issues = (memoryStores: unknown) => {
+      try {
+        normalizeLoopConfig("feishu-agent", { ...base, memoryStores });
+      } catch (error) {
+        if (error instanceof LoopConfigError) return error.issues.map(({ field, code }) => ({ field, code }));
+        throw error;
+      }
+      return [];
+    };
+    expect(issues([{ id: "" }])).toEqual([{ field: "memoryStores", code: "required" }]);
+    expect(issues([{ access: "read_only" }])).toEqual([{ field: "memoryStores", code: "required" }]);
+    expect(issues([{ id: 7 }])).toEqual([{ field: "memoryStores", code: "type" }]);
+    expect(issues(["memstore_kb"])).toEqual([{ field: "memoryStores", code: "type" }]);
+    expect(issues([{ id: "memstore_kb", access: "write" }])).toEqual([{ field: "memoryStores", code: "enum" }]);
+    expect(issues([{ id: "memstore_kb" }, { id: "memstore_kb", access: "read_only" }])).toEqual([
+      { field: "memoryStores", code: "duplicate" },
+    ]);
+    expect(issues(Array.from({ length: 9 }, (_, i) => ({ id: `memstore_${i}` })))).toEqual([
+      { field: "memoryStores", code: "max_items" },
+    ]);
+    expect(issues("memstore_kb")).toEqual([{ field: "memoryStores", code: "type" }]);
   });
 
   it("refuses a template that defines a host field", () => {

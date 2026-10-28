@@ -194,6 +194,14 @@ export const createOpenMAConnector = (
     const repositoryUrls = Array.isArray(metadata.repositories)
       ? metadata.repositories.filter((r): r is string => typeof r === "string" && r !== "")
       : [];
+    const memoryStores = Array.isArray(metadata.memoryStores)
+      ? metadata.memoryStores.flatMap((entry) => {
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+          const { id, access } = entry as { id?: unknown; access?: unknown };
+          if (typeof id !== "string" || id === "") return [];
+          return [{ id, access: access === "read_only" ? ("read_only" as const) : ("read_write" as const) }];
+        })
+      : [];
     const created = await client.createSession({
       agentId: input.agentId,
       title,
@@ -205,6 +213,7 @@ export const createOpenMAConnector = (
             : await options.environmentId(),
       vaultIds,
       ...(repositoryUrls.length === 0 ? {} : { repositoryUrls }),
+      ...(memoryStores.length === 0 ? {} : { memoryStores }),
     });
     return handleFor(created.id);
   };

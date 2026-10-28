@@ -7,10 +7,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { PopoverContent } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 import { DataTable, type ColumnDef } from "../components/DataTable";
+import { Field } from "../components/Field";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip } from "../components/FilterChip";
 import { Page } from "../components/Page";
@@ -51,6 +53,9 @@ type Agent = { id: string; name: string };
 /** An environment or vault, as the session settings list it. */
 type Choice = { id: string; name: string };
 
+/** A Memory Store a Loop mounts in its sessions, as its config saves it. */
+type MemoryStoreChoice = { id: string; access: "read_write" | "read_only" };
+
 /** The Environment option that keeps the service's default. */
 const DEFAULT_ENVIRONMENT = "__default";
 
@@ -63,6 +68,7 @@ function useLoopData() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [environments, setEnvironments] = useState<Choice[] | null>(null);
   const [vaults, setVaults] = useState<Choice[] | null>(null);
+  const [memoryStores, setMemoryStores] = useState<Choice[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,12 +114,20 @@ function useLoopData() {
       .list({ limit: 200 })
       .then((r) => live && setVaults(r.data.map((v) => ({ id: v.id, name: v.display_name || v.id }))))
       .catch(() => live && setVaults([]));
+    managedApi.memoryStores
+      .list({ limit: 200 })
+      .then(
+        (r) =>
+          live &&
+          setMemoryStores(r.data.filter((s) => !s.archived_at).map((s) => ({ id: s.id, name: s.name || s.id }))),
+      )
+      .catch(() => live && setMemoryStores([]));
     return () => {
       live = false;
     };
   }, [managedApi]);
 
-  return { templates, loops, bonds, agents, environments, vaults, loading, error, reload, reloadBonds };
+  return { templates, loops, bonds, agents, environments, vaults, memoryStores, loading, error, reload, reloadBonds };
 }
 
 type LoopState = "running" | "starting" | "error" | "disabled";
@@ -433,6 +447,7 @@ export function LoopEditPage() {
         agents={data.agents}
         environments={data.environments}
         vaults={data.vaults}
+        memoryStores={data.memoryStores}
         reload={data.reload}
         reloadBonds={data.reloadBonds}
         initialBond={params.get("bond") ?? undefined}
@@ -456,6 +471,7 @@ function LoopForm(props: {
   agents: Agent[] | null;
   environments: Choice[] | null;
   vaults: Choice[] | null;
+  memoryStores: Choice[] | null;
   reload: () => Promise<void>;
   reloadBonds: () => Promise<void>;
   /** Preselected Bond, from `/loops/new?bond=…` (the Bond page links here). */
@@ -490,7 +506,12 @@ function LoopForm(props: {
   const trigger = fields.filter(([, f]) => f["x-oma-section"] === "trigger");
   // Session settings a template adds itself, such as `sessionScope`.
   const sessionOptions = fields.filter(
-    ([key, f]) => f["x-oma-section"] === "session" && key !== "environmentId" && key !== "vaultIds" && key !== agentKey,
+    ([key, f]) =>
+      f["x-oma-section"] === "session" &&
+      key !== "environmentId" &&
+      key !== "vaultIds" &&
+      key !== "memoryStores" &&
+      key !== agentKey,
   );
   const environment = typeof values.environmentId === "string" && values.environmentId !== "" ? values.environmentId : "";
   const chosenVaults = Array.isArray(values.vaultIds) ? (values.vaultIds as string[]) : [];
@@ -693,6 +714,13 @@ function LoopForm(props: {
                 <p className="text-xs text-fg-subtle">{m.loops.vaultsHint}</p>
               </div>
             )}
+            {session("memoryStores") && (
+              <MemoryStoresField
+                stores={props.memoryStores}
+                value={Array.isArray(values.memoryStores) ? (values.memoryStores as MemoryStoreChoice[]) : []}
+                onChange={(v) => set("memoryStores", v)}
+              />
+            )}
           </div>
         </MatterSection>
       )}
@@ -781,6 +809,85 @@ export function issueText(m: Messages["matter"], issue: MatterIssue): string | u
       : "";
   const text = fill(template, { ...params, field, expected, options });
   return params.item === undefined ? text : text + fill(m.issues.item, { item: params.item });
+}
+
+/** The workspace's Memory Stores to mount in the Loop's sessions, each
+ * read-write or read-only. A saved store the list lacks (deleted, or not
+ * loaded) is still shown by id, so it can be seen and unchecked. */
+function MemoryStoresField(props: {
+  stores: Choice[] | null;
+  value: MemoryStoreChoice[];
+  onChange: (value: MemoryStoreChoice[]) => void;
+}) {
+  const { t } = useI18n();
+  const m = t.matter;
+  const listed = props.stores ?? [];
+  const rows = [
+    ...listed,
+    ...props.value.filter((v) => !listed.some((s) => s.id === v.id)).map((v) => ({ id: v.id, name: v.id })),
+  ];
+  const chosen = (id: string) => props.value.find((v) => v.id === id);
+  return (
+    <Field label={m.loops.memoryStores} hint={m.loops.memoryStoresHint}>
+      <div role="group" aria-label={m.loops.memoryStores} className="space-y-1.5">
+        {props.stores === null && props.value.length === 0 ? (
+          <p className="text-sm text-fg-muted">{t.common.loading}</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-fg-muted">{m.loops.noMemoryStores}</p>
+        ) : (
+          rows.map((store) => {
+            const entry = chosen(store.id);
+            return (
+              <div key={store.id} className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                <Label className="flex min-w-0 items-center gap-2 text-sm font-normal text-fg">
+                  <Checkbox
+                    aria-label={store.name}
+                    checked={entry !== undefined}
+                    onCheckedChange={(on) =>
+                      props.onChange(
+                        on === true
+                          ? [...props.value, { id: store.id, access: "read_write" }]
+                          : props.value.filter((v) => v.id !== store.id),
+                      )
+                    }
+                  />
+                  <span className="truncate">{store.name}</span>
+                </Label>
+                {entry !== undefined && (
+                  <RadioGroup
+                    aria-label={fill(m.loops.memoryStoreAccess, { store: store.name })}
+                    value={entry.access === "read_only" ? "read_only" : "read_write"}
+                    onValueChange={(access) =>
+                      props.onChange(
+                        props.value.map((v) =>
+                          v.id === store.id ? { ...v, access: access as MemoryStoreChoice["access"] } : v,
+                        ),
+                      )
+                    }
+                    className="flex items-center gap-3"
+                  >
+                    {(
+                      [
+                        ["read_write", m.loops.readWrite],
+                        ["read_only", m.loops.readOnly],
+                      ] as const
+                    ).map(([access, text]) => (
+                      <div key={access} className="flex items-center gap-1.5">
+                        <RadioGroupItem id={`loop-memory-${store.id}-${access}`} value={access} aria-label={text} />
+                        <Label htmlFor={`loop-memory-${store.id}-${access}`} className="text-sm font-normal text-fg-muted">
+                          {text}
+                        </Label>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </Field>
+  );
 }
 
 /** Repository URLs, one per line. The text is kept as typed (blank lines

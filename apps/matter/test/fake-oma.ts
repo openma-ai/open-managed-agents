@@ -33,6 +33,7 @@ export type Responder = (
 export class FakeOma {
   readonly sessions = new Map<string, Session>();
   readonly vaults = new Map<string, { name: string; credentials: unknown[] }>();
+  readonly memoryStores = new Map<string, { name: string; archived_at?: string | null }>();
   readonly agents = new Map<
     string,
     {
@@ -114,6 +115,17 @@ export class FakeOma {
       return vault === undefined
         ? Response.json({ error: "Vault not found" }, { status: 404 })
         : Response.json({ id: parts[2], display_name: vault.name });
+    }
+    if (parts[0] === "v1" && parts[1] === "memory_stores" && parts.length === 3 && method === "GET") {
+      // The Memory Store routes need their own beta, next to Managed Agents'.
+      const betas = (headers.get("anthropic-beta") ?? "").split(",").map((b) => b.trim());
+      if (!betas.includes("agent-memory-2026-07-22")) {
+        return Response.json({ error: "Missing required anthropic-beta flag: agent-memory-2026-07-22" }, { status: 400 });
+      }
+      const store = this.memoryStores.get(parts[2] ?? "");
+      return store === undefined
+        ? Response.json({ error: "Memory store not found" }, { status: 404 })
+        : Response.json({ id: parts[2], type: "memory_store", ...store });
     }
     if (parts[0] === "v1" && parts[1] === "vaults" && method === "POST") {
       if (parts.length === 2) {
