@@ -783,6 +783,24 @@ export function issueText(m: Messages["matter"], issue: MatterIssue): string | u
   return params.item === undefined ? text : text + fill(m.issues.item, { item: params.item });
 }
 
+/** Repository URLs, one per line. The text is kept as typed (blank lines
+ * included) so a new line can be started; the value drops blank lines. */
+function RepositoriesField(props: { id: string; value: string[]; onChange: (value: string[]) => void }) {
+  const [text, setText] = useState(() => props.value.join("\n"));
+  return (
+    <Textarea
+      id={props.id}
+      rows={3}
+      placeholder="https://gitlab.example.com/group/project.git"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        props.onChange(e.target.value.split("\n").map((line) => line.trim()).filter(Boolean));
+      }}
+    />
+  );
+}
+
 /** One template option, rendered from its JSON Schema. */
 function ConfigField(props: {
   name: string;
@@ -818,7 +836,9 @@ function ConfigField(props: {
         {label}
         {props.required && <span className="text-danger"> *</span>}
       </Label>
-      {field["x-oma-widget"] === "bond-resources" ? (
+      {field["x-oma-widget"] === "repositories" ? (
+        <RepositoriesField id={id} value={Array.isArray(value) ? (value as string[]) : []} onChange={onChange} />
+      ) : field["x-oma-widget"] === "bond-resources" ? (
         <ResourcesField bond={props.bond} value={Array.isArray(value) ? (value as string[]) : []} onChange={onChange} />
       ) : field.enum ? (
         <Select value={String(value ?? "")} onValueChange={onChange}>

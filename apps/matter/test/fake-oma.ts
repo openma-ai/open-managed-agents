@@ -16,6 +16,7 @@ interface Session {
   agent: string;
   environment_id?: string;
   vault_ids: string[];
+  resources?: unknown[];
   status: string;
   archived_at: string | null;
   events: StoredEvent[];
@@ -173,6 +174,7 @@ export class FakeOma {
           title: string;
           environment_id?: string;
           vault_ids?: string[];
+          resources?: unknown[];
         };
         if (typeof b.environment_id !== "string" || b.environment_id === "") {
           return Response.json({ error: "environment_id is required" }, { status: 400 });
@@ -181,6 +183,7 @@ export class FakeOma {
         const session = this.sessions.get(sid)!;
         if (b.environment_id !== undefined) session.environment_id = b.environment_id;
         session.vault_ids = b.vault_ids ?? [];
+        if (b.resources !== undefined) session.resources = b.resources;
         return Response.json(this.view(session));
       }
       const agent = url.searchParams.get("agent_id");
