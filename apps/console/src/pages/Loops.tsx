@@ -725,7 +725,7 @@ function LoopForm(props: {
         </div>
       )}
       {started && (
-        <div role="status" className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+        <div role="status" className="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-sm text-success">
           {m.runStarted}
         </div>
       )}
