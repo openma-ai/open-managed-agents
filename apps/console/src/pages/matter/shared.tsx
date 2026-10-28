@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Field } from "../../components/Field";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -105,10 +106,10 @@ export function FeishuLinker({ onLinked }: { onLinked: (bond: string) => Promise
         <TabsTrigger value="scan">{b.feishuModeScan}</TabsTrigger>
         <TabsTrigger value="existing">{b.feishuModeExisting}</TabsTrigger>
       </TabsList>
-      <TabsContent value="scan">
+      <TabsContent value="scan" className="pt-2">
         <FeishuScan onLinked={onLinked} />
       </TabsContent>
-      <TabsContent value="existing">
+      <TabsContent value="existing" className="pt-2">
         <FeishuAppForm submitLabel={b.link} onLinked={setLinked} />
       </TabsContent>
     </Tabs>
@@ -164,32 +165,36 @@ export function FeishuAppForm({
   }
 
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-4 text-sm">
       {!fixed && (
         <>
           <p className="text-fg-muted">{b.feishuExistingHint}</p>
-          <Label htmlFor="feishu-brand">{b.feishuBrand}</Label>
-          <Select value={brand} onValueChange={(v) => setBrand(v as "feishu" | "lark")}>
-            <SelectTrigger id="feishu-brand" aria-label={b.feishuBrand} className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="feishu">{b.brandFeishu}</SelectItem>
-              <SelectItem value="lark">{b.brandLark}</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label htmlFor="feishu-app-id">{b.feishuAppId}</Label>
-          <Input id="feishu-app-id" placeholder="cli_…" value={appId} onChange={(e) => setAppId(e.target.value)} />
+          <div className="space-y-1.5">
+            <Label htmlFor="feishu-brand">{b.feishuBrand}</Label>
+            <Select value={brand} onValueChange={(v) => setBrand(v as "feishu" | "lark")}>
+              <SelectTrigger id="feishu-brand" aria-label={b.feishuBrand} className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="feishu">{b.brandFeishu}</SelectItem>
+                <SelectItem value="lark">{b.brandLark}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Field label={b.feishuAppId}>
+            <Input id="feishu-app-id" placeholder="cli_…" value={appId} onChange={(e) => setAppId(e.target.value)} />
+          </Field>
         </>
       )}
-      <Label htmlFor="feishu-app-secret">{b.feishuAppSecret}</Label>
-      <Input
-        id="feishu-app-secret"
-        type="password"
-        autoComplete="off"
-        value={appSecret}
-        onChange={(e) => setAppSecret(e.target.value)}
-      />
+      <Field label={b.feishuAppSecret}>
+        <Input
+          id="feishu-app-secret"
+          type="password"
+          autoComplete="off"
+          value={appSecret}
+          onChange={(e) => setAppSecret(e.target.value)}
+        />
+      </Field>
       {error && (
         <p role="alert" className="text-danger">
           {error}
@@ -305,7 +310,7 @@ function useGitLabInstance(): { url: string; field: ReactNode } {
     };
   }, []);
   const field = (
-    <>
+    <div className="space-y-1.5">
       <Label htmlFor={instances.length > 0 ? "gitlab-instance" : "gitlab-url"}>{b.gitlabUrl}</Label>
       {instances.length > 0 && (
         <Select value={instance} onValueChange={setInstance}>
@@ -325,7 +330,7 @@ function useGitLabInstance(): { url: string; field: ReactNode } {
       {instance === OTHER && (
         <Input id="gitlab-url" aria-label={b.gitlabUrl} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
       )}
-    </>
+    </div>
   );
   return { url: instance === OTHER ? baseUrl : instance, field };
 }
@@ -358,13 +363,15 @@ function GitLabBotFields({ form, onChange }: { form: GitLabBotForm; onChange: (f
   return (
     <>
       <p className="text-fg-muted">{b.gitlabBotHint}</p>
-      <Label htmlFor="gitlab-project">{b.gitlabProject}</Label>
-      <Input
-        id="gitlab-project"
-        placeholder="group/name"
-        value={form.project}
-        onChange={(e) => onChange({ ...form, project: e.target.value })}
-      />
+      <Field label={b.gitlabProject}>
+        <Input
+          id="gitlab-project"
+          placeholder="group/name"
+          value={form.project}
+          onChange={(e) => onChange({ ...form, project: e.target.value })}
+        />
+      </Field>
+      <div className="space-y-1.5">
       <Label id="gitlab-preset-label">{b.gitlabPreset}</Label>
       <RadioGroup
         aria-labelledby="gitlab-preset-label"
@@ -386,21 +393,24 @@ function GitLabBotFields({ form, onChange }: { form: GitLabBotForm; onChange: (f
           </div>
         ))}
       </RadioGroup>
-      <Label htmlFor="gitlab-expires">{b.gitlabExpires}</Label>
-      <Input
-        id="gitlab-expires"
-        type="date"
-        value={form.expiresAt}
-        onChange={(e) => onChange({ ...form, expiresAt: e.target.value })}
-      />
-      <Label htmlFor="gitlab-user-token">{b.gitlabUserToken}</Label>
-      <Input
-        id="gitlab-user-token"
-        type="password"
-        autoComplete="off"
-        value={form.userToken}
-        onChange={(e) => onChange({ ...form, userToken: e.target.value })}
-      />
+      </div>
+      <Field label={b.gitlabExpires}>
+        <Input
+          id="gitlab-expires"
+          type="date"
+          value={form.expiresAt}
+          onChange={(e) => onChange({ ...form, expiresAt: e.target.value })}
+        />
+      </Field>
+      <Field label={b.gitlabUserToken}>
+        <Input
+          id="gitlab-user-token"
+          type="password"
+          autoComplete="off"
+          value={form.userToken}
+          onChange={(e) => onChange({ ...form, userToken: e.target.value })}
+        />
+      </Field>
     </>
   );
 }
@@ -425,10 +435,10 @@ function GitLabModeTabs({
         <TabsTrigger value="create">{b.gitlabModeCreate}</TabsTrigger>
         <TabsTrigger value="paste">{b.gitlabModePaste}</TabsTrigger>
       </TabsList>
-      <TabsContent value="create" className="space-y-2">
+      <TabsContent value="create" className="space-y-4 pt-2">
         {create}
       </TabsContent>
-      <TabsContent value="paste" className="space-y-2">
+      <TabsContent value="paste" className="space-y-4 pt-2">
         {paste}
       </TabsContent>
     </Tabs>
@@ -440,8 +450,9 @@ function GitLabPastedToken({ token, onChange }: { token: string; onChange: (toke
   const b = t.matter.bonds;
   return (
     <>
-      <Label htmlFor="gitlab-token">{b.gitlabToken}</Label>
-      <Input id="gitlab-token" type="password" autoComplete="off" value={token} onChange={(e) => onChange(e.target.value)} />
+      <Field label={b.gitlabToken}>
+        <Input id="gitlab-token" type="password" autoComplete="off" value={token} onChange={(e) => onChange(e.target.value)} />
+      </Field>
     </>
   );
 }
@@ -489,12 +500,14 @@ export function GitLabLinker({ onLinked }: { onLinked: (bond: string) => Promise
 
   if (result) {
     return (
-      <div className="space-y-2 text-sm">
+      <div className="space-y-4 text-sm">
         <p className="text-fg-muted">{b.webhookHint}</p>
-        <Label>{b.webhookUrl}</Label>
-        <Input readOnly value={absolute ?? ""} onFocus={(e) => e.currentTarget.select()} />
-        <Label>{b.webhookSecret}</Label>
-        <Input readOnly value={result.webhookSecret} onFocus={(e) => e.currentTarget.select()} />
+        <Field label={b.webhookUrl}>
+          <Input readOnly value={absolute ?? ""} onFocus={(e) => e.currentTarget.select()} />
+        </Field>
+        <Field label={b.webhookSecret}>
+          <Input readOnly value={result.webhookSecret} onFocus={(e) => e.currentTarget.select()} />
+        </Field>
         <Button size="sm" onClick={() => void onLinked(`gitlab:${result.id}`)}>
           {b.done}
         </Button>
@@ -503,7 +516,7 @@ export function GitLabLinker({ onLinked }: { onLinked: (bond: string) => Promise
   }
   const ready = mode === "create" ? botFormReady(bot) : token.trim() !== "";
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-4 text-sm">
       {field}
       <GitLabModeTabs
         mode={mode}
@@ -560,7 +573,7 @@ export function GitLabTokenReplacer({
 
   const ready = mode === "create" ? botFormReady(bot) : token.trim() !== "";
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-4 text-sm">
       <GitLabModeTabs
         mode={mode}
         onMode={setMode}
