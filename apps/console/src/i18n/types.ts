@@ -366,8 +366,28 @@ export interface Messages {
       sectionSetup: string;
       sectionSetupHint: string;
       gitlabHint: string;
+      gitlabModeCreate: string;
+      gitlabModePaste: string;
+      gitlabBotHint: string;
+      gitlabProject: string;
+      gitlabPreset: string;
+      gitlabPresetRead: string;
+      gitlabPresetComment: string;
+      gitlabExpires: string;
+      gitlabUserToken: string;
+      createBot: string;
+      replaceToken: string;
+      replace: string;
+      tokenReplaced: string;
       notFound: string;
-      detail: { appId: string; baseUrl: string; username: string; webhookUrl: string };
+      detail: {
+        appId: string;
+        baseUrl: string;
+        username: string;
+        webhookUrl: string;
+        tokenScopes: string;
+        tokenExpiresAt: string;
+      };
     };
     /** Template names and descriptions, by template id. */
     templates: Record<string, { name: string; description: string }>;

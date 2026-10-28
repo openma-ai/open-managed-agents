@@ -95,7 +95,8 @@ export interface GitLabConnectionRecord {
   readonly id: string;
   /** The instance root, for example `https://gitlab.example.com`. */
   readonly baseUrl: string;
-  /** The bot user's token (API scope); notes are posted as this user. */
+  /** The bot user's token; notes are posted as this user. `read_repository`
+   * is enough to clone, `api` is needed to post notes. */
   readonly token: string;
   /** The bot user's username, without @; comments mentioning it are answered. */
   readonly username: string;
@@ -106,6 +107,10 @@ export interface GitLabConnectionRecord {
   readonly tenantId: string;
   readonly userId?: string;
   readonly agentId: string;
+  /** The token's scopes and expiry (YYYY-MM-DD), when GitLab told them at
+   * link time; shown to the user only. */
+  readonly tokenScopes?: readonly string[];
+  readonly tokenExpiresAt?: string;
   readonly connectedAt: string;
 }
 
@@ -257,6 +262,13 @@ const tables = (kind: "sqlite" | "mysql"): string[] => {
   ];
 };
 
+/** Nullable text columns added after a table was first created, as
+ * `[table, column]`; added when missing. */
+const addedColumns: readonly (readonly [string, string])[] = [
+  ["openmatter_gitlab_connections", "token_scopes"],
+  ["openmatter_gitlab_connections", "token_expires_at"],
+];
+
 /** `INSERT … ON CONFLICT DO UPDATE` in each dialect. */
 const upsert = (
   kind: "sqlite" | "mysql",
@@ -336,6 +348,8 @@ const createMatterDatabase = (
     tenant_id: string;
     user_id: string | null;
     agent_id: string;
+    token_scopes: string | null;
+    token_expires_at: string | null;
     connected_at: string;
   };
   const toGitLab = (row: GitLabRow): GitLabConnectionRecord => ({
@@ -348,6 +362,8 @@ const createMatterDatabase = (
     tenantId: row.tenant_id,
     ...(row.user_id === null ? {} : { userId: row.user_id }),
     agentId: row.agent_id,
+    ...(row.token_scopes === null ? {} : { tokenScopes: JSON.parse(row.token_scopes) as string[] }),
+    ...(row.token_expires_at === null ? {} : { tokenExpiresAt: row.token_expires_at }),
     connectedAt: row.connected_at,
   });
   type RegistrationRow = {
@@ -398,6 +414,8 @@ const createMatterDatabase = (
     "tenant_id",
     "user_id",
     "agent_id",
+    "token_scopes",
+    "token_expires_at",
     "connected_at",
   ];
   const getApp = async (appId: string) => {
@@ -499,6 +517,8 @@ const createMatterDatabase = (
           c.tenantId,
           c.userId ?? null,
           c.agentId,
+          c.tokenScopes === undefined ? null : JSON.stringify(c.tokenScopes),
+          c.tokenExpiresAt ?? null,
           now().toISOString(),
         ]);
         return (await getGitLab(c.id))!;
@@ -740,6 +760,10 @@ export const openSqliteMatterDatabase = (options: {
       db.exec(`INSERT OR IGNORE INTO ${to} SELECT * FROM ${from}; DROP TABLE ${from};`);
     }
   }
+  for (const [table, column] of addedColumns) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+  }
   return createMatterDatabase(
     sqliteDriver(db),
     options.box,
@@ -781,6 +805,14 @@ export const openMysqlMatterDatabase = async (options: {
         // CREATE INDEX has no IF NOT EXISTS in MySQL 8; a second replica
         // (or a restart) finds it already there.
         if ((error as { code?: string }).code !== "ER_DUP_KEYNAME") throw error;
+      }
+    }
+    for (const [table, column] of addedColumns) {
+      try {
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} LONGTEXT NULL`);
+      } catch (error) {
+        // Added by an earlier start or another replica.
+        if ((error as { code?: string }).code !== "ER_DUP_FIELDNAME") throw error;
       }
     }
   } catch (error) {

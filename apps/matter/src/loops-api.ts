@@ -240,6 +240,9 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
             baseUrl: c.baseUrl,
             username: c.username,
             webhookUrl: options.publicUrl === undefined ? path : `${options.publicUrl}${path}`,
+            // Known when GitLab told them at link time.
+            ...(c.tokenScopes === undefined ? {} : { tokenScopes: c.tokenScopes.join(", ") }),
+            ...(c.tokenExpiresAt === undefined ? {} : { tokenExpiresAt: c.tokenExpiresAt }),
           },
         });
       }

@@ -25,9 +25,11 @@ import { connectFeishuApp, createFeishuAdapter } from "./feishu-adapter.js";
 import {
   connectGitLab,
   createGitLabAdapter,
+  createGitLabBot,
   createGitLabConnectHandler,
   createGitLabWebhookHandler,
   parseBaseUrl,
+  replaceGitLabToken,
 } from "./gitlab-adapter.js";
 import { createMatterHost, type MatterHost, type MatterHostOptions } from "./host.js";
 import { createLoopApiHandler, migrateConnectionsToLoops } from "./loops-api.js";
@@ -265,12 +267,15 @@ export const createMatterService = async (
       return principal !== null && accepts(principal.tenantId) ? principal : null;
     },
   });
+  const gitlabLink = {
+    db,
+    ...providerFetch,
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+  };
   const connectGitLabHandler = createGitLabConnectHandler({
-    connect: connectGitLab(host, {
-      db,
-      ...providerFetch,
-      ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
-    }),
+    connect: connectGitLab(host, gitlabLink),
+    createBot: createGitLabBot(host, gitlabLink),
+    replaceToken: replaceGitLabToken(host, gitlabLink),
     db,
     ...(config.gitlabUrls === undefined ? {} : { presets: config.gitlabUrls }),
     authorize: async (request) => {

@@ -135,6 +135,7 @@ describe("BondsPage", () => {
     open("/bonds/new?provider=gitlab");
     expect((await screen.findByRole("combobox", { name: /GitLab URL|GitLab 地址/ })).textContent).toContain("https://git.corp.example");
     expect(screen.queryByRole("textbox", { name: /GitLab URL|GitLab 地址/ })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /Paste a bot token|粘贴机器人令牌/ }));
     fireEvent.change(document.getElementById("gitlab-token")!, { target: { value: "glpat-x" } });
     fireEvent.click(screen.getByRole("button", { name: /^(Link|连接)$/ }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
@@ -146,5 +147,82 @@ describe("BondsPage", () => {
     open("/bonds/new?provider=gitlab");
     expect(((await screen.findByRole("textbox", { name: /GitLab URL|GitLab 地址/ })) as HTMLInputElement).value).toBe("https://gitlab.com");
     expect(screen.queryByRole("combobox", { name: /GitLab URL|GitLab 地址/ })).toBeNull();
+  });
+
+  it("creates a project bot by default, sending the user's token once", async () => {
+    routes["GET /matter/connect/gitlab"] = () => json(200, { instances: ["https://gitlab.example.com"], data: [] });
+    let refuse = true;
+    routes["POST /matter/connect/gitlab/bot"] = () =>
+      refuse
+        ? json(400, { error: "GitLab rejected your token or you are not a Maintainer of the project" })
+        : json(201, { id: "gitlab-3", webhookUrl: "https://matter.example/webhooks/gitlab/gitlab-3", webhookSecret: "s3" });
+    open("/bonds/new?provider=gitlab");
+    expect(await screen.findByText(/only and sees nothing else|看不到其他项目/)).toBeTruthy();
+    const create = screen.getByRole("button", { name: /^(Create bot|创建机器人)$/ }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    // Read only is the default preset.
+    expect(screen.getByRole("radio", { name: /Read only|只读/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.change(document.getElementById("gitlab-project")!, { target: { value: " group/app " } });
+    fireEvent.change(document.getElementById("gitlab-user-token")!, { target: { value: "glpat-mine" } });
+    fireEvent.click(create);
+    expect((await screen.findByRole("alert")).textContent).toContain("not a Maintainer");
+    expect(calls.find((c) => c.url === "/matter/connect/gitlab/bot")?.body).toEqual({
+      baseUrl: "https://gitlab.example.com",
+      project: "group/app",
+      preset: "read",
+      userToken: "glpat-mine",
+    });
+
+    refuse = false;
+    fireEvent.click(screen.getByRole("radio", { name: /Comment on merge requests|在合并请求下评论/ }));
+    fireEvent.change(document.getElementById("gitlab-expires")!, { target: { value: "2027-06-30" } });
+    fireEvent.click(create);
+    expect(await screen.findByDisplayValue("s3")).toBeTruthy();
+    expect(calls.filter((c) => c.url === "/matter/connect/gitlab/bot").at(-1)?.body).toEqual({
+      baseUrl: "https://gitlab.example.com",
+      project: "group/app",
+      preset: "comment",
+      expiresAt: "2027-06-30",
+      userToken: "glpat-mine",
+    });
+  });
+
+  it("shows a GitLab Bond's token facts and replaces its token in place", async () => {
+    const linked = {
+      ...spare,
+      details: { baseUrl: "https://gitlab.example", username: "bot", tokenScopes: "read_repository, read_api", tokenExpiresAt: "2027-01-31" },
+    };
+    routes["GET /matter/bonds"] = () => json(200, { data: [linked] });
+    routes["GET /matter/loops"] = () => json(200, { data: [] });
+    routes["PUT /matter/connect/gitlab/gitlab-1/token"] = () => {
+      routes["GET /matter/bonds"] = () => json(200, { data: [{ ...linked, details: { ...linked.details, tokenScopes: "api" } }] });
+      return json(200, { id: "gitlab-1", username: "bot", webhookUrl: "/webhooks/gitlab/gitlab-1", tokenScopes: ["api"] });
+    };
+    open("/bonds/gitlab%3Agitlab-1");
+    expect(await screen.findByText("read_repository, read_api")).toBeTruthy();
+    expect(screen.getByText(/^(Token scopes|令牌权限)$/)).toBeTruthy();
+    expect(screen.getByText("2027-01-31")).toBeTruthy();
+
+    // Mint a new project bot token.
+    fireEvent.click(screen.getByRole("button", { name: /^(Replace token|更换令牌)$/ }));
+    fireEvent.change(document.getElementById("gitlab-project")!, { target: { value: "42" } });
+    fireEvent.change(document.getElementById("gitlab-user-token")!, { target: { value: "glpat-mine" } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Replace|更换)$/ }));
+    expect(await screen.findByText(/Token replaced|令牌已更换/)).toBeTruthy();
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ project: "42", preset: "read", userToken: "glpat-mine" });
+    // The Bond is loaded again with the new token's facts.
+    expect(await screen.findByText("api")).toBeTruthy();
+
+    // Or paste one.
+    fireEvent.click(screen.getByRole("button", { name: /^(Replace token|更换令牌)$/ }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /Paste a bot token|粘贴机器人令牌/ }));
+    fireEvent.change(document.getElementById("gitlab-token")!, { target: { value: "glpat-new" } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Replace|更换)$/ }));
+    await waitFor(() => expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2));
+    expect(calls.filter((c) => c.method === "PUT")[1]).toEqual({
+      method: "PUT",
+      url: "/matter/connect/gitlab/gitlab-1/token",
+      body: { token: "glpat-new" },
+    });
   });
 });
