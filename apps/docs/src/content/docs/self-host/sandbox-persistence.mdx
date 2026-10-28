@@ -10,6 +10,10 @@ sandbox owns compute lifetime. Workspace persistence owns the mutable coding
 workspace. Session output owns user-visible deliverables. A resource fence is
 the only component allowed to make a new workspace or output revision active.
 
+The [execution backend contract](/self-host/sandbox-backend/) is the plug-in
+guide for a new compute backend. This page is the persistence and fencing
+contract that guide relies on.
+
 None of these settings extend the public Anthropic Managed Agents shape. An
 official self-hosted Environment is still exactly:
 
