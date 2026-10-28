@@ -52,6 +52,9 @@ export interface CreateSessionInput {
   readonly title: string;
   readonly environmentId: string;
   readonly vaultIds?: readonly string[];
+  /** Repositories cloned into the session. No token: OpenMA asks this
+   * Matter service for the workspace's Bond credential (OMA extension). */
+  readonly repositoryUrls?: readonly string[];
 }
 
 export interface CreateBearerCredentialInput {
@@ -229,6 +232,9 @@ export const createOmaClient = (options: OmaClientOptions): OmaClient => {
             ...(input.vaultIds === undefined || input.vaultIds.length === 0
               ? {}
               : { vault_ids: input.vaultIds }),
+            ...(input.repositoryUrls === undefined || input.repositoryUrls.length === 0
+              ? {}
+              : { resources: input.repositoryUrls.map((url) => ({ type: "github_repository", url })) }),
           }),
         }),
       );

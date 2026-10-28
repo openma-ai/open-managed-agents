@@ -185,6 +185,35 @@ describe("LoopsPage", () => {
     expect(await screen.findByText("Helpdesk")).toBeTruthy();
   });
 
+  it("edits the repositories cloned into the Loop's sessions, one URL per line", async () => {
+    const withRepositories = {
+      ...feishuTemplate,
+      configSchema: {
+        ...feishuTemplate.configSchema,
+        properties: {
+          ...feishuTemplate.configSchema.properties,
+          repositories: { type: "array", items: { type: "string" }, default: [], title: "Repositories", "x-oma-widget": "repositories", "x-oma-section": "session" },
+        },
+      },
+    };
+    const saved = { ...loop, config: { ...loop.config, repositories: ["https://gitlab.example.com/g/a.git"] } };
+    routes["GET /matter/loop-templates"] = () => json(200, { data: [withRepositories] });
+    routes["GET /matter/loops"] = () => json(200, { data: [saved] });
+    routes["PATCH /matter/loops/loop-1"] = () => json(200, saved);
+    open("/loops/loop-1");
+    const field = (await screen.findByLabelText(/^(Repositories|代码仓库)/)) as HTMLTextAreaElement;
+    expect(field.value).toBe("https://gitlab.example.com/g/a.git");
+    fireEvent.change(field, { target: { value: "https://gitlab.example.com/g/a.git\n" } });
+    expect(field.value).toBe("https://gitlab.example.com/g/a.git\n");
+    fireEvent.change(field, { target: { value: "https://gitlab.example.com/g/a.git\n\n  https://gitlab.example.com/g/b.git " } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Save|保存)$/ }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
+    expect((calls.find((c) => c.method === "PATCH")?.body as { config: { repositories: string[] } }).config.repositories).toEqual([
+      "https://gitlab.example.com/g/a.git",
+      "https://gitlab.example.com/g/b.git",
+    ]);
+  });
+
   it("schedules a report Loop in the browser's time zone", async () => {
     const reportTemplate = {
       id: "feishu-scheduled-report",

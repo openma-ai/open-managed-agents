@@ -13,6 +13,7 @@
 import { mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
+import { createRepositoryCredentialHandler } from "./repository-credential.js";
 import {
   createFeishuConnectHandler,
   FeishuConnectService,
@@ -290,6 +291,7 @@ export const createMatterService = async (
   });
   const gitlabWebhooks = createGitLabWebhookHandler(gitlab, (key) => host.ensure(gitlab.kind, key));
   const mcp = createMatterMcpHandler({ bridge, tokens: db.tokens });
+  const repositoryCredential = createRepositoryCredentialHandler({ db, secret: config.proxySecret, accepts });
 
   const fetchHandler = async (request: Request): Promise<Response> => {
     const path = new URL(request.url).pathname;
@@ -298,6 +300,7 @@ export const createMatterService = async (
     }
     if (path === "/mcp") return mcp(request);
     return (
+      (await repositoryCredential(request)) ??
       (await gitlabWebhooks(request)) ??
       (await connectGitLabHandler(request)) ??
       (await loopApi(request)) ??

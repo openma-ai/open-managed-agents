@@ -79,10 +79,11 @@ export const resetLoopTemplates = (): void => {
 
 /**
  * The OpenMA session a Loop opens, next to the Agent: the environment it runs
- * in (its sandbox image, packages and network) and the vaults attached to it
- * (credentials, including environment variables). The host adds these fields
- * to every template; a template never sees them. Empty keeps the service's
- * default environment and only the vault Matter makes for each session.
+ * in (its sandbox image, packages and network), the vaults attached to it
+ * (credentials, including environment variables) and the git repositories
+ * cloned into it. The host adds these fields to every template; a template
+ * never sees them. Empty keeps the service's default environment, only the
+ * vault Matter makes for each session, and no repository.
  */
 export const SESSION_FIELDS = {
   environmentId: {
@@ -97,6 +98,17 @@ export const SESSION_FIELDS = {
     default: [],
     title: "Vaults",
     "x-oma-widget": "vault",
+    "x-oma-section": "session",
+  },
+  repositories: {
+    type: "array",
+    items: { type: "string", minLength: 1, maxLength: 2048 },
+    default: [],
+    title: "Repositories",
+    description:
+      "Git repositories cloned into each Session, by URL. The workspace's GitLab Bond for each " +
+      "URL's instance clones them, and fetches again before later runs; the Agent never sees its token.",
+    "x-oma-widget": "repositories",
     "x-oma-section": "session",
   },
 } as const;
@@ -118,6 +130,8 @@ export const hostFields = (loop: LoopTemplate): Readonly<Record<string, Property
 export interface LoopSession {
   readonly environmentId?: string;
   readonly vaultIds: readonly string[];
+  /** Repository URLs, each cloned with the workspace's GitLab Bond for it. */
+  readonly repositories: readonly string[];
 }
 
 /** Splits a saved configuration into the template's part, the session and the schedule. */
@@ -128,7 +142,7 @@ export const splitLoopConfig = (
   readonly session: LoopSession;
   readonly schedule?: { readonly schedule: string; readonly timezone: string };
 } => {
-  const { environmentId, vaultIds, schedule, timezone, ...rest } = config;
+  const { environmentId, vaultIds, repositories, schedule, timezone, ...rest } = config;
   return {
     config: rest,
     ...(typeof schedule === "string" && schedule !== ""
@@ -138,6 +152,9 @@ export const splitLoopConfig = (
       ...(typeof environmentId === "string" && environmentId !== "" ? { environmentId } : {}),
       vaultIds: Array.isArray(vaultIds)
         ? vaultIds.filter((id): id is string => typeof id === "string" && id !== "")
+        : [],
+      repositories: Array.isArray(repositories)
+        ? repositories.filter((r): r is string => typeof r === "string" && r !== "")
         : [],
     },
   };

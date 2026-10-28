@@ -354,6 +354,7 @@ export const zhCN: Messages = {
       bond: { title: "运行在" },
       agentId: { title: "Agent" },
       chats: { title: "群聊", description: "机器人回答哪些群。不选：机器人所在的所有群。私聊总是回答。" },
+      repositories: { title: "代码仓库", description: "每个会话里 clone 的 git 仓库，一行一个地址。用工作区接入的 GitLab 连接拉取，之后每次运行前更新；Agent 看不到其中的 token。" },
       sessionScope: { title: "会话粒度", description: "哪些请求共用一个 Agent 会话。共用的请求能看到彼此的上下文；新开的会话从头开始。" },
       acknowledge: { title: "确认表情", description: "机器人接下消息时加的飞书表情，例如 Get、OnIt、THUMBSUP。留空：不加。" },
       freshness: { title: "只回复最新消息", description: "Agent 回复前检查有没有更新的消息。" },

@@ -14,6 +14,7 @@
  */
 
 import { MissingReferenceError } from "./issues.js";
+import { findRepositoryBond, RepositoryBondError } from "./repository-credential.js";
 import { makeConnectorAgentDriver } from "@openma/matter/agent";
 import type { WorkIntegration } from "@openma/matter/integration";
 import { createOpenMatter } from "@openma/matter/runtime";
@@ -81,7 +82,8 @@ export interface MatterHost {
   /** Give an Agent the Matter MCP server before a connection uses it.
    * Throws when this service cannot act in the tenant. */
   prepareAgent(tenantId: string, agentId: string): Promise<void>;
-  /** Throws a "not found" error unless the session's environment and vaults exist. */
+  /** Throws a "not found" error unless the session's environment and vaults
+   * exist and one GitLab Bond of the tenant serves each repository. */
   checkSession(tenantId: string, session: LoopSession): Promise<void>;
   /** Keys of the connections currently running. */
   running(): readonly string[];
@@ -99,12 +101,27 @@ const errorMessage = (error: unknown): string =>
     : String(error);
 
 const hasSession = (session: LoopSession): boolean =>
-  session.environmentId !== undefined || session.vaultIds.length > 0;
+  session.environmentId !== undefined || session.vaultIds.length > 0 || session.repositories.length > 0;
 
 const sessionMetadata = (session: LoopSession) => ({
   ...(session.environmentId === undefined ? {} : { environmentId: session.environmentId }),
   vaultIds: [...session.vaultIds],
+  ...(session.repositories.length === 0 ? {} : { repositories: [...session.repositories] }),
 });
+
+/** The driver key suffix of a Loop's session settings. Repositories join it
+ * only when set, so Loops saved before them keep their Sessions. */
+const sessionDigest = (session: LoopSession): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify([
+        session.environmentId ?? null,
+        [...session.vaultIds].sort(),
+        ...(session.repositories.length === 0 ? [] : [[...session.repositories].sort()]),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 12);
 
 /**
  * One Agent driver per Agent and session settings. A Loop without session
@@ -125,11 +142,7 @@ export const loopDrivers = (
     if (typeof agentId !== "string" || agentId === "") return { ...record, config };
     let key = agentId;
     if (hasSession(session)) {
-      const digest = createHash("sha256")
-        .update(JSON.stringify([session.environmentId ?? null, [...session.vaultIds].sort()]))
-        .digest("hex")
-        .slice(0, 12);
-      key = `${agentId}#${digest}`;
+      key = `${agentId}#${sessionDigest(session)}`;
     }
     if (!drivers.has(key)) drivers.set(key, { agentId, session });
     return { ...record, config: { ...config, agentId: key } };
@@ -418,6 +431,16 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       for (const vaultId of session.vaultIds) {
         const vault = await client.getVault(vaultId);
         if (vault === null || vault.archived_at) throw new MissingReferenceError("vaultIds", "Vault", vaultId);
+      }
+      for (const url of session.repositories) {
+        try {
+          await findRepositoryBond(options.db, tenantId, url);
+        } catch (error) {
+          if (error instanceof RepositoryBondError) {
+            throw new MissingReferenceError("repositories", "GitLab Bond for repository", url);
+          }
+          throw error;
+        }
       }
     },
     running: () => [...running.keys()],

@@ -357,6 +357,7 @@ export const en: Messages = {
       bond: { title: "Runs on" },
       agentId: { title: "Agent" },
       chats: { title: "Chats", description: "Which group chats the bot answers. None: every chat it is in. Direct messages are always answered." },
+      repositories: { title: "Repositories", description: "Git repositories cloned into each session, one URL per line. The workspace's GitLab Bond clones them and fetches before later runs; the Agent never sees its token." },
       sessionScope: { title: "Session scope", description: "Which requests share one Agent session. Requests that share it see each other's context; a new session starts fresh." },
       acknowledge: { title: "Acknowledge emoji", description: "Feishu reaction added when the bot takes a message, e.g. Get, OnIt, THUMBSUP. Empty: none." },
       freshness: { title: "Answer only the latest", description: "Before replying, the Agent checks for newer messages." },

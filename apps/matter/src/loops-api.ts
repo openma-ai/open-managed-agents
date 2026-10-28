@@ -17,6 +17,7 @@
  */
 
 import { issueJson, MissingReferenceError, type LoopIssue } from "./issues.js";
+import { findRepositoryBond } from "./repository-credential.js";
 import { randomUUID } from "node:crypto";
 import type { ProviderAppConfig } from "@openma/matter/bond";
 import { makeFeishuResourceCatalog, mintTenantAccessToken } from "@openma/matter-feishu/bond";
@@ -279,6 +280,18 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
   const json = (body: unknown, status = 200) =>
     Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
+  /** Whether a Loop of the tenant clones a repository with this GitLab Bond. */
+  const clonesWith = async (tenantId: string, bondKey: string): Promise<boolean> => {
+    for (const loop of await db.loops.list()) {
+      if (loop.tenantId !== tenantId) continue;
+      for (const url of splitLoopConfig(loop.config).session.repositories) {
+        const served = await findRepositoryBond(db, tenantId, url).catch(() => undefined);
+        if (served?.id === bondKey) return true;
+      }
+    }
+    return false;
+  };
+
   return async (request: Request): Promise<Response | undefined> => {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "");
@@ -346,6 +359,9 @@ export const createLoopApiHandler = (options: LoopApiOptions) => {
         await resolveBond(principal.tenantId, id, bond.provider);
         if ((await db.loops.listForBond(bond.kind, bond.key)).length > 0) {
           throw new ApiError(409, "Delete the Loops that use it first");
+        }
+        if (bond.provider === "gitlab" && (await clonesWith(principal.tenantId, bond.key))) {
+          throw new ApiError(409, "Loops clone repositories with it; remove them from those Loops first");
         }
         if (bond.provider === "feishu") await db.apps.delete(bond.key);
         else await db.gitlab.delete(bond.key);

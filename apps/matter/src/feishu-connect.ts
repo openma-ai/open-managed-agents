@@ -465,6 +465,9 @@ export const MATTER_PROXY_HEADERS = {
   secret: "x-matter-proxy-secret",
   tenant: "x-oma-tenant-id",
   user: "x-oma-user-id",
+  /** The control plane itself calling `/internal/*` (credentials). Its
+   * Console proxy never sends it, so a signed-in user cannot reach them. */
+  internal: "x-matter-internal-secret",
 } as const;
 
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest();

@@ -191,6 +191,9 @@ export const createOpenMAConnector = (
       ? metadata.vaultIds.filter((id): id is string => typeof id === "string" && id !== "")
       : [];
     const vaultIds = [...((await options.vaultIds?.(input)) ?? []), ...loopVaults];
+    const repositoryUrls = Array.isArray(metadata.repositories)
+      ? metadata.repositories.filter((r): r is string => typeof r === "string" && r !== "")
+      : [];
     const created = await client.createSession({
       agentId: input.agentId,
       title,
@@ -201,6 +204,7 @@ export const createOpenMAConnector = (
             ? options.environmentId
             : await options.environmentId(),
       vaultIds,
+      ...(repositoryUrls.length === 0 ? {} : { repositoryUrls }),
     });
     return handleFor(created.id);
   };
