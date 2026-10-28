@@ -6,11 +6,16 @@ import {
 } from "@open-managed-agents/sandbox";
 import type {
   FilesApplicationPort,
+  MemoriesApplicationPort,
   Session,
   SkillVersionsApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionResourceSecretSource } from "@open-managed-agents/session-resource-store";
 import type { NodeManagedMemorySnapshotPort } from "./node-managed-memory-snapshots.js";
+import {
+  nodeManagedMemoryStoreName,
+  type NodeManagedMemoryFileSync,
+} from "./node-managed-memory-file-sync.js";
 import { resolveAppendablePrompts } from "@open-managed-agents/agent/runtime/appendable-prompts";
 import type { SkillMountDescriptor } from "@open-managed-agents/agent/harness/skills";
 import {
@@ -91,6 +96,13 @@ export interface NodeManagedSessionInputPreparerDependencies {
   memorySnapshots: NodeManagedMemorySnapshotPort;
   /** Shared OSS collection uses provider-local outputs, not a FUSE mount. */
   sharedOutputs?: boolean;
+  /** Set for sandboxes without FUSE: Memory Stores are copied into
+   * `/mnt/memory/<name>/` before the turn and written back at the turn
+   * barrier instead of being mounted. Unset keeps the FUSE mount. */
+  memoryFileSync?: {
+    sync: NodeManagedMemoryFileSync;
+    memories: MemoriesApplicationPort;
+  };
 }
 
 export function buildNodeManagedSkillReminders(
@@ -247,36 +259,55 @@ export class NodeManagedSessionInputPreparer {
     const memoryStores = input.session.resources.filter(
       (resource) => resource.type === "memory_store",
     );
-    if (memoryStores.length > 0 && input.sandbox.mountMemoryStore === undefined) {
+    const memoryFileSync = this.dependencies.memoryFileSync;
+    if (
+      memoryStores.length > 0
+      && memoryFileSync === undefined
+      && input.sandbox.mountMemoryStore === undefined
+    ) {
       throw new Error(
         "Managed Session has memory stores, but the selected sandbox does not support memory store mounts",
       );
     }
+    if (memoryStores.length > 0 && memoryFileSync !== undefined) {
+      // Nothing may be written back before the fenced turn barrier, so a
+      // recovered local workspace fails closed instead of mutating here.
+      await memoryFileSync.sync.materialize({
+        workspaceId: input.workspaceId,
+        session: input.session,
+        sandbox: input.sandbox,
+        memories: memoryFileSync.memories,
+        authorize: async () => false,
+        workId: input.runtimeGeneration ?? input.session.id,
+      });
+    }
     for (const resource of memoryStores) {
       const access = resource.access === "read_only" ? "read_only" : "read_write";
-      if (
-        access === "read_write" &&
-        input.runtimeGeneration === undefined
-      ) {
-        throw new Error(
-          `Writable Managed Memory Store ${resource.memoryStoreId} requires a runtime generation`,
-        );
+      const storeName = nodeManagedMemoryStoreName(resource);
+      if (memoryFileSync === undefined) {
+        if (
+          access === "read_write" &&
+          input.runtimeGeneration === undefined
+        ) {
+          throw new Error(
+            `Writable Managed Memory Store ${resource.memoryStoreId} requires a runtime generation`,
+          );
+        }
+        const snapshot = await this.dependencies.memorySnapshots.materialize({
+          workspaceId: input.workspaceId,
+          sessionId: input.session.id,
+          memoryStoreId: resource.memoryStoreId,
+          access,
+          ...(access === "read_write"
+            ? { runtimeGeneration: input.runtimeGeneration }
+            : {}),
+        });
+        await input.sandbox.mountMemoryStore!({
+          storeName,
+          storeId: snapshot.mountStoreId,
+          readOnly: access === "read_only",
+        });
       }
-      const snapshot = await this.dependencies.memorySnapshots.materialize({
-        workspaceId: input.workspaceId,
-        sessionId: input.session.id,
-        memoryStoreId: resource.memoryStoreId,
-        access,
-        ...(access === "read_write"
-          ? { runtimeGeneration: input.runtimeGeneration }
-          : {}),
-      });
-      await input.sandbox.mountMemoryStore!({
-        storeName: resource.name ?? resource.memoryStoreId,
-        storeId: snapshot.mountStoreId,
-        readOnly: access === "read_only",
-      });
-      const storeName = resource.name ?? resource.memoryStoreId;
       await input.sandbox.setEnvVars?.({
         OMA_MEMORY_DIR: "/mnt/memory",
         [`OMA_MEMORY_${storeName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`]:

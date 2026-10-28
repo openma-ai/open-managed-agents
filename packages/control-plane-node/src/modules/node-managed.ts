@@ -95,6 +95,7 @@ import {
   buildNodeManagedAppendablePromptReminders,
   NodeManagedSessionInputPreparer,
 } from "../lib/node-managed-session-inputs.js";
+import { NodeManagedMemoryFileSync } from "../lib/node-managed-memory-file-sync.js";
 import { NodeManagedMemorySnapshotMaterializer } from "../lib/node-managed-memory-snapshots.js";
 import { NodeSessionExecutionWorker } from "../lib/node-session-execution-worker.js";
 import { createNodeMcpProxyBinding, type NodeMcpProxyTarget } from "../lib/http-mcp-proxy.js";
@@ -383,6 +384,17 @@ export async function createManagedNodeRuntime(
     findSession: async input => (await managedRuntimeReaders.executionContext.find(input))?.session ?? null,
   });
 
+  // SANDBOX_MEMORY_MOUNT selects how Memory Stores reach the sandbox:
+  // "fuse" (default) mounts the memory bucket; "file_sync" copies files in
+  // before a turn and writes them back after it, for sandboxes without FUSE.
+  const memoryMount = config.sandbox.environment.SANDBOX_MEMORY_MOUNT?.trim() || "fuse";
+  if (memoryMount !== "fuse" && memoryMount !== "file_sync") {
+    throw new Error(
+      `SANDBOX_MEMORY_MOUNT must be "fuse" or "file_sync"; received ${JSON.stringify(memoryMount)}`,
+    );
+  }
+  const memoryFileSync = memoryMount === "file_sync" ? new NodeManagedMemoryFileSync() : undefined;
+
   const managedSessionOutputCollector = new NodeManagedSessionOutputCollector({
     outputsRoot,
     isFenceActive: isManagedSessionExecutionFenceActive,
@@ -479,6 +491,13 @@ export async function createManagedNodeRuntime(
     }) => {
       const preparer = new NodeManagedSessionInputPreparer({
         sharedOutputs: sharedSessionOutputs !== undefined,
+        ...(memoryFileSync === undefined ? {} : {
+          memoryFileSync: {
+            sync: memoryFileSync,
+            memories: managedMemoriesApplicationForWorkspace(workspaceId)
+              .port(managedAgentsPortTokens.memories),
+          },
+        }),
         files: managedPlatform
           .app({ workspaceId })
           .port(managedAgentsPortTokens.files),
@@ -543,46 +562,57 @@ export async function createManagedNodeRuntime(
       runtimeGeneration,
       executionFence,
     }) => {
-      await sandbox.synchronizeMemoryStores?.();
       const memories = managedMemoriesApplicationForWorkspace(workspaceId)
         .port(managedAgentsPortTokens.memories);
-      const result = await synchronizeManagedSessionMemoryWorkspaces(
-        { find: async () => session },
-        memories,
-        {
-          getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
-          list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
-          put: (key, content) => memoryBlobs.put(key, content),
-          delete: (key) => memoryBlobs.delete(key),
-        },
-        {
+      if (memoryFileSync !== undefined) {
+        await memoryFileSync.synchronize({
           workspaceId,
-          sessionId: session.id,
-          runtimeGeneration,
-          executionFence,
-          isFenceActive: isManagedSessionExecutionFenceActive,
-        },
-      );
-      if (result.type === "fence_lost") {
-        throw new Error(
-          `Managed Memory synchronization lost the execution fence for ${session.id}`,
+          session,
+          sandbox,
+          memories,
+          authorize: () => isManagedSessionExecutionFenceActive(executionFence),
+          workId: executionFence.executionId,
+        });
+      } else {
+        await sandbox.synchronizeMemoryStores?.();
+        const result = await synchronizeManagedSessionMemoryWorkspaces(
+          { find: async () => session },
+          memories,
+          {
+            getText: async (key) => (await memoryBlobs.getText(key))?.text ?? null,
+            list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
+            put: (key, content) => memoryBlobs.put(key, content),
+            delete: (key) => memoryBlobs.delete(key),
+          },
+          {
+            workspaceId,
+            sessionId: session.id,
+            runtimeGeneration,
+            executionFence,
+            isFenceActive: isManagedSessionExecutionFenceActive,
+          },
         );
-      }
-      if (result.type === "not_found") {
-        throw new Error(`Managed Session ${session.id} disappeared before Memory synchronization`);
-      }
-      if (result.recoveredWipes.length > 0) {
-        throw new Error(
-          `Writable Managed Memory workspace became distrusted: ${result.recoveredWipes.join(", ")}`,
-        );
-      }
-      if (result.conflicts.length > 0) {
-        logger.warn({
-          conflicts: result.conflicts,
-          op: "main-node.managed_memory.conflicts",
-          sessionId: session.id,
-          workspaceId,
-        }, "Managed Memory synchronization kept canonical winners for conflicts");
+        if (result.type === "fence_lost") {
+          throw new Error(
+            `Managed Memory synchronization lost the execution fence for ${session.id}`,
+          );
+        }
+        if (result.type === "not_found") {
+          throw new Error(`Managed Session ${session.id} disappeared before Memory synchronization`);
+        }
+        if (result.recoveredWipes.length > 0) {
+          throw new Error(
+            `Writable Managed Memory workspace became distrusted: ${result.recoveredWipes.join(", ")}`,
+          );
+        }
+        if (result.conflicts.length > 0) {
+          logger.warn({
+            conflicts: result.conflicts,
+            op: "main-node.managed_memory.conflicts",
+            sessionId: session.id,
+            workspaceId,
+          }, "Managed Memory synchronization kept canonical winners for conflicts");
+        }
       }
       await managedSessionOutputCollector.synchronize({
         workspaceId,

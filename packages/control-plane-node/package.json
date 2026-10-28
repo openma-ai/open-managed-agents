@@ -50,6 +50,7 @@
     "@open-managed-agents/managed-agents-adapters-sql": "workspace:*",
     "@open-managed-agents/managed-agents-api": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/managed-runtime-sandbox": "workspace:*",
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/mcp-access-loss": "workspace:*",
     "@open-managed-agents/memory-document-store-sql": "workspace:*",

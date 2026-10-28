@@ -574,7 +574,7 @@ function parentDirectory(path: string): string {
 
 /** Filesystem adapter used by the canonical Session Memory lifecycle. */
 export function createSandboxSessionMemoryFilePort(
-  runtime: SandboxPort & SandboxRuntimePort,
+  runtime: Pick<SandboxPort, "exec" | "readFile" | "writeFile">,
 ): SessionMemoryWorkspaceFilePort {
   return {
     async scan(root, signal) {
