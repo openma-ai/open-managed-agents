@@ -13,6 +13,7 @@ import {
   beginFeishuAppRegistration,
   checkFeishuAppSetup,
   feishuAgentSetup,
+  mintTenantAccessToken,
   pollFeishuAppRegistration,
   type FeishuAppSetupReport,
   type FeishuBrand,
@@ -183,6 +184,21 @@ export interface FeishuConnectOptions {
 
 const openOrigin = (brand: FeishuBrand) =>
   brand === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn";
+
+/** Why an app could not be linked; the message names no secret. */
+export class FeishuLinkError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 409 | 502,
+  ) {
+    super(message);
+    this.name = "FeishuLinkError";
+  }
+}
+
+export const FEISHU_APP_TAKEN = "This app is linked in another workspace; unlink it there first";
+
+type Registered = Extract<FeishuConnectStatus, { status: "registered" }>;
 
 const defaultSchedule = (task: () => void, ms: number) => {
   const timer = setTimeout(task, ms);
@@ -355,6 +371,53 @@ export class FeishuConnectService {
     }
   }
 
+  /**
+   * Link an app the user already has, by its credentials: Feishu must
+   * accept them (a tenant access token), then it is saved like a scanned
+   * app, its connection starts and its setup is checked. Linking an app of
+   * the same tenant again replaces its secret; its Loops stay.
+   */
+  async link(input: {
+    readonly principal: FeishuConnectPrincipal;
+    readonly appId: string;
+    readonly appSecret: string;
+    readonly brand: FeishuBrand;
+  }): Promise<Registered> {
+    const app: RegisteredFeishuApp = {
+      appId: input.appId,
+      appSecret: input.appSecret,
+      brand: input.brand,
+      baseUrl: openOrigin(input.brand),
+    };
+    const minted = await Effect.runPromise(
+      Effect.either(
+        mintTenantAccessToken({
+          baseUrl: app.baseUrl,
+          appId: app.appId,
+          appSecret: app.appSecret,
+          ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
+        }),
+      ),
+    );
+    if (minted._tag === "Left") {
+      // Feishu answered (an error code, or a client error): the
+      // credentials are wrong. No answer or a server error: try again.
+      const { status, cause } = minted.left as { status?: unknown; cause?: { retryable?: unknown } };
+      if (typeof status === "number" && status < 500 && cause?.retryable !== true) {
+        throw new FeishuLinkError("Feishu rejected the App ID or App Secret", 400);
+      }
+      throw new FeishuLinkError("Feishu could not be reached", 502);
+    }
+    await this.options.onRegistered({
+      app,
+      tenantId: input.principal.tenantId,
+      ...(input.principal.userId === undefined ? {} : { userId: input.principal.userId }),
+    });
+    const registered = { status: "registered", appId: app.appId, brand: app.brand } as const;
+    const setup = await this.checkSetup(app);
+    return setup === undefined ? { ...registered, setupUnavailable: true } : { ...registered, setup };
+  }
+
   /** Check a connected app against what the `feishu-agent` Loop needs;
    * undefined when Feishu could not be asked. */
   async checkSetup(app: {
@@ -403,6 +466,7 @@ export interface FeishuConnectHandlerOptions {
 /**
  * `GET {base}` serves the page, `POST {base}/registrations` starts a
  * registration and `GET {base}/registrations/:id` reports its status.
+ * `POST {base}/app` links an existing app by its credentials.
  */
 export const createFeishuConnectHandler = (options: FeishuConnectHandlerOptions) => {
   const base = (options.basePath ?? "/connect/feishu").replace(/\/+$/, "");
@@ -446,6 +510,33 @@ export const createFeishuConnectHandler = (options: FeishuConnectHandlerOptions)
           { error: "Feishu did not start the registration. Try again." },
           { status: 502 },
         );
+      }
+    }
+    if (rest === "/app" && request.method === "POST") {
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      const appId = typeof body?.appId === "string" ? body.appId.trim() : "";
+      const appSecret = typeof body?.appSecret === "string" ? body.appSecret.trim() : "";
+      const brand = body?.brand ?? "feishu";
+      // Only a self-built app has a long connection (and a safe key).
+      if (!/^cli_[0-9a-fA-F]{16}$/.test(appId)) {
+        return Response.json(
+          { error: "appId must be a self-built app's App ID (cli_ and 16 hex digits)" },
+          { status: 400 },
+        );
+      }
+      if (appSecret === "") return Response.json({ error: "appSecret is required" }, { status: 400 });
+      if (brand !== "feishu" && brand !== "lark") {
+        return Response.json({ error: "brand must be feishu or lark" }, { status: 400 });
+      }
+      try {
+        return Response.json(await options.service.link({ principal, appId, appSecret, brand }), {
+          headers: { "cache-control": "no-store" },
+        });
+      } catch (error) {
+        if (error instanceof FeishuLinkError) {
+          return Response.json({ error: error.message }, { status: error.status });
+        }
+        throw error;
       }
     }
     const match = /^\/registrations\/([A-Za-z0-9_-]+)$/.exec(rest);

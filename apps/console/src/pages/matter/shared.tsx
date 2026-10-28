@@ -82,8 +82,128 @@ type Registration =
   | { status: "expired" | "denied" }
   | { status: "failed"; reason?: string };
 
-/** Link a Feishu app: scan, confirm, and it becomes the Bond `feishu:<appId>`. */
+/** Link a Feishu app: scan to create one (the default), or give an existing
+ * app's credentials. It becomes the Bond `feishu:<appId>`. */
 export function FeishuLinker({ onLinked }: { onLinked: (bond: string) => Promise<void> | void }) {
+  const { t } = useI18n();
+  const b = t.matter.bonds;
+  const [mode, setMode] = useState<"scan" | "existing">("scan");
+  const [linked, setLinked] = useState<LinkedFeishuApp | null>(null);
+  if (linked) {
+    return (
+      <div className="space-y-3 text-sm">
+        <SetupResult setup={linked.setup} />
+        <Button size="sm" onClick={() => void onLinked(`feishu:${linked.appId}`)}>
+          {b.done}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <Tabs value={mode} onValueChange={(v) => setMode(v as "scan" | "existing")}>
+      <TabsList>
+        <TabsTrigger value="scan">{b.feishuModeScan}</TabsTrigger>
+        <TabsTrigger value="existing">{b.feishuModeExisting}</TabsTrigger>
+      </TabsList>
+      <TabsContent value="scan">
+        <FeishuScan onLinked={onLinked} />
+      </TabsContent>
+      <TabsContent value="existing">
+        <FeishuAppForm submitLabel={b.link} onLinked={setLinked} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+/** What `POST /connect/feishu/app` returns: the app and its setup check. */
+export interface LinkedFeishuApp {
+  status: "registered";
+  appId: string;
+  brand: "feishu" | "lark";
+  setup?: SetupReport;
+  setupUnavailable?: true;
+}
+
+/**
+ * Link an existing self-built app by its App ID and App Secret. With
+ * `fixed` (a linked app), only a new secret is asked: it replaces the old
+ * one in place.
+ */
+export function FeishuAppForm({
+  fixed,
+  submitLabel,
+  onLinked,
+}: {
+  fixed?: { appId: string; brand: "feishu" | "lark" };
+  submitLabel: string;
+  onLinked: (app: LinkedFeishuApp) => void;
+}) {
+  const { t } = useI18n();
+  const b = t.matter.bonds;
+  const [appId, setAppId] = useState(fixed?.appId ?? "");
+  const [appSecret, setAppSecret] = useState("");
+  const [brand, setBrand] = useState<"feishu" | "lark">(fixed?.brand ?? "feishu");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function link() {
+    setBusy(true);
+    setError(null);
+    try {
+      const app = await matter<LinkedFeishuApp>("/connect/feishu/app", {
+        method: "POST",
+        body: JSON.stringify({ appId: appId.trim(), appSecret, brand }),
+      });
+      setAppSecret("");
+      onLinked(app);
+    } catch (err) {
+      setError(err instanceof MatterError ? err.message : b.linkFailed);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 text-sm">
+      {!fixed && (
+        <>
+          <p className="text-fg-muted">{b.feishuExistingHint}</p>
+          <Label htmlFor="feishu-brand">{b.feishuBrand}</Label>
+          <Select value={brand} onValueChange={(v) => setBrand(v as "feishu" | "lark")}>
+            <SelectTrigger id="feishu-brand" aria-label={b.feishuBrand} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="feishu">{b.brandFeishu}</SelectItem>
+              <SelectItem value="lark">{b.brandLark}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Label htmlFor="feishu-app-id">{b.feishuAppId}</Label>
+          <Input id="feishu-app-id" placeholder="cli_…" value={appId} onChange={(e) => setAppId(e.target.value)} />
+        </>
+      )}
+      <Label htmlFor="feishu-app-secret">{b.feishuAppSecret}</Label>
+      <Input
+        id="feishu-app-secret"
+        type="password"
+        autoComplete="off"
+        value={appSecret}
+        onChange={(e) => setAppSecret(e.target.value)}
+      />
+      {error && (
+        <p role="alert" className="text-danger">
+          {error}
+        </p>
+      )}
+      <Button size="sm" onClick={() => void link()} disabled={busy || appId.trim() === "" || appSecret.trim() === ""}>
+        {submitLabel}
+      </Button>
+    </div>
+  );
+}
+
+/** Scan, confirm, and a new app pre-configured for the bot is linked. */
+function FeishuScan({ onLinked }: { onLinked: (bond: string) => Promise<void> | void }) {
   const { t } = useI18n();
   const b = t.matter.bonds;
   const [status, setStatus] = useState<Registration | null>(null);

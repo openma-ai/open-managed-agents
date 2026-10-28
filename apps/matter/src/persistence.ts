@@ -143,7 +143,9 @@ export interface ConnectionError {
 
 export interface MatterDatabase {
   readonly apps: {
-    /** Insert or replace: connecting the same app again moves it. */
+    /** Insert, or replace the same tenant's app (connecting it again). An
+     * app another tenant linked stays theirs: the record returned is
+     * theirs, unchanged. */
     save(connection: FeishuConnection, extra?: { readonly botOpenId?: string }): Promise<FeishuAppRecord>;
     list(): Promise<readonly FeishuAppRecord[]>;
     get(appId: string): Promise<FeishuAppRecord | undefined>;
@@ -269,19 +271,25 @@ const addedColumns: readonly (readonly [string, string])[] = [
   ["openmatter_gitlab_connections", "token_expires_at"],
 ];
 
-/** `INSERT … ON CONFLICT DO UPDATE` in each dialect. */
+/** `INSERT … ON CONFLICT DO UPDATE` in each dialect. With `guard`, an
+ * existing row is replaced only when its `guard` column already has the
+ * new value (the same owner). */
 const upsert = (
   kind: "sqlite" | "mysql",
   table: string,
   columns: readonly string[],
   key: string,
+  guard?: string,
 ): string => {
   const updates = columns.filter((c) => c !== key);
   const placeholders = columns.map(() => "?").join(", ");
   const head = `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
-  return kind === "mysql"
-    ? `${head} ON DUPLICATE KEY UPDATE ${updates.map((c) => `${c} = VALUES(${c})`).join(", ")}`
-    : `${head} ON CONFLICT (${key}) DO UPDATE SET ${updates.map((c) => `${c} = excluded.${c}`).join(", ")}`;
+  if (kind === "mysql") {
+    const value = (c: string) => (guard === undefined ? `VALUES(${c})` : `IF(${guard} = VALUES(${guard}), VALUES(${c}), ${c})`);
+    return `${head} ON DUPLICATE KEY UPDATE ${updates.map((c) => `${c} = ${value(c)}`).join(", ")}`;
+  }
+  const where = guard === undefined ? "" : ` WHERE ${table}.${guard} = excluded.${guard}`;
+  return `${head} ON CONFLICT (${key}) DO UPDATE SET ${updates.map((c) => `${c} = excluded.${c}`).join(", ")}${where}`;
 };
 
 const insertIgnore = (kind: "sqlite" | "mysql") =>
@@ -484,7 +492,7 @@ const createMatterDatabase = (
     apps: {
       save: async (connection, extra = {}) => {
         const { app } = connection;
-        await sql.run(upsert(sql.kind, "openmatter_feishu_apps", appColumns, "app_id"), [
+        await sql.run(upsert(sql.kind, "openmatter_feishu_apps", appColumns, "app_id", "tenant_id"), [
           app.appId,
           box.seal(app.appSecret, appSecretPurpose(app.appId)),
           app.brand,

@@ -24,7 +24,7 @@ import {
   type MatterAdapter,
   type MatterConnection,
 } from "./adapter.js";
-import type { FeishuConnection } from "./feishu-connect.js";
+import { FEISHU_APP_TAKEN, FeishuLinkError, type FeishuConnection } from "./feishu-connect.js";
 import type { MatterHost } from "./host.js";
 import { installLoops, normalizeLoopConfig } from "./loops.js";
 import type { FeishuAppRecord, LoopRecord, MatterDatabase } from "./persistence.js";
@@ -133,6 +133,11 @@ export const createFeishuAdapter = (
 export const connectFeishuApp =
   (host: MatterHost, options: Pick<FeishuAdapterOptions, "db" | "fetch">) =>
   async (connection: FeishuConnection): Promise<void> => {
+    // Never take over another workspace's Bond (and its Loops).
+    const linked = await options.db.apps.get(connection.app.appId);
+    if (linked !== undefined && linked.tenantId !== connection.tenantId) {
+      throw new FeishuLinkError(FEISHU_APP_TAKEN, 409);
+    }
     if (connection.agentId !== undefined) await host.prepareAgent(connection.tenantId, connection.agentId);
     // The bot's open_id decides which group messages mention it. Without
     // it the long connection still delivers direct messages.
@@ -148,6 +153,8 @@ export const connectFeishuApp =
     );
     const { agentId, ...bond } = connection;
     const record = await options.db.apps.save(bond, info._tag === "Right" ? { botOpenId: info.right.botOpenId } : {});
+    // Another workspace linked it meanwhile; the save left theirs as it was.
+    if (record.tenantId !== connection.tenantId) throw new FeishuLinkError(FEISHU_APP_TAKEN, 409);
     if (agentId !== undefined) {
       await options.db.loops.save({
         id: `loop-${randomUUID()}`,

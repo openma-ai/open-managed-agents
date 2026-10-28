@@ -225,4 +225,53 @@ describe("BondsPage", () => {
       body: { token: "glpat-new" },
     });
   });
+
+  it("links an existing Feishu app by its credentials and shows what its setup still needs", async () => {
+    let refuse = true;
+    routes["POST /matter/connect/feishu/app"] = () =>
+      refuse
+        ? json(409, { error: "This app is linked in another workspace; unlink it there first" })
+        : json(200, {
+            status: "registered",
+            appId: "cli_a1b2c3d4e5f60718",
+            brand: "lark",
+            setup: { ready: false, problems: ["Subscribe im.message.receive_v1"], links: { events: "https://open.larksuite.com/events" } },
+          });
+    open("/bonds/new?provider=feishu");
+    // Scanning stays the default.
+    expect(await screen.findByRole("button", { name: /Show QR code|生成二维码/ })).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /Use an existing app|使用已有应用/ }));
+    const link = (await screen.findByRole("button", { name: /^(Link|连接)$/ })) as HTMLButtonElement;
+    expect(link.disabled).toBe(true);
+    fireEvent.change(document.getElementById("feishu-app-id")!, { target: { value: " cli_a1b2c3d4e5f60718 " } });
+    fireEvent.change(document.getElementById("feishu-app-secret")!, { target: { value: "app-secret" } });
+    fireEvent.click(link);
+    expect((await screen.findByRole("alert")).textContent).toContain("another workspace");
+    expect(calls.find((c) => c.url === "/matter/connect/feishu/app")?.body).toEqual({
+      appId: "cli_a1b2c3d4e5f60718",
+      appSecret: "app-secret",
+      brand: "feishu",
+    });
+
+    refuse = false;
+    fireEvent.click(link);
+    expect(await screen.findByText("Subscribe im.message.receive_v1")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Subscribe events|订阅事件/ }).getAttribute("href")).toBe("https://open.larksuite.com/events");
+    fireEvent.click(screen.getByRole("button", { name: /^(Done|完成)$/ }));
+    expect(await screen.findByText(/This app is not linked|找不到这个应用/)).toBeTruthy();
+  });
+
+  it("replaces a Feishu app's secret in place", async () => {
+    routes["GET /matter/bonds"] = () => json(200, { data: [{ ...bond, details: { appId: "cli_old", brand: "lark" } }] });
+    routes["POST /matter/connect/feishu/app"] = () => json(200, { status: "registered", appId: "cli_old", brand: "lark", setupUnavailable: true });
+    open("/bonds/feishu%3Acli_old");
+    fireEvent.click(await screen.findByRole("button", { name: /^(Replace secret|更换 App Secret)$/ }));
+    // The app is known: only the secret is asked.
+    expect(document.getElementById("feishu-app-id")).toBeNull();
+    fireEvent.change(document.getElementById("feishu-app-secret")!, { target: { value: "new-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^(Replace|更换)$/ }));
+    expect(await screen.findByText(/Secret replaced|App Secret 已更换/)).toBeTruthy();
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ appId: "cli_old", appSecret: "new-secret", brand: "lark" });
+    expect(document.getElementById("feishu-app-secret")).toBeNull();
+  });
 });

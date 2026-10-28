@@ -18,6 +18,7 @@ import { useI18n } from "../i18n";
 import { matter, MatterError, type Bond, type Loop } from "../lib/matter";
 import {
   bondPath,
+  FeishuAppForm,
   FeishuLinker,
   GitLabLinker,
   GitLabTokenReplacer,
@@ -243,11 +244,9 @@ export function BondDetailPage() {
       <MatterSection
         title={m.bonds.sectionInfo}
         action={
-          bond.provider === "gitlab" ? (
-            <Button size="sm" variant="outline" onClick={() => setReplacing((open) => !open)}>
-              {m.bonds.replaceToken}
-            </Button>
-          ) : undefined
+          <Button size="sm" variant="outline" onClick={() => setReplacing((open) => !open)}>
+            {bond.provider === "gitlab" ? m.bonds.replaceToken : m.bonds.replaceSecret}
+          </Button>
         }
       >
         <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
@@ -274,6 +273,19 @@ export function BondDetailPage() {
               onReplaced={() => {
                 setReplacing(false);
                 setNotice(m.bonds.tokenReplaced);
+                setRevision((n) => n + 1);
+              }}
+            />
+          </div>
+        )}
+        {replacing && bond.provider === "feishu" && (
+          <div className="mt-4 border-t border-border pt-4">
+            <FeishuAppForm
+              fixed={{ appId: String(bond.details.appId ?? ""), brand: bond.details.brand === "lark" ? "lark" : "feishu" }}
+              submitLabel={m.bonds.replace}
+              onLinked={() => {
+                setReplacing(false);
+                setNotice(m.bonds.secretReplaced);
                 setRevision((n) => n + 1);
               }}
             />

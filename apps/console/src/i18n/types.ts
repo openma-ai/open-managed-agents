@@ -379,6 +379,16 @@ export interface Messages {
       replaceToken: string;
       replace: string;
       tokenReplaced: string;
+      feishuModeScan: string;
+      feishuModeExisting: string;
+      feishuExistingHint: string;
+      feishuAppId: string;
+      feishuAppSecret: string;
+      feishuBrand: string;
+      brandFeishu: string;
+      brandLark: string;
+      replaceSecret: string;
+      secretReplaced: string;
       notFound: string;
       detail: {
         appId: string;
