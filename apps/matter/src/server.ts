@@ -271,6 +271,7 @@ export const createMatterService = async (
     db,
     ...providerFetch,
     ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+    ...(config.gitlabUrls === undefined ? {} : { presets: config.gitlabUrls }),
   };
   const connectGitLabHandler = createGitLabConnectHandler({
     connect: connectGitLab(host, gitlabLink),

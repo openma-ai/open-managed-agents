@@ -45,14 +45,41 @@ class FakeGitLab {
   selfStatus = 200;
   /** Status of creating a project access token, to fail it. */
   mintStatus = 201;
+  /** Status of `/user` for minted bot tokens, to fail linking after minting. */
+  botUserStatus = 200;
+  /** Every call answers with a redirect to another host. */
+  redirect = false;
+  /** Revoking a token fails at the network. */
+  revokeThrows = false;
+  readonly revoked: string[] = [];
+  /** The `redirect` mode of every call. */
+  readonly redirectModes: (string | undefined)[] = [];
+  /** Runs before `/user` answers, for races. */
+  beforeUser: (() => Promise<void>) | undefined;
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? null;
     const body = init?.body === undefined ? undefined : (JSON.parse(String(init.body)) as unknown);
     this.calls.push({ method, path: url.pathname, token, ...(body === undefined ? {} : { body }) });
+    this.redirectModes.push(init?.redirect);
+    if (this.redirect) {
+      return new Response(JSON.stringify({ message: "secret internal body" }), {
+        status: 302,
+        headers: { location: "http://metadata.internal.example/latest" },
+      });
+    }
     const known = token !== null && this.users.has(token);
+    if (url.pathname === "/api/v4/personal_access_tokens/self" && method === "DELETE") {
+      if (this.revokeThrows) throw new TypeError("fetch failed");
+      if (token !== null) this.revoked.push(token);
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === "/api/v4/user") {
+      await this.beforeUser?.();
+      if (known && this.minted.includes(token!) && this.botUserStatus !== 200) {
+        return Response.json({}, { status: this.botUserStatus });
+      }
       return known ? Response.json({ id: 9, username: this.users.get(token!) }) : Response.json({}, { status: 401 });
     }
     if (url.pathname === "/api/v4/personal_access_tokens/self") {
@@ -293,8 +320,15 @@ describe("creating a project bot", () => {
     expect(await problem(await bot({ project: "group/missing" }))).toEqual([404, expect.stringContaining("not found")]);
     gitlab.mintStatus = 500;
     expect(await problem(await bot({}))).toEqual([502, "GitLab did not create the project access token"]);
+    // GitLab's own message is not reflected.
     gitlab.mintStatus = 400;
-    expect(await problem(await bot({}))).toEqual([400, expect.stringContaining("expires_at is beyond the limit")]);
+    const refusedMint = await bot({});
+    const refusedText = await refusedMint.text();
+    expect([refusedMint.status, JSON.parse(refusedText)]).toEqual([
+      400,
+      { error: "GitLab refused to create the project access token (check the expiry date and your role)" },
+    ]);
+    expect(refusedText).not.toContain("beyond the limit");
     gitlab.mintStatus = 201;
 
     const before = gitlab.calls.length;
@@ -451,5 +485,115 @@ describe("replacing a Bond's token", () => {
     expect(await problem(await put(bond.id, { userToken: USER_TOKEN, project: 7 }))).toEqual([404, expect.stringContaining("not found")]);
     expect((await call(service, "POST", `/connect/gitlab/${bond.id}/token`, { token: PASTED_2 })).status).toBe(405);
     expect(await service.db.gitlab.get(bond.id)).toEqual(saved);
+  });
+});
+
+describe("talking to GitLab safely", () => {
+  it("follows no redirect and does not reflect the body it got", async () => {
+    const service = await start();
+    gitlab.redirect = true;
+    const message = "GitLab answered with a redirect; give the instance's own root URL";
+    for (const response of [
+      await call(service, "POST", "/connect/gitlab", { baseUrl: BASE, token: PASTED }),
+      await call(service, "POST", "/connect/gitlab/bot", { baseUrl: BASE, project: 42, userToken: USER_TOKEN }),
+    ]) {
+      const text = await response.text();
+      expect([response.status, JSON.parse(text)]).toEqual([400, { error: message }]);
+      expect(text).not.toContain("secret internal body");
+      expect(text).not.toContain("metadata.internal");
+    }
+    gitlab.redirect = false;
+    const bond = (await (await call(service, "POST", "/connect/gitlab", { baseUrl: BASE, token: PASTED })).json()) as { id: string };
+    gitlab.redirect = true;
+    expect(await problem(await call(service, "PUT", `/connect/gitlab/${bond.id}/token`, { token: PASTED_2 }))).toEqual([400, message]);
+    expect((await service.db.gitlab.get(bond.id))?.token).toBe(PASTED);
+    // Every call, the token facts included, asked not to follow redirects.
+    expect(gitlab.redirectModes.length).toBeGreaterThan(4);
+    expect(gitlab.redirectModes.every((mode) => mode === "manual")).toBe(true);
+  });
+
+  it("links only the deployment's instances, or one the workspace linked before, when it lists some", async () => {
+    config = { ...config, gitlabUrls: [BASE] };
+    const service = await start();
+    const other = "https://gitlab.other.example.com";
+    const notOffered = "This GitLab instance is not offered here; choose one of the listed instances";
+    expect(await problem(await call(service, "POST", "/connect/gitlab", { baseUrl: other, token: PASTED }))).toEqual([400, notOffered]);
+    expect(
+      await problem(await call(service, "POST", "/connect/gitlab/bot", { baseUrl: other, project: 42, userToken: USER_TOKEN })),
+    ).toEqual([400, notOffered]);
+    // Refused before the user's token went anywhere.
+    expect(gitlab.calls).toEqual([]);
+    expect((await call(service, "POST", "/connect/gitlab", { baseUrl: `${BASE}/`, token: PASTED })).status).toBe(201);
+
+    // An instance this workspace linked before stays usable; not for another workspace.
+    await service.db.gitlab.save({
+      id: "gitlab-old", baseUrl: other, token: "glpat-old", username: "old-bot",
+      webhookSecret: "w", projectIds: [], tenantId: "default", agentId: "",
+    });
+    expect((await call(service, "POST", "/connect/gitlab/bot", { baseUrl: other, project: 42, userToken: USER_TOKEN })).status).toBe(201);
+    await service.db.gitlab.save({
+      id: "gitlab-else", baseUrl: "https://gitlab.third.example.com", token: "glpat-else", username: "else-bot",
+      webhookSecret: "w", projectIds: [], tenantId: "tenant-else", agentId: "",
+    });
+    expect(
+      await problem(await call(service, "POST", "/connect/gitlab", { baseUrl: "https://gitlab.third.example.com", token: PASTED })),
+    ).toEqual([400, notOffered]);
+  });
+
+  it("revokes a token it minted when linking it then fails, and still reports the failure", async () => {
+    const service = await start();
+    gitlab.botUserStatus = 500;
+    expect(await problem(await call(service, "POST", "/connect/gitlab/bot", { baseUrl: BASE, project: 42, userToken: USER_TOKEN }))).toEqual([
+      502,
+      "GitLab did not return the token's user",
+    ]);
+    expect(gitlab.revoked).toEqual([gitlab.minted[0]]);
+    expect(gitlab.calls.at(-1)).toMatchObject({ method: "DELETE", path: "/api/v4/personal_access_tokens/self", token: gitlab.minted[0] });
+    expect(await service.db.gitlab.list()).toEqual([]);
+
+    // A failed revocation changes nothing about the answer.
+    gitlab.revokeThrows = true;
+    expect((await call(service, "POST", "/connect/gitlab/bot", { baseUrl: BASE, project: 42, userToken: USER_TOKEN })).status).toBe(502);
+    expect(gitlab.minted).toHaveLength(2);
+    gitlab.revokeThrows = false;
+
+    // The same when replacing a Bond's token with a minted one.
+    gitlab.botUserStatus = 200;
+    const bond = (await (await call(service, "POST", "/connect/gitlab", { baseUrl: BASE, token: PASTED })).json()) as { id: string };
+    gitlab.botUserStatus = 500;
+    expect((await call(service, "PUT", `/connect/gitlab/${bond.id}/token`, { userToken: USER_TOKEN, project: 42 })).status).toBe(502);
+    expect(gitlab.revoked).toEqual([gitlab.minted[0], gitlab.minted[2]]);
+    expect((await service.db.gitlab.get(bond.id))?.token).toBe(PASTED);
+    // A pasted token is the user's: it is never revoked.
+    expect(await problem(await call(service, "PUT", `/connect/gitlab/${bond.id}/token`, { token: "glpat-wrong" }))).toEqual([
+      400,
+      "GitLab rejected the token",
+    ]);
+    expect(gitlab.revoked).toHaveLength(2);
+  });
+
+  it("does not bring back a Bond deleted while its token was being replaced", async () => {
+    const service = await start();
+    const bond = (await (await call(service, "POST", "/connect/gitlab", { baseUrl: BASE, token: PASTED })).json()) as { id: string };
+    gitlab.beforeUser = async () => {
+      gitlab.beforeUser = undefined;
+      await service.db.gitlab.delete(bond.id);
+    };
+    expect(await problem(await call(service, "PUT", `/connect/gitlab/${bond.id}/token`, { token: PASTED_2 }))).toEqual([
+      404,
+      "GitLab Bond not found",
+    ]);
+    expect(await service.db.gitlab.get(bond.id)).toBeUndefined();
+    expect(await service.db.gitlab.list()).toEqual([]);
+
+    // The update itself touches only the tenant's existing row.
+    await service.db.gitlab.save({
+      id: "gitlab-else", baseUrl: BASE, token: "glpat-else", username: "else-bot",
+      webhookSecret: "w", projectIds: [], tenantId: "tenant-else", agentId: "",
+    });
+    expect(await service.db.gitlab.updateToken("gitlab-else", "default", { token: "x", username: "x" })).toBeUndefined();
+    expect(await service.db.gitlab.updateToken("gitlab-gone", "default", { token: "x", username: "x" })).toBeUndefined();
+    expect(await service.db.gitlab.get("gitlab-else")).toMatchObject({ token: "glpat-else", username: "else-bot" });
+    expect(await service.db.gitlab.get("gitlab-gone")).toBeUndefined();
   });
 });

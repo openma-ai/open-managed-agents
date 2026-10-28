@@ -193,7 +193,19 @@ interface GitLabLinkOptions {
   readonly db: MatterDatabase;
   readonly publicUrl?: string;
   readonly fetch?: typeof fetch;
+  /** Instances the deployment offers (`MATTER_GITLAB_URLS`). When set, new
+   * Bonds may only use these or an instance the tenant linked before. */
+  readonly presets?: readonly string[];
 }
+
+/** Refuse an instance the deployment does not offer, when it offers some. */
+const checkAllowed = async (options: GitLabLinkOptions, tenantId: string, baseUrl: string): Promise<void> => {
+  if (options.presets === undefined || options.presets.length === 0 || options.presets.includes(baseUrl)) return;
+  const linked = (await options.db.gitlab.list()).some((c) => c.tenantId === tenantId && c.baseUrl === baseUrl);
+  if (!linked) {
+    throw new GitLabConnectError("This GitLab instance is not offered here; choose one of the listed instances", 400);
+  }
+};
 
 const webhookUrlOf = (options: GitLabLinkOptions, id: string): string => {
   const path = `/webhooks/gitlab/${id}`;
@@ -203,13 +215,19 @@ const webhookUrlOf = (options: GitLabLinkOptions, id: string): string => {
 const asObject = (body: unknown): Record<string, unknown> =>
   typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
 
-/** A GitLab call that names no secret when the instance cannot be reached. */
+/** A GitLab call that names no secret when the instance cannot be reached.
+ * Redirects are not followed (they could lead anywhere, with the token). */
 const reach = async (doFetch: typeof fetch, url: string, init: RequestInit): Promise<Response> => {
+  let response: Response;
   try {
-    return await doFetch(url, init);
+    response = await doFetch(url, { ...init, redirect: "manual" });
   } catch {
     throw new GitLabConnectError("GitLab could not be reached", 502);
   }
+  if ((response.status >= 300 && response.status < 400) || response.type === "opaqueredirect") {
+    throw new GitLabConnectError("GitLab answered with a redirect; give the instance's own root URL", 400);
+  }
+  return response;
 };
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}`, accept: "application/json" });
@@ -233,7 +251,10 @@ type TokenFacts = Pick<GitLabConnectionRecord, "tokenScopes" | "tokenExpiresAt">
  * not say (an older instance, a token type without the endpoint). */
 const tokenFacts = async (doFetch: typeof fetch, baseUrl: string, token: string): Promise<TokenFacts> => {
   try {
-    const response = await doFetch(`${baseUrl}/api/v4/personal_access_tokens/self`, { headers: bearer(token) });
+    const response = await doFetch(`${baseUrl}/api/v4/personal_access_tokens/self`, {
+      headers: bearer(token),
+      redirect: "manual",
+    });
     if (!response.ok) return {};
     const self = (await response.json()) as { scopes?: unknown; expires_at?: unknown };
     const scopes = Array.isArray(self.scopes) && self.scopes.every((s) => typeof s === "string") ? self.scopes : undefined;
@@ -304,11 +325,18 @@ const parseBotRequest = (input: Record<string, unknown>): BotRequest => {
   return { project, preset: preset as GitLabBotPreset, expiresAt, userToken: input.userToken.trim() };
 };
 
-const gitlabMessage = async (response: Response): Promise<string> => {
-  const body = (await response.json().catch(() => null)) as { message?: unknown; error?: unknown } | null;
-  const message = body?.message ?? body?.error;
-  const text = typeof message === "string" ? message : message === undefined ? "" : JSON.stringify(message);
-  return text.slice(0, 300);
+/** Best effort: revoke a token Matter minted but could not link, so it does
+ * not linger in GitLab. A project bot token may revoke itself. */
+const revokeMinted = async (doFetch: typeof fetch, baseUrl: string, token: string): Promise<void> => {
+  try {
+    await doFetch(`${baseUrl}/api/v4/personal_access_tokens/self`, {
+      method: "DELETE",
+      headers: bearer(token),
+      redirect: "manual",
+    });
+  } catch {
+    // Left for the user to revoke; the original error is what matters.
+  }
 };
 
 /**
@@ -342,8 +370,13 @@ const mintProjectBotToken = async (doFetch: typeof fetch, baseUrl: string, reque
   });
   if (created.status === 401 || created.status === 403) throw refused();
   if (created.status === 404) throw notFound();
+  // GitLab's own message is not passed on: the instance's answers are not
+  // ours to show.
   if (created.status === 400) {
-    throw new GitLabConnectError(`GitLab refused the project access token: ${await gitlabMessage(created)}`, 400);
+    throw new GitLabConnectError(
+      "GitLab refused to create the project access token (check the expiry date and your role)",
+      400,
+    );
   }
   const minted = (await created.json().catch(() => null)) as { token?: unknown } | null;
   if (!created.ok || typeof minted?.token !== "string" || minted.token === "") {
@@ -365,34 +398,43 @@ const linkGitLab =
       readonly token: string;
       readonly projectIds: readonly number[];
       readonly agentId?: string;
+      /** Matter minted the token: revoke it if it cannot be saved. */
+      readonly minted?: boolean;
     },
   ): Promise<GitLabConnectResult> => {
     const { baseUrl, token, projectIds, agentId } = input;
     const doFetch = options.fetch ?? fetch;
-    const username = await tokenUser(doFetch, baseUrl, token);
-    if (agentId !== undefined) {
-      try {
-        await host.prepareAgent(principal.tenantId, agentId);
-      } catch (error) {
-        if (error instanceof Error && /not found/.test(error.message)) {
-          throw new GitLabConnectError(error.message, 404);
-        }
-        throw error;
-      }
-    }
     const id = `gitlab-${randomBytes(8).toString("hex")}`;
-    const record = await options.db.gitlab.save({
-      id,
-      baseUrl,
-      token,
-      username,
-      webhookSecret: randomBytes(24).toString("base64url"),
-      projectIds,
-      tenantId: principal.tenantId,
-      ...(principal.userId === undefined ? {} : { userId: principal.userId }),
-      agentId: "",
-      ...(await tokenFacts(doFetch, baseUrl, token)),
-    });
+    let username: string;
+    let record: GitLabConnectionRecord;
+    try {
+      username = await tokenUser(doFetch, baseUrl, token);
+      if (agentId !== undefined) {
+        try {
+          await host.prepareAgent(principal.tenantId, agentId);
+        } catch (error) {
+          if (error instanceof Error && /not found/.test(error.message)) {
+            throw new GitLabConnectError(error.message, 404);
+          }
+          throw error;
+        }
+      }
+      record = await options.db.gitlab.save({
+        id,
+        baseUrl,
+        token,
+        username,
+        webhookSecret: randomBytes(24).toString("base64url"),
+        projectIds,
+        tenantId: principal.tenantId,
+        ...(principal.userId === undefined ? {} : { userId: principal.userId }),
+        agentId: "",
+        ...(await tokenFacts(doFetch, baseUrl, token)),
+      });
+    } catch (error) {
+      if (input.minted === true) await revokeMinted(doFetch, baseUrl, token);
+      throw error;
+    }
     if (agentId !== undefined) {
       await options.db.loops.save({
         id: `loop-${randomUUID()}`,
@@ -440,6 +482,7 @@ export const connectGitLab = (host: MatterHost, options: GitLabLinkOptions) => {
     if (projectIds === undefined) {
       throw new GitLabConnectError("projectIds must be a non-empty list of project ids", 400);
     }
+    await checkAllowed(options, principal.tenantId, baseUrl);
     return link(principal, {
       baseUrl,
       token: input.token.trim(),
@@ -462,8 +505,10 @@ export const createGitLabBot = (host: MatterHost, options: GitLabLinkOptions) =>
     if (baseUrl === undefined) {
       throw new GitLabConnectError("baseUrl must be the instance's http(s) root URL", 400);
     }
-    const token = await mintProjectBotToken(options.fetch ?? fetch, baseUrl, parseBotRequest(input));
-    return link(principal, { baseUrl, token, projectIds: [] });
+    const request = parseBotRequest(input);
+    await checkAllowed(options, principal.tenantId, baseUrl);
+    const token = await mintProjectBotToken(options.fetch ?? fetch, baseUrl, request);
+    return link(principal, { baseUrl, token, projectIds: [], minted: true });
   };
 };
 
@@ -497,11 +542,19 @@ export const replaceGitLabToken =
     }
     const doFetch = options.fetch ?? fetch;
     const token = pasted ?? (await mintProjectBotToken(doFetch, record.baseUrl, parseBotRequest(input)));
-    const username = await tokenUser(doFetch, record.baseUrl, token);
-    const facts = await tokenFacts(doFetch, record.baseUrl, token);
-    const { connectedAt: _connectedAt, tokenScopes: _scopes, tokenExpiresAt: _expires, ...kept } = record;
-    // Saving moves the Bond's revision, so every replica starts it again.
-    await options.db.gitlab.save({ ...kept, token, username, ...facts });
+    let username: string;
+    let facts: Awaited<ReturnType<typeof tokenFacts>>;
+    try {
+      username = await tokenUser(doFetch, record.baseUrl, token);
+      facts = await tokenFacts(doFetch, record.baseUrl, token);
+      // Only the Bond as it still is: one deleted meanwhile is not recreated.
+      // Updating moves the Bond's revision, so every replica starts it again.
+      const updated = await options.db.gitlab.updateToken(id, principal.tenantId, { token, username, ...facts });
+      if (updated === undefined) throw new GitLabConnectError("GitLab Bond not found", 404);
+    } catch (error) {
+      if (pasted === undefined) await revokeMinted(doFetch, record.baseUrl, token);
+      throw error;
+    }
     if (username !== record.username) {
       // Mention Loops answer the bot's username; follow the new bot user.
       for (const loop of await options.db.loops.listForBond(GITLAB_ADAPTER_KIND, id)) {

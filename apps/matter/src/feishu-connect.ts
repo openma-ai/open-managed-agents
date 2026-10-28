@@ -400,13 +400,14 @@ export class FeishuConnectService {
       ),
     );
     if (minted._tag === "Left") {
-      // Feishu answered (an error code, or a client error): the
-      // credentials are wrong. No answer or a server error: try again.
       const { status, cause } = minted.left as { status?: unknown; cause?: { retryable?: unknown } };
-      if (typeof status === "number" && status < 500 && cause?.retryable !== true) {
-        throw new FeishuLinkError("Feishu rejected the App ID or App Secret", 400);
-      }
-      throw new FeishuLinkError("Feishu could not be reached", 502);
+      // No answer, or a server error.
+      if (typeof status !== "number" || status >= 500) throw new FeishuLinkError("Feishu could not be reached", 502);
+      // Rate limited (HTTP 429, or a rate-limit code): not the credentials.
+      if (status === 429 || cause?.retryable === true) throw new FeishuLinkError("Feishu is busy, try again", 502);
+      // Feishu answered with an error code or a client error: the
+      // credentials are wrong.
+      throw new FeishuLinkError("Feishu rejected the App ID or App Secret", 400);
     }
     await this.options.onRegistered({
       app,

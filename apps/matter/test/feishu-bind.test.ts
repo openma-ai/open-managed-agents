@@ -30,6 +30,10 @@ class FakeWsClient implements FeishuWsClient {
 class FakeFeishu {
   secret = SECRET;
   down = false;
+  /** Answer of the tenant token call, to rate-limit it. */
+  tokenReply: { status: number; body: unknown } | undefined;
+  /** The bot info cannot be read. */
+  botDown = false;
   readonly hosts: string[] = [];
   readonly fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -38,6 +42,7 @@ class FakeFeishu {
     const reply = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (url.pathname === "/open-apis/auth/v3/tenant_access_token/internal") {
+      if (this.tokenReply !== undefined) return reply(this.tokenReply.body, this.tokenReply.status);
       const body = JSON.parse(String(init?.body)) as { app_id: string; app_secret: string };
       return body.app_id === APP_ID && body.app_secret === this.secret
         ? reply({ code: 0, tenant_access_token: "t-tenant", expire: 7200 })
@@ -56,7 +61,9 @@ class FakeFeishu {
         data: { app_version: { events: feishuAgentSetup().requirements.events, ability: { bot: {} } } },
       });
     }
-    if (url.pathname === "/open-apis/bot/v3/info") return reply({ code: 0, bot: { open_id: "ou_bot" } });
+    if (url.pathname === "/open-apis/bot/v3/info") {
+      return this.botDown ? reply({ code: 99991663, msg: "unavailable" }, 400) : reply({ code: 0, bot: { open_id: "ou_bot" } });
+    }
     return reply({ code: 0, data: {} });
   }) as typeof fetch;
 }
@@ -229,5 +236,26 @@ describe("linking an existing Feishu app", () => {
     expect(ws.length).toBeGreaterThan(started);
     expect(ws.at(-1)?.params.appSecret).toBe(ROTATED);
     expect(service.host.running()).toEqual([APP_ID]);
+  });
+
+  it("reports a rate limit as busy, not as wrong credentials", async () => {
+    const service = await start();
+    feishu.tokenReply = { status: 429, body: {} };
+    expect(await problem(await link(service, {}))).toEqual([502, "Feishu is busy, try again"]);
+    feishu.tokenReply = { status: 200, body: { code: 99991400, msg: "request trigger frequency limit" } };
+    expect(await problem(await link(service, {}))).toEqual([502, "Feishu is busy, try again"]);
+    feishu.tokenReply = { status: 503, body: {} };
+    expect(await problem(await link(service, {}))).toEqual([502, "Feishu could not be reached"]);
+    expect(await service.db.apps.list()).toEqual([]);
+  });
+
+  it("keeps the bot's open_id when a relink cannot read it", async () => {
+    const service = await start();
+    expect((await link(service, {})).status).toBe(200);
+    expect((await service.db.apps.get(APP_ID))?.botOpenId).toBe("ou_bot");
+    feishu.botDown = true;
+    feishu.secret = ROTATED;
+    expect((await link(service, { appSecret: ROTATED })).status).toBe(200);
+    expect(await service.db.apps.get(APP_ID)).toMatchObject({ appSecret: ROTATED, botOpenId: "ou_bot" });
   });
 });
