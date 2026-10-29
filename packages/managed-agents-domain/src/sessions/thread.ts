@@ -12,6 +12,7 @@ export type SessionThreadAgent =
       id: string;
       description: string | null;
       mcpServers: AgentMcpServer[];
+      metadata?: Record<string, string>;
       model: AgentModel;
       name: string;
       openma?: AgentOpenMaExtensions;

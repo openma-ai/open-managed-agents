@@ -24,8 +24,10 @@ import {
   type VerifierContext,
   type SessionRecord,
   type FullStatus,
+  type AgentConfig,
 } from "@open-managed-agents/shared";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { EnvironmentService } from "@open-managed-agents/environments-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
 import type { EvalRunService } from "@open-managed-agents/evals-store";
@@ -44,7 +46,7 @@ import {
  *  Keeps the package decoupled from packages/services. CF satisfies
  *  this from buildCfServices(); Node from its own bundle. */
 export interface EvalRunnerServices {
-  agents: AgentService;
+  agents: AgentStore;
   environments: EnvironmentService;
   sessions: SessionService;
   evals: EvalRunService;
@@ -139,7 +141,7 @@ async function createTaskSession(
 ): Promise<string> {
   const t = run.tenant_id;
   const services = await ctx.getServicesForTenant(t);
-  const agentSnapshot = await services.agents.getRuntimeSnapshot({ tenantId: t, agentId: run.agent_id });
+  const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, t, run.agent_id);
   if (!agentSnapshot) throw new Error(`agent ${run.agent_id} not found`);
   const envRow = await services.environments.get({ tenantId: t, environmentId: run.environment_id });
   const environmentSnapshot = envRow ? toEnvironmentConfig(envRow) : undefined;
@@ -152,7 +154,7 @@ async function createTaskSession(
     agentId: run.agent_id,
     environmentId: run.environment_id,
     title: `eval ${run.id} :: ${task.id}`,
-    agentSnapshot,
+    agentSnapshot: agentSnapshot as unknown as AgentConfig,
     environmentSnapshot,
   });
   const sessionId = session.id;

@@ -8,7 +8,7 @@ import { SqlAgentPersistence } from "../src";
 import { agentStorePortContract } from "./contracts/store-port-contracts";
 
 const PG_URL = getStorageIntegrationConfig().postgres.agentsSql;
-const WORKSPACE_ID = "agents_adapter_pg_contract";
+const WORKSPACE_ID = "managed_agents_adapter_pg_contract";
 
 const agent: AgentRecord = {
   id: "agent_pg_contract_01",
@@ -65,41 +65,41 @@ beforeAll(async () => {
     connection as unknown as ConstructorParameters<typeof PostgresSqlClient>[0],
   );
   await client.exec(`
-    CREATE TABLE IF NOT EXISTS agents (
+    CREATE TABLE IF NOT EXISTS managed_agents (
       id text PRIMARY KEY NOT NULL,
-      tenant_id text NOT NULL,
-      config text NOT NULL,
+      workspace_id text NOT NULL,
+      document text NOT NULL,
       version bigint NOT NULL,
       created_at bigint NOT NULL,
       updated_at bigint NOT NULL,
       archived_at bigint
     );
-    CREATE TABLE IF NOT EXISTS agent_versions (
+    CREATE TABLE IF NOT EXISTS managed_agent_versions (
       agent_id text NOT NULL,
-      tenant_id text NOT NULL,
+      workspace_id text NOT NULL,
       version bigint NOT NULL,
-      snapshot text NOT NULL,
+      document text NOT NULL,
       created_at bigint NOT NULL,
       PRIMARY KEY (agent_id, version)
     );
   `);
   await client
-    .prepare("DELETE FROM agent_versions WHERE tenant_id = ?")
+    .prepare("DELETE FROM managed_agent_versions WHERE workspace_id = ?")
     .bind(WORKSPACE_ID)
     .run();
   await client
-    .prepare("DELETE FROM agents WHERE tenant_id = ?")
+    .prepare("DELETE FROM managed_agents WHERE workspace_id = ?")
     .bind(WORKSPACE_ID)
     .run();
 });
 
 afterAll(async () => {
   await client
-    .prepare("DELETE FROM agent_versions WHERE tenant_id = ?")
+    .prepare("DELETE FROM managed_agent_versions WHERE workspace_id = ?")
     .bind(WORKSPACE_ID)
     .run();
   await client
-    .prepare("DELETE FROM agents WHERE tenant_id = ?")
+    .prepare("DELETE FROM managed_agents WHERE workspace_id = ?")
     .bind(WORKSPACE_ID)
     .run();
   await connection.end({ timeout: 5 });

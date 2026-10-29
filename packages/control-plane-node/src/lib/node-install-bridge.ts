@@ -81,7 +81,8 @@ import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
 import { SessionNotIdleError, type SessionService } from "@open-managed-agents/sessions-store";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type {
   AgentConfig,
   SessionEvent,
@@ -109,7 +110,7 @@ export interface NodeInstallBridgeOpts {
   vaults: VaultService;
   credentials: CredentialService;
   sessions: SessionService;
-  agents: AgentService;
+  agents: AgentStore;
   /** Look up the OMA tenantId for a userId. main-node uses the membership
    *  table for this; we accept it as a callback so the bridge stays
    *  agnostic to better-auth wiring. */
@@ -626,11 +627,8 @@ class InProcessSessionCreator implements SessionCreator {
   async create(input: CreateSessionInput): Promise<{ sessionId: SessionId }> {
     const tenantId = await this.opts.resolveTenantId(input.userId);
     if (!tenantId) throw new Error("user has no tenant");
-    const agentRow = await this.opts.agents.get({ tenantId, agentId: input.agentId });
-    if (!agentRow) throw new Error("agent not found in tenant");
-    // Strip tenant_id like internal.ts does so the snapshot shape matches.
-    const agentBase = { ...agentRow, tenant_id: undefined } as unknown as Record<string, unknown>;
-    delete agentBase.tenant_id;
+    const agentBase = await loadRuntimeAgentSnapshot(this.opts.agents, tenantId, input.agentId);
+    if (!agentBase) throw new Error("agent not found in tenant");
 
     // Same create-time augmentation as apps/main internal.ts: integration
     // MCP servers + toolsets, then the provider's frozen protocol prose.
@@ -679,8 +677,8 @@ class InProcessSessionCreator implements SessionCreator {
     const session = await this.opts.sessions.getById({ sessionId });
     if (!session) throw new Error(`session_not_found: ${sessionId}`);
     if (!session.agent_id) throw new Error(`session_agent_missing: ${sessionId}`);
-    const agentRow = await this.opts.agents.get({
-      tenantId: session.tenant_id,
+    const agentRow = await this.opts.agents.findCurrent({
+      workspaceId: session.tenant_id,
       agentId: session.agent_id,
     });
     if (!agentRow) throw new Error(`agent_gone: ${session.agent_id}`);

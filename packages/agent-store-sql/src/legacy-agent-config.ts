@@ -1,6 +1,9 @@
 import type { AgentRecord } from "@open-managed-agents/agent-store";
 
-// Storage uses the existing AgentConfig envelope, not runtime-expanded agents.
+// Reads the config JSON of the retired `agents` / `agent_versions` tables
+// (snake_case from the first OMA agent service, camelCase from the later
+// codec) as a domain Agent. Used only by the migration that moves those rows
+// to `managed_agents`.
 // Only contract keys are renamed; user-owned JSON (schemas, env, provider
 // options, metadata) is opaque and must never have its keys rewritten.
 const names: Record<string, string> = {
@@ -47,8 +50,8 @@ function map(value: unknown, encode: boolean, shape: Shape = root): any {
 const extensionKeys = ["auxiliaryModel", "appendablePrompts", "contextManagement", "openaiModelSettings", "compactionWireFormat", "harness", "acp", "runtimeBinding", "enableGeneralSubagent"] as const;
 const storageKeys = new Set(["id", "name", "model", "system", "description", "tools", "skills", "metadata", "multiagent", "mcp_servers", "version", "created_at", "updated_at", "archived_at", ...extensionKeys.map((key) => names[key] ?? key)]);
 
-export function decodeAgent(config: string): AgentRecord {
-  const raw = JSON.parse(config);
+export function fromLegacyAgentConfig(config: string | Record<string, unknown>): AgentRecord {
+  const raw = typeof config === "string" ? JSON.parse(config) : config;
   const value = map(raw, false);
   const openma: Record<string, unknown> = {};
   for (const key of extensionKeys) {
@@ -78,14 +81,4 @@ export function decodeAgent(config: string): AgentRecord {
     archivedAt: value.archivedAt ?? null, version: value.version,
     ...(Object.keys(openma).length ? { openma } : {}),
   } as AgentRecord;
-}
-
-export function encodeAgent(agent: AgentRecord): string {
-  const { openma, ...base } = agent;
-  const extras = openma?.compatibility?.storedFields;
-  const result = { ...(extras && typeof extras === "object" && !Array.isArray(extras) ? extras : {}), ...map(base, true) };
-  for (const key of extensionKeys) {
-    if (openma?.[key] !== undefined) Object.assign(result, map({ [key]: openma[key] }, true));
-  }
-  return JSON.stringify(result);
 }

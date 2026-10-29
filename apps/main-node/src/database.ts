@@ -11,6 +11,7 @@ import type { NodeDatabase } from "@open-managed-agents/node-database";
 import type { DatabaseConfig } from "./config.js";
 import { loadBetterSqlite3 } from "./lib/better-sqlite3.js";
 import { reconcilePiModelConfigMigration } from "./lib/reconcile-pi-model-config-migration.js";
+import { moveLegacyAgents } from "./lib/move-legacy-agents.js";
 
 export type {
   NodeAuthDatabase,
@@ -62,6 +63,7 @@ export async function migrateNodeDatabase(database: NodeDatabase): Promise<void>
     ? new URL("../migrations", import.meta.url).pathname
     : new URL("../migrations-sqlite", import.meta.url).pathname;
   await reconcilePiModelConfigMigration(sql, dialect);
+  await moveLegacyAgents(sql, dialect);
   await database.applyMigrations(migrationsFolder);
   if (dialect !== "mysql") await ensureEventLogSchema(sql, dialect);
 }

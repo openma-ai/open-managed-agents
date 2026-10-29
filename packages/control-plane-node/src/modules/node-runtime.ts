@@ -39,7 +39,7 @@ export async function createNodeRuntime(
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,
@@ -101,7 +101,7 @@ export async function createNodeRuntime(
 
   const services: RouteServices = {
     sql,
-    agents: agentsService,
+    agents: agentStore,
     vaults: vaultService,
     credentials: credentialService,
     memory: memoryService,
@@ -257,7 +257,7 @@ export async function createNodeRuntime(
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,

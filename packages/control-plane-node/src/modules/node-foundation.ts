@@ -20,7 +20,7 @@ import { createNodeLogger } from "@open-managed-agents/observability/logger/node
 import { createNodeMetricsRecorder, type NodeMetricsHandle } from "@open-managed-agents/observability/metrics/node";
 import { createNodeTracer, type NodeTracerHandle } from "@open-managed-agents/observability/tracer/node";
 import { setRootLogger, type Logger } from "@open-managed-agents/observability";
-import { createSqliteAgentService } from "@open-managed-agents/agents-store";
+import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
 import { createSqliteMemoryStoreService, SqlMemoryRepo } from "@open-managed-agents/memory-store";
 import { createSqliteDreamService } from "@open-managed-agents/dreams-store";
 import type { BlobStore } from "@open-managed-agents/blob-store";
@@ -141,7 +141,7 @@ export async function createNodeFoundation(
 
   // ─── Stores ─────────────────────────────────────────────────────────────
 
-  const agentsService = createSqliteAgentService({ db: drizzleDb });
+  const agentStore = new SqlAgentStore(sql);
   const vaultService = createSqliteVaultService({ db: drizzleDb });
   const credentialService = createSqliteCredentialService({ db: drizzleDb });
   const sessionsService = createSqliteSessionService({ db: drizzleDb });
@@ -394,7 +394,7 @@ export async function createNodeFoundation(
   const sessionRegistry = new SessionRegistry({
     sql,
     hub,
-    agentsService,
+    agentStore,
     memoryService,
     sandboxOrchestrator,
     newEventLog,
@@ -503,7 +503,7 @@ export async function createNodeFoundation(
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,
