@@ -97,7 +97,7 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildTools, disposeTools } from "../harness/tools";
+import { buildTools, disposeTools, ToolFailureError } from "../harness/tools";
 import { resolveProxiedToolCall } from "../harness/tool-proxy";
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
@@ -4261,7 +4261,9 @@ export class SessionDO extends DurableObject<Env> {
             const toolResultEvent: SessionEvent = {
               type: "agent.tool_result",
               tool_use_id: pending.toolCallId,
-              content: `Error: ${e instanceof Error ? e.message : String(e)}`,
+              // ToolFailureError messages are pre-formatted model-facing
+              // text ("Error: " prefix included); use them verbatim.
+              content: e instanceof ToolFailureError ? e.message : `Error: ${e instanceof Error ? e.message : String(e)}`,
               parent_event_id: pending.toolCallId,
             };
             history.append(toolResultEvent);

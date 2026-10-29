@@ -141,9 +141,43 @@ If the page is an error/404/login wall/empty result, output exactly one line sta
 
 
 /**
- * Wrap a tool execute function so errors are returned as strings to the LLM
- * instead of crashing the entire harness (matching Claude Code's behavior).
- * The LLM sees the error and can retry, try a different approach, or inform the user.
+ * A tool failure that already carries its complete model-facing text
+ * (the same string the tool used to return, "Error: " prefix included).
+ *
+ * Built-in tools report failures as error values so the model can read
+ * what went wrong and recover (matching Claude Code's behavior). But when
+ * the failure travels as a plain result string, the harness loops cannot
+ * tell it apart from a successful result, so the canonical
+ * agent.tool_result event goes out with is_error: false and API clients
+ * cannot trust the flag (#359). safe() therefore throws ToolFailureError
+ * instead of returning the string, and executes throw it directly for
+ * failures they detect in-band. Both loops already turn a thrown tool
+ * error into an error result whose content is the error's message, so
+ * the model sees exactly the text it saw before — now with the error
+ * flag set.
+ *
+ * toString() returns the message verbatim: Error#toString would prepend
+ * "ToolFailureError: ", and consumers that stringify the error (AI SDK
+ * error results, event normalization) must reproduce the pre-formatted
+ * message byte-for-byte.
+ */
+export class ToolFailureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolFailureError";
+  }
+
+  override toString(): string {
+    return this.message;
+  }
+}
+
+/**
+ * Wrap a tool execute function so a failure cannot be mistaken for a
+ * successful result: errors are thrown as ToolFailureError (see above)
+ * instead of being returned as strings, and the harness loops mark the
+ * tool result as an error. The LLM still sees the error text and can
+ * retry, try a different approach, or inform the user.
  *
  * Result type is `string | object`: most tools return text, but multimodal tools
  * (e.g. Read returning an image block) return structured objects that toModelOutput
@@ -177,6 +211,9 @@ function safe<T>(
       if (typeof result === "string" && result.trim() === "") return "(completed with no output)";
       return result;
     } catch (err) {
+      // Already carries its model-facing text (thrown by the execute
+      // itself for an in-band failure); do not re-wrap or re-prefix it.
+      if (err instanceof ToolFailureError) throw err;
       const msg = modelFacingError(err);
       // Stack traces and the full cause chain are for operators, not the
       // model: it cannot act on server source locations.
@@ -184,7 +221,7 @@ function safe<T>(
       const truncated = msg.length > 10000
         ? msg.slice(0, 5000) + `\n[${msg.length - 10000} characters truncated]\n` + msg.slice(-5000)
         : msg;
-      return `Error: ${truncated}`;
+      throw new ToolFailureError(`Error: ${truncated}`);
     }
   };
 }
@@ -523,9 +560,9 @@ export async function buildTools(
           const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
           if (!m) return raw;
           const code = parseInt(m[1], 10);
-          if (code !== 0) return `Error reading file (exit=${code}): ${m[2].slice(0, 200)}`;
+          if (code !== 0) throw new ToolFailureError(`Error reading file (exit=${code}): ${m[2].slice(0, 200)}`);
           const data = m[2].trimEnd();
-          if (!data) return "Error: file is empty or unreadable";
+          if (!data) throw new ToolFailureError("Error: file is empty or unreadable");
 
           if (imageMedia) {
             return {
@@ -602,14 +639,14 @@ export async function buildTools(
       execute: safe(async ({ file_path, old_string, new_string, replace_all }) => {
         const content = await sandbox.readFile(file_path);
         if (!content.includes(old_string)) {
-          return "Error: old_string not found in file";
+          throw new ToolFailureError("Error: old_string not found in file");
         }
         // Default behavior: require uniqueness (matches Anthropic Edit semantics)
         if (!replace_all) {
           const occurrences = content.split(old_string).length - 1;
           if (occurrences > 1) {
-            return `Error: old_string appears ${occurrences} times in file. ` +
-              `Provide more surrounding context to make it unique, or pass replace_all=true.`;
+            throw new ToolFailureError(`Error: old_string appears ${occurrences} times in file. ` +
+              `Provide more surrounding context to make it unique, or pass replace_all=true.`);
           }
         }
         const updated = replace_all
@@ -643,7 +680,7 @@ export async function buildTools(
         if (!m) return raw;
         const code = parseInt(m[1], 10);
         const out = m[2].trimEnd();
-        if (code !== 0) return truncateResult(`Error: glob exited with code ${code}\n${out}`);
+        if (code !== 0) throw new ToolFailureError(truncateResult(`Error: glob exited with code ${code}\n${out}`));
         if (!out) return "No files matched the pattern";
         const files = out.split("\n").filter(Boolean);
         return truncateResult(`Found ${files.length} file${files.length === 1 ? "" : "s"}\n${files.join("\n")}`);
@@ -757,7 +794,7 @@ export async function buildTools(
           return "No matches found";
         }
         // Real error
-        return truncateResult(`Error: grep exited with code ${code}\n${out}`);
+        throw new ToolFailureError(truncateResult(`Error: grep exited with code ${code}\n${out}`));
       }),
     });
   }
@@ -794,7 +831,7 @@ export async function buildTools(
         };
 
         const guardErr = webFetchGuardError(url, fetchNetworking);
-        if (guardErr) return guardErr;
+        if (guardErr) throw new ToolFailureError(guardErr);
 
         const cap = max_length || 50000;
         const truncate = (s: string) => (s.length > cap ? s.slice(0, cap) + `\n\n…[truncated to ${cap} chars]` : s);
@@ -848,7 +885,7 @@ export async function buildTools(
             markdown = `[NOTE: markdown extraction unavailable for this URL — returning raw response. Look for the actual content between HTML tags.]\n\n${truncateResult(body.slice(0, cap))}`;
             isRaw = true;
           } catch (err) {
-            return `Error: ${webFetchHttpErrorMessage(err, WEB_FETCH_RAW_TIMEOUT_MS)}`;
+            throw new ToolFailureError(`Error: ${webFetchHttpErrorMessage(err, WEB_FETCH_RAW_TIMEOUT_MS)}`);
           }
         }
 
@@ -1033,10 +1070,10 @@ export async function buildTools(
           toolOpts?.abortSignal,
           WEB_SEARCH_DDG_TIMEOUT_MS,
         );
-        if (!vqdRes.ok) return `DuckDuckGo error: ${vqdRes.status}`;
+        if (!vqdRes.ok) throw new ToolFailureError(`DuckDuckGo error: ${vqdRes.status}`);
         const vqdText = await vqdRes.text();
         const vqd = /vqd=['"](\d+-\d+(?:-\d+)?)['"]/?.exec(vqdText)?.[1];
-        if (!vqd) return "DuckDuckGo: failed to get search token";
+        if (!vqd) throw new ToolFailureError("DuckDuckGo: failed to get search token");
 
         // Step 2: Fetch search results
         const params = new URLSearchParams({
@@ -1048,11 +1085,11 @@ export async function buildTools(
           toolOpts?.abortSignal,
           WEB_SEARCH_DDG_TIMEOUT_MS,
         );
-        if (!searchRes.ok) return `DuckDuckGo search error: ${searchRes.status}`;
+        if (!searchRes.ok) throw new ToolFailureError(`DuckDuckGo search error: ${searchRes.status}`);
         const body = await searchRes.text();
 
         if (body.includes("DDG.deep.anomalyDetectionBlock"))
-          return "DuckDuckGo rate limited. Try again in a moment.";
+          throw new ToolFailureError("DuckDuckGo rate limited. Try again in a moment.");
 
         // Step 3: Parse results from JSONP-like response
         const match = /DDG\.pageLayout\.load\('d',(\[.+?\])\);DDG\.duckbar\.load/.exec(body);
@@ -1097,7 +1134,7 @@ export async function buildTools(
             toolOpts?.abortSignal,
           );
         } catch (err) {
-          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+          throw new ToolFailureError(`Error: ${err instanceof Error ? err.message : String(err)}`);
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const data = (await res.json()) as any;
