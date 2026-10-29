@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractManagedSkillFiles } from "./skill-upload";
+import { extractManagedSkillFiles, readSkillArchivePreview } from "./skill-upload";
 
 function buffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
@@ -38,5 +38,23 @@ describe("extractManagedSkillFiles", () => {
   it("rejects an empty archive before making a request", async () => {
     const zip = new File([fromBase64(EMPTY_ZIP)], "empty.zip");
     await expect(extractManagedSkillFiles(zip)).rejects.toThrow("does not contain any files");
+  });
+});
+
+describe("readSkillArchivePreview", () => {
+  it("decodes text entries and flags non-UTF-8 entries as binary", () => {
+    // Built in Node: jsdom Uint8Arrays fail fflate zipSync instanceof checks.
+    const archive = new Uint8Array(fromBase64(
+      "UEsDBBQAAAAIAABAIVzWYixjFwAAABcAAAARAAAAcmVzZWFyY2gvU0tJTEwubWTT1dXlykvMTbVSKEotTk0sSs7gAgkBAFBLAwQUAAAACAAAQCFcFwSjrQYAAAAEAAAAGAAAAHJlc2VhcmNoL2Fzc2V0cy9sb2dvLmJpbvv/j6EBAFBLAQIUABQAAAAIAABAIVzWYixjFwAAABcAAAARAAAAAAAAAAAAAAAAAAAAAAByZXNlYXJjaC9TS0lMTC5tZFBLAQIUABQAAAAIAABAIVwXBKOtBgAAAAQAAAAYAAAAAAAAAAAAAAAAAEYAAAByZXNlYXJjaC9hc3NldHMvbG9nby5iaW5QSwUGAAAAAAIAAgCFAAAAggAAAAAA",
+    ));
+
+    expect(readSkillArchivePreview(archive)).toEqual([
+      { filename: "research/assets/logo.bin", content: "", encoding: "base64" },
+      {
+        filename: "research/SKILL.md",
+        content: "---\nname: research\n---\n",
+        encoding: "utf8",
+      },
+    ]);
   });
 });
