@@ -169,6 +169,14 @@ export interface Env {
         }
       | { type: "not_found" }
     >;
+    /** CLI placeholder env for a v1 managed Session; `not_found` for others. */
+    resolveManagedCapCliEnvironment(opts: {
+      tenantId: string;
+      sessionId: string;
+    }): Promise<
+      | { type: "found"; env: Record<string, string> }
+      | { type: "not_found" }
+    >;
     downloadManagedSessionFile(opts: {
       tenantId: string;
       sessionId: string;

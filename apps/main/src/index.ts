@@ -197,6 +197,8 @@ import mcpProxyRoutes, {
   resolveOutboundCredentialByHost,
   forwardWithRefresh,
 } from "./routes/mcp-proxy";
+import { capCliBootstrapEnvironment } from "./routes/managed-proxy-credentials";
+import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import {
   resolveGithubCredentials,
   resolveManagedGithubCredentials,
@@ -1617,6 +1619,39 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
           id: row.id,
         })),
       },
+    };
+  }
+
+  /**
+   * CLI placeholder environment (cap spec `bootstrap.env`) for a v1 managed
+   * Session's sandbox, from the session's managed `cap_cli` credentials.
+   * Placeholders only; real tokens stay here and are injected at egress.
+   * `not_found` means the session is not a managed one.
+   */
+  async resolveManagedCapCliEnvironment(opts: {
+    tenantId: string;
+    sessionId: string;
+  }): Promise<{ type: "found"; env: Record<string, string> } | { type: "not_found" }> {
+    const { sessionSource, credentialSource } = await managedMcpSources(
+      this.env,
+      opts.tenantId,
+    );
+    const session = await withMissingManagedSessionSchemaFallback(
+      () => sessionSource.find({ workspaceId: opts.tenantId, sessionId: opts.sessionId }),
+      async () => null,
+    );
+    if (session === null || session.archivedAt !== null) {
+      return { type: "not_found" };
+    }
+    const records = session.vaultIds.length === 0
+      ? []
+      : await credentialSource.listByVaults({
+          workspaceId: opts.tenantId,
+          vaultIds: session.vaultIds,
+        });
+    return {
+      type: "found",
+      env: capCliBootstrapEnvironment(records, createSpecRegistry(builtinSpecs)),
     };
   }
 

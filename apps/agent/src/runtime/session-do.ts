@@ -3712,8 +3712,25 @@ export class SessionDO extends DurableObject<Env> {
       // set here from the cap spec's bootstrap.env so CLIs that refuse to
       // dial out without a token-shaped env value still try; the proxy
       // replaces the sentinel-bearing Authorization header at HTTPS time.
+      // v1 managed Sessions keep credentials in the managed Vault store, which
+      // only the main worker reads; it returns the placeholders. A failure
+      // here fails warmup like every other managed input. Legacy `/v1/oma`
+      // Sessions (not_found) keep the vault snapshot path below.
+      const managedCapEnv = this.state.session_id && this.env.MAIN_MCP
+        ? await this.env.MAIN_MCP.resolveManagedCapCliEnvironment({
+            tenantId: this.state.tenant_id,
+            sessionId: this.state.session_id,
+          })
+        : { type: "not_found" as const };
       const vaultIds = this.state.vault_ids;
-      if (vaultIds.length && sandbox.setEnvVars) {
+      if (managedCapEnv.type === "found") {
+        if (Object.keys(managedCapEnv.env).length > 0) {
+          if (!sandbox.setEnvVars) {
+            throw new Error("This sandbox cannot set the CLI placeholder environment for Vault cap_cli credentials");
+          }
+          await sandbox.setEnvVars(managedCapEnv.env);
+        }
+      } else if (vaultIds.length && sandbox.setEnvVars) {
         try {
           const { builtinSpecs, createSpecRegistry } = await import("@open-managed-agents/cap");
           const registry = createSpecRegistry(builtinSpecs);
