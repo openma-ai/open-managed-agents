@@ -112,6 +112,7 @@ function snapshotThreadAgent(agent: Agent): SessionThreadAgent {
     id: agent.id,
     description: agent.description,
     mcpServers: agent.mcpServers,
+    metadata: agent.metadata,
     model: agent.model,
     name: agent.name,
     ...(agent.openma !== undefined && { openma: agent.openma }),
@@ -134,7 +135,7 @@ async function findPinnedAgent(
   return source.findVersion({ workspaceId, agentId, version });
 }
 
-async function snapshotAgent(
+export async function snapshotSessionAgent(
   agent: Agent,
   source: SessionAgentSourcePort,
   workspaceId: string,
@@ -158,6 +159,7 @@ async function snapshotAgent(
     id: agent.id,
     description: agent.description,
     mcpServers: agent.mcpServers,
+    metadata: agent.metadata,
     model: agent.model,
     multiagent:
       agent.multiagent === null
@@ -202,7 +204,7 @@ async function applyOverrides(
   source: SessionAgentSourcePort,
   workspaceId: string,
 ): Promise<SessionAgent | null> {
-  const snapshot = await snapshotAgent(agent, source, workspaceId);
+  const snapshot = await snapshotSessionAgent(agent, source, workspaceId);
   if (snapshot === null) return null;
   if (selector.type !== "overrides") return snapshot;
   return {

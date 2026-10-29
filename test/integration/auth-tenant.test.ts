@@ -152,14 +152,13 @@ describe("multi-tenant KV isolation", () => {
     expect(createRes.status).toBe(201);
     const agent = await createRes.json();
 
-    // Agents are in D1 now (was KV pre-storage-port). Verify the row exists
-    // for tenant=default and the agent name round-trips through `config` JSON.
+    // The agent is stored for tenant=default as a domain document.
     const row = await env.AUTH_DB.prepare(
-      "SELECT tenant_id, config FROM agents WHERE id = ?",
-    ).bind(agent.id).first<{ tenant_id: string; config: string }>();
+      "SELECT workspace_id, document FROM managed_agents WHERE id = ?",
+    ).bind(agent.id).first<{ workspace_id: string; document: string }>();
     expect(row).toBeTruthy();
-    expect(row!.tenant_id).toBe("default");
-    expect(JSON.parse(row!.config).name).toBe("Tenant Test Agent");
+    expect(row!.workspace_id).toBe("default");
+    expect(JSON.parse(row!.document).name).toBe("Tenant Test Agent");
   });
 });
 

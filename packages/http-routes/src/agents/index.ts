@@ -76,7 +76,8 @@ export function buildAgentRoutes(deps: AgentRoutesDeps) {
     if ((await application.retrieveAgent({ agentId })).type === "not_found") return c.json({ error: "Agent not found" }, 404);
     if (await deps.hasActiveSessionsByAgent?.(tenantId, agentId)) return c.json({ error: "Cannot delete agent with active sessions" }, 409);
     if (await deps.hasActiveEvalsByAgent?.(tenantId, agentId)) return c.json({ error: "Cannot delete agent with active eval runs" }, 409);
-    await resolveServices(deps.services, c).agents.delete({ tenantId, agentId });
+    const deleted = await resolveServices(deps.services, c).agents.deleteCurrent({ workspaceId: tenantId, agentId });
+    if (deleted.type === "not_found") return c.json({ error: "Agent not found" }, 404);
     return c.json({ type: "agent_deleted", id: agentId });
   });
   return app;

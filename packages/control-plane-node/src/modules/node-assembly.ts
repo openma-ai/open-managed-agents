@@ -67,7 +67,7 @@ async function buildNodeControlPlane(
   const runtime = await createNodeRuntime(components, disposables, log);
   const {
     config, processMode, logger, metrics, backendDescription, platformRootSecret, sql,
-    agentsService, environmentsService, sessionsService, evalsService, kv,
+    agentStore, environmentsService, sessionsService, evalsService, kv,
     memoryService, managedSessionExecutionWorker, sharedSessionOutputs,
   } = runtime;
   setDbBoundaryLogger((record) => {
@@ -83,7 +83,7 @@ async function buildNodeControlPlane(
   // when an in-process gateway lands.
   const scheduler = buildNodeScheduler({
     evalServices: {
-      agents: agentsService,
+      agents: agentStore,
       environments: environmentsService,
       sessions: sessionsService,
       evals: evalsService,

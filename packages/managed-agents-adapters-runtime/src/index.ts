@@ -1,4 +1,9 @@
+import { snapshotSessionAgent } from "@open-managed-agents/managed-agents-application";
 import type {
+  AgentAcpConfig,
+  SessionAgent,
+  SessionAgentSourcePort,
+  SessionThreadAgent,
   AgentCustomToolInputSchema,
   AgentMcpServer,
   AgentSkill,
@@ -566,17 +571,35 @@ type RuntimeAgentTool =
       input_schema: AgentCustomToolInputSchema;
     };
 
-interface RuntimeAgentSnapshot {
+type RuntimeModel = {
+  id: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  inference_geo?: string;
+  provider_options?: Record<string, unknown>;
+  speed?: "standard" | "fast";
+};
+
+/** The Agent configuration a Session's runtime executes. */
+export interface RuntimeAgentSnapshot {
   id: string;
   name: string;
   description: string | null;
-  model: {
-    id: string;
-    effort?: "low" | "medium" | "high" | "xhigh" | "max";
-    inference_geo?: string;
-    provider_options?: Record<string, unknown>;
-    speed?: "standard" | "fast";
+  model: RuntimeModel;
+  aux_model?: RuntimeModel & { max_tokens?: number };
+  appendable_prompts?: string[];
+  harness?: string;
+  acp?: {
+    agent: { id?: string; command?: string; registry?: string; args?: string[]; env?: Record<string, string | undefined>; cwd?: string };
+    restart?: { mode: "never" | "on-crash" | "always"; max_restarts?: number; window_ms?: number };
+    idle_timeout_ms?: number;
+    per_turn_timeout_ms?: number;
   };
+  runtime_binding?: { runtime_id: string; acp_agent_id: string; local_skill_blocklist?: string[] };
+  context_management?: unknown;
+  model_settings?: unknown;
+  compaction_wire_format?: string;
+  enable_general_subagent?: boolean;
+  metadata?: Record<string, string>;
   system: string;
   tools: RuntimeAgentTool[];
   mcp_servers: AgentMcpServer[];
@@ -710,39 +733,40 @@ function runtimeAgentTool(tool: AgentTool): RuntimeAgentTool {
   }
 }
 
-function runtimeAgentSnapshot(input: StartSessionExecution): RuntimeAgentSnapshot {
-  const { agent } = input.session;
-  const roster = agent.multiagent?.subagents.type === "enabled"
-    ? agent.multiagent.subagents.predefinedAgents
-        .filter((member): member is Extract<typeof member, { type: "agent" }> => member.type === "agent")
-    : [];
+/**
+ * Encode a Session's Agent snapshot in the runtime's wire shape. The
+ * timestamps are the Session's, so a resumed Session sees the same snapshot.
+ */
+export function encodeRuntimeAgentSnapshot(
+  agent: SessionAgent | Extract<SessionThreadAgent, { type: "agent" }>,
+  times: { createdAt: string; updatedAt: string },
+): RuntimeAgentSnapshot {
+  const multiagent = "multiagent" in agent ? agent.multiagent : null;
+  const openma = agent.openma;
   return {
     id: agent.id,
     name: agent.name,
     description: agent.description,
-    model: {
-      id: agent.model.id,
-      ...(agent.model.effort !== undefined && { effort: agent.model.effort }),
-      ...(agent.model.inferenceGeo !== undefined && {
-        inference_geo: agent.model.inferenceGeo,
-      }),
-      ...(agent.model.providerOptions !== undefined && {
-        provider_options: structuredClone(agent.model.providerOptions),
-      }),
-      ...(agent.model.speed !== undefined && { speed: agent.model.speed }),
-    },
-    ...(agent.openma?.auxiliaryModel !== undefined && { aux_model: {
-      id: agent.openma.auxiliaryModel.id,
-      ...(agent.openma.auxiliaryModel.effort !== undefined && { effort: agent.openma.auxiliaryModel.effort }),
-      ...(agent.openma.auxiliaryModel.inferenceGeo !== undefined && { inference_geo: agent.openma.auxiliaryModel.inferenceGeo }),
-      ...(agent.openma.auxiliaryModel.speed !== undefined && { speed: agent.openma.auxiliaryModel.speed }),
-      ...(agent.openma.auxiliaryModel.maxTokens !== undefined && { max_tokens: agent.openma.auxiliaryModel.maxTokens }),
-      ...(agent.openma.auxiliaryModel.providerOptions !== undefined && { provider_options: structuredClone(agent.openma.auxiliaryModel.providerOptions) }),
+    model: runtimeModel(agent.model),
+    ...(openma?.auxiliaryModel !== undefined && { aux_model: {
+      ...runtimeModel(openma.auxiliaryModel),
+      ...(openma.auxiliaryModel.maxTokens !== undefined && { max_tokens: openma.auxiliaryModel.maxTokens }),
     } }),
-    ...(agent.openma?.appendablePrompts !== undefined && { appendable_prompts: structuredClone(agent.openma.appendablePrompts) }),
-    ...(agent.openma?.harness !== undefined && { harness: agent.openma.harness }),
-    ...(agent.openma?.contextManagement !== undefined && { context_management: structuredClone(agent.openma.contextManagement) }),
-    ...(agent.openma?.openaiModelSettings !== undefined && { model_settings: structuredClone(agent.openma.openaiModelSettings) }),
+    ...(openma?.appendablePrompts !== undefined && { appendable_prompts: structuredClone(openma.appendablePrompts) }),
+    ...(openma?.harness !== undefined && { harness: openma.harness }),
+    ...(openma?.acp !== undefined && { acp: runtimeAcp(openma.acp) }),
+    ...(openma?.runtimeBinding !== undefined && { runtime_binding: {
+      runtime_id: openma.runtimeBinding.runtimeId,
+      acp_agent_id: openma.runtimeBinding.acpAgentId,
+      ...(openma.runtimeBinding.localSkillBlocklist !== undefined && {
+        local_skill_blocklist: [...openma.runtimeBinding.localSkillBlocklist],
+      }),
+    } }),
+    ...(openma?.contextManagement !== undefined && { context_management: structuredClone(openma.contextManagement) }),
+    ...(openma?.openaiModelSettings !== undefined && { model_settings: structuredClone(openma.openaiModelSettings) }),
+    ...(openma?.compactionWireFormat !== undefined && { compaction_wire_format: openma.compactionWireFormat }),
+    ...(openma?.enableGeneralSubagent !== undefined && { enable_general_subagent: openma.enableGeneralSubagent }),
+    ...(agent.metadata !== undefined && { metadata: { ...agent.metadata } }),
     system: agent.system ?? "",
     tools: agent.tools.map(runtimeAgentTool),
     mcp_servers: agent.mcpServers.map((server) => ({ ...server })),
@@ -752,28 +776,65 @@ function runtimeAgentSnapshot(input: StartSessionExecution): RuntimeAgentSnapsho
       version: skill.version,
     })),
     version: agent.version,
-    created_at: input.session.createdAt,
-    updated_at: input.session.updatedAt,
-    ...(agent.multiagent !== null && {
+    created_at: times.createdAt,
+    updated_at: times.updatedAt,
+    ...(multiagent !== null && {
       multiagent: {
-        type: agent.multiagent.type,
+        type: multiagent.type,
         advisor: { type: "disabled" },
         subagents:
-          agent.multiagent.subagents.type === "disabled"
+          multiagent.subagents.type === "disabled"
             ? { type: "disabled" }
             : {
                 type: "enabled",
-                inline_agents: agent.multiagent.subagents.inlineAgents,
-                predefined_agents: roster.map((member) => ({
-                  type: "agent" as const,
-                  ...runtimeAgentSnapshot({ ...input, session: {
-                    ...input.session, agent: { ...member, multiagent: null },
-                  } }),
-                })),
+                inline_agents: multiagent.subagents.inlineAgents,
+                predefined_agents: multiagent.subagents.predefinedAgents
+                  .filter((member): member is Extract<SessionThreadAgent, { type: "agent" }> => member.type === "agent")
+                  .map((member) => ({ type: "agent" as const, ...encodeRuntimeAgentSnapshot(member, times) })),
               },
         workflows: { type: "disabled" },
       },
     }),
+  };
+}
+
+function runtimeAcp(acp: AgentAcpConfig): NonNullable<RuntimeAgentSnapshot["acp"]> {
+  return {
+    agent: structuredClone(acp.agent),
+    ...(acp.restart !== undefined && { restart: {
+      mode: acp.restart.mode,
+      ...(acp.restart.maxRestarts !== undefined && { max_restarts: acp.restart.maxRestarts }),
+      ...(acp.restart.windowMs !== undefined && { window_ms: acp.restart.windowMs }),
+    } }),
+    ...(acp.idleTimeoutMs !== undefined && { idle_timeout_ms: acp.idleTimeoutMs }),
+    ...(acp.perTurnTimeoutMs !== undefined && { per_turn_timeout_ms: acp.perTurnTimeoutMs }),
+  };
+}
+
+/**
+ * Freeze the current Agent, with its pinned subagents, for a Session started
+ * outside the Managed Agents application. Null when the Agent does not exist
+ * or is archived; throws when a pinned subagent cannot be resolved.
+ */
+export async function loadRuntimeAgentSnapshot(
+  store: SessionAgentSourcePort,
+  workspaceId: string,
+  agentId: string,
+): Promise<RuntimeAgentSnapshot | null> {
+  const agent = await store.findCurrent({ workspaceId, agentId });
+  if (agent === null || agent.archivedAt !== null) return null;
+  const snapshot = await snapshotSessionAgent(agent, store, workspaceId);
+  if (snapshot === null) throw new Error(`Agent ${agentId} has an unavailable pinned subagent or unsupported multiagent configuration`);
+  return encodeRuntimeAgentSnapshot(snapshot, agent);
+}
+
+function runtimeModel(model: SessionAgent["model"]): RuntimeModel {
+  return {
+    id: model.id,
+    ...(model.effort !== undefined && { effort: model.effort }),
+    ...(model.inferenceGeo !== undefined && { inference_geo: model.inferenceGeo }),
+    ...(model.providerOptions !== undefined && { provider_options: structuredClone(model.providerOptions) }),
+    ...(model.speed !== undefined && { speed: model.speed }),
   };
 }
 
@@ -788,7 +849,7 @@ export function encodeRuntimeSessionStart(
     session_id: session.id,
     tenant_id: input.workspaceId,
     vault_ids: session.vaultIds,
-    agent_snapshot: runtimeAgentSnapshot(input),
+    agent_snapshot: encodeRuntimeAgentSnapshot(input.session.agent, input.session),
     environment_snapshot: {
       type: "environment",
       id: environment.id,

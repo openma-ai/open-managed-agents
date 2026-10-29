@@ -9,7 +9,6 @@
 // emits migrations into apps/main-node/migrations/.
 
 export * from "./cf-auth-auth";
-export * from "./cf-auth-agents";
 export * from "./cf-auth-managed-agents";
 export * from "./cf-auth-sessions";
 export * from "./cf-auth-memory";
