@@ -230,6 +230,34 @@ export async function apiKeyToTenantId(kv: KvStore, apiKey: string): Promise<str
 }
 
 /**
+ * A managed Session's credentials. A store failure is not "no credentials":
+ * it is logged and rethrown, so the HTTP proxy answers 5xx and the sandbox
+ * egress lookup fails (closed when egress is required) instead of silently
+ * forwarding without the Vault credential.
+ */
+async function listManagedCredentials(
+  source: McpProxyCredentialSource,
+  workspaceId: string,
+  sessionId: string,
+  vaultIds: string[],
+): Promise<ManagedProxyCredentialRecord[]> {
+  try {
+    return await source.listByVaults({ workspaceId, vaultIds });
+  } catch (error) {
+    logWarn(
+      {
+        op: "mcp_proxy.managed_credentials_unavailable",
+        tenant_id: workspaceId,
+        session_id: sessionId,
+        error: error instanceof Error ? error.name : "Error",
+      },
+      "managed Vault credentials could not be read",
+    );
+    throw error;
+  }
+}
+
+/**
  * Validate the (tenantId, sid, serverName) triple and resolve the upstream
  * URL + injection token. Returns null if anything fails — the caller turns
  * that into a 403 with a generic message.
@@ -302,9 +330,7 @@ export async function resolveProxyTargetByTenant(
   const vaultIds = legacySession.vault_ids ?? managedSession.vaultIds ?? [];
   if (vaultIds.length === 0) return null;
   if (managedSessionRecord !== null && credentialSource !== undefined) {
-    const records = await credentialSource
-      .listByVaults({ workspaceId: tenantId, vaultIds })
-      .catch(() => []);
+    const records = await listManagedCredentials(credentialSource, tenantId, sid, vaultIds);
     return selectManagedMcpTarget(records, server.url, credentialSource);
   }
   const grouped = await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);
@@ -412,9 +438,7 @@ export async function resolveOutboundCredentialByHost(
   const vaultIds = legacySession.vault_ids ?? managedSession.vaultIds ?? [];
   if (vaultIds.length === 0) return null;
   if (managedSessionRecord !== null && credentialSource !== undefined) {
-    const records = await credentialSource
-      .listByVaults({ workspaceId: tenantId, vaultIds })
-      .catch(() => []);
+    const records = await listManagedCredentials(credentialSource, tenantId, sid, vaultIds);
     return selectManagedOutboundTarget(records, hostname, capRegistry, credentialSource);
   }
   const grouped = await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);

@@ -47,6 +47,8 @@ export interface McpProxyCredentialSource {
 
 /** Refresh metadata for a managed credential; persisted through `source`. */
 export interface ManagedCredentialRefresh {
+  /** Present when the credential was resolved; refresh itself always uses
+   *  the refresh token stored at that moment, read back from `source`. */
   refreshToken: string;
   tokenEndpoint: string;
   clientId?: string;
@@ -357,10 +359,37 @@ export async function exchangeRefreshToken(input: {
   };
 }
 
+/** Stored refresh token of a refreshable credential, or null. */
+function storedRefreshToken(credential: Credential): string | null {
+  const auth = credential.auth;
+  switch (auth.type) {
+    case "mcp_oauth":
+      return auth.refresh?.refreshToken || null;
+    case "cap_cli":
+      return auth.refreshToken || null;
+    case "static_bearer":
+    case "environment_variable":
+      return null;
+  }
+}
+
+/** Attempts to persist one rotation before giving up. */
+const ROTATION_WRITE_ATTEMPTS = 3;
+
 /**
  * Refresh a managed credential after the upstream rejected `staleToken`.
- * Writes the rotation back with `replace` (revision-checked) at the
- * credential's real vault/credential id. Returns the token to retry with.
+ *
+ * The refresh token is read from the current stored record, not from the
+ * resolution snapshot. The rotation is written back with `replace`
+ * (revision-checked) at the credential's real vault/credential id. A
+ * revision conflict only means another writer touched the row: when that
+ * writer already rotated the token we use theirs, otherwise this rotation is
+ * re-applied on the newer revision. Providers that rotate refresh tokens
+ * (GitHub) invalidate the stored one once they issue a new one, so a
+ * rotation that cannot be saved is an error, never a silent success.
+ *
+ * Returns the token to retry with, or null when the provider refused the
+ * refresh (the caller surfaces the upstream's 401).
  */
 export async function refreshManagedCredential(
   workspaceId: string,
@@ -374,15 +403,17 @@ export async function refreshManagedCredential(
     vaultId: refresh.vaultId,
     credentialId: refresh.credentialId,
   };
-  const current = await source.find(location).catch(() => null);
+  let current = await source.find(location);
   if (current === null) return null;
   // Another call may already have rotated it.
   const live = liveManagedToken(current.credential);
   if (live !== null && live !== staleToken) return live;
+  const refreshToken = storedRefreshToken(current.credential);
+  if (refreshToken === null) return null;
 
   const exchanged = await exchangeRefreshToken({
     tokenEndpoint: refresh.tokenEndpoint,
-    refreshToken: refresh.refreshToken,
+    refreshToken,
     ...(refresh.clientId !== undefined && { clientId: refresh.clientId }),
     ...(refresh.clientSecret !== undefined && { clientSecret: refresh.clientSecret }),
   });
@@ -391,26 +422,53 @@ export async function refreshManagedCredential(
       failure.code = exchanged.oauthError;
     }
     // A parallel refresh may have won and rotated the refresh token.
-    const after = await source.find(location).catch(() => null);
+    const after = await source.find(location);
     const winner = after === null ? null : liveManagedToken(after.credential);
     return winner !== null && winner !== staleToken ? winner : null;
   }
   const tokens = exchanged.tokens!;
-  const next = applyManagedRotation(
-    current.credential,
-    tokens,
-    new Date().toISOString(),
-  );
-  if (next === null) return tokens.accessToken;
-  const replaced = await source
-    .replace({ ...location, expectedRevision: current.revision, next })
-    .catch(() => null);
-  if (replaced?.type === "revision_conflict") {
-    const winner = await source.find(location).catch(() => null);
-    const winnerToken = winner === null ? null : liveManagedToken(winner.credential);
-    if (winnerToken !== null) return winnerToken;
+  let lastFailure = "revision conflict";
+  for (let attempt = 0; attempt < ROTATION_WRITE_ATTEMPTS; attempt += 1) {
+    const next = applyManagedRotation(
+      current.credential,
+      tokens,
+      new Date().toISOString(),
+    );
+    if (next === null) {
+      throw new Error(
+        `managed credential ${refresh.credentialId} has no refreshable token`,
+      );
+    }
+    let replaced: ManagedCredentialReplaceResult;
+    try {
+      replaced = await source.replace({
+        ...location,
+        expectedRevision: current.revision,
+        next,
+      });
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.name : "Error";
+      const reread = await source.find(location);
+      if (reread === null) break;
+      current = reread;
+      continue;
+    }
+    if (replaced.type === "replaced") return tokens.accessToken;
+    if (replaced.type === "not_found") {
+      lastFailure = "credential deleted";
+      break;
+    }
+    const winner = await source.find(location);
+    if (winner === null) {
+      lastFailure = "credential deleted";
+      break;
+    }
+    const winnerToken = liveManagedToken(winner.credential);
+    if (winnerToken !== null && winnerToken !== staleToken) return winnerToken;
+    // The conflicting write did not rotate the token: keep ours.
+    current = winner;
   }
-  // The provider issued a valid token; a failed write must not drop it for
-  // this request. The next 401 retries the refresh.
-  return tokens.accessToken;
+  throw new Error(
+    `managed credential ${refresh.credentialId} refreshed but the rotation could not be saved (${lastFailure})`,
+  );
 }
