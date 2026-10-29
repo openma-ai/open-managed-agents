@@ -5,15 +5,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import type {
-  BetaManagedAgentsCredential,
   CredentialCreateParams,
   CredentialUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/vaults/credentials";
 import type { BetaManagedAgentsVault } from "@anthropic-ai/sdk/resources/beta/vaults/vaults";
 
-import { useApi } from "../lib/api";
 import { useApiQuery, useInfiniteApiQuery, useQueryClient } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
+import type { OpenMaCredential } from "../lib/managed-api";
 
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
@@ -38,7 +37,8 @@ import { useI18n } from "../i18n";
 // =================================================================
 
 type Vault = BetaManagedAgentsVault;
-type Credential = BetaManagedAgentsCredential;
+// Official credential plus the OpenMA `cap_cli` extension.
+type Credential = OpenMaCredential;
 
 function credentialTypeView(credential: Credential): {
   label: string;
@@ -64,6 +64,14 @@ function credentialTypeView(credential: Credential): {
         className: "bg-brand-subtle text-brand",
         target: credential.auth.secret_name,
       };
+    case "cap_cli": {
+      const cliId = credential.auth.cli_id;
+      return {
+        label: "CLI",
+        className: "bg-warning-subtle text-warning",
+        target: CAP_CLIS.find((cli) => cli.cli_id === cliId)?.label ?? cliId,
+      };
+    }
   }
 }
 
@@ -104,7 +112,6 @@ const inputCls =
 
 export function VaultDetail() {
   const { id } = useParams<{ id: string }>();
-  const { api } = useApi();
   const managedApi = useManagedApi();
   const nav = useNavigate();
   const queryClient = useQueryClient();
@@ -598,12 +605,19 @@ function EditCredentialModal({
         </div>
         <div className="text-xs text-fg-subtle">
           Type: <span className="font-mono">{credential.auth.type}</span>
-          {credential.auth.type !== "environment_variable" && (
+          {(credential.auth.type === "mcp_oauth" ||
+            credential.auth.type === "static_bearer") && (
             <>
               {" · "}
               <span className="font-mono">
                 {credential.auth.mcp_server_url}
               </span>
+            </>
+          )}
+          {credential.auth.type === "cap_cli" && (
+            <>
+              {" · "}
+              <span className="font-mono">{credential.auth.cli_id}</span>
             </>
           )}
           {credential.auth.type === "environment_variable" && (
@@ -645,7 +659,6 @@ function AddCredentialModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const { api } = useApi();
   const managedApi = useManagedApi();
 
   // Top-level tab inside the modal: MCP server vs CLI. Folds the two
@@ -688,12 +701,12 @@ function AddCredentialModal({
   // ready / failure, then writes a cap_cli credential.
   const [deviceFlow, setDeviceFlow] = useState<{
     cli_id: string;
-    session_id: string;
+    flow_token: string;
     user_code: string;
     verification_uri: string;
     verification_uri_complete?: string;
     interval_seconds: number;
-    expires_at_ms: number;
+    expires_at: string;
     status: "polling" | "ready" | "expired" | "denied" | "error";
     error?: string;
   } | null>(null);
@@ -845,16 +858,13 @@ function AddCredentialModal({
   const createCapCliCred = async () => {
     const defaultName =
       CAP_CLIS.find((c) => c.cli_id === cliForm.cli_id)?.label ?? cliForm.cli_id;
-    await api(`/v1/oma/vaults/${vault.id}/credentials`, {
-      method: "POST",
-      body: JSON.stringify({
-        display_name: cliForm.display_name || defaultName,
-        auth: {
-          type: "cap_cli",
-          cli_id: cliForm.cli_id,
-          token: cliForm.token,
-        },
-      }),
+    await managedApi.vaults.credentials.create(vault.id, {
+      display_name: cliForm.display_name || defaultName,
+      auth: {
+        type: "cap_cli",
+        cli_id: cliForm.cli_id,
+        token: cliForm.token,
+      },
     });
     onCreated();
   };
@@ -865,28 +875,21 @@ function AddCredentialModal({
   const startDeviceFlow = async () => {
     setDeviceFlow(null);
     try {
-      const init = await api<{
-        session_id: string;
-        user_code: string;
-        verification_uri: string;
-        verification_uri_complete?: string;
-        interval_seconds: number;
-        expires_at_ms: number;
-      }>(`/v1/oma/cap-cli/oauth/initiate`, {
-        method: "POST",
-        body: JSON.stringify({ vault_id: vault.id, cli_id: cliForm.cli_id }),
-      });
-      const flow = { ...init, cli_id: cliForm.cli_id, status: "polling" as const };
+      const init = await managedApi.vaults.credentials.capCliDeviceFlow.start(
+        vault.id,
+        { cli_id: cliForm.cli_id },
+      );
+      const flow = { ...init, status: "polling" as const };
       setDeviceFlow(flow);
       void pollDeviceFlow(flow);
     } catch (err) {
       setDeviceFlow({
         cli_id: cliForm.cli_id,
-        session_id: "",
+        flow_token: "",
         user_code: "",
         verification_uri: "",
         interval_seconds: 0,
-        expires_at_ms: 0,
+        expires_at: new Date(0).toISOString(),
         status: "error",
         error: (err as Error).message,
       });
@@ -894,33 +897,25 @@ function AddCredentialModal({
   };
 
   const pollDeviceFlow = async (flow: {
-    session_id: string;
+    flow_token: string;
     interval_seconds: number;
-    expires_at_ms: number;
+    expires_at: string;
   }) => {
     let interval = flow.interval_seconds;
-    while (Date.now() < flow.expires_at_ms) {
+    let flowToken = flow.flow_token;
+    const expiresAtMs = Date.parse(flow.expires_at);
+    while (Date.now() < expiresAtMs) {
       await new Promise((r) => setTimeout(r, interval * 1000));
       try {
-        const r = await api<{
-          status:
-            | "pending"
-            | "slow_down"
-            | "ready"
-            | "expired"
-            | "denied"
-            | "error";
-          new_interval_seconds?: number;
-          oauth_error?: string;
-          description?: string;
-          credential_id?: string;
-        }>(`/v1/oma/cap-cli/oauth/poll`, {
-          method: "POST",
-          body: JSON.stringify({ session_id: flow.session_id }),
-        });
+        const r = await managedApi.vaults.credentials.capCliDeviceFlow.poll(
+          vault.id,
+          { flow_token: flowToken },
+        );
         if (r.status === "pending") continue;
         if (r.status === "slow_down") {
-          interval = r.new_interval_seconds ?? interval + 5;
+          // The server re-seals the flow with the slower interval.
+          interval = r.interval_seconds;
+          flowToken = r.flow_token;
           continue;
         }
         if (r.status === "ready") {
@@ -934,12 +929,15 @@ function AddCredentialModal({
           return;
         }
         // expired / denied / error
+        const terminal = r.status;
         setDeviceFlow((prev) =>
           prev
             ? {
                 ...prev,
-                status: r.status as "expired" | "denied" | "error",
-                error: r.description ?? r.oauth_error,
+                status: terminal,
+                ...(r.status === "error" && {
+                  error: r.description ?? r.oauth_error,
+                }),
               }
             : null,
         );
