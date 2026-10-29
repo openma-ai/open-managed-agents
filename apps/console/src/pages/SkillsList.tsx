@@ -8,10 +8,12 @@ import type {
   VersionListResponse,
   VersionRetrieveResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/versions";
-import { useApi } from "../lib/api";
 import { useInfiniteApiQuery } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
-import { extractManagedSkillFiles } from "../lib/skill-upload";
+import {
+  extractManagedSkillFiles,
+  readSkillArchivePreview,
+} from "../lib/skill-upload";
 import { Modal } from "../components/Modal";
 import { Button } from "@/components/ui/button";
 import { PopoverContent } from "@/components/ui/popover";
@@ -57,7 +59,6 @@ const SOURCE_OPTIONS: { value: SourceValue; label: string }[] = [
 // degradation for an unusual config.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const SKILLS_API = "/v1/skills";
-const SKILLS_PREVIEW_API = "/v1/oma/skills";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -77,7 +78,6 @@ function isZipFile(file: File): boolean {
 /* ---------- component ---------- */
 
 export function SkillsList() {
-  const { api } = useApi();
   const managedApi = useManagedApi();
 
   /* Server-driven filter state. `source` flows into skillsParams below
@@ -199,9 +199,12 @@ export function SkillsList() {
           skill_id: skill.id,
         }),
         managedApi.skills.versions.list(skill.id, { limit: 100 }),
-        api<Pick<VersionDetail, "files">>(
-          `${SKILLS_PREVIEW_API}/${skill.id}/versions/${skill.latest_version}`,
-        ).catch(() => ({ files: [] })),
+        managedApi.skills.versions
+          .download(skill.latest_version, { skill_id: skill.id })
+          .then(async (res) => ({
+            files: readSkillArchivePreview(new Uint8Array(await res.arrayBuffer())),
+          }))
+          .catch((): Pick<VersionDetail, "files"> => ({ files: [] })),
       ]);
       setDetail({
         ...skill,
