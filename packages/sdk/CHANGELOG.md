@@ -1,5 +1,15 @@
 # @openma/sdk
 
+## 1.1.0
+
+### Minor Changes
+
+- 1599e16: Support the `multiagent_20261001` agent configuration (predefined and inline subagents with pinned versions), paginate agent lists, and list the deployment harness catalog through `oma.harnesses`.
+
+### Patch Changes
+
+- 30f388d: Document how deferred MCP tools are called when the model cannot declare tools mid-conversation: the tool list stays fixed and found tools are called through `mcp_invoke`. Document `tool_search_deferred_hints`, whose default now follows that mode.
+
 ## 1.0.2
 
 ### Patch Changes
