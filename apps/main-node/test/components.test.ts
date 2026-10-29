@@ -158,6 +158,47 @@ describe("createNodeControlPlane(components)", () => {
     expect(row!.sealed_document).toMatch(/^sealed:managed\.vault\.credentials:/);
   });
 
+  it("serves cap_cli Vault credentials and the device-flow extension on /v1/vaults", async () => {
+    const secrets: NodeSecrets = {
+      cipherFor: (purpose) => ({
+        encrypt: async (plaintext) => `sealed:${purpose}:${plaintext}`,
+        decrypt: async (ciphertext) => ciphertext.slice(`sealed:${purpose}:`.length),
+      }),
+    };
+    const cp = await boot(await nodeDefaults(testConfig(), { secrets }));
+    const vault = await cp.fetch(new Request("http://localhost/v1/vaults", {
+      method: "POST", headers: v1, body: JSON.stringify({ display_name: "cli" }),
+    }));
+    const { id } = await vault.json() as { id: string };
+
+    const created = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}/credentials`, {
+      method: "POST", headers: v1,
+      body: JSON.stringify({ auth: { type: "cap_cli", cli_id: "gh", token: "gho_secret_value" } }),
+    }));
+    const createdText = await created.text();
+    expect(created.status, createdText).toBe(201);
+    expect(JSON.parse(createdText).auth).toEqual({ type: "cap_cli", cli_id: "gh" });
+    expect(createdText).not.toContain("gho_secret_value");
+
+    const unknownCli = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}/credentials`, {
+      method: "POST", headers: v1,
+      body: JSON.stringify({ auth: { type: "cap_cli", cli_id: "not-a-cli", token: "t" } }),
+    }));
+    expect(unknownCli.status).toBe(400);
+
+    // Mounted ahead of the official Vault routes; neither shadows the other.
+    const noDeviceFlow = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}/cap_cli_device_flow`, {
+      method: "POST", headers: v1, body: JSON.stringify({ cli_id: "fly" }),
+    }));
+    expect(noDeviceFlow.status, await noDeviceFlow.text()).toBe(400);
+    const missingVault = await cp.fetch(new Request("http://localhost/v1/vaults/vlt_missing/cap_cli_device_flow", {
+      method: "POST", headers: v1, body: JSON.stringify({ cli_id: "gh" }),
+    }));
+    expect(missingVault.status).toBe(404);
+    const retrieved = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}`, { headers: v1 }));
+    expect(retrieved.status).toBe(200);
+  });
+
   it("authenticates through the caller-supplied auth component", async () => {
     const auth: NodeAuth = {
       description: "test-auth",

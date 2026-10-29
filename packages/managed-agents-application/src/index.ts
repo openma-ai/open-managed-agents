@@ -109,6 +109,8 @@ export * from "./user-profiles/application";
 export * from "./user-profiles/enrollment-issuer";
 export * from "./user-profiles/persistence";
 export * from "./credentials/application";
+export * from "./credentials/cap-cli-device-flow";
+export * from "./credentials/cap-cli-device-flow-application";
 export * from "./credentials/cli-catalog";
 export * from "./credentials/persistence";
 export * from "./credentials/validation";

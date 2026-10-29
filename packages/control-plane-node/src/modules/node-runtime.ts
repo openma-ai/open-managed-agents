@@ -91,6 +91,7 @@ export async function createNodeRuntime(
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
     managedUserProfilesRoutes,
   } = managed;
 
@@ -304,6 +305,7 @@ export async function createNodeRuntime(
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
     managedUserProfilesRoutes,
     kv,
     services,

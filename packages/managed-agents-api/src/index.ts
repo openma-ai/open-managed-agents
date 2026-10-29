@@ -61,6 +61,7 @@ export { buildMemoryRoutes } from "./routes/memories";
 export { buildMemoryVersionRoutes } from "./routes/memory-versions";
 export { buildModelRoutes } from "./routes/models";
 export { buildVaultRoutes } from "./routes/vaults";
+export { buildCapCliDeviceFlowRoutes } from "./routes/cap-cli-device-flow";
 export { buildSessionEventRoutes } from "./routes/session-events";
 export { buildSessionResourceRoutes } from "./routes/session-resources";
 export { buildSessionThreadRoutes } from "./routes/session-threads";

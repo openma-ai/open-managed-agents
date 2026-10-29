@@ -1,6 +1,6 @@
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
-import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
+import { CapCliDeviceFlowApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -27,6 +27,7 @@ import {
 } from "@open-managed-agents/http-routes";
 import {
   buildAgentRoutes as buildManagedAgentRoutes,
+  buildCapCliDeviceFlowRoutes,
   buildCredentialRoutes as buildManagedCredentialRoutes,
   buildDeploymentRoutes as buildManagedDeploymentRoutes,
   buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
@@ -199,6 +200,7 @@ import mcpProxyRoutes, {
 } from "./routes/mcp-proxy";
 import { capCliBootstrapEnvironment } from "./routes/managed-proxy-credentials";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
+import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import {
   resolveGithubCredentials,
   resolveManagedGithubCredentials,
@@ -622,6 +624,25 @@ function managedCredentialsPortFor(context: AppCtx) {
 }
 
 const managedCredentialsRoutes = buildManagedCredentialRoutes(context => managedCredentialsPortFor(context as AppCtx));
+
+// OpenMA extension: OAuth device flow that ends in a managed cap_cli credential.
+const capCliDeviceFlow = createBuiltinCapDeviceFlow({
+  fetch: (input, init) => fetch(input, init),
+});
+const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
+  const ctx = context as AppCtx;
+  const secret = ctx.env.PLATFORM_ROOT_SECRET;
+  if (secret === undefined) {
+    throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+  }
+  return new CapCliDeviceFlowApplicationService({
+    workspaceId: (ctx.var as { tenant_id: string }).tenant_id,
+    credentials: managedCredentialsPortFor(ctx),
+    deviceFlow: capCliDeviceFlow,
+    cipher: new WebCryptoAesGcm(secret, "managed.vault.cap_cli_device_flow"),
+    clock: { now: () => new Date() },
+  });
+});
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
   return managedCoreApplicationFor(context)
@@ -1354,6 +1375,7 @@ app.all("/openai/*", c => c.json({ error: {
 app.route("/v1/sessions", managedSessionsRoutes);
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
+app.route("/v1/vaults", managedCapCliDeviceFlowRoutes);
 app.route("/v1/vaults", managedVaultsRoutes);
 app.route("/v1/vaults", managedCredentialsRoutes);
 app.route("/v1/user_profiles", managedUserProfilesRoutes);

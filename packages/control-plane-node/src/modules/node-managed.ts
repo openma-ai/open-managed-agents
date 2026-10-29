@@ -38,8 +38,9 @@ import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform
 import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/assembly/skill-config";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 
-import { buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
+import { buildCapCliDeviceFlowRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
+import { CapCliDeviceFlowApplicationService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -1344,6 +1345,29 @@ export async function createManagedNodeRuntime(
       .port(managedAgentsPortTokens.credentials),
   );
 
+  // OpenMA extension: OAuth device flow that ends in a managed cap_cli credential.
+  const managedCapCliFlowCipher = secrets === null
+    ? null
+    : secrets.cipherFor("managed.vault.cap_cli_device_flow");
+  const capCliDeviceFlow = createBuiltinCapDeviceFlow({
+    fetch: (input, init) => globalThis.fetch(input, init),
+  });
+  const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
+    if (managedCapCliFlowCipher === null) {
+      throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+    }
+    const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+    return new CapCliDeviceFlowApplicationService({
+      workspaceId,
+      credentials: managedPlatform
+        .app({ workspaceId })
+        .port(managedAgentsPortTokens.credentials),
+      deviceFlow: capCliDeviceFlow,
+      cipher: managedCapCliFlowCipher,
+      clock: { now: () => new Date() },
+    });
+  });
+
   const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
     managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
@@ -1379,6 +1403,7 @@ export async function createManagedNodeRuntime(
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
     managedUserProfilesRoutes,
   };
 }

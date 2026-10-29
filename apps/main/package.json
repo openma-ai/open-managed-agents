@@ -41,6 +41,7 @@
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/model-cards-store": "workspace:*",
     "@open-managed-agents/observability": "workspace:*",
+    "@open-managed-agents/oma-cap-adapter": "workspace:*",
     "@open-managed-agents/outbound-snapshots-store": "workspace:*",
     "@open-managed-agents/platform-cloudflare": "workspace:*",
     "@open-managed-agents/queue": "workspace:*",
