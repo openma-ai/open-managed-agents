@@ -213,6 +213,32 @@ export function selectManagedOutboundTarget(
   return { upstreamUrl: best.url, upstreamToken: best.token, ...(refresh && { refresh }) };
 }
 
+/**
+ * Sandbox placeholder environment for a managed Session: each active
+ * `cap_cli` credential contributes its CLI spec's `bootstrap.env` (e.g.
+ * `GITHUB_TOKEN=__cap_managed__`) so CLIs that refuse to start without a
+ * token still dial out; the egress proxy swaps in the real token. Tokens
+ * themselves never appear here. The first credential to set a name wins.
+ */
+export function capCliBootstrapEnvironment(
+  records: readonly ManagedProxyCredentialRecord[],
+  registry: SpecRegistry,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const { credential } of records) {
+    const auth = credential.auth;
+    if (credential.archivedAt !== null || auth.type !== "cap_cli") continue;
+    const spec = registry.byCliId(auth.cliId);
+    if (spec === null) {
+      throw new Error(`cap_cli credential ${credential.id} names unknown cli_id "${auth.cliId}"`);
+    }
+    for (const [name, value] of Object.entries(spec.bootstrap?.env ?? {})) {
+      if (!(name in env)) env[name] = value;
+    }
+  }
+  return env;
+}
+
 export interface IssuedTokens {
   accessToken: string;
   refreshToken: string | null;

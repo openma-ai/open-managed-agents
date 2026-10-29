@@ -9,6 +9,8 @@ import {
   type ManagedProxyCredentialRecord,
   type McpProxyCredentialSource,
 } from "../../apps/main/src/routes/mcp-proxy";
+import { capCliBootstrapEnvironment } from "../../apps/main/src/routes/managed-proxy-credentials";
+import { builtinSpecs, createSpecRegistry } from "../../packages/cap/src/index";
 
 const WORKSPACE = "workspace_01";
 const SESSION = "session_01";
@@ -251,5 +253,32 @@ describe("managed Session cap_cli egress", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1]!.headers.get("authorization")).toBe("Bearer gho_rotated_elsewhere");
     expect(replaced).toEqual([]);
+  });
+});
+
+describe("managed Session cap_cli sandbox placeholders", () => {
+  const registry = createSpecRegistry(builtinSpecs);
+
+  it("sets each active CLI's bootstrap placeholders and never a token", () => {
+    const env = capCliBootstrapEnvironment([
+      capRecord({ id: "c_gh", token: "gho_real_secret", updatedAt: "2026-09-01T00:00:00.000Z" }),
+      capRecord({ id: "c_glab", cliId: "glab", token: "glpat_real_secret", updatedAt: "2026-09-01T00:00:00.000Z" }),
+      capRecord({ id: "c_gone", cliId: "fly", token: "fo1_real_secret", updatedAt: "2026-09-01T00:00:00.000Z", archivedAt: "2026-09-02T00:00:00.000Z" }),
+    ], registry);
+    expect(env.GITHUB_TOKEN).toBe("__cap_managed__");
+    expect(Object.keys(env).length).toBeGreaterThan(1);
+    expect(JSON.stringify(env)).not.toContain("real_secret");
+    for (const name of Object.keys(registry.byCliId("fly")?.bootstrap?.env ?? {})) {
+      if (!Object.keys(registry.byCliId("glab")?.bootstrap?.env ?? {}).includes(name)
+        && !Object.keys(registry.byCliId("gh")?.bootstrap?.env ?? {}).includes(name)) {
+        expect(env).not.toHaveProperty(name);
+      }
+    }
+  });
+
+  it("fails loudly on a stored cli_id the registry does not know", () => {
+    expect(() => capCliBootstrapEnvironment([
+      capRecord({ id: "c_bad", cliId: "not-a-cli", token: "t", updatedAt: "2026-09-01T00:00:00.000Z" }),
+    ], registry)).toThrow('unknown cli_id "not-a-cli"');
   });
 });
