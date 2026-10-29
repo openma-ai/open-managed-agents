@@ -219,7 +219,7 @@ describe.skipIf(ROOT_URL === undefined)("replicas sharing MySQL", () => {
     expect(b.host.running()).toEqual([saved.id]);
   });
 
-  it("pairs an MCP call received by one replica with the Turn another runs", async () => {
+  it("runs an MCP call received by one replica in the Turn another runs", async () => {
     const turnDb = await openMysqlMatterDatabase({ url, box: createSecretBox(SECRET) });
     const mcpDb = await openMysqlMatterDatabase({ url, box: createSecretBox(SECRET) });
     extraDbs.push(turnDb, mcpDb);
@@ -228,19 +228,27 @@ describe.skipIf(ROOT_URL === undefined)("replicas sharing MySQL", () => {
     const tools = [{ name: "gitlab.note.create", description: "Post", inputSchema: { type: "object" } }];
     await turnSide.setTools("s-mcp", tools);
     expect(await mcpSide.tools("s-mcp")).toEqual(tools);
-    const call = mcpSide.call("s-mcp", "gitlab.note.create", { body: "hi" });
-    await turnSide.announce("s-mcp", "cb-1", "gitlab.note.create", { body: "hi" });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await turnSide.resolve("cb-1", { ok: true, result: { status: "sent" } });
+    const call = mcpSide.call("s-mcp", "gitlab_note_create", { body: "hi" });
+    let taken = (await turnSide.take("s-mcp", "turn-a"))[0];
+    while (taken === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      taken = (await turnSide.take("s-mcp", "turn-a"))[0];
+    }
+    expect(taken).toMatchObject({ tool: "gitlab_note_create", input: { body: "hi" } });
+    await turnSide.resolve(taken.callId, { ok: true, result: { status: "sent" } });
     expect(await call).toEqual({ ok: true, result: { status: "sent" } });
-    // Two identical calls in flight pair with two events, in order.
-    await turnSide.announce("s-mcp", "cb-2", "gitlab.note.create", { body: "x" });
-    await turnSide.announce("s-mcp", "cb-3", "gitlab.note.create", { body: "x" });
-    const claimed = await Promise.all([
-      mcpDb.calls.claim("s-mcp", `gitlab.note.create\u0000{"body":"x"}`, "r1"),
-      turnDb.calls.claim("s-mcp", `gitlab.note.create\u0000{"body":"x"}`, "r2"),
-    ]);
-    expect(claimed.sort()).toEqual(["cb-2", "cb-3"]);
+    // Two Turns racing for the same calls: each call goes to one, in order.
+    const calls = [
+      mcpSide.call("s-mcp", "gitlab_note_create", { body: "x" }),
+      mcpSide.call("s-mcp", "gitlab_note_create", { body: "y" }),
+    ];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const [one, two] = await Promise.all([mcpDb.calls.take("s-mcp", "r1"), turnDb.calls.take("s-mcp", "r2")]);
+    const all = [...one!, ...two!];
+    expect(all).toHaveLength(2);
+    expect(new Set(all.map((c) => c.callId)).size).toBe(2);
+    for (const c of all) await turnSide.resolve(c.callId, { ok: true, result: null });
+    await Promise.all(calls);
   });
 
   it("gives a registration's poll to one replica at a time", async () => {

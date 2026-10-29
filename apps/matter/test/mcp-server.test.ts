@@ -44,7 +44,7 @@ const rpc = async (method: string, params?: unknown, id: number = 1) => {
 };
 
 beforeEach(async () => {
-  bridge = new OperationCallBridge({ matchTimeoutMs: 50 });
+  bridge = new OperationCallBridge({ pickupTimeoutMs: 50, pollMs: 5 });
   tokens = createMemorySessionTokenStore();
   handler = createMatterMcpHandler({ bridge, tokens, version: "1.2.3" });
   token = await tokens.issue("session-a");
@@ -107,6 +107,18 @@ describe("protocol", () => {
   });
 });
 
+/** Play the running Turn: take the next call of session-a and answer it. */
+const answerNext = async (outcome: Parameters<OperationCallBridge["resolve"]>[1]) => {
+  for (;;) {
+    const [call] = await bridge.take("session-a", "turn");
+    if (call !== undefined) {
+      await bridge.resolve(call.callId, outcome);
+      return call;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+};
+
 describe("tools", () => {
   it("lists the Session's tools under MCP names", async () => {
     const listed = await rpc("tools/list");
@@ -127,8 +139,8 @@ describe("tools", () => {
       name: "feishu_message_reply",
       arguments: { markdown: "hi" },
     });
-    bridge.announce("session-a", "toolu_1", "feishu_message_reply", { markdown: "hi" });
-    bridge.resolve("toolu_1", { ok: true, result: { status: "delivered" } });
+    const call = await answerNext({ ok: true, result: { status: "delivered" } });
+    expect(call).toMatchObject({ sessionId: "session-a", tool: "feishu_message_reply", input: { markdown: "hi" } });
     expect((await pending).result).toEqual({
       content: [{ type: "text", text: '{"status":"delivered"}' }],
       isError: false,
@@ -143,29 +155,27 @@ describe("tools", () => {
       [{ status: "conflict", effect: "not-applied", conflict: { reason: "newer_messages", messages: [] }, seenRevision: 3 }, false],
     ];
     for (const [index, [result, isError]] of cases.entries()) {
-      const callbackId = `toolu_${index}`;
-      bridge.announce("session-a", callbackId, "feishu_message_reply", { markdown: String(index) });
-      bridge.resolve(callbackId, { ok: true, result: result as never });
-      const response = await rpc("tools/call", {
+      const pending = rpc("tools/call", {
         name: "feishu_message_reply",
         arguments: { markdown: String(index) },
       });
+      await answerNext({ ok: true, result: result as never });
+      const response = await pending;
       expect(response.result.isError).toBe(isError);
       expect(JSON.parse(response.result.content[0].text)).toEqual(result);
     }
   });
 
-  it("reports a callback error and a call no Turn recorded as tool errors", async () => {
-    bridge.announce("session-a", "toolu_e", "feishu_message_reply", { markdown: "e" });
-    bridge.resolve("toolu_e", { ok: false, error: { message: "kernel failed" } });
-    const failed = await rpc("tools/call", { name: "feishu_message_reply", arguments: { markdown: "e" } });
-    expect(failed.result).toEqual({
+  it("reports a callback error and a call no Turn ran as tool errors", async () => {
+    const pending = rpc("tools/call", { name: "feishu_message_reply", arguments: { markdown: "e" } });
+    await answerNext({ ok: false, error: { message: "kernel failed" } });
+    expect((await pending).result).toEqual({
       content: [{ type: "text", text: '{"message":"kernel failed"}' }],
       isError: true,
     });
     const orphan = await rpc("tools/call", { name: "feishu_message_reply", arguments: { markdown: "x" } });
     expect(orphan.result.isError).toBe(true);
-    expect(orphan.result.content[0].text).toContain("not part of an active Turn");
+    expect(orphan.result.content[0].text).toContain("no running Turn");
   });
 
   it("rejects a tool the Session does not have and malformed arguments", async () => {

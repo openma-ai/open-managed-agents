@@ -7,8 +7,11 @@
  * opened: a Turn is the events that follow its `user.message`, and a
  * repeated Turn is read back from the event list. The Agent reaches
  * OpenMatter operations (for example the Feishu reply tool) through the
- * Matter MCP server configured on the Agent; the connector turns those tool
- * calls into operation-call callbacks (see `tool-bridge.ts`).
+ * Matter MCP server configured on the Agent. The MCP request registers each
+ * call in the bridge's store; while a Turn runs, the connector takes the
+ * Session's calls from the store, alongside the OpenMA event stream, and
+ * reports them as operation-call callbacks (see `tool-bridge.ts`). It does
+ * not look for tool calls in the OpenMA event log.
  */
 
 import {
@@ -33,6 +36,7 @@ import {
   mcpToolName,
   type JsonValue,
   type OperationCallBridge,
+  type StoredCall,
 } from "./tool-bridge.js";
 
 export const OPENMA_CONNECTOR_ID = "openma";
@@ -40,8 +44,6 @@ export const OPENMA_CONNECTOR_ID = "openma";
 /** Prefix of an OpenMatter-created session title; the rest is the
  * idempotency key, so a replayed `open` finds the session it created. */
 export const SESSION_TITLE_PREFIX = "openmatter:";
-
-const MCP_INVOKE_TOOL = "mcp_invoke";
 
 export class OmaSessionUnavailableError extends Error {
   constructor(sessionId: string) {
@@ -57,8 +59,6 @@ export const isOmaSessionUnavailable = (cause: unknown): boolean =>
 export interface OpenMAConnectorOptions {
   readonly client: OmaClient;
   readonly bridge: OperationCallBridge;
-  /** Name of the Matter MCP server in the Agent's `mcp_servers`. */
-  readonly mcpServerName: string;
   /** The environment new sessions run in, or how to find it. */
   readonly environmentId: string | (() => Promise<string>);
   /** Vaults attached to a new session, for example the one holding the
@@ -89,34 +89,14 @@ const turnTools = (input: AgentTurnInput): ReadonlyMap<string, AgentTool> => {
   return map;
 };
 
-/** The Matter MCP tool an event calls, if any. */
-const matterToolCall = (
-  event: OmaEvent,
-  serverName: string,
-): { readonly id: string; readonly tool: string; readonly input: unknown } | undefined => {
-  if (typeof event.id !== "string") return undefined;
-  const prefix = `mcp__${serverName}__`;
-  if (event.type === "agent.mcp_tool_use") {
-    if (event.mcp_server_name !== serverName) return undefined;
-    const name = typeof event.name === "string" ? event.name : "";
-    return {
-      id: event.id,
-      tool: name.startsWith(prefix) ? name.slice(prefix.length) : name,
-      input: event.input ?? {},
-    };
-  }
-  if (event.type === "agent.tool_use" && event.name === MCP_INVOKE_TOOL) {
-    const args = isRecord(event.input) ? event.input : {};
-    const target = typeof args.tool_name === "string" ? args.tool_name : "";
-    if (!target.startsWith(prefix)) return undefined;
-    return {
-      id: event.id,
-      tool: target.slice(prefix.length),
-      input: isRecord(args.arguments) ? args.arguments : {},
-    };
-  }
-  return undefined;
-};
+const toolFailure = (message: string) =>
+  ({ ok: false, error: { message } }) as const;
+
+/** Waits for the next of a Turn's two sources: the OpenMA event stream and
+ * the Matter MCP calls of its Session. */
+type Next =
+  | { readonly kind: "event"; readonly result: IteratorResult<OmaEvent> }
+  | { readonly kind: "call" };
 
 const userMessage = (content: AgentContent): Record<string, unknown> => ({
   type: "user.message",
@@ -129,7 +109,7 @@ export const createOpenMAConnector = (
 ): OpenMAAgentConnector => {
   const id = options.id ?? OPENMA_CONNECTOR_ID;
   const now = options.now ?? (() => new Date());
-  const { client, bridge, mcpServerName } = options;
+  const { client, bridge } = options;
   /** The `user.message` event that started each Turn, so a repeated turnId
    * replays it; null when the server returned no id for it. */
   const turnStarts = new Map<string, string | null>();
@@ -244,8 +224,101 @@ export const createOpenMAConnector = (
       yield* backlog;
       yield* stream;
     }
+
+    // Take the Session's MCP calls from the store while the Turn runs. This
+    // runs apart from the kernel reading this generator: the kernel handles
+    // one event at a time, and a call must be taken while an earlier
+    // callback is still being answered.
+    const taker = bridge.newTaker();
+    const taken: StoredCall[] = [];
+    const surfaced = new Set<string>();
+    let notify: (() => void) | undefined;
+    let watchError: unknown;
+    const watching = new AbortController();
+    const watcher = (async () => {
+      try {
+        while (!watching.signal.aborted) {
+          const calls = await bridge.take(input.sessionId, taker);
+          if (calls.length > 0) {
+            taken.push(...calls);
+            notify?.();
+          }
+          await bridge.pause(watching.signal);
+        }
+      } catch (error) {
+        if (!watching.signal.aborted) {
+          watchError = error;
+          notify?.();
+        }
+      }
+    })();
+
+    const callbackFor = (call: StoredCall, tool: AgentTool): OpenMAEvent => {
+      const ctx = {
+        eventId: `${omaSessionId}:${call.callId}:operation`,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        occurredAt: new Date(call.createdAtMs).toISOString(),
+        seq: ++seq,
+      };
+      const params = {
+        integrationId: tool.integrationId,
+        operation: tool.operation,
+        input: call.input,
+      };
+      return createOpenMAEvent({
+        ...agentEventEnvelope(ctx, SOURCE),
+        type: "callback.requested",
+        data: {
+          callback_id: call.callId,
+          fingerprint: callbackFingerprint(
+            ctx,
+            "extension",
+            OPERATION_CALL_METHOD,
+            call.callId,
+            params,
+          ),
+          method: OPERATION_CALL_METHOD,
+          category: "extension",
+          params,
+        },
+      }) as OpenMAEvent;
+    };
+
+    const events = turnEvents();
+    let pending: Promise<Next> | undefined;
     try {
-      for await (const event of turnEvents()) {
+      for (;;) {
+        if (watchError !== undefined) throw watchError;
+        // Calls first: they are already waiting, in registration order.
+        const call = taken.shift();
+        if (call !== undefined) {
+          const tool = tools.get(call.tool);
+          if (tool === undefined) {
+            await bridge.resolve(
+              call.callId,
+              toolFailure(`${call.tool} is not available in this Turn`),
+            );
+            continue;
+          }
+          surfaced.add(call.callId);
+          yield callbackFor(call, tool);
+          continue;
+        }
+        pending ??= events.next().then((result) => ({ kind: "event", result }) as const);
+        const called = new Promise<Next>((resolve) => {
+          notify = () => resolve({ kind: "call" });
+        });
+        const next = await Promise.race([pending, called]);
+        notify = undefined;
+        if (next.kind === "call") continue;
+        pending = undefined;
+        if (next.result.done) {
+          throw new Error(
+            `OpenMA event stream for session ${omaSessionId} ended before the Turn finished`,
+          );
+        }
+        const event = next.result.value;
         if (typeof event.id === "string") {
           if (seen.has(event.id)) continue;
           seen.add(event.id);
@@ -261,45 +334,26 @@ export const createOpenMAConnector = (
           throw new OmaSessionUnavailableError(omaSessionId);
         }
         yield mapped;
-        const call = matterToolCall(event, mcpServerName);
-        const tool = call === undefined ? undefined : tools.get(call.tool);
-        if (call !== undefined && tool !== undefined) {
-          const ctx = context(event, ":operation");
-          const params = {
-            integrationId: tool.integrationId,
-            operation: tool.operation,
-            input: call.input as JsonValue,
-          };
-          await bridge.announce(input.sessionId, call.id, call.tool, call.input);
-          yield createOpenMAEvent({
-            ...agentEventEnvelope(ctx, SOURCE),
-            type: "callback.requested",
-            data: {
-              callback_id: call.id,
-              fingerprint: callbackFingerprint(
-                ctx,
-                "extension",
-                OPERATION_CALL_METHOD,
-                call.id,
-                params,
-              ),
-              method: OPERATION_CALL_METHOD,
-              category: "extension",
-              params,
-            },
-          }) as OpenMAEvent;
-        }
         if (isTurnTerminalEvent(mapped)) {
           turnStarts.delete(input.turnId);
           return;
         }
       }
-      throw new Error(
-        `OpenMA event stream for session ${omaSessionId} ended before the Turn finished`,
-      );
     } finally {
       abort.abort();
-      await bridge.release(input.sessionId).catch(() => undefined);
+      // The stream may be mid-read; its read ends with the abort.
+      pending?.catch(() => undefined);
+      watching.abort();
+      await watcher;
+      // Calls this Turn took but the kernel did not answer fail now; first
+      // answer wins, so answered calls keep their answer.
+      const late = await bridge.take(input.sessionId, taker).catch(() => []);
+      for (const call of [...taken, ...late]) surfaced.add(call.callId);
+      for (const callId of surfaced) {
+        await bridge
+          .resolve(callId, toolFailure("The Turn ended before this call was answered"))
+          .catch(() => undefined);
+      }
     }
   }
 
