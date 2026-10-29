@@ -63,6 +63,19 @@ import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-s
 import { SqlCredentialStore } from "@open-managed-agents/credential-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
+import {
+  refreshManagedCredential,
+  selectManagedMcpTarget,
+  selectManagedOutboundTarget,
+  type ManagedCredentialRefresh,
+  type ManagedProxyCredentialRecord,
+  type McpProxyCredentialSource,
+} from "./managed-proxy-credentials";
+
+export type {
+  ManagedProxyCredentialRecord,
+  McpProxyCredentialSource,
+} from "./managed-proxy-credentials";
 import { createCloudflareAccessLossRuntime } from "../lib/mcp-access-loss";
 
 // Module-level: the cap spec registry is pure data + immutable. Building
@@ -104,50 +117,12 @@ export interface McpProxySessionSource {
   } | null>;
 }
 
-interface ManagedProxyCredential {
-  id: string;
-  vaultId: string;
-  archivedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  auth: Record<string, unknown> & { type: string };
-}
-
-interface ManagedProxyCredentialRecord {
-  revision: number;
-  credential: ManagedProxyCredential;
-}
-
 /**
- * Credential half of the managed MCP boundary. The official v1 Vault API
- * persists encrypted documents in `managed_credentials`; the legacy
- * `Services.credentials` adapter reads a different table and encryption
- * context. Keeping this as a narrow Port prevents either storage shape from
- * leaking into the MCP protocol code.
+ * Managed credentials live in `managed_credentials` (the official v1 Vault
+ * API store); the legacy `Services.credentials` adapter reads a different
+ * table and encryption context. v1 Sessions only read the former, through
+ * {@link McpProxyCredentialSource}.
  */
-export interface McpProxyCredentialSource {
-  listByVaults(input: {
-    workspaceId: string;
-    vaultIds: string[];
-  }): Promise<ManagedProxyCredentialRecord[]>;
-  find?(input: {
-    workspaceId: string;
-    vaultId: string;
-    credentialId: string;
-  }): Promise<ManagedProxyCredentialRecord | null>;
-  replace?(input: {
-    workspaceId: string;
-    vaultId: string;
-    credentialId: string;
-    expectedRevision: number;
-    next: ManagedProxyCredential;
-  }): Promise<
-    | { type: "replaced"; record: ManagedProxyCredentialRecord }
-    | { type: "not_found" }
-    | { type: "revision_conflict"; actualRevision: number }
-  >;
-}
-
 export function createManagedMcpProxyCredentialSource(
   env: Env,
   tenantDb: D1Database,
@@ -176,7 +151,7 @@ export function createManagedMcpProxyCredentialSource(
             limit: 100,
             ...(position !== undefined && { position }),
           });
-          records.push(...page as ManagedProxyCredentialRecord[]);
+          records.push(...page);
           if (page.length < 100) break;
           const last = page.at(-1)!;
           position = {
@@ -187,12 +162,8 @@ export function createManagedMcpProxyCredentialSource(
       }
       return records;
     },
-    find: (input) => store.find(input) as Promise<ManagedProxyCredentialRecord | null>,
-    replace: (input) => store.replace(input as never) as Promise<
-      | { type: "replaced"; record: ManagedProxyCredentialRecord }
-      | { type: "not_found" }
-      | { type: "revision_conflict"; actualRevision: number }
-    >,
+    find: (input) => store.find(input),
+    replace: (input) => store.replace(input),
   };
 }
 
@@ -206,21 +177,23 @@ export interface ProxyTarget {
    *  to retry once with a fresh token if the upstream rejects the
    *  bearer. Stays internal to main — never leaves through any RPC
    *  return value or HTTP response body. */
-  refresh?: {
-    refreshToken: string;
-    tokenEndpoint: string;
-    clientId?: string;
-    clientSecret?: string;
-    credentialId: string;
-    vaultId: string;
-    /** Where in the credential's `auth` blob the rotated access token
-     *  is read from + written back to. mcp_oauth uses `access_token`;
-     *  cap_cli uses `token`. Defaults to `access_token` to keep
-     *  pre-cap callers working unchanged. */
-    tokenField?: "access_token" | "token";
-    /** Present for credentials created through the official v1 Vault API. */
-    credentialSource?: McpProxyCredentialSource;
-  };
+  refresh?: LegacyCredentialRefresh | ManagedCredentialRefresh;
+}
+
+/** Refresh metadata for a legacy `/v1/oma` Vault credential. */
+interface LegacyCredentialRefresh {
+  refreshToken: string;
+  tokenEndpoint: string;
+  clientId?: string;
+  clientSecret?: string;
+  credentialId: string;
+  vaultId: string;
+  /** Where in the credential's `auth` blob the rotated access token
+   *  is read from + written back to. mcp_oauth uses `access_token`;
+   *  cap_cli uses `token`. Defaults to `access_token` to keep
+   *  pre-cap callers working unchanged. */
+  tokenField?: "access_token" | "token";
+  credentialSource?: undefined;
 }
 
 export interface ForwardHttpMcpProxyRequestInput {
@@ -328,15 +301,13 @@ export async function resolveProxyTargetByTenant(
 
   const vaultIds = legacySession.vault_ids ?? managedSession.vaultIds ?? [];
   if (vaultIds.length === 0) return null;
-  const useManagedCredentialSource = managedSessionRecord !== null && credentialSource !== undefined;
-  const managedCredentials = useManagedCredentialSource
-    ? await credentialSource
+  if (managedSessionRecord !== null && credentialSource !== undefined) {
+    const records = await credentialSource
       .listByVaults({ workspaceId: tenantId, vaultIds })
-      .catch(() => [])
-    : [];
-  const grouped = useManagedCredentialSource
-    ? [{ vault_id: "managed", credentials: managedCredentials.map((record) => record.credential) }]
-    : await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);
+      .catch(() => []);
+    return selectManagedMcpTarget(records, server.url, credentialSource);
+  }
+  const grouped = await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);
   for (const g of grouped) {
     for (const c of g.credentials) {
       const credential = c as unknown as {
@@ -387,22 +358,6 @@ export async function resolveProxyTargetByTenant(
           clientSecret: auth.client_secret,
           credentialId: (c as { id: string }).id,
           vaultId: g.vault_id,
-        };
-      }
-      if (
-        credentialSource
-        && auth.type === "mcp_oauth"
-        && auth.refresh?.refreshToken
-        && auth.refresh.tokenEndpoint
-      ) {
-        target.refresh = {
-          refreshToken: auth.refresh.refreshToken,
-          tokenEndpoint: auth.refresh.tokenEndpoint,
-          clientId: auth.refresh.clientId,
-          clientSecret: auth.refresh.tokenEndpointAuth?.clientSecret ?? undefined,
-          credentialId: credential.id,
-          vaultId: credential.vaultId ?? credential.vault_id ?? "",
-          credentialSource,
         };
       }
       return target;
@@ -456,15 +411,13 @@ export async function resolveOutboundCredentialByHost(
 
   const vaultIds = legacySession.vault_ids ?? managedSession.vaultIds ?? [];
   if (vaultIds.length === 0) return null;
-  const useManagedCredentialSource = managedSessionRecord !== null && credentialSource !== undefined;
-  const managedCredentials = useManagedCredentialSource
-    ? await credentialSource
+  if (managedSessionRecord !== null && credentialSource !== undefined) {
+    const records = await credentialSource
       .listByVaults({ workspaceId: tenantId, vaultIds })
-      .catch(() => [])
-    : [];
-  const grouped = useManagedCredentialSource
-    ? [{ vault_id: "managed", credentials: managedCredentials.map((record) => record.credential) }]
-    : await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);
+      .catch(() => []);
+    return selectManagedOutboundTarget(records, hostname, capRegistry, credentialSource);
+  }
+  const grouped = await services.credentials.listByVaults({ tenantId, vaultIds }).catch(() => []);
 
   // First pass: cap_cli credentials matched via cap's spec registry.
   // Cap owns the per-CLI knowledge — endpoints (`api.github.com`,
@@ -637,22 +590,6 @@ export async function resolveOutboundCredentialByHost(
         clientSecret: auth.client_secret,
         credentialId: (bestMcp.c as { id: string }).id,
         vaultId: bestMcp.vaultId,
-      };
-    }
-    if (
-      credentialSource
-      && auth.type === "mcp_oauth"
-      && auth.refresh?.refreshToken
-      && auth.refresh.tokenEndpoint
-    ) {
-      target.refresh = {
-        refreshToken: auth.refresh.refreshToken,
-        tokenEndpoint: auth.refresh.tokenEndpoint,
-        clientId: auth.refresh.clientId,
-        clientSecret: auth.refresh.tokenEndpointAuth?.clientSecret ?? undefined,
-        credentialId: (bestMcp.c as { id: string }).id,
-        vaultId: bestMcp.vaultId,
-        credentialSource,
       };
     }
     return target;
@@ -886,19 +823,10 @@ async function tryRefreshOauth(
   staleAccessToken: string,
   failure?: { code: string | null },
 ): Promise<string | null> {
-  const tokenField = refresh.tokenField ?? "access_token";
-  let managedCurrent: ManagedProxyCredentialRecord | null = null;
-  if (refresh.credentialSource?.find) {
-    managedCurrent = await refresh.credentialSource.find({
-      workspaceId: tenantId,
-      vaultId: refresh.vaultId,
-      credentialId: refresh.credentialId,
-    }).catch(() => null);
-    const liveAccessToken = managedCurrent?.credential.auth.accessToken;
-    if (typeof liveAccessToken === "string" && liveAccessToken !== staleAccessToken) {
-      return liveAccessToken;
-    }
+  if (refresh.credentialSource !== undefined) {
+    return refreshManagedCredential(tenantId, refresh, staleAccessToken, failure);
   }
+  const tokenField = refresh.tokenField ?? "access_token";
   // Double-checked locking against concurrent refresh: if N parallel
   // calls all 401 at the same instant (typical when access_token TTL
   // hits boundary mid-multi-tool-call), they'll all enter this path.
@@ -973,15 +901,6 @@ async function tryRefreshOauth(
     //       invalid. The winner persisted a fresh access_token to D1.
     //       Re-read and route the caller's retry through it.
     try {
-      if (refresh.credentialSource?.find) {
-        const after = await refresh.credentialSource.find({
-          workspaceId: tenantId,
-          vaultId: refresh.vaultId,
-          credentialId: refresh.credentialId,
-        });
-        const winner = after?.credential.auth.accessToken;
-        if (typeof winner === "string" && winner !== staleAccessToken) return winner;
-      }
       const after = await services.credentials
         .get({ tenantId, vaultId: refresh.vaultId, credentialId: refresh.credentialId })
         .catch(() => null);
@@ -1003,53 +922,6 @@ async function tryRefreshOauth(
     return null;
   }
   if (!tokens.access_token) return null;
-
-  if (
-    refresh.credentialSource?.replace
-    && managedCurrent !== null
-    && managedCurrent.credential.auth.type === "mcp_oauth"
-  ) {
-    const currentAuth = managedCurrent.credential.auth;
-    const currentRefresh = currentAuth.refresh;
-    if (typeof currentRefresh === "object" && currentRefresh !== null) {
-      const next: ManagedProxyCredential = {
-        ...managedCurrent.credential,
-        updatedAt: new Date().toISOString(),
-        auth: {
-          ...currentAuth,
-          accessToken: tokens.access_token,
-          ...(tokens.expires_in !== undefined && {
-            expiresAt: new Date(Date.now() + tokens.expires_in * 1_000).toISOString(),
-          }),
-          refresh: {
-            ...currentRefresh,
-            refreshToken: tokens.refresh_token ?? refresh.refreshToken,
-          },
-        },
-      };
-      const replaced = await refresh.credentialSource.replace({
-        workspaceId: tenantId,
-        vaultId: refresh.vaultId,
-        credentialId: refresh.credentialId,
-        expectedRevision: managedCurrent.revision,
-        next,
-      }).catch(() => null);
-      if (replaced?.type === "replaced") return tokens.access_token;
-      if (replaced?.type === "revision_conflict") {
-        const winner = await refresh.credentialSource.find?.({
-          workspaceId: tenantId,
-          vaultId: refresh.vaultId,
-          credentialId: refresh.credentialId,
-        }).catch(() => null);
-        const winnerToken = winner?.credential.auth.accessToken;
-        if (typeof winnerToken === "string") return winnerToken;
-      }
-      // The provider already issued a valid token. A transient persistence
-      // failure must not throw away the current request; the next 401 retries
-      // refresh and exposes the storage problem through normal logs.
-      return tokens.access_token;
-    }
-  }
 
   // Persist back to D1 via CAS. Two parallel refreshes that both made it
   // through token_endpoint successfully (the provider didn't one-shot
