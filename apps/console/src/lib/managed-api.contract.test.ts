@@ -117,6 +117,35 @@ describe("Console Managed Agents client", () => {
     ]);
   });
 
+  it("routes the OpenMA cap_cli extension through the managed /v1/vaults API", async () => {
+    const client = createManagedApiClient(request);
+
+    await client.vaults.credentials.create("vault/1", {
+      display_name: "gh",
+      auth: { type: "cap_cli", cli_id: "gh", token: "gho_token" },
+    });
+    await client.vaults.credentials.capCliDeviceFlow.start("vault/1", { cli_id: "gh" });
+    await client.vaults.credentials.capCliDeviceFlow.poll("vault/1", { flow_token: "sealed" });
+
+    expect(request.mock.calls).toEqual([
+      ["/v1/vaults/vault%2F1/credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          display_name: "gh",
+          auth: { type: "cap_cli", cli_id: "gh", token: "gho_token" },
+        }),
+      }],
+      ["/v1/vaults/vault%2F1/cap_cli_device_flow", {
+        method: "POST",
+        body: JSON.stringify({ cli_id: "gh" }),
+      }],
+      ["/v1/vaults/vault%2F1/cap_cli_device_flow/poll", {
+        method: "POST",
+        body: JSON.stringify({ flow_token: "sealed" }),
+      }],
+    ]);
+  });
+
   it("builds official multipart skill uploads with files[]", async () => {
     const client = createManagedApiClient(request);
     const file = new File(["# Skill"], "SKILL.md", { type: "text/markdown" });
