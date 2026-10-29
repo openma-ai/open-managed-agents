@@ -46,7 +46,9 @@ import type { HarnessRuntime } from "./interface";
 interface AcpSessionUpdate {
   sessionUpdate: string;
   // ContentChunk shape
-  content?: { type?: string; text?: string };
+  // ContentChunk carries one block; ToolCallUpdate carries a list of
+  // ToolCallContent (`{ type: "content", content }`, `{ type: "terminal" }`, ...).
+  content?: { type?: string; text?: string } | AcpToolCallContent[];
   // ToolCall / ToolCallUpdate shape
   toolCallId?: string;
   title?: string;
@@ -54,6 +56,15 @@ interface AcpSessionUpdate {
   rawOutput?: unknown;
   status?: string;
   kind?: string;
+  _meta?: {
+    terminal_output?: { data?: unknown };
+    terminal_output_delta?: { data?: unknown };
+  };
+}
+
+interface AcpToolCallContent {
+  type?: string;
+  content?: { type?: string; text?: string };
 }
 
 interface AcpPromptUsage {
@@ -119,6 +130,11 @@ export class AcpTranslator {
    *  channel is `tool_call_update` with non-terminal status, which we still
    *  honor by patching pending state but never re-emit a second tool_use. */
   #emittedToolUses: Set<string> = new Set();
+  /** Tool output seen on `tool_call_update` frames, keyed by toolCallId.
+   *  claude-agent-acp sends a command's output in its own update before the
+   *  status update, either as `_meta.terminal_output(_delta)` or as
+   *  `content`, and leaves `rawOutput` unset. */
+  #toolOutputs: Map<string, string> = new Map();
 
   constructor(runtime: HarnessRuntime, options: AcpTranslatorOptions = {}) {
     this.#runtime = runtime;
@@ -181,11 +197,11 @@ export class AcpTranslator {
         // tool_call_update never arrived; without flushing here, the eventual
         // turn-end flush would put them AFTER the assistant's text.)
         await this.#flushAllPendingToolUses();
-        await this.#onTextChunk(upd.content?.text ?? "");
+        await this.#onTextChunk(chunkText(upd.content));
         break;
       case "agent_thought_chunk":
         await this.#flushAllPendingToolUses();
-        await this.#onThinkingChunk(upd.content?.text ?? "");
+        await this.#onThinkingChunk(chunkText(upd.content));
         break;
       case "tool_call":
         // New tool call — close any in-flight message/thinking first since
@@ -195,6 +211,7 @@ export class AcpTranslator {
         this.#bufferToolUse(upd);
         break;
       case "tool_call_update":
+        this.#recordToolOutput(upd);
         // Terminal status (completed / failed / cancelled / anything not
         // "in_progress"|"pending") closes the call — flush our buffered
         // tool_use first so the persisted order is `tool_use → tool_result`,
@@ -405,19 +422,54 @@ export class AcpTranslator {
     }
   }
 
+  #recordToolOutput(upd: AcpSessionUpdate): void {
+    if (!upd.toolCallId) return;
+    const meta = upd._meta;
+    const delta = meta?.terminal_output_delta?.data;
+    const full = meta?.terminal_output?.data;
+    const previous = this.#toolOutputs.get(upd.toolCallId) ?? "";
+    if (typeof delta === "string") {
+      this.#toolOutputs.set(upd.toolCallId, previous + delta);
+    } else if (typeof full === "string") {
+      this.#toolOutputs.set(upd.toolCallId, full);
+    } else {
+      const text = toolCallContentText(upd.content);
+      if (text !== undefined) this.#toolOutputs.set(upd.toolCallId, text);
+    }
+  }
+
   async #emitToolResult(upd: AcpSessionUpdate): Promise<void> {
     if (!upd.toolCallId) return;
     const out = upd.rawOutput;
+    const seen = this.#toolOutputs.get(upd.toolCallId);
+    this.#toolOutputs.delete(upd.toolCallId);
     const text =
       typeof out === "string" ? out
-      : out == null ? `(status: ${upd.status ?? "unknown"})`
-      : JSON.stringify(out);
+      : out != null ? JSON.stringify(out)
+      : seen !== undefined ? seen
+      : `(status: ${upd.status ?? "unknown"})`;
     this.#runtime.broadcast({
       type: "agent.tool_result",
       tool_use_id: upd.toolCallId,
       content: text,
     });
   }
+}
+
+function chunkText(content: AcpSessionUpdate["content"]): string {
+  return content && !Array.isArray(content) ? content.text ?? "" : "";
+}
+
+/** Text of a ToolCallUpdate's `content` list; undefined when it carries none
+ *  (a terminal reference alone, or no list at all). */
+function toolCallContentText(content: AcpSessionUpdate["content"]): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const texts = content.flatMap((item) =>
+    item?.type === "content" && item.content?.type === "text" && typeof item.content.text === "string"
+      ? [item.content.text]
+      : [],
+  );
+  return texts.length > 0 ? texts.join("\n") : undefined;
 }
 
 function isPromptTerminal(value: unknown): value is AcpEvent {
