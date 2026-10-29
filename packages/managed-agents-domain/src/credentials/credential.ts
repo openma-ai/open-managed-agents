@@ -40,7 +40,23 @@ export type CredentialAuth =
       secretName: string;
       secretValue: string | null;
       injectionLocation: CredentialInjectionLocation;
-    };
+    }
+  | CredentialCapCliAuth;
+
+/**
+ * OpenMA extension, not part of the Anthropic Managed Agents contract. A CLI
+ * Auth Protocol credential: the egress proxy injects `token` into requests
+ * to the endpoints of the CLI spec named by `cliId`. The sandbox only ever
+ * sees the spec's placeholder environment values, never the token.
+ */
+export interface CredentialCapCliAuth {
+  type: "cap_cli";
+  cliId: string;
+  token: string | null;
+  refreshToken?: string | null;
+  expiresAt?: string | null;
+  extras?: Record<string, string>;
+}
 
 export interface Credential {
   id: string;

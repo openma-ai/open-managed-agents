@@ -8,11 +8,50 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/vaults/credentials";
 import { z } from "zod";
 
-export type CredentialCreateBody = Omit<CredentialCreateParams, "betas">;
+/**
+ * `cap_cli` is an OpenMA extension, not part of the Anthropic Managed Agents
+ * contract. It names a built-in CLI Auth Protocol spec (`cli_id`, e.g. "gh")
+ * whose endpoints the egress proxy injects `token` into. `token`,
+ * `refresh_token` and `extras` are write-only, like every other secret.
+ */
+export interface CapCliCredentialCreateAuth {
+  type: "cap_cli";
+  cli_id: string;
+  token: string;
+  refresh_token?: string | null;
+  expires_at?: string | null;
+  extras?: Record<string, string>;
+}
+
+/** OpenMA extension; see {@link CapCliCredentialCreateAuth}. */
+export interface CapCliCredentialUpdateAuth {
+  type: "cap_cli";
+  token?: string | null;
+  refresh_token?: string | null;
+  expires_at?: string | null;
+  extras?: Record<string, string> | null;
+}
+
+/** OpenMA extension; see {@link CapCliCredentialCreateAuth}. */
+export interface CapCliCredentialResponseAuth {
+  type: "cap_cli";
+  cli_id: string;
+  expires_at?: string | null;
+}
+
+export type CredentialCreateBody = Omit<CredentialCreateParams, "betas" | "auth"> & {
+  auth: CredentialCreateParams["auth"] | CapCliCredentialCreateAuth;
+};
 export type CredentialUpdateBody = Omit<
   CredentialUpdateParams,
-  "betas" | "vault_id"
->;
+  "betas" | "vault_id" | "auth"
+> & {
+  auth?: NonNullable<CredentialUpdateParams["auth"]> | CapCliCredentialUpdateAuth;
+};
+/** The official credential object, widened by the OpenMA `cap_cli` auth. */
+export type CredentialResponse = Omit<BetaManagedAgentsCredential, "auth"> & {
+  auth: BetaManagedAgentsCredential["auth"] | CapCliCredentialResponseAuth;
+};
 export type CredentialListQuery = Omit<CredentialListParams, "betas">;
 
 const unrestrictedNetworkingSchema = z
@@ -131,6 +170,17 @@ const credentialCreateAuthSchema = z.discriminatedUnion("type", [
       injection_location: injectionLocationInputSchema.optional(),
     })
     .strict(),
+  // OpenMA extension.
+  z
+    .object({
+      type: z.literal("cap_cli"),
+      cli_id: z.string().min(1),
+      token: z.string().min(1),
+      refresh_token: z.string().nullable().optional(),
+      expires_at: z.string().nullable().optional(),
+      extras: z.record(z.string(), z.string()).optional(),
+    })
+    .strict(),
 ]);
 
 const credentialUpdateAuthSchema = z.discriminatedUnion("type", [
@@ -156,6 +206,16 @@ const credentialUpdateAuthSchema = z.discriminatedUnion("type", [
       secret_value: z.string().nullable().optional(),
     })
     .strict(),
+  // OpenMA extension.
+  z
+    .object({
+      type: z.literal("cap_cli"),
+      token: z.string().nullable().optional(),
+      refresh_token: z.string().nullable().optional(),
+      expires_at: z.string().nullable().optional(),
+      extras: z.record(z.string(), z.string()).nullable().optional(),
+    })
+    .strict(),
 ]);
 
 const credentialResponseAuthSchema = z.discriminatedUnion("type", [
@@ -179,6 +239,14 @@ const credentialResponseAuthSchema = z.discriminatedUnion("type", [
       injection_location: injectionLocationResponseSchema,
       networking: networkingSchema,
       secret_name: z.string(),
+    })
+    .strict(),
+  // OpenMA extension.
+  z
+    .object({
+      type: z.literal("cap_cli"),
+      cli_id: z.string(),
+      expires_at: z.string().nullable().optional(),
     })
     .strict(),
 ]);
@@ -213,7 +281,7 @@ export const credentialListQuerySchema = z
   })
   .strict();
 
-export const credentialResponseSchema: z.ZodType<BetaManagedAgentsCredential> =
+export const credentialResponseSchema: z.ZodType<CredentialResponse> =
   z
     .object({
       id: z.string().min(1),
