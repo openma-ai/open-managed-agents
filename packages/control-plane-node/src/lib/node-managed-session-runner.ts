@@ -163,6 +163,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   prepareSandbox?(input: ManagedRunnerContext & {
     sandbox: SandboxExecutor;
     runtimeGeneration: string;
+    /** The execution acquiring the sandbox, when it runs under a fence. */
+    executionFence?: SessionExecutionFence;
     signal?: AbortSignal;
   }): Promise<void>;
   /** Fenced turn barrier for provider-neutral writable state reconciliation. */
@@ -331,7 +333,13 @@ export class DefaultNodeManagedSessionRunner
       },
       prepare: (sandbox) => {
         if (signal.aborted) return Promise.reject(abortedError(signal));
-        return this.dependencies.prepareSandbox?.({ ...context, sandbox, runtimeGeneration, signal }) ?? Promise.resolve();
+        return this.dependencies.prepareSandbox?.({
+          ...context,
+          sandbox,
+          runtimeGeneration,
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+          signal,
+        }) ?? Promise.resolve();
       },
     });
     const allocation = runtime.acquire();

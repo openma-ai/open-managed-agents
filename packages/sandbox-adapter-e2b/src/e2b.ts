@@ -563,6 +563,12 @@ export class E2BSandboxExecutor
    * read-only is honoured at the application layer (memory tools refuse
    * write ops on stores the agent has read-only access to).
    */
+  /** The s3fs mount exists only with a memory bucket; without one the host
+   * copies Memory Stores in and out as files. */
+  supportsNativeMemoryStoreMount(): boolean {
+    return this.memoryBucketConfig !== undefined;
+  }
+
   async mountMemoryStore(opts: {
     storeName: string;
     storeId: string;

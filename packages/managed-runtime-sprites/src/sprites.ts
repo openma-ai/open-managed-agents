@@ -370,6 +370,12 @@ export class SpritesRuntime
     }
   }
 
+  /** The provider-local projection over the host memory workspace is this
+   * runtime's native mount; it exists only when that workspace is wired. */
+  supportsNativeMemoryStoreMount(): boolean {
+    return this.#memoryWorkspace !== undefined;
+  }
+
   runtimeHandle() {
     return { provider: providerName, runtimeId: this.#sprite.name };
   }

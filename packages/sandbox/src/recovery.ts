@@ -65,6 +65,7 @@ const LOCAL_METHODS = new Set([
   "runtimeCapabilities",
   "capabilities",
   "sessionOutputMountCapabilities",
+  "supportsNativeMemoryStoreMount",
   "registerCommandSecrets",
   "setEnvVars",
 ]);

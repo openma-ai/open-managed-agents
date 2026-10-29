@@ -25,6 +25,7 @@ export type {
   SandboxSessionOutputMountPort,
 } from "./ports";
 export {
+  hasNativeMemoryStoreMount,
   supportsDuplexProcess,
   supportsManagedWorkspaceLifecycle,
   supportsPreparedBase,

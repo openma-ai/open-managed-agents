@@ -154,6 +154,12 @@ export class LiteBoxSandbox implements SandboxExecutor {
     this.pendingCaUpload = { hostPath: caCertPath, guestPath: inBoxCaPath };
   }
 
+  /** The host bind mount needs an on-disk memory root; without one the host
+   * copies Memory Stores into the VM as files. */
+  supportsNativeMemoryStoreMount(): boolean {
+    return Boolean(this.opts.memoryRoot || process.env.MEMORY_BLOB_DIR);
+  }
+
   async mountMemoryStore(opts: {
     storeName: string;
     storeId: string;

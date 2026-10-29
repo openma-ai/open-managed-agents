@@ -242,6 +242,7 @@ describe("NodeManagedSessionInputPreparer", () => {
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
       mountSessionOutputs: async () => { order.push("outputs"); },
+      supportsNativeMemoryStoreMount: () => true,
       mountMemoryStore: async () => { order.push("memory-mount"); },
       writeFileBytes: async () => { order.push("file-or-skill"); return "written"; },
       gitCheckout: async () => { order.push("repository"); },
@@ -518,7 +519,7 @@ describe("NodeManagedSessionInputPreparer", () => {
     })).resolves.toBeUndefined();
   });
 
-  it("fails closed when a memory store is attached to a sandbox without memory mounts", async () => {
+  it("copies memory stores as files when the sandbox declares no native mount", async () => {
     const session = managedSession();
     session.agent.skills = [];
     session.resources = [{
@@ -527,6 +528,8 @@ describe("NodeManagedSessionInputPreparer", () => {
       name: "project-memory",
       access: "read_write",
     }];
+    const materialize = vi.fn(async () => ({ mountStoreId: "unused" }));
+    const listMemories = vi.fn(async () => ({ type: "not_found" as const }));
     const preparer = new NodeManagedSessionInputPreparer({
       files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
       skillVersions: {
@@ -534,18 +537,29 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memorySnapshots: { materialize },
+      memories: { listMemories } as never,
     });
+    const mountMemoryStore = vi.fn(async () => undefined);
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
       mountSessionOutputs: async () => undefined,
+      // Implemented but not declared: never used.
+      mountMemoryStore,
+      // No manifest from an earlier turn; every other command succeeds.
+      exec: async (command: string) => command.startsWith("if [ -f ") ? "0" : "",
+      readFile: async () => { throw new Error("missing"); },
+      writeFile: async (path: string) => path,
     } as unknown as SandboxExecutor;
 
     await expect(preparer.prepare({
       workspaceId: "workspace_inputs",
       session,
       sandbox,
-    })).rejects.toThrow(/memory store mounts/i);
+    })).rejects.toThrow("Managed Memory Store memory_01 could not be listed: not_found");
+    expect(listMemories).toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+    expect(mountMemoryStore).not.toHaveBeenCalled();
   });
 
   it("materializes read-write Managed Memory in a fenced runtime generation", async () => {
@@ -572,6 +586,7 @@ describe("NodeManagedSessionInputPreparer", () => {
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
       mountSessionOutputs: async () => undefined,
+      supportsNativeMemoryStoreMount: () => true,
       mountMemoryStore,
       setEnvVars,
     } as unknown as SandboxExecutor;

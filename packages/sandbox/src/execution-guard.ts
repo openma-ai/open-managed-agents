@@ -29,6 +29,7 @@ const SAFE_METHODS = new Set([
   "capabilities",
   "inspect",
   "sessionOutputMountCapabilities",
+  "supportsNativeMemoryStoreMount",
   "registerCommandSecrets",
 ]);
 

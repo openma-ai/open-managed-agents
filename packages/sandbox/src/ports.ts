@@ -217,6 +217,17 @@ export function supportsSessionOutputMount(
   }
 }
 
+/** True when the sandbox declares a native Memory Store mount (see
+ * {@link SandboxPort.supportsNativeMemoryStoreMount}). A sandbox that only
+ * implements `mountMemoryStore` without declaring it is not native. */
+export function hasNativeMemoryStoreMount(
+  sandbox: SandboxPort,
+): sandbox is SandboxPort & Required<Pick<SandboxPort, "mountMemoryStore">> {
+  return typeof sandbox.mountMemoryStore === "function"
+    && typeof sandbox.supportsNativeMemoryStoreMount === "function"
+    && sandbox.supportsNativeMemoryStoreMount() === true;
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */
@@ -248,9 +259,18 @@ export interface SandboxPort {
    */
   writeFileBytes?(path: string, bytes: Uint8Array): Promise<string>;
   /**
+   * Declares that {@link mountMemoryStore} is a native mount this sandbox
+   * can serve in its current configuration (FUSE, host bind, provider
+   * projection). The Node control plane uses the native mount only when this
+   * returns true; otherwise it copies Memory Stores in and out as files
+   * through `exec`/`readFile`/`writeFile`, which every sandbox supports.
+   * Must be synchronous and side-effect free.
+   */
+  supportsNativeMemoryStoreMount?(): boolean;
+  /**
    * Mount a memory store into the sandbox at /mnt/memory/<storeName>/.
-   * On CF backed by R2 + FUSE; on Node we hydrate by copying. Read-only
-   * mounts reject writes.
+   * On CF backed by R2 + FUSE. Read-only mounts reject writes. Node hosts
+   * call it only when {@link supportsNativeMemoryStoreMount} returns true.
    */
   mountMemoryStore?(opts: {
     storeName: string;

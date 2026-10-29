@@ -381,6 +381,7 @@ describe("E2BSandboxExecutor boundaries", () => {
     const warn = vi.fn();
     const runtime = new E2BSandboxExecutor(sb as never, { memoryBucket: config, logger: { warn } });
     expect(runtime.sessionOutputMountCapabilities()).toEqual({ durability: "durable" });
+    expect(runtime.supportsNativeMemoryStoreMount()).toBe(true);
     await runtime.mountMemoryStore({ storeName: "m", storeId: "id", readOnly: false });
     await runtime.mountMemoryStore({ storeName: "ro", storeId: "id2", readOnly: true });
     await runtime.mountSessionOutputs({ tenantId: "t", sessionId: "s" });
@@ -396,6 +397,8 @@ describe("E2BSandboxExecutor boundaries", () => {
 
     const missing = new E2BSandboxExecutor(remote() as never, {});
     expect(missing.sessionOutputMountCapabilities()).toBeNull();
+    // Without a bucket the host file-syncs Memory Stores instead.
+    expect(missing.supportsNativeMemoryStoreMount()).toBe(false);
     await expect(missing.mountMemoryStore({ storeName: "m", storeId: "i", readOnly: false })).rejects.toThrow("without memoryBucket");
     await expect(missing.mountSessionOutputs({ tenantId: "t", sessionId: "s" })).rejects.toThrow("no memoryBucket");
 

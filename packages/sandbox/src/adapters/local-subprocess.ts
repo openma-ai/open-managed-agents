@@ -331,6 +331,13 @@ export class LocalSubprocessSandbox
    * view and remove write bits recursively. The backing store remains owned
    * by the collector/GC and is never chmod'ed by the sandbox adapter.
    */
+  /** Always native: commands run on the host, where `/mnt/memory` is not
+   * rewritten, so host-driven file sync would touch host paths. Without a
+   * memoryRoot the mount fails loudly instead. */
+  supportsNativeMemoryStoreMount(): boolean {
+    return true;
+  }
+
   async mountMemoryStore(opts: {
     storeName: string;
     storeId: string;
