@@ -7,7 +7,10 @@
 // somewhere — we transparently rewrite /workspace → workdir).
 //
 // /mnt/memory and /mnt/session/outputs are represented inside the workdir's
-// `.mnt/...` tree and exposed through OMA_* environment variables. A caller
+// `.mnt/...` tree and exposed through OMA_* environment variables. Commands
+// see the same view: exec/startProcess rewrite those roots and /workspace when
+// they appear as whole path tokens, so a command and readFile/writeFile agree
+// on what `/mnt/memory/notes/a.md` is. A caller
 // that owns an exclusive mount namespace (for example the main-node
 // container) may opt into rootMountBase=/mnt. Root mounts are never created
 // implicitly: process-global `/mnt` symlinks are unsafe when local sessions
@@ -144,7 +147,7 @@ export class LocalSubprocessSandbox
     const env = this.buildEnv(command);
 
     return new Promise<string>((resolveExec) => {
-      const child = spawn("/bin/sh", ["-c", command], {
+      const child = spawn("/bin/sh", ["-c", this.resolveCommandPaths(command)], {
         cwd: this.workdir,
         env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -191,7 +194,7 @@ export class LocalSubprocessSandbox
 
   async startProcess(command: string): Promise<ProcessHandle | null> {
     const env = this.buildEnv(command);
-    const child = spawn("/bin/sh", ["-c", command], {
+    const child = spawn("/bin/sh", ["-c", this.resolveCommandPaths(command)], {
       cwd: this.workdir,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -488,6 +491,9 @@ export class LocalSubprocessSandbox
     for (const mount of this.mounts.values()) {
       if (mount.readOnly) makeWritableRecursive(mount.targetDir);
     }
+    // A file-synced read-only Memory Store is a plain copy without write
+    // bits inside the workdir. lstat-based: mount symlinks are not followed.
+    makeWritableRecursive(join(this.workdir, ".mnt", "memory"));
     this.removeOwnedRootSymlinks();
     try {
       rmSync(this.workdir, { recursive: true, force: true });
@@ -537,9 +543,24 @@ export class LocalSubprocessSandbox
    * local conformance tests.
    */
   private resolveProcessEnvValue(value: string): string {
-    return value === "/workspace" || value.startsWith("/workspace/")
+    return SANDBOX_ROOTS.some((root) => value === root || value.startsWith(`${root}/`))
       ? this.resolvePath(value)
       : value;
+  }
+
+  /**
+   * Rewrite the logical sandbox roots in a shell command to their workdir
+   * locations, matching {@link resolvePath}. Only whole path tokens are
+   * rewritten: the root must start the command or follow whitespace, a
+   * quote, `=`, `:`, `(` or a backtick, and be followed by `/`, the end, or a
+   * shell delimiter, so `/workspaces` or `/mnt/memory2` stay untouched. The
+   * workdir is inserted verbatim; keep it free of shell metacharacters.
+   */
+  private resolveCommandPaths(command: string): string {
+    return command.replace(
+      SANDBOX_ROOT_TOKEN,
+      (_match, lead: string, root: string) => `${lead}${this.resolvePath(root)}`,
+    );
   }
 
   private createOwnedRootSymlink(linkPath: string, targetDir: string): void {
@@ -615,6 +636,11 @@ export class LocalSubprocessSandbox
     return base;
   }
 }
+
+/** Logical roots every real sandbox exposes; see resolvePath. */
+const SANDBOX_ROOTS = ["/workspace", "/mnt/memory", "/mnt/session/outputs"] as const;
+const SANDBOX_ROOT_TOKEN =
+  /(^|[\s'"=:(`])(\/workspace|\/mnt\/memory|\/mnt\/session\/outputs)(?=$|[\/\s'"`;:)|&<>])/g;
 
 function makeReadOnlyRecursive(path: string): void {
   let info;

@@ -248,20 +248,18 @@ export interface SandboxPort {
    */
   writeFileBytes?(path: string, bytes: Uint8Array): Promise<string>;
   /**
-   * Mount a memory store into the sandbox at /mnt/memory/<storeName>/.
-   * On CF backed by R2 + FUSE; on Node we hydrate by copying. Read-only
-   * mounts reject writes.
+   * Native Memory Store mount at /mnt/memory/<storeName>/ over a blob prefix
+   * (`storeId`): R2 + FUSE on Cloudflare, s3fs or a host bind/symlink on Node
+   * adapters. Read-only mounts reject writes. The Node control plane calls it
+   * only when the composed factory declares
+   * {@link SandboxFactoryCapabilities.nativeMemoryStoreMount}; otherwise it
+   * file-syncs Memory Stores through `exec`/`readFile`/`writeFile`.
    */
   mountMemoryStore?(opts: {
     storeName: string;
     storeId: string;
     readOnly: boolean;
   }): Promise<void>;
-  /** Flush provider-local writable Memory projections back into their
-   * generation-scoped blob prefixes before the host performs canonical CAS
-   * reconciliation. Native shared mounts omit this because writes are already
-   * visible in the backing store. */
-  synchronizeMemoryStores?(): Promise<void>;
   /** Destroy the sandbox — kills processes, unmounts, stops. */
   destroy?(): Promise<void>;
   /**
@@ -307,15 +305,10 @@ export interface SandboxFactoryContext {
   /** Per-session host workdir. LocalSubprocess uses this as the cwd
    *  for child processes; remote / VM adapters can ignore it. */
   workdir: string;
-  /** Memory blob root on the host. Adapters that mount memory stores
-   *  via symlink (LocalSubprocess) read from this; remote adapters
-   *  (Daytona/E2B) typically use s3fs and ignore it. */
+  /** Memory blob root on the host, for native Memory Store mounts only.
+   *  Adapters that mount via symlink/bind (LocalSubprocess, LiteBox) read
+   *  from this; remote adapters (Daytona/E2B) use s3fs and ignore it. */
   memoryRoot?: string;
-  /** Host-side text workspace bridge for remote providers without a native
-   * object-store/POSIX mount. The adapter copies a generation-scoped snapshot
-   * into the sandbox and flushes it through `synchronizeMemoryStores` at the
-   * fenced finalization barrier. */
-  memoryWorkspace?: SandboxMemoryWorkspacePort;
   /** Session-outputs root on the host. LocalSubprocess symlinks
    *  per-(tenant, session) dirs under here when mountSessionOutputs
    *  is called; remote adapters that don't host-mount can ignore it. */
@@ -337,16 +330,6 @@ export interface SandboxFactoryContext {
   preparedBase?: SandboxPreparedBaseHandle;
 }
 
-export interface SandboxMemoryWorkspacePort {
-  getText(key: string): Promise<{ text: string } | null>;
-  list(prefix: string, cursor?: string): Promise<{
-    keys: string[];
-    nextCursor: string | null;
-  }>;
-  put(key: string, content: string): Promise<unknown | null>;
-  delete(key: string): Promise<void>;
-}
-
 /** Read-only view of process env handed to the factory. Whole `process.env`
  *  is fine in practice — adapters cherry-pick the keys they care about
  *  (e.g. BoxRun reads `BOXRUN_URL`, E2B reads `E2B_API_KEY`). */
@@ -359,6 +342,14 @@ export interface SandboxFactoryCapabilities {
   /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
    * creates from {@link SandboxFactoryContext.preparedBase}. */
   preparedBase?: boolean;
+  /** Sandboxes implement {@link SandboxPort.mountMemoryStore} as a native
+   * mount over the host's memory blobs (for example s3fs with `MEMORY_S3_*`,
+   * or a host bind of a local memory root), and the composer guarantees it
+   * works in this deployment. The Node control plane then mounts Memory
+   * Stores instead of file-syncing them, and a failing mount fails the turn.
+   * Undeclared (the default for every built-in factory): Memory Stores are
+   * file-synced, which works on any sandbox. See docs/memory-stores.md. */
+  nativeMemoryStoreMount?: boolean;
 }
 
 export type SandboxFactory = ((

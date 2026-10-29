@@ -5,6 +5,7 @@ import {
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,
+  UNKNOWN_EXIT_CODE,
   type PackageSandbox,
 } from "../src/environment-packages";
 
@@ -35,6 +36,23 @@ describe("environment packages", () => {
     expect(parseExecResult("some output\n[exit 1]")).toEqual({ exitCode: 1, stdout: "some output", stderr: "" });
     expect(parseExecResult("[exit 127]").exitCode).toBe(127);
     expect(parseExecResult("all good").exitCode).toBe(0);
+  });
+
+  it("reads every adapter's status shape, failing closed on unknown status", () => {
+    // LocalSubprocess
+    expect(parseExecResult("partial\n[exit exit=2]")).toEqual({ exitCode: 2, stdout: "partial", stderr: "" });
+    expect(parseExecResult("[exit signal=SIGKILL]")).toEqual({
+      exitCode: UNKNOWN_EXIT_CODE, stdout: "", stderr: "signal=SIGKILL",
+    });
+    expect(parseExecResult("[exit exit=?]").exitCode).toBe(UNKNOWN_EXIT_CODE);
+    // BoxRun
+    expect(parseExecResult("exit=1\nout[stderr:denied]")).toEqual({ exitCode: 1, stdout: "out", stderr: "denied" });
+    expect(parseExecResult("exit=?\n").exitCode).toBe(UNKNOWN_EXIT_CODE);
+    // Spawn failures
+    expect(parseExecResult("[error: spawn /bin/sh ENOENT]")).toEqual({
+      exitCode: UNKNOWN_EXIT_CODE, stdout: "", stderr: "spawn /bin/sh ENOENT",
+    });
+    expect(parseExecResult("exit=0\nfine")).toEqual({ exitCode: 0, stdout: "fine", stderr: "" });
   });
 
   it("knows when there is nothing to install", () => {

@@ -79,24 +79,53 @@ export type EnvironmentPackagesProgress =
   | { kind: "step"; step: "running_setup" | "reinstalling_apt"; reason?: string }
   | { kind: "done"; path: EnvironmentPackagesPath; durationMs: number };
 
+/** Exit code reported by {@link parseExecResult} when a command did not
+ * report a numeric exit status (killed by a signal, unknown exit, or the
+ * adapter could not run it at all). Always a failure. */
+export const UNKNOWN_EXIT_CODE = -1;
+
 /**
- * Read an exec result. Two shapes exist: the Cloudflare sandbox returns
- * "exit=N\n<stdout>\nstderr: <stderr>", other adapters return the combined
- * output with a trailing "\n[exit N]" when the command failed.
+ * Read an exec result. Adapters report the status in one of these shapes,
+ * always at the start or the end of the output, never in the middle (text in
+ * the middle is command output, even when it looks like a status):
+ *
+ * - "exit=N\n<stdout>\nstderr: <stderr>" (Cloudflare sandbox);
+ *   "exit=N\n<stdout>[stderr:<stderr>]" (BoxRun, `exit=?` when unknown);
+ * - "<output>\n[exit N]" on failure (most adapters), where LocalSubprocess
+ *   writes "[exit exit=N]" or "[exit signal=SIGTERM]";
+ * - "[error: <message>]" as the whole output when the adapter could not run
+ *   the command.
+ *
+ * Statuses without a numeric exit code map to {@link UNKNOWN_EXIT_CODE}.
  */
 export function parseExecResult(raw: string): { exitCode: number; stdout: string; stderr: string } {
-  const prefixed = raw.match(/^exit=(-?\d+)\n?/);
+  const prefixed = raw.match(/^exit=(-?\d+|\?)\n?/);
   if (prefixed) {
+    const exitCode = prefixed[1] === "?" ? UNKNOWN_EXIT_CODE : parseInt(prefixed[1]!, 10);
     const rest = raw.slice(prefixed[0].length);
     const marker = "\nstderr: ";
     const idx = rest.indexOf(marker);
-    return idx >= 0
-      ? { exitCode: parseInt(prefixed[1]!, 10), stdout: rest.slice(0, idx), stderr: rest.slice(idx + marker.length) }
-      : { exitCode: parseInt(prefixed[1]!, 10), stdout: rest, stderr: "" };
+    if (idx >= 0) {
+      return { exitCode, stdout: rest.slice(0, idx), stderr: rest.slice(idx + marker.length) };
+    }
+    const boxrunStderr = rest.match(/\[stderr:([\s\S]*)\]$/);
+    if (boxrunStderr) {
+      return { exitCode, stdout: rest.slice(0, boxrunStderr.index), stderr: boxrunStderr[1]! };
+    }
+    return { exitCode, stdout: rest, stderr: "" };
   }
-  const suffixed = raw.match(/(?:^|\n)\[exit (-?\d+)\]\s*$/);
+  const suffixed = raw.match(/(?:^|\n)\[exit (?:exit=)?([^\]\n]*)\]\s*$/);
   if (suffixed) {
-    return { exitCode: parseInt(suffixed[1]!, 10), stdout: raw.slice(0, suffixed.index), stderr: "" };
+    const status = suffixed[1]!;
+    return {
+      exitCode: /^-?\d+$/.test(status) ? parseInt(status, 10) : UNKNOWN_EXIT_CODE,
+      stdout: raw.slice(0, suffixed.index),
+      stderr: status.startsWith("signal=") ? status : "",
+    };
+  }
+  const failed = raw.match(/^\[error: ([\s\S]*)\]\s*$/);
+  if (failed) {
+    return { exitCode: UNKNOWN_EXIT_CODE, stdout: "", stderr: failed[1]! };
   }
   return { exitCode: 0, stdout: raw, stderr: "" };
 }

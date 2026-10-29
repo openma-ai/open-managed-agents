@@ -14,7 +14,6 @@ export type {
   SandboxFactory,
   SandboxFactoryContext,
   SandboxFactoryEnv,
-  SandboxMemoryWorkspacePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
@@ -94,6 +93,7 @@ export {
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,
+  UNKNOWN_EXIT_CODE,
 } from "./environment-packages";
 export type {
   EnvironmentPackages,
