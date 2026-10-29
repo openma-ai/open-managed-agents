@@ -86,7 +86,7 @@
     "@open-managed-agents/vault-forward": "workspace:*",
     "@open-managed-agents/vault-store-sql": "workspace:*",
     "@open-managed-agents/vaults-store": "workspace:*",
-    "ai": "^7.0.123",
+    "ai": "^7.0.153",
     "chokidar": "^4.0.0",
     "effect": "3.22.1",
     "fflate": "^0.8.2",
