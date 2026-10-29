@@ -593,6 +593,8 @@ Vault credentials of type `environment_variable` are set in the sandbox of every
 
 Read-only memory mounts: Daytona and E2B enforce read-only on their mounted view. LiteBox honors the `readOnly` flag on its volume mount. CloudflareSandbox does not enforce ro at the FS layer — the harness's write tool checks `assertWritable` and refuses writes regardless of provider.
 
+On the Node server these native mounts are opt-in: by default every provider gets Memory Stores through file sync (copied into `/mnt/memory/<name>/` before the turn, written back at the turn barrier), which needs no mount primitive and therefore also works on BoxRun and OpenSandbox. A composed sandbox factory turns native mounts on by declaring `nativeMemoryStoreMount`. See [Memory Stores in a sandbox](./memory-stores.md).
+
 ### Sandbox loss and recovery
 
 Sandboxes are disposable ([ADR 0005](./adr/0005-self-hosted-worker-runtime-resources.md)): a provider may reclaim one at any time (lifetime expiry, eviction, a backend restart). The Node server (`apps/main-node`) handles that for providers that implement the runtime Port (`status`/`renewLease`; E2B does):

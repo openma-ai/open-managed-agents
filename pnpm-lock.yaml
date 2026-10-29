@@ -1464,6 +1464,9 @@ importers:
       '@open-managed-agents/managed-agents-application':
         specifier: workspace:*
         version: link:../managed-agents-application
+      '@open-managed-agents/managed-runtime-sandbox':
+        specifier: workspace:*
+        version: link:../managed-runtime-sandbox
       '@open-managed-agents/markdown':
         specifier: workspace:*
         version: link:../markdown

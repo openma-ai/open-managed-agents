@@ -102,7 +102,7 @@ describe("NodeManagedSessionInputPreparer", () => {
     const preparer = new NodeManagedSessionInputPreparer({
       sharedOutputs: true,
       files: {} as never, skillVersions: {} as never,
-      repositoryCredentials: {} as never, memorySnapshots: {} as never,
+      repositoryCredentials: {} as never, memoryStores: { mode: "native", snapshots: {} as never },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -179,7 +179,7 @@ describe("NodeManagedSessionInputPreparer", () => {
       files,
       skillVersions,
       repositoryCredentials,
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await preparer.prepare({
@@ -281,10 +281,13 @@ describe("NodeManagedSessionInputPreparer", () => {
         }),
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: {
-        materialize: async () => {
-          order.push("memory-snapshot");
-          return { mountStoreId: "managed-snapshot/memory_01/revision" };
+      memoryStores: {
+        mode: "native",
+        snapshots: {
+          materialize: async () => {
+            order.push("memory-snapshot");
+            return { mountStoreId: "managed-snapshot/memory_01/revision" };
+          },
         },
       },
     });
@@ -319,7 +322,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await preparer.prepare({ workspaceId: "workspace_inputs", session, sandbox });
@@ -353,7 +356,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await expect(preparer.prepare({
@@ -397,7 +400,7 @@ describe("NodeManagedSessionInputPreparer", () => {
           downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
         },
         repositoryCredentials: { findGithubToken: async () => { throw new Error("a Bond repository has no stored token"); } },
-        memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+        memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
         ...(repositoryBonds === undefined ? {} : { repositoryBonds }),
       });
 
@@ -451,7 +454,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         },
         repositoryCredentials: { findGithubToken: async () => "ghp_private" },
         repositoryBonds: { repositoryToken: async () => { throw new Error("a token repository never asks a Bond"); } },
-        memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+        memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
       }).prepare({ workspaceId: "workspace_inputs", session, sandbox: sandbox as unknown as SandboxExecutor });
       expect(sandbox.exec.mock.calls.map(([command]) => command)).toEqual([
         "git -C 'repository' remote get-url origin",
@@ -484,7 +487,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await expect(preparer.prepare({
@@ -502,7 +505,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const session = managedSession();
     session.resources = [];
@@ -534,7 +537,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -567,7 +570,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize },
+      memoryStores: { mode: "native", snapshots: { materialize } },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -637,7 +640,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         })),
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const session = managedSession();
     session.resources = [];

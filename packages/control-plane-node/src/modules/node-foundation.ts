@@ -278,12 +278,6 @@ export async function createNodeFoundation(
         sessionId,
         workdir,
         memoryRoot: memoryBlobLocalDir ?? "",
-        memoryWorkspace: {
-          getText: (key) => memoryBlobs.getText(key),
-          list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
-          put: (key, content) => memoryBlobs.put(key, content),
-          delete: (key) => memoryBlobs.delete(key),
-        },
         outputsRoot,
       },
       sandboxEnvironment,

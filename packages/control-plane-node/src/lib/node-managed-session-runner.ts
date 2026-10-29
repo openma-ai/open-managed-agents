@@ -164,6 +164,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     sandbox: SandboxExecutor;
     runtimeGeneration: string;
     signal?: AbortSignal;
+    /** The execution this sandbox is acquired for; absent outside a claim. */
+    executionFence?: SessionExecutionFence;
   }): Promise<void>;
   /** Fenced turn barrier for provider-neutral writable state reconciliation. */
   /** Extra runtime-state check before reusing a warm sandbox (for example
@@ -331,7 +333,13 @@ export class DefaultNodeManagedSessionRunner
       },
       prepare: (sandbox) => {
         if (signal.aborted) return Promise.reject(abortedError(signal));
-        return this.dependencies.prepareSandbox?.({ ...context, sandbox, runtimeGeneration, signal }) ?? Promise.resolve();
+        return this.dependencies.prepareSandbox?.({
+          ...context,
+          sandbox,
+          runtimeGeneration,
+          signal,
+          ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
+        }) ?? Promise.resolve();
       },
     });
     const allocation = runtime.acquire();
