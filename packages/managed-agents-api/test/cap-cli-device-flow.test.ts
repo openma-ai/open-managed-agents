@@ -8,6 +8,7 @@ import {
   type CapCliFlowTokenCipher,
 } from "@open-managed-agents/managed-agents-application";
 import { MemoryCredentialStore } from "../../credential-store-memory/src/index";
+import { WebCryptoAesGcm } from "../../integrations-adapters-cf/src/crypto";
 import { buildCapCliDeviceFlowRoutes } from "../src/index";
 
 const WORKSPACE = "ws_1";
@@ -23,7 +24,10 @@ const cipher: CapCliFlowTokenCipher = {
   },
 };
 
-function harness(pollResults: CapCliDeviceFlowPollResult[]) {
+function harness(
+  pollResults: CapCliDeviceFlowPollResult[],
+  options: { cipher?: CapCliFlowTokenCipher; nowMs?: () => number } = {},
+) {
   const store = new MemoryCredentialStore();
   let ids = 0;
   const credentials = new CredentialsApplicationService({
@@ -68,8 +72,8 @@ function harness(pollResults: CapCliDeviceFlowPollResult[]) {
       workspaceId: workspace,
       credentials,
       deviceFlow,
-      cipher,
-      clock: { now: () => new Date(NOW) },
+      cipher: options.cipher ?? cipher,
+      clock: { now: () => new Date((options.nowMs ?? (() => NOW))()) },
     })));
   const post = async (path: string, body: unknown) => {
     const response = await app.request(path, {
@@ -158,5 +162,51 @@ describe("cap_cli device flow routes (OpenMA extension)", () => {
     expect((await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", { flow_token: flowToken })).status).toBe(404);
     expect((await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", { flow_token: "forged" })).status).toBe(400);
     expect(h.polled).toEqual([]);
+  });
+
+  describe("with the production AES-GCM cipher", () => {
+    const realCipher = new WebCryptoAesGcm("test-root-secret", "managed.vault.cap_cli_device_flow");
+
+    it("round-trips a flow token and keeps the device code out of it", async () => {
+      const h = harness([{ type: "pending" }], { cipher: realCipher });
+      const started = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow", { cli_id: "gh" });
+      expect(started.body.flow_token).not.toContain("device-code-secret");
+      const polled = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", {
+        flow_token: started.body.flow_token,
+      });
+      expect(polled.body).toEqual({ status: "pending" });
+      expect(h.polled).toHaveLength(1);
+    });
+
+    it("rejects a tampered flow token", async () => {
+      const h = harness([], { cipher: realCipher });
+      const started = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow", { cli_id: "gh" });
+      const token = started.body.flow_token as string;
+      const index = Math.floor(token.length / 2);
+      const flipped = token[index] === "A" ? "B" : "A";
+      const tampered = token.slice(0, index) + flipped + token.slice(index + 1);
+      const polled = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", { flow_token: tampered });
+      expect(polled.status).toBe(400);
+      expect(h.polled).toEqual([]);
+    });
+
+    it("rejects a token sealed under another purpose key", async () => {
+      const other = new WebCryptoAesGcm("test-root-secret", "managed.vault.credentials");
+      const sealed = await other.encrypt(JSON.stringify({ v: 1 }));
+      const h = harness([], { cipher: realCipher });
+      expect((await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", { flow_token: sealed })).status).toBe(400);
+    });
+
+    it("reports an expired flow without polling the provider", async () => {
+      let now = NOW;
+      const h = harness([], { cipher: realCipher, nowMs: () => now });
+      const started = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow", { cli_id: "gh" });
+      now = NOW + 900_000;
+      const polled = await h.post("/v1/vaults/vlt_1/cap_cli_device_flow/poll", {
+        flow_token: started.body.flow_token,
+      });
+      expect(polled.body).toEqual({ status: "expired" });
+      expect(h.polled).toEqual([]);
+    });
   });
 });
