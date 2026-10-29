@@ -131,6 +131,35 @@ Update — including rotating the secret.
 ### `DELETE /v1/vaults/:id`
 Delete.
 
+### `cap_cli` credentials (OpenMA extension)
+
+`POST /v1/vaults/:id/credentials` also accepts `auth.type: "cap_cli"`. This is an OpenMA extension, not part of the Anthropic Managed Agents API, so the Anthropic SDK does not type it.
+
+```json
+{
+  "display_name": "GitHub CLI",
+  "auth": {
+    "type": "cap_cli",
+    "cli_id": "gh",
+    "token": "gho_...",
+    "refresh_token": "ghr_...",
+    "expires_at": "2026-09-01T00:00:00Z"
+  }
+}
+```
+
+`cli_id` must name a builtin CLI spec (`gh`, `glab`, `aws`, `gcloud`, `kubectl`, ...); anything else is a 400. `refresh_token`, `expires_at` and `extras` are optional. `token`, `refresh_token` and `extras` are write-only: responses carry only `type`, `cli_id` and `expires_at`. `cli_id` cannot change on update. `mcp_oauth_validate` refuses `cap_cli` credentials with a 400.
+
+In a session, the egress proxy injects the newest active `cap_cli` credential for the CLI whose spec claims the request host, and refreshes it on 401 when the spec has a device flow and a `refresh_token` is stored. The sandbox only gets the spec's placeholder environment (for example `GITHUB_TOKEN=__cap_managed__`), never the token. Injection needs a credential egress proxy; on runtimes without one (self-hosted Node today), `cap_cli` credentials are stored but not injected.
+
+### `POST /v1/vaults/:id/cap_cli_device_flow` (OpenMA extension)
+
+Starts an OAuth device authorization (RFC 8628) for a CLI with `{ "cli_id": "gh" }`. The response has `user_code`, `verification_uri`, `interval_seconds`, `expires_at` and an opaque `flow_token`.
+
+### `POST /v1/vaults/:id/cap_cli_device_flow/poll` (OpenMA extension)
+
+Polls with `{ "flow_token": "..." }`. `status` is `pending`, `slow_down` (with a new `interval_seconds` and `flow_token` to use from then on), `expired`, `denied`, `error`, or `ready` with the `credential_id` of the new `cap_cli` credential. On `ready`, older active `cap_cli` credentials for the same CLI in that vault are archived.
+
 ## Memory Stores
 
 ### `GET /v1/memory_stores`
