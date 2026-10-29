@@ -21,7 +21,6 @@ import type {
   SandboxFactoryContext,
   SandboxFactoryEnv,
   SandboxFactory,
-  SandboxMemoryWorkspacePort,
   SandboxPort,
   SandboxRuntimePort,
   SandboxRuntimeStatus,
@@ -126,7 +125,6 @@ export interface SpritesProviderOptions {
     baseDelayMs?: number;
     wait?(milliseconds: number, signal: AbortSignal): Promise<void>;
   };
-  memoryWorkspace?: SandboxMemoryWorkspacePort;
   createOptions?(input: ProviderManagedRuntimeAcquisitionContext & {
     name: string;
     ownershipLabels: string[];
@@ -342,32 +340,16 @@ export class SpritesRuntime
   implements SandboxPort, SandboxRuntimePort, SandboxDuplexProcessPort {
   readonly #client: SpritesClientPort;
   readonly #sprite: SpriteSdkPort;
-  readonly #memoryWorkspace?: SandboxMemoryWorkspacePort;
-  readonly #memoryMounts = new Map<string, { storeId: string; readOnly: boolean }>();
   readonly #commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   #environment: Record<string, string> = {};
   #destroyed = false;
 
-  readonly mountMemoryStore?: (input: {
-    storeName: string;
-    storeId: string;
-    readOnly: boolean;
-  }) => Promise<void>;
-
-  readonly synchronizeMemoryStores?: () => Promise<void>;
-
   constructor(input: {
     client: SpritesClientPort;
     sprite: SpriteSdkPort;
-    memoryWorkspace?: SandboxMemoryWorkspacePort;
   }) {
     this.#client = input.client;
     this.#sprite = input.sprite;
-    this.#memoryWorkspace = input.memoryWorkspace;
-    if (input.memoryWorkspace !== undefined) {
-      this.mountMemoryStore = (mount) => this.#mountMemoryStore(mount);
-      this.synchronizeMemoryStores = () => this.#synchronizeMemoryStores();
-    }
   }
 
   runtimeHandle() {
@@ -575,75 +557,6 @@ export class SpritesRuntime
     ).catch(() => undefined);
   }
 
-  async #mountMemoryStore(input: {
-    storeName: string;
-    storeId: string;
-    readOnly: boolean;
-  }): Promise<void> {
-    const workspace = this.#memoryWorkspace;
-    if (workspace === undefined) throw new Error("Sprites Memory workspace bridge is unavailable");
-    const mountRoot = memoryMountRoot(input.storeName);
-    await this.#mkdir(mountRoot);
-    const prefix = `${safeBlobPrefix(input.storeId)}/`;
-    for (const key of await listAllKeys(workspace, prefix)) {
-      const relative = safeRelativeBlobPath(key, prefix);
-      const value = await workspace.getText(key);
-      if (value === null) continue;
-      const target = `${mountRoot}/${relative}`;
-      await this.#mkdir(target.slice(0, target.lastIndexOf("/")));
-      await this.#sprite.filesystem("/").writeFile(target, value.text);
-    }
-    if (input.readOnly) {
-      const result = await this.#sprite.execFileHTTP(
-        "/bin/chmod",
-        ["-R", "a-w", mountRoot],
-        { cwd: "/", timeout: 60_000 },
-      );
-      if (result.exitCode !== 0) throw new Error(`Sprite read-only Memory projection failed: ${String(result.stderr)}`);
-    }
-    this.#memoryMounts.set(input.storeName, {
-      storeId: input.storeId,
-      readOnly: input.readOnly,
-    });
-  }
-
-  async #synchronizeMemoryStores(): Promise<void> {
-    const workspace = this.#memoryWorkspace;
-    if (workspace === undefined) return;
-    for (const [storeName, mount] of this.#memoryMounts) {
-      if (mount.readOnly) continue;
-      const mountRoot = memoryMountRoot(storeName);
-      const result = await this.#sprite.execFileHTTP(
-        "/usr/bin/find",
-        [mountRoot, "-type", "f", "-print0"],
-        { cwd: "/", timeout: 60_000 },
-      );
-      if (result.exitCode !== 0) throw new Error(`Sprite Memory collection failed: ${String(result.stderr)}`);
-      const prefix = `${safeBlobPrefix(mount.storeId)}/`;
-      const localKeys = new Set<string>();
-      for (const absolutePath of String(result.stdout).split("\0").filter(Boolean)) {
-        if (!absolutePath.startsWith(`${mountRoot}/`)) {
-          throw new Error(`Sprite Memory file escaped its mount: ${absolutePath}`);
-        }
-        const relative = safeRelativeBlobPath(absolutePath.slice(mountRoot.length + 1), "");
-        const key = `${prefix}${relative}`;
-        localKeys.add(key);
-        const written = await workspace.put(
-          key,
-          await this.#sprite.filesystem("/").readFile(absolutePath, "utf8"),
-        );
-        if (written === null) throw new Error(`Sprite Memory flush failed: ${relative}`);
-      }
-      for (const key of await listAllKeys(workspace, prefix)) {
-        if (!localKeys.has(key)) await workspace.delete(key);
-      }
-    }
-  }
-
-  async #mkdir(path: string): Promise<void> {
-    await this.#sprite.filesystem("/").mkdir(path, { recursive: true });
-  }
-
   #environmentForCommand(command: string): Record<string, string> {
     const environment = { ...this.#environment };
     const trimmed = command.trimStart();
@@ -657,55 +570,6 @@ export class SpritesRuntime
     }
     return environment;
   }
-}
-
-function memoryMountRoot(storeName: string): string {
-  if (
-    storeName.length === 0
-    || storeName === "."
-    || storeName === ".."
-    || storeName.includes("/")
-    || storeName.includes("\0")
-  ) throw new Error("Sprite Memory Store name must be a safe path segment");
-  return `/mnt/memory/${storeName}`;
-}
-
-function safeBlobPrefix(value: string): string {
-  const normalized = value.replace(/^\/+|\/+$/gu, "");
-  if (
-    normalized.length === 0
-    || normalized.includes("\0")
-    || normalized.split("/").some((part) => part.length === 0 || part === "." || part === "..")
-  ) throw new Error("Sprite Memory Store id must be a safe blob prefix");
-  return normalized;
-}
-
-function safeRelativeBlobPath(value: string, prefix: string): string {
-  if (prefix !== "" && !value.startsWith(prefix)) {
-    throw new Error(`Sprite Memory blob escaped its prefix: ${value}`);
-  }
-  const relative = prefix === "" ? value : value.slice(prefix.length);
-  if (
-    relative.length === 0
-    || relative.startsWith("/")
-    || relative.includes("\0")
-    || relative.split("/").some((part) => part.length === 0 || part === "." || part === "..")
-  ) throw new Error(`Sprite Memory blob has an unsafe path: ${value}`);
-  return relative;
-}
-
-async function listAllKeys(
-  workspace: SandboxMemoryWorkspacePort,
-  prefix: string,
-): Promise<string[]> {
-  const keys: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await workspace.list(prefix, cursor);
-    keys.push(...page.keys);
-    cursor = page.nextCursor ?? undefined;
-  } while (cursor !== undefined);
-  return [...new Set(keys)].sort();
 }
 
 function createProviderWithClient(
@@ -772,7 +636,6 @@ function createProviderWithClient(
       return new SpritesRuntime({
         client,
         sprite,
-        ...(options.memoryWorkspace === undefined ? {} : { memoryWorkspace: options.memoryWorkspace }),
       });
     },
 
@@ -807,7 +670,6 @@ function createProviderWithClient(
       return new SpritesRuntime({
         client,
         sprite,
-        ...(options.memoryWorkspace === undefined ? {} : { memoryWorkspace: options.memoryWorkspace }),
       });
     },
 
@@ -838,7 +700,6 @@ export async function createSpritesSandbox(
 ): Promise<SpritesRuntime> {
   const provider = createSpritesProvider({
     ...options,
-    memoryWorkspace: options.memoryWorkspace ?? context.memoryWorkspace,
     token: options.token ?? environment.SPRITES_TOKEN,
     baseURL: options.baseURL ?? environment.SPRITES_API_URL,
   });

@@ -5,6 +5,7 @@ import type {
 } from "@open-managed-agents/runtime-resource-contract";
 
 import {
+  SessionMemoryWorkspaceDistrustedError,
   SessionMemoryWorkspaceLifecycle,
   type SessionMemoryWorkspaceFilePort,
 } from "../src/session-memory-workspace";
@@ -292,7 +293,7 @@ describe("SessionMemoryWorkspaceLifecycle", () => {
     expect(canonical.remove).not.toHaveBeenCalled();
   });
 
-  it("rehydrates a missing marker instead of interpreting a wiped folder as deletes", async () => {
+  it("resets a wiped folder to the store and reports it instead of deleting", async () => {
     const files = new MemoryFiles();
     const canonical = await memoryAccess({
       "/a.md": "a",
@@ -305,7 +306,13 @@ describe("SessionMemoryWorkspaceLifecycle", () => {
       if (path.startsWith("/workspace/memory/")) files.files.delete(path);
     }
 
-    await lifecycle.synchronize(context);
+    const failure = await lifecycle.synchronize(context).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SessionMemoryWorkspaceDistrustedError);
+    expect((failure as SessionMemoryWorkspaceDistrustedError).stores).toEqual([{
+      memoryStoreId: "memstore_1",
+      mountPath: "/workspace/memory",
+      reason: "directory_missing",
+    }]);
 
     expect(canonical.remove).not.toHaveBeenCalled();
     expect(files.files.get("/workspace/memory/a.md")).toBe("a");
@@ -415,7 +422,7 @@ describe("SessionMemoryWorkspaceLifecycle", () => {
       { id: "1", path: "/a", sha256: "x" },
       { id: "2", path: "/a", sha256: "y" },
     ] }),
-  ])("recovers a corrupt private manifest from canonical state %#", async (manifest) => {
+  ])("resets to canonical state and reports a corrupt private manifest %#", async (manifest) => {
     const files = new MemoryFiles();
     const canonical = await memoryAccess({ "/notes.md": "canonical" });
     const lifecycle = new SessionMemoryWorkspaceLifecycle(files);
@@ -430,7 +437,7 @@ describe("SessionMemoryWorkspaceLifecycle", () => {
     );
     files.files.set("/workspace/memory/stale.md", "stale");
 
-    await expect(lifecycle.synchronize(context)).resolves.toBeUndefined();
+    await expect(lifecycle.synchronize(context)).rejects.toThrow(/baseline_missing/u);
     expect(files.files.get("/workspace/memory/notes.md")).toBe("canonical");
     expect(files.files.has("/workspace/memory/stale.md")).toBe(false);
   });

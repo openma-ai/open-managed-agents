@@ -277,50 +277,15 @@ describe("Sprites provider boundary contracts", () => {
     expect(value.updateNetworkPolicy).toHaveBeenCalledWith({ rules: [{ domain: "example.com", action: "allow" }] });
   });
 
-  it("projects and flushes generation-scoped Memory workspaces when the host supplies a bridge", async () => {
-    const value = sprite({
-      exec: { stdout: "/mnt/memory/project/notes/alpha.txt\0", exitCode: 0 },
-    });
-    const put = vi.fn(async () => ({ etag: "etag", size: 4 }));
-    const remove = vi.fn(async () => undefined);
-    const memoryWorkspace = {
-      getText: vi.fn(async (key: string) => ({ text: key.endsWith("alpha.txt") ? "alpha" : "stale" })),
-      list: vi.fn(async () => ({
-        keys: ["snapshot/data/notes/alpha.txt", "snapshot/data/notes/deleted.txt"],
-        nextCursor: null,
-      })),
-      put,
-      delete: remove,
-    };
-    const runtime = await createSpritesProvider({
-      client: client(value),
-      memoryWorkspace,
-    }).create(
+  it("leaves Memory Stores to the shared file sync: no native mount", async () => {
+    const runtime = await createSpritesProvider({ client: client(sprite({})) }).create(
       { sessionId: scope.sessionId, workdir: "/workspace" },
       {},
       acquisition(),
     );
 
-    expect(runtime.mountMemoryStore).toBeTypeOf("function");
-    expect(runtime.synchronizeMemoryStores).toBeTypeOf("function");
-    await runtime.mountMemoryStore!({
-      storeName: "project",
-      storeId: "snapshot/data",
-      readOnly: false,
-    });
-    expect(value.filesystemPort.writeFile).toHaveBeenCalledWith(
-      "/mnt/memory/project/notes/alpha.txt",
-      "alpha",
-    );
-    await runtime.synchronizeMemoryStores!();
-    expect(put).toHaveBeenCalledWith("snapshot/data/notes/alpha.txt", "text");
-    expect(remove).toHaveBeenCalledWith("snapshot/data/notes/deleted.txt");
-
-    await expect(runtime.mountMemoryStore!({
-      storeName: "../escape",
-      storeId: "snapshot/data",
-      readOnly: false,
-    })).rejects.toThrow(/safe path segment/i);
+    expect("mountMemoryStore" in runtime).toBe(false);
+    expect("synchronizeMemoryStores" in runtime).toBe(false);
   });
 
   it("preserves native duplex streams and process termination semantics", async () => {
