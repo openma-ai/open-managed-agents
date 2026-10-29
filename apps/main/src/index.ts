@@ -1654,23 +1654,24 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     tenantId: string;
     sessionId: string;
   }): Promise<{ type: "found"; env: Record<string, string> } | { type: "not_found" }> {
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      opts.tenantId,
-    );
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
+    // Look the session up before touching the managed credential store, so a
+    // legacy `/v1/oma` Session never depends on managed-only configuration
+    // (PLATFORM_ROOT_SECRET) and keeps its previous warmup behaviour.
     const session = await withMissingManagedSessionSchemaFallback(
-      () => sessionSource.find({ workspaceId: opts.tenantId, sessionId: opts.sessionId }),
+      () => new SqlSessionSource(new CfD1SqlClient(tenantDb))
+        .find({ workspaceId: opts.tenantId, sessionId: opts.sessionId }),
       async () => null,
     );
     if (session === null || session.archivedAt !== null) {
       return { type: "not_found" };
     }
-    const records = session.vaultIds.length === 0
-      ? []
-      : await credentialSource.listByVaults({
-          workspaceId: opts.tenantId,
-          vaultIds: session.vaultIds,
-        });
+    if (session.vaultIds.length === 0) return { type: "found", env: {} };
+    const credentialSource = createManagedMcpProxyCredentialSource(this.env, tenantDb);
+    const records = await credentialSource.listByVaults({
+      workspaceId: opts.tenantId,
+      vaultIds: session.vaultIds,
+    });
     return {
       type: "found",
       env: capCliBootstrapEnvironment(records, createSpecRegistry(builtinSpecs)),
