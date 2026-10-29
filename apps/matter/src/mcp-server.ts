@@ -1,6 +1,7 @@
 /**
  * The Matter MCP server: lists the OpenMatter tools of the caller's Session
- * and forwards each call to the kernel through the operation-call bridge. It
+ * and forwards each call to the kernel through the operation-call bridge
+ * (the request itself registers the call; see `tool-bridge.ts`). It
  * holds no provider credentials; the kernel and the integration act with the
  * Bond the Turn runs under.
  *
@@ -10,7 +11,7 @@
 
 import {
   mcpToolName,
-  ToolCallTimeoutError,
+  ToolCallError,
   type JsonValue,
   type OperationCallBridge,
 } from "./tool-bridge.js";
@@ -124,7 +125,7 @@ export const createMatterMcpHandler = (options: MatterMcpServerOptions) => {
           return rpcError(id, INVALID_PARAMS, `Unknown tool ${name}`);
         }
         try {
-          const outcome = await options.bridge.call(sessionId, name, args, signal);
+          const outcome = await options.bridge.call(sessionId, name, args as JsonValue, signal);
           if (!outcome.ok) {
             return {
               jsonrpc: "2.0",
@@ -142,7 +143,7 @@ export const createMatterMcpHandler = (options: MatterMcpServerOptions) => {
             ),
           };
         } catch (error) {
-          if (error instanceof ToolCallTimeoutError) {
+          if (error instanceof ToolCallError) {
             return { jsonrpc: "2.0", id, result: toolResult(error.message, true) };
           }
           throw error;

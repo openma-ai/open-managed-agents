@@ -284,7 +284,6 @@ export const createMatterHost = (options: MatterHostOptions): MatterHost => {
       ...(image === undefined ? {} : { content: (content) => withImages(content, image) }),
       client,
       bridge: options.bridge,
-      mcpServerName,
       vaultIds: sessionVaults({
         client,
         tokens: options.db.tokens,

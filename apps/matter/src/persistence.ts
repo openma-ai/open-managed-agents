@@ -35,7 +35,7 @@ import type {
   RegistrationStore,
 } from "./feishu-connect.js";
 import type { SessionTokenStore } from "./session-tokens.js";
-import type { CallStore } from "./tool-bridge.js";
+import type { CallStore, StoredCall } from "./tool-bridge.js";
 
 /** AES-256-GCM with a key derived from the operator's secret. The purpose is
  * bound as additional data, so a sealed value cannot be moved to another
@@ -190,8 +190,8 @@ export interface MatterDatabase {
     clear(key: string): Promise<void>;
   };
   /** Operation calls an Agent made through MCP, shared by every replica:
-   * the replica running the Turn announces and answers them; the replica
-   * that received the MCP request claims one and waits for its answer. */
+   * the replica that received the MCP request registers a call and waits;
+   * the replica running the Session's Turn takes and answers it. */
   readonly calls: CallStore & {
     /** Drop calls and Session tool lists older than `beforeMs`. */
     prune(beforeMs: number): Promise<void>;
@@ -262,12 +262,15 @@ const tables = (kind: "sqlite" | "mysql"): string[] => {
       lease_owner ${key}, lease_until_ms ${int}, finished_at_ms ${int})`,
     `CREATE TABLE IF NOT EXISTS openmatter_session_tools (
       session_id ${key} PRIMARY KEY, tools_json ${text} NOT NULL, updated_at_ms ${int} NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS openmatter_tool_calls (
-      callback_id ${key} PRIMARY KEY, session_id ${key} NOT NULL, call_key ${key} NOT NULL,
-      seq ${int} NOT NULL, claimed_by ${key}, outcome_json ${text}, created_at_ms ${int} NOT NULL)`,
+    // MCP tool calls; `seq` is registration order across replicas. (The
+    // earlier `openmatter_tool_calls` table is no longer used.)
+    `CREATE TABLE IF NOT EXISTS openmatter_mcp_calls (
+      seq ${kind === "mysql" ? "BIGINT AUTO_INCREMENT PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"},
+      call_id ${key} NOT NULL UNIQUE, session_id ${key} NOT NULL, tool ${key} NOT NULL,
+      input_json ${text} NOT NULL, taken_by ${key}, outcome_json ${text}, created_at_ms ${int} NOT NULL)`,
     kind === "mysql"
-      ? `CREATE INDEX openmatter_tool_calls_match ON openmatter_tool_calls (session_id, call_key)`
-      : `CREATE INDEX IF NOT EXISTS openmatter_tool_calls_match ON openmatter_tool_calls (session_id, call_key)`,
+      ? `CREATE INDEX openmatter_mcp_calls_session ON openmatter_mcp_calls (session_id, seq)`
+      : `CREATE INDEX IF NOT EXISTS openmatter_mcp_calls_session ON openmatter_mcp_calls (session_id, seq)`,
   ];
 };
 
@@ -312,18 +315,6 @@ const gitlabWebhookPurpose = (id: string) => `gitlab-webhook-secret:${id}`;
 const deviceCodePurpose = (id: string) => `feishu-device-code:${id}`;
 
 const tokenDigest = (token: string): Buffer => createHash("sha256").update(token, "utf8").digest();
-
-/** A long call key (tool name and canonical arguments) as an indexable digest. */
-export const callKeyDigest = (key: string): string =>
-  createHash("sha256").update(key, "utf8").digest("hex");
-
-/** Announcement order across replicas: microseconds, strictly increasing
- * within a process (a Turn's calls are announced by one process). */
-let lastSeq = 0;
-const nextSeq = (nowMs: number): number => {
-  lastSeq = Math.max(nowMs * 1000, lastSeq + 1);
-  return lastSeq;
-};
 
 type Num = number | bigint | string | null;
 const n = (value: Num): number | undefined => (value === null ? undefined : Number(value));
@@ -727,50 +718,67 @@ const createMatterDatabase = (
         );
         return row?.tools_json;
       },
-      announce: async (sessionId, callbackId, key) => {
+      register: async (call) => {
         await sql.run(
-          `${insertIgnore(sql.kind)} openmatter_tool_calls (callback_id, session_id, call_key, seq, created_at_ms)
+          `${insertIgnore(sql.kind)} openmatter_mcp_calls (call_id, session_id, tool, input_json, created_at_ms)
            VALUES (?, ?, ?, ?, ?)`,
-          [callbackId, sessionId, callKeyDigest(key), nextSeq(now().getTime()), now().getTime()],
+          [call.callId, call.sessionId, call.tool, JSON.stringify(call.input), call.createdAtMs],
         );
       },
-      resolve: async (callbackId, outcome) => {
-        await sql.run(
-          `UPDATE openmatter_tool_calls SET outcome_json = ? WHERE callback_id = ? AND outcome_json IS NULL`,
-          [JSON.stringify(outcome), callbackId],
+      take: async (sessionId, taker) => {
+        const candidates = await sql.rows<{
+          call_id: string;
+          tool: string;
+          input_json: string;
+          created_at_ms: Num;
+        }>(
+          `SELECT call_id, tool, input_json, created_at_ms FROM openmatter_mcp_calls
+           WHERE session_id = ? AND taken_by IS NULL ORDER BY seq`,
+          [sessionId],
         );
-      },
-      claim: async (sessionId, key, claimer) => {
-        const candidates = await sql.rows<{ callback_id: string }>(
-          `SELECT callback_id FROM openmatter_tool_calls
-           WHERE session_id = ? AND call_key = ? AND claimed_by IS NULL
-           ORDER BY seq LIMIT 5`,
-          [sessionId, callKeyDigest(key)],
-        );
-        for (const { callback_id: id } of candidates) {
-          const taken = await sql.run(
-            `UPDATE openmatter_tool_calls SET claimed_by = ? WHERE callback_id = ? AND claimed_by IS NULL`,
-            [claimer, id],
+        const taken: StoredCall[] = [];
+        for (const row of candidates) {
+          // Another Turn (a stale one on another replica) may race for it.
+          const won = await sql.run(
+            `UPDATE openmatter_mcp_calls SET taken_by = ? WHERE call_id = ? AND taken_by IS NULL`,
+            [taker, row.call_id],
           );
-          if (taken === 1) return id;
+          if (won === 1) {
+            taken.push({
+              callId: row.call_id,
+              sessionId,
+              tool: row.tool,
+              input: JSON.parse(row.input_json) as StoredCall["input"],
+              createdAtMs: n(row.created_at_ms) ?? 0,
+            });
+          }
         }
-        return undefined;
+        return taken;
       },
-      outcome: async (callbackId) => {
-        const [row] = await sql.rows<{ outcome_json: string | null }>(
-          `SELECT outcome_json FROM openmatter_tool_calls WHERE callback_id = ?`,
-          [callbackId],
+      state: async (callId) => {
+        const [row] = await sql.rows<{ taken_by: string | null; outcome_json: string | null }>(
+          `SELECT taken_by, outcome_json FROM openmatter_mcp_calls WHERE call_id = ?`,
+          [callId],
         );
-        return row?.outcome_json == null ? undefined : (JSON.parse(row.outcome_json) as unknown);
+        if (row === undefined) return { state: "missing" };
+        if (row.outcome_json != null) {
+          return { state: "answered", outcome: JSON.parse(row.outcome_json) as unknown };
+        }
+        return { state: row.taken_by == null ? "waiting" : "taken" };
       },
-      release: async (sessionId) => {
-        await sql.run(`DELETE FROM openmatter_tool_calls WHERE session_id = ? AND claimed_by IS NULL`, [sessionId]);
+      resolve: async (callId, outcome) => {
+        await sql.run(
+          `UPDATE openmatter_mcp_calls SET outcome_json = ? WHERE call_id = ? AND outcome_json IS NULL`,
+          [JSON.stringify(outcome), callId],
+        );
       },
-      forget: async (callbackId) => {
-        await sql.run(`DELETE FROM openmatter_tool_calls WHERE callback_id = ?`, [callbackId]);
+      withdraw: async (callId) =>
+        (await sql.run(`DELETE FROM openmatter_mcp_calls WHERE call_id = ? AND taken_by IS NULL`, [callId])) === 1,
+      forget: async (callId) => {
+        await sql.run(`DELETE FROM openmatter_mcp_calls WHERE call_id = ?`, [callId]);
       },
       prune: async (beforeMs) => {
-        await sql.run(`DELETE FROM openmatter_tool_calls WHERE created_at_ms < ?`, [beforeMs]);
+        await sql.run(`DELETE FROM openmatter_mcp_calls WHERE created_at_ms < ?`, [beforeMs]);
         await sql.run(`DELETE FROM openmatter_session_tools WHERE updated_at_ms < ?`, [beforeMs]);
       },
     },

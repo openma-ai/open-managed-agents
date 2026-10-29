@@ -1,25 +1,43 @@
 /**
- * Correlates an Agent's MCP tool calls with OpenMatter operation calls.
+ * Runs an Agent's Matter MCP tool calls as OpenMatter operation calls.
  *
- * The OpenMA harness records every MCP tool call as a session event
- * (`agent.mcp_tool_use`, or `agent.tool_use` for `mcp_invoke` when tools are
- * deferred behind `tool_search`) before it executes the call. The connector
- * reads that event from the session event log and reports it to the kernel as
- * an operation-call callback whose id is the tool-use id. The MCP endpoint
- * receives the same call over HTTP and waits here until the kernel answers.
+ * The MCP request is the source of the call. Its tool name, its arguments
+ * and the bearer (which Matter issued for one OpenMatter Agent Session) are
+ * all Matter needs, so Matter does not read the Agent's event log to find
+ * calls. Harnesses differ in how and when they log a tool call: some log it
+ * only after the call returns, which is too late to correlate with. Tool
+ * execution must not depend on any harness's event format or timing.
  *
- * Deriving the callback from the event log, rather than from the HTTP call,
- * keeps the Agent event stream deterministic: a replayed Turn produces the
- * same callbacks at the same positions.
+ * The flow:
  *
- * Calls are grouped by the OpenMatter Agent Session id, which the MCP endpoint
- * learns from the bearer it issued for that Session.
+ * 1. The MCP request registers the call in the `CallStore` under a call id it
+ *    generates, and waits.
+ * 2. The connector running that Session's Turn watches the store and takes
+ *    the Session's new calls. It does this alongside reading the harness's
+ *    event stream, because a harness may emit nothing while it waits on the
+ *    tool. It reports each call to the kernel as a `callback.requested`
+ *    operation call.
+ * 3. The kernel's answer resolves the call, and the MCP request returns it.
  *
- * The pairing lives in a `CallStore` (the Matter database), not in memory:
- * the replica running the Turn announces and answers calls, and the MCP
- * request may reach any other replica, which claims the call and polls for
- * its answer.
+ * Bounds: when no Turn takes a call within `pickupTimeoutMs` (the Session
+ * has no running Turn on any replica), the call fails. A Turn takes calls
+ * within one poll interval, so the bound only has to cover polling and
+ * database latency. A taken call waits up to `resultTimeoutMs` for the
+ * kernel's answer. When a Turn ends, every call it took but did not answer
+ * fails.
+ *
+ * Determinism: the connector reports calls in the order they were
+ * registered in the store, interleaved with the harness's events in the
+ * order they reach the connector. The callback positions in the Agent event
+ * stream therefore follow arrival time, not a position in the harness's
+ * log, and a replayed Turn does not reproduce callbacks it already reported.
+ * We accept that tradeoff so the call can run while the harness waits on it.
+ *
+ * The store is shared by all replicas (the Matter database): the MCP
+ * request may reach a different replica than the one running the Turn.
  */
+
+import { randomUUID } from "node:crypto";
 
 export type JsonValue =
   | null
@@ -34,25 +52,28 @@ export type JsonValue =
 export const mcpToolName = (toolName: string): string =>
   toolName.replace(/[^A-Za-z0-9_-]/g, "_");
 
-/** Canonical JSON with sorted object keys, used to match a call to its event. */
-export const stableJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(",")}}`;
+/** A tool call that ended without an answer from the kernel. */
+export class ToolCallError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolCallError";
   }
-  return JSON.stringify(value ?? null);
-};
+}
 
-export class ToolCallTimeoutError extends Error {
+/** No running Turn of the Session took the call. */
+export class NoActiveTurnError extends ToolCallError {
   constructor(toolName: string) {
     super(
-      `No operation call was recorded for ${toolName}; the call is not part of an active Turn`,
+      `${toolName} was not run: this Session has no running Turn to run it in`,
     );
+    this.name = "NoActiveTurnError";
+  }
+}
+
+/** A Turn took the call, but the kernel did not answer in time. */
+export class ToolCallTimeoutError extends ToolCallError {
+  constructor(toolName: string) {
+    super(`${toolName} got no answer in time; its outcome is unknown`);
     this.name = "ToolCallTimeoutError";
   }
 }
@@ -61,74 +82,97 @@ export type ToolCallOutcome =
   | { readonly ok: true; readonly result: JsonValue }
   | { readonly ok: false; readonly error: JsonValue };
 
-/** Shared state behind the bridge. `key` is the tool name and canonical
- * arguments; a store may keep only a digest of it. */
+/** A registered call, as the Turn side reads it. */
+export interface StoredCall {
+  readonly callId: string;
+  readonly sessionId: string;
+  /** MCP tool name. */
+  readonly tool: string;
+  readonly input: JsonValue;
+  readonly createdAtMs: number;
+}
+
+export type CallState =
+  /** Not registered, or forgotten. */
+  | { readonly state: "missing" }
+  | { readonly state: "waiting" }
+  | { readonly state: "taken" }
+  | { readonly state: "answered"; readonly outcome: unknown };
+
+/** Shared state behind the bridge. */
 export interface CallStore {
   setTools(sessionId: string, toolsJson: string): Promise<void>;
   tools(sessionId: string): Promise<string | undefined>;
-  /** Idempotent per callback id; calls of a Session are claimed in
-   * announcement order. */
-  announce(sessionId: string, callbackId: string, key: string): Promise<void>;
+  /** Record a new call. Registration order is the order `take` returns. */
+  register(call: StoredCall): Promise<void>;
+  /** Atomically take the Session's calls no Turn took yet, oldest first. */
+  take(sessionId: string, taker: string): Promise<readonly StoredCall[]>;
+  state(callId: string): Promise<CallState>;
   /** First answer wins. */
-  resolve(callbackId: string, outcome: unknown): Promise<void>;
-  /** Claim the oldest unclaimed call of a Session with this key. */
-  claim(sessionId: string, key: string, claimer: string): Promise<string | undefined>;
-  outcome(callbackId: string): Promise<unknown>;
-  /** Drop a Session's calls no MCP request claimed (its Turn ended). */
-  release(sessionId: string): Promise<void>;
-  /** Drop one call after its answer was delivered. */
-  forget(callbackId: string): Promise<void>;
+  resolve(callId: string, outcome: unknown): Promise<void>;
+  /** Remove a call no Turn took. True when it was removed; false when a
+   * Turn took it first (or it is gone). */
+  withdraw(callId: string): Promise<boolean>;
+  /** Remove a call after its answer was delivered. */
+  forget(callId: string): Promise<void>;
 }
 
 /** A `CallStore` in process memory, for a single process and tests. */
 export const memoryCallStore = (): CallStore => {
   const tools = new Map<string, string>();
   interface Row {
-    readonly callbackId: string;
-    readonly sessionId: string;
-    readonly key: string;
-    claimedBy?: string;
+    readonly call: StoredCall;
+    takenBy?: string;
     outcome?: unknown;
   }
-  // Insertion order is announcement order.
+  // Insertion order is registration order.
   const rows = new Map<string, Row>();
   return {
     setTools: async (sessionId, json) => void tools.set(sessionId, json),
     tools: async (sessionId) => tools.get(sessionId),
-    announce: async (sessionId, callbackId, key) => {
-      if (!rows.has(callbackId)) rows.set(callbackId, { callbackId, sessionId, key });
+    register: async (call) => {
+      if (!rows.has(call.callId)) rows.set(call.callId, { call });
     },
-    resolve: async (callbackId, outcome) => {
-      const row = rows.get(callbackId);
-      if (row !== undefined && row.outcome === undefined) row.outcome = outcome;
-    },
-    claim: async (sessionId, key, claimer) => {
+    take: async (sessionId, taker) => {
+      const taken: StoredCall[] = [];
       for (const row of rows.values()) {
-        if (row.sessionId === sessionId && row.key === key && row.claimedBy === undefined) {
-          row.claimedBy = claimer;
-          return row.callbackId;
+        if (row.call.sessionId === sessionId && row.takenBy === undefined) {
+          row.takenBy = taker;
+          taken.push(row.call);
         }
       }
-      return undefined;
+      return taken;
     },
-    outcome: async (callbackId) => rows.get(callbackId)?.outcome,
-    release: async (sessionId) => {
-      for (const [id, row] of rows) {
-        if (row.sessionId === sessionId && row.claimedBy === undefined) rows.delete(id);
-      }
+    state: async (callId) => {
+      const row = rows.get(callId);
+      if (row === undefined) return { state: "missing" };
+      if (row.outcome !== undefined) return { state: "answered", outcome: row.outcome };
+      return { state: row.takenBy === undefined ? "waiting" : "taken" };
     },
-    forget: async (callbackId) => void rows.delete(callbackId),
+    resolve: async (callId, outcome) => {
+      const row = rows.get(callId);
+      if (row !== undefined && row.outcome === undefined) row.outcome = outcome;
+    },
+    withdraw: async (callId) => {
+      const row = rows.get(callId);
+      if (row === undefined || row.takenBy !== undefined) return false;
+      rows.delete(callId);
+      return true;
+    },
+    forget: async (callId) => void rows.delete(callId),
   };
 };
 
 export interface OperationCallBridgeOptions {
   /** Defaults to `memoryCallStore()`: a single process. */
   readonly store?: CallStore;
-  /** How long an MCP call waits for its tool-use event (default 60 s). */
-  readonly matchTimeoutMs?: number;
-  /** How long a matched call waits for the kernel's answer (default 10 min). */
+  /** How long a call waits for a running Turn to take it (default 15 s).
+   * A running Turn takes it within one `pollMs`; the rest is slack for
+   * database latency across replicas. */
+  readonly pickupTimeoutMs?: number;
+  /** How long a taken call waits for the kernel's answer (default 10 min). */
   readonly resultTimeoutMs?: number;
-  /** Polling interval of a waiting MCP call (default 200 ms). */
+  /** Polling interval of both sides (default 200 ms). */
   readonly pollMs?: number;
 }
 
@@ -157,25 +201,21 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-let claimers = 0;
+let takers = 0;
 
 export class OperationCallBridge {
   private readonly store: CallStore;
-  private readonly matchTimeoutMs: number;
+  private readonly pickupTimeoutMs: number;
   private readonly resultTimeoutMs: number;
   private readonly pollMs: number;
-  /** Wakes a waiting call early when this process wrote what it waits for. */
+  /** Wakes a waiter early when this process wrote what it waits for. */
   private readonly wakers = new Set<() => void>();
 
   constructor(options: OperationCallBridgeOptions = {}) {
     this.store = options.store ?? memoryCallStore();
-    this.matchTimeoutMs = options.matchTimeoutMs ?? 60_000;
+    this.pickupTimeoutMs = options.pickupTimeoutMs ?? 15_000;
     this.resultTimeoutMs = options.resultTimeoutMs ?? 600_000;
     this.pollMs = options.pollMs ?? 200;
-  }
-
-  private static key(toolName: string, input: unknown): string {
-    return `${toolName}\u0000${stableJson(input)}`;
   }
 
   private wake(): void {
@@ -183,7 +223,7 @@ export class OperationCallBridge {
   }
 
   /** Waits `pollMs`, or less when this process changed the store. */
-  private async pause(signal?: AbortSignal): Promise<void> {
+  async pause(signal?: AbortSignal): Promise<void> {
     const local = new AbortController();
     const waker = () => local.abort();
     this.wakers.add(waker);
@@ -210,56 +250,59 @@ export class OperationCallBridge {
     return json === undefined ? [] : (JSON.parse(json) as BridgeTool[]);
   }
 
-  /** Connector side: the event log shows the Agent called `toolName`. */
-  async announce(
-    sessionId: string,
-    callbackId: string,
-    toolName: string,
-    input: unknown,
-  ): Promise<void> {
-    await this.store.announce(sessionId, callbackId, OperationCallBridge.key(toolName, input));
+  /** Connector side: a new taker id for one running Turn. */
+  newTaker(): string {
+    return `${process.pid}:${++takers}:${randomUUID()}`;
+  }
+
+  /** Connector side: take the Session's new calls, in registration order. */
+  async take(sessionId: string, taker: string): Promise<readonly StoredCall[]> {
+    return this.store.take(sessionId, taker);
+  }
+
+  /** Connector side: answer a call (the kernel's answer, or a failure). */
+  async resolve(callId: string, outcome: ToolCallOutcome): Promise<void> {
+    await this.store.resolve(callId, outcome);
     this.wake();
   }
 
-  /** Connector side: the kernel answered the callback. */
-  async resolve(callbackId: string, outcome: ToolCallOutcome): Promise<void> {
-    await this.store.resolve(callbackId, outcome);
-    this.wake();
-  }
-
-  /** Drop calls no MCP request claimed, for example after a Turn ends. */
-  async release(sessionId: string): Promise<void> {
-    await this.store.release(sessionId);
-  }
-
-  /** MCP side: wait for the kernel's answer to this call. */
+  /** MCP side: register the call and wait for its answer. */
   async call(
     sessionId: string,
     toolName: string,
-    input: unknown,
+    input: JsonValue,
     signal?: AbortSignal,
   ): Promise<ToolCallOutcome> {
-    const key = OperationCallBridge.key(toolName, input);
-    const claimer = `${process.pid}:${++claimers}`;
-    const matchBy = Date.now() + this.matchTimeoutMs;
-    let callbackId: string | undefined;
-    for (;;) {
-      if (signal?.aborted) throw signal.reason ?? new Error("Tool call aborted");
-      callbackId = await this.store.claim(sessionId, key, claimer);
-      if (callbackId !== undefined) break;
-      if (Date.now() >= matchBy) throw new ToolCallTimeoutError(toolName);
-      await this.pause(signal);
-    }
-    const answerBy = Date.now() + this.resultTimeoutMs;
+    const callId = `mcp_${randomUUID()}`;
+    await this.store.register({
+      callId,
+      sessionId,
+      tool: toolName,
+      input,
+      createdAtMs: Date.now(),
+    });
+    this.wake();
+    const pickupBy = Date.now() + this.pickupTimeoutMs;
+    let answerBy: number | undefined;
     try {
       for (;;) {
-        const outcome = await this.store.outcome(callbackId);
-        if (outcome !== undefined) return outcome as ToolCallOutcome;
-        if (Date.now() >= answerBy) throw new ToolCallTimeoutError(toolName);
+        if (signal?.aborted) throw signal.reason ?? new Error("Tool call aborted");
+        const current = await this.store.state(callId);
+        if (current.state === "answered") return current.outcome as ToolCallOutcome;
+        if (current.state === "missing") throw new NoActiveTurnError(toolName);
+        if (current.state === "waiting" && Date.now() >= pickupBy) {
+          // A Turn may take it at this moment; withdrawing settles the race.
+          if (await this.store.withdraw(callId)) throw new NoActiveTurnError(toolName);
+          continue;
+        }
+        if (current.state === "taken") {
+          answerBy ??= Date.now() + this.resultTimeoutMs;
+          if (Date.now() >= answerBy) throw new ToolCallTimeoutError(toolName);
+        }
         await this.pause(signal);
       }
     } finally {
-      await this.store.forget(callbackId).catch(() => undefined);
+      await this.store.forget(callId).catch(() => undefined);
     }
   }
 }
