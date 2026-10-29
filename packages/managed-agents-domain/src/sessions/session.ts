@@ -18,6 +18,9 @@ export interface SessionAgent {
   id: string;
   description: string | null;
   mcpServers: AgentMcpServer[];
+  /** The Agent's metadata, for the runtime only. Absent on Sessions created
+   *  before it was snapshotted. */
+  metadata?: Record<string, string>;
   model: AgentModel;
   multiagent: SessionAgentMultiagent | null;
   name: string;

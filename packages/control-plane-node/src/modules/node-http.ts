@@ -98,7 +98,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,
@@ -496,7 +496,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
   v1.route("/oma/evals", buildEvalRoutes({
     evals: evalsService,
-    agents: agentsService,
+    agents: agentStore,
     environments: environmentsService,
   }));
 
@@ -652,7 +652,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       vaults: vaultService,
       credentials: credentialService,
       sessions: sessionsService,
-      agents: agentsService,
+      agents: agentStore,
       resolveTenantId: async (userId) => {
         const row = await sql
           .prepare(

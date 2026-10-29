@@ -111,9 +111,6 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
-      '@open-managed-agents/agents-store':
-        specifier: workspace:*
-        version: link:../../packages/agents-store
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
@@ -518,9 +515,6 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
-      '@open-managed-agents/agents-store':
-        specifier: workspace:*
-        version: link:../../packages/agents-store
       '@open-managed-agents/app':
         specifier: workspace:*
         version: link:../../packages/managed-agents-app
@@ -814,9 +808,9 @@ importers:
       '@open-managed-agents/agent-store-memory':
         specifier: workspace:*
         version: link:../../packages/agent-store-memory
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store-sql':
         specifier: workspace:*
-        version: link:../../packages/agents-store
+        version: link:../../packages/agent-store-sql
       '@open-managed-agents/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -1157,21 +1151,6 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
-  packages/agents-store:
-    dependencies:
-      '@open-managed-agents/db-schema':
-        specifier: workspace:*
-        version: link:../db-schema
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
-      drizzle-orm:
-        specifier: ^0.45.2
-        version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
-
   packages/api-types: {}
 
   packages/auth:
@@ -1359,9 +1338,12 @@ importers:
       '@open-managed-agents/agent':
         specifier: workspace:*
         version: link:../../apps/agent
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
@@ -1978,9 +1960,9 @@ importers:
 
   packages/evals-runner:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../environments-store
@@ -1990,6 +1972,9 @@ importers:
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../kv-store
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-runtime
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../sessions-store
@@ -2166,9 +2151,9 @@ importers:
 
   packages/http-routes:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
@@ -2205,6 +2190,9 @@ importers:
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../kv-store
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-runtime
       '@open-managed-agents/managed-agents-api':
         specifier: workspace:*
         version: link:../managed-agents-api
@@ -3923,9 +3911,12 @@ importers:
 
   packages/services:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
       '@open-managed-agents/blob-store':
         specifier: workspace:*
         version: link:../blob-store

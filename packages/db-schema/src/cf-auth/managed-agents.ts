@@ -1,8 +1,6 @@
 // Official Anthropic Managed Agents persistence (CF SQLite / D1).
 //
-// These tables are intentionally separate from legacy OMA `agents` and
-// `agent_versions`. The two JSON documents have different contracts and must
-// remain independently deployable while `/v1/oma/*` extensions are isolated.
+// The only agent storage. Each row holds the domain Agent document.
 
 import { blob, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 

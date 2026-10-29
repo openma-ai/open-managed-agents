@@ -388,6 +388,7 @@ describe("SessionsApplicationService", () => {
           mcpServers: [
             { type: "url", name: "docs", url: "https://mcp.test" },
           ],
+          metadata: { owner: "agents" },
           model: {
             id: "claude-opus-5",
             effort: "high",

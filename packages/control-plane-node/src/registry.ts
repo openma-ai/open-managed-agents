@@ -33,7 +33,8 @@ import type {
   OrchestratorMemoryMount,
   SandboxOrchestrator,
 } from "@open-managed-agents/sandbox/orchestrator";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { MemoryStoreService } from "@open-managed-agents/memory-store";
 import type {
   AgentConfig,
@@ -54,7 +55,7 @@ const log = getLogger("session-registry");
 export interface SessionRegistryDeps {
   sql: SqlClient;
   hub: EventStreamHub;
-  agentsService: AgentService;
+  agentStore: AgentStore;
   memoryService: MemoryStoreService;
   /** Sandbox provisioning — vault outbound, mounts, backup-restore.
    *  Replaces the per-runtime buildMemoryMounter / buildSessionOutputsMounter
@@ -291,11 +292,10 @@ export class SessionRegistry {
           try {
             return JSON.parse(stored.agent_snapshot) as AgentConfig;
           } catch {
-            // Fall through to the live agent row.
+            // Fall through to the live agent.
           }
         }
-        const row = await this.deps.agentsService.get({ tenantId, agentId });
-        return row ?? null;
+        return (await loadRuntimeAgentSnapshot(this.deps.agentStore, tenantId, agentId)) as AgentConfig | null;
       },
       // Memory + outputs mounting happens in the orchestrator above.
       // SessionStateMachine still accepts the hooks for CF parity but

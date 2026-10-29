@@ -36,6 +36,7 @@ import {
   SessionResourceMaxExceededError,
   SessionResourceNotFoundError,
 } from "@open-managed-agents/sessions-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionRouter, SessionInitParams } from "@open-managed-agents/session-runtime";
 import type { RouteServicesArg } from "../types";
 import { resolveServices } from "../types";
@@ -348,10 +349,10 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       }
     }
 
-    const agentRow = await services.agents.get({ tenantId: t, agentId });
-    if (!agentRow) return c.json({ error: "Agent not found" }, 404);
+    const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, t, agentId);
+    if (!agentSnapshot) return c.json({ error: "Agent not found" }, 404);
 
-    const agentIsLocalRuntime = !!agentRow.runtime_binding;
+    const agentIsLocalRuntime = !!agentSnapshot.runtime_binding;
 
     if (deps.lifecycle?.preCreateGate) {
       const gate = await deps.lifecycle.preCreateGate({
@@ -370,8 +371,6 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       envId = deps.localRuntimeEnvId ?? "env_local_runtime";
     }
 
-    const agentSnapshot = await services.agents.getRuntimeSnapshot({ tenantId: t, agentId });
-    if (!agentSnapshot) return c.json({ error: "Agent not found" }, 404);
     const envSnap = deps.loadEnvironment
       ? await deps.loadEnvironment({ tenantId: t, environmentId: envId })
       : null;

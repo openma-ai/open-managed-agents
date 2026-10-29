@@ -11,7 +11,8 @@ import type {
 } from "@open-managed-agents/sql-client";
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
-const currentSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
+const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
+const currentSnapshot = "8f90aaab-6f92-4233-95a2-0cdab2dfa28c";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {
@@ -37,6 +38,21 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.snapshotId).toBe(currentSnapshot);
   });
 
+  it("drops the emptied legacy agent tables", async () => {
+    const sql = new MigrationSqlClient(invitationsSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("agents", 0).set("agent_versions", 0);
+    await migrateNodeMysqlSchema(sql, migrations);
+    expect(sql.dropped).toEqual(["agent_versions", "agents"]);
+    expect(sql.snapshotId).toBe(currentSnapshot);
+  });
+
+  it("refuses to drop legacy agent tables that still have rows", async () => {
+    const sql = new MigrationSqlClient(invitationsSnapshot, ["tenant_id", "created_at", "id"]);
+    sql.legacyTables.set("agents", 2).set("agent_versions", 0);
+    await expect(migrateNodeMysqlSchema(sql, migrations)).rejects.toThrow("agents still has 2 row(s)");
+    expect(sql.snapshotId).toBe(invitationsSnapshot);
+  });
+
   it("fails closed when an existing attribution index has the wrong shape", async () => {
     const sql = new MigrationSqlClient(previousSnapshot, ["tenant_id", "id"]);
 
@@ -49,6 +65,8 @@ describe("main-node MySQL snapshot migrations", () => {
 
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
+  readonly legacyTables = new Map<string, number>();
+  readonly dropped: string[] = [];
 
   constructor(
     public snapshotId: string,
@@ -64,6 +82,11 @@ class MigrationSqlClient implements SqlClient {
   }
 
   async exec(sql: string): Promise<void> {
+    const drop = /^DROP TABLE `([a-z_]+)`$/.exec(sql);
+    if (drop) {
+      this.dropped.push(drop[1]!);
+      this.legacyTables.delete(drop[1]!);
+    }
     if (sql.includes("CREATE INDEX `idx_usage_events_attribution`")) {
       this.createdAttributionIndex = true;
       this.indexColumns = ["tenant_id", "created_at", "id"];
@@ -100,6 +123,11 @@ class MigrationStatement implements SqlStatement {
     if (this.sql.includes("SELECT snapshot_id FROM openma_schema_metadata")) {
       return { snapshot_id: this.client.snapshotId } as T;
     }
+    if (this.sql.includes("information_schema.tables")) {
+      return this.client.legacyTables.has(this.params[0] as string) ? { present: 1 } as T : null;
+    }
+    const count = /^SELECT COUNT\(\*\) AS n FROM `([a-z_]+)`$/.exec(this.sql);
+    if (count) return { n: this.client.legacyTables.get(count[1]!) ?? 0 } as T;
     return null;
   }
 
