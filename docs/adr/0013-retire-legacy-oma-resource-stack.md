@@ -89,22 +89,25 @@ Each step is one pull request. A step starts after the previous one merges.
    the managed runtime encoder, which also carries `acp`, `runtime_binding`
    and `metadata`. The migration converts `agents` and `agent_versions` to
    `managed_*` and drops them.
-2. **Integrations.** Delete the install bridge, the legacy integration routes,
-   their Console pages and provider tables. Feishu and GitLab already run as
-   Matter Loops. Slack, Linear and GitHub event handling is unavailable until
-   their Loops are hosted (see Open questions).
-3. **Evals on managed Sessions.** The eval runner creates managed Sessions.
-4. **Session runtime.** Delete `sessions-store`, `SessionRegistry`,
+2. **Host Slack, Linear and GitHub as Matter Loops.** OMA Matter hosts the
+   OpenMatter Slack, Linear and GitHub integrations the same way it hosts
+   Feishu and GitLab, with Console setup for each. Their Sessions are managed
+   Sessions.
+3. **Integrations.** Delete the install bridge, the legacy integration routes,
+   their Console pages and provider tables. Every provider now runs as a
+   Matter Loop.
+4. **Evals on managed Sessions.** The eval runner creates managed Sessions.
+5. **Session runtime.** Delete `sessions-store`, `SessionRegistry`,
    `NodeSessionRouter`, `/v1/oma/sessions` and the `sessions` table.
-5. **Remaining resources.** Vaults, credentials, environments, files, memory
+6. **Remaining resources.** Vaults, credentials, environments, files, memory
    stores, dreams and skills. The Console switches to the `/v1` routes first.
-6. **Docs.** Remove the legacy path from `self-host.md`, the architecture docs
+7. **Docs.** Remove the legacy path from `self-host.md`, the architecture docs
    and the API reference. Publish the upgrade notes below.
 
 ## Upgrade notes for self-hosted deployments
 
 - Upgrade through step 1 in one go: agents are converted automatically.
-- For steps 2 to 5, a deployment that still has rows in a legacy table stops
+- For steps 3 to 6, a deployment that still has rows in a legacy table stops
   at the drop migration with the table name. Move the data through the `/v1`
   API (create the resource again) or delete it, then rerun the migration.
 - Clients of `/v1/oma/<resource>` for an in-scope resource move to the `/v1`
@@ -114,14 +117,13 @@ Each step is one pull request. A step starts after the previous one merges.
 
 - One store, one table and one shape per resource. No codec between shapes.
 - `/v1/oma` keeps only OMA-only resources.
-- Slack, Linear and GitHub integrations stop working between step 2 and the
-  hosting of their Loops, unless that hosting lands first.
+- Slack, Linear and GitHub keep working: their Loops are hosted (step 2)
+  before the install bridge is deleted (step 3). Existing installations are
+  set up again as Matter connections.
 - Self-hosters with data only in legacy tables must move it by hand.
 
 ## Open questions
 
-- Slack, Linear and GitHub: host their OpenMatter Loops before step 2, or
-  drop them at step 2 and add them back later.
 - Cloudflare D1 cannot run conversion code in a migration. Step 1 needs a
   one-off conversion command for D1, or a guard that stops the migration and
   points to it.
