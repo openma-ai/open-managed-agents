@@ -147,6 +147,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
     managedUserProfilesRoutes,
     services,
     apiKeyStorage,
@@ -492,6 +493,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/oma/inference-proxy", buildNodeHttpInferenceProxyRoutes({
     resolveUpstream: resolveNodeInferenceUpstream,
   }));
+  v1.route("/vaults", managedCapCliDeviceFlowRoutes);
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);

@@ -27,6 +27,7 @@ import type { UserProfilesApplicationPort } from "./ports/user-profiles";
 import type { VaultsApplicationPort } from "./ports/vaults";
 
 export * from "./ports/agents";
+export * from "./ports/cap-cli-device-flow";
 export * from "./ports/common";
 export * from "./ports/credentials";
 export * from "./ports/deployment-runs";

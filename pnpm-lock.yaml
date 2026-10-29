@@ -611,6 +611,9 @@ importers:
       '@open-managed-agents/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@open-managed-agents/oma-cap-adapter':
+        specifier: workspace:*
+        version: link:../../packages/oma-cap-adapter
       '@open-managed-agents/openai-agents-api':
         specifier: workspace:*
         version: link:../../packages/openai-agents-api
@@ -3371,6 +3374,9 @@ importers:
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../credentials-store
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../sessions-store
