@@ -1,3 +1,4 @@
+import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import type { CredentialStore } from "@open-managed-agents/credential-store";
 import {
   CredentialsApplicationService,
@@ -32,6 +33,10 @@ export const credentialValidationProbePort =
     "managed-agents.outbound.credentials.validation",
   );
 
+// cap_cli (OpenMA extension) credentials may only name a built-in CLI spec.
+const capSpecs = createSpecRegistry(builtinSpecs);
+const cliCatalog = { has: (cliId: string) => capSpecs.byCliId(cliId) !== null };
+
 export function credentialsModule(): AppModule {
   return defineAppModule({
     name: "managed-agents:credentials",
@@ -55,6 +60,7 @@ export function credentialsModule(): AppModule {
             store: port(credentialStorePort),
             vaults: port(credentialVaultSourcePort),
             validation: port(credentialValidationProbePort),
+            cliCatalog,
             clock: port(clockPort),
             ids: { nextCredentialId: () => ids.next("credential") },
           }),

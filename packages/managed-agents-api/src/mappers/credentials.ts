@@ -60,6 +60,16 @@ function toTokenEndpointAuthUpdate(
 }
 
 function toCredentialAuthInput(auth: WireCreateAuth): CredentialAuthInput {
+  if (auth.type === "cap_cli") {
+    return {
+      type: auth.type,
+      cliId: auth.cli_id,
+      token: auth.token,
+      ...(auth.refresh_token !== undefined && { refreshToken: auth.refresh_token }),
+      ...(auth.expires_at !== undefined && { expiresAt: auth.expires_at }),
+      ...(auth.extras !== undefined && { extras: auth.extras }),
+    };
+  }
   if (auth.type === "static_bearer") {
     return {
       type: auth.type,
@@ -113,6 +123,15 @@ function toCredentialAuthInput(auth: WireCreateAuth): CredentialAuthInput {
 }
 
 function toCredentialAuthUpdate(auth: WireUpdateAuth): CredentialAuthUpdate {
+  if (auth.type === "cap_cli") {
+    return {
+      type: auth.type,
+      ...(auth.token !== undefined && { token: auth.token }),
+      ...(auth.refresh_token !== undefined && { refreshToken: auth.refresh_token }),
+      ...(auth.expires_at !== undefined && { expiresAt: auth.expires_at }),
+      ...(auth.extras !== undefined && { extras: auth.extras }),
+    };
+  }
   if (auth.type === "static_bearer") {
     return {
       type: auth.type,
@@ -243,6 +262,13 @@ export function toValidateCredentialCommand(
 function fromCredentialAuth(auth: CredentialAuthView): object {
   if (auth.type === "static_bearer") {
     return { type: auth.type, mcp_server_url: auth.mcpServerUrl };
+  }
+  if (auth.type === "cap_cli") {
+    return {
+      type: auth.type,
+      cli_id: auth.cliId,
+      ...(auth.expiresAt !== undefined && { expires_at: auth.expiresAt }),
+    };
   }
   if (auth.type === "environment_variable") {
     return {

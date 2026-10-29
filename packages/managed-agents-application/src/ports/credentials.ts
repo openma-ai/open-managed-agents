@@ -72,6 +72,15 @@ export type CredentialAuthInput =
       secretName: string;
       secretValue: string;
       injectionLocation?: CredentialInjectionLocationInput;
+    }
+  | {
+      /** OpenMA extension: CLI Auth Protocol credential. */
+      type: "cap_cli";
+      cliId: string;
+      token: string;
+      refreshToken?: string | null;
+      expiresAt?: string | null;
+      extras?: Record<string, string>;
     };
 
 export type CredentialAuthView =
@@ -87,6 +96,12 @@ export type CredentialAuthView =
       injectionLocation: CredentialInjectionLocationView;
       networking: CredentialNetworkingView;
       secretName: string;
+    }
+  | {
+      /** OpenMA extension. Token, refresh token and extras stay write-only. */
+      type: "cap_cli";
+      cliId: string;
+      expiresAt?: string | null;
     };
 
 export type CredentialAuthUpdate =
@@ -102,6 +117,14 @@ export type CredentialAuthUpdate =
       injectionLocation?: CredentialInjectionLocationInput;
       networking?: CredentialNetworkingInput | null;
       secretValue?: string | null;
+    }
+  | {
+      /** OpenMA extension. `cliId` is immutable, like every auth type. */
+      type: "cap_cli";
+      token?: string | null;
+      refreshToken?: string | null;
+      expiresAt?: string | null;
+      extras?: Record<string, string> | null;
     };
 
 export interface CredentialView {
@@ -219,6 +242,7 @@ export type ArchiveCredentialResult =
 
 export type ValidateCredentialResult =
   | { type: "validated"; validation: CredentialValidationView }
+  | { type: "invalid_request"; message: string }
   | { type: "not_found" };
 
 export interface CredentialsApplicationPort {

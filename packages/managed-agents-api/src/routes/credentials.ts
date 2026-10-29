@@ -212,6 +212,9 @@ export function buildCredentialRoutes(
           c.req.param("credentialId"),
         ),
       );
+      if (result.type === "invalid_request") {
+        return c.json(invalidRequest(result.message), 400);
+      }
       if (result.type === "not_found") {
         return c.json(
           notFound(`Credential ${c.req.param("credentialId")} was not found`),

@@ -2548,6 +2548,9 @@ importers:
       '@open-managed-agents/agent-store':
         specifier: workspace:*
         version: link:../agent-store
+      '@open-managed-agents/cap':
+        specifier: workspace:*
+        version: link:../cap
       '@open-managed-agents/credential-store':
         specifier: workspace:*
         version: link:../credential-store
