@@ -21,10 +21,13 @@ export function managedResolver(fake: FakeManagedCredentials): ManagedCredential
     insert: async () => { throw new Error("unused"); },
     archive: async () => ({ type: "not_found" }),
     delete: async () => ({ type: "not_found" }),
-    // One page per Vault: whatever the fake returns for that Vault.
-    list: async ({ workspaceId, vaultId }) => fake.listByVaults({ workspaceId, vaultIds: [vaultId] }),
-    find: async (input) => fake.find?.(input) ?? null,
-    replace: async (input) => fake.replace?.(input) ?? { type: "not_found" },
+    // One page per Vault: whatever the fake returns for that Vault. Each
+    // call awaits the fake: an async function that returns an already
+    // rejected promise unawaited is reported as an unhandled rejection by
+    // the Workers test pool before the caller's handler adopts it.
+    list: async ({ workspaceId, vaultId }) => await fake.listByVaults({ workspaceId, vaultIds: [vaultId] }),
+    find: async (input) => (fake.find === undefined ? null : await fake.find(input)),
+    replace: async (input) => (fake.replace === undefined ? { type: "not_found" } : await fake.replace(input)),
   };
   return new ManagedCredentialResolver({
     credentials: store,
