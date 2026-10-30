@@ -247,7 +247,7 @@ export type OpenMaCredential = Omit<BetaManagedAgentsCredential, "auth"> & {
 export type OpenMaCredentialCreateParams = Omit<CredentialCreateParams, "auth"> & {
   auth: CredentialCreateParams["auth"] | OpenMaCapCliCreateAuth;
 };
-/** OpenMA extension: `POST /v1/vaults/:id/cap_cli_device_flow`. */
+/** OpenMA extension: `POST /v1/oma/vaults/:id/cap_cli_device_flow`. */
 export interface OpenMaCapCliDeviceFlow {
   type: "cap_cli_device_flow";
   cli_id: string;
@@ -258,7 +258,7 @@ export interface OpenMaCapCliDeviceFlow {
   interval_seconds: number;
   expires_at: string;
 }
-/** OpenMA extension: `POST /v1/vaults/:id/cap_cli_device_flow/poll`. */
+/** OpenMA extension: `POST /v1/oma/vaults/:id/cap_cli_device_flow/poll`. */
 export type OpenMaCapCliDeviceFlowPoll =
   | { status: "pending" | "expired" | "denied" }
   | { status: "slow_down"; interval_seconds: number; flow_token: string }
@@ -672,12 +672,12 @@ export function createManagedApiClient(
         capCliDeviceFlow: {
           start: (vaultId: string, params: { cli_id: string }) =>
             request<OpenMaCapCliDeviceFlow>(
-              `/v1/vaults/${id(vaultId)}/cap_cli_device_flow`,
+              `/v1/oma/vaults/${id(vaultId)}/cap_cli_device_flow`,
               json(params),
             ),
           poll: (vaultId: string, params: { flow_token: string }) =>
             request<OpenMaCapCliDeviceFlowPoll>(
-              `/v1/vaults/${id(vaultId)}/cap_cli_device_flow/poll`,
+              `/v1/oma/vaults/${id(vaultId)}/cap_cli_device_flow/poll`,
               json(params),
             ),
         },

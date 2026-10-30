@@ -1,7 +1,7 @@
 // @ts-nocheck
 // Cloudflare composition for the OpenMA cap_cli extension on the managed
-// /v1 Vault stack: credential CRUD, the device-flow routes mounted ahead of
-// the official Vault routes, and the managed sandbox placeholder RPC.
+// /v1 Vault stack: credential CRUD, the device-flow routes under /v1/oma/vaults
+// (mounted ahead of the legacy Vault router), and the managed sandbox placeholder RPC.
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -49,15 +49,29 @@ describe("managed cap_cli Vault credentials (Cloudflare)", () => {
     expect(archived.status).toBe(200);
   });
 
-  it("serves the device-flow extension without shadowing the official Vault routes", async () => {
+  it("serves the device-flow extension under /v1/oma/vaults without shadowing other routes", async () => {
     const vault = await post("/v1/vaults", { display_name: "device flow vault" });
     const { id } = await vault.json();
 
-    expect((await post(`/v1/vaults/${id}/cap_cli_device_flow`, { cli_id: "fly" })).status).toBe(400);
-    expect((await post(`/v1/vaults/${id}/cap_cli_device_flow`, { cli_id: "nope" })).status).toBe(400);
-    expect((await post("/v1/vaults/vlt_missing/cap_cli_device_flow", { cli_id: "gh" })).status).toBe(404);
-    expect((await post(`/v1/vaults/${id}/cap_cli_device_flow/poll`, { flow_token: "forged" })).status).toBe(400);
+    expect((await post(`/v1/oma/vaults/${id}/cap_cli_device_flow`, { cli_id: "fly" })).status).toBe(400);
+    expect((await post(`/v1/oma/vaults/${id}/cap_cli_device_flow`, { cli_id: "nope" })).status).toBe(400);
+    expect((await post("/v1/oma/vaults/vlt_missing/cap_cli_device_flow", { cli_id: "gh" })).status).toBe(404);
+    expect((await post(`/v1/oma/vaults/${id}/cap_cli_device_flow/poll`, { flow_token: "forged" })).status).toBe(400);
     expect((await api(`/v1/vaults/${id}`, { headers: HEADERS })).status).toBe(200);
+
+    // The official namespace no longer carries the extension.
+    const official = await post(`/v1/vaults/${id}/cap_cli_device_flow`, { cli_id: "gh" });
+    expect(official.status).toBe(404);
+
+    // The remaining legacy /v1/oma/vaults routes keep their behaviour.
+    const legacy = await post("/v1/oma/vaults", { name: "legacy vault" });
+    expect(legacy.status, await legacy.clone().text()).toBe(201);
+    const legacyVault = await legacy.json();
+    const legacyList = await api("/v1/oma/vaults", { headers: HEADERS });
+    expect(legacyList.status).toBe(200);
+    expect(JSON.stringify(await legacyList.json())).toContain(legacyVault.id);
+    const legacyGet = await api(`/v1/oma/vaults/${legacyVault.id}`, { headers: HEADERS });
+    expect(legacyGet.status).toBe(200);
   });
 
   it("reports not_found for a non-managed session from the placeholder RPC", async () => {

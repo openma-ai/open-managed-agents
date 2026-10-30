@@ -1,8 +1,8 @@
 /**
  * OpenMA extension, not part of the Anthropic Managed Agents API:
  *
- *   POST /v1/vaults/:vaultId/cap_cli_device_flow        { cli_id }
- *   POST /v1/vaults/:vaultId/cap_cli_device_flow/poll   { flow_token }
+ *   POST /v1/oma/vaults/:vaultId/cap_cli_device_flow        { cli_id }
+ *   POST /v1/oma/vaults/:vaultId/cap_cli_device_flow/poll   { flow_token }
  *
  * Starts and polls an OAuth Device Authorization Grant (RFC 8628) whose
  * approval is stored as a managed `cap_cli` Vault credential.
