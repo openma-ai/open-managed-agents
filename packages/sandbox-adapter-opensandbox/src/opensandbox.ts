@@ -2,7 +2,7 @@
 // stay in the control-plane connection config, never in the sandbox environment.
 import { randomInt } from "node:crypto";
 import { Buffer } from "node:buffer";
-import type { CommandExecution, Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
+import type { CommandExecution, Sandbox as SdkSandbox, Volume } from "@alibaba-group/opensandbox";
 import type {
   SandboxCheckpointHandle, SandboxCheckpointKind, SandboxDuplexProcessPort, SandboxDuplexProcessSpec,
   SandboxFactory, SandboxFactoryEnv, SandboxPort, SandboxProviderPort,
@@ -21,7 +21,81 @@ export interface OpenSandboxOptions {
   memory: string;
   snapshotTimeoutMs: number;
   snapshotPollMs: number;
-  suspendedTtlSeconds: number;
+  /** What a pause retains on the declared backend; memory only when the operator declares it. */
+  suspendKind: "filesystem" | "memory";
+  volumes: Volume[];
+}
+
+/** Backends whose pause retains memory and processes (Docker freeze; Fast Sandbox vmstate per docs). */
+const MEMORY_RUNTIMES = new Set(["docker", "fast"]);
+
+function suspendKindFrom(env: SandboxFactoryEnv): "filesystem" | "memory" {
+  const runtime = env.OPENSANDBOX_RUNTIME;
+  if (runtime !== undefined && !["docker", "kubernetes", "fast"].includes(runtime)) {
+    throw new Error("OPENSANDBOX_RUNTIME must be docker, kubernetes or fast");
+  }
+  const kind = env.OPENSANDBOX_SUSPEND_KIND;
+  if (kind !== undefined && kind !== "filesystem" && kind !== "memory") {
+    throw new Error("OPENSANDBOX_SUSPEND_KIND must be filesystem or memory");
+  }
+  if (kind === "memory" && (runtime === undefined || !MEMORY_RUNTIMES.has(runtime))) {
+    throw new Error("OPENSANDBOX_SUSPEND_KIND=memory requires OPENSANDBOX_RUNTIME=docker or fast");
+  }
+  return kind ?? (runtime !== undefined && MEMORY_RUNTIMES.has(runtime) ? "memory" : "filesystem");
+}
+
+/** Parses OPENSANDBOX_VOLUMES (SDK Volume[] JSON). Errors never echo the value: ossfs entries carry keys. */
+export function volumesFromEnvironment(env: SandboxFactoryEnv): Volume[] {
+  const raw = env.OPENSANDBOX_VOLUMES;
+  if (raw === undefined || raw.trim() === "") return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error("OPENSANDBOX_VOLUMES must be a JSON array of OpenSandbox volumes"); }
+  if (!Array.isArray(parsed)) throw new Error("OPENSANDBOX_VOLUMES must be a JSON array of OpenSandbox volumes");
+  const names = new Set<string>();
+  return parsed.map((value, index) => {
+    const volume = value as Volume;
+    const where = `OPENSANDBOX_VOLUMES[${index}]`;
+    if (typeof volume !== "object" || volume === null || typeof volume.name !== "string" || !volume.name) throw new Error(`${where} needs a name`);
+    if (names.has(volume.name)) throw new Error(`${where} duplicates volume name`);
+    names.add(volume.name);
+    if (typeof volume.mountPath !== "string" || !volume.mountPath.startsWith("/")) throw new Error(`${where} needs an absolute mountPath`);
+    if ([volume.host, volume.pvc, volume.ossfs].filter(b => b != null).length !== 1) throw new Error(`${where} must set exactly one of host, pvc, ossfs`);
+    if (volume.host && typeof volume.host.path !== "string") throw new Error(`${where}.host needs path`);
+    if (volume.pvc && typeof volume.pvc.claimName !== "string") throw new Error(`${where}.pvc needs claimName`);
+    if (volume.ossfs && (typeof volume.ossfs.bucket !== "string" || typeof volume.ossfs.endpoint !== "string"
+      || typeof volume.ossfs.accessKeyId !== "string" || typeof volume.ossfs.accessKeySecret !== "string")) {
+      throw new Error(`${where}.ossfs needs bucket, endpoint, accessKeyId and accessKeySecret`);
+    }
+    return volume;
+  });
+}
+
+/** Stable, credential-free identity of a volume: backend location + subPath + mountPath. */
+export function openSandboxVolumeIdentity(volume: Volume): string {
+  const sub = volume.subPath ? `/${volume.subPath.replace(/^\/+/, "")}` : "";
+  const source = volume.pvc ? `pvc://${volume.pvc.claimName}`
+    : volume.ossfs ? `ossfs://${volume.ossfs.bucket}@${volume.ossfs.endpoint}`
+    : volume.host ? `host://${volume.host.path}` : "unknown://";
+  return `opensandbox:${source}${sub}#${volume.mountPath}`;
+}
+
+/**
+ * Builds a managed-runtime `durableMount` for a volume mounted at `mountPath`
+ * by OPENSANDBOX_VOLUMES. Volumes are fixed at Sandbox.create, so attach only
+ * verifies the acquired runtime was created with the same volume identity.
+ */
+export function openSandboxDurableMount(env: SandboxFactoryEnv, mountPath: string) {
+  const volume = volumesFromEnvironment(env).find(v => v.mountPath === mountPath);
+  if (volume === undefined) throw new Error(`OPENSANDBOX_VOLUMES has no volume mounted at ${mountPath}`);
+  const identity = openSandboxVolumeIdentity(volume);
+  return {
+    identity: () => identity,
+    async attach({ runtime, signal }: { runtime: object; signal: AbortSignal }) {
+      signal.throwIfAborted();
+      const identities = (runtime as { volumeIdentities?(): string[] }).volumeIdentities?.();
+      if (!identities?.includes(identity)) throw new Error(`OpenSandbox runtime is missing durable volume at ${mountPath}`);
+    },
+  };
 }
 
 function positive(value: string | undefined, fallback: number, name: string, min = 1): number {
@@ -51,9 +125,8 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptio
     memory: env.OPENSANDBOX_MEMORY ?? "1Gi",
     snapshotTimeoutMs: positive(env.OPENSANDBOX_SNAPSHOT_TIMEOUT_MS, 600_000, "OPENSANDBOX_SNAPSHOT_TIMEOUT_MS"),
     snapshotPollMs: positive(env.OPENSANDBOX_SNAPSHOT_POLL_MS, 1_000, "OPENSANDBOX_SNAPSHOT_POLL_MS"),
-    // OpenSandbox expiry deletes paused sandboxes too, and the last lease
-    // renewal (host heartbeat TTL) is usually short. Suspend extends it.
-    suspendedTtlSeconds: positive(env.OPENSANDBOX_SUSPENDED_TTL_SECONDS, 86_400, "OPENSANDBOX_SUSPENDED_TTL_SECONDS", 60),
+    suspendKind: suspendKindFrom(env),
+    volumes: volumesFromEnvironment(env),
   };
 }
 
@@ -111,10 +184,15 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
 
   runtimeHandle(): SandboxRuntimeHandle { return { provider: "opensandbox", runtimeId: this.id }; }
-  // Docker/Kubernetes pause keeps the same resource (container freeze keeps
-  // memory and processes). Snapshots are filesystem images: restoring one
-  // creates a new runtime and does not carry process or memory state.
-  runtimeCapabilities() { return { lease: true, suspend: ["filesystem", "memory"] as const, checkpoint: ["filesystem"] as const }; }
+  // Pause semantics differ by backend: Docker freezes the container (memory and
+  // processes kept), Kubernetes commits rootfs only. Memory is advertised only
+  // when the operator declares a backend that retains it. Snapshots are
+  // filesystem images restored into a new runtime.
+  runtimeCapabilities() {
+    const suspend = this.options.suspendKind === "memory" ? ["filesystem", "memory"] as const : ["filesystem"] as const;
+    return { lease: true, suspend, checkpoint: ["filesystem"] as const };
+  }
+  volumeIdentities(): string[] { return this.options.volumes.map(openSandboxVolumeIdentity); }
   async status(signal?: AbortSignal): Promise<SandboxRuntimeStatus> {
     if (this.destroyed) return "stopped";
     signal?.throwIfAborted();
@@ -137,9 +215,13 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   }
   async suspend({ kind }: { kind: SandboxCheckpointKind }): Promise<SandboxCheckpointHandle> {
     if (kind !== "filesystem" && kind !== "memory") throw new Error("Unsupported OpenSandbox suspend kind");
-    // The server's expiry timer keeps running while paused and deletes the
-    // sandbox. Extend first so a failed renewal never leaves a doomed pause.
-    await this.call(() => this.client.renew(this.options.suspendedTtlSeconds));
+    if (kind === "memory" && this.options.suspendKind !== "memory") {
+      throw new Error("OpenSandbox memory suspend requires OPENSANDBOX_RUNTIME=docker or fast");
+    }
+    // Hot pause only: expires_at stays absolute while paused. Renew to the
+    // normal active window so pause starts with a full one; a failed renewal
+    // never leaves a doomed pause. Long-lived state belongs in volumes or snapshots.
+    await this.call(() => this.client.renew(this.options.timeoutSeconds));
     await this.call(() => this.client.pause());
     return { provider: "opensandbox", checkpointId: this.id, sourceRuntimeId: this.id, kind, scope: "runtime" };
   }
@@ -257,6 +339,7 @@ async function allocate(
       ...(snapshotId === undefined ? { image: options.image } : { snapshotId }),
       timeoutSeconds: options.timeoutSeconds,
       resource: { cpu: options.cpu, memory: options.memory },
+      ...(options.volumes.length ? { volumes: options.volumes } : {}),
       entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId },
       readyTimeoutSeconds: options.readyTimeoutMs / 1000,
       signal: AbortSignal.timeout(options.readyTimeoutMs),

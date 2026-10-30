@@ -40,7 +40,9 @@ SANDBOX_IMAGE=node:22-slim
 | `OPENSANDBOX_API_KEY` | unset | Lifecycle API key; optional for a no-auth development server. `OPEN_SANDBOX_API_KEY` is the official SDK-compatible fallback name. |
 | `OPENSANDBOX_PROTOCOL` | `http` | `http` or `https` for domain and scheme-less service endpoints. |
 | `OPENSANDBOX_TIMEOUT_SECONDS` | `1800` | Initial sandbox lifetime, integer seconds, minimum `60`. OpenMA renews active runtime leases via `renew-expiration`. |
-| `OPENSANDBOX_SUSPENDED_TTL_SECONDS` | `86400` | Expiration set right before `suspend` pauses the sandbox (paused sandboxes still expire), minimum `60`. Resume restores `OPENSANDBOX_TIMEOUT_SECONDS`. |
+| `OPENSANDBOX_RUNTIME` | unset | Declared server backend: `docker`, `kubernetes` or `fast`. Decides what a pause retains (table below). |
+| `OPENSANDBOX_SUSPEND_KIND` | `memory` for `docker`/`fast`, else `filesystem` | Advertised suspend kind. `memory` is refused unless `OPENSANDBOX_RUNTIME` is `docker` or `fast`; set `filesystem` to opt out. |
+| `OPENSANDBOX_VOLUMES` | unset | JSON array of official SDK `Volume` objects (`host` / `pvc` / `ossfs`, exactly one each) passed to `Sandbox.create`. Values are never logged or echoed in errors. |
 | `OPENSANDBOX_SNAPSHOT_TIMEOUT_MS` / `OPENSANDBOX_SNAPSHOT_POLL_MS` | `600000` / `1000` | Wait for a snapshot to become `Ready`. |
 | `OPENSANDBOX_READY_TIMEOUT_MS` | `120000` | Provisioning and execd readiness deadline in milliseconds. |
 | `OPENSANDBOX_CPU` | `1` | OpenSandbox `resourceLimits.cpu` quantity. |
@@ -67,49 +69,95 @@ worker/supervisor protocol remains unchanged. The lifecycle API key stays on
 the control plane and is never added to commands, container environment, or
 file uploads. Relay authentication uses a random, per-process token.
 
-Managed runtime hosts can pass the exported `sandboxProvider` directly to
-`createProviderManagedRuntime` from `@open-managed-agents/managed-runtime-sandbox`
-with `providerName: "opensandbox"`, `sandboxCapabilities: { suspendResume:
-"unsupported", hardTerminate: "supported", runtimeCheckpoints: [] }`, and
-`workspace: { strategies: ["ephemeral"] }`. Compositions may also opt in to
-`"retained_runtime"` (`retainedSuspendKind: "memory"`) and/or
-`"checkpoint_restore"` (`portableCheckpointKind: "filesystem"`) once their
-OpenSandbox runtime is certified for pause and snapshots (see below). Select an image containing the
-OpenMA runtime and supply the usual runtime environment verification and
-harness configuration. The default Node image supports basic sandbox tools;
-it does not preinstall an OpenMA worker.
+## Lifecycle mapping
 
-Lifecycle hooks map to the official SDK only:
+OpenSandbox pause does **not** freeze `expires_at`: expiry stays absolute
+while a sandbox is paused, and the server deletes it on expiry. Pause is for
+hot reclaim inside the TTL window. Long-lived files belong in volumes,
+external services or explicit snapshots, never in long pause plus renew.
 
-- `suspend({ kind })` → `Sandbox.pause()`. Returns a `runtime`-scoped handle
-  for the same sandbox id. On the Docker runtime this freezes the container, so
-  files, memory and running processes are retained.
-  OpenSandbox's expiry timer keeps running while a sandbox is paused and
-  deletes it on expiry (Docker and Kubernetes). Suspend therefore first renews
-  the expiration to `OPENSANDBOX_SUSPENDED_TTL_SECONDS` (default 86400, min 60)
-  and only pauses if that renewal succeeded. This is the retention window for a
-  retained runtime.
-- `resume(handle)` → `Sandbox.resume()` (fresh execd endpoint), then renews the
-  expiration back to `OPENSANDBOX_TIMEOUT_SECONDS`; a no-op when the sandbox is
-  already running. Attaching a paused runtime via `sandboxProvider.resume` does
-  the same.
+| OpenMA strategy | OpenSandbox primitive | Lifetime | Verification |
+| --- | --- | --- | --- |
+| `retained_runtime` + `suspend`/`resume` | `Sandbox.pause` / `Sandbox.resume` (same sandbox id) | Hot only, within `expires_at` | Docker: live-certified |
+| `durable_mount` | `volumes` on `Sandbox.create` (`pvc` / `ossfs` / `host`) | As durable as the backing volume | Mock-tested only; live-untested |
+| `checkpoint_restore` | `SandboxManager.createSnapshot` → `Sandbox.create({ snapshotId })` (new sandbox) | Portable, until the snapshot is deleted | Docker: live-certified |
+
+What a `retained_runtime` pause keeps depends on the backend, so declare it
+with `OPENSANDBOX_RUNTIME`. Without a declaration the adapter advertises only
+`suspend: ["filesystem"]`, and `suspend({ kind: "memory" })` throws.
+
+| `OPENSANDBOX_RUNTIME` | Pause mechanism | Retains | Status |
+| --- | --- | --- | --- |
+| `docker` | Container freeze | Files, memory and running processes | Live-verified (process and counter survive pause/resume) |
+| `fast` | rootfs + vmstate + guest memory checkpoint | Files and memory, per upstream docs | Untested |
+| `kubernetes` (BatchSandbox) | rootfs committed to an OCI image | Files only: no processes or memory (QEMU VMState is an opt-in upstream exception, not assumed). Re-inject credential/egress state after resume. | Untested |
+
+Hooks map to the official SDK only:
+
+- `suspend({ kind })` renews the expiration to `OPENSANDBOX_TIMEOUT_SECONDS`
+  (the normal active window) and then calls `Sandbox.pause()`. If renewal fails
+  it does not pause. There is no separate long suspended TTL: a paused runtime
+  expires one active window after suspend unless the host resumes it. Returns a
+  `runtime`-scoped handle for the same sandbox id.
+- `resume(handle)` → `Sandbox.resume()` (fresh execd endpoint), then renews
+  to `OPENSANDBOX_TIMEOUT_SECONDS`. No-op when already running.
+  `sandboxProvider.resume` resumes a paused runtime when attaching by handle.
 - `checkpoint({ kind: "filesystem", name })` → `SandboxManager.createSnapshot`,
-  polled with `getSnapshot` until `Ready` (`OPENSANDBOX_SNAPSHOT_TIMEOUT_MS`,
-  default 600000; `OPENSANDBOX_SNAPSHOT_POLL_MS`, default 1000). Returns a
-  `portable` handle. Memory checkpoints are refused: snapshots do not capture
-  processes.
-- `sandboxProvider.restore(handle)` → `Sandbox.create({ snapshotId })`, a new
-  sandbox with the snapshot's filesystem.
+  polled until `Ready` (`OPENSANDBOX_SNAPSHOT_TIMEOUT_MS`, default 600000;
+  `OPENSANDBOX_SNAPSHOT_POLL_MS`, default 1000). Returns a `portable` handle.
+  Memory checkpoints are refused.
+- `sandboxProvider.restore(handle)` → `Sandbox.create({ snapshotId })`.
 
-Snapshot support depends on the server runtime (servers without it answer
-HTTP 501, surfaced as `OpenSandbox snapshot failed (HTTP 501)`). The adapter
-does not delete snapshots; the OpenMA port has no snapshot deletion hook, so
-operators must garbage-collect them (`SandboxManager.deleteSnapshot`).
+Snapshot support depends on the server runtime (HTTP 501 surfaces as
+`OpenSandbox snapshot failed (HTTP 501)`). The adapter does not delete
+snapshots; operators must garbage-collect them (`SandboxManager.deleteSnapshot`).
 
-Native background process handles, durable workspace or memory mounts, and credential-vault/egress enforcement are not
-advertised by this adapter. OpenSandbox Credential Vault policies require a
-separate, explicit mapping to OpenMA's credential egress port; no enforcement
-is inferred from provider selection.
+### Volumes (`durable_mount`)
+
+```sh
+OPENSANDBOX_VOLUMES='[{"name":"ws","pvc":{"claimName":"oma-workspaces"},"mountPath":"/workspace","subPath":"team-a"}]'
+```
+
+Docker maps `pvc` to a named volume and Kubernetes to a PersistentVolumeClaim;
+`ossfs` needs a Linux FUSE host (Docker) and inline OSS keys; `host` paths must
+be under the server's allowed prefixes. Fast Sandbox rejects volumes upstream.
+Volumes are fixed at creation, so every create, restore and resume uses the
+same definitions. `openSandboxDurableMount(env, mountPath)` returns a
+managed-runtime `durableMount` whose identity is credential-free
+(`opensandbox:pvc://<claim>/<subPath>#<mountPath>`,
+`opensandbox:ossfs://<bucket>@<endpoint>/<subPath>#<mountPath>`) and whose
+`attach` verifies the runtime was created with that volume.
+
+### Compositions
+
+Pass `sandboxProvider` to `createProviderManagedRuntime` from
+`@open-managed-agents/managed-runtime-sandbox` with
+`providerName: "opensandbox"`. A minimal ephemeral composition:
+
+```ts
+sandboxCapabilities: { suspendResume: "unsupported", hardTerminate: "supported", runtimeCheckpoints: [] },
+workspace: { strategies: ["ephemeral"] },
+```
+
+With the mapped lifecycle (here a declared Docker backend and a workspace volume):
+
+```ts
+sandboxCapabilities: { suspendResume: "supported", hardTerminate: "supported", runtimeCheckpoints: [] },
+workspace: {
+  // durable_mount is added automatically when durableMount is supplied.
+  strategies: ["retained_runtime", "checkpoint_restore"],
+  retainedSuspendKind: "memory",           // "filesystem" unless OPENSANDBOX_RUNTIME=docker|fast
+  portableCheckpointKind: "filesystem",
+  durableMount: openSandboxDurableMount(env, "/workspace"), // optional
+},
+```
+
+Select an image containing the OpenMA runtime. The default Node image supports
+basic sandbox tools; it does not preinstall an OpenMA worker.
+
+Native background process handles and credential-vault/egress enforcement are
+not advertised. OpenSandbox Credential Vault policies require a separate,
+explicit mapping to OpenMA's credential egress port.
 
 Run the default tests without an OpenSandbox server:
 
@@ -121,7 +169,8 @@ pnpm --filter @open-managed-agents/sandbox-adapter-opensandbox typecheck
 These tests run the real SDK against an HTTP test double, and run the stdio
 relay as a real local child process. To opt into the live lifecycle, file,
 command, renewal, reattachment and binary stdio check, plus pause/resume
-(files and a running process survive), resume-by-handle of a paused runtime,
+(files and, on a declared Docker backend, a running process survive), hot pause
+within the active window, resume-by-handle of a paused runtime,
 and filesystem snapshot + restore into a new sandbox, configure the connection
 variables above and run:
 
