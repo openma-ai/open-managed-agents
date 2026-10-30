@@ -3,8 +3,8 @@ import type { SqlClient } from "@open-managed-agents/sql-client";
 
 /**
  * Run immediately before the normal Node schema migrator. Moves agents from
- * the legacy tables into `managed_agents`, so the migration that drops the
- * legacy tables finds them empty. A no-op once the tables are gone.
+ * the legacy tables into `managed_agents`, leaving the retired tables empty.
+ * A no-op when empty or absent after an earlier upgrade.
  */
 export async function moveLegacyAgents(
   sql: SqlClient,
