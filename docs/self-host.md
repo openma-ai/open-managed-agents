@@ -627,7 +627,17 @@ rotation is written back). Without one the connection is a blind TCP tunnel
 and the request is not read. If the credential lookup fails, the proxy answers
 `502` instead of forwarding without the credential. Plain `http://` proxy
 requests are forwarded without injection. The CA private key never leaves
-main-node.
+main-node. Every decrypted HTTP request revalidates the original CONNECT
+pass and reloads the current Session and its Vault bindings. Removing a Vault
+stops using its credentials on that same keepalive connection; archiving the
+Session or expiring the pass rejects subsequent requests. Ordinary blind TCP
+tunnels are not actively revoked.
+
+Before every turn, including warm sandbox reuse, main-node renews the pass
+and refreshes the CLI placeholders without rebuilding the sandbox. Replaced
+or removed bindings clear the old placeholder variables; removing all Vaults
+also clears proxy and CA environment settings. These are empty-string
+overrides (the adapter environment API merges string values), not file deletion.
 
 **On by default and public.** main-node listens on
 `SANDBOX_EGRESS_PROXY_PORT` (default **8788**, all interfaces) and tells
@@ -674,7 +684,7 @@ Configuration (all optional, on main-node):
 | `SANDBOX_EGRESS_PROXY_PORT` | `8788` | Listen port. |
 | `SANDBOX_EGRESS_PROXY_HOST` | `HOST` | Listen address. |
 | `SANDBOX_EGRESS_CA_DIR` | `./data/sandbox-egress-ca` | Persistent CA directory (`ca.crt`, `ca.key`); share it between replicas. |
-| `SANDBOX_EGRESS_PASS_TTL_SEC` | `86400` | Pass lifetime. A sandbox kept longer than this between preparations loses injection. |
+| `SANDBOX_EGRESS_PASS_TTL_SEC` | `86400` | Pass lifetime, renewed before each turn (including warm reuse). An already-running process using an expired pass must reload the current proxy environment. |
 
 A leaked pass lets its holder use that Session's Vault credentials through
 the proxy until the pass expires or the Session is archived; it is as

@@ -558,7 +558,10 @@ export async function createManagedNodeRuntime(
           : { authorizeMemoryMutation: () => isManagedSessionExecutionFenceActive(executionFence) }),
         ...(signal === undefined ? {} : { signal }),
       });
-      // Last, so input staging (repository clones) does not go through it.
+    },
+    // Cold preparation calls this last (after repository clones); warm reuse
+    // calls it again to renew the pass and honor the current Vault bindings.
+    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
       await applySandboxEgress({
         sandbox,
         scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
+import { applySandboxEgress } from "../../../packages/control-plane-node/src/lib/sandbox-egress/environment";
+import { createEgressPassAuthority } from "../../../packages/control-plane-node/src/lib/sandbox-egress/pass";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type {
@@ -68,6 +70,12 @@ interface RunnerConstructor {
       sandbox: SandboxExecutor;
       runtimeGeneration: string;
       signal?: AbortSignal;
+    }): Promise<void>;
+    refreshSandboxEnvironment?(input: {
+      workspaceId: string;
+      session: Session;
+      environment: Environment;
+      sandbox: SandboxExecutor;
     }): Promise<void>;
     synchronizeSandbox?(input: {
       workspaceId: string;
@@ -212,6 +220,72 @@ describe("DefaultNodeManagedSessionRunner", () => {
     expect(runner.connectedSandbox({ workspaceId: "workspace_other", sessionId: session.id })).toBeNull();
     await runner.stop({ workspaceId: "workspace_01", sessionId: session.id });
     expect(runner.connectedSandbox({ workspaceId: "workspace_01", sessionId: session.id })).toBeNull();
+  });
+
+  it("refreshes Vault egress on the same warm sandbox when Vaults are added, replaced and removed", async () => {
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
+    const { DefaultNodeManagedSessionRunner } = await import(/* @vite-ignore */ modulePath) as { DefaultNodeManagedSessionRunner: RunnerConstructor };
+    const env: Record<string, string> = { USER_SETTING: "keep" };
+    let builds = 0;
+    let preparations = 0;
+    let now = 1_000;
+    const sandbox = {
+      exec: async () => "",
+      destroy: async () => {},
+      writeFile: async (path: string) => path,
+      setEnvVars: async (values: Record<string, string>) => { Object.assign(env, values); },
+    } as SandboxExecutor;
+    const runner = new DefaultNodeManagedSessionRunner({
+      buildSandbox: async () => { builds++; return sandbox; },
+      prepareSandbox: async () => { preparations++; },
+      refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
+        await applySandboxEgress({
+          sandbox,
+          scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
+          placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
+            ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
+          egress: { type: "enabled", settings: {
+            publicUrl: "http://proxy.example:8788", caCertificatePem: "PUBLIC-CA",
+            passes: createEgressPassAuthority("root", { now: () => new Date(now) }), passTtlMs: 60_000,
+          } },
+          log: { info: () => {}, warn: () => {} },
+        });
+      },
+      outcomes: { evaluate: async () => { throw new Error("unused"); } },
+      confirmedTools: { execute: async () => { throw new Error("unused"); } },
+      buildModel: async () => ({}), buildTools: async () => ({}),
+      buildHarness: () => ({ run: async () => {} }), buildHarnessContext: async (input) => input,
+      clock: { now: () => new Date(now) }, ids: { nextEventId: () => "event_egress" },
+    });
+    const start = (vaultIds: string[]) => runner.start({
+      workspaceId: "workspace_01", sessionId: session.id,
+      session: { ...session, vaultIds }, environment, initialEvents: [],
+    });
+    try {
+      await start([]);
+      expect(env.HTTPS_PROXY).toBeUndefined();
+      await start(["vlt_a"]);
+      expect(env.GITHUB_TOKEN).toBe("__cap_managed__");
+      expect(env.HTTPS_PROXY).toContain("@proxy.example:8788");
+      const firstPass = env.HTTPS_PROXY;
+      now += 1_000;
+      await start(["vlt_a"]);
+      expect(env.HTTPS_PROXY).not.toBe(firstPass);
+      await start(["vlt_b"]);
+      expect(env.GITHUB_TOKEN).toBe("");
+      expect(env.GITLAB_TOKEN).toBe("__cap_managed__");
+      expect(env.HTTPS_PROXY).toContain("@proxy.example:8788");
+      await start([]);
+      for (const key of ["GITHUB_TOKEN", "GITLAB_TOKEN", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"]) {
+        expect(env[key], key).toBe("");
+      }
+      expect(env.USER_SETTING).toBe("keep");
+      expect(builds).toBe(1);
+      expect(preparations).toBe(1);
+      expect(runner.connectedSandbox({ workspaceId: "workspace_01", sessionId: session.id })).toBe(sandbox);
+    } finally {
+      await runner.stop({ workspaceId: "workspace_01", sessionId: session.id });
+    }
   });
 
   it("destroys a new sandbox when Session input preparation fails", async () => {

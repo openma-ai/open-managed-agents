@@ -167,6 +167,11 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     /** The execution this sandbox is acquired for; absent outside a claim. */
     executionFence?: SessionExecutionFence;
   }): Promise<void>;
+  /** Refresh lightweight Session environment after preparation and on every
+   * warm reuse, without restaging resources or rebuilding the sandbox. */
+  refreshSandboxEnvironment?(input: ManagedRunnerContext & {
+    sandbox: SandboxExecutor;
+  }): Promise<void>;
   /** Fenced turn barrier for provider-neutral writable state reconciliation. */
   /** Extra runtime-state check before reusing a warm sandbox (for example
    * shared Session outputs advanced by another replica). */
@@ -280,7 +285,13 @@ export class DefaultNodeManagedSessionRunner
       if (reusable && existing !== undefined) {
         reusable = await untilAborted(this.probe(existing), signal) !== "lost";
       }
-      if (reusable) return;
+      if (reusable && existing !== undefined) {
+        await untilAborted(this.dependencies.refreshSandboxEnvironment?.({
+          workspaceId: input.workspaceId, session: input.session, environment: input.environment,
+          sandbox: existing,
+        }) ?? Promise.resolve(), signal);
+        return;
+      }
       if (existing !== undefined) {
         const previousWorkspace = this.workspaces.get(input);
         this.workspaces.delete(input);
@@ -331,15 +342,17 @@ export class DefaultNodeManagedSessionRunner
         if (signal.aborted) throw abortedError(signal);
         return this.dependencies.buildSandbox({ ...context, signal });
       },
-      prepare: (sandbox) => {
-        if (signal.aborted) return Promise.reject(abortedError(signal));
-        return this.dependencies.prepareSandbox?.({
+      prepare: async (sandbox) => {
+        if (signal.aborted) throw abortedError(signal);
+        await this.dependencies.prepareSandbox?.({
           ...context,
           sandbox,
           runtimeGeneration,
           signal,
           ...(input.executionFence === undefined ? {} : { executionFence: input.executionFence }),
-        }) ?? Promise.resolve();
+        });
+        if (signal.aborted) throw abortedError(signal);
+        await this.dependencies.refreshSandboxEnvironment?.({ ...context, sandbox });
       },
     });
     const allocation = runtime.acquire();

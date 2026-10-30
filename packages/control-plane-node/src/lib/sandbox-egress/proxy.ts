@@ -74,7 +74,8 @@ export interface SandboxEgressProxy {
 }
 
 interface TunnelContext {
-  scope: ManagedSessionScope;
+  /** Revalidate the original CONNECT pass for every decrypted request. */
+  proxyAuthorization: string | undefined;
   hostname: string;
   port: number;
 }
@@ -182,8 +183,8 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
       upstream.pipe(client);
       client.pipe(upstream);
     });
-    upstream.once("error", (error) => {
-      log.warn({ op: "sandbox_egress.tunnel_failed", host: hostname, port, error: error.message }, "sandbox egress tunnel failed");
+    upstream.once("error", () => {
+      log.warn({ op: "sandbox_egress.tunnel_failed", host: hostname, port, code: "upstream_connection_failed" }, "sandbox egress tunnel failed");
       if (!client.destroyed) rejectSocket(client, 502, "Bad Gateway");
     });
     client.once("error", () => upstream.destroy());
@@ -271,15 +272,21 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
       fail(response, 500, "sandbox egress: tunnel context lost");
       return;
     }
-    const { scope, hostname, port } = context;
+    const { hostname, port } = context;
     const method = request.method ?? "GET";
     const path = request.url ?? "/";
-    const logFields = { tenant_id: scope.workspaceId, session_id: scope.sessionId, host: hostname, method };
+    const logFields: Record<string, unknown> = { host: hostname, method };
     try {
       const body = await bodyOf(request);
+      const authorized = await authorize(context.proxyAuthorization);
+      if (!("scope" in authorized)) {
+        fail(response, authorized.status, "sandbox egress: proxy authorization expired or inactive");
+        return;
+      }
+      const { scope } = authorized;
+      Object.assign(logFields, { tenant_id: scope.workspaceId, session_id: scope.sessionId });
       const inbound = headersOf(request.headers);
-      // Live per request: a credential rotated, archived or added since the
-      // tunnel opened is honored on the next request.
+      // Resolve only against the current Session Vaults, never the CONNECT snapshot.
       const target = await dependencies.credentials.outboundTarget(scope, hostname);
       const send = (token: string | null) => sendUpstream({
         hostname,
@@ -300,9 +307,10 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
         "Vault credential injected into sandbox egress",
       );
       await writeResponse(outcome.response, response);
-    } catch (error) {
+    } catch {
+      // Exception messages may embed credentials (e.g. invalid header values).
       log.error(
-        { op: "sandbox_egress.failed", ...logFields, error: error instanceof Error ? error.message : String(error) },
+        { op: "sandbox_egress.failed", ...logFields, code: "request_failed" },
         "sandbox egress request failed",
       );
       fail(response, 502, "sandbox egress: credential injection failed");
@@ -326,8 +334,8 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
 
   const front: HttpServer = createHttpServer(async (request, response) => {
     // Plain-HTTP proxying: forwarded, never injected (no TLS, no tokens).
-    const authorized = await authorize(request.headers["proxy-authorization"]).catch((error: unknown) => {
-      log.error({ op: "sandbox_egress.failed", error: error instanceof Error ? error.message : String(error) }, "sandbox egress authorization failed");
+    const authorized = await authorize(request.headers["proxy-authorization"]).catch(() => {
+      log.error({ op: "sandbox_egress.failed", code: "authorization_failed" }, "sandbox egress authorization failed");
       return { status: 502, reason: "Bad Gateway" };
     });
     if (!("scope" in authorized)) {
@@ -389,9 +397,10 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
       }
       scope = authorized.scope;
       target = await dependencies.credentials.outboundTarget(scope, hostname);
-    } catch (error) {
+    } catch {
+      // Exception messages may embed credentials (e.g. invalid header values).
       log.error(
-        { op: "sandbox_egress.failed", host: hostname, error: error instanceof Error ? error.message : String(error) },
+        { op: "sandbox_egress.failed", host: hostname, code: "credential_lookup_failed" },
         "sandbox egress could not resolve Vault credentials",
       );
       rejectSocket(client, 502, "Bad Gateway");
@@ -408,10 +417,11 @@ export function createSandboxEgressProxy(dependencies: SandboxEgressProxyDepende
       return;
     }
     try {
-      await intercept(client, head, { scope, hostname, port });
-    } catch (error) {
+      await intercept(client, head, { proxyAuthorization: request.headers["proxy-authorization"], hostname, port });
+    } catch {
+      // Exception messages may embed credentials (e.g. invalid header values).
       log.error(
-        { op: "sandbox_egress.failed", host: hostname, error: error instanceof Error ? error.message : String(error) },
+        { op: "sandbox_egress.failed", host: hostname, code: "tls_interception_failed" },
         "sandbox egress could not intercept TLS",
       );
       if (!client.destroyed) rejectSocket(client, 502, "Bad Gateway");
