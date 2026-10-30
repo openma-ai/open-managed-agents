@@ -169,7 +169,8 @@ export interface SandboxEgressProxySettings {
   listenHost: string;
   /** Listen port (SANDBOX_EGRESS_PROXY_PORT, default 8788). */
   listenPort: number;
-  /** Persistent CA directory, ca.crt + ca.key (SANDBOX_EGRESS_CA_DIR). */
+  /** @deprecated Compatibility only (SANDBOX_EGRESS_CA_DIR). Production CA
+   * material is encrypted in shared SQL, never read from this directory. */
   caDir: string;
   /** Lifetime of a Session's proxy pass (SANDBOX_EGRESS_PASS_TTL_SEC). */
   passTtlMs: number;

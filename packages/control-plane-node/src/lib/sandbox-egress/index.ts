@@ -3,7 +3,8 @@
  * configuration. See ./proxy.ts for the request path.
  */
 import type { SandboxEgressProxySettings } from "../../config.js";
-import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "./ca.js";
+import { createEgressCertificateAuthority, loadOrCreateSharedEgressCa } from "./ca.js";
+import type { EgressCaStore } from "./ca-store.js";
 import type { SandboxEgressSettings } from "./environment.js";
 import { createEgressPassAuthority } from "./pass.js";
 import { createSandboxEgressProxy, type SandboxEgressProxyDependencies } from "./proxy.js";
@@ -19,9 +20,9 @@ export interface StartedSandboxEgressProxy {
 export async function startSandboxEgressProxy(
   config: SandboxEgressProxySettings,
   rootSecret: string,
-  dependencies: Omit<SandboxEgressProxyDependencies, "passes" | "ca">,
+  dependencies: Omit<SandboxEgressProxyDependencies, "passes" | "ca"> & { caStore: EgressCaStore },
 ): Promise<StartedSandboxEgressProxy> {
-  const ca = await createEgressCertificateAuthority(await loadOrCreateEgressCa(config.caDir));
+  const ca = await createEgressCertificateAuthority(await loadOrCreateSharedEgressCa(dependencies.caStore));
   const passes = createEgressPassAuthority(rootSecret, { now: () => new Date() });
   const proxy = createSandboxEgressProxy({
     ...dependencies,

@@ -36,6 +36,10 @@ import {
   type EgressSessionRecord,
 } from "../../../packages/control-plane-node/src/lib/sandbox-egress/proxy.js";
 import { loadNodeConfig } from "../src/config";
+import { createBetterSqlite3SqlClient, type SqlClient } from "../../../packages/sql-client/src/index.js";
+import { createNodeSecrets } from "../../../packages/control-plane-node/src/secrets.js";
+import { startSandboxEgressProxy } from "../../../packages/control-plane-node/src/lib/sandbox-egress/index.js";
+import { SqlEgressCaStore } from "../../../packages/control-plane-node/src/lib/sandbox-egress/sql-ca-store.js";
 
 const run = promisify(execFile);
 const cleanup: Array<() => Promise<void>> = [];
@@ -539,6 +543,123 @@ function keepAliveGet(socket: TLSSocket, authority: string): Promise<string> {
 }
 
 const basic = (pass: string) => `Basic ${Buffer.from(`openma:${pass}`).toString("base64")}`;
+
+describe("shared sandbox egress CA", () => {
+  async function replicas() {
+    const dir = await tempDir();
+    const dbPath = join(dir, "shared.sqlite");
+    const sqlA = await createBetterSqlite3SqlClient(dbPath);
+    const sqlB = await createBetterSqlite3SqlClient(dbPath);
+    await sqlA.exec(`CREATE TABLE kv_entries (
+      tenant_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires_at INTEGER,
+      PRIMARY KEY (tenant_id, key)
+    )`);
+    const upstreamCa = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "upstream")));
+    const upstream = await startUpstream("localhost", upstreamCa, () => 200);
+    const resolver = new ManagedCredentialResolver({
+      credentials: memoryStore([mcpCredential("cred_a", "vlt_a", `https://localhost:${upstream.port}/mcp`, "shared-ca-token")]),
+      fetch: async () => { throw new Error("unused"); }, clock: { now: () => new Date() }, log: { warn: () => {} },
+    }, createSpecRegistry(builtinSpecs));
+    const start = async (sql: SqlClient, pod: string) => {
+      const caStore = new SqlEgressCaStore(sql, createNodeSecrets("shared-root").cipherFor("managed.sandbox-egress.ca"));
+      const dependencies = {
+        caStore, credentials: resolver,
+        findSession: async () => ({ vaultIds: ["vlt_a"], archived: false }), claimsHost: () => false,
+        log: { info: () => {}, warn: () => {}, error: () => {} }, upstreamCa: upstreamCa.certificatePem,
+      };
+      const proxy = await startSandboxEgressProxy({
+        publicUrl: "http://egress.example:8788", listenHost: "127.0.0.1", listenPort: 0,
+        caDir: join(dir, pod), passTtlMs: 60_000,
+      }, "shared-root", dependencies);
+      const close = proxy.close;
+      let closed = false;
+      proxy.close = async () => {
+        if (closed) return;
+        closed = true;
+        await close();
+      };
+      cleanup.push(() => proxy.close());
+      return proxy;
+    };
+    return { dir, sqlA, sqlB, upstream, start };
+  }
+
+  it("shares one encrypted CA across independent proxies and restart without a shared local directory", async () => {
+    const { dir, sqlA, sqlB, upstream, start } = await replicas();
+    const a = await start(sqlA, "pod-a");
+    const b = await start(sqlB, "pod-b");
+    const caFile = join(dir, "sandbox-trust-from-a.crt");
+    await writeFile(caFile, a.settings.caCertificatePem);
+    const pass = a.settings.passes.issue({ workspaceId: "ws_a", sessionId: "sesn_a", ttlMs: 60_000 });
+    const result = await curl(`https://localhost:${upstream.port}/replica-b`, {
+      proxy: `http://openma:${pass}@127.0.0.1:${b.port}`, cacert: caFile,
+    });
+    expect(result, result.error ?? "").toMatchObject({ status: 200 });
+    expect(upstream.seen[0]!.authorization).toBe("Bearer shared-ca-token");
+    expect(b.settings.caCertificatePem).toBe(a.settings.caCertificatePem);
+    await a.close();
+    await b.close();
+    const restarted = await start(await createBetterSqlite3SqlClient(join(dir, "shared.sqlite")), "pod-c");
+    expect(restarted.settings.caCertificatePem).toBe(a.settings.caCertificatePem);
+    const rows = await sqlA.prepare("SELECT value FROM kv_entries").all<{ value: string }>();
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results![0]!.value).not.toContain("PRIVATE KEY");
+    expect(rows.results![0]!.value).not.toContain("BEGIN CERTIFICATE");
+  });
+
+  it.each(["read", "write"] as const)("fails startup on shared CA SQL %s errors even with a valid local CA", async (operation) => {
+    const { dir, sqlA, start } = await replicas();
+    await loadOrCreateEgressCa(join(dir, "local-ca"));
+    if (operation === "read") await sqlA.exec("DROP TABLE kv_entries");
+    else await sqlA.exec("CREATE TRIGGER reject_ca_write BEFORE INSERT ON kv_entries BEGIN SELECT RAISE(ABORT, 'ca_write_failed'); END");
+    await expect(start(sqlA, "local-ca")).rejects.toThrow();
+  });
+
+  it("fails startup when the shared CA cannot be decrypted rather than replacing it", async () => {
+    const { dir, sqlA, sqlB, start } = await replicas();
+    await start(sqlA, "first");
+    const before = await sqlA.prepare("SELECT value FROM kv_entries").first<{ value: string }>();
+    const wrongCipher = new SqlEgressCaStore(sqlB, createNodeSecrets("wrong-root").cipherFor("managed.sandbox-egress.ca"));
+    await expect(startSandboxEgressProxy({
+      publicUrl: "http://egress.example:8788", listenHost: "127.0.0.1", listenPort: 0,
+      caDir: join(dir, "other"), passTtlMs: 60_000,
+    }, "wrong-root", {
+      caStore: wrongCipher, credentials: { outboundTarget: async () => null, forward: async () => { throw new Error("unused"); } },
+      findSession: async () => null, claimsHost: () => false, log: { info: () => {}, warn: () => {}, error: () => {} },
+    })).rejects.toThrow();
+    expect(await sqlA.prepare("SELECT value FROM kv_entries").first<{ value: string }>()).toEqual(before);
+  });
+
+  it("rejects corrupt decrypted CA documents without exposing their plaintext", async () => {
+    const { sqlA } = await replicas();
+    const cipher = createNodeSecrets("shared-root").cipherFor("managed.sandbox-egress.ca");
+    const encrypted = await cipher.encrypt("canary-private-material");
+    await sqlA.prepare('INSERT INTO kv_entries (tenant_id, "key", value) VALUES (?, ?, ?)')
+      .bind("__platform__", "sandbox-egress.ca.v1", encrypted).run();
+    const store = new SqlEgressCaStore(sqlA, cipher);
+    const error = await store.load().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).not.toContain("canary");
+  });
+
+  it("converges concurrent first proxy startups on the single atomically stored CA", async () => {
+    const { sqlA, sqlB, start } = await replicas();
+    // Audit only successful inserts: both replicas read absence before async
+    // key generation, but the losing INSERT must not overwrite the winner.
+    await sqlA.exec(`CREATE TABLE ca_insert_audit (created INTEGER);
+      CREATE TRIGGER count_ca_insert AFTER INSERT ON kv_entries BEGIN INSERT INTO ca_insert_audit VALUES (1); END`);
+    const [a, b] = await Promise.all([start(sqlA, "concurrent-a"), start(sqlB, "concurrent-b")]);
+    expect(a.settings.caCertificatePem).toBe(b.settings.caCertificatePem);
+    const row = await sqlA.prepare("SELECT COUNT(*) AS count FROM kv_entries").first<{ count: number }>();
+    expect(row!.count).toBe(1);
+    const inserts = await sqlA.prepare("SELECT COUNT(*) AS count FROM ca_insert_audit").first<{ count: number }>();
+    expect(inserts!.count).toBe(1);
+    const persisted = await sqlA.prepare("SELECT value FROM kv_entries").first<{ value: string }>();
+    await new SqlEgressCaStore(sqlB, createNodeSecrets("shared-root").cipherFor("managed.sandbox-egress.ca"))
+      .createIfAbsent({ cert: "must-not-replace", key: "must-not-replace" });
+    expect(await sqlA.prepare("SELECT value FROM kv_entries").first<{ value: string }>()).toEqual(persisted);
+  });
+});
 
 describe("sandbox egress proxy", () => {
   async function fixture(options: {

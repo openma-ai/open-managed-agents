@@ -118,7 +118,8 @@ ANTHROPIC_API_KEY=sk-... BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   fans events out across replicas; `upsertFromEvent` is idempotent on
   sha256 etag). Caveats: `MEMORY_BLOB_DIR` must be on shared storage
   (NFS/EFS/shared docker volume); `auth.db` is still single-process
-  (deferred); replicas share `SANDBOX_EGRESS_CA_DIR`. See `docs/self-host.md#running-multiple-oma-server-replicas-pg-mode-only`.
+  (deferred); the egress CA is encrypted in shared SQL (no shared CA volume).
+  See `docs/self-host.md#running-multiple-oma-server-replicas-pg-mode-only`.
 - Deployable Node entrypoints reject missing providers and the internal
   subprocess test adapter. Every agent tool execution must cross an isolated
   provider boundary.
