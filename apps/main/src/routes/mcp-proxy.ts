@@ -729,21 +729,12 @@ export async function forwardWithRefresh(
   }
 
   const first = await forwardToUpstream(target, method, inboundHeaders, body);
-  // Trigger refresh on either 401 (canonical "your token is expired /
-  // invalid") or 403 (some MCP servers — observed on mcp.airtable.com,
-  // mcp.asana.com, mcp.sentry.dev — return Forbidden instead of
-  // Unauthorized when the bearer is expired or revoked, presumably
-  // because their auth layer treats "no usable identity" as a
-  // permission failure rather than an auth failure). 403 is ambiguous
-  // — it could also mean "scope removed" or "plan tier downgrade", in
-  // which case refresh succeeds + retry still 403s, and we surface that
-  // genuine error to the caller. The cost of an extra refresh call in
-  // the false-positive case is one HTTP round-trip + D1 write, which is
-  // cheap relative to the user-visible breakage of "token expired and
-  // nothing ever recovers" (the actual symptom — staging 2026-05-20
-  // sess-pvdx9d16zitzhw39 saw all three of airtable/asana/sentry
-  // permanently 403 across multiple sessions until manual SQL cleanup).
-  const refreshableStatus = first.status === 401 || first.status === 403;
+  // Only 401 means "this token is expired / invalid". A 403 is a permission
+  // decision (scope removed, plan tier, a vendor toggle); refreshing on it
+  // would rotate the token and write the Vault on every forbidden request
+  // without ever recovering. Providers that answer 403 for an expired
+  // bearer need a fresh authorization instead.
+  const refreshableStatus = first.status === 401;
   if (!refreshableStatus || !target.refresh) {
     log(
       {
@@ -869,8 +860,8 @@ async function tryRefreshOauth(
     if (fresh) {
       const liveAccessToken = (fresh.row.auth as unknown as Record<string, unknown>)?.[tokenField];
       if (typeof liveAccessToken === "string" && liveAccessToken !== staleAccessToken) {
-        // Another in-flight refresh (or a manual /v1/oma/oauth/refresh) has
-        // already rotated the token between our caller's first 401/403
+        // Another in-flight refresh has
+        // already rotated the token between our caller's first 401
         // and us reaching this re-read. Use the live token, skip the
         // token_endpoint roundtrip + the CAS write entirely.
         return liveAccessToken;

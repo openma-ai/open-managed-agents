@@ -103,9 +103,9 @@ export class ManagedCredentialResolver {
 
   /**
    * One upstream exchange with refresh: `send` injects the given token. A
-   * 401, or a 403 (several MCP servers answer Forbidden for an expired
-   * bearer), from a refreshable target refreshes the credential; only a
-   * successful refresh retries, once, with the new token. A refused refresh
+   * 401 from a refreshable target refreshes the credential; only a
+   * successful refresh retries, once, with the new token. A 403 is a
+   * permission decision, not an expired token, and is returned as is. A refused refresh
    * returns the first response untouched, so a non-idempotent request is
    * never sent twice with the same token. `send` may run twice, so callers
    * must hand it a buffered (replayable) body.
@@ -116,7 +116,7 @@ export class ManagedCredentialResolver {
     send: (token: string) => Promise<Response>,
   ): Promise<ForwardOutcome> {
     const first = await send(target.upstreamToken);
-    if ((first.status !== 401 && first.status !== 403) || target.refresh === undefined) {
+    if (first.status !== 401 || target.refresh === undefined) {
       return { response: first, refreshed: false, refreshFailed: false, refreshFailureCode: null };
     }
     const failure: { code: string | null } = { code: null };

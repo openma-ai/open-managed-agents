@@ -477,6 +477,35 @@ describe("forwardWithRefresh — OAuth refresh on 401", () => {
     expect((live!.auth as { access_token: string }).access_token).toBe("expired-token");
   });
 
+  it("403 is a permission decision: no refresh, returned as is", async () => {
+    const { services, credService } = makeServices();
+    const cred = await seedCred(credService, "valid-but-forbidden");
+    mock.restore();
+    mock = installFetchMock([
+      () => new Response('{"error":"forbidden"}', { status: 403 }),
+    ]);
+    const res = await forwardWithRefresh(
+      services,
+      TENANT,
+      {
+        upstreamUrl: SERVER,
+        upstreamToken: "valid-but-forbidden",
+        refresh: {
+          refreshToken: "refresh_v1",
+          tokenEndpoint: TOKEN_EP,
+          clientId: "test-client",
+          credentialId: cred.id,
+          vaultId: VAULT,
+        },
+      },
+      "POST",
+      new Headers({ "content-type": "application/json" }),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call"}',
+    );
+    expect(res.status).toBe(403);
+    expect(mock.calls).toHaveLength(1);
+  });
+
   it("non-OAuth target (no .refresh metadata) → 401 returned immediately, no refresh attempted", async () => {
     const { services } = makeServices();
 
