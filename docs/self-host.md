@@ -204,12 +204,19 @@ Hard requirements before you scale out:
      lease holder polls a given store at a time).
 2. **The sandbox egress proxy runs inside each replica.** Every
    replica listens on `SANDBOX_EGRESS_PROXY_PORT` (8788); point
-   `SANDBOX_EGRESS_PROXY_URL` at a TCP load balancer in front of them and
-   mount the same `SANDBOX_EGRESS_CA_DIR` into every replica (the first
-   one to boot generates `ca.{crt,key}` under an O_EXCL `ca.lock`; the
-   others wait and read it). All replicas MUST share the CA: a sandbox
-   trusts one CA. Passes are verified with `PLATFORM_ROOT_SECRET`, which
-   replicas already share.
+   `SANDBOX_EGRESS_PROXY_URL` at a TCP load balancer in front of them.
+   The deployment CA is stored encrypted in the existing shared SQL
+   `kv_entries` table, with atomic create-if-absent on first startup. All
+   replicas and restarts read the same CA; no shared local volume is needed.
+   Replicas must share both the database and the purpose cipher/root secret.
+   Storage or decryption errors fail proxy startup; local CA files are never
+   used as a fallback. Passes are verified with `PLATFORM_ROOT_SECRET`.
+
+   Upgrading from local per-replica CAs creates a new shared trust anchor;
+   existing local CA files are not imported. Upgrade all proxy replicas and
+   re-prepare existing sandboxes before validating injection (do not mix old
+   local-CA and shared-CA replicas behind one proxy address). Back up the CA
+   KV row with the database and retain the matching root secret/cipher.
 
 Sticky cookies are NOT required for `/v1/*`, `/auth/*`, or outbound
 sandbox traffic — the SSE fanout is replica-agnostic, better-auth is
@@ -505,7 +512,7 @@ The same demo works on the Postgres compose unchanged.
 | `/v1/tenants` create workspace + membership | ✓ (no shard assign — CF-only) |
 | `/v1/oma/*` mirror namespace | ✓ |
 | Postgres backend (DATABASE_URL=postgres://...) | ✓ same code path as SQLite |
-| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; egress proxy per replica with a shared CA directory; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
+| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; egress proxy per replica with an encrypted shared-SQL CA; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
 | Multi-tenant authentication (better-auth) | ✓ email+password + OTP, AUTH_DISABLED=1 escape |
 | Console UI (vite dev or built `dist`) | ✓ talks to main-node via `/auth/*` + `/v1/*` |
 | Integrations (linear / github / slack) — read-side CRUD on publications, installations, dispatch rules | ✓ wired via `@open-managed-agents/integrations-adapters-node` (set `PLATFORM_ROOT_SECRET`). |
@@ -683,7 +690,7 @@ Configuration (all optional, on main-node):
 | `SANDBOX_EGRESS_PROXY_URL` | `http://<PUBLIC_BASE_URL host>:<port>` | Address sandboxes use; set when the public host differs. `http://host:port` only. |
 | `SANDBOX_EGRESS_PROXY_PORT` | `8788` | Listen port. |
 | `SANDBOX_EGRESS_PROXY_HOST` | `HOST` | Listen address. |
-| `SANDBOX_EGRESS_CA_DIR` | `./data/sandbox-egress-ca` | Persistent CA directory (`ca.crt`, `ca.key`); share it between replicas. |
+| `SANDBOX_EGRESS_CA_DIR` | `./data/sandbox-egress-ca` | Deprecated compatibility setting, unused by production. The CA is encrypted in shared SQL; no local CA directory is read or written. |
 | `SANDBOX_EGRESS_PASS_TTL_SEC` | `86400` | Pass lifetime, renewed before each turn (including warm reuse). An already-running process using an expired pass must reload the current proxy environment. |
 
 A leaked pass lets its holder use that Session's Vault credentials through

@@ -53,7 +53,7 @@ services:
       # CLIs such as gh/glab/curl): on by default at PUBLIC_BASE_URL's host,
       # port 8788 (published under `ports:`; sandboxes must reach it). Requires
       # PLATFORM_ROOT_SECRET. See docs/self-host.md "Sandbox egress proxy".
-      SANDBOX_EGRESS_CA_DIR: /app/data/sandbox-egress-ca
+      # CA material is encrypted in the shared SQL database; no CA volume needed.
       # Auth: better-auth sqlite-backed. AUTH_DISABLED=1 bypasses entirely
       # (all requests become tenant_id="default") for local single-user
       # demos. BETTER_AUTH_SECRET signs cookies; generate with

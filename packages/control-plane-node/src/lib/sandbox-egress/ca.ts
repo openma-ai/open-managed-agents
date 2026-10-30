@@ -1,15 +1,16 @@
 /**
- * The egress proxy's certificate authority: one per deployment, persisted in
- * a directory (`ca.crt`, `ca.key`) so sandboxes that trust it keep working
- * across restarts and replicas sharing the directory. Only `ca.crt` ever
- * reaches a sandbox. Leaf certificates for intercepted hosts are minted in
- * memory and cached per hostname.
+ * The egress proxy's certificate authority: one per deployment, persisted
+ * through EgressCaStore so replicas and restarts share the same trust anchor.
+ * Only the public certificate reaches a sandbox. Leaf certificates for
+ * intercepted hosts are minted in memory and cached per hostname.
+ * The directory helper below is retained for standalone tests only.
  */
 import { webcrypto, randomBytes } from "node:crypto";
 import { promises as fs, mkdirSync } from "node:fs";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
 import * as x509 from "@peculiar/x509";
+import type { EgressCaMaterial, EgressCaStore } from "./ca-store.js";
 
 const crypto = webcrypto as unknown as Crypto;
 x509.cryptoProvider.set(crypto);
@@ -59,6 +60,17 @@ async function generateCa(): Promise<{ cert: string; key: string }> {
   });
   const pkcs8 = await crypto.subtle.exportKey("pkcs8", keys.privateKey) as ArrayBuffer;
   return { cert: cert.toString("pem"), key: x509.PemConverter.encode(pkcs8, "PRIVATE KEY") };
+}
+
+/** Load or atomically create the deployment CA. Always read the winner back;
+ * a concurrent creator may have stored different material. No local fallback. */
+export async function loadOrCreateSharedEgressCa(store: EgressCaStore): Promise<EgressCaMaterial> {
+  const existing = await store.load();
+  if (existing !== null) return existing;
+  await store.createIfAbsent(await generateCa());
+  const persisted = await store.load();
+  if (persisted === null) throw new Error("Sandbox egress CA was not persisted");
+  return persisted;
 }
 
 /**

@@ -92,6 +92,7 @@ import { ManagedCredentialResolver } from "@open-managed-agents/managed-credenti
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { applySandboxEgress, startSandboxEgressProxy, type SandboxEgress } from "../lib/sandbox-egress/index.js";
+import { SqlEgressCaStore } from "../lib/sandbox-egress/sql-ca-store.js";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
@@ -1195,8 +1196,9 @@ export async function createManagedNodeRuntime(
       `Sandbox egress proxy unavailable (${egressProxyConfig.reason}): Sessions whose Vaults hold CLI credentials will fail to start`,
     );
   } else {
-    if (platformRootSecret === undefined) throw new Error("PLATFORM_ROOT_SECRET is required for the sandbox egress proxy");
+    if (platformRootSecret === undefined || secrets === null) throw new Error("PLATFORM_ROOT_SECRET is required for the sandbox egress proxy");
     const started = await startSandboxEgressProxy(egressProxyConfig, platformRootSecret, {
+      caStore: new SqlEgressCaStore(sql, secrets.cipherFor("managed.sandbox-egress.ca")),
       credentials: managedCredentialResolver,
       findSession: async (input) => {
         const session = (await managedRuntimeReaders.executionContext.find(input))?.session;

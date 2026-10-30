@@ -47,7 +47,7 @@ services:
       SESSION_OUTPUTS_DIR: /app/data/session-outputs
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Set SANDBOX_PROVIDER to an isolated provider}
       # Sandbox egress proxy on port 8788: see docker-compose.yml.
-      SANDBOX_EGRESS_CA_DIR: /app/data/sandbox-egress-ca
+      # CA material is encrypted in PostgreSQL; no CA volume needed.
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
       AUTH_DISABLED: ${AUTH_DISABLED:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
