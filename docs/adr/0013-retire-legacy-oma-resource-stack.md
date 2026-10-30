@@ -47,9 +47,10 @@ Remove the legacy stack. Running code uses only the managed stack.
 1. No new caller of a legacy service, route or table.
 2. Managed code never reads or writes a legacy table, and never converts to
    or from a legacy shape at runtime.
-3. Each removal deletes the service package, its routes, its tables in all
-   four SQL dialects, its schema definitions, and every Console call to it,
-   in one change. Nothing is left marked deprecated.
+3. Each removal deletes the service package, its routes, its schema
+   definitions, and every Console call to it in one change. Retired agent
+   tables are retained empty in all four SQL dialects; no runtime code uses
+   them. Nothing is left marked deprecated.
 4. A migration that drops a legacy table fails if the table still has rows
    that were not converted. It never drops data silently, and there is no
    runtime fallback to the old table.
@@ -88,7 +89,8 @@ Each step is one pull request. A step starts after the previous one merges.
    bridge read the agent from `AgentStore` and build the runtime snapshot with
    the managed runtime encoder, which also carries `acp`, `runtime_binding`
    and `metadata`. The migration converts `agents` and `agent_versions` to
-   `managed_*` and drops them.
+   `managed_*`, deletes the converted legacy rows, and retains the empty
+   legacy tables. This retirement requires no `DROP` privilege.
 2. **Host Slack, Linear and GitHub as Matter Loops.** OMA Matter hosts the
    OpenMatter Slack, Linear and GitHub integrations the same way it hosts
    Feishu and GitLab, with Console setup for each. Their Sessions are managed
@@ -106,7 +108,17 @@ Each step is one pull request. A step starts after the previous one merges.
 
 ## Upgrade notes for self-hosted deployments
 
-- Upgrade through step 1 in one go: agents are converted automatically.
+- Node deployments upgrade through step 1 in one go: agents and version
+  history are converted automatically before schema migration. D1 operators
+  first run `pnpm tsx scripts/migrate-legacy-agents.ts --db=<d1-database-id>`
+  on every database holding agents, then apply migration 0024.
+- Agent retirement retains empty `agents` and `agent_versions` tables; no
+  runtime lookup uses them. Migration guards still stop on unconverted rows.
+  MySQL no longer needs `DROP` permission for this upgrade.
+- Migration names/numbers and snapshot IDs remain unchanged. Existing
+  databases already at the retirement snapshot restart normally, including
+  those where the previous release dropped the old tables. The snapshots
+  describe the managed runtime schema; retained legacy tables are inert.
 - For steps 3 to 6, a deployment that still has rows in a legacy table stops
   at the drop migration with the table name. Move the data through the `/v1`
   API (create the resource again) or delete it, then rerun the migration.

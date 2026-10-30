@@ -9,7 +9,10 @@ import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
 import { BetterSqlite3SqlClient } from "@open-managed-agents/sql-client/adapters/better-sqlite3";
 import { moveLegacyAgents } from "../src/lib/move-legacy-agents";
 
-const migrationsFolder = resolve(import.meta.dirname, "../migrations-sqlite");
+const migrationTargets = [
+  { name: "SQLite", folder: resolve(import.meta.dirname, "../migrations-sqlite"), retirementTag: "0028_drop_legacy_agents" },
+  { name: "D1", folder: resolve(import.meta.dirname, "../../main/migrations"), retirementTag: "0024_drop_legacy_agents" },
+];
 const directories: string[] = [];
 const databases: Database.Database[] = [];
 
@@ -18,17 +21,16 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-/** A database at the schema before the legacy agent tables were dropped,
- *  holding one agent the way the previous release stored it. */
-async function previousRelease(): Promise<Database.Database> {
+/** A database before legacy agent retirement, holding one agent as the previous release stored it. */
+async function previousRelease(folder: string, retirementTag: string): Promise<Database.Database> {
   const directory = await mkdtemp(join(tmpdir(), "legacy-agents-"));
   directories.push(directory);
   await mkdir(join(directory, "meta"));
-  const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8"));
-  journal.entries = journal.entries.filter((entry: { tag: string }) => entry.tag !== "0028_drop_legacy_agents");
+  const journal = JSON.parse(await readFile(join(folder, "meta/_journal.json"), "utf8"));
+  journal.entries = journal.entries.filter((entry: { tag: string }) => entry.tag !== retirementTag);
   await writeFile(join(directory, "meta/_journal.json"), JSON.stringify(journal));
   for (const entry of journal.entries) {
-    await cp(join(migrationsFolder, `${entry.tag}.sql`), join(directory, `${entry.tag}.sql`));
+    await cp(join(folder, `${entry.tag}.sql`), join(directory, `${entry.tag}.sql`));
   }
   const db = new Database(":memory:");
   databases.push(db);
@@ -47,31 +49,51 @@ async function previousRelease(): Promise<Database.Database> {
 const tables = (db: Database.Database) =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(({ name }) => name);
 
-describe("upgrading a database with legacy agent tables", () => {
-  it("moves the agents into managed_agents and drops the legacy tables", async () => {
-    const db = await previousRelease();
+describe.each(migrationTargets)("$name legacy agent upgrade", ({ folder: migrationsFolder, retirementTag }) => {
+  it("moves agents and their history into managed tables and retains empty legacy tables", async () => {
+    const db = await previousRelease(migrationsFolder, retirementTag);
     const sql = new BetterSqlite3SqlClient(db);
 
     await moveLegacyAgents(sql, "sqlite");
     migrate(drizzle(db), { migrationsFolder });
 
-    expect(tables(db)).not.toContain("agents");
-    expect(tables(db)).not.toContain("agent_versions");
-    const store = new SqlAgentStore(sql);
-    expect(await store.findCurrent({ workspaceId: "ws", agentId: "agent_keep" }))
-      .toMatchObject({ name: "keep", version: 2, openma: { harness: "acp-sandbox" }, updatedAt: "2026-10-01T00:00:01.000Z" });
-    expect(await store.findVersion({ workspaceId: "ws", agentId: "agent_keep", version: 1 }))
-      .toMatchObject({ name: "keep v1", model: { id: "m" } });
+    const expectMoved = async () => {
+      expect(tables(db)).toEqual(expect.arrayContaining(["agents", "agent_versions"]));
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agents").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_versions").get()).toEqual({ n: 0 });
+      const store = new SqlAgentStore(sql);
+      expect(await store.findCurrent({ workspaceId: "ws", agentId: "agent_keep" }))
+        .toMatchObject({ name: "keep", version: 2, openma: { harness: "acp-sandbox" }, updatedAt: "2026-10-01T00:00:01.000Z" });
+      expect(await store.findVersion({ workspaceId: "ws", agentId: "agent_keep", version: 1 }))
+        .toMatchObject({ name: "keep v1", model: { id: "m" } });
+    };
+    await expectMoved();
 
-    // A second start finds nothing to move.
+    // A second start finds nothing to move and keeps the managed documents intact.
     await moveLegacyAgents(sql, "sqlite");
     migrate(drizzle(db), { migrationsFolder });
+    await expectMoved();
   });
 
-  it("refuses to drop legacy tables whose rows were not moved", async () => {
-    const db = await previousRelease();
+  it.each(["agents", "agent_versions"])("refuses retirement while %s has unmoved rows", async (table) => {
+    const db = await previousRelease(migrationsFolder, retirementTag);
+    if (table === "agents") db.prepare("DELETE FROM agent_versions").run();
+    else db.prepare("DELETE FROM agents").run();
     expect(() => migrate(drizzle(db), { migrationsFolder })).toThrow(/legacy_agents_guard/);
-    expect(tables(db)).toContain("agents");
-    expect(db.prepare("SELECT COUNT(*) AS n FROM agents").get()).toEqual({ n: 1 });
+    expect(tables(db)).toEqual(expect.arrayContaining(["agents", "agent_versions"]));
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 1 });
+  });
+
+  it("restarts databases where the previous release already dropped the legacy tables", async () => {
+    const db = await previousRelease(migrationsFolder, retirementTag);
+    const sql = new BetterSqlite3SqlClient(db);
+    await moveLegacyAgents(sql, "sqlite");
+    migrate(drizzle(db), { migrationsFolder });
+    db.exec("DROP TABLE IF EXISTS agent_versions; DROP TABLE IF EXISTS agents");
+
+    await moveLegacyAgents(sql, "sqlite");
+    migrate(drizzle(db), { migrationsFolder });
+    expect(await new SqlAgentStore(sql).findCurrent({ workspaceId: "ws", agentId: "agent_keep" }))
+      .toMatchObject({ name: "keep", version: 2 });
   });
 });

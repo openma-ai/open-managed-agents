@@ -41,9 +41,10 @@ interface SqliteSnapshot {
   tables: Record<string, SnapshotTable>;
 }
 
-/** Drops the legacy `agents` / `agent_versions` tables. main-node moves
- *  their rows to `managed_agents` before the schema migrator runs. */
-const dropLegacyAgentsMigration = {
+/** Retires the legacy agent tables after main-node moves their rows to managed
+ * tables. Keep the historical snapshot IDs, including for databases that already
+ * dropped the tables; upgrades now retain empty legacy tables without DROP. */
+const legacyAgentsRetirementMigration = {
   fromSnapshot: "725618e8-372f-4f13-98a7-44a94146b663",
   toSnapshot: "8f90aaab-6f92-4233-95a2-0cdab2dfa28c",
 } as const;
@@ -113,8 +114,8 @@ export async function migrateNodeMysqlSchema(
     if (
       installed?.snapshot_id === usageAttributionMigration.fromSnapshot &&
       (snapshot.id === usageAttributionMigration.toSnapshot ||
-        snapshot.id === dropLegacyAgentsMigration.fromSnapshot ||
-        snapshot.id === dropLegacyAgentsMigration.toSnapshot)
+        snapshot.id === legacyAgentsRetirementMigration.fromSnapshot ||
+        snapshot.id === legacyAgentsRetirementMigration.toSnapshot)
     ) {
       await migrateUsageAttributionIndex(sql);
       installed = { snapshot_id: usageAttributionMigration.toSnapshot };
@@ -122,13 +123,13 @@ export async function migrateNodeMysqlSchema(
     // This snapshot only adds tenant_invitation. The regular idempotent table
     // installer below performs the DDL before recording the new snapshot.
     if (installed?.snapshot_id === usageAttributionMigration.toSnapshot &&
-        (snapshot.id === dropLegacyAgentsMigration.fromSnapshot ||
-          snapshot.id === dropLegacyAgentsMigration.toSnapshot)) {
-      installed = { snapshot_id: dropLegacyAgentsMigration.fromSnapshot };
+        (snapshot.id === legacyAgentsRetirementMigration.fromSnapshot ||
+          snapshot.id === legacyAgentsRetirementMigration.toSnapshot)) {
+      installed = { snapshot_id: legacyAgentsRetirementMigration.fromSnapshot };
     }
-    if (installed?.snapshot_id === dropLegacyAgentsMigration.fromSnapshot &&
-        snapshot.id === dropLegacyAgentsMigration.toSnapshot) {
-      await dropLegacyAgentTables(sql);
+    if (installed?.snapshot_id === legacyAgentsRetirementMigration.fromSnapshot &&
+        snapshot.id === legacyAgentsRetirementMigration.toSnapshot) {
+      await assertLegacyAgentTablesEmpty(sql);
       installed = { snapshot_id: snapshot.id };
     }
     if (installed !== null && installed.snapshot_id !== snapshot.id) {
@@ -160,7 +161,7 @@ export async function migrateNodeMysqlSchema(
   }
 }
 
-async function dropLegacyAgentTables(sql: SqlClient): Promise<void> {
+async function assertLegacyAgentTablesEmpty(sql: SqlClient): Promise<void> {
   for (const table of ["agent_versions", "agents"]) {
     const exists = await sql
       .prepare("SELECT 1 AS present FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?")
@@ -171,7 +172,6 @@ async function dropLegacyAgentTables(sql: SqlClient): Promise<void> {
     if (Number(row?.n ?? 0) > 0) {
       throw new Error(`${table} still has ${row?.n} row(s); move them to managed_agents before upgrading`);
     }
-    await sql.exec(`DROP TABLE ${quote(table)}`);
   }
 }
 

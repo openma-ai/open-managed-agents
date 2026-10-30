@@ -2,7 +2,7 @@
 // the Node baseline migrates (twice, to prove idempotence), and Better Auth
 // signs a user up through the auth database the adapter opens.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,6 +30,31 @@ afterAll(async () => {
 }, 60_000);
 
 describe("Postgres database component", () => {
+  it("retains empty legacy agent tables but rejects unmoved data", async () => {
+    const { Client } = await import("pg");
+    const client = new Client({ connectionString: container.getConnectionUri() });
+    await client.connect();
+    try {
+      await client.query("CREATE SCHEMA legacy_agent_retirement_test");
+      await client.query("SET search_path TO legacy_agent_retirement_test");
+      await client.query("CREATE TABLE agents (id text); CREATE TABLE agent_versions (agent_id text)");
+      const migration = readFileSync(new URL("../migrations/0028_drop_legacy_agents.sql", import.meta.url), "utf8");
+      for (const table of ["agents", "agent_versions"]) {
+        await client.query(`INSERT INTO ${table} VALUES ('keep')`);
+        await expect(client.query(migration)).rejects.toThrow(/still has rows/);
+        expect((await client.query(`SELECT COUNT(*) AS n FROM ${table}`)).rows).toEqual([{ n: "1" }]);
+        await client.query(`DELETE FROM ${table}`);
+      }
+      await client.query(migration);
+      await client.query(migration);
+      for (const table of ["agents", "agent_versions"]) {
+        expect((await client.query(`SELECT COUNT(*) AS n FROM ${table}`)).rows).toEqual([{ n: "0" }]);
+      }
+    } finally {
+      await client.end();
+    }
+  });
+
   it("migrates idempotently and backs Better Auth sign-up", async () => {
     const config = loadNodeConfig({
       NODE_ENV: "test",

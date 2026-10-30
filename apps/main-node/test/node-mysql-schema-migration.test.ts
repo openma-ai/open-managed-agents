@@ -38,18 +38,31 @@ describe("main-node MySQL snapshot migrations", () => {
     expect(sql.snapshotId).toBe(currentSnapshot);
   });
 
-  it("drops the emptied legacy agent tables", async () => {
-    const sql = new MigrationSqlClient(invitationsSnapshot, ["tenant_id", "created_at", "id"]);
-    sql.legacyTables.set("agents", 0).set("agent_versions", 0);
+  it.each([invitationsSnapshot, currentSnapshot])(
+    "starts from snapshot %s without DROP permission and retains empty legacy tables",
+    async (snapshot) => {
+      const sql = new MigrationSqlClient(snapshot, ["tenant_id", "created_at", "id"]);
+      sql.legacyTables.set("agents", 0).set("agent_versions", 0);
+
+      await migrateNodeMysqlSchema(sql, migrations);
+      await migrateNodeMysqlSchema(sql, migrations);
+
+      expect([...sql.legacyTables]).toEqual([["agents", 0], ["agent_versions", 0]]);
+      expect(sql.snapshotId).toBe(currentSnapshot);
+    },
+  );
+
+  it("restarts an already upgraded snapshot whose legacy tables were previously dropped", async () => {
+    const sql = new MigrationSqlClient(currentSnapshot, ["tenant_id", "created_at", "id"]);
     await migrateNodeMysqlSchema(sql, migrations);
-    expect(sql.dropped).toEqual(["agent_versions", "agents"]);
     expect(sql.snapshotId).toBe(currentSnapshot);
   });
 
-  it("refuses to drop legacy agent tables that still have rows", async () => {
+  it.each(["agents", "agent_versions"])("refuses to retire %s before its rows are moved", async (table) => {
     const sql = new MigrationSqlClient(invitationsSnapshot, ["tenant_id", "created_at", "id"]);
-    sql.legacyTables.set("agents", 2).set("agent_versions", 0);
-    await expect(migrateNodeMysqlSchema(sql, migrations)).rejects.toThrow("agents still has 2 row(s)");
+    sql.legacyTables.set("agents", 0).set("agent_versions", 0).set(table, 2);
+    await expect(migrateNodeMysqlSchema(sql, migrations)).rejects.toThrow(`${table} still has 2 row(s)`);
+    expect(sql.legacyTables.get(table)).toBe(2);
     expect(sql.snapshotId).toBe(invitationsSnapshot);
   });
 
@@ -66,7 +79,6 @@ describe("main-node MySQL snapshot migrations", () => {
 class MigrationSqlClient implements SqlClient {
   createdAttributionIndex = false;
   readonly legacyTables = new Map<string, number>();
-  readonly dropped: string[] = [];
 
   constructor(
     public snapshotId: string,
@@ -82,10 +94,8 @@ class MigrationSqlClient implements SqlClient {
   }
 
   async exec(sql: string): Promise<void> {
-    const drop = /^DROP TABLE `([a-z_]+)`$/.exec(sql);
-    if (drop) {
-      this.dropped.push(drop[1]!);
-      this.legacyTables.delete(drop[1]!);
+    if (/\bDROP\s+TABLE\b/i.test(sql)) {
+      throw new Error("DROP command denied to migration user");
     }
     if (sql.includes("CREATE INDEX `idx_usage_events_attribution`")) {
       this.createdAttributionIndex = true;
