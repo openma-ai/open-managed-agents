@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { McpOAuthApplicationService, CredentialsApplicationService, type McpOAuthPort } from "@open-managed-agents/managed-agents-application";
+import { McpOAuthApplicationService, McpOAuthCliService, CredentialsApplicationService, type McpOAuthPort } from "@open-managed-agents/managed-agents-application";
 import { MemoryCredentialStore } from "../../credential-store-memory/src/index";
 import { WebCryptoAesGcm } from "../../integrations-adapters-cf/src/crypto";
-import { buildMcpOAuthRoutes } from "../src/index";
+import { buildMcpOAuthRoutes, buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback } from "../src/index";
 
 function harness() {
   const store = new MemoryCredentialStore();
@@ -23,8 +23,18 @@ function harness() {
     probe: async () => ({ ok: false, reason: "http_401" }),
   };
   const service = new McpOAuthApplicationService({ workspaceId: "ws_1", credentials, oauth, pkce: { create: async () => ({ verifier: "verifier", challenge: "challenge" }) }, cipher: new WebCryptoAesGcm("test-root-secret-not-production", "test.mcp.oauth"), clock: { now: () => new Date("2026-09-01T00:00:00.000Z") }, log: { warn: () => {} } });
-  const app = new Hono<{ Variables: { user_id?: string } }>();
-  app.use("*", async (c, next) => { const user = c.req.header("x-test-user"); if (user) c.set("user_id", user); await next(); });
+  let serial = 0;
+  const rows = new Map<string, string>();
+  const secrets = { randomToken: () => `random_${++serial}`, hash: async (s: string) => `hash:${s}` };
+  const cli = new McpOAuthCliService({ application: () => service, cipher: new WebCryptoAesGcm("test-root-secret-not-production", "test.mcp.cli"), secrets, clock: { now: () => new Date("2026-09-01T00:00:00.000Z") }, store: {
+    create: async (id, value) => { rows.set(id, value); }, read: async (id) => rows.get(id) ?? null,
+    compareAndSwap: async (id, expected, value) => { if (rows.get(id) !== expected) return false; rows.set(id, value); return true; },
+    consume: async (id, expected) => { if (rows.get(id) !== expected) return false; rows.delete(id); return true; },
+  } });
+  const app = new Hono<{ Variables: { user_id?: string; tenant_id: string } }>();
+  app.use("/v1/oma/oauth/callback", buildMcpOAuthCliCallback(cli));
+  app.use("*", async (c, next) => { c.set("tenant_id", "ws_1"); const user = c.req.header("x-test-user"); if (user) c.set("user_id", user); await next(); });
+  app.route("/v1/oma/oauth/cli", buildMcpOAuthCliRoutes(cli, secrets));
   app.route("/v1/oma/oauth", buildMcpOAuthRoutes(service, { consoleOrigins: ["https://console.example.test"] }));
   const post = (body: unknown, user = "user_1") => app.request("https://cp.example.test/v1/oma/oauth/authorize", { method: "POST", headers: { "content-type": "application/json", "x-test-user": user }, body: JSON.stringify(body) });
   return { app, post, credentials, oauth, exchanges: () => exchanges };
@@ -33,6 +43,26 @@ function harness() {
 const body = { vault_id: "vlt_1", mcp_server_url: "https://mcp.example.test/mcp" };
 
 describe("MCP OAuth routes", () => {
+  it("lets CLI browser callback complete without cookies but requires the original key and claim secret to collect", async () => {
+    const h = harness();
+    const post = (path: string, body: unknown, key = "original-key") => h.app.request(`https://cp.example.test/v1/oma/oauth/cli/${path}`, { method: "POST", headers: { "x-api-key": key, "x-test-user": "user_1", "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect((await post("authorize", { ...body, redirect_uri: "http://localhost:3000/callback" })).status).toBe(400);
+    const started = await post("authorize", { ...body, client_id: "pinned", client_secret: "private-secret" });
+    expect(started.status).toBe(200);
+    const data = await started.json() as { authorization_url: string; flow_id: string; claim_token: string };
+    expect(data.authorization_url).not.toContain(data.claim_token);
+    expect(data.authorization_url).not.toContain("private-secret");
+    const state = new URL(data.authorization_url).searchParams.get("state")!;
+    const claim = { flow_id: data.flow_id, claim_token: data.claim_token };
+    expect((await (await post("result", claim)).json())).toEqual({ status: "pending" });
+    const callback = await h.app.request(`https://cp.example.test/v1/oma/oauth/callback?${new URLSearchParams({ state, code: "c" })}`);
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).not.toContain("private-access");
+    expect((await post("result", claim, "other-key")).status).toBe(400);
+    expect(await (await post("result", claim)).json()).toEqual({ status: "ready", credential_id: "cred_1" });
+    expect((await post("result", claim)).status).toBe(400);
+  });
+
   it("accepts secrets only in POST JSON and returns a sealed authorization URL without a redirect", async () => {
     const h = harness();
     const legacy = await h.app.request("https://cp.example.test/v1/oma/oauth/authorize?client_secret=private-secret");
