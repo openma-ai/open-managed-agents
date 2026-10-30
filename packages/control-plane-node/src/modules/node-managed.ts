@@ -458,6 +458,7 @@ export async function createManagedNodeRuntime(
   const memoryStoreMode = nodeManagedMemoryStoreModeName(components.sandbox);
 
   const managedRuntimeRunner = new DefaultNodeManagedSessionRunner({
+    backgroundPiSandbox: true,
     ...(workspaceCheckpoints === undefined ? {} : { workspaceCheckpoints }),
     ...(config.workspace.sandboxLeaseTtlMs === undefined
       ? {}

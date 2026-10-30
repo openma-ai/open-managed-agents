@@ -148,6 +148,8 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   confirmedTools: ManagedNodeConfirmedToolExecutionPort;
   outcomes: ManagedNodeOutcomeEvaluationPort;
   sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
+  /** Start Pi's sandbox alongside the model; only sandbox operations wait for readiness. */
+  backgroundPiSandbox?: boolean;
   buildSandbox(input: ManagedRunnerContext & { signal?: AbortSignal }): Promise<SandboxExecutor>;
   /** Liveness probe used before reusing a warm sandbox and after a failed
    * sandbox operation. Default: the provider runtime Port's `status()`. */
@@ -229,6 +231,8 @@ export class DefaultNodeManagedSessionRunner
   private readonly runtimeGenerations = new ScopedSessionMap<string>();
   private readonly sandboxConfigurationFingerprints = new ScopedSessionMap<string>();
   private readonly abortControllers = new ScopedSessionMap<AbortController>();
+  private readonly startupAborts = new ScopedSessionMap<AbortController>();
+  private readonly sandboxStarts = new ScopedSessionMap<Promise<void>>();
   private readonly subagentExecutions = new ScopedSessionMap<ManagedNodeSubagents>();
   private readonly workspaces = new ScopedSessionMap<ManagedWorkspaceState>();
 
@@ -240,6 +244,7 @@ export class DefaultNodeManagedSessionRunner
    * the stale attempt must not tell the client its turn failed. */
   cancel(input: { workspaceId: string; sessionId: string; reason?: string }): void {
     this.abortControllers.get(input)?.abort(input.reason ?? "cancelled");
+    this.startupAborts.get(input)?.abort(input.reason ?? "cancelled");
   }
 
   /** Returns only a prepared live runtime, scoped exactly like execution. */
@@ -248,19 +253,52 @@ export class DefaultNodeManagedSessionRunner
   }
 
   async start(input: StartNodeManagedSessionRuntime): Promise<void> {
+    const startup = this.beginSandboxStartup(input);
+    if (this.canOverlapSandboxStartup(input)) {
+      // Keep provisioning after a text-only turn finishes. A later sandbox
+      // operation awaits startup (or retries it), while text can stream now.
+      void startup.catch((error) => {
+        console.warn(`[managed-runner] session ${input.sessionId}: background sandbox startup failed:`, error);
+      });
+      return;
+    }
+    await startup;
+  }
+
+  private canOverlapSandboxStartup(input: ManagedRunnerContext): boolean {
+    return this.dependencies.backgroundPiSandbox === true
+      && input.session.agent.openma?.harness === "pi"
+      && this.dependencies.workspaceCheckpoints === undefined;
+  }
+
+  private sandboxFingerprint(input: ManagedRunnerContext): string {
+    return JSON.stringify({
+      resources: input.session.resources,
+      skills: input.session.agent.skills,
+      environment: input.environment.config,
+      // A different catalog image needs a different sandbox, like packages.
+      sandboxImage: input.environment.openma?.sandboxImage ?? null,
+    });
+  }
+
+  private beginSandboxStartup(input: StartNodeManagedSessionRuntime): Promise<void> {
+    const pending = this.sandboxStarts.get(input);
+    if (pending !== undefined) return pending;
+    const startup = this.startSandbox(input).finally(() => {
+      if (this.sandboxStarts.get(input) === startup) this.sandboxStarts.delete(input);
+    });
+    this.sandboxStarts.set(input, startup);
+    return startup;
+  }
+
+  private async startSandbox(input: StartNodeManagedSessionRuntime): Promise<void> {
     const startup = new AbortController();
     const unlinkParent = linkAbort(input.signal, startup);
     const signal = startup.signal;
-    let registered = false;
+    this.startupAborts.set(input, startup);
     try {
       if (signal.aborted) throw abortedError(signal);
-      const fingerprint = JSON.stringify({
-        resources: input.session.resources,
-        skills: input.session.agent.skills,
-        environment: input.environment.config,
-        // A different catalog image needs a different sandbox, like packages.
-        sandboxImage: input.environment.openma?.sandboxImage ?? null,
-      });
+      const fingerprint = this.sandboxFingerprint(input);
       const existing = this.sandboxes.get(input);
       if (this.dependencies.workspaceCheckpoints !== undefined && input.executionFence === undefined) {
         throw new Error("Managed workspace checkpoint_restore requires a Session Execution fence");
@@ -291,8 +329,6 @@ export class DefaultNodeManagedSessionRunner
             binding: previousWorkspace.binding,
           });
         }
-        this.abortControllers.get(input)?.abort();
-        this.abortControllers.delete(input);
         this.sandboxes.delete(input);
         this.sandboxRuntimes.delete(input);
         this.runtimeGenerations.delete(input);
@@ -300,14 +336,12 @@ export class DefaultNodeManagedSessionRunner
         // A lost sandbox may refuse to be destroyed; it is gone either way.
         await untilAborted(existing.destroy?.().catch(() => undefined) ?? Promise.resolve(), signal);
       }
-      this.abortControllers.set(input, startup);
-      registered = true;
       const acquired = await this.acquireSandbox(input, signal);
       this.installSandbox(input, acquired, fingerprint);
     } finally {
       unlinkParent();
-      if (registered && this.abortControllers.get(input) === startup) {
-        this.abortControllers.delete(input);
+      if (this.startupAborts.get(input) === startup) {
+        this.startupAborts.delete(input);
       }
     }
   }
@@ -441,6 +475,8 @@ export class DefaultNodeManagedSessionRunner
   }
 
   async stop(input: StopNodeManagedSessionRuntime): Promise<void> {
+    this.startupAborts.get(input)?.abort();
+    await this.sandboxStarts.get(input)?.catch(() => undefined);
     await this.discardSandbox(input);
   }
 
@@ -488,11 +524,20 @@ export class DefaultNodeManagedSessionRunner
         `Managed Node runner does not yet support ${event.type}`,
       );
     }
-    const rawSandbox = this.sandboxes.get(input);
+    const deferred = this.canOverlapSandboxStartup(input);
+    // Only the three execution primitives are needed by Pi's host-side tools.
+    // Capability inspection must not allocate a provider resource.
+    const unallocated: SandboxExecutor = {
+      exec: async () => { throw new Error("Sandbox has not been acquired"); },
+      readFile: async () => { throw new Error("Sandbox has not been acquired"); },
+      writeFile: async () => { throw new Error("Sandbox has not been acquired"); },
+    };
+    const rawSandbox = this.sandboxes.get(input) ?? (deferred ? unallocated : undefined);
     if (rawSandbox === undefined) {
       throw new Error(`Session ${input.sessionId} sandbox was not started`);
     }
-    const runtimeGeneration = this.runtimeGenerations.get(input);
+    const runtimeGeneration = this.runtimeGenerations.get(input)
+      ?? (deferred ? `pending_${randomUUID()}` : undefined);
     if (runtimeGeneration === undefined) {
       throw new Error(`Session ${input.sessionId} runtime generation was not started`);
     }
@@ -540,17 +585,44 @@ export class DefaultNodeManagedSessionRunner
         abortController.abort(error);
       },
     });
-    const stopHeartbeat = this.dependencies.sandboxLease === undefined
-      ? async () => undefined
-      : startSandboxHeartbeat(currentSandbox, {
-          ...this.dependencies.sandboxLease,
-          onRenewFailed: (renewed, error) => recovery.check(renewed, error),
-        });
-    const sandbox = input.executionFence === undefined
+    let sandboxReady = !deferred;
+    let stopHeartbeat: () => Promise<void> = async () => undefined;
+    const beginHeartbeat = () => {
+      if (this.dependencies.sandboxLease === undefined) return;
+      stopHeartbeat = startSandboxHeartbeat(currentSandbox, {
+        ...this.dependencies.sandboxLease,
+        onRenewFailed: (renewed, error) => recovery.check(renewed, error),
+      });
+    };
+    if (!deferred) beginHeartbeat();
+    const guardedSandbox = input.executionFence === undefined
       ? recovery.sandbox
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
         });
+    let acquisition: Promise<void> | undefined;
+    const ensureSandbox = (): Promise<void> => acquisition ??= this.beginSandboxStartup({
+      ...input,
+      signal: abortController.signal,
+    }).then(async () => {
+      if (abortController.signal.aborted) throw abortedError(abortController.signal);
+      // A prior text-only turn may still have been preparing an older
+      // resource/environment snapshot when this turn began.
+      if (this.sandboxConfigurationFingerprints.get(input) !== this.sandboxFingerprint(input)) {
+        await this.beginSandboxStartup({ ...input, signal: abortController.signal });
+      }
+      if (abortController.signal.aborted) throw abortedError(abortController.signal);
+      sandboxReady = true;
+      beginHeartbeat();
+    }).catch((error) => {
+      acquisition = undefined;
+      throw error;
+    });
+    const sandbox: SandboxExecutor = deferred ? {
+      exec: async (...args) => { await ensureSandbox(); return guardedSandbox.exec(...args); },
+      readFile: async (...args) => { await ensureSandbox(); return guardedSandbox.readFile(...args); },
+      writeFile: async (...args) => { await ensureSandbox(); return guardedSandbox.writeFile(...args); },
+    } : guardedSandbox;
     const runtime = new ManagedNodeHarnessRuntime({
       initialEvents: input.initialEvents,
       events: input.historyEvents.filter((event) => managedEventThread(event) === "sthr_primary"),
@@ -825,7 +897,7 @@ export class DefaultNodeManagedSessionRunner
       }
       try {
         if (
-          !sandboxLost &&
+          sandboxReady && !sandboxLost &&
           input.executionFence !== undefined &&
           this.dependencies.synchronizeSandbox !== undefined
         ) {
@@ -896,7 +968,7 @@ export class DefaultNodeManagedSessionRunner
       }
       try {
         await runtime.drain();
-        if (!sandboxLost && input.executionFence !== undefined) {
+        if (sandboxReady && !sandboxLost && input.executionFence !== undefined) {
           await this.dependencies.afterExecution?.({
             workspaceId: input.workspaceId,
             session: input.session,
