@@ -1,3 +1,5 @@
+export { supportsCredentialEgress } from "./ports";
+export type { SandboxCredentialEgressBinding, SandboxCredentialEgressPort } from "./ports";
 export type {
   ProcessHandle,
   SandboxDuplexProcess,

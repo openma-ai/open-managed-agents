@@ -1,0 +1,10 @@
+{
+  "name": "@open-managed-agents/sandbox-egress",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/install.ts", "./ca": "./src/ca.ts", "./direct-https": "./src/direct-https.ts" },
+  "scripts": { "build": "esbuild src/entry.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/relay.cjs" },
+  "dependencies": { "@peculiar/x509": "1.14.3", "@open-managed-agents/sandbox": "workspace:*" },
+  "devDependencies": { "esbuild": "^0.28.2" }
+}
