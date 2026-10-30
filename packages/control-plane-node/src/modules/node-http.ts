@@ -433,10 +433,11 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/oma/inference-proxy", buildNodeHttpInferenceProxyRoutes({
     resolveUpstream: resolveNodeInferenceUpstream,
   }));
-  v1.route("/vaults", managedCapCliDeviceFlowRoutes);
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);
+  // OpenMA extension, mounted ahead of the legacy Vault routes.
+  v1.route("/oma/vaults", managedCapCliDeviceFlowRoutes);
   v1.route("/oma/vaults", buildLegacyVaultRoutes({ services }));
   v1.route("/memory_stores", managedMemoryStoresRoutes);
   v1.route("/memory_stores", managedMemoriesRoutes);

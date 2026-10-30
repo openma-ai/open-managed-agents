@@ -1375,10 +1375,11 @@ app.all("/openai/*", c => c.json({ error: {
 app.route("/v1/sessions", managedSessionsRoutes);
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
-app.route("/v1/vaults", managedCapCliDeviceFlowRoutes);
 app.route("/v1/vaults", managedVaultsRoutes);
 app.route("/v1/vaults", managedCredentialsRoutes);
 app.route("/v1/user_profiles", managedUserProfilesRoutes);
+// OpenMA extension, mounted ahead of the legacy catch-all Vault router.
+app.route("/v1/oma/vaults", managedCapCliDeviceFlowRoutes);
 app.route("/v1/oma/vaults", legacyVaultsRoutes);
 app.route("/v1/oma/cap-cli/oauth", capCliOauthRoutes);
 app.route("/v1/memory_stores", managedMemoryStoresRoutes);

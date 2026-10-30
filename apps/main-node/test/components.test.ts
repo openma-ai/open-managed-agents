@@ -158,7 +158,7 @@ describe("createNodeControlPlane(components)", () => {
     expect(row!.sealed_document).toMatch(/^sealed:managed\.vault\.credentials:/);
   });
 
-  it("serves cap_cli Vault credentials and the device-flow extension on /v1/vaults", async () => {
+  it("serves cap_cli Vault credentials and the device-flow extension on /v1/oma/vaults", async () => {
     const secrets: NodeSecrets = {
       cipherFor: (purpose) => ({
         encrypt: async (plaintext) => `sealed:${purpose}:${plaintext}`,
@@ -186,17 +186,35 @@ describe("createNodeControlPlane(components)", () => {
     }));
     expect(unknownCli.status).toBe(400);
 
-    // Mounted ahead of the official Vault routes; neither shadows the other.
-    const noDeviceFlow = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}/cap_cli_device_flow`, {
+    // Mounted ahead of the legacy /v1/oma/vaults router; neither shadows the other.
+    const noDeviceFlow = await cp.fetch(new Request(`http://localhost/v1/oma/vaults/${id}/cap_cli_device_flow`, {
       method: "POST", headers: v1, body: JSON.stringify({ cli_id: "fly" }),
     }));
     expect(noDeviceFlow.status, await noDeviceFlow.text()).toBe(400);
-    const missingVault = await cp.fetch(new Request("http://localhost/v1/vaults/vlt_missing/cap_cli_device_flow", {
+    const missingVault = await cp.fetch(new Request("http://localhost/v1/oma/vaults/vlt_missing/cap_cli_device_flow", {
       method: "POST", headers: v1, body: JSON.stringify({ cli_id: "gh" }),
     }));
     expect(missingVault.status).toBe(404);
     const retrieved = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}`, { headers: v1 }));
     expect(retrieved.status).toBe(200);
+
+    // The official namespace no longer carries the extension.
+    const official = await cp.fetch(new Request(`http://localhost/v1/vaults/${id}/cap_cli_device_flow`, {
+      method: "POST", headers: v1, body: JSON.stringify({ cli_id: "gh" }),
+    }));
+    expect(official.status).toBe(404);
+
+    // The remaining legacy /v1/oma/vaults routes keep their behaviour.
+    const legacy = await cp.fetch(new Request("http://localhost/v1/oma/vaults", {
+      method: "POST", headers: v1, body: JSON.stringify({ name: "legacy vault" }),
+    }));
+    expect(legacy.status, await legacy.clone().text()).toBe(201);
+    const legacyVault = await legacy.json() as { id: string };
+    const legacyList = await cp.fetch(new Request("http://localhost/v1/oma/vaults", { headers: v1 }));
+    expect(legacyList.status).toBe(200);
+    expect(JSON.stringify(await legacyList.json())).toContain(legacyVault.id);
+    const legacyGet = await cp.fetch(new Request(`http://localhost/v1/oma/vaults/${legacyVault.id}`, { headers: v1 }));
+    expect(legacyGet.status).toBe(200);
   });
 
   it("authenticates through the caller-supplied auth component", async () => {
