@@ -111,6 +111,8 @@ export * from "./user-profiles/persistence";
 export * from "./credentials/application";
 export * from "./credentials/cap-cli-device-flow";
 export * from "./credentials/cap-cli-device-flow-application";
+export * from "./credentials/mcp-oauth";
+export * from "./credentials/mcp-oauth-application";
 export * from "./credentials/cli-catalog";
 export * from "./credentials/persistence";
 export * from "./credentials/validation";

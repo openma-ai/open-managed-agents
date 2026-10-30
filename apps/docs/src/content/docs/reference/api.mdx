@@ -150,7 +150,7 @@ Delete.
 
 `cli_id` must name a builtin CLI spec (`gh`, `glab`, `aws`, `gcloud`, `kubectl`, ...); anything else is a 400. `refresh_token`, `expires_at` and `extras` are optional. `token`, `refresh_token` and `extras` are write-only: responses carry only `type`, `cli_id` and `expires_at`. `cli_id` cannot change on update. `mcp_oauth_validate` refuses `cap_cli` credentials with a 400.
 
-In a session, the egress proxy injects the newest active `cap_cli` credential for the CLI whose spec claims the request host, and refreshes it on 401 when the spec has a device flow and a `refresh_token` is stored. The sandbox only gets the spec's placeholder environment (for example `GITHUB_TOKEN=__cap_managed__`), never the token. Injection needs a credential egress proxy; on runtimes without one (self-hosted Node today), `cap_cli` credentials are stored but not injected.
+In a session, the egress proxy injects the newest active `cap_cli` credential for the CLI whose spec claims the request host, and refreshes it on 401 when the spec has a device flow and a `refresh_token` is stored. The sandbox only gets the spec's placeholder environment (for example `GITHUB_TOKEN=__cap_managed__`), never the token. Injection needs a credential egress proxy. Self-hosted Node does not have one yet: Node managed sessions do not inject `cap_cli` credentials, or MCP credentials into direct sandbox traffic, until the sandbox layer implements `CredentialEgressPort`. There, `cap_cli` credentials are stored but not injected; `mcp_oauth` and `static_bearer` credentials still reach MCP servers through the Node MCP proxy.
 
 ### `POST /v1/oma/vaults/:id/cap_cli_device_flow` (OpenMA extension)
 
@@ -308,13 +308,13 @@ Create. Body: `{ "name": "..." }`. Returns the key once — store it now.
 ### `DELETE /v1/oma/api_keys/:id`
 Revoke.
 
-## OAuth (Console use)
+## MCP OAuth (OpenMA extension, Console use)
 
-### `GET /v1/oma/oauth/:provider/authorize`
-Start an OAuth flow (Google sign-in for the Console).
+### `GET /v1/oma/oauth/authorize`
+Starts browser OAuth 2.1 (Authorization Code + PKCE) for an MCP server and redirects to its authorization page. Query: `mcp_server_url` and `vault_id` (required); `credential_id` (re-authorize that credential), `redirect_uri` (where the browser returns), `client_id` / `client_secret` (pin an OAuth client). The authorization server is discovered from the MCP server's metadata (RFC 9728, RFC 8414). The client comes from dynamic registration or, for providers that do not support it, from `<PROVIDER>_OAUTH_CLIENT_ID` / `_SECRET` (`GITHUB`, `FEISHU`, `LARK`, `ASANA`, `CLICKUP`, `SLACK`); without one the answer is 501 with setup instructions. The in-flight flow travels sealed in the OAuth `state` (10 minutes).
 
-### `GET /v1/oma/oauth/:provider/callback`
-OAuth callback handler.
+### `GET /v1/oma/oauth/callback`
+Exchanges the code and stores a managed `mcp_oauth` credential in the vault, with refresh metadata when the provider issued a refresh token. Older active `mcp_oauth` credentials for the same MCP server in that vault, and the re-authorized one, are archived. The popup page notifies the Console (`postMessage` and `BroadcastChannel("openma-oauth")`) and closes. The MCP and egress proxies refresh the credential on 401.
 
 ## Health
 

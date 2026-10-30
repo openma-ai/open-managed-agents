@@ -39,8 +39,8 @@ import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
-import { buildCapCliDeviceFlowRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { CapCliDeviceFlowApplicationService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { buildCapCliDeviceFlowRoutes, buildMcpOAuthRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
+import { CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -89,6 +89,7 @@ import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarness
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
 import { ManagedCredentialResolver } from "@open-managed-agents/managed-credential-resolver";
+import { HttpMcpOAuth, webCryptoMcpOAuthPkce } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
@@ -1332,6 +1333,33 @@ export async function createManagedNodeRuntime(
     });
   });
 
+  // OpenMA extension: browser MCP OAuth that ends in a managed mcp_oauth credential.
+  const managedMcpOAuthStateCipher = secrets === null
+    ? null
+    : secrets.cipherFor("managed.vault.mcp_oauth_state");
+  const mcpOAuth = new HttpMcpOAuth({
+    fetch: (input, init) => globalThis.fetch(input, init),
+    clock: { now: () => new Date() },
+    presets: config.mcpOAuthPresets,
+    log: { warn: (fields, message) => logger.warn(fields, message) },
+  });
+  const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
+    if (managedMcpOAuthStateCipher === null) {
+      throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+    }
+    const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+    return new McpOAuthApplicationService({
+      workspaceId,
+      credentials: managedPlatform
+        .app({ workspaceId })
+        .port(managedAgentsPortTokens.credentials),
+      oauth: mcpOAuth,
+      pkce: webCryptoMcpOAuthPkce,
+      cipher: managedMcpOAuthStateCipher,
+      clock: { now: () => new Date() },
+    });
+  });
+
   const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
     managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
@@ -1368,6 +1396,7 @@ export async function createManagedNodeRuntime(
     managedVaultsRoutes,
     managedCredentialsRoutes,
     managedCapCliDeviceFlowRoutes,
+    managedMcpOAuthRoutes,
     managedUserProfilesRoutes,
   };
 }

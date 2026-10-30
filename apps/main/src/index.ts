@@ -1,6 +1,6 @@
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
-import { CapCliDeviceFlowApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
+import { CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -28,6 +28,7 @@ import {
 import {
   buildAgentRoutes as buildManagedAgentRoutes,
   buildCapCliDeviceFlowRoutes,
+  buildMcpOAuthRoutes,
   buildCredentialRoutes as buildManagedCredentialRoutes,
   buildDeploymentRoutes as buildManagedDeploymentRoutes,
   buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
@@ -104,7 +105,12 @@ import {
 import {
   createCloudflareManagedAgentsApp,
 } from "@open-managed-agents/platform-cloudflare";
-import { buildOmaModelsHttpRoutes } from "@open-managed-agents/managed-agents-adapters-http";
+import {
+  HttpMcpOAuth,
+  buildOmaModelsHttpRoutes,
+  mcpOAuthPresetsFromEnvironment,
+  webCryptoMcpOAuthPkce,
+} from "@open-managed-agents/managed-agents-adapters-http";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
 import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
@@ -176,7 +182,6 @@ import {
 import { validateAgentLimits } from "./lib/limits";
 import { listMemberships, hasMembership } from "./auth-config";
 import legacyEnvironmentsRoutes from "./routes/environments";
-import oauthRoutes from "./routes/oauth";
 import capCliOauthRoutes from "./routes/cap-cli-oauth";
 import legacyMemoryRoutes from "./routes/memory";
 import dreamsRoutes from "./routes/dreams";
@@ -205,7 +210,7 @@ import {
 } from "./lib/github-creds";
 import { buildCfScheduler } from "./lib/cf-scheduler-jobs";
 import { buildCfMemoryQueue, dispatchCfMemoryQueueBatch } from "./lib/cf-queue-handlers";
-import { logError, recordEvent, errFields } from "@open-managed-agents/shared";
+import { logError, logWarn, recordEvent, errFields } from "@open-managed-agents/shared";
 import { globalErrorHandler, requestMetricsMiddleware } from "./lib/observability";
 import { errorEnvelopeMiddleware } from "./lib/error-envelope";
 import type { R2EventMessage } from "@open-managed-agents/shared";
@@ -638,6 +643,28 @@ const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
     credentials: managedCredentialsPortFor(ctx),
     deviceFlow: capCliDeviceFlow,
     cipher: new WebCryptoAesGcm(secret, "managed.vault.cap_cli_device_flow"),
+    clock: { now: () => new Date() },
+  });
+});
+
+// OpenMA extension: browser MCP OAuth that ends in a managed mcp_oauth credential.
+const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
+  const ctx = context as AppCtx;
+  const secret = ctx.env.PLATFORM_ROOT_SECRET;
+  if (secret === undefined) {
+    throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+  }
+  return new McpOAuthApplicationService({
+    workspaceId: (ctx.var as { tenant_id: string }).tenant_id,
+    credentials: managedCredentialsPortFor(ctx),
+    oauth: new HttpMcpOAuth({
+      fetch: (input, init) => fetch(input, init),
+      clock: { now: () => new Date() },
+      presets: mcpOAuthPresetsFromEnvironment(ctx.env as unknown as Record<string, string | undefined>),
+      log: { warn: (fields, message) => logWarn(fields, message) },
+    }),
+    pkce: webCryptoMcpOAuthPkce,
+    cipher: new WebCryptoAesGcm(secret, "managed.vault.mcp_oauth_state"),
     clock: { now: () => new Date() },
   });
 });
@@ -1467,7 +1494,7 @@ app.route("/v1/oma/evals", evalsRoutes);
 app.route("/v1/oma/cost_report", costReportRoutes);
 app.route("/v1/oma/integrations", integrationsRoutes);
 app.route("/v1/oma/runtimes", runtimesRoutes);
-app.route("/v1/oma/oauth", oauthRoutes);
+app.route("/v1/oma/oauth", managedMcpOAuthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
 // Cloudflare sandboxes run one container image; there is no operator image
 // catalog, so the list is empty and `_oma.sandbox_image` is rejected.

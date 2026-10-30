@@ -145,6 +145,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     managedVaultsRoutes,
     managedCredentialsRoutes,
     managedCapCliDeviceFlowRoutes,
+    managedMcpOAuthRoutes,
     managedUserProfilesRoutes,
     services,
     apiKeyStorage,
@@ -438,6 +439,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/user_profiles", managedUserProfilesRoutes);
   // OpenMA extension, mounted ahead of the legacy Vault routes.
   v1.route("/oma/vaults", managedCapCliDeviceFlowRoutes);
+  v1.route("/oma/oauth", managedMcpOAuthRoutes);
   v1.route("/oma/vaults", buildLegacyVaultRoutes({ services }));
   v1.route("/memory_stores", managedMemoryStoresRoutes);
   v1.route("/memory_stores", managedMemoriesRoutes);

@@ -35,6 +35,7 @@ describe("Managed Agents API application port boundary", () => {
       "../src/ports/environment-work.ts",
       "../src/ports/environments.ts",
       "../src/ports/files.ts",
+      "../src/ports/mcp-oauth.ts",
       "../src/ports/memories.ts",
       "../src/ports/memory-stores.ts",
       "../src/ports/memory-versions.ts",

@@ -726,6 +726,9 @@ importers:
       '@open-managed-agents/event-log':
         specifier: workspace:*
         version: link:../../packages/event-log
+      '@open-managed-agents/managed-agents-adapters-http':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-http
       '@open-managed-agents/managed-runtime-sprites':
         specifier: workspace:*
         version: link:../../packages/managed-runtime-sprites
