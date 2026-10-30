@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, URL as NodeURL } from "node:url";
 import type { SandboxPort } from "@open-managed-agents/sandbox";
 import { supportsCredentialEgress } from "@open-managed-agents/sandbox";
+import type { CredentialEgressRevokeReason, RuntimeResourceScope, RuntimeResourceFence } from "@open-managed-agents/runtime-resource-contract";
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 const installed = new WeakMap<object, string[]>();
 const lifecycles = new WeakSet<object>();
@@ -9,6 +10,36 @@ let bundle: Promise<string> | undefined;
 async function relayBundle() {
   bundle ??= readFile(fileURLToPath(new NodeURL("../dist/relay.cjs", import.meta.url)), "utf8").catch(() => { throw new Error("Sandbox relay bundle missing; build @open-managed-agents/sandbox-egress before starting the host"); });
   return bundle;
+}
+type Preparation = Parameters<typeof prepareSandboxEgress>[0];
+/** Fits ProviderManagedRuntimeOptions.credentialEgress for every SandboxPort.
+ * The host supplies current Session grants and revokes authorization remotely;
+ * this adapter owns only the sandbox-side process/environment lifecycle.
+ * Environment proxies are advisory, not provider-enforced network policy. */
+export function createSandboxCredentialEgress(options: {
+  resolve(input: { scope: RuntimeResourceScope; fence: RuntimeResourceFence; signal: AbortSignal }): Promise<{
+    vaultIds: readonly string[];
+    relay: Preparation["relay"];
+    issuePass: Preparation["issuePass"];
+    placeholders: Preparation["placeholders"];
+  }>;
+  revoke(input: { scope: RuntimeResourceScope; fence: RuntimeResourceFence; reason: CredentialEgressRevokeReason }): Promise<void>;
+}) {
+  return {
+    capabilities: { enforcement: "advisory" as const, credentialMode: "live" as const, interceptedProtocols: ["https" as const] },
+    async attach(input: { runtime: SandboxPort; scope: RuntimeResourceScope; fence: RuntimeResourceFence; requirement: "required" | "best_effort"; signal: AbortSignal }) {
+      input.signal.throwIfAborted();
+      if (input.requirement === "required") throw new Error("Sandbox environment proxy is advisory; required egress needs provider-native enforcement");
+      const grant = await options.resolve(input);
+      input.signal.throwIfAborted();
+      await prepareSandboxEgress({ ...grant, sandbox: input.runtime, scope: { ...input.scope, vaultIds: grant.vaultIds } });
+      input.signal.throwIfAborted();
+    },
+    async revoke(input: { runtime: SandboxPort; scope: RuntimeResourceScope; fence: RuntimeResourceFence; reason: CredentialEgressRevokeReason }) {
+      try { await options.revoke(input); }
+      finally { await clearSandboxEgress(input.runtime); }
+    },
+  };
 }
 export interface PreparedSandboxEgress { pid?: number; port?: number; caFile?: string }
 export async function clearSandboxEgress(sandbox: SandboxPort): Promise<void> {
@@ -19,7 +50,7 @@ export async function clearSandboxEgress(sandbox: SandboxPort): Promise<void> {
     await sandbox.setEnvVars(Object.fromEntries(previous.map(name => [name, ""])));
     installed.delete(sandbox);
   }
-  await sandbox.exec("if [ -f .oma-egress/ready.json ]; then node -e 'try { process.kill(JSON.parse(require(\"fs\").readFileSync(\".oma-egress/ready.json\")).pid, \"SIGTERM\") } catch {}'; fi");
+  if (!supportsCredentialEgress(sandbox)) await sandbox.exec("if [ -f .oma-egress/ready.json ]; then node -e 'try { process.kill(JSON.parse(require(\"fs\").readFileSync(\".oma-egress/ready.json\")).pid, \"SIGTERM\") } catch {}'; fi");
 }
 /** Provider-neutral lifecycle. Native adapters own interception; otherwise the
  * sandbox owns its bundled local process, CA files, readiness and cleanup. */
@@ -49,10 +80,12 @@ export async function prepareSandboxEgress(input: {
   const source = await relayBundle();
   if (source === undefined) throw new Error("Sandbox relay bundle unavailable");
   const pathOutput = await sandbox.exec("mkdir -p .oma-egress && chmod 700 .oma-egress && printf 'EGRESS_DIR:' && cd .oma-egress && pwd", 5000);
-  const directory = /EGRESS_DIR:(\/[^\r\n]+)/u.exec(pathOutput)?.[1];
-  if (!directory) throw new Error("Sandbox cannot create local relay directory");
-  const entry = await sandbox.writeFile(`${directory}/relay.cjs`, source);
-  await sandbox.writeFile(`${directory}/binding.next.json`, JSON.stringify({ ...binding, directory }));
+  if (!/EGRESS_DIR:(\/[^\r\n]+)/u.test(pathOutput)) throw new Error("Sandbox cannot create local relay directory");
+  // /workspace is the logical root shared by every adapter. writeFile returns
+  // the executable path (local conformance adapters may map it to a host dir).
+  const entry = await sandbox.writeFile("/workspace/.oma-egress/relay.cjs", source);
+  const directory = entry.slice(0, entry.lastIndexOf("/"));
+  await sandbox.writeFile("/workspace/.oma-egress/binding.next.json", JSON.stringify({ ...binding, directory }));
   await sandbox.exec(`chmod 600 ${quote(`${directory}/binding.next.json`)} && mv ${quote(`${directory}/binding.next.json`)} ${quote(`${directory}/binding.json`)}`, 5000);
   const ready = `${directory}/ready.json`;
   if (sandbox.destroy && !lifecycles.has(sandbox)) {
