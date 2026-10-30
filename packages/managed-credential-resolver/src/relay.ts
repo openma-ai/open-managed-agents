@@ -79,7 +79,7 @@ export function createCredentialEgressRelay(ports: CredentialEgressRelayPorts): 
     } catch { return denied(400); }
     const body = ["GET", "HEAD"].includes(method) ? null : await request.arrayBuffer();
     const send = (token: string) => ports.send(new Request(targetUrl, { method,
-      headers: egressRequestHeaders(inbound, { token, stripAuthorization: true }),
+      headers: egressRequestHeaders(inbound, { token, stripAuthorization: true, ...(target.header ? { header: target.header } : {}) }),
       body, redirect: "manual",
     }));
     const { response } = await ports.credentials.forward(claims.workspaceId, target, send);

@@ -21,7 +21,7 @@ const run = promisify(execFile);
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function fixture() {
+async function fixture(cliId?: "gh" | "glab", realCli = false) {
   const dir = await mkdtemp(join(tmpdir(), "oma-local-relay-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const upstreamCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "upstream")));
@@ -31,13 +31,14 @@ async function fixture() {
   const upstream = createServer(await upstreamCA.leafFor("localhost"), async (request, response) => {
     const parts: Buffer[] = []; for await (const chunk of request) parts.push(chunk);
     seen.push({ token: request.headers.authorization, path: request.url!, body: Buffer.concat(parts), headers: request.headers });
+    if (request.url === "/redirect") { response.writeHead(307, { location: "/next" }); response.end(); return; }
     if (request.url === "/head") { response.writeHead(200, { "content-length": "123", "x-head": "yes" }); response.end(); return; }
     if (request.url === "/gzip") {
       const zipped = gzipSync(Buffer.from([0, 255, 128]));
       response.writeHead(200, { "content-encoding": "gzip", "content-length": String(zipped.length) }); response.end(zipped); return;
     }
     if (request.url === "/stream") {
-      response.writeHead(206, { "content-type": "application/octet-stream" }); response.write("first");
+      response.writeHead(206, { "content-type": "application/octet-stream", "set-cookie": ["a=1; Path=/", "b=2; Path=/"] }); response.write("first");
       setTimeout(() => response.end("last"), 1200); return;
     }
     if ([204, 205, 304].includes(status)) {
@@ -50,20 +51,21 @@ async function fixture() {
   cleanup.push(async () => { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); });
   const target = `https://localhost:${(upstream.address() as { port: number }).port}`;
   let row: StoredCredential = { revision: 1, credential: { id: "cred", vaultId: "vault", metadata: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", archivedAt: null, auth: { type: "mcp_oauth", mcpServerUrl: target, accessToken: "real-token", refresh: { refreshToken: "refresh", clientId: "client", tokenEndpoint: "https://auth.example/token", tokenEndpointAuth: { type: "none" } } } } };
+  if (cliId) row.credential.auth = { type: "cap_cli", cliId, token: "real-token" };
   const credentials: CredentialStore = {
     insert: async () => { throw new Error("unused"); }, find: async () => row,
     replace: async ({ next }) => { row = { revision: row.revision + 1, credential: next }; return { type: "replaced", record: row }; },
     archive: async () => ({ type: "not_found" }), delete: async () => ({ type: "not_found" }), list: async ({ vaultId }) => vaultId === "vault" ? [row] : [],
   };
-  const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(builtinSpecs));
+  const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(cliId && !realCli ? builtinSpecs.map(spec => spec.cli_id === cliId ? { ...spec, endpoints: ["localhost"] } : spec) : builtinSpecs));
   const passes = createEgressRelayPasses("root", () => now);
-  const relay = createCredentialEgressRelay({ passes, credentials: resolver, findSession: async () => ({ vaultIds, archivedAt }), send: request => sendDirectHttps(request, upstreamCA.certificatePem) });
+  const relay = createCredentialEgressRelay({ passes, credentials: resolver, findSession: async () => ({ vaultIds, archivedAt }), send: request => sendDirectHttps(realCli ? new Request(`${target}${new URL(request.url).pathname}${new URL(request.url).search}`, request) : request, upstreamCA.certificatePem) });
   const routes = new Hono().route("/v1/oma/egress", buildCredentialEgressRoutes(() => relay));
   const controlCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "control-test")));
   const control = createServer(await controlCA.leafFor("localhost"), async (incoming, outgoing) => {
     const chunks: Buffer[] = []; for await (const chunk of incoming) chunks.push(chunk);
     const response = await routes.fetch(new Request(`https://control.example${incoming.url}`, { method: incoming.method, headers: incoming.headers as Record<string, string>, body: Buffer.concat(chunks) }));
-    outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+    outgoing.writeHead(response.status, { ...Object.fromEntries(response.headers), ...(response.headers.has("set-cookie") ? { "set-cookie": response.headers.getSetCookie() } : {}) });
     if (response.body) Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>).on("error", () => outgoing.destroy()).pipe(outgoing);
     else outgoing.end();
   });
@@ -86,6 +88,32 @@ describe("sandbox-owned local credential relay", () => {
     expect(f.seen[0]!.headers).not.toHaveProperty("proxy-authorization");
   });
 
+  it.each([
+    { cliId: "glab" as const, alias: "PRIVATE-TOKEN" },
+    { cliId: "gh" as const, alias: "X-Github-Token" },
+  ])("removes $cliId protocol placeholder aliases at the real TLS upstream", async ({ cliId, alias }) => {
+    // Only the endpoint is redirected to the fixture; strip/set rules are the
+    // builtin CLI spec, and TLS is verified with the sandbox-generated CA.
+    const f = await fixture(cliId); await f.prepare();
+    const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -H '${alias}: __cap_managed__' -H 'Authorization: Bearer __cap_managed__' '${f.target}/user' | od -An -tu1`);
+    expect(output).toMatch(/0\s+255\s+128/); expect(f.seen).toHaveLength(1);
+    expect(f.seen[0]!.token).toBe("Bearer real-token");
+    expect(f.seen[0]!.headers).not.toHaveProperty(alias.toLowerCase());
+    expect(JSON.stringify(f.seen[0]!.headers)).not.toContain("__cap_managed__");
+  });
+
+  it("runs the installed gh CLI against the credential relay without exposing its token", async context => {
+    const available = await run("sh", ["-c", "command -v gh || true"]);
+    if (!available.stdout.trim()) { context.skip(); return; }
+    const f = await fixture("gh", true); await f.prepare();
+    // Preserve the real hostname/spec; only the control-plane upstream
+    // transport routes this synthetic request to the local TLS fixture.
+    const output = await f.sandbox.exec(`GH_CONFIG_DIR='${f.dir}/gh-config' GH_PROMPT_DISABLED=1 gh api --hostname github.com user --silent`, 10000);
+    expect(output).not.toContain("[exit"); expect(output).not.toContain("real-token");
+    expect(f.seen).toHaveLength(1); expect(f.seen[0]!.token).toBe("Bearer real-token");
+    expect(JSON.stringify(f.seen[0]!.headers)).not.toContain("__cap_managed__");
+  });
+
   it("preserves a credential-matched HEAD representation length without sending a body", async () => {
     const f = await fixture(); await f.prepare();
     const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -I '${f.target}/head'`);
@@ -102,6 +130,13 @@ describe("sandbox-owned local credential relay", () => {
     expect(output).not.toContain("x-oma-egress-");
   });
 
+  it("preserves 307 location without following the redirect", async () => {
+    const f = await fixture(); await f.prepare();
+    const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -D - '${f.target}/redirect'`);
+    expect(output).toContain("307 Temporary Redirect"); expect(output).toContain("location: /next");
+    expect(f.seen).toHaveLength(1); expect(f.seen[0]!.path).toBe("/redirect");
+  });
+
   it("keeps gzip content encoding, encoded length and actual bytes consistent", async () => {
     const f = await fixture(); await f.prepare();
     const headers = await f.sandbox.writeFile("gzip.headers", "");
@@ -114,10 +149,13 @@ describe("sandbox-owned local credential relay", () => {
 
   it("delivers the first response chunk before the delayed tail", async () => {
     const f = await fixture(); await f.prepare();
-    const output = await f.sandbox.exec(`curl -sS --max-time 4 --noproxy '' -N -w '\\nTIMES:%{time_starttransfer}|%{time_total}' '${f.target}/stream'`);
+    const headers = await f.sandbox.writeFile("stream.headers", "");
+    const output = await f.sandbox.exec(`curl -sS --max-time 4 --noproxy '' -N -D '${headers}' -w '\\nTIMES:%{time_starttransfer}|%{time_total}' '${f.target}/stream'`);
     expect(output).toContain("firstlast");
     const times = /TIMES:([\d.]+)\|([\d.]+)/u.exec(output)!;
     expect(times).not.toBeNull(); expect(Number(times[2]) - Number(times[1])).toBeGreaterThan(0.9);
+    const metadata = await readFile(headers, "utf8");
+    expect(metadata).toContain("206 Partial Content"); expect(metadata.match(/set-cookie:/gu)).toHaveLength(2);
   });
 
   it("replays binary POST only on successful refresh and rechecks current Vaults and archive state", async () => {

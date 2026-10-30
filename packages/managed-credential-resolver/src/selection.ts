@@ -3,7 +3,7 @@
  * by server URL, sandbox egress by hostname, and the CLI placeholder
  * environment. Pure functions over stored records.
  */
-import type { CapSpec, SpecRegistry } from "@open-managed-agents/cap";
+import type { CapSpec, HeaderInjectSpec, SpecRegistry } from "@open-managed-agents/cap";
 import type { StoredCredential } from "@open-managed-agents/credential-store";
 import type { Credential, CredentialAuth } from "@open-managed-agents/domain/credentials";
 
@@ -19,6 +19,7 @@ export interface ManagedCredentialRefresh {
 export interface ManagedCredentialTarget {
   upstreamUrl: string;
   upstreamToken: string;
+  header?: HeaderInjectSpec;
   refresh?: ManagedCredentialRefresh;
 }
 
@@ -128,6 +129,7 @@ export function selectOutboundTarget(
       return {
         upstreamUrl: `https://${hostname}/`,
         upstreamToken: best.token,
+        ...(spec.inject_mode === "header" && spec.header ? { header: spec.header } : {}),
         ...(refresh && { refresh }),
       };
     }
