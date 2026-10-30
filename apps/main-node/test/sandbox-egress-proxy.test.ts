@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:https";
 import { connect } from "node:net";
+import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -427,10 +428,11 @@ async function startProxy(input: {
   /** Keyed by `workspace/session`. */
   sessions?: Record<string, EgressSessionRecord>;
   upstreamCaPem: string;
+  clock?: { now(): Date };
 }) {
   const dir = await tempDir();
   const ca = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "ca")));
-  const passes = createEgressPassAuthority("root", { now: () => new Date() });
+  const passes = createEgressPassAuthority("root", input.clock ?? { now: () => new Date() });
   const logs: Array<{ level: string; fields: Record<string, unknown> }> = [];
   const record = (level: string) => (fields: Record<string, unknown>) => logs.push({ level, fields });
   const proxy = createSandboxEgressProxy({
@@ -498,6 +500,44 @@ function openTunnel(port: number, authority: string, proxyAuthorization: string)
   });
 }
 
+async function keepAliveClient(proxy: { port: number; caFile: string; pass(): string }, authority: string) {
+  const tunnel = await openTunnel(proxy.port, authority, basic(proxy.pass()));
+  expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
+  const socket = tlsConnect({ socket: tunnel.socket, servername: "localhost", ca: await readFile(proxy.caFile, "utf8") });
+  cleanup.push(async () => { socket.destroy(); });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("secureConnect", resolve);
+    socket.once("error", reject);
+  });
+  return () => keepAliveGet(socket, authority);
+}
+
+function keepAliveGet(socket: TLSSocket, authority: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      if (error) reject(error);
+      else resolve(data);
+    };
+    const onError = (error: Error) => finish(error);
+    const onData = (chunk: Buffer) => {
+      data += chunk.toString("utf8");
+      const split = data.indexOf("\r\n\r\n");
+      if (split < 0) return;
+      const length = /content-length: (\d+)/iu.exec(data.slice(0, split));
+      if (length ? data.length >= split + 4 + Number(length[1]) : data.endsWith("0\r\n\r\n")) finish();
+    };
+    const timer = setTimeout(() => finish(new Error("keepalive response timeout")), 5_000);
+    socket.on("data", onData);
+    socket.once("error", onError);
+    // No Proxy-Authorization inside TLS: revalidation must use the CONNECT pass.
+    socket.write(`GET /keepalive HTTP/1.1\r\nHost: ${authority}\r\nConnection: keep-alive\r\n\r\n`);
+  });
+}
+
 const basic = (pass: string) => `Basic ${Buffer.from(`openma:${pass}`).toString("base64")}`;
 
 describe("sandbox egress proxy", () => {
@@ -506,6 +546,7 @@ describe("sandbox egress proxy", () => {
     sessions?: Record<string, EgressSessionRecord>;
     injectedStatus?: (seen: Seen) => number;
     cli?: boolean;
+    clock?: { now(): Date };
   } = {}) {
     const dir = await tempDir();
     const upstreamCa = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "upstream-ca")));
@@ -539,6 +580,7 @@ describe("sandbox egress proxy", () => {
       credentials: resolver,
       ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
       upstreamCaPem: upstreamCa.certificatePem,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
     return { proxy, injected, tunneled, urls, upstreamCaFile, records, tokenRequests, resolver };
   }
@@ -625,6 +667,39 @@ describe("sandbox egress proxy", () => {
     }
     expect(injected.seen.map((s) => s.authorization)).toEqual(["Bearer real-token", "Bearer fresh-token"]);
     expect(tokenRequests).toHaveLength(1);
+  });
+
+  it.each(["vault removed", "archived", "expired"] as const)("revalidates a keepalive MITM request after the Session is %s", async (change) => {
+    let now = Date.now();
+    const sessions = { "ws_a/sesn_a": { vaultIds: ["vlt_a"], archived: false } };
+    const { proxy, injected } = await fixture({ sessions, clock: { now: () => new Date(now) } });
+    const get = await keepAliveClient(proxy, `localhost:${injected.port}`);
+    expect(await get()).toMatch(/^HTTP\/1.1 200 /u);
+    expect(injected.seen[0]!.authorization).toBe("Bearer real-token");
+    if (change === "vault removed") sessions["ws_a/sesn_a"] = { vaultIds: [], archived: false };
+    else if (change === "archived") sessions["ws_a/sesn_a"] = { vaultIds: ["vlt_a"], archived: true };
+    else now += 60_001;
+    const response = await get();
+    if (change === "vault removed") {
+      expect(response).toMatch(/^HTTP\/1.1 200 /u);
+      expect(injected.seen).toHaveLength(2);
+      expect(injected.seen[1]!.authorization).toBeUndefined();
+    } else {
+      expect(response).toMatch(change === "archived" ? /^HTTP\/1.1 403 /u : /^HTTP\/1.1 407 /u);
+      expect(injected.seen).toHaveLength(1);
+    }
+  });
+
+  it("never logs a credential rejected as an invalid HTTP header", async () => {
+    const { proxy, injected, urls } = await fixture({
+      records: (u) => [mcpCredential("cred_a", "vlt_a", `${u.injected}/mcp`, "canary-real-token\r\ninvalid")],
+    });
+    const result = await curl(`${urls.injected}/`, { proxy: proxy.proxyUrl(), cacert: proxy.caFile });
+    expect(result).toMatchObject({ status: 502 });
+    expect(injected.seen).toHaveLength(0);
+    expect(proxy.logs.some((entry) => entry.level === "error")).toBe(true);
+    expect(JSON.stringify(proxy.logs)).not.toContain("canary-real-token");
+    expect(result.body).not.toContain("canary-real-token");
   });
 
   it("answers 502 when the credential store fails, instead of forwarding without the credential", async () => {

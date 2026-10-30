@@ -74,9 +74,14 @@ export type SandboxEgress =
   | { type: "enabled"; settings: SandboxEgressSettings }
   | { type: "unavailable"; reason: string };
 
+// Only names installed by this layer are cleared on a later warm refresh.
+// Adapters merge string values, so an empty value disables an old setting.
+const installedEnvironment = new WeakMap<object, readonly string[]>();
+
 /**
- * Put a Session's egress wiring into its sandbox. Sessions without Vaults
- * get nothing. A Session whose Vaults hold CLI credentials (placeholders)
+ * Refresh a Session's egress wiring, including on warm reuse. Sessions
+ * without Vaults clear any previously installed settings. A Session whose
+ * Vaults hold CLI credentials (placeholders)
  * cannot be prepared while the proxy is unavailable: the error names the
  * reason instead of starting CLIs that would dial out unauthenticated.
  */
@@ -88,7 +93,20 @@ export async function applySandboxEgress(input: {
   log: SandboxEgressLogger;
 }): Promise<{ proxied: boolean; placeholders: string[] }> {
   const { sandbox, scope, egress, log } = input;
-  if (scope.vaultIds.length === 0) return { proxied: false, placeholders: [] };
+  const replaceEnvironment = async (next: Record<string, string>) => {
+    const previous = installedEnvironment.get(sandbox) ?? [];
+    if (previous.length === 0 && Object.keys(next).length === 0) return;
+    if (sandbox.setEnvVars === undefined) {
+      throw new Error("This sandbox cannot set environment variables, so Vault egress credentials cannot reach it");
+    }
+    const cleared = Object.fromEntries(previous.filter((name) => !(name in next)).map((name) => [name, ""]));
+    await sandbox.setEnvVars({ ...cleared, ...next });
+    installedEnvironment.set(sandbox, Object.keys(next));
+  };
+  if (scope.vaultIds.length === 0) {
+    await replaceEnvironment({});
+    return { proxied: false, placeholders: [] };
+  }
   const placeholders = await input.placeholders(scope);
   const names = Object.keys(placeholders);
   const fields = { op: "sandbox_egress.prepare", tenant_id: scope.workspaceId, session_id: scope.sessionId, placeholders: names };
@@ -98,6 +116,7 @@ export async function applySandboxEgress(input: {
         `Vault CLI credentials (${names.join(", ")}) need the sandbox egress proxy, which is unavailable: ${egress.reason}`,
       );
     }
+    await replaceEnvironment({});
     return { proxied: false, placeholders: [] };
   }
   if (sandbox.setEnvVars === undefined) {
@@ -111,7 +130,7 @@ export async function applySandboxEgress(input: {
     sessionId: scope.sessionId,
     ttlMs: settings.passTtlMs,
   });
-  await sandbox.setEnvVars({
+  await replaceEnvironment({
     ...placeholders,
     ...sandboxEgressEnvironment({ publicUrl: settings.publicUrl, pass, caFile, caBundleFile }),
   });
