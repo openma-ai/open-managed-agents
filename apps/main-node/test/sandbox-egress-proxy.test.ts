@@ -547,6 +547,7 @@ describe("sandbox egress proxy", () => {
     injectedStatus?: (seen: Seen) => number;
     cli?: boolean;
     clock?: { now(): Date };
+    tokenResponse?: () => Response;
   } = {}) {
     const dir = await tempDir();
     const upstreamCa = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(dir, "upstream-ca")));
@@ -571,7 +572,7 @@ describe("sandbox egress proxy", () => {
       credentials: memoryStore(records),
       fetch: async (_url, init) => {
         tokenRequests.push(String(init?.body));
-        return Response.json({ access_token: "fresh-token", refresh_token: "refresh-v2" });
+        return options.tokenResponse?.() ?? Response.json({ access_token: "fresh-token", refresh_token: "refresh-v2" });
       },
       clock: { now: () => new Date() },
       log: { warn: () => {} },
@@ -646,6 +647,22 @@ describe("sandbox egress proxy", () => {
     expect(injected.seen.map((s) => s.authorization)).toEqual(["Bearer real-token", "Bearer fresh-token"]);
     expect(tokenRequests).toHaveLength(1);
     expect(records[0]!.credential.auth).toMatchObject({ accessToken: "fresh-token" });
+  });
+
+  it("does not refresh or replay an upstream 403", async () => {
+    const { proxy, injected, urls, tokenRequests } = await fixture({ injectedStatus: () => 403 });
+    const result = await curl(`${urls.injected}/forbidden`, { proxy: proxy.proxyUrl(), cacert: proxy.caFile });
+    expect(result, result.error ?? "").toMatchObject({ status: 403 });
+    expect(injected.seen).toHaveLength(1);
+    expect(tokenRequests).toEqual([]);
+  });
+
+  it("keeps a failed 401 refresh to one upstream request", async () => {
+    const { proxy, injected, urls, tokenRequests } = await fixture({ injectedStatus: () => 401, tokenResponse: () => new Response("rejected", { status: 400 }) });
+    const result = await curl(`${urls.injected}/expired`, { proxy: proxy.proxyUrl(), cacert: proxy.caFile });
+    expect(result, result.error ?? "").toMatchObject({ status: 401 });
+    expect(injected.seen).toHaveLength(1);
+    expect(tokenRequests).toHaveLength(1);
   });
 
   it("replays the entire binary POST body after a 401 refresh", async () => {
