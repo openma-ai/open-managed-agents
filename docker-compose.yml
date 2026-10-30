@@ -20,8 +20,6 @@ services:
     container_name: oma-server
     ports:
       - "${OMA_PORT:-8787}:8787"
-      # Sandbox egress proxy (public by default; every request needs a pass).
-      - "${SANDBOX_EGRESS_PUBLISHED_PORT:-8788}:8788"
     env_file:
       - path: ./.env
         required: false
@@ -49,11 +47,7 @@ services:
       # Required: deployable entrypoints do not expose the non-isolated
       # local subprocess test adapter.
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Set SANDBOX_PROVIDER to an isolated provider}
-      # Sandbox egress proxy (best effort Vault credential injection for
-      # CLIs such as gh/glab/curl): on by default at PUBLIC_BASE_URL's host,
-      # port 8788 (published under `ports:`; sandboxes must reach it). Requires
-      # PLATFORM_ROOT_SECRET. See docs/self-host.md "Sandbox egress proxy".
-      # CA material is encrypted in the shared SQL database; no CA volume needed.
+      # Vault egress uses the normal HTTPS API; the sandbox owns interception.
       # Auth: better-auth sqlite-backed. AUTH_DISABLED=1 bypasses entirely
       # (all requests become tenant_id="default") for local single-user
       # demos. BETTER_AUTH_SECRET signs cookies; generate with

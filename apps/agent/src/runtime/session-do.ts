@@ -1982,7 +1982,7 @@ export class SessionDO extends DurableObject<Env> {
       // — i.e. plaintext secrets visible to anyone with KV-read access in
       // the agent worker scope. Post-refactor the interceptor RPCs into
       // main on each call (apps/agent/src/oma-sandbox.ts → env.MAIN_MCP
-      // .outboundForward), main does the live vault lookup, and the agent
+      // .credentialEgress), main does the live vault lookup, and the agent
       // worker never holds plaintext credentials. See file-level comment
       // on apps/agent/src/oma-sandbox.ts for the full rationale.
 
@@ -3706,7 +3706,7 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       // CLI auth lives in main worker via cap_cli credentials — sandbox
-      // outbound handler RPCs to MAIN_MCP.lookupOutboundCredential on
+      // outbound handler RPCs to MAIN_MCP.credentialEgress on
       // every HTTPS request, main resolves cap spec + token, injects
       // Bearer at proxy. Sandbox never holds plaintext token in env or
       // memory. Sentinel env vars (e.g. GITHUB_TOKEN=__cap_managed__) are

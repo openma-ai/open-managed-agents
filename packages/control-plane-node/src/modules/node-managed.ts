@@ -88,11 +88,12 @@ import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarnessEnvironmentConfig, resolveNodeManagedAuxiliaryToolModel } from "../lib/node-managed-agent-codec.js";
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
-import { ManagedCredentialResolver } from "@open-managed-agents/managed-credential-resolver";
+import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
-import { applySandboxEgress, startSandboxEgressProxy, type SandboxEgress } from "../lib/sandbox-egress/index.js";
-import { SqlEgressCaStore } from "../lib/sandbox-egress/sql-ca-store.js";
+import { prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
+import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
+import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
@@ -563,12 +564,15 @@ export async function createManagedNodeRuntime(
     // Cold preparation calls this last (after repository clones); warm reuse
     // calls it again to renew the pass and honor the current Vault bindings.
     refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
-      await applySandboxEgress({
+      if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
+        throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
+      }
+      await prepareSandboxEgress({
         sandbox,
         scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
         placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
-        egress: sandboxEgress,
-        log: logger,
+        relay: { endpoint: config.http.publicBaseUrl ?? "https://unavailable.invalid", pass: "" },
+        issuePass: () => relayPasses!.issue({ workspaceId, sessionId: session.id, ttlMs: 86_400_000 }),
       });
     },
     synchronizeSandbox: async ({
@@ -1185,35 +1189,19 @@ export async function createManagedNodeRuntime(
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logger.warn(fields, message) },
   }, capSpecs);
-  // Sandbox egress proxy: injects the Session's Vault credentials into
-  // sandbox HTTPS egress (best effort, public by default; docs/self-host.md).
-  const egressProxyConfig = config.sandbox.egressProxy;
-  let sandboxEgress: SandboxEgress;
-  if (egressProxyConfig.type === "unavailable") {
-    sandboxEgress = egressProxyConfig;
-    logger.warn(
-      { op: "main-node.sandbox_egress.unavailable", reason: egressProxyConfig.reason },
-      `Sandbox egress proxy unavailable (${egressProxyConfig.reason}): Sessions whose Vaults hold CLI credentials will fail to start`,
-    );
-  } else {
-    if (platformRootSecret === undefined || secrets === null) throw new Error("PLATFORM_ROOT_SECRET is required for the sandbox egress proxy");
-    const started = await startSandboxEgressProxy(egressProxyConfig, platformRootSecret, {
-      caStore: new SqlEgressCaStore(sql, secrets.cipherFor("managed.sandbox-egress.ca")),
+  const relayPasses = platformRootSecret ? createEgressRelayPasses(platformRootSecret, Date.now) : null;
+  const managedCredentialEgressRoutes = buildCredentialEgressRoutes(() => {
+    if (!relayPasses) throw new Error("Credential relay is not configured");
+    return createCredentialEgressRelay({
+      passes: relayPasses,
       credentials: managedCredentialResolver,
-      findSession: async (input) => {
+      findSession: async input => {
         const session = (await managedRuntimeReaders.executionContext.find(input))?.session;
-        return session === undefined ? null : { vaultIds: session.vaultIds, archived: session.archivedAt !== null };
+        return session === undefined ? null : { vaultIds: session.vaultIds, archivedAt: session.archivedAt };
       },
-      claimsHost: (hostname) => capSpecs.byHostname(hostname) !== null,
-      log: logger,
+      send: sendDirectHttps,
     });
-    disposables.add("sandbox_egress_proxy", () => started.close());
-    sandboxEgress = { type: "enabled", settings: started.settings };
-    logger.info(
-      { op: "main-node.sandbox_egress.listening", port: started.port, public_url: started.settings.publicUrl },
-      "Sandbox egress proxy listening (public; pass required)",
-    );
-  }
+  });
   // One managed platform graph per process. Every official application
   // module is installed on the same workspace App, so a workspace has one
   // App, one clock, one id generator and one set of stores. `modules` runs on
@@ -1423,6 +1411,7 @@ export async function createManagedNodeRuntime(
   );
 
   return {
+    managedCredentialEgressRoutes,
     resolveNodeMcpProxyTarget,
     resolveNodeInferenceUpstream,
     managedAcpCapabilities,

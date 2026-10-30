@@ -61,7 +61,7 @@ the optional sandbox egress proxy (its own port) for CLI credential injection.
 | Event log | `SqlEventLog` (per-session events in shared `session_events` table) + `InProcessEventStreamHub` (sqlite mode) or `PgEventStreamHub` (pg mode, LISTEN/NOTIFY-backed) for SSE fan-out |
 | Sandbox | Required `SANDBOX_PROVIDER`: `litebox` (local Firecracker μVM), `boxrun`, `daytona`, `opensandbox`, or `e2b`; no non-isolated fallback |
 | Auth | `better-auth`; separate `auth.db` in SQLite mode, same server DB in Postgres/MySQL mode. `AUTH_DISABLED=1` bypasses for local demos |
-| Vault credential injection | Work-scoped HTTP MCP gateway for managed sandbox MCP; in-process sandbox egress proxy for CLIs (`SANDBOX_EGRESS_PROXY_*`, best effort) |
+| Vault credential injection | Work-scoped HTTP MCP gateway; sandbox-owned relay/native outbound adapter for CLIs through ordinary HTTPS |
 | Memory mount | sandbox symlinks `/mnt/memory/<storeName>` → `<MEMORY_BLOB_DIR>/<storeId>/`. chokidar watcher reflects fs writes back into the SQL `memories` index |
 | Cron | `croner` per-minute scheduler; memory-version retention and eval/webhook sweeps run in-process |
 | Queue | not used — chokidar watcher replaces the R2-event Queue consumer |
@@ -118,7 +118,7 @@ ANTHROPIC_API_KEY=sk-... BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   fans events out across replicas; `upsertFromEvent` is idempotent on
   sha256 etag). Caveats: `MEMORY_BLOB_DIR` must be on shared storage
   (NFS/EFS/shared docker volume); `auth.db` is still single-process
-  (deferred); the egress CA is encrypted in shared SQL (no shared CA volume).
+  (deferred); sandbox-owned egress needs no shared CA or extra server port.
   See `docs/self-host.md#running-multiple-oma-server-replicas-pg-mode-only`.
 - Deployable Node entrypoints reject missing providers and the internal
   subprocess test adapter. Every agent tool execution must cross an isolated
@@ -185,7 +185,7 @@ network presence.
 | Event log | DO storage SQL (per-DO sqlite namespace) |
 | Sandbox | `@cloudflare/sandbox` Container DO running locally via Docker |
 | Auth | `better-auth` against the local D1 simulator |
-| Vault credential injection | `MAIN_MCP.outboundForward` RPC — agent's container HTTPS calls go through main worker which injects header |
+| Vault credential injection | `MAIN_MCP.credentialEgress` RPC — agent's container HTTPS calls go through main worker which injects header |
 | Memory mount | R2 simulator + sandbox.mountBucket(localBucket: true) sync |
 | Cron | wrangler dev `--test-scheduled` flag triggers crons manually |
 | Queue | wrangler dev simulates queues but R2 Event Notifications do NOT fire (control-plane feature). Agent writes to memory don't audit in dev — known limitation |
@@ -261,7 +261,7 @@ each with its own bindings, deployed via `wrangler deploy`.
 | Event log | SessionDO sqlite (per-DO) |
 | Sandbox | `@cloudflare/sandbox` Container DO — Firecracker on CF Containers |
 | Auth | `better-auth` on D1, email + password + Google OAuth + email OTP. Email via CF Email Workers (`SEND_EMAIL` binding) |
-| Vault credential injection | `MAIN_MCP.outboundForward` RPC. agent's container HTTPS goes through main worker via `outboundByHost` callback. Zero-trust: agent never sees secret |
+| Vault credential injection | `MAIN_MCP.credentialEgress` RPC. agent's container HTTPS goes through main worker via `outboundByHost` callback. Zero-trust: agent never sees secret |
 | Memory mount | R2-FUSE via `@cloudflare/sandbox` `mountBucket()`. R2 Event Notifications → `managed-agents-memory-events` queue → consumer in main worker → D1 audit |
 | Cron | `* * * * *` cron in main worker (env-image build poll, base-snapshot maintenance) |
 | Queue | `managed-agents-memory-events` + DLQ; queue consumer in main worker reflects R2 events to D1 |

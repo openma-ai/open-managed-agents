@@ -112,8 +112,8 @@ selected sandbox provider credential directly to Fly secrets without printing
 it; `openma.dev` never sees the value. Add a tenant-scoped Model Card after the
 Console is healthy, or set model-provider secrets directly with `fly secrets`.
 The Node work-scoped HTTP MCP gateway remains available. Direct HTTPS
-credential injection for sandbox CLIs needs the sandbox egress proxy (TCP 8788 by default)
-published at an address the sandbox provider can reach; Fly does not add that network interception automatically.
+credential injection for sandbox CLIs uses a sandbox-owned local relay (or native
+outbound adapter) and the ordinary HTTPS API. No additional public TCP port is required.
 
 ## Redeploy
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
-import { applySandboxEgress } from "../../../packages/control-plane-node/src/lib/sandbox-egress/environment";
-import { createEgressPassAuthority } from "../../../packages/control-plane-node/src/lib/sandbox-egress/pass";
+import { prepareSandboxEgress } from "../../../packages/sandbox-egress/src/install";
+import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type {
@@ -229,26 +229,27 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let builds = 0;
     let preparations = 0;
     let now = 1_000;
+    let boundPass: string | undefined;
     const sandbox = {
       exec: async () => "",
+      readFile: async () => "",
       destroy: async () => {},
       writeFile: async (path: string) => path,
+      prepareCredentialEgress: async (binding: { pass: string }) => { boundPass = binding.pass; },
+      clearCredentialEgress: async () => { boundPass = undefined; },
       setEnvVars: async (values: Record<string, string>) => { Object.assign(env, values); },
-    } as SandboxExecutor;
+    };
     const runner = new DefaultNodeManagedSessionRunner({
       buildSandbox: async () => { builds++; return sandbox; },
       prepareSandbox: async () => { preparations++; },
       refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
-        await applySandboxEgress({
+        await prepareSandboxEgress({
           sandbox,
           scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
           placeholders: async (scope) => scope.vaultIds.includes("vlt_a")
             ? { GITHUB_TOKEN: "__cap_managed__" } : { GITLAB_TOKEN: "__cap_managed__" },
-          egress: { type: "enabled", settings: {
-            publicUrl: "http://proxy.example:8788", caCertificatePem: "PUBLIC-CA",
-            passes: createEgressPassAuthority("root", { now: () => new Date(now) }), passTtlMs: 60_000,
-          } },
-          log: { info: () => {}, warn: () => {} },
+          relay: { endpoint: "https://control.example", pass: "" },
+          issuePass: () => createEgressRelayPasses("root", () => now).issue({ workspaceId, sessionId: session.id, ttlMs: 60000 }),
         });
       },
       outcomes: { evaluate: async () => { throw new Error("unused"); } },
@@ -266,19 +267,18 @@ describe("DefaultNodeManagedSessionRunner", () => {
       expect(env.HTTPS_PROXY).toBeUndefined();
       await start(["vlt_a"]);
       expect(env.GITHUB_TOKEN).toBe("__cap_managed__");
-      expect(env.HTTPS_PROXY).toContain("@proxy.example:8788");
-      const firstPass = env.HTTPS_PROXY;
+      expect(boundPass).toBeDefined();
+      const firstPass = boundPass;
       now += 1_000;
       await start(["vlt_a"]);
-      expect(env.HTTPS_PROXY).not.toBe(firstPass);
+      expect(boundPass).not.toBe(firstPass);
       await start(["vlt_b"]);
       expect(env.GITHUB_TOKEN).toBe("");
       expect(env.GITLAB_TOKEN).toBe("__cap_managed__");
-      expect(env.HTTPS_PROXY).toContain("@proxy.example:8788");
+      expect(boundPass).toBeDefined();
       await start([]);
-      for (const key of ["GITHUB_TOKEN", "GITLAB_TOKEN", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"]) {
-        expect(env[key], key).toBe("");
-      }
+      expect(boundPass).toBeUndefined();
+      for (const key of ["GITHUB_TOKEN", "GITLAB_TOKEN"]) expect(env[key], key).toBe("");
       expect(env.USER_SETTING).toBe("keep");
       expect(builds).toBe(1);
       expect(preparations).toBe(1);

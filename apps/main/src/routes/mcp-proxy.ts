@@ -622,7 +622,7 @@ export async function forwardToUpstream(
  *
  * Body must be pre-buffered (string | null) because the request stream
  * gets consumed by the first fetch and we need to replay it on retry.
- * For Worker-to-Worker traffic both `mcpForward` and `outboundForward`
+ * For Worker-to-Worker traffic both `mcpForward` and `credentialEgress`
  * already pass body as a string; the public HTTP /v1/oma/mcp-proxy endpoint
  * pre-buffers via `c.req.text()` for the same reason.
  *

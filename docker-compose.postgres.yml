@@ -26,8 +26,6 @@ services:
     container_name: oma-server
     ports:
       - "${OMA_PORT:-8787}:8787"
-      # Sandbox egress proxy (public by default; every request needs a pass).
-      - "${SANDBOX_EGRESS_PUBLISHED_PORT:-8788}:8788"
     env_file:
       - path: ./.env
         required: false
@@ -46,8 +44,7 @@ services:
       MEMORY_BLOB_DIR: /app/data/memory-blobs
       SESSION_OUTPUTS_DIR: /app/data/session-outputs
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Set SANDBOX_PROVIDER to an isolated provider}
-      # Sandbox egress proxy on port 8788: see docker-compose.yml.
-      # CA material is encrypted in PostgreSQL; no CA volume needed.
+      # Vault egress uses the normal HTTPS API; no extra port or shared CA.
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
       AUTH_DISABLED: ${AUTH_DISABLED:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}

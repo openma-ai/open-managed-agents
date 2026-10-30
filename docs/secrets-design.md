@@ -40,7 +40,7 @@ MCP token）。
    sandbox、没有 hostname 匹配，vault 根本插不上手。
 
 2. **自举秘钥不能存它自己保护的库里（循环依赖）。** 决定性证据：注入 vault 凭据的进程自己启动都是从 env 读
-   配置的——main-node 读 `DATABASE_URL` / `PLATFORM_ROOT_SECRET` / `SANDBOX_EGRESS_PROXY_*`。
+   配置的——main-node 读 `DATABASE_URL` / `PLATFORM_ROOT_SECRET` / 普通 HTTPS API 地址。
    如果"进程启动需要的秘钥"要存在 vault 里，那 vault 自己启动时又去哪拿它的 DB 口令？所以自举层
    必然在 vault 之外。
 
@@ -175,7 +175,7 @@ Tier 0 管控）。
 
 ## 参考
 
-- `packages/control-plane-node/src/lib/sandbox-egress/` —— Layer B 沙箱出站注入代理
+- `packages/sandbox-egress/` —— 沙箱本地中继；`managed-credential-resolver/src/relay.ts` —— 控制面 HTTPS 授权转发
 - `apps/main-node/src/index.ts` —— Layer A 模型 key 读取（L526）
 - `packages/vaults-store` / `packages/credentials-store` —— Layer B 存储
 - `packages/vault-forward` —— hostname 匹配 + 注入 + 401 刷新的纯函数
