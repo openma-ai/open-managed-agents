@@ -27,6 +27,7 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 
 interface SealedAuthorization {
   v: 1;
+  flow: "mcp_console";
   workspaceId: string;
   userId: string | null;
   vaultId: string;
@@ -50,6 +51,7 @@ function parseSealed(value: unknown): SealedAuthorization | null {
   const s = value as Record<string, unknown>;
   if (
     s.v !== 1
+    || s.flow !== "mcp_console"
     || !isString(s.workspaceId)
     || (s.userId !== null && !isString(s.userId))
     || !isString(s.vaultId)
@@ -139,6 +141,7 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
     const pkce = await this.dependencies.pkce.create();
     const state = await this.dependencies.cipher.encrypt(JSON.stringify({
       v: 1,
+      flow: "mcp_console",
       workspaceId: this.dependencies.workspaceId,
       userId: command.userId,
       vaultId: command.vaultId,

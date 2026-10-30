@@ -25,6 +25,7 @@ describe("Managed Agents SQL adapter boundary", () => {
       "../src/files-sql-persistence.ts",
       "../src/index.ts",
       "../src/managed-sessions-composition.ts",
+      "../src/mcp-oauth-cli-store.ts",
       "../src/memories-sql-persistence.ts",
       "../src/memory-store-sql-source.ts",
       "../src/memory-stores-sql-persistence.ts",

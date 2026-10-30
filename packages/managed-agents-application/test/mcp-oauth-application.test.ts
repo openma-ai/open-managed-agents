@@ -153,6 +153,7 @@ describe("McpOAuthApplicationService", () => {
       scope: "read",
     });
     expect(url.searchParams.get("state")).toMatch(/^sealed:/);
+    expect(JSON.parse(await cipher.decrypt(url.searchParams.get("state")!))).toMatchObject({ flow: "mcp_console" });
   });
 
   it("rejects an unknown Vault before discovery", async () => {
@@ -195,6 +196,15 @@ describe("McpOAuthApplicationService", () => {
       },
     });
     expect(fake.archived).toEqual(["cred_old", "cred_reauth"]);
+  });
+
+  it("refuses a different flow discriminator even when all Console state fields are present", async () => {
+    const fake = credentialsFake();
+    const state = (await authorize(fake.port)).searchParams.get("state")!;
+    const flow = JSON.parse(await cipher.decrypt(state));
+    const cli = await cipher.encrypt(JSON.stringify({ ...flow, flow: "mcp_cli" }));
+    expect(await service({ credentials: fake.port }).complete({ state: cli, code: "c", callbackUri: "https://openma.test/v1/oma/oauth/callback", userId: "user_1" })).toEqual({ type: "invalid_state" });
+    expect(fake.created).toEqual([]);
   });
 
   it("refuses a state sealed for another workspace, a forged state, and an expired one", async () => {
