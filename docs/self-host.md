@@ -690,7 +690,6 @@ Configuration (all optional, on main-node):
 | `SANDBOX_EGRESS_PROXY_URL` | `http://<PUBLIC_BASE_URL host>:<port>` | Address sandboxes use; set when the public host differs. `http://host:port` only. |
 | `SANDBOX_EGRESS_PROXY_PORT` | `8788` | Listen port. |
 | `SANDBOX_EGRESS_PROXY_HOST` | `HOST` | Listen address. |
-| `SANDBOX_EGRESS_CA_DIR` | `./data/sandbox-egress-ca` | Deprecated compatibility setting, unused by production. The CA is encrypted in shared SQL; no local CA directory is read or written. |
 | `SANDBOX_EGRESS_PASS_TTL_SEC` | `86400` | Pass lifetime, renewed before each turn (including warm reuse). An already-running process using an expired pass must reload the current proxy environment. |
 
 A leaked pass lets its holder use that Session's Vault credentials through
