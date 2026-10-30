@@ -196,26 +196,6 @@ export class BoxRunSandbox implements SandboxExecutor {
     this.envVars = { ...this.envVars, ...envVars };
   }
 
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    // BoxRun: VM-level network — same env-var pattern as LocalSubprocess /
-    // LiteBox. CA cert is uploaded into the box on the first writeFile —
-    // we stash the host path here and apply on box creation.
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-    const inBoxCaPath = "/etc/ssl/oma-vault-ca.crt";
-    await this.setEnvVars({
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      NODE_EXTRA_CA_CERTS: inBoxCaPath,
-      SSL_CERT_FILE: inBoxCaPath,
-      CURL_CA_BUNDLE: inBoxCaPath,
-    });
-    this.pendingCaUpload = { hostPath: caCertPath, guestPath: inBoxCaPath };
-  }
-
   async mountMemoryStore(_opts: {
     storeName: string;
     storeId: string;
@@ -254,8 +234,6 @@ export class BoxRunSandbox implements SandboxExecutor {
     const tarBytes = new Uint8Array(await res.arrayBuffer());
     return extractFirstRegularFile(tarBytes);
   }
-
-  private pendingCaUpload: { hostPath: string; guestPath: string } | null = null;
 
   async destroy(): Promise<void> {
     // Idempotent — DELETE on a never-created box returns 404 which we
@@ -304,34 +282,7 @@ export class BoxRunSandbox implements SandboxExecutor {
     }
     const box = (await res.json()) as { box_id: string };
     this.logger.log(`box created ${box.box_id} (${body.image})`);
-    // Apply the deferred CA upload from setOutboundContext so outbound TLS
-    // through oma-vault works on the very first exec. Best-effort —
-    // missing CA only breaks vault-mediated outbound, not the box itself.
-    if (this.pendingCaUpload) {
-      try {
-        const { promises: nodeFs } = await import("node:fs");
-        const buf = await nodeFs.readFile(this.pendingCaUpload.hostPath);
-        await this.uploadFileBytes(box.box_id, this.pendingCaUpload.guestPath, new Uint8Array(buf));
-        this.pendingCaUpload = null;
-      } catch (err) {
-        this.logger.warn(`vault CA upload failed: ${(err as Error).message}`);
-      }
-    }
     return box.box_id;
-  }
-
-  private async uploadFileBytes(boxId: string, path: string, bytes: Uint8Array): Promise<void> {
-    const { dir, name } = tarUploadTarget(path);
-    const tar = packSingleFileTar(name, bytes);
-    const res = await this.fetch(
-      `/boxes/${boxId}/files?path=${encodeURIComponent(dir)}&overwrite=true`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/x-tar" },
-        body: tar,
-      },
-    );
-    if (!res.ok) throw new Error(`boxrun uploadFileBytes ${path} failed: ${res.status}`);
   }
 
   private fetch(path: string, init: RequestInit = {}): Promise<Response> {

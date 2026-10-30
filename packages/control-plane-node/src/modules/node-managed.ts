@@ -91,6 +91,7 @@ import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluat
 import { ManagedCredentialResolver } from "@open-managed-agents/managed-credential-resolver";
 import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
+import { applySandboxEgress, startSandboxEgressProxy, type SandboxEgress } from "../lib/sandbox-egress/index.js";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
@@ -556,6 +557,14 @@ export async function createManagedNodeRuntime(
           ? {}
           : { authorizeMemoryMutation: () => isManagedSessionExecutionFenceActive(executionFence) }),
         ...(signal === undefined ? {} : { signal }),
+      });
+      // Last, so input staging (repository clones) does not go through it.
+      await applySandboxEgress({
+        sandbox,
+        scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
+        placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
+        egress: sandboxEgress,
+        log: logger,
       });
     },
     synchronizeSandbox: async ({
@@ -1165,12 +1174,41 @@ export async function createManagedNodeRuntime(
   };
   const managedCredentialValidation = new McpOAuthCredentialValidationProbe();
   const managedCredentialStore = new SqlCredentialStore(sql, managedCredentialCipher);
+  const capSpecs = createSpecRegistry(builtinSpecs);
   const managedCredentialResolver = new ManagedCredentialResolver({
     credentials: managedCredentialStore,
     fetch: (request, init) => fetch(request, init),
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logger.warn(fields, message) },
-  }, createSpecRegistry(builtinSpecs));
+  }, capSpecs);
+  // Sandbox egress proxy: injects the Session's Vault credentials into
+  // sandbox HTTPS egress (best effort, public by default; docs/self-host.md).
+  const egressProxyConfig = config.sandbox.egressProxy;
+  let sandboxEgress: SandboxEgress;
+  if (egressProxyConfig.type === "unavailable") {
+    sandboxEgress = egressProxyConfig;
+    logger.warn(
+      { op: "main-node.sandbox_egress.unavailable", reason: egressProxyConfig.reason },
+      `Sandbox egress proxy unavailable (${egressProxyConfig.reason}): Sessions whose Vaults hold CLI credentials will fail to start`,
+    );
+  } else {
+    if (platformRootSecret === undefined) throw new Error("PLATFORM_ROOT_SECRET is required for the sandbox egress proxy");
+    const started = await startSandboxEgressProxy(egressProxyConfig, platformRootSecret, {
+      credentials: managedCredentialResolver,
+      findSession: async (input) => {
+        const session = (await managedRuntimeReaders.executionContext.find(input))?.session;
+        return session === undefined ? null : { vaultIds: session.vaultIds, archived: session.archivedAt !== null };
+      },
+      claimsHost: (hostname) => capSpecs.byHostname(hostname) !== null,
+      log: logger,
+    });
+    disposables.add("sandbox_egress_proxy", () => started.close());
+    sandboxEgress = { type: "enabled", settings: started.settings };
+    logger.info(
+      { op: "main-node.sandbox_egress.listening", port: started.port, public_url: started.settings.publicUrl },
+      "Sandbox egress proxy listening (public; pass required)",
+    );
+  }
   // One managed platform graph per process. Every official application
   // module is installed on the same workspace App, so a workspace has one
   // App, one clock, one id generator and one set of stores. `modules` runs on

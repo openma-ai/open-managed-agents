@@ -4,7 +4,6 @@ packages:
   - 'apps/main-node'
   - 'apps/main-fly'
   - 'apps/main-vercel'
-  - 'apps/oma-vault'
   - 'apps/matter'
   - 'apps/agent'
   - 'apps/console'

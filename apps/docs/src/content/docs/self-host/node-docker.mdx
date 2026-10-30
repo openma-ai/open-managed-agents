@@ -32,7 +32,7 @@ runtime decides. SQLite needs only `DATABASE_PATH`; server databases use
 uses the selected server database; only SQLite mode uses a separate
 `auth.db`.
 
-`better-sqlite3` is an optional dependency of `main-node` and `oma-vault`:
+`better-sqlite3` is an optional dependency of `main-node`:
 it is installed by default, but a Postgres or MySQL image does not need its
 native addon. If it is missing or failed to build, a server-database
 deployment still starts, and SQLite mode refuses to start with a message
@@ -237,35 +237,28 @@ Session output manifests, and the difference between an official Managed
 Agents worker and an OpenMA-supervised harness, see
 [Managed Runtime Host](/self-host/managed-runtime-host/).
 
-## Vault sidecar (outbound credential injection)
+## Sandbox egress proxy (CLI credential injection)
 
-`docker compose up` brings up an `oma-vault` container alongside
-`oma-server`. It's a mockttp HTTPS MITM proxy — when the sandbox makes
-outbound calls to a host you registered a credential for, the proxy
-injects the matching `Authorization` header. **The agent process never
-sees the secret value**; it lives only in the proxy's lookup table.
+main-node can run an HTTP forward proxy on its own port that injects a
+Session's Vault credentials into the sandbox's outbound HTTPS calls (`gh`,
+`glab`, `curl`, …). The sandbox gets `HTTPS_PROXY` with a signed per-Session
+pass, the deployment CA, and CLI placeholders such as
+`GITHUB_TOKEN=__cap_managed__`; the real token never enters it. Only hosts
+with a credential in the Session's Vaults are intercepted; everything else is
+tunneled untouched.
 
-Enable per-vault:
+It is **on by default and public**: main-node listens on port 8788 and
+sandboxes use `http://<PUBLIC_BASE_URL host>:8788` (the bundled compose
+publishes 8788). Open that TCP port to the sandbox network; an ingress in
+front must pass HTTP `CONNECT` through. Without a valid pass every request
+is answered `407`; there are no destination restrictions or rate limits. The
+pass travels in plain HTTP Basic proxy authentication, not protected by the
+destination's TLS; use a trusted transport/network for that hop when needed. Override
+the address with `SANDBOX_EGRESS_PROXY_URL` when the public host differs.
 
-```bash
-# Create a vault
-VID=$(curl -s -X POST localhost:8787/v1/vaults \
-  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
-  -d '{"name":"github-prod"}' | jq -r .id)
-
-# Add a credential bound to api.github.com
-curl -s -X POST localhost:8787/v1/vaults/$VID/credentials \
-  -H 'content-type: application/json' -H "x-api-key: $YOUR_KEY" \
-  -d '{
-    "display_name":"github-pat",
-    "auth":{"type":"static_bearer","token":"ghp_xxx","mcp_server_url":"https://api.github.com"}
-  }'
-
-# Bind to a session — agent's `curl https://api.github.com/...` then sees
-# the Authorization header injected at the network layer
-```
-
-Skip the sidecar if you don't need it: `docker compose up oma-server`.
+It is best effort, not isolation: a process can bypass the proxy, certificate
+pinning breaks interception, and SSH git does not use it. Details:
+`docs/self-host.md` → "Sandbox egress proxy".
 
 ## Console branding
 
@@ -308,11 +301,6 @@ is invalid or names a missing file.
   dir — exporting it only in your shell is silently ignored.
 - **`docker compose restart` does NOT re-read env.** After editing
   `.env`, use `docker compose up -d --force-recreate oma-server`.
-- **`oma-vault` and `oma-server` MUST agree on the backend.** If you
-  set `DATABASE_URL` to a Postgres URL on `oma-server` only, the vault
-  sidecar will fall back to its own SQLite and never see the credentials
-  you wrote. The bundled compose handles this for you; if you customise,
-  mirror the env.
 - **First boot from an old `oma.db`.** `main-node` runs idempotent
   `ALTER TABLE` for the unified-runtime turn marker columns on every
   start, so existing dbs upgrade in place. If you ever see

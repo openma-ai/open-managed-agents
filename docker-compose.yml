@@ -20,6 +20,8 @@ services:
     container_name: oma-server
     ports:
       - "${OMA_PORT:-8787}:8787"
+      # Sandbox egress proxy (public by default; every request needs a pass).
+      - "${SANDBOX_EGRESS_PUBLISHED_PORT:-8788}:8788"
     env_file:
       - path: ./.env
         required: false
@@ -47,12 +49,11 @@ services:
       # Required: deployable entrypoints do not expose the non-isolated
       # local subprocess test adapter.
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:?Set SANDBOX_PROVIDER to an isolated provider}
-      # Outbound credential injection via the oma-vault sidecar. When set,
-      # the selected sandbox adapter wires its runtime to route HTTPS traffic
-      # through oma-vault for header injection. Remote providers need a proxy
-      # URL that is reachable from their sandbox network.
-      OMA_VAULT_PROXY_URL: http://oma-vault:14322
-      OMA_VAULT_CA_CERT: /app/data/oma-vault-ca/ca.crt
+      # Sandbox egress proxy (best effort Vault credential injection for
+      # CLIs such as gh/glab/curl): on by default at PUBLIC_BASE_URL's host,
+      # port 8788 (published under `ports:`; sandboxes must reach it). Requires
+      # PLATFORM_ROOT_SECRET. See docs/self-host.md "Sandbox egress proxy".
+      SANDBOX_EGRESS_CA_DIR: /app/data/sandbox-egress-ca
       # Auth: better-auth sqlite-backed. AUTH_DISABLED=1 bypasses entirely
       # (all requests become tenant_id="default") for local single-user
       # demos. BETTER_AUTH_SECRET signs cookies; generate with
@@ -67,9 +68,6 @@ services:
       MATTER_PROXY_SECRET: ${MATTER_PROXY_SECRET:-}
     volumes:
       - ./data:/app/data
-    depends_on:
-      oma-vault:
-        condition: service_started
     restart: unless-stopped
     # Healthcheck queries /health every 30s. unhealthy after 3 misses
     # (90s grace), at which point Docker / your orchestrator can decide
@@ -117,30 +115,4 @@ services:
     depends_on:
       oma-server:
         condition: service_started
-    restart: unless-stopped
-
-  # Outbound credential injector — mockttp HTTPS MITM proxy. Reads vault
-  # credentials from the same sqlite db as oma-server (./data/oma.db) and
-  # injects matching Authorization headers when the sandbox makes outbound
-  # HTTPS requests. The agent never sees the credential value. CA cert is
-  # written to ./data/oma-vault-ca/ca.crt and trusted by the sandbox via
-  # OMA_VAULT_CA_CERT (NODE_EXTRA_CA_CERTS / SSL_CERT_FILE).
-  oma-vault:
-    build:
-      context: .
-      dockerfile: apps/oma-vault/Dockerfile
-    image: openma/oma-vault:dev
-    container_name: oma-vault
-    environment:
-      DATABASE_PATH: /app/data/oma.db
-      OMA_VAULT_CA_DIR: /app/data/oma-vault-ca
-      OMA_VAULT_PORT: "14322"
-      # Tenant scope. Default "*" matches active credentials across ALL
-      # tenants by hostname — fine for single-operator self-host (every
-      # vault belongs to "me"), unsafe for shared multi-tenant deploys
-      # where two tenants might both register the same host. Override
-      # with OMA_TENANT=tn_xxx in .env for multi-user prod.
-      OMA_TENANT: ${OMA_TENANT:-*}
-    volumes:
-      - ./data:/app/data
     restart: unless-stopped

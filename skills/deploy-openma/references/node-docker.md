@@ -44,11 +44,12 @@ network names and paths do not apply to a native process.
      proof that a nested sandbox can run.
    - BoxRun: needs an existing reachable service and matching runtime capabilities.
    Do not treat an adapter name as proof that all resource/security features work.
-5. Check the required sandbox-to-service network paths. The bundled
-   `http://oma-vault:14322` address is Docker-network local, not a remote-sandbox
-   endpoint. For remote providers, configure a supported authenticated egress
-   path and necessary storage. Do not expose the vault proxy unauthenticated or
-   pretend environment proxy variables provide enforced multi-tenant isolation.
+5. Check the required sandbox-to-service network paths. The sandbox egress
+   proxy is on by default on TCP 8788 at `PUBLIC_BASE_URL`'s host
+   (`SANDBOX_EGRESS_PROXY_URL` overrides); sandboxes must reach it, so open
+   that port (CONNECT must pass through any ingress). It requires a signed
+   per-Session pass, but environment proxy variables are bypassable: do not
+   present it as enforced isolation.
 
 For local trials, bind the Console/API host port to `127.0.0.1`. The bundled
 Compose mapping may bind all interfaces. Use a local deployment configuration
