@@ -1379,8 +1379,9 @@ export async function createManagedNodeRuntime(
       pkce: webCryptoMcpOAuthPkce,
       cipher: managedMcpOAuthStateCipher,
       clock: { now: () => new Date() },
+      log: { warn: (fields, message) => logger.warn(fields, message) },
     });
-  });
+  }, { consoleOrigins: config.http.consoleOrigins });
 
   const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
     managedPlatform

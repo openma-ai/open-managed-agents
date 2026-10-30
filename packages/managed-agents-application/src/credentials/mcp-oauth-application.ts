@@ -19,6 +19,7 @@ export interface McpOAuthApplicationServiceDependencies {
   pkce: McpOAuthPkce;
   cipher: McpOAuthStateCipher;
   clock: { now(): Date };
+  log: { warn(fields: Record<string, unknown>, message: string): void };
 }
 
 /** How long an authorization may take before its state is refused. */
@@ -27,6 +28,7 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 interface SealedAuthorization {
   v: 1;
   workspaceId: string;
+  userId: string | null;
   vaultId: string;
   credentialId?: string;
   mcpServerUrl: string;
@@ -49,6 +51,7 @@ function parseSealed(value: unknown): SealedAuthorization | null {
   if (
     s.v !== 1
     || !isString(s.workspaceId)
+    || (s.userId !== null && !isString(s.userId))
     || !isString(s.vaultId)
     || (s.credentialId !== undefined && !isString(s.credentialId))
     || !isString(s.mcpServerUrl)
@@ -93,10 +96,24 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
       pageSize: 1,
     });
     if (vault.type === "not_found") return { type: "not_found" };
+    if (command.credentialId !== undefined) {
+      const existing = await this.dependencies.credentials.retrieveCredential({
+        vaultId: command.vaultId,
+        credentialId: command.credentialId,
+      });
+      if (existing.type === "not_found") return { type: "not_found" };
+      const auth = existing.credential.auth;
+      if (auth.type !== "mcp_oauth" || auth.mcpServerUrl !== command.mcpServerUrl) {
+        return {
+          type: "invalid_request",
+          message: "credential_id must name an mcp_oauth credential for the same mcp_server_url",
+        };
+      }
+    }
 
     const discovered = await this.dependencies.oauth.discover(command.mcpServerUrl);
     if (discovered.type === "failed") {
-      return { type: "discovery_failed", message: discovered.message };
+      return { type: "discovery_failed", reason: discovered.reason };
     }
     const { metadata } = discovered;
     let client: { clientId: string; clientSecret?: string };
@@ -123,6 +140,7 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
     const state = await this.dependencies.cipher.encrypt(JSON.stringify({
       v: 1,
       workspaceId: this.dependencies.workspaceId,
+      userId: command.userId,
       vaultId: command.vaultId,
       ...(command.credentialId !== undefined && { credentialId: command.credentialId }),
       mcpServerUrl: command.mcpServerUrl,
@@ -152,6 +170,7 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
     if (
       flow === null
       || flow.workspaceId !== this.dependencies.workspaceId
+      || flow.userId !== command.userId
       || this.dependencies.clock.now().getTime() >= flow.expiresAtMs
     ) return { type: "invalid_state" };
 
@@ -167,7 +186,7 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
       },
     });
     if (exchanged.type === "failed") {
-      return { type: "token_exchange_failed", message: exchanged.message };
+      return { type: "token_exchange_failed", reason: exchanged.reason };
     }
     const { tokens } = exchanged;
     const { credentials } = this.dependencies;
@@ -198,8 +217,34 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
       },
     });
     if (created.type !== "created") return created;
+    const unarchived: string[] = [];
     for (const credentialId of previous) {
-      await credentials.archiveCredential({ vaultId: flow.vaultId, credentialId });
+      try {
+        const archived = await credentials.archiveCredential({ vaultId: flow.vaultId, credentialId });
+        if (archived.type !== "archived") unarchived.push(credentialId);
+      } catch {
+        unarchived.push(credentialId);
+      }
+    }
+    if (unarchived.length > 0) {
+      // Both the new and the replaced credentials stay active: selection
+      // would be ambiguous, so the flow reports it instead of succeeding.
+      this.dependencies.log.warn(
+        {
+          op: "mcp_oauth.archive_failed",
+          workspace_id: this.dependencies.workspaceId,
+          vault_id: flow.vaultId,
+          credential_id: created.credential.id,
+          unarchived_credential_ids: unarchived,
+        },
+        "MCP OAuth stored a credential but could not archive the ones it replaces",
+      );
+      return {
+        type: "archive_failed",
+        vaultId: flow.vaultId,
+        credentialId: created.credential.id,
+        unarchivedCredentialIds: unarchived,
+      };
     }
     const probe = await this.dependencies.oauth.probe(flow.mcpServerUrl, tokens.accessToken);
     return {
@@ -209,7 +254,7 @@ export class McpOAuthApplicationService implements McpOAuthApplicationPort {
       serviceName,
       returnTo: flow.returnTo,
       probeOk: probe.ok,
-      ...(probe.message !== undefined && { probeMessage: probe.message }),
+      ...(probe.reason !== undefined && { probeReason: probe.reason }),
     };
   }
 

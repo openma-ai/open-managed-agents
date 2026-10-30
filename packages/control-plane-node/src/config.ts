@@ -94,6 +94,9 @@ export interface NodeConfig {
     publicBaseUrl: string | undefined;
     gatewayOrigin: string;
     consoleDir: string | undefined;
+    /** CONSOLE_ORIGINS: origins a Console runs on besides this server's own.
+     * MCP OAuth only returns to (and reports to) those origins. */
+    consoleOrigins: string[];
     /** CONSOLE_BRANDING_DIR: branding.json plus the logo, favicon, and stylesheet it names. */
     brandingDir: string | undefined;
     metricsToken: string | undefined;

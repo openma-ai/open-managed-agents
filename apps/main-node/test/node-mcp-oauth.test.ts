@@ -81,6 +81,7 @@ describe("Node /v1/oma/oauth", () => {
 
     const cp = await createNodeControlPlane(await nodeDefaults(loadNodeConfig({
       NODE_ENV: "test", AUTH_DISABLED: "0", API_KEY: "test-admin",
+      CONSOLE_ORIGINS: "http://console.test",
       PLATFORM_ROOT_SECRET: "test-root-secret-not-production",
       OPENMA_TEST_SANDBOX_PROVIDER: "local-subprocess",
       MEMORY_QUEUE: "disabled", LOG_LEVEL: "silent",
@@ -102,15 +103,15 @@ describe("Node /v1/oma/oauth", () => {
 
     const vault = await call("/v1/vaults", { display_name: "oauth" });
     const authorize = await cp.fetch(new Request(
-      `http://cp/v1/oma/oauth/authorize?${new URLSearchParams({
+      "http://cp/v1/oma/oauth/authorize",
+      { method: "POST", headers, body: JSON.stringify({
         mcp_server_url: serverUrl,
         vault_id: vault.data.id,
         redirect_uri: "http://console.test/vaults",
-      })}`,
-      { headers },
+      }) },
     ));
-    expect(authorize.status, await authorize.clone().text()).toBe(302);
-    const location = new URL(authorize.headers.get("location")!);
+    expect(authorize.status, await authorize.clone().text()).toBe(200);
+    const location = new URL((await authorize.json() as { authorization_url: string }).authorization_url);
     expect(location.origin + location.pathname).toBe(`${origin}/authorize`);
     expect(location.searchParams.get("client_id")).toBe("registered-client");
     expect(location.searchParams.get("redirect_uri")).toBe("http://cp/v1/oma/oauth/callback");
@@ -122,6 +123,9 @@ describe("Node /v1/oma/oauth", () => {
     const page = await callback.text();
     expect(callback.status, page).toBe(200);
     expect(page).toContain("oauth_complete");
+    expect(page).toContain('postMessage(msg, "http://console.test")');
+    expect((await call("/v1/oma/oauth/authorize", { mcp_server_url: serverUrl, vault_id: vault.data.id, redirect_uri: "https://untrusted.example.test" })).status).toBe(400);
+    expect((await call("/v1/oma/oauth/authorize?client_secret=secret")).status).toBe(404);
     expect(page).not.toContain("first-access");
     expect(tokenBodies[0]!.get("code")).toBe("auth-code");
     expect(tokenBodies[0]!.get("code_verifier")).toBeTruthy();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HttpMcpOAuth, mcpOAuthPresetsFromEnvironment } from "../src/mcp-oauth";
+import { HttpMcpOAuth, mcpOAuthPresetsFromEnvironment, parseConsoleOrigins } from "../src/mcp-oauth";
 
 function fetchFrom(routes: Record<string, () => Response>, seen: string[] = []): typeof fetch {
   return (async (input: RequestInfo | URL) => {
@@ -12,6 +12,38 @@ function fetchFrom(routes: Record<string, () => Response>, seen: string[] = []):
 const clock = { now: () => new Date("2026-09-01T00:00:00.000Z") };
 
 describe("HttpMcpOAuth", () => {
+  it("does not echo an unconfigured issuer URL in client errors", async () => {
+    const oauth = new HttpMcpOAuth({ clock, presets: {}, fetch: fetchFrom({}) });
+    const result = await oauth.client({ metadata: { resource: "https://mcp.example.test", issuer: "https://private.example.test/secret", authorizationEndpoint: "https://private.example.test/authorize", tokenEndpoint: "https://private.example.test/token", scopes: [] }, callbackUri: "https://cp.example.test/callback" });
+    expect(result.type).toBe("unavailable");
+    expect(JSON.stringify(result)).not.toContain("private.example.test");
+  });
+
+  it.each([
+    { body: "null" },
+    { body: '{"access_token":42}' },
+    { body: '{"access_token":"at","expires_in":1e100}' },
+  ])("rejects malformed token JSON without throwing or exposing content: $body", async ({ body }) => {
+    const oauth = new HttpMcpOAuth({ clock, presets: {}, fetch: (async () => new Response(body)) as typeof fetch });
+    expect(await oauth.exchangeCode({ tokenEndpoint: "https://private.example.test/token", code: "c", codeVerifier: "v", callbackUri: "https://cp/callback", resource: "https://mcp", client: { clientId: "id" } })).toEqual({ type: "failed", reason: "upstream_invalid_response" });
+  });
+
+  it("keeps discovery, token and probe failures to fixed codes", async () => {
+    const oauth = new HttpMcpOAuth({ clock, presets: {}, fetch: (async () => { throw new Error("https://private.example.test/sensitive upstream body"); }) as typeof fetch });
+    expect(await oauth.discover("https://mcp.example.test/mcp")).toEqual({ type: "failed", reason: "upstream_unreachable" });
+    expect(await oauth.exchangeCode({ tokenEndpoint: "https://private.example.test/token", code: "c", codeVerifier: "v", callbackUri: "https://cp/callback", resource: "https://mcp", client: { clientId: "id" } })).toEqual({ type: "failed", reason: "upstream_unreachable" });
+    expect(await oauth.probe("https://mcp.example.test/mcp", "token")).toEqual({ ok: false, reason: "unreachable" });
+    const rejected = new HttpMcpOAuth({ clock, presets: {}, fetch: (async () => new Response("sensitive upstream body", { status: 401 })) as typeof fetch });
+    expect(await rejected.exchangeCode({ tokenEndpoint: "https://private.example.test/token", code: "c", codeVerifier: "v", callbackUri: "https://cp/callback", resource: "https://mcp", client: { clientId: "id" } })).toEqual({ type: "failed", reason: "upstream_rejected" });
+    expect(await rejected.probe("https://mcp.example.test/mcp", "token")).toEqual({ ok: false, reason: "http_401" });
+  });
+
+  it("parses only origin configuration, rejecting paths and non-http origins", () => {
+    expect(parseConsoleOrigins(undefined)).toEqual([]);
+    expect(parseConsoleOrigins("https://console.example.test/, http://localhost:3000")).toEqual(["https://console.example.test", "http://localhost:3000"]);
+    for (const value of ["https://console.example.test/path", "javascript:alert(1)", "not a URL"]) expect(() => parseConsoleOrigins(value)).toThrow();
+  });
+
   it("discovers path-based resource metadata and RFC 8414 path-inserted server metadata", async () => {
     const seen: string[] = [];
     const oauth = new HttpMcpOAuth({
@@ -64,6 +96,7 @@ describe("HttpMcpOAuth", () => {
     const missing = await without.client({ metadata, callbackUri: "https://cp/v1/oma/oauth/callback" });
     expect(missing.type).toBe("unavailable");
     expect(missing.type === "unavailable" && missing.message).toContain("GITHUB_OAUTH_CLIENT_ID");
+    expect(JSON.stringify(missing)).not.toContain("https://cp/");
   });
 
   it("exchanges the code with PKCE and resource, and reports a refused exchange", async () => {
