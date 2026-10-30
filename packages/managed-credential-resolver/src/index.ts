@@ -1,3 +1,4 @@
+export * from "./relay";
 export type { ManagedCredentialResolverPorts } from "./ports";
 export {
   ManagedCredentialResolver,
