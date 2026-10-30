@@ -32,8 +32,6 @@ export {
   type NodeProcessMode,
   type RealtimeFanoutConfig,
   type RealtimeFanoutMode,
-  type SandboxEgressProxyConfig,
-  type SandboxEgressProxySettings,
 } from "./config.js";
 export type {
   NodeAuthDatabase,

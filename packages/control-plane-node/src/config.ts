@@ -147,30 +147,7 @@ export interface NodeConfig {
      * default (`SANDBOX_IMAGE`) exists and any selection is rejected.
      */
     images?: SandboxImageCatalog;
-    /**
-     * The in-process proxy that injects managed Vault credentials into
-     * Session sandbox HTTPS egress (best effort). On by default, publicly
-     * reachable at PUBLIC_BASE_URL's host; `unavailable` says why it cannot
-     * run (Sessions that need it then fail to prepare).
-     */
-    egressProxy: SandboxEgressProxyConfig;
   };
-}
-
-export type SandboxEgressProxyConfig =
-  | ({ type: "enabled" } & SandboxEgressProxySettings)
-  | { type: "unavailable"; reason: string };
-
-export interface SandboxEgressProxySettings {
-  /** `http://host:port` as reachable from sandboxes: SANDBOX_EGRESS_PROXY_URL,
-   * else PUBLIC_BASE_URL's host with the listen port. */
-  publicUrl: string;
-  /** Listen address (SANDBOX_EGRESS_PROXY_HOST, default HOST). */
-  listenHost: string;
-  /** Listen port (SANDBOX_EGRESS_PROXY_PORT, default 8788). */
-  listenPort: number;
-  /** Lifetime of a Session's proxy pass (SANDBOX_EGRESS_PASS_TTL_SEC). */
-  passTtlMs: number;
 }
 
 /**

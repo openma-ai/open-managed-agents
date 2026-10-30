@@ -142,42 +142,23 @@ export const handleCredentialEgressRequest = async (
     });
   }
 
-  let cred: { type: "bearer"; token: string } | null = null;
+  // Native interception shares the ordinary relay application. The binding
+  // returns only forwarding results/metadata, never the upstream token.
   if (params.tenantId && params.sessionId && e.MAIN_MCP) {
     try {
-      cred = await e.MAIN_MCP.lookupOutboundCredential({
-        tenantId: params.tenantId,
-        sessionId: params.sessionId,
-        hostname: url.hostname,
-        ...(fence === null ? {} : { runtimeFence: fence }),
-      });
-    } catch (err) {
-      console.error(
-        `[oma-sandbox] lookupOutboundCredential threw host=${url.hostname}: ${(err as Error)?.message ?? err}`,
-      );
-      if (required) {
-        return new Response("credential egress unavailable", { status: 502 });
-      }
+      const scope = { tenantId: params.tenantId, sessionId: params.sessionId,
+        ...(fence === null ? {} : { runtimeFence: fence }) };
+      const resolved = await e.MAIN_MCP.credentialEgress(scope, "resolve", new Request(request.url));
+      if (!resolved.ok) return resolved;
+      const { inject } = await resolved.json() as { inject: boolean };
+      if (inject) return e.MAIN_MCP.credentialEgress(scope, "forward", request);
+    } catch {
+      return new Response("credential egress unavailable", { status: 502 });
     }
+  } else if (required) {
+    return new Response("credential egress unavailable", { status: 502 });
   }
-
-  // Build outgoing request: clone with CF-internal headers stripped +
-  // bearer token injected. Body handling:
-  //   - GET / HEAD: no body
-  //   - others: materialize body as ArrayBuffer so Workers fetch can
-  //     compute and send Content-Length. Workers strips Content-Length
-  //     from stream bodies and switches to chunked encoding, which R2
-  //     presigned-URL PUTs reject with 411 "Length Required". Buffering
-  //     is acceptable for our use case (workspace squashfs uploads
-  //     are typically <100 MB; very large would need a streaming-with-
-  //     known-length API, doesn't currently exist in Workers).
-  // In enforced mode an agent cannot smuggle a credential around Vault by
-  // supplying its own Authorization value. Public destinations still pass,
-  // but without sandbox-owned bearer material.
-  const outHeaders = egressRequestHeaders(request.headers, {
-    token: cred?.token ?? null,
-    stripAuthorization: required,
-  });
+  const outHeaders = egressRequestHeaders(request.headers, { token: null, stripAuthorization: required });
 
   let upstreamReq: Request;
   if (request.method === "GET" || request.method === "HEAD") {
@@ -199,7 +180,7 @@ export const handleCredentialEgressRequest = async (
   }
 
   console.log(
-    `[oma-sandbox] outbound host=${url.hostname} method=${request.method} cred=${cred ? "yes" : "no"}`,
+    `[oma-sandbox] outbound passthrough host=${url.hostname} method=${request.method}`,
   );
 
   // Return upstream Response unchanged — preserves status, headers,
@@ -640,7 +621,7 @@ const r2OutboundPassthrough = async (request: Request): Promise<Response> => {
 //     attached one or more github_repository resources. Most specific —
 //     matches the request's owner/repo path, returns that resource's
 //     scoped token.
-//   ② vault fallback (lookupOutboundCredential → cap_cli cli_id="gh"):
+//   ② Vault requests forwarded to the shared credential relay:
 //     for sessions whose vault has a cap_cli credential for gh but no
 //     per-repo resource. Generic GitHub access via the user's vault.
 //
@@ -699,37 +680,9 @@ const githubAuthHandler = async (
     }
   }
 
-  // ② vault fallback (cap_cli cli_id="gh")
-  //
-  // Always query at api.github.com (cap's gh spec endpoint) regardless of
-  // the actual request host — same GitHub token serves both git protocol
-  // and REST API, scheme is decided locally based on request host. cap's
-  // spec model intentionally doesn't carry per-endpoint scheme config;
-  // GitHub's dual-scheme quirk lives in this GitHub-specific handler.
-  if (!cred && params.tenantId && params.sessionId && e.MAIN_MCP) {
-    try {
-      const fallback = await e.MAIN_MCP.lookupOutboundCredential({
-        tenantId: params.tenantId,
-        sessionId: params.sessionId,
-        hostname: "api.github.com",
-        ...(fence === null ? {} : { runtimeFence: fence }),
-      });
-      if (fallback) {
-        cred = {
-          scheme: url.hostname === "github.com" ? "Basic" : "Bearer",
-          token: fallback.token,
-          slug: "vault:gh",
-        };
-      }
-    } catch (err) {
-      console.error(
-        `[oma-sandbox] cap fallback threw host=${url.hostname}: ${(err as Error)?.message ?? err}`,
-      );
-      if (required) {
-        return new Response("credential egress unavailable", { status: 502 });
-      }
-    }
-  }
+  // Vault credentials never cross to the native handler. Repository-resource
+  // credentials retain their existing adapter; Vault traffic uses the relay.
+  if (!cred) return handleCredentialEgressRequest(request, env, ctx);
 
   const outHeaders = new Headers(request.headers);
   for (const h of HOP_BY_HOP_OR_CF_HEADERS) outHeaders.delete(h);

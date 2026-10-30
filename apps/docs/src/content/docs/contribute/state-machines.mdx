@@ -181,7 +181,7 @@ container's libcurl issues HTTPS request
              other host                    -> catch-all handler
                                               -> injectVaultCredsHandler
                                                    -> RPC main worker
-                                                       lookupOutboundCredential
+                                                       credentialEgress
                                                    -> Authorization injected
                                                        (or null = passthrough)
                                                    -> upstream fetch

@@ -44,12 +44,10 @@ network names and paths do not apply to a native process.
      proof that a nested sandbox can run.
    - BoxRun: needs an existing reachable service and matching runtime capabilities.
    Do not treat an adapter name as proof that all resource/security features work.
-5. Check the required sandbox-to-service network paths. The sandbox egress
-   proxy is on by default on TCP 8788 at `PUBLIC_BASE_URL`'s host
-   (`SANDBOX_EGRESS_PROXY_URL` overrides); sandboxes must reach it, so open
-   that port (CONNECT must pass through any ingress). It requires a signed
-   per-Session pass, but environment proxy variables are bypassable: do not
-   present it as enforced isolation.
+5. Check sandbox reachability to the ordinary HTTPS `PUBLIC_BASE_URL`.
+   Vault egress uses `/v1/oma/egress`; no additional TCP listener is required.
+   Local interception belongs to the sandbox (or its native outbound adapter).
+   Environment proxy variables are bypassable; do not present them as isolation.
 
 For local trials, bind the Console/API host port to `127.0.0.1`. The bundled
 Compose mapping may bind all interfaces. Use a local deployment configuration

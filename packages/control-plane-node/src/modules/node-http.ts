@@ -151,6 +151,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     managedMcpOAuthRoutes,
     managedMcpOAuthCliRoutes,
     managedMcpOAuthCliCallback,
+    managedCredentialEgressRoutes,
     managedUserProfilesRoutes,
     services,
     apiKeyStorage,
@@ -298,6 +299,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     ensureTenantForUser: (s) => ensureTenantSqlite(sql, s.userId, s.name, s.email),
   });
 
+  app.route("/v1/oma/egress", managedCredentialEgressRoutes);
   app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
 
   const v1 = new Hono<{

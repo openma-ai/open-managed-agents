@@ -22,7 +22,6 @@ import {
   type NodeEnvironment,
   type NodeProcessMode,
   type RealtimeFanoutConfig,
-  type SandboxEgressProxyConfig,
 } from "@open-managed-agents/control-plane-node";
 
 import { resolveNodeProcessMode, validateNodeProcessEnvironment } from "./process-mode.js";
@@ -178,7 +177,6 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
 
   const skillSourceAllowHosts = attempt<string[]>([], () => parseAllowHosts(env.SKILL_SOURCES_ALLOW_HOSTS));
   const sandboxImages = attempt(EMPTY_SANDBOX_IMAGE_CATALOG, () => parseSandboxImageCatalog(env.SANDBOX_IMAGES));
-  const egressProxy = sandboxEgressProxyConfig(env, processMode, problems, integer);
 
   const config: NodeConfig = {
     processMode,
@@ -243,73 +241,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     sandbox: {
       environment: env,
       images: sandboxImages,
-      egressProxy,
     },
   };
 
   if (problems.length > 0) throw new NodeConfigError(problems);
   return config;
-}
-
-/** Default listen port of the sandbox egress proxy. */
-export const DEFAULT_SANDBOX_EGRESS_PROXY_PORT = 8788;
-
-/**
- * The sandbox egress proxy is on by default and public: its address is
- * PUBLIC_BASE_URL's host with SANDBOX_EGRESS_PROXY_PORT, unless
- * SANDBOX_EGRESS_PROXY_URL names another one. Without a public origin (or
- * the root secret, or outside standalone mode) it is `unavailable`: the
- * server still starts, and a Session that needs CLI credential injection
- * fails to prepare with the reason.
- */
-function sandboxEgressProxyConfig(
-  env: NodeEnvironment,
-  processMode: NodeProcessMode,
-  problems: string[],
-  integer: (key: string, fallback: number, options?: { min?: number; max?: number }) => number,
-): SandboxEgressProxyConfig {
-  const listenPort = integer("SANDBOX_EGRESS_PROXY_PORT", DEFAULT_SANDBOX_EGRESS_PROXY_PORT, { min: 0, max: 65535 });
-  const passTtlMs = integer("SANDBOX_EGRESS_PASS_TTL_SEC", 86_400, { min: 60 }) * 1000;
-
-  let publicUrl: string | undefined;
-  const override = env.SANDBOX_EGRESS_PROXY_URL?.trim();
-  if (override) {
-    let url: URL | undefined;
-    try {
-      url = new URL(override);
-    } catch {
-      problems.push("SANDBOX_EGRESS_PROXY_URL must be an absolute http://host:port URL");
-    }
-    if (url !== undefined) {
-      if (url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-        problems.push("SANDBOX_EGRESS_PROXY_URL must be http://host:port (the proxy speaks plain HTTP CONNECT; no credentials or path)");
-      } else {
-        publicUrl = `http://${url.host}`;
-      }
-    }
-  } else if (env.PUBLIC_BASE_URL?.trim()) {
-    let origin: URL | undefined;
-    try {
-      origin = new URL(env.PUBLIC_BASE_URL.trim());
-    } catch {
-      problems.push("PUBLIC_BASE_URL must be an absolute URL");
-    }
-    if (origin !== undefined) publicUrl = `http://${origin.hostname}:${listenPort}`;
-  }
-
-  const unavailable = publicUrl === undefined
-    ? "no public address: set PUBLIC_BASE_URL (or SANDBOX_EGRESS_PROXY_URL)"
-    : !env.PLATFORM_ROOT_SECRET
-      ? "PLATFORM_ROOT_SECRET is not set"
-      : processMode !== "standalone"
-        ? "the proxy needs a listener, which only the standalone process mode runs"
-        : null;
-  if (unavailable !== null) return { type: "unavailable", reason: unavailable };
-  return {
-    type: "enabled",
-    publicUrl: publicUrl!,
-    listenHost: env.SANDBOX_EGRESS_PROXY_HOST?.trim() || (env.HOST ?? "0.0.0.0"),
-    listenPort,
-    passTtlMs,
-  };
 }

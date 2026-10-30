@@ -202,21 +202,13 @@ Hard requirements before you scale out:
      `S3BlobStore` adapter and a per-store-leased `S3PollAdapter`
      replaces chokidar. Multi-replica safe by construction (only the
      lease holder polls a given store at a time).
-2. **The sandbox egress proxy runs inside each replica.** Every
-   replica listens on `SANDBOX_EGRESS_PROXY_PORT` (8788); point
-   `SANDBOX_EGRESS_PROXY_URL` at a TCP load balancer in front of them.
-   The deployment CA is stored encrypted in the existing shared SQL
-   `kv_entries` table, with atomic create-if-absent on first startup. All
-   replicas and restarts read the same CA; no shared local volume is needed.
-   Replicas must share both the database and the purpose cipher/root secret.
-   Storage or decryption errors fail proxy startup; local CA files are never
-   used as a fallback. Passes are verified with `PLATFORM_ROOT_SECRET`.
-
-   Upgrading from local per-replica CAs creates a new shared trust anchor;
-   existing local CA files are not imported. Upgrade all proxy replicas and
-   re-prepare existing sandboxes before validating injection (do not mix old
-   local-CA and shared-CA replicas behind one proxy address). Back up the CA
-   KV row with the database and retain the matching root secret/cipher.
+2. **Credential interception belongs to each sandbox, not each server replica.**
+   Local relays use independent sandbox CAs; native outbound adapters use the
+   same authorization/forwarding core. Control planes expose only ordinary
+   HTTPS `/v1/oma/egress/resolve` and `/forward`, with the shared database and
+   root secret for Session authorization. No extra listener or shared CA is
+   needed. Upgrade/re-prepare sandboxes to install the new local relay. Old
+   shared CA KV rows are inert and are not deleted by this upgrade.
 
 Sticky cookies are NOT required for `/v1/*`, `/auth/*`, or outbound
 sandbox traffic — the SSE fanout is replica-agnostic, better-auth is
@@ -506,13 +498,13 @@ The same demo works on the Postgres compose unchanged.
 | `browser` tool | ✗  CF-only (uses @cloudflare/playwright) |
 | Memory stores | ✓ legacy `/v1/oma` mount + watcher; official `/v1/sessions` local harness mounts immutable read-only snapshots and rejects `read_write` until reverse sync is configured |
 | `/v1/vaults` + `/v1/vaults/:id/credentials` full CRUD + `mcp_oauth_validate` | ✓ via package |
-| Vault credential injection for outbound MCP / API calls | ✓ HTTP MCP gateway; sandbox CLI egress via the in-process egress proxy (best effort, public on port 8788 by default) |
+| Vault credential injection for outbound MCP / API calls | ✓ HTTP MCP gateway; sandbox-owned local relay or native outbound adapter through ordinary HTTPS |
 | `/v1/api_keys` mint / list / revoke (SHA-256 hashed in `api_keys` table) | ✓ |
 | `/v1/me` + `/v1/me/tenants` + `/v1/me/cli-tokens` | ✓ |
 | `/v1/tenants` create workspace + membership | ✓ (no shard assign — CF-only) |
 | `/v1/oma/*` mirror namespace | ✓ |
 | Postgres backend (DATABASE_URL=postgres://...) | ✓ same code path as SQLite |
-| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; egress proxy per replica with an encrypted shared-SQL CA; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
+| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; sandbox-owned relay/native egress with independent trust; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
 | Multi-tenant authentication (better-auth) | ✓ email+password + OTP, AUTH_DISABLED=1 escape |
 | Console UI (vite dev or built `dist`) | ✓ talks to main-node via `/auth/*` + `/v1/*` |
 | Integrations (linear / github / slack) — read-side CRUD on publications, installations, dispatch rules | ✓ wired via `@open-managed-agents/integrations-adapters-node` (set `PLATFORM_ROOT_SECRET`). |
@@ -607,119 +599,50 @@ Session and server declaration, then overwrites the Work bearer with the
 upstream Vault credential. The upstream URL and credential are not given to
 the sandbox.
 
-### Sandbox egress proxy (CLI credentials, best effort)
+### Sandbox credential relay (CLI credentials, best effort)
 
-CLIs in the sandbox (`gh`, `glab`, `curl`, `git` over HTTPS, …) can use the
-Session's Vault credentials without the token entering the sandbox. main-node
-runs an HTTP forward proxy on its own port; each managed Session sandbox with
-Vaults gets:
+Attach Vaults to a Session; no proxy configuration is required. The sandbox
+owns interception, CA files, environment, process installation and health.
+Node-compatible sandboxes run the bundled `@open-managed-agents/sandbox-egress`
+entrypoint on loopback. Each sandbox generates its own CA and gets proxy/CA
+environment variables plus placeholders such as `GITHUB_TOKEN=__cap_managed__`.
+Providers with native outbound interception implement the same capability
+without a local Node relay (Cloudflare uses its native handler).
 
-- `HTTPS_PROXY` / `HTTP_PROXY` (and lower-case) = `http://openma:<pass>@<proxy>`,
-  `NO_PROXY=localhost,127.0.0.1,::1`, `NODE_USE_ENV_PROXY=1`;
-- the deployment CA at `/tmp/openma-egress/ca.crt` (`NODE_EXTRA_CA_CERTS`,
-  `DENO_CERT`) and public roots plus that CA at
-  `/tmp/openma-egress/ca-bundle.crt` (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
-  `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`);
-- the CLI placeholders of its `cap_cli` credentials (e.g. `GITHUB_TOKEN=__cap_managed__`).
+The request path is CLI → localhost relay → ordinary HTTPS control-plane
+`/v1/oma/egress/forward` → upstream. `/resolve` returns only interception
+metadata, never credentials. The control plane validates the expiring Session
+pass, active Session and current Vault bindings for every request. It alone
+injects the real token and persists refresh rotation. A 401 refreshes once;
+only successful refresh replays the complete buffered body. Failed refresh
+and 403 never resend. Metadata and upstream headers are separate; hop/proxy
+auth headers are stripped. Responses preserve status and stream bytes.
 
-The pass is an HMAC-signed, expiring value naming the workspace and Session
-(key derived from `PLATFORM_ROOT_SECRET`). It is not a Vault credential and
-reads nothing; the proxy refuses it once the Session is archived or the pass
-expires. For `CONNECT host:443` the proxy asks the shared managed credential
-resolver for a credential **in that Session's Vaults** (a `cap_cli` credential
-for a CLI spec host, or an MCP credential whose server URL has that host).
-With one, it terminates TLS with a leaf from the deployment CA, replaces
-`Authorization` with `Bearer <token>`, and refreshes once on 401/403 (the
-rotation is written back). Without one the connection is a blind TCP tunnel
-and the request is not read. If the credential lookup fails, the proxy answers
-`502` instead of forwarding without the credential. Plain `http://` proxy
-requests are forwarded without injection. The CA private key never leaves
-main-node. Every decrypted HTTP request revalidates the original CONNECT
-pass and reloads the current Session and its Vault bindings. Removing a Vault
-stops using its credentials on that same keepalive connection; archiving the
-Session or expiring the pass rejects subsequent requests. Ordinary blind TCP
-tunnels are not actively revoked.
+There is no control-plane CONNECT listener, additional TCP port, shared CA,
+or CA KV dependency. Sandboxes need access only to the ordinary HTTPS API
+(`PUBLIC_BASE_URL` on Node) and public upstreams for non-injected traffic.
+Non-injected traffic passes locally; a previously intercepted host is not
+silently downgraded after Vault removal. Missing/expired passes return 401,
+inactive Sessions and removed credential bindings return 403, and relay
+failures return errors rather than falling back to direct placeholder traffic.
 
-Before every turn, including warm sandbox reuse, main-node renews the pass
-and refreshes the CLI placeholders without rebuilding the sandbox. Replaced
-or removed bindings clear the old placeholder variables; removing all Vaults
-also clears proxy and CA environment settings. These are empty-string
-overrides (the adapter environment API merges string values), not file deletion.
+Build the standalone entrypoint before running a source checkout:
+`pnpm --filter @open-managed-agents/sandbox-egress build`. The Node Docker
+build does this automatically. Local relay installation requires a working
+Node runtime in the sandbox; missing runtime or readiness fails preparation
+explicitly. Warm preparation renews the Session pass, updates placeholders,
+and probes/restarts a dead relay. Removing all Vaults clears installed env
+and stops the relay; sandbox destruction also stops it.
 
-**On by default and public.** main-node listens on
-`SANDBOX_EGRESS_PROXY_PORT` (default **8788**, all interfaces) and tells
-sandboxes to use `http://<PUBLIC_BASE_URL host>:8788`. Open that port to the
-sandbox networks (for remote providers: the internet). It speaks plain HTTP
-forward-proxy (`CONNECT host:port`), so either publish the TCP port directly
-(Docker `ports: ["8788:8788"]`, a security group rule, a TCP/L4 load balancer)
-or put it behind an ingress that passes `CONNECT` through; an HTTP(S) ingress
-that terminates TLS or rejects `CONNECT` (most L7 ingresses) does not work.
-If `PUBLIC_BASE_URL` points at a CDN or an ingress on another host, set
-`SANDBOX_EGRESS_PROXY_URL` to the address that actually reaches the proxy.
-The bundled Compose maps `${SANDBOX_EGRESS_PUBLISHED_PORT:-8788}:8788`.
-If the published port differs from 8788, set `SANDBOX_EGRESS_PROXY_URL` to
-that external host and port; changing the published port does not change the
-advertised URL automatically. Keep the container listener at 8788, or update
-the Compose mapping's container port too.
+The local CA private key belongs to the sandbox, not the control plane.
+Existing centralized CA rows are unused and are not deleted. Re-prepare old
+sandboxes when upgrading. A leaked relay pass authorizes that Session until
+expiry or archival, so treat it as a sandbox capability.
 
-Every new proxy request requires a signed pass: missing, invalid or expired
-passes get `407` before any upstream connection; archived or unknown Sessions
-(including a Session named under another workspace) get `403`. This is
-credential attribution, not network isolation: there are no destination/IP
-restrictions, DNS filtering, rate limits or per-pass connection limits.
-
-**The proxy connection is plain HTTP.** Its Basic `Proxy-Authorization` pass
-is base64-encoded, not encrypted by the destination's HTTPS tunnel. Anyone
-who can observe this hop can reuse the pass until it expires or the Session
-is archived. Destination HTTPS and the installed CA do not protect this
-initial proxy authentication. Use a trusted transport/network for this hop
-when confidentiality is needed; do not describe direct public HTTP exposure
-as TLS-secured.
-
-When the proxy cannot run (no `PUBLIC_BASE_URL` / `SANDBOX_EGRESS_PROXY_URL`,
-no `PLATFORM_ROOT_SECRET`, or the serverless process mode) the server still
-starts and logs the reason; a Session whose Vaults hold CLI (`cap_cli`)
-credentials then fails to start with that reason, instead of running CLIs
-that would dial out with a placeholder token. Sessions without such
-credentials are unaffected.
-
-Configuration (all optional, on main-node):
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `SANDBOX_EGRESS_PROXY_URL` | `http://<PUBLIC_BASE_URL host>:<port>` | Address sandboxes use; set when the public host differs. `http://host:port` only. |
-| `SANDBOX_EGRESS_PROXY_PORT` | `8788` | Listen port. |
-| `SANDBOX_EGRESS_PROXY_HOST` | `HOST` | Listen address. |
-| `SANDBOX_EGRESS_PASS_TTL_SEC` | `86400` | Pass lifetime, renewed before each turn (including warm reuse). An already-running process using an expired pass must reload the current proxy environment. |
-
-A leaked pass lets its holder use that Session's Vault credentials through
-the proxy until the pass expires or the Session is archived; it is as
-sensitive as the sandbox itself.
-
-Limits (best effort, not an isolation boundary):
-
-- A process can ignore `HTTPS_PROXY` and connect directly; it then gets no
-  credential, nothing is blocked.
-- Runtimes that pin certificates or ignore the CA variables above fail TLS on
-  intercepted hosts (only hosts with a Vault credential are intercepted).
-- `git` over SSH, and any non-HTTP protocol, does not go through the proxy.
-- The injected header is always `Authorization: Bearer <token>`; WebSocket
-  upgrades through an intercepted host are not supported.
-- Every request to an intercepted host carries the Vault token, replacing
-  any `Authorization` the client sent (for example a repository token git
-  sends to a host that also has a Vault credential).
-
-Example:
-
-```bash
-# main-node: nothing to set beyond PUBLIC_BASE_URL + PLATFORM_ROOT_SECRET;
-# open TCP 8788 to the sandboxes.
-
-# A Vault with a `cap_cli` credential for gh (cli_id "gh"), then a Session
-# with vault_ids=[that vault]: `gh api user` in the sandbox reaches
-# api.github.com with the real token; the sandbox only ever sees
-# GITHUB_TOKEN=__cap_managed__.
-```
+This is credential injection, not network isolation. Processes can bypass
+proxy env, certificate pinning can reject local MITM, SSH/non-HTTP protocols
+are not intercepted, and WebSocket upgrades are not supported. Remote
+provider live certification remains necessary before claiming support.
 
 ## Architecture
 

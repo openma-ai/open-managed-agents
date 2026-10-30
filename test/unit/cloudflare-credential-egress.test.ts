@@ -39,7 +39,7 @@ describe("Cloudflare credential egress handler", () => {
       }),
       {
         MAIN_MCP: {
-          lookupOutboundCredential: vi.fn(async () => {
+          credentialEgress: vi.fn(async () => {
             throw new Error("stale runtime fence");
           }),
         },
@@ -57,7 +57,7 @@ describe("Cloudflare credential egress handler", () => {
     globalThis.fetch = vi.fn(async () => new Response("unexpected"));
     const response = await handleCredentialEgressRequest(
       new Request("https://mcp.example.test/rpc"),
-      { MAIN_MCP: { lookupOutboundCredential: lookup } },
+      { MAIN_MCP: { credentialEgress: lookup } },
       { ...context, params: { tenantId: "tenant-1", sessionId: "session-1", required: true } },
     );
 
@@ -66,33 +66,22 @@ describe("Cloudflare credential egress handler", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("replaces sandbox authorization with the live Vault credential", async () => {
-    const lookup = vi.fn(async () => ({ type: "bearer", token: "vault-token" }));
-    globalThis.fetch = vi.fn(async (request: Request) => {
-      expect(request.headers.get("authorization")).toBe("Bearer vault-token");
-      return new Response("ok", { status: 200 });
+  it("relays the request without receiving the real Vault token in the native adapter", async () => {
+    const relay = vi.fn(async (scope, action, request) => {
+      expect(scope).toMatchObject({ tenantId: "tenant-1", sessionId: "session-1", runtimeFence: { token: "fence-secret" } });
+      if (action === "resolve") return Response.json({ inject: true });
+      expect(request.headers.get("authorization")).toBe("Bearer __cap_managed__");
+      expect(new Uint8Array(await request.arrayBuffer())).toEqual(new Uint8Array([0,255,128]));
+      return new Response(new Uint8Array([1,255]), { status: 201 });
     });
-    const response = await handleCredentialEgressRequest(
-      new Request("https://mcp.example.test/rpc", {
-        headers: { authorization: "Bearer sandbox-secret" },
-      }),
-      { MAIN_MCP: { lookupOutboundCredential: lookup } },
-      context,
-    );
-
-    expect(response.status).toBe(200);
-    expect(lookup).toHaveBeenCalledWith({
-      tenantId: "tenant-1",
-      sessionId: "session-1",
-      hostname: "mcp.example.test",
-      runtimeFence: {
-        environmentId: "environment-1",
-        workId: "work-1",
-        ownerId: "worker-1",
-        generation: 2,
-        token: "fence-secret",
-      },
-    });
+    globalThis.fetch = vi.fn();
+    const response = await handleCredentialEgressRequest(new Request("https://mcp.example.test/rpc", {
+      method: "POST", body: new Uint8Array([0,255,128]), headers: { authorization: "Bearer __cap_managed__" },
+    }), { MAIN_MCP: { credentialEgress: relay } }, context);
+    expect(response.status).toBe(201);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1,255]));
+    expect(relay).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("drops unmanaged sandbox authorization even when a public host has no Vault match", async () => {
@@ -110,7 +99,7 @@ describe("Cloudflare credential egress handler", () => {
           cookie: "openma-session=must-not-leak",
         },
       }),
-      { MAIN_MCP: { lookupOutboundCredential: vi.fn(async () => null) } },
+      { MAIN_MCP: { credentialEgress: vi.fn(async () => Response.json({ inject: false })) } },
       context,
     );
 
