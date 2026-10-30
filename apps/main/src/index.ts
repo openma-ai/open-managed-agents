@@ -109,6 +109,7 @@ import {
   HttpMcpOAuth,
   buildOmaModelsHttpRoutes,
   mcpOAuthPresetsFromEnvironment,
+  parseConsoleOrigins,
   webCryptoMcpOAuthPkce,
 } from "@open-managed-agents/managed-agents-adapters-http";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
@@ -666,7 +667,10 @@ const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
     pkce: webCryptoMcpOAuthPkce,
     cipher: new WebCryptoAesGcm(secret, "managed.vault.mcp_oauth_state"),
     clock: { now: () => new Date() },
+    log: { warn: (fields, message) => logWarn(fields, message) },
   });
+}, {
+  consoleOrigins: (context) => parseConsoleOrigins((context as AppCtx).env.CONSOLE_ORIGINS),
 });
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {

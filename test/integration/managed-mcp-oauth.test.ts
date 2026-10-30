@@ -38,7 +38,7 @@ function installProvider(tokenBodies: URLSearchParams[]) {
       case "/register":
         return Response.json({ client_id: "cf-registered" }, { status: 201 });
       case "/token":
-        tokenBodies.push(new URLSearchParams(await request.text()));
+        tokenBodies.push(new URLSearchParams(new TextDecoder().decode(await request.arrayBuffer())));
         return Response.json({ access_token: "cf-access", refresh_token: "cf-refresh", expires_in: 3600 });
       case "/mcp":
         return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
@@ -56,13 +56,13 @@ describe("managed MCP OAuth (Cloudflare)", () => {
       method: "POST", headers: HEADERS, body: JSON.stringify({ display_name: "oauth" }),
     })).json();
 
-    const authorize = await api(`/v1/oma/oauth/authorize?${new URLSearchParams({
+    const authorize = await api("/v1/oma/oauth/authorize", { method: "POST", headers: HEADERS, body: JSON.stringify({
       mcp_server_url: `${PROVIDER}/mcp`,
       vault_id: vault.id,
       redirect_uri: "http://localhost/console",
-    })}`, { headers: HEADERS });
-    expect(authorize.status, await authorize.clone().text()).toBe(302);
-    const location = new URL(authorize.headers.get("location"));
+    }) });
+    expect(authorize.status, await authorize.clone().text()).toBe(200);
+    const location = new URL((await authorize.json()).authorization_url);
     expect(location.searchParams.get("client_id")).toBe("cf-registered");
     expect(location.searchParams.get("redirect_uri")).toBe("http://localhost/v1/oma/oauth/callback");
 
@@ -88,9 +88,11 @@ describe("managed MCP OAuth (Cloudflare)", () => {
 
   it("rejects a missing Vault, missing parameters and a forged state", async () => {
     installProvider([]);
-    const missing = await api(`/v1/oma/oauth/authorize?mcp_server_url=${encodeURIComponent(`${PROVIDER}/mcp`)}&vault_id=vlt_missing`, { headers: HEADERS });
+    const missing = await api("/v1/oma/oauth/authorize", { method: "POST", headers: HEADERS, body: JSON.stringify({ mcp_server_url: `${PROVIDER}/mcp`, vault_id: "vlt_missing" }) });
     expect(missing.status).toBe(404);
-    expect((await api("/v1/oma/oauth/authorize", { headers: HEADERS })).status).toBe(400);
+    expect((await api("/v1/oma/oauth/authorize", { method: "POST", headers: HEADERS })).status).toBe(400);
+    expect((await api("/v1/oma/oauth/authorize?client_secret=secret", { headers: HEADERS })).status).toBe(404);
+    expect((await api("/v1/oma/oauth/authorize", { method: "POST", headers: HEADERS, body: JSON.stringify({ mcp_server_url: `${PROVIDER}/mcp`, vault_id: "vlt_missing", redirect_uri: "https://untrusted.example.test" }) })).status).toBe(400);
     expect((await api("/v1/oma/oauth/callback?code=x&state=forged", { headers: HEADERS })).status).toBe(400);
   });
 });

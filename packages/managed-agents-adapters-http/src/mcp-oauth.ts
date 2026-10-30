@@ -9,6 +9,7 @@ import type {
   McpOAuthClientResult,
   McpOAuthDiscoveryResult,
   McpOAuthExchangeResult,
+  McpOAuthFailureReason,
   McpOAuthPkce,
   McpOAuthPort,
   McpOAuthServerMetadata,
@@ -49,6 +50,26 @@ export function mcpOAuthPresetsFromEnvironment(
   return presets;
 }
 
+/**
+ * Comma-separated `CONSOLE_ORIGINS` (deployment configuration, same name on
+ * Cloudflare and Node) as canonical origins. A malformed entry fails.
+ */
+export function parseConsoleOrigins(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === "") return [];
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+    let url: URL;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error(`CONSOLE_ORIGINS entry "${entry}" must be an http(s) origin`);
+    }
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.origin !== entry.replace(/\/+$/, "")) {
+      throw new Error(`CONSOLE_ORIGINS entry "${entry}" must be an http(s) origin`);
+    }
+    return url.origin;
+  });
+}
+
 export interface HttpMcpOAuthDependencies {
   fetch: typeof fetch;
   clock: { now(): Date };
@@ -77,6 +98,20 @@ const GITHUB_AUTH_SERVER: AuthServerMeta = {
 
 const PROBE_TIMEOUT_MS = 5_000;
 
+class DiscoveryError extends Error {
+  constructor(readonly reason: McpOAuthFailureReason) {
+    super(reason);
+  }
+}
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
 export class HttpMcpOAuth implements McpOAuthPort {
   constructor(private readonly dependencies: HttpMcpOAuthDependencies) {}
 
@@ -84,18 +119,30 @@ export class HttpMcpOAuth implements McpOAuthPort {
     try {
       return await this.discoverOrThrow(mcpServerUrl);
     } catch (error) {
-      return { type: "failed", message: error instanceof Error ? error.message : String(error) };
+      const reason: McpOAuthFailureReason = error instanceof DiscoveryError ? error.reason : "upstream_unreachable";
+      // Server-side detail stays a host and a code: no URLs or bodies.
+      this.warn("mcp_oauth.discovery_failed", { host: hostOf(mcpServerUrl), reason });
+      return { type: "failed", reason };
     }
   }
 
-  private async firstJson<T>(candidates: string[]): Promise<{ value: T } | { lastError: string }> {
-    let lastError = "";
+  private warn(op: string, fields: Record<string, unknown>): void {
+    this.dependencies.log?.warn({ op, ...fields }, "MCP OAuth upstream call failed");
+  }
+
+  private async firstJson<T>(candidates: string[]): Promise<T | null> {
     for (const candidate of candidates) {
       const response = await this.dependencies.fetch(candidate);
-      if (response.ok) return { value: (await response.json()) as T };
-      lastError = `${candidate}: ${response.status}`;
+      if (response.ok) {
+        try {
+          return (await response.json()) as T;
+        } catch {
+          throw new DiscoveryError("metadata_invalid");
+        }
+      }
+      await response.body?.cancel();
     }
-    return { lastError };
+    return null;
   }
 
   private async discoverOrThrow(mcpServerUrl: string): Promise<McpOAuthDiscoveryResult> {
@@ -107,11 +154,11 @@ export class HttpMcpOAuth implements McpOAuthPort {
       `${url.origin}/.well-known/oauth-protected-resource`,
     ];
     const resource = await this.firstJson<ProtectedResourceMeta>(resourceCandidates);
-    if (!("value" in resource)) {
-      throw new Error(`Failed to fetch Protected Resource Metadata (tried ${resourceCandidates.length}): ${resource.lastError}`);
+    if (resource === null) throw new DiscoveryError("metadata_unavailable");
+    const authorizationServer = resource.authorization_servers?.[0];
+    if (!authorizationServer || typeof resource.resource !== "string") {
+      throw new DiscoveryError("metadata_invalid");
     }
-    const authorizationServer = resource.value.authorization_servers?.[0];
-    if (!authorizationServer) throw new Error("No authorization_servers in Protected Resource Metadata");
 
     // RFC 8414 §3 inserts the well-known segment between origin and path;
     // OIDC discovery and the legacy issuer-suffix form are also probed.
@@ -128,26 +175,23 @@ export class HttpMcpOAuth implements McpOAuthPort {
       `${issuer.origin}/.well-known/openid-configuration`,
       `${authorizationServer}/.well-known/oauth-authorization-server`,
     ];
-    const found = await this.firstJson<AuthServerMeta>(asmCandidates);
-    let authServer: AuthServerMeta | null = "value" in found ? found.value : null;
+    let authServer = await this.firstJson<AuthServerMeta>(asmCandidates);
     // GitHub publishes no authorization server metadata; its endpoints are stable.
     if (authServer === null && /^https:\/\/github\.com\/login\/oauth\/?$/.test(authorizationServer)) {
       authServer = GITHUB_AUTH_SERVER;
     }
-    if (authServer === null) {
-      throw new Error(`Failed to fetch Auth Server Metadata (tried ${asmCandidates.length}): ${"lastError" in found ? found.lastError : ""}`);
-    }
+    if (authServer === null) throw new DiscoveryError("metadata_unavailable");
     if (!authServer.authorization_endpoint || !authServer.token_endpoint) {
-      throw new Error("Auth Server Metadata missing authorization_endpoint or token_endpoint");
+      throw new DiscoveryError("metadata_invalid");
     }
     return {
       type: "discovered",
       metadata: {
-        resource: resource.value.resource,
+        resource: resource.resource,
         issuer: authServer.issuer,
         authorizationEndpoint: authServer.authorization_endpoint,
         tokenEndpoint: authServer.token_endpoint,
-        scopes: resource.value.scopes_supported ?? [],
+        scopes: resource.scopes_supported ?? [],
       },
       ...(authServer.registration_endpoint && { registrationEndpoint: authServer.registration_endpoint }),
     };
@@ -170,12 +214,12 @@ export class HttpMcpOAuth implements McpOAuthPort {
       }
       return {
         type: "unavailable",
-        message: `${provider.label} MCP OAuth requires a pre-registered ${provider.label} OAuth app: visit ${provider.console}, create one with redirect URL ${input.callbackUri}, then set ${provider.key}_OAUTH_CLIENT_ID and ${provider.key}_OAUTH_CLIENT_SECRET.`,
+        message: `${provider.label} MCP OAuth requires a pre-registered ${provider.label} OAuth app: visit ${provider.console}, register this service's /v1/oma/oauth/callback as the redirect URI, then set ${provider.key}_OAUTH_CLIENT_ID and ${provider.key}_OAUTH_CLIENT_SECRET.`,
       };
     }
     return {
       type: "unavailable",
-      message: `The MCP server's authorization server ${input.metadata.issuer} does not support Dynamic Client Registration and no preset client is configured for it.`,
+      message: "The MCP server's authorization server does not support Dynamic Client Registration and no preset client is configured for it.",
     };
   }
 
@@ -234,27 +278,48 @@ export class HttpMcpOAuth implements McpOAuthPort {
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: body.toString(),
       });
-    } catch (error) {
-      return { type: "failed", message: `token endpoint unreachable: ${error instanceof Error ? error.message : String(error)}` };
+    } catch {
+      this.warn("mcp_oauth.exchange_failed", { host: hostOf(input.tokenEndpoint), reason: "upstream_unreachable" });
+      return { type: "failed", reason: "upstream_unreachable" };
     }
     if (!response.ok) {
-      return { type: "failed", message: `HTTP ${response.status}: ${(await response.text()).slice(0, 240)}` };
+      await response.body?.cancel();
+      this.warn("mcp_oauth.exchange_failed", {
+        host: hostOf(input.tokenEndpoint),
+        reason: "upstream_rejected",
+        status: response.status,
+      });
+      return { type: "failed", reason: "upstream_rejected" };
     }
-    const tokens = (await response.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
-    if (!tokens.access_token) return { type: "failed", message: "token response has no access_token" };
+    let tokens: { access_token?: string; refresh_token?: string; expires_in?: number };
+    try {
+      tokens = (await response.json()) as typeof tokens;
+    } catch {
+      return { type: "failed", reason: "upstream_invalid_response" };
+    }
+    if (
+      tokens === null || typeof tokens !== "object"
+      || typeof tokens.access_token !== "string" || tokens.access_token.length === 0
+      || (tokens.refresh_token !== undefined && typeof tokens.refresh_token !== "string")
+      || (tokens.expires_in !== undefined && (typeof tokens.expires_in !== "number" || !Number.isFinite(tokens.expires_in) || tokens.expires_in < 0))
+    ) return { type: "failed", reason: "upstream_invalid_response" };
+    const expiresAt = tokens.expires_in === undefined
+      ? null
+      : new Date(this.dependencies.clock.now().getTime() + tokens.expires_in * 1_000);
+    if (expiresAt !== null && !Number.isFinite(expiresAt.getTime())) {
+      return { type: "failed", reason: "upstream_invalid_response" };
+    }
     return {
       type: "issued",
       tokens: {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token ?? null,
-        expiresAt: tokens.expires_in !== undefined
-          ? new Date(this.dependencies.clock.now().getTime() + tokens.expires_in * 1_000).toISOString()
-          : null,
+        expiresAt: expiresAt?.toISOString() ?? null,
       },
     };
   }
 
-  async probe(mcpServerUrl: string, accessToken: string): Promise<{ ok: boolean; message?: string }> {
+  async probe(mcpServerUrl: string, accessToken: string): Promise<{ ok: boolean; reason?: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
@@ -268,12 +333,11 @@ export class HttpMcpOAuth implements McpOAuthPort {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
         signal: controller.signal,
       });
+      await response.body?.cancel();
       if (response.status >= 200 && response.status < 300) return { ok: true };
-      // Vendor guidance (e.g. "enable the app here: <url>") is surfaced verbatim.
-      const slice = (await response.text().catch(() => "")).slice(0, 240).trim();
-      return { ok: false, message: `MCP probe HTTP ${response.status}${slice ? `: ${slice}` : ""}` };
-    } catch (error) {
-      return { ok: false, message: `MCP probe failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 120)}` };
+      return { ok: false, reason: `http_${response.status}` };
+    } catch {
+      return { ok: false, reason: "unreachable" };
     } finally {
       clearTimeout(timer);
     }

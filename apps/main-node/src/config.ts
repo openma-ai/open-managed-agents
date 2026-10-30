@@ -10,7 +10,7 @@
 // are: the sandbox provider's own keys (SandboxFactory takes a
 // SandboxFactoryEnv), and nothing else.
 
-import { mcpOAuthPresetsFromEnvironment } from "@open-managed-agents/managed-agents-adapters-http";
+import { mcpOAuthPresetsFromEnvironment, parseConsoleOrigins } from "@open-managed-agents/managed-agents-adapters-http";
 import { nanoid } from "nanoid";
 import { EMPTY_SANDBOX_IMAGE_CATALOG, parseSandboxImageCatalog } from "@open-managed-agents/sandbox";
 
@@ -220,6 +220,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       publicBaseUrl: env.PUBLIC_BASE_URL,
       gatewayOrigin: env.GATEWAY_ORIGIN ?? env.PUBLIC_BASE_URL ?? "http://localhost:8787",
       consoleDir: env.CONSOLE_DIR,
+      consoleOrigins: parseConsoleOrigins(env.CONSOLE_ORIGINS),
       brandingDir: env.CONSOLE_BRANDING_DIR,
       metricsToken: env.METRICS_BIND_TOKEN,
       apiKey: env.API_KEY,

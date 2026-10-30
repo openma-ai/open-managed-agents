@@ -12,6 +12,7 @@ import type { BetaManagedAgentsVault } from "@anthropic-ai/sdk/resources/beta/va
 
 import { useApiQuery, useInfiniteApiQuery, useQueryClient } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
+import { useApi } from "../lib/api";
 import type { OpenMaCredential } from "../lib/managed-api";
 
 import { Modal } from "../components/Modal";
@@ -660,11 +661,13 @@ function AddCredentialModal({
   onCreated: () => void;
 }) {
   const managedApi = useManagedApi();
+  const { api } = useApi();
 
   // Top-level tab inside the modal: MCP server vs CLI. Folds the two
   // previously separate entry points into one modal; matches Anthropic.
   const [addTab, setAddTab] = useState<"mcp" | "cli">("mcp");
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [oauthCallbackOrigin, setOAuthCallbackOrigin] = useState(window.location.origin);
 
   // Custom MCP server form — single inline form (Anthropic-style). All
   // fields in one view; refresh-token block reveals only when an access
@@ -719,17 +722,19 @@ function AddCredentialModal({
   // parallel channel; the popup posts to both. Either firing is enough.
   const handleOAuthMessage = useCallback(
     (event: MessageEvent | { data: unknown }) => {
+      if ("origin" in event && event.origin !== oauthCallbackOrigin) return;
       const data = (
         event as {
           data?: {
             type?: string;
             service?: string;
+            vault_id?: string;
             probe_ok?: boolean;
-            probe_message?: string | null;
+            probe_reason?: string | null;
           };
         }
       ).data;
-      if (data?.type === "oauth_complete") {
+      if (data?.type === "oauth_complete" && data.vault_id === vault.id) {
         setConnecting(null);
         onCreated();
         // Surface the MCP probe result so the user knows whether the just-
@@ -740,14 +745,14 @@ function AddCredentialModal({
           toast.success(`Connected to ${svc} — token verified.`);
         } else if (data.probe_ok === false) {
           toast.warning(
-            data.probe_message
-              ? `Connected to ${svc}, but: ${data.probe_message}`
+            data.probe_reason
+              ? `Connected to ${svc}, but: ${data.probe_reason}`
               : `Connected to ${svc}, but the server rejected our token.`,
           );
         }
       }
     },
-    [onCreated],
+    [onCreated, vault.id, oauthCallbackOrigin],
   );
 
   useEffect(() => {
@@ -768,23 +773,36 @@ function AddCredentialModal({
     };
   }, [handleOAuthMessage]);
 
-  const connectMcp = (
+  const connectMcp = async (
     entry: McpRegistryEntry | { name: string; url: string },
     opts?: { clientId?: string; clientSecret?: string },
   ) => {
+    // Open during the click, before awaiting HTTP, so popup blockers allow it.
+    const popup = window.open("about:blank", "oauth", "width=600,height=700,popup=yes");
+    if (!popup) {
+      toast.error("Allow popups to connect this MCP server.");
+      return;
+    }
     setConnecting(entry.name);
-    const params = new URLSearchParams({
-      mcp_server_url: entry.url,
-      vault_id: vault.id,
-      redirect_uri: window.location.href,
-    });
-    if (opts?.clientId) params.set("client_id", opts.clientId);
-    if (opts?.clientSecret) params.set("client_secret", opts.clientSecret);
-    window.open(
-      `/v1/oma/oauth/authorize?${params.toString()}`,
-      "oauth",
-      "width=600,height=700,popup=yes",
-    );
+    try {
+      const result = await api<{ authorization_url: string }>("/v1/oma/oauth/authorize", {
+        method: "POST",
+        body: JSON.stringify({
+          mcp_server_url: entry.url,
+          vault_id: vault.id,
+          redirect_uri: window.location.href,
+          ...(opts?.clientId && { client_id: opts.clientId }),
+          ...(opts?.clientSecret && { client_secret: opts.clientSecret }),
+        }),
+      });
+      const callback = new URL(result.authorization_url).searchParams.get("redirect_uri");
+      setOAuthCallbackOrigin(callback ? new URL(callback).origin : window.location.origin);
+      popup.location.href = result.authorization_url;
+    } catch {
+      popup.close();
+      setConnecting(null);
+      // useApi already presents the error.
+    }
   };
 
   const createBearerCred = async () => {

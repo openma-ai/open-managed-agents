@@ -326,6 +326,9 @@ export interface Env {
   // Public URL of the integrations gateway (used to build redirect URLs to
   // OAuth callbacks etc. when the gateway is on a different host).
   INTEGRATIONS_PUBLIC_URL?: string;
+  /** Comma-separated origins a Console runs on besides this worker's own;
+   * MCP OAuth only returns to (and reports to) those origins. */
+  CONSOLE_ORIGINS?: string;
   // Used by integrations subsystem to sign tokens at rest. Gateway's value.
   PLATFORM_ROOT_SECRET?: string;
   /** Optional organization-level Managed Agents webhook wake-up endpoint.

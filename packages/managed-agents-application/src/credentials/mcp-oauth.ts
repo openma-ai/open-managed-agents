@@ -18,9 +18,11 @@ export interface McpOAuthClient {
   clientSecret?: string;
 }
 
+import type { McpOAuthFailureReason } from "../ports/mcp-oauth";
+
 export type McpOAuthDiscoveryResult =
   | { type: "discovered"; metadata: McpOAuthServerMetadata; registrationEndpoint?: string }
-  | { type: "failed"; message: string };
+  | { type: "failed"; reason: McpOAuthFailureReason };
 
 export type McpOAuthClientResult =
   | { type: "client"; client: McpOAuthClient }
@@ -34,7 +36,7 @@ export interface McpOAuthIssuedTokens {
 
 export type McpOAuthExchangeResult =
   | { type: "issued"; tokens: McpOAuthIssuedTokens }
-  | { type: "failed"; message: string };
+  | { type: "failed"; reason: McpOAuthFailureReason };
 
 export interface McpOAuthPort {
   discover(mcpServerUrl: string): Promise<McpOAuthDiscoveryResult>;
@@ -52,8 +54,8 @@ export interface McpOAuthPort {
     resource: string;
     client: McpOAuthClient;
   }): Promise<McpOAuthExchangeResult>;
-  /** `tools/list` with the new token; descriptive only. */
-  probe(mcpServerUrl: string, accessToken: string): Promise<{ ok: boolean; message?: string }>;
+  /** `tools/list` with the new token; descriptive only. `reason` is a code. */
+  probe(mcpServerUrl: string, accessToken: string): Promise<{ ok: boolean; reason?: string }>;
 }
 
 /** Seals authorization state; ciphertexts must be authenticated (e.g. AES-GCM). */

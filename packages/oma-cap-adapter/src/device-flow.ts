@@ -37,6 +37,13 @@ export class CapDeviceFlow implements CapCliDeviceFlowPort {
     const spec = this.options.registry.byCliId(cliId);
     if (spec === null) return { type: "unknown_cli" };
     if (!spec.oauth?.device_flow) return { type: "no_device_flow" };
+    const clientId = spec.oauth.device_flow.client_id;
+    if (!clientId.trim() || clientId.startsWith("__cap_")) {
+      return {
+        type: "upstream_error",
+        message: `OAuth device-flow client for ${cliId} is not configured. Register an OAuth client or add a personal access token manually.`,
+      };
+    }
     try {
       const state = parseDeviceInitiateResponse(
         spec,

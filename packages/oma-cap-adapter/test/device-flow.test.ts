@@ -67,6 +67,13 @@ describe("CapDeviceFlow", () => {
     expect(http.calls).toEqual([]);
   });
 
+  it("explains an unconfigured device client locally instead of sending a placeholder client ID", async () => {
+    const http = recordingFetch([]);
+    const flow = createBuiltinCapDeviceFlow({ fetch: http.fetch });
+    expect(await flow.initiate("glab")).toMatchObject({ type: "upstream_error", message: expect.stringMatching(/client.*not configured.*personal access token/i) });
+    expect(http.calls).toEqual([]);
+  });
+
   it("surfaces an unreachable or malformed upstream as an error, not a throw", async () => {
     const flow = createBuiltinCapDeviceFlow({
       fetch: async () => { throw new Error("network down"); },

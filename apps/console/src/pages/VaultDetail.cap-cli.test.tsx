@@ -95,6 +95,79 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+async function openMcpForm() {
+  fireEvent.click(await screen.findByRole("button", { name: "+ Add credential" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByRole("combobox"), { target: { value: "https://mcp.example.test/mcp" } });
+  return dialog;
+}
+
+describe("VaultDetail MCP OAuth", () => {
+  it("opens a blank popup synchronously, POSTs secrets in JSON and navigates only after authorization", async () => {
+    const popup = { location: { href: "about:blank" }, close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    let resolve!: (value: { authorization_url: string }) => void;
+    legacyApi.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderPage();
+    const dialog = await openMcpForm();
+    fireEvent.click(within(dialog).getByRole("button", { name: /OAuth client credentials/ }));
+    fireEvent.change(within(dialog).getByLabelText("OAuth client ID"), { target: { value: "pinned-client" } });
+    fireEvent.change(within(dialog).getByLabelText("OAuth client secret"), { target: { value: "private-secret" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(open).toHaveBeenCalledWith("about:blank", "oauth", "width=600,height=700,popup=yes");
+    expect(legacyApi).toHaveBeenCalledWith("/v1/oma/oauth/authorize", {
+      method: "POST",
+      body: JSON.stringify({ mcp_server_url: "https://mcp.example.test/mcp", vault_id: "vault-1", redirect_uri: window.location.href, client_id: "pinned-client", client_secret: "private-secret" }),
+    });
+    expect(popup.location.href).toBe("about:blank");
+    await act(async () => { resolve({ authorization_url: "https://provider.example.test/authorize?state=sealed" }); });
+    expect(popup.location.href).toBe("https://provider.example.test/authorize?state=sealed");
+    expect(popup.location.href).not.toContain("private-secret");
+  });
+
+  it("closes a blank popup and allows retry when authorize fails", async () => {
+    const popup = { location: { href: "about:blank" }, close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    legacyApi.mockRejectedValue(new Error("OAuth unavailable"));
+    renderPage();
+    const dialog = await openMcpForm();
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Connect" })); });
+    expect(popup.close).toHaveBeenCalledOnce();
+    expect(within(dialog).getByRole("button", { name: "Connect" })).toBeEnabled();
+  });
+
+  it("accepts completion from the API callback origin returned by authorization", async () => {
+    const popup = { location: { href: "about:blank" }, close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    legacyApi.mockResolvedValue({ authorization_url: "https://provider.example.test/authorize?redirect_uri=https%3A%2F%2Fapi.example.test%2Fv1%2Foma%2Foauth%2Fcallback" });
+    renderPage();
+    const dialog = await openMcpForm();
+    await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Connect" })); });
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { origin: "https://api.example.test", data: { type: "oauth_complete", vault_id: "vault-1", probe_ok: true } }));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("ignores OAuth completion messages from another origin or vault", async () => {
+    renderPage();
+    await openMcpForm();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { origin: "https://untrusted.example.test", data: { type: "oauth_complete", vault_id: "vault-1", probe_ok: true } }));
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, data: { type: "oauth_complete", vault_id: "other-vault", probe_ok: true } }));
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, data: { type: "oauth_complete", vault_id: "vault-1", probe_ok: true } }));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
 
 describe("VaultDetail cap_cli credentials", () => {
@@ -119,6 +192,21 @@ describe("VaultDetail cap_cli credentials", () => {
       auth: { type: "cap_cli", cli_id: "gh", token: "gho_manual" },
     });
     expect(legacyApi).not.toHaveBeenCalled();
+  });
+
+  it("allows manual glab PAT entry without initiating device authorization", async () => {
+    // JSDOM lacks the scrolling primitive Radix Select uses for focus.
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    managed.vaults.credentials.create.mockResolvedValue({ ...capCredential, auth: { type: "cap_cli", cli_id: "glab" } });
+    renderPage();
+    const dialog = await openCliTab();
+    fireEvent.click(within(dialog).getByRole("combobox"));
+    fireEvent.click(await screen.findByRole("option", { name: /GitLab CLI/ }));
+    fireEvent.change(within(dialog).getByLabelText(/^Token/), { target: { value: "glpat-manual-test" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Create" })); });
+    expect(managed.vaults.credentials.create).toHaveBeenCalledWith("vault-1", { display_name: "GitLab CLI (glab)", auth: { type: "cap_cli", cli_id: "glab", token: "glpat-manual-test" } });
+    expect(managed.vaults.credentials.capCliDeviceFlow.start).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("runs the device flow against /v1, following slow_down's re-sealed token", async () => {
