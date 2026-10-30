@@ -316,6 +316,12 @@ Starts browser OAuth 2.1 (Authorization Code + PKCE) for an MCP server. JSON bod
 ### `GET /v1/oma/oauth/callback`
 Exchanges the code and stores a managed `mcp_oauth` credential in the vault, with refresh metadata when the provider issued a refresh token. Older active `mcp_oauth` credentials for the same MCP server in that vault, and the re-authorized one, are archived. Archival failures return an error instead of reporting success. The popup page notifies only the validated Console origin (`postMessage`, plus `BroadcastChannel("openma-oauth")` when same-origin) and closes, or navigates back when no notification transport is available. Error responses contain fixed reasons rather than upstream bodies or internal URLs. The MCP and egress proxies refresh the credential on 401.
 
+### CLI MCP OAuth
+
+`oma connect <server|url> --vault <id>` uses `POST /v1/oma/oauth/cli/authorize` with the same required JSON fields, without `redirect_uri`. The response includes `authorization_url`, `flow_id`, `claim_token`, `expires_at` and `interval_seconds`. Only open `authorization_url` in the browser; never include the API key, client secret or claim token in a URL. The provider still redirects to the service's registered `/v1/oma/oauth/callback`, so existing preset clients do not need loopback redirect registration.
+
+Poll `POST /v1/oma/oauth/cli/result` with `{ "flow_id": "...", "claim_token": "..." }` and the original `x-api-key`. Results are `pending`, `failed`, or `ready` with only `credential_id`, never access/refresh tokens. Flows expire after 10 minutes and terminal results are consumed once. Claims are bound to the workspace, initiating user (when the key has one), original API key hash and independent claim secret. The browser does not need a Console cookie: only the sealed CLI discriminator plus the matching pending flow can complete the public callback; Console states continue to require their original authenticated user and allowed origin.
+
 ## Health
 
 ### `GET /healthz`

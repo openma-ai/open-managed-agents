@@ -63,6 +63,7 @@ export { buildModelRoutes } from "./routes/models";
 export { buildVaultRoutes } from "./routes/vaults";
 export { buildCapCliDeviceFlowRoutes } from "./routes/cap-cli-device-flow";
 export { buildMcpOAuthRoutes, type McpOAuthRouteOptions } from "./routes/mcp-oauth";
+export { buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback } from "./routes/mcp-oauth-cli";
 export { buildSessionEventRoutes } from "./routes/session-events";
 export { buildSessionResourceRoutes } from "./routes/session-resources";
 export { buildSessionThreadRoutes } from "./routes/session-threads";

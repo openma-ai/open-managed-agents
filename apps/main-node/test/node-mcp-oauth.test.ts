@@ -165,5 +165,21 @@ describe("Node /v1/oma/oauth", () => {
     expect(bearers.slice(1)).toEqual(["Bearer first-access", "Bearer second-access"]);
     expect(tokenBodies[1]!.get("grant_type")).toBe("refresh_token");
     expect(tokenBodies[1]!.get("refresh_token")).toBe("refresh-1");
+
+    const cli = await call("/v1/oma/oauth/cli/authorize", { mcp_server_url: serverUrl, vault_id: vault.data.id });
+    expect(cli.status, JSON.stringify(cli.data)).toBe(200);
+    const cliUrl = new URL(cli.data.authorization_url);
+    expect(cliUrl.searchParams.get("redirect_uri")).toBe("http://cp/v1/oma/oauth/callback");
+    expect(cli.data.authorization_url).not.toContain(cli.data.claim_token);
+    const cliCallback = `http://cp/v1/oma/oauth/callback?${new URLSearchParams({ code: "cli-code", state: cliUrl.searchParams.get("state")! })}`;
+    const cliCompleted = await cp.fetch(new Request(cliCallback));
+    expect(cliCompleted.status, await cliCompleted.clone().text()).toBe(200);
+    expect((await cp.fetch(new Request(cliCallback))).status).toBe(400);
+    expect((await cp.fetch(new Request("http://cp/v1/oma/oauth/callback?code=c&state=forged"))).status).toBe(401);
+    const claim = { flow_id: cli.data.flow_id, claim_token: cli.data.claim_token };
+    const collected = await call("/v1/oma/oauth/cli/result", claim);
+    expect(collected.status).toBe(200);
+    expect(collected.data).toEqual({ status: "ready", credential_id: expect.any(String) });
+    expect((await call("/v1/oma/oauth/cli/result", claim)).status).toBe(400);
   });
 });

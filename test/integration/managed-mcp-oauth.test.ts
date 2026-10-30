@@ -86,6 +86,29 @@ describe("managed MCP OAuth (Cloudflare)", () => {
     expect(JSON.stringify(listed)).not.toContain("cf-refresh");
   });
 
+  it("completes a CLI flow without browser authentication and only allows one authenticated claim", async () => {
+    const bodies: URLSearchParams[] = [];
+    installProvider(bodies);
+    const vault = await (await api("/v1/vaults", { method: "POST", headers: HEADERS, body: JSON.stringify({ display_name: "cli oauth" }) })).json();
+    const started = await api("/v1/oma/oauth/cli/authorize", { method: "POST", headers: HEADERS, body: JSON.stringify({ vault_id: vault.id, mcp_server_url: `${PROVIDER}/mcp` }) });
+    expect(started.status, await started.clone().text()).toBe(200);
+    const data = await started.json();
+    const url = new URL(data.authorization_url);
+    expect(url.searchParams.get("redirect_uri")).toBe("http://localhost/v1/oma/oauth/callback");
+    expect(data.authorization_url).not.toContain(data.claim_token);
+    const callbackPath = `/v1/oma/oauth/callback?${new URLSearchParams({ code: "cli-code", state: url.searchParams.get("state") })}`;
+    const callback = await api(callbackPath);
+    expect(callback.status, await callback.clone().text()).toBe(200);
+    expect((await api(callbackPath)).status).toBe(400);
+    expect((await api("/v1/oma/oauth/callback?state=forged&code=c")).status).toBe(401);
+    const claim = () => api("/v1/oma/oauth/cli/result", { method: "POST", headers: HEADERS, body: JSON.stringify({ flow_id: data.flow_id, claim_token: data.claim_token }) });
+    const claimed = await claim();
+    expect(claimed.status).toBe(200);
+    expect(await claimed.json()).toMatchObject({ status: "ready", credential_id: expect.any(String) });
+    expect((await claim()).status).toBe(400);
+    expect(bodies).toHaveLength(1);
+  });
+
   it("rejects a missing Vault, missing parameters and a forged state", async () => {
     installProvider([]);
     const missing = await api("/v1/oma/oauth/authorize", { method: "POST", headers: HEADERS, body: JSON.stringify({ mcp_server_url: `${PROVIDER}/mcp`, vault_id: "vlt_missing" }) });

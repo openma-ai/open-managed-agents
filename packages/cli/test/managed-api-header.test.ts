@@ -34,6 +34,12 @@ afterEach(async () => {
 });
 
 describe("Managed Agents CLI transport", () => {
+  it("advertises POST CLI OAuth instead of the removed GET authorize endpoint", async () => {
+    const result = await runCli("https://cp.example.test", "api", "mcp");
+    expect(result.stdout).toContain("POST   /v1/oma/oauth/cli/authorize");
+    expect(result.stdout).not.toContain("GET    /v1/oma/oauth/authorize");
+  });
+
   it("surfaces the socket error code when runtime list cannot reach the server", async () => {
     const server = createServer();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -49,6 +55,25 @@ describe("Managed Agents CLI transport", () => {
     await expect(runCli(baseURL, "runtime", "list")).rejects.toMatchObject({
       stderr: expect.stringContaining("ECONNREFUSED"),
     });
+  });
+
+  it("connects using authenticated CLI POSTs without a local callback or browser credentials", async () => {
+    const calls: Array<{ method: string; url: string; key: string | undefined; body: unknown }> = [];
+    const baseURL = await listen(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      calls.push({ method: request.method!, url: request.url!, key: request.headers["x-api-key"] as string | undefined, body: JSON.parse(raw) });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url?.endsWith("authorize") ? { authorization_url: "https://provider.example.test/authorize?state=sealed", flow_id: "flow_1", claim_token: "private-claim", interval_seconds: 2, expires_at: new Date(Date.now() + 60000).toISOString() } : { status: "ready", credential_id: "cred_connected" }));
+    });
+    const result = await execFileAsync(process.execPath, ["--import", "tsx", entry, "connect", "https://mcp.example.test/mcp", "--vault", "vlt_1"], { env: { ...process.env, PATH: "", OMA_BASE_URL: baseURL, OMA_API_KEY: "cli-contract-key" } });
+    expect(calls).toEqual([
+      { method: "POST", url: "/v1/oma/oauth/cli/authorize", key: "cli-contract-key", body: { vault_id: "vlt_1", mcp_server_url: "https://mcp.example.test/mcp" } },
+      { method: "POST", url: "/v1/oma/oauth/cli/result", key: "cli-contract-key", body: { flow_id: "flow_1", claim_token: "private-claim" } },
+    ]);
+    expect(result.stdout).toContain("Connected (cred_connected)");
+    expect(result.stdout).not.toContain("private-claim");
+    expect(result.stdout).not.toContain("cli-contract-key");
   });
 
   it("sends the official Managed Agents beta header on v1 commands", async () => {

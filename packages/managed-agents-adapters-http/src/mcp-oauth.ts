@@ -6,6 +6,7 @@
  * `tools/list` probe. Platform neutral: transport and presets are injected.
  */
 import type {
+  McpOAuthCliSecrets,
   McpOAuthClientResult,
   McpOAuthDiscoveryResult,
   McpOAuthExchangeResult,
@@ -343,6 +344,11 @@ export class HttpMcpOAuth implements McpOAuthPort {
     }
   }
 }
+
+export const webCryptoMcpOAuthCliSecrets: McpOAuthCliSecrets = {
+  randomToken: () => base64Url(crypto.getRandomValues(new Uint8Array(32))),
+  hash: async (value) => base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))),
+};
 
 /** RFC 7636 S256 PKCE over Web Crypto. */
 export const webCryptoMcpOAuthPkce: McpOAuthPkce = {

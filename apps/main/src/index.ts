@@ -1,6 +1,6 @@
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
-import { CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
+import { CapCliDeviceFlowApplicationService, McpOAuthCliService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -29,6 +29,8 @@ import {
   buildAgentRoutes as buildManagedAgentRoutes,
   buildCapCliDeviceFlowRoutes,
   buildMcpOAuthRoutes,
+  buildMcpOAuthCliRoutes,
+  buildMcpOAuthCliCallback,
   buildCredentialRoutes as buildManagedCredentialRoutes,
   buildDeploymentRoutes as buildManagedDeploymentRoutes,
   buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
@@ -111,11 +113,13 @@ import {
   mcpOAuthPresetsFromEnvironment,
   parseConsoleOrigins,
   webCryptoMcpOAuthPkce,
+  webCryptoMcpOAuthCliSecrets,
 } from "@open-managed-agents/managed-agents-adapters-http";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
 import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
 import {
+  SqlMcpOAuthCliStore,
   SqlDeploymentAgentSource,
   SqlDeploymentVaultSource,
   SqlFileMetadataPersistence,
@@ -284,6 +288,10 @@ app.get("/auth-info", (c) => {
     turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null,
   });
 });
+
+// A sealed CLI flow alone can finish the provider callback. All other
+// callback states fall through to normal Console authentication below.
+app.use("/v1/oma/oauth/callback", buildMcpOAuthCliCallback((context) => managedMcpOAuthCliFor((context as AppCtx).env)));
 
 // API routes (require authentication)
 app.use("/v1/*", authMiddleware);
@@ -584,14 +592,14 @@ const managedVaultsRoutes = buildManagedVaultRoutes(context => managedVaultsPort
 
 const managedCredentialValidation = new McpOAuthCredentialValidationProbe();
 function managedCredentialsPortFor(context: AppCtx) {
-  const request = context.var as {
-    tenant_id: string;
-    tenantDb: D1Database;
-  };
-  const credentialCrypto = context.env.PLATFORM_ROOT_SECRET === undefined
+  const request = context.var as { tenant_id: string; tenantDb: D1Database };
+  return managedCredentialsPortOn(context.env, request.tenant_id, request.tenantDb);
+}
+function managedCredentialsPortOn(env: Env, workspaceId: string, tenantDb: D1Database) {
+  const credentialCrypto = env.PLATFORM_ROOT_SECRET === undefined
     ? null
     : new WebCryptoAesGcm(
-        context.env.PLATFORM_ROOT_SECRET,
+        env.PLATFORM_ROOT_SECRET,
         "managed.vault.credentials",
       );
   const cipher: CredentialDocumentCipher = {
@@ -613,8 +621,8 @@ function managedCredentialsPortFor(context: AppCtx) {
     },
   };
   return createCloudflareManagedAgentsApp({
-    workspaceId: request.tenant_id,
-    sql: new CfD1SqlClient(request.tenantDb),
+    workspaceId,
+    sql: new CfD1SqlClient(tenantDb),
     credentialCipher: cipher,
     credentialValidation: managedCredentialValidation,
   }, {
@@ -649,19 +657,18 @@ const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
 });
 
 // OpenMA extension: browser MCP OAuth that ends in a managed mcp_oauth credential.
-const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
-  const ctx = context as AppCtx;
-  const secret = ctx.env.PLATFORM_ROOT_SECRET;
+function managedMcpOAuthOn(env: Env, workspaceId: string, tenantDb: D1Database) {
+  const secret = env.PLATFORM_ROOT_SECRET;
   if (secret === undefined) {
     throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
   }
   return new McpOAuthApplicationService({
-    workspaceId: (ctx.var as { tenant_id: string }).tenant_id,
-    credentials: managedCredentialsPortFor(ctx),
+    workspaceId,
+    credentials: managedCredentialsPortOn(env, workspaceId, tenantDb),
     oauth: new HttpMcpOAuth({
       fetch: (input, init) => fetch(input, init),
       clock: { now: () => new Date() },
-      presets: mcpOAuthPresetsFromEnvironment(ctx.env as unknown as Record<string, string | undefined>),
+      presets: mcpOAuthPresetsFromEnvironment(env as unknown as Record<string, string | undefined>),
       log: { warn: (fields, message) => logWarn(fields, message) },
     }),
     pkce: webCryptoMcpOAuthPkce,
@@ -669,9 +676,22 @@ const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logWarn(fields, message) },
   });
-}, {
-  consoleOrigins: (context) => parseConsoleOrigins((context as AppCtx).env.CONSOLE_ORIGINS),
-});
+}
+const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
+  const ctx = context as AppCtx;
+  return managedMcpOAuthOn(ctx.env, ctx.var.tenant_id, ctx.var.tenantDb);
+}, { consoleOrigins: (context) => parseConsoleOrigins((context as AppCtx).env.CONSOLE_ORIGINS) });
+function managedMcpOAuthCliFor(env: Env) {
+  if (!env.PLATFORM_ROOT_SECRET) throw new Error("PLATFORM_ROOT_SECRET is required for MCP OAuth");
+  return new McpOAuthCliService({
+    store: new SqlMcpOAuthCliStore(new CfD1SqlClient(env.MAIN_DB), { now: () => new Date() }),
+    application: async (workspaceId) => managedMcpOAuthOn(env, workspaceId, await buildCfTenantDbProvider(env).resolve(workspaceId)),
+    cipher: new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "managed.vault.mcp_oauth_cli"),
+    secrets: webCryptoMcpOAuthCliSecrets,
+    clock: { now: () => new Date() },
+  });
+}
+const managedMcpOAuthCliRoutes = buildMcpOAuthCliRoutes((context) => managedMcpOAuthCliFor((context as AppCtx).env), webCryptoMcpOAuthCliSecrets);
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
   return managedCoreApplicationFor(context)
@@ -1498,6 +1518,7 @@ app.route("/v1/oma/evals", evalsRoutes);
 app.route("/v1/oma/cost_report", costReportRoutes);
 app.route("/v1/oma/integrations", integrationsRoutes);
 app.route("/v1/oma/runtimes", runtimesRoutes);
+app.route("/v1/oma/oauth/cli", managedMcpOAuthCliRoutes);
 app.route("/v1/oma/oauth", managedMcpOAuthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
 // Cloudflare sandboxes run one container image; there is no operator image
