@@ -669,13 +669,16 @@ async function finishMcpProxyResponse(
   });
 }
 
+/** A request body `forwardWithRefresh` can send twice. Streams cannot. */
+export type ReplayableBody = string | ArrayBuffer | null;
+
 export async function forwardWithRefresh(
   services: Services,
   tenantId: string,
   target: ProxyTarget,
   method: string,
   inboundHeaders: Headers,
-  body: BodyInit | null,
+  body: ReplayableBody,
   /** Audit context — surfaces in structured log lines so production
    *  incidents have a "who called what when" trail without us having to
    *  thread it through every call. tenantId comes from the function arg
@@ -716,7 +719,7 @@ export async function forwardWithRefresh(
         refreshed: outcome.refreshed,
         ms: Date.now() - started,
       },
-      outcome.refreshFailed ? "mcp_proxy refresh failed; surfacing upstream 401" : "mcp_proxy forward",
+      outcome.refreshFailed ? "mcp_proxy refresh failed; returning the upstream rejection" : "mcp_proxy forward",
     );
     return finishMcpProxyResponse(outcome.response, {
       refreshed: outcome.refreshed,

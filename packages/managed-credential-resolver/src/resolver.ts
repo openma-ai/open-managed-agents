@@ -104,10 +104,11 @@ export class ManagedCredentialResolver {
   /**
    * One upstream exchange with refresh: `send` injects the given token. A
    * 401, or a 403 (several MCP servers answer Forbidden for an expired
-   * bearer), from a refreshable target refreshes once and retries; when the
-   * refresh is refused the request is replayed with the original token so
-   * the caller sees the upstream's own rejection. `send` may run twice, so it
-   * must replay a buffered body.
+   * bearer), from a refreshable target refreshes the credential; only a
+   * successful refresh retries, once, with the new token. A refused refresh
+   * returns the first response untouched, so a non-idempotent request is
+   * never sent twice with the same token. `send` may run twice, so callers
+   * must hand it a buffered (replayable) body.
    */
   async forward(
     workspaceId: string,
@@ -118,20 +119,15 @@ export class ManagedCredentialResolver {
     if ((first.status !== 401 && first.status !== 403) || target.refresh === undefined) {
       return { response: first, refreshed: false, refreshFailed: false, refreshFailureCode: null };
     }
+    const failure: { code: string | null } = { code: null };
+    const fresh = await this.refresh(workspaceId, target, target.upstreamToken, failure);
+    if (fresh === null) {
+      return { response: first, refreshed: false, refreshFailed: true, refreshFailureCode: failure.code };
+    }
     try {
       await first.body?.cancel();
     } catch {
       /* already consumed */
-    }
-    const failure: { code: string | null } = { code: null };
-    const fresh = await this.refresh(workspaceId, target, target.upstreamToken, failure);
-    if (fresh === null) {
-      return {
-        response: await send(target.upstreamToken),
-        refreshed: false,
-        refreshFailed: true,
-        refreshFailureCode: failure.code,
-      };
     }
     return { response: await send(fresh), refreshed: true, refreshFailed: false, refreshFailureCode: null };
   }

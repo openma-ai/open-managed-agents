@@ -66,6 +66,64 @@ describe("ManagedCredentialResolver.forward", () => {
     expect(records[0]!.credential.auth).toMatchObject({ accessToken: "fresh", refresh: { refreshToken: "r2" } });
   });
 
+  function resolverWith(tokenEndpoint: () => Response, records = [structuredClone(oauth)]) {
+    return {
+      records,
+      resolver: new ManagedCredentialResolver({
+        credentials: store(records),
+        fetch: async () => tokenEndpoint(),
+        clock: { now: () => new Date("2026-09-02T00:00:00.000Z") },
+        log: { warn: () => {} },
+      }, createSpecRegistry(builtinSpecs)),
+    };
+  }
+  const scope = { workspaceId: "ws", sessionId: "s", vaultIds: ["vlt_1"] };
+
+  for (const status of [401, 403]) {
+    it(`sends once and returns the first ${status} unchanged when the refresh is refused`, async () => {
+      const { resolver, records } = resolverWith(() => Response.json({ error: "invalid_grant" }, { status: 400 }));
+      const target = await resolver.mcpTarget(scope, "https://mcp.example/mcp");
+      const sent: string[] = [];
+      const outcome = await resolver.forward("ws", target!, async (token) => {
+        sent.push(token);
+        return new Response(`upstream rejected ${token}`, { status });
+      });
+      expect(sent).toEqual(["stale"]);
+      expect(outcome).toMatchObject({ refreshed: false, refreshFailed: true, refreshFailureCode: "invalid_grant" });
+      expect(outcome.response.status).toBe(status);
+      expect(await outcome.response.text()).toBe("upstream rejected stale");
+      expect(records[0]!.revision).toBe(1);
+    });
+
+    it(`after a ${status} retries once with the new token and the complete buffered body`, async () => {
+      const { resolver } = resolverWith(() => Response.json({ access_token: "fresh" }));
+      const target = await resolver.mcpTarget(scope, "https://mcp.example/mcp");
+      const body = new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call" })).buffer;
+      const received: Array<{ token: string; body: string }> = [];
+      const outcome = await resolver.forward("ws", target!, async (token) => {
+        const request = new Request("https://mcp.example/mcp", { method: "POST", body });
+        received.push({ token, body: await request.text() });
+        return new Response(null, { status: token === "fresh" ? 200 : status });
+      });
+      expect(received.map((r) => r.token)).toEqual(["stale", "fresh"]);
+      expect(received[1]!.body).toBe(received[0]!.body);
+      expect(JSON.parse(received[1]!.body)).toMatchObject({ id: 7 });
+      expect(outcome).toMatchObject({ refreshed: true, refreshFailed: false });
+    });
+  }
+
+  it("does not refresh or retry on a non-auth failure", async () => {
+    const { resolver } = resolverWith(() => { throw new Error("token endpoint must not be called"); });
+    const target = await resolver.mcpTarget(scope, "https://mcp.example/mcp");
+    let calls = 0;
+    const outcome = await resolver.forward("ws", target!, async () => {
+      calls += 1;
+      return new Response(null, { status: 500 });
+    });
+    expect(calls).toBe(1);
+    expect(outcome.response.status).toBe(500);
+  });
+
   it("logs and rethrows a store failure instead of returning no credential", async () => {
     const warnings: unknown[] = [];
     const resolver = new ManagedCredentialResolver({

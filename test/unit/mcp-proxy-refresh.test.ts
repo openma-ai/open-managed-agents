@@ -301,6 +301,62 @@ describe("forwardWithRefresh — OAuth refresh on 401", () => {
     expect(record.credential.auth.refresh.refreshToken).toBe("managed-refresh-v2");
   });
 
+  it("managed credential: a refused refresh returns the first 401 and never resends the POST", async () => {
+    const { services } = makeServices();
+    const record = {
+      revision: 3,
+      credential: {
+        id: "vcrd_managed",
+        vaultId: VAULT,
+        archivedAt: null,
+        createdAt: "2026-09-10T00:00:00.000Z",
+        updatedAt: "2026-09-10T00:00:00.000Z",
+        auth: {
+          type: "mcp_oauth",
+          mcpServerUrl: SERVER,
+          accessToken: "expired-managed-token",
+          refresh: {
+            clientId: "managed-client",
+            refreshToken: "revoked-refresh",
+            tokenEndpoint: TOKEN_EP,
+            tokenEndpointAuth: { type: "none" },
+          },
+        },
+      },
+    };
+    const resolver = managedResolver({
+      listByVaults: async () => [record],
+      find: async () => record,
+      replace: async () => { throw new Error("must not write"); },
+    });
+    mock.restore();
+    mock = installFetchMock([
+      () => new Response('{"error":"unauthorized"}', { status: 401 }),
+      () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }),
+    ]);
+    const response = await forwardWithRefresh(
+      services,
+      TENANT,
+      {
+        upstreamUrl: SERVER,
+        upstreamToken: "expired-managed-token",
+        refresh: {
+          tokenEndpoint: TOKEN_EP,
+          clientId: "managed-client",
+          credentialId: "vcrd_managed",
+          vaultId: VAULT,
+          resolver,
+        },
+      },
+      "POST",
+      new Headers({ "content-type": "application/json" }),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call"}',
+    );
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('{"error":"unauthorized"}');
+    expect(mock.calls.map((call) => call.url)).toEqual([SERVER, TOKEN_EP]);
+  });
+
   it("dedup: second 401 sees already-refreshed credential in D1, skips token_endpoint", async () => {
     const { services, credService } = makeServices();
     const cred = await seedCred(credService, "expired-token");

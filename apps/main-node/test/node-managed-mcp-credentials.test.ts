@@ -57,6 +57,7 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     let credentialId = "";
     const tokenRequests: string[] = [];
     const upstreamBearers: string[] = [];
+    const upstreamBodies: string[] = [];
 
     const upstream = createServer(async (request, response) => {
       if (request.url === "/token") {
@@ -70,7 +71,7 @@ describe("Node MCP proxy with managed Vault credentials", () => {
         response.end(JSON.stringify({ access_token: "fresh-access", refresh_token: "refresh-v2", expires_in: 3600 }));
         return;
       }
-      await bodyOf(request);
+      upstreamBodies.push(await bodyOf(request));
       const bearer = request.headers.authorization ?? "";
       upstreamBearers.push(bearer);
       const ok = bearer === "Bearer fresh-access";
@@ -111,6 +112,7 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     expect(credential.status, JSON.stringify(credential.data)).toBe(201);
     credentialId = credential.data.id;
     upstreamBearers.length = 0;
+    upstreamBodies.length = 0;
 
     const env = await call("/v1/environments", {
       name: "sandbox",
@@ -137,6 +139,10 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     }));
     expect(proxied.status, await proxied.clone().text()).toBe(200);
     expect(upstreamBearers).toEqual(["Bearer stale-access", "Bearer fresh-access"]);
+    // The retry replays the complete buffered request body.
+    expect(upstreamBodies).toHaveLength(2);
+    expect(upstreamBodies[1]).toBe(upstreamBodies[0]);
+    expect(JSON.parse(upstreamBodies[1]!)).toMatchObject({ method: "tools/list" });
     expect(tokenRequests).toHaveLength(1);
     expect(tokenRequests[0]).toContain("refresh_token=refresh-v1");
 
