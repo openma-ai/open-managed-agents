@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
+import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
 
 const servers: ReturnType<typeof createServer>[] = [];
 const planes: NodeControlPlane[] = [];
@@ -131,6 +132,17 @@ describe("Node MCP proxy with managed Vault credentials", () => {
       vault_ids: [vaultId],
     });
     expect(session.status, JSON.stringify(session.data)).toBeLessThan(300);
+
+    // The production relay route uses its own Session pass, not ambient API auth.
+    const passes = createEgressRelayPasses("test-root-secret-not-production", Date.now);
+    const pass = await passes.issue({ workspaceId: "default", sessionId: session.data.id, ttlMs: 60000 });
+    const resolve = (authorization: string) => cp.fetch(new Request("https://cp/v1/oma/egress/resolve", {
+      method: "POST", headers: { authorization, "x-oma-egress-target": "https://public.example/" },
+    }));
+    const resolved = await resolve(`Bearer ${pass}`);
+    expect(resolved.status, await resolved.clone().text()).toBe(200);
+    expect(await resolved.json()).toEqual({ inject: false });
+    expect((await resolve("Bearer test-admin")).status).toBe(401);
 
     const proxied = await cp.fetch(new Request(`http://cp/v1/oma/mcp-proxy/${session.data.id}/docs`, {
       method: "POST",

@@ -3864,6 +3864,9 @@ importers:
 
   packages/sandbox-egress:
     dependencies:
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox

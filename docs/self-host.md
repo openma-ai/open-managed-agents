@@ -634,6 +634,18 @@ explicitly. Warm preparation renews the Session pass, updates placeholders,
 and probes/restarts a dead relay. Removing all Vaults clears installed env
 and stops the relay; sandbox destruction also stops it.
 
+The Node managed-session runner applies this lifecycle to every configured
+SandboxPort factory. Standalone resource-runtime compositions (E2B, Daytona,
+Sprites, Modal, Vercel, Blaxel, BoxLite and Superserve) can pass
+`createSandboxCredentialEgress({ resolve, revoke })` from the sandbox-egress
+package as their `credentialEgress` option. `resolve` supplies the current
+Session Vault ids, HTTPS endpoint, pass issuer and placeholder resolver;
+`revoke` must invalidate control-plane authorization before sandbox cleanup.
+These compositions do not enable credential access by default. The common
+adapter advertises live, advisory HTTPS injection and rejects `required`
+enforcement; use a provider-native implementation for that requirement.
+No provider-specific SDK or credential resolver is bundled into the local relay.
+
 The local CA private key belongs to the sandbox, not the control plane.
 Existing centralized CA rows are unused and are not deleted. Re-prepare old
 sandboxes when upgrading. A leaked relay pass authorizes that Session until
