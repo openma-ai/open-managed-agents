@@ -217,6 +217,20 @@ export function supportsSessionOutputMount(
   }
 }
 
+export interface SandboxCredentialEgressBinding {
+  endpoint: string;
+  pass: string;
+}
+/** Native interception or a sandbox-resident relay implement the same capability. */
+export interface SandboxCredentialEgressPort {
+  prepareCredentialEgress(binding: SandboxCredentialEgressBinding): Promise<void>;
+  clearCredentialEgress(): Promise<void>;
+}
+export function supportsCredentialEgress(value: unknown): value is SandboxCredentialEgressPort {
+  const port = value as Partial<SandboxCredentialEgressPort> | null;
+  return port !== null && typeof port === "object" && typeof port.prepareCredentialEgress === "function" && typeof port.clearCredentialEgress === "function";
+}
+
 export interface SandboxPort {
   exec(command: string, timeout?: number): Promise<string>;
   /** Start a process without blocking. Returns handle for kill/status/logs. */

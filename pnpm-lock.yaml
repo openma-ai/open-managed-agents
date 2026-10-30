@@ -1477,6 +1477,9 @@ importers:
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@open-managed-agents/sandbox-egress':
+        specifier: workspace:*
+        version: link:../sandbox-egress
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler
@@ -3861,6 +3864,19 @@ importers:
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
+  packages/sandbox-egress:
+    dependencies:
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      '@peculiar/x509':
+        specifier: 1.14.3
+        version: 1.14.3
+    devDependencies:
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
 
   packages/scheduler:
     dependencies:
