@@ -37,6 +37,7 @@
     "@open-managed-agents/managed-agents-adapters-runtime": "workspace:*",
     "@open-managed-agents/managed-agents-api": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/model-cards-store": "workspace:*",
     "@open-managed-agents/observability": "workspace:*",

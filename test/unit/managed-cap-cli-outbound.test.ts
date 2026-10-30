@@ -6,11 +6,11 @@ import {
   forwardWithRefresh,
   resolveOutboundCredentialByHost,
   resolveProxyTargetByTenant,
-  type ManagedProxyCredentialRecord,
-  type McpProxyCredentialSource,
 } from "../../apps/main/src/routes/mcp-proxy";
-import { capCliBootstrapEnvironment } from "../../apps/main/src/routes/managed-proxy-credentials";
+import type { StoredCredential } from "@open-managed-agents/credential-store";
+import { placeholderEnvironment } from "@open-managed-agents/managed-credential-resolver";
 import { builtinSpecs, createSpecRegistry } from "../../packages/cap/src/index";
+import { managedResolver, type FakeManagedCredentials } from "./helpers/managed-resolver";
 
 const WORKSPACE = "workspace_01";
 const SESSION = "session_01";
@@ -24,7 +24,7 @@ function capRecord(input: {
   updatedAt: string;
   archivedAt?: string | null;
   revision?: number;
-}): ManagedProxyCredentialRecord {
+}): StoredCredential {
   return {
     revision: input.revision ?? 1,
     credential: {
@@ -67,10 +67,10 @@ function legacyServicesThatMustNotBeRead() {
   } as never;
 }
 
-function memorySource(initial: ManagedProxyCredentialRecord[]) {
+function memorySource(initial: StoredCredential[]) {
   const records = new Map(initial.map((record) => [record.credential.id, record]));
   const replaced: Array<{ vaultId: string; credentialId: string; expectedRevision: number }> = [];
-  const source: McpProxyCredentialSource = {
+  const fake: FakeManagedCredentials = {
     listByVaults: async ({ vaultIds }) =>
       [...records.values()].filter((record) => vaultIds.includes(record.credential.vaultId)),
     find: async ({ vaultId, credentialId }) => {
@@ -89,7 +89,7 @@ function memorySource(initial: ManagedProxyCredentialRecord[]) {
       return { type: "replaced", record };
     },
   };
-  return { source, records, replaced };
+  return { source: managedResolver(fake), records, replaced };
 }
 
 afterEach(() => {
@@ -132,11 +132,10 @@ describe("managed Session cap_cli egress", () => {
       source,
     );
     expect(target?.refresh).toMatchObject({
-      refreshToken: "ghr_1",
       tokenEndpoint: "https://github.com/login/oauth/access_token",
       credentialId: "c_gh",
       vaultId: "vlt_b",
-      credentialSource: source,
+      resolver: source,
     });
   });
 
@@ -238,11 +237,10 @@ describe("managed Session cap_cli egress", () => {
         upstreamUrl: "https://api.github.com/user",
         upstreamToken: "gho_stale",
         refresh: {
-          refreshToken: "ghr_1",
           tokenEndpoint: "https://github.com/login/oauth/access_token",
           credentialId: "c_gh",
           vaultId: "vlt_a",
-          credentialSource: source,
+          resolver: source,
         },
       },
       "GET",
@@ -260,7 +258,7 @@ describe("managed Session cap_cli sandbox placeholders", () => {
   const registry = createSpecRegistry(builtinSpecs);
 
   it("sets each active CLI's bootstrap placeholders and never a token", () => {
-    const env = capCliBootstrapEnvironment([
+    const env = placeholderEnvironment([
       capRecord({ id: "c_gh", token: "gho_real_secret", updatedAt: "2026-09-01T00:00:00.000Z" }),
       capRecord({ id: "c_glab", cliId: "glab", token: "glpat_real_secret", updatedAt: "2026-09-01T00:00:00.000Z" }),
       capRecord({ id: "c_gone", cliId: "fly", token: "fo1_real_secret", updatedAt: "2026-09-01T00:00:00.000Z", archivedAt: "2026-09-02T00:00:00.000Z" }),
@@ -277,7 +275,7 @@ describe("managed Session cap_cli sandbox placeholders", () => {
   });
 
   it("fails loudly on a stored cli_id the registry does not know", () => {
-    expect(() => capCliBootstrapEnvironment([
+    expect(() => placeholderEnvironment([
       capRecord({ id: "c_bad", cliId: "not-a-cli", token: "t", updatedAt: "2026-09-01T00:00:00.000Z" }),
     ], registry)).toThrow('unknown cli_id "not-a-cli"');
   });

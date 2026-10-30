@@ -23,6 +23,7 @@
 // or that the session-binding RPC layer plumbs everything through. Both
 // of those are tested at staging-deploy regression level.
 
+import { managedResolver } from "./helpers/managed-resolver";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { forwardWithRefresh } from "../../apps/main/src/routes/mcp-proxy";
 import { createInMemoryCredentialService } from "../../packages/credentials-store/src/test-fakes";
@@ -252,7 +253,7 @@ describe("forwardWithRefresh — OAuth refresh on 401", () => {
         },
       },
     };
-    const credentialSource = {
+    const credentialSource = managedResolver({
       listByVaults: async () => [record],
       find: async () => record,
       replace: async (input) => {
@@ -260,7 +261,7 @@ describe("forwardWithRefresh — OAuth refresh on 401", () => {
         record = { revision: 8, credential: input.next };
         return { type: "replaced", record };
       },
-    };
+    });
 
     mock.restore();
     mock = installFetchMock([
@@ -280,12 +281,11 @@ describe("forwardWithRefresh — OAuth refresh on 401", () => {
         upstreamUrl: SERVER,
         upstreamToken: "expired-managed-token",
         refresh: {
-          refreshToken: "managed-refresh-v1",
           tokenEndpoint: TOKEN_EP,
           clientId: "managed-client",
           credentialId: "vcrd_managed",
           vaultId: VAULT,
-          credentialSource,
+          resolver: credentialSource,
         },
       },
       "POST",

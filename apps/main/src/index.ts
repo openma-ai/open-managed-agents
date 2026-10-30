@@ -193,13 +193,11 @@ import statsRoutes from "./routes/stats";
 import inferenceProxyRoutes from "./routes/inference-proxy";
 import { createCloudflareAccessLossRuntime } from "./lib/mcp-access-loss";
 import mcpProxyRoutes, {
-  createManagedMcpProxyCredentialSource,
+  createManagedCredentialResolver,
   resolveProxyTargetByTenant,
   resolveOutboundCredentialByHost,
   forwardWithRefresh,
 } from "./routes/mcp-proxy";
-import { capCliBootstrapEnvironment } from "./routes/managed-proxy-credentials";
-import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import {
   resolveGithubCredentials,
@@ -837,7 +835,7 @@ async function managedMcpSources(env: Env, workspaceId: string) {
   const tenantDb = await buildCfTenantDbProvider(env).resolve(workspaceId);
   return {
     sessionSource: new SqlSessionSource(new CfD1SqlClient(tenantDb)),
-    credentialSource: createManagedMcpProxyCredentialSource(env, tenantDb),
+    credentialSource: createManagedCredentialResolver(env, tenantDb),
   };
 }
 
@@ -1668,14 +1666,13 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       return { type: "not_found" };
     }
     if (session.vaultIds.length === 0) return { type: "found", env: {} };
-    const credentialSource = createManagedMcpProxyCredentialSource(this.env, tenantDb);
-    const records = await credentialSource.listByVaults({
-      workspaceId: opts.tenantId,
-      vaultIds: session.vaultIds,
-    });
     return {
       type: "found",
-      env: capCliBootstrapEnvironment(records, createSpecRegistry(builtinSpecs)),
+      env: await createManagedCredentialResolver(this.env, tenantDb).placeholderEnvironment({
+        workspaceId: opts.tenantId,
+        sessionId: opts.sessionId,
+        vaultIds: session.vaultIds,
+      }),
     };
   }
 

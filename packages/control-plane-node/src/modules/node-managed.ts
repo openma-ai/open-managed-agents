@@ -88,6 +88,8 @@ import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarnessEnvironmentConfig, resolveNodeManagedAuxiliaryToolModel } from "../lib/node-managed-agent-codec.js";
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
+import { ManagedCredentialResolver } from "@open-managed-agents/managed-credential-resolver";
+import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
@@ -162,63 +164,19 @@ export async function createManagedNodeRuntime(
         (candidate) => candidate.name === input.serverName,
       );
       if (server === undefined || server.type !== "url") return null;
-      for (const vaultId of managedContext.session.vaultIds) {
-        const records = await managedCredentialStore.list({
-          workspaceId: input.tenantId,
-          vaultId,
-          includeArchived: false,
-          limit: 100,
-        });
-        for (const record of records) {
-          const credential = record.credential;
-          const auth = credential.auth;
-          if (
-            (auth.type !== "static_bearer" && auth.type !== "mcp_oauth")
-            || auth.mcpServerUrl !== server.url
-          ) continue;
-          const accessToken = auth.type === "static_bearer"
-            ? auth.token
-            : auth.accessToken;
-          if (!accessToken) continue;
-          const target: NodeMcpProxyTarget = {
-            upstreamUrl: server.url,
-            accessToken,
-          };
-          if (auth.type === "mcp_oauth" && auth.refresh?.refreshToken) {
-            const tokenEndpointAuth = auth.refresh.tokenEndpointAuth;
-            target.refresh = {
-              refreshToken: auth.refresh.refreshToken,
-              tokenEndpoint: auth.refresh.tokenEndpoint,
-              clientId: auth.refresh.clientId,
-              clientSecret: tokenEndpointAuth.type === "none"
-                ? undefined
-                : tokenEndpointAuth.clientSecret ?? undefined,
-            };
-            target.onRefreshed = async (tokens) => {
-              await managedCredentialStore.replace({
-                workspaceId: input.tenantId,
-                vaultId,
-                credentialId: credential.id,
-                expectedRevision: record.revision,
-                next: {
-                  ...credential,
-                  auth: {
-                    ...auth,
-                    accessToken: tokens.access_token,
-                    refresh: {
-                      ...auth.refresh!,
-                      refreshToken: tokens.refresh_token,
-                    },
-                  },
-                  updatedAt: new Date().toISOString(),
-                },
-              });
-            };
-          }
-          return target;
-        }
-      }
-      return null;
+      const target = await managedCredentialResolver.mcpTarget({
+        workspaceId: input.tenantId,
+        sessionId: input.sessionId,
+        vaultIds: managedContext.session.vaultIds,
+      }, server.url);
+      if (target === null) return null;
+      return {
+        upstreamUrl: target.upstreamUrl,
+        accessToken: target.upstreamToken,
+        managed: {
+          forward: (send) => managedCredentialResolver.forward(input.tenantId, target, send),
+        },
+      };
     }
 
     const session = await sessionsService.get({
@@ -1206,6 +1164,12 @@ export async function createManagedNodeRuntime(
   };
   const managedCredentialValidation = new McpOAuthCredentialValidationProbe();
   const managedCredentialStore = new SqlCredentialStore(sql, managedCredentialCipher);
+  const managedCredentialResolver = new ManagedCredentialResolver({
+    credentials: managedCredentialStore,
+    fetch: (request, init) => fetch(request, init),
+    clock: { now: () => new Date() },
+    log: { warn: (fields, message) => logger.warn(fields, message) },
+  }, createSpecRegistry(builtinSpecs));
   // One managed platform graph per process. Every official application
   // module is installed on the same workspace App, so a workspace has one
   // App, one clock, one id generator and one set of stores. `modules` runs on

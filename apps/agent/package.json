@@ -45,6 +45,7 @@
     "@open-managed-agents/event-log": "workspace:*",
     "@open-managed-agents/files-store": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/managed-credential-resolver": "workspace:*",
     "@open-managed-agents/markdown": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/mcp": "workspace:*",
