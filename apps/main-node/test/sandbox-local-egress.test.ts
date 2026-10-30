@@ -4,6 +4,8 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
 import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
@@ -29,6 +31,18 @@ async function fixture() {
   const upstream = createServer(await upstreamCA.leafFor("localhost"), async (request, response) => {
     const parts: Buffer[] = []; for await (const chunk of request) parts.push(chunk);
     seen.push({ token: request.headers.authorization, path: request.url!, body: Buffer.concat(parts), headers: request.headers });
+    if (request.url === "/head") { response.writeHead(200, { "content-length": "123", "x-head": "yes" }); response.end(); return; }
+    if (request.url === "/gzip") {
+      const zipped = gzipSync(Buffer.from([0, 255, 128]));
+      response.writeHead(200, { "content-encoding": "gzip", "content-length": String(zipped.length) }); response.end(zipped); return;
+    }
+    if (request.url === "/stream") {
+      response.writeHead(206, { "content-type": "application/octet-stream" }); response.write("first");
+      setTimeout(() => response.end("last"), 1200); return;
+    }
+    if ([204, 205, 304].includes(status)) {
+      response.writeHead(status, { "x-empty": "yes", ...(status === 304 ? { "content-length": "123" } : status === 205 ? { "content-length": "0" } : {}) }); response.end(); return;
+    }
     response.writeHead(status === 401 && request.headers.authorization === "Bearer fresh-token" ? 200 : status, { "content-type": "application/octet-stream" });
     response.end(Buffer.from([0, 255, 128]));
   });
@@ -49,7 +63,9 @@ async function fixture() {
   const control = createServer(await controlCA.leafFor("localhost"), async (incoming, outgoing) => {
     const chunks: Buffer[] = []; for await (const chunk of incoming) chunks.push(chunk);
     const response = await routes.fetch(new Request(`https://control.example${incoming.url}`, { method: incoming.method, headers: incoming.headers as Record<string, string>, body: Buffer.concat(chunks) }));
-    outgoing.writeHead(response.status, Object.fromEntries(response.headers)); outgoing.end(Buffer.from(await response.arrayBuffer()));
+    outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+    if (response.body) Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>).on("error", () => outgoing.destroy()).pipe(outgoing);
+    else outgoing.end();
   });
   await new Promise<void>(resolve => control.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => { control.closeAllConnections(); await new Promise<void>(resolve => control.close(() => resolve())); });
@@ -68,6 +84,40 @@ describe("sandbox-owned local credential relay", () => {
     expect(output).toContain("__cap_managed__"); expect(output).toMatch(/0\s+255\s+128/); expect(output).not.toContain("real-token");
     expect(f.seen).toHaveLength(1); expect(f.seen[0]).toMatchObject({ token: "Bearer real-token", path: "/a%2Fb?q=one%20two" });
     expect(f.seen[0]!.headers).not.toHaveProperty("proxy-authorization");
+  });
+
+  it("preserves a credential-matched HEAD representation length without sending a body", async () => {
+    const f = await fixture(); await f.prepare();
+    const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -I '${f.target}/head'`);
+    expect(output).toContain("200 OK"); expect(output).toContain("content-length: 123"); expect(output).toContain("x-head: yes");
+    expect(output).not.toContain("curl:"); expect(output).not.toContain("x-oma-egress-");
+    expect(f.seen).toHaveLength(1); expect(f.seen[0]!.token).toBe("Bearer real-token");
+  });
+
+  it.each([204, 205, 304])("preserves bodyless %s status and representation metadata", async status => {
+    const f = await fixture(); f.setStatus(status); await f.prepare();
+    const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -D - '${f.target}/empty'`);
+    expect(output).toContain(`HTTP/1.1 ${status}`); expect(output).toContain("x-empty: yes"); expect(output).not.toContain("curl:");
+    if (status === 304) expect(output).toContain("content-length: 123");
+    expect(output).not.toContain("x-oma-egress-");
+  });
+
+  it("keeps gzip content encoding, encoded length and actual bytes consistent", async () => {
+    const f = await fixture(); await f.prepare();
+    const headers = await f.sandbox.writeFile("gzip.headers", "");
+    const output = await f.sandbox.exec(`curl -sS --max-time 3 --noproxy '' -D '${headers}' '${f.target}/gzip' | base64`);
+    const expected = gzipSync(Buffer.from([0, 255, 128]));
+    expect(Buffer.from(output.trim(), "base64")).toEqual(expected);
+    const metadata = await readFile(headers, "utf8");
+    expect(metadata).toContain("content-encoding: gzip"); expect(metadata).toContain(`content-length: ${expected.length}`);
+  });
+
+  it("delivers the first response chunk before the delayed tail", async () => {
+    const f = await fixture(); await f.prepare();
+    const output = await f.sandbox.exec(`curl -sS --max-time 4 --noproxy '' -N -w '\\nTIMES:%{time_starttransfer}|%{time_total}' '${f.target}/stream'`);
+    expect(output).toContain("firstlast");
+    const times = /TIMES:([\d.]+)\|([\d.]+)/u.exec(output)!;
+    expect(times).not.toBeNull(); expect(Number(times[2]) - Number(times[1])).toBeGreaterThan(0.9);
   });
 
   it("replays binary POST only on successful refresh and rechecks current Vaults and archive state", async () => {

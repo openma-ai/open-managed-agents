@@ -19,7 +19,11 @@ async function bytes(request: IncomingMessage) { const parts: Buffer[] = []; for
 function reject(socket: Duplex, status: number) { socket.end(`HTTP/1.1 ${status} Denied\r\ncontent-length: 0\r\nconnection: close\r\n\r\n`); }
 async function respond(response: Response, output: ServerResponse) {
   const headers: Record<string, string | string[]> = {};
-  response.headers.forEach((value, name) => { if (!HOP.includes(name)) headers[name] = name === "set-cookie" ? response.headers.getSetCookie() : value; });
+  response.headers.forEach((value, name) => { if (!HOP.includes(name) && !name.startsWith("x-oma-egress-")) headers[name] = name === "set-cookie" ? response.headers.getSetCookie() : value; });
+  if (output.req.method === "HEAD") {
+    const length = response.headers.get("x-oma-egress-head-content-length");
+    if (length !== null) headers["content-length"] = length;
+  }
   output.writeHead(response.status, response.statusText, headers);
   if (!response.body) { output.end(); return; }
   const stream = Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>);

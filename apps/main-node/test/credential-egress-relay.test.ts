@@ -32,17 +32,24 @@ function fixture() {
   const relay = createCredentialEgressRelay({ passes,
     findSession: async () => exists ? { vaultIds, archivedAt } : null,
     credentials: resolver,
-    send: async request => { seen.push(request); return new Response(new Uint8Array([0, 255, 128]), { status: status === 401 && request.headers.get("authorization") === "Bearer fresh-token" ? 200 : status, headers: { "content-type": "application/octet-stream" } }); },
+    send: async request => {
+      seen.push(request);
+      const responseStatus = status === 401 && request.headers.get("authorization") === "Bearer fresh-token" ? 200 : status;
+      const empty = request.method === "HEAD" || [204, 205, 304].includes(responseStatus);
+      return new Response(empty ? null : new Uint8Array([0, 255, 128]), { status: responseStatus, headers: {
+        "content-type": "application/octet-stream", ...(request.method === "HEAD" || responseStatus === 304 ? { "content-length": "123" } : {}),
+      } });
+    },
   });
   return { passes, relay, seen, get refreshes() { return refreshes; }, setVaults: (ids: string[]) => { vaultIds = ids; }, archive: () => { archivedAt = "now"; }, remove: () => { exists = false; }, expire: () => { now = 100000; }, setStatus: (value: number) => { status = value; }, failRefresh: () => { refreshOk = false; } };
 }
 
-async function call(f: ReturnType<typeof fixture>, path: string, opts: { pass?: string; target?: string; headers?: Record<string, string>; body?: Uint8Array } = {}) {
+async function call(f: ReturnType<typeof fixture>, path: string, opts: { pass?: string; target?: string; headers?: Record<string, string>; body?: Uint8Array; method?: string } = {}) {
   const pass = opts.pass ?? await f.passes.issue({ workspaceId: "ws", sessionId: "session", ttlMs: 10000 });
   const app = buildCredentialEgressRoutes(() => f.relay);
   return app.request(`https://control.example${path}`, { method: "POST", headers: {
     authorization: `Bearer ${pass}`, "x-oma-egress-target": opts.target ?? "https://upstream.example/a%2Fb?q=one%20two",
-    "x-oma-egress-method": "POST", "x-oma-egress-headers": JSON.stringify(opts.headers ?? { authorization: "Bearer __cap_managed__", "content-type": "application/octet-stream" }),
+    "x-oma-egress-method": opts.method ?? "POST", "x-oma-egress-headers": JSON.stringify(opts.headers ?? { authorization: "Bearer __cap_managed__", "content-type": "application/octet-stream" }),
   }, body: opts.body ?? new Uint8Array([0, 255, 1, 128]) });
 }
 
@@ -59,6 +66,27 @@ describe("credential relay shared HTTP contract", () => {
     expect(request.headers.get("authorization")).toBe("Bearer real-token");
     expect(request.headers.get("x-client")).toBe("keep");
     for (const header of ["proxy-authorization", "connection", "x-hop", "x-oma-egress-target"]) expect(request.headers.has(header)).toBe(false);
+  });
+
+  it("separates HEAD representation length from POST transport framing without changing native responses", async () => {
+    const f = fixture();
+    const response = await call(f, "/forward", { method: "HEAD" });
+    expect(response.status).toBe(200); expect(await response.text()).toBe("");
+    expect(response.headers.has("content-length")).toBe(false);
+    expect(response.headers.get("x-oma-egress-head-content-length")).toBe("123");
+    const native = await f.relay.handle("forward", new Request("https://control.example/forward", { method: "POST", headers: {
+      authorization: `Bearer ${await f.passes.issue({ workspaceId: "ws", sessionId: "session", ttlMs: 10000 })}`,
+      "x-oma-egress-target": "https://upstream.example/", "x-oma-egress-method": "HEAD",
+    } }));
+    expect(native.body).toBeNull(); expect(native.headers.get("content-length")).toBe("123");
+    expect(native.headers.has("x-oma-egress-head-content-length")).toBe(false);
+  });
+
+  it.each([204, 205, 304])("keeps %s body null through the shared core and HTTP boundary", async status => {
+    const f = fixture(); f.setStatus(status);
+    const response = await call(f, "/forward", { method: "GET" });
+    expect(response.status).toBe(status); expect(response.body).toBeNull();
+    if (status === 304) expect(response.headers.get("content-length")).toBe("123");
   });
 
   it("revalidates vault bindings for every resolve and forward", async () => {
