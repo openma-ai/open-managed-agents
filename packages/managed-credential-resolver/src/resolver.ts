@@ -45,6 +45,8 @@ export class ManagedCredentialResolver {
     try {
       const records: StoredCredential[] = [];
       for (const vaultId of scope.vaultIds) {
+        const current = await this.ports.vaults.find({ workspaceId: scope.workspaceId, vaultId });
+        if (current === null || current.vault.archivedAt !== null) continue;
         let position: { createdAt: string; credentialId: string } | undefined;
         for (;;) {
           const page = await this.ports.credentials.list({

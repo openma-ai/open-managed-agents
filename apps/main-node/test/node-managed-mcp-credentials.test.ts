@@ -170,5 +170,25 @@ describe("Node MCP proxy with managed Vault credentials", () => {
     expect(again.status).toBe(200);
     expect(upstreamBearers).toEqual(["Bearer fresh-access"]);
     expect(tokenRequests).toHaveLength(1);
+
+    const relay = (action: "resolve" | "forward") => cp.fetch(new Request(`https://cp/v1/oma/egress/${action}`, {
+      method: "POST", headers: { authorization: `Bearer ${pass}`, "x-oma-egress-target": "https://127.0.0.1/", "x-oma-egress-method": "GET" },
+    }));
+    expect(await (await relay("resolve")).json()).toEqual({ inject: true });
+    const archived = await call(`/v1/vaults/${vaultId}/archive`, {});
+    expect(archived.status).toBe(200); expect(archived.data.archived_at).not.toBeNull();
+    const assertRevoked = async () => {
+      expect(await (await relay("resolve")).json()).toEqual({ inject: false });
+      expect((await relay("forward")).status).toBe(403);
+      upstreamBearers.length = 0;
+      const mcp = await cp.fetch(new Request(`http://cp/v1/oma/mcp-proxy/${session.data.id}/docs`, {
+        method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+      }));
+      expect(mcp.status).toBeGreaterThanOrEqual(400); expect(upstreamBearers).toEqual([]);
+    };
+    await assertRevoked();
+    const deleted = await cp.fetch(new Request(`http://cp/v1/vaults/${vaultId}`, { method: "DELETE", headers }));
+    expect(deleted.status).toBe(200);
+    await assertRevoked();
   });
 });

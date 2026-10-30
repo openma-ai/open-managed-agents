@@ -668,6 +668,9 @@ importers:
       '@open-managed-agents/tenant-dbs-store':
         specifier: workspace:*
         version: link:../../packages/tenant-dbs-store
+      '@open-managed-agents/vault-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/vault-store-sql
       '@open-managed-agents/vaults-store':
         specifier: workspace:*
         version: link:../../packages/vaults-store

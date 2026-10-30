@@ -1185,6 +1185,7 @@ export async function createManagedNodeRuntime(
   const capSpecs = createSpecRegistry(builtinSpecs);
   const managedCredentialResolver = new ManagedCredentialResolver({
     credentials: managedCredentialStore,
+    vaults: new SqlVaultStore(sql),
     fetch: (request, init) => fetch(request, init),
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logger.warn(fields, message) },
