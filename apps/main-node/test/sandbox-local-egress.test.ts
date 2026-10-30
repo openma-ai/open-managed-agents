@@ -55,7 +55,7 @@ async function fixture() {
     replace: async ({ next }) => { row = { revision: row.revision + 1, credential: next }; return { type: "replaced", record: row }; },
     archive: async () => ({ type: "not_found" }), delete: async () => ({ type: "not_found" }), list: async ({ vaultId }) => vaultId === "vault" ? [row] : [],
   };
-  const resolver = new ManagedCredentialResolver({ credentials, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(builtinSpecs));
+  const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date() }, log: { warn() {} }, fetch: async () => { refreshes++; return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("no", { status: 400 }); } }, createSpecRegistry(builtinSpecs));
   const passes = createEgressRelayPasses("root", () => now);
   const relay = createCredentialEgressRelay({ passes, credentials: resolver, findSession: async () => ({ vaultIds, archivedAt }), send: request => sendDirectHttps(request, upstreamCA.certificatePem) });
   const routes = new Hono().route("/v1/oma/egress", buildCredentialEgressRoutes(() => relay));

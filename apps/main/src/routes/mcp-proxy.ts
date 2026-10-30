@@ -61,6 +61,7 @@ import type { KvStore } from "@open-managed-agents/kv-store";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { SqlCredentialStore } from "@open-managed-agents/credential-store-sql";
+import { SqlVaultStore } from "@open-managed-agents/vault-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
 import {
@@ -132,6 +133,7 @@ export function createManagedCredentialResolver(
   });
   return new ManagedCredentialResolver({
     credentials: store,
+    vaults: new SqlVaultStore(new CfD1SqlClient(tenantDb)),
     fetch: (input, init) => fetch(input, init),
     clock: { now: () => new Date() },
     log: { warn: (fields, message) => logWarn(fields, message) },

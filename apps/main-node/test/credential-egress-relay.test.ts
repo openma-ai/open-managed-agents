@@ -24,7 +24,7 @@ function fixture() {
     replace: async ({ next }) => { row = { revision: row.revision + 1, credential: next }; return { type: "replaced", record: row }; },
     insert: async () => { throw new Error("unused"); }, archive: async () => ({ type: "not_found" }), delete: async () => ({ type: "not_found" }),
   };
-  const resolver = new ManagedCredentialResolver({ credentials, clock: { now: () => new Date(now) }, log: { warn() {} }, fetch: async () => {
+  const resolver = new ManagedCredentialResolver({ credentials, vaults: { find: async () => ({ vault: { archivedAt: null } }) }, clock: { now: () => new Date(now) }, log: { warn() {} }, fetch: async () => {
     refreshes++;
     return refreshOk ? Response.json({ access_token: "fresh-token" }) : new Response("refused", { status: 400 });
   } }, createSpecRegistry(builtinSpecs));

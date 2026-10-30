@@ -44,11 +44,29 @@ const oauth: StoredCredential = {
   },
 };
 
+describe("ManagedCredentialResolver Vault authority", () => {
+  it.each(["archived", "missing"])("rechecks %s Vaults for MCP, outbound and placeholder selection", async state => {
+    let vault: { vault: { archivedAt: string | null } } | null = { vault: { archivedAt: null } };
+    const resolver = new ManagedCredentialResolver({
+      vaults: { find: async () => vault }, credentials: store([structuredClone(oauth)]),
+      fetch, clock: { now: () => new Date() }, log: { warn() {} },
+    }, createSpecRegistry(builtinSpecs));
+    const scope = { workspaceId: "ws", sessionId: "s", vaultIds: ["vlt_1"] };
+    expect(await resolver.mcpTarget(scope, "https://mcp.example/mcp")).not.toBeNull();
+    expect(await resolver.outboundTarget(scope, "mcp.example")).not.toBeNull();
+    vault = state === "archived" ? { vault: { archivedAt: "2026-10-01" } } : null;
+    expect(await resolver.mcpTarget(scope, "https://mcp.example/mcp")).toBeNull();
+    expect(await resolver.outboundTarget(scope, "mcp.example")).toBeNull();
+    expect(await resolver.placeholderEnvironment(scope)).toEqual({});
+  });
+});
+
 describe("ManagedCredentialResolver.forward", () => {
   it("refreshes once on 401, persists the rotation and retries with the new token", async () => {
     const records = [structuredClone(oauth)];
     const resolver = new ManagedCredentialResolver({
       credentials: store(records),
+      vaults: { find: async () => ({ vault: { archivedAt: null } }) },
       fetch: async () => Response.json({ access_token: "fresh", refresh_token: "r2" }),
       clock: { now: () => new Date("2026-09-02T00:00:00.000Z") },
       log: { warn: () => {} },
@@ -71,6 +89,7 @@ describe("ManagedCredentialResolver.forward", () => {
       records,
       resolver: new ManagedCredentialResolver({
         credentials: store(records),
+      vaults: { find: async () => ({ vault: { archivedAt: null } }) },
         fetch: async () => tokenEndpoint(),
         clock: { now: () => new Date("2026-09-02T00:00:00.000Z") },
         log: { warn: () => {} },
@@ -140,6 +159,7 @@ describe("ManagedCredentialResolver.forward", () => {
     const warnings: unknown[] = [];
     const resolver = new ManagedCredentialResolver({
       credentials: { ...store([]), list: async () => { throw new Error("db down"); } },
+      vaults: { find: async () => ({ vault: { archivedAt: null } }) },
       fetch: async () => { throw new Error("unused"); },
       clock: { now: () => new Date() },
       log: { warn: (fields) => warnings.push(fields) },

@@ -8,6 +8,8 @@ import type { CredentialStore } from "@open-managed-agents/credential-store";
  */
 export interface ManagedCredentialResolverPorts {
   credentials: CredentialStore;
+  /** Current Vault authority, deliberately narrower than its persistence Port. */
+  vaults: { find(input: { workspaceId: string; vaultId: string }): Promise<{ vault: { archivedAt: string | null } } | null> };
   /** Transport for OAuth token endpoints. */
   fetch: typeof fetch;
   clock: { now(): Date };

@@ -31,6 +31,7 @@ export function managedResolver(fake: FakeManagedCredentials): ManagedCredential
   };
   return new ManagedCredentialResolver({
     credentials: store,
+    vaults: { find: async () => ({ vault: { archivedAt: null } }) },
     fetch: (input, init) => fetch(input, init),
     clock: { now: () => new Date() },
     log: { warn: () => {} },
