@@ -21,6 +21,11 @@
 //
 // API reference: https://developers.cloudflare.com/changelog/post/2026-04-13-sandbox-outbound-workers-tls-auth/
 
+import {
+  EGRESS_HOP_HEADERS,
+  EGRESS_SANDBOX_CONTROL_HEADERS,
+  egressRequestHeaders,
+} from "@open-managed-agents/managed-credential-resolver";
 import { Sandbox } from "@cloudflare/sandbox";
 import type { Env } from "@open-managed-agents/shared";
 import {
@@ -101,37 +106,14 @@ function runtimeFenceClaim(params: OutboundContextParams): RuntimeFenceLookupCla
 }
 
 /**
- * Headers we strip before forwarding upstream. CF Workers auto-adds some
- * of these when you invoke `fetch()` from a worker; if they're in the
- * upstream's SigV4-signed-headers list (boto3, aws-sdk, s3fs, awscli),
- * the signature mismatch produces a 403. The container's libcurl/sdk
- * never set these — they're CF artifacts of going through our handler.
- *
- * `host` is also problematic: container's libcurl set it to upstream's
- * host; if we forward via `new Request(url, { headers })` the runtime
- * may rewrite based on URL. We trust the runtime's auto-set Host
- * (matches URL) so we strip the explicit one to avoid header collision.
+ * Headers stripped before forwarding upstream, shared with every Vault
+ * egress proxy. CF Workers auto-adds some of these when invoking `fetch()`;
+ * if they are in an upstream SigV4 signed-headers list (boto3, aws-sdk,
+ * s3fs, awscli) the signature mismatch produces a 403. `host` is left to the
+ * runtime, which derives it from the URL.
  */
-const HOP_BY_HOP_OR_CF_HEADERS = new Set([
-  "cf-connecting-ip",
-  "cf-ipcountry",
-  "cf-ray",
-  "cf-visitor",
-  "cf-worker",
-  "cf-ew-via",
-  "x-forwarded-for",
-  "x-forwarded-proto",
-  "x-real-ip",
-  "x-amzn-trace-id",
-  "host",
-]);
-
-const SANDBOX_CONTROL_HEADERS = [
-  "x-api-key",
-  "proxy-authorization",
-  "cookie",
-  "x-active-tenant",
-] as const;
+const HOP_BY_HOP_OR_CF_HEADERS = EGRESS_HOP_HEADERS;
+const SANDBOX_CONTROL_HEADERS = EGRESS_SANDBOX_CONTROL_HEADERS;
 
 export const handleCredentialEgressRequest = async (
   request: Request,
@@ -189,16 +171,13 @@ export const handleCredentialEgressRequest = async (
   //     is acceptable for our use case (workspace squashfs uploads
   //     are typically <100 MB; very large would need a streaming-with-
   //     known-length API, doesn't currently exist in Workers).
-  const outHeaders = new Headers(request.headers);
-  for (const h of HOP_BY_HOP_OR_CF_HEADERS) outHeaders.delete(h);
-  for (const h of SANDBOX_CONTROL_HEADERS) outHeaders.delete(h);
   // In enforced mode an agent cannot smuggle a credential around Vault by
   // supplying its own Authorization value. Public destinations still pass,
   // but without sandbox-owned bearer material.
-  if (required) outHeaders.delete("authorization");
-  if (cred) {
-    outHeaders.set("authorization", `Bearer ${cred.token}`);
-  }
+  const outHeaders = egressRequestHeaders(request.headers, {
+    token: cred?.token ?? null,
+    stripAuthorization: required,
+  });
 
   let upstreamReq: Request;
   if (request.method === "GET" || request.method === "HEAD") {
