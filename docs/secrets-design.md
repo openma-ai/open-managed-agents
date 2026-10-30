@@ -5,7 +5,7 @@
 
 > 配套阅读：Layer B 的内部机制（OAuth 刷新、并发去重、审计）见
 > [mcp-credential-architecture.md](./mcp-credential-architecture.md)；私有化部署总览与
-> `oma-vault` sidecar runbook 见 [self-host.md](./self-host.md)。本文不重复这两篇，只讲
+> 沙箱出站代理（sandbox egress proxy）runbook 见 [self-host.md](./self-host.md)。本文不重复这两篇，只讲
 > **哪些秘钥该放哪一层**——这件事它们都没单独说清。
 
 ---
@@ -15,7 +15,7 @@
 OMA 的 **vault** 不是通用秘钥库。它的目标安全模型是 **不可信 agent/sandbox 永不在内存里持有明文**。
 Managed harness-in-sandbox 的 MCP 走带当前 Work capability 的
 `/v1/oma/mcp-proxy/<session>/<server>`；Cloudflare 透明出站走 runtime-fenced handler。
-旧 `apps/oma-vault` 只按 hostname 注入，是本地/单操作员兼容路径，不是多租户安全边界。详见
+Node 沙箱出站代理（main-node 进程内）只在 Session 的 Vault 里选凭据，属 best effort（proxy env 可绕过），不是隔离边界。详见
 `mcp-credential-architecture.md`。所以 vault
 只覆盖一类秘钥：**agent/sandbox 代用户出站调外部服务时的凭据**（GitHub PAT、Linear/Slack OAuth、
 MCP token）。
@@ -34,13 +34,13 @@ MCP token）。
 均由 OMA Vault 管理，不向 Agent 沙箱暴露"。后半句（不向沙箱暴露）是对的；前半句把范围说大了。
 真相是分两层，理由有两条：
 
-1. **vault 的注入模型对不上自举秘钥的用法。** vault 是 `apps/oma-vault`（mockttp MITM 代理，端口
-   14322）按出站请求的 hostname 匹配 `mcp_server_url`、注入 header。而飞书 App Secret 是网关进程
+1. **vault 的注入模型对不上自举秘钥的用法。** vault 的出站注入（MCP 网关、沙箱出站代理）按 Session
+   的 Vault 和出站请求的 host 选凭据、注入 header。而飞书 App Secret 是网关进程
    连飞书 WebSocket 的**自身身份**，模型 provider key 是 main-node 调 LLM 的**自身身份**——这里没有
    sandbox、没有 hostname 匹配，vault 根本插不上手。
 
-2. **自举秘钥不能存它自己保护的库里（循环依赖）。** 决定性证据：vault 服务自己启动都是从 env 读
-   配置的——`apps/oma-vault/src/index.ts:51-61` 读 `DATABASE_URL` / `OMA_VAULT_PORT` / `OMA_TENANT`。
+2. **自举秘钥不能存它自己保护的库里（循环依赖）。** 决定性证据：注入 vault 凭据的进程自己启动都是从 env 读
+   配置的——main-node 读 `DATABASE_URL` / `PLATFORM_ROOT_SECRET` / `SANDBOX_EGRESS_PROXY_*`。
    如果"进程启动需要的秘钥"要存在 vault 里，那 vault 自己启动时又去哪拿它的 DB 口令？所以自举层
    必然在 vault 之外。
 
@@ -56,14 +56,14 @@ MCP token）。
                     └───────────────┬─────────────────────────────┘
                                     │ 启动时注入 env
                        ┌────────────▼────────────────────┐
-                       │  进程自举层 (Layer A)            │  main-node / 网关 / oma-vault 自己
+                       │  进程自举层 (Layer A)            │  main-node / 网关 自己
                        │  • 模型 provider key             │  → env，或 /v1/model_cards 入库
                        │  • DB 口令                       │
                        │  • 飞书 App Secret（bot 身份）   │
                        │  • 服务间 internal token         │
                        │  • 网关→main-node API key        │
                        └────────────┬────────────────────┘
-                                    │ main-node / oma-vault 持有
+                                    │ main-node 持有
                     ┌───────────────▼─────────────────────────────┐
                     │  OMA vault (Layer B)                        │  D1 / PG / sqlite
                     │  type = static_bearer | mcp_oauth           │
@@ -78,9 +78,9 @@ MCP token）。
 | | Layer A：进程自举 | Layer B：租户出站 |
 |---|---|---|
 | **是什么** | 进程自己的身份与启动配置 | agent 代用户调外部服务时的凭据 |
-| **谁在用** | main-node / 网关 / oma-vault 自身 | sandbox 里的 bash、agent 的 MCP 调用 |
+| **谁在用** | main-node / 网关 自身 | sandbox 里的 bash、agent 的 MCP 调用 |
 | **注入点** | 进程启动时从 env 读 | 出站 HTTPS 按 hostname 实时注入 header |
-| **OMA 现状** | env（`ANTHROPIC_API_KEY` 见 `apps/main-node/src/index.ts:526`） | OMA vault + `oma-vault` sidecar |
+| **OMA 现状** | env（`ANTHROPIC_API_KEY` 见 `apps/main-node/src/index.ts:526`） | OMA vault + MCP 网关 / 沙箱出站代理 |
 | **私有化落位** | 外部 secret manager → env；模型 key 可走 `/v1/model_cards` | 复用 OMA vault（白送） |
 | **能否进 vault** | **否** | **就是 vault** |
 
@@ -144,16 +144,15 @@ Tier 0 管控）。
 | `FEISHU_APP_ID` | A | 同上（非密钥，但一并走配置） |
 | 网关→main-node 鉴权 | A | `/v1/api_keys` 签发真 key，**去掉 `AUTH_DISABLED=1` 与 `oma_local_dev`** |
 | 模型 provider key | A | 优先 `/v1/model_cards`；否则 secret manager |
-| 专家/Supervisor 调外部 MCP（将来） | B | OMA vault + `oma-vault` 注入 |
+| 专家/Supervisor 调外部 MCP（将来） | B | OMA vault + MCP 网关 / 沙箱出站代理注入 |
 
 ---
 
 ## 已知限制 / 不在范围内
 
-- **`oma-vault` 跨租户串 token / 可绕过**：两个租户都给同一 host（如 `api.github.com`）注册凭据时，
-  hostname-only 查询无法安全归因；进程还可以忽略 proxy env。即使设置 `OMA_TENANT`，也只适用于
-  单租户、可信本地调试。多租户必须走 Work-scoped HTTP MCP gateway，或使用经过网络隔离与 runtime
-  fence conformance 的 provider adapter。
+- **Node 沙箱出站代理可绕过**：它用签名的 Session 通行证归因、只在该 Session 的 Vault 里选凭据，
+  但进程可以忽略 proxy env 直连（拿不到凭据，也不被拦）。需要强制隔离必须走 Work-scoped HTTP MCP
+  gateway，或使用经过网络隔离与 runtime fence conformance 的 provider adapter。
 - **`command_secret` 仍进沙箱 env**：如 `GIT_TOKEN` 这类按命令注入 env 的，仍是沙箱内可见（AST 门控，
   但定向 prompt injection 仍可能泄）。详见 `mcp-credential-architecture.md` 的 "What this DOESN'T
   cover"。**别**把高爆炸半径的凭据（组织级 PAT、生产 DB 口令）挂到处理不可信输入的 agent 上。
@@ -168,7 +167,7 @@ Tier 0 管控）。
 
 - [mcp-credential-architecture.md](./mcp-credential-architecture.md) —— Layer B 内部机制（OAuth 刷新、
   并发去重、审计、deploy 顺序）。
-- [self-host.md](./self-host.md) —— 私有化部署总览、Postgres/多副本、`oma-vault` sidecar runbook。
+- [self-host.md](./self-host.md) —— 私有化部署总览、Postgres/多副本、沙箱出站代理 runbook。
 - [feishu-multi-agent-integration-prd.md](./feishu-multi-agent-integration-prd.md) —— 本设计修正该 PRD
   Executive Summary 中"飞书凭据和内部系统凭据均由 OMA Vault 管理"的表述：分清"平台身份（Layer A，
   不进 vault）"与"agent 代用户出站（Layer B，进 vault）"。PRD 的"不向 Agent 沙箱暴露"目标不变，只是
@@ -176,7 +175,7 @@ Tier 0 管控）。
 
 ## 参考
 
-- `apps/oma-vault/src/index.ts` —— Layer B 注入代理；自举 env 读取（L51-61）、跨租户限制（L194-203）
+- `packages/control-plane-node/src/lib/sandbox-egress/` —— Layer B 沙箱出站注入代理
 - `apps/main-node/src/index.ts` —— Layer A 模型 key 读取（L526）
 - `packages/vaults-store` / `packages/credentials-store` —— Layer B 存储
 - `packages/vault-forward` —— hostname 匹配 + 注入 + 401 刷新的纯函数

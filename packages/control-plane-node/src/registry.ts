@@ -239,7 +239,7 @@ export class SessionRegistry {
 
     // Resolve the per-session memory bindings + outputs flag, then hand
     // the whole bundle to the orchestrator. The orchestrator owns
-    // ordering (vault outbound first, restore second, mounts last) so
+    // ordering (restore first, mounts last) so
     // the registry no longer reasons about it.
     const memoryBindings = await this.deps.sql
       .prepare(`SELECT store_id, access FROM session_memory_stores WHERE session_id = ?`)

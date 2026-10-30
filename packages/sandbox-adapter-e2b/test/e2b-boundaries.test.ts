@@ -62,21 +62,12 @@ function remote(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const originalProxy = process.env.OMA_VAULT_PROXY_URL;
-const originalCa = process.env.OMA_VAULT_CA_CERT;
-
 beforeEach(() => {
   sdk.create.mockReset();
   sdk.connect.mockReset();
-  delete process.env.OMA_VAULT_PROXY_URL;
-  delete process.env.OMA_VAULT_CA_CERT;
 });
 
 afterEach(() => {
-  if (originalProxy === undefined) delete process.env.OMA_VAULT_PROXY_URL;
-  else process.env.OMA_VAULT_PROXY_URL = originalProxy;
-  if (originalCa === undefined) delete process.env.OMA_VAULT_CA_CERT;
-  else process.env.OMA_VAULT_CA_CERT = originalCa;
   vi.restoreAllMocks();
 });
 
@@ -336,18 +327,9 @@ describe("E2BSandboxExecutor boundaries", () => {
     await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
   });
 
-  it("wires outbound proxy/CA and file operations, including binary failure", async () => {
-    const caPath = join(tmpdir(), `openma-e2b-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_PROXY_URL = "http://localhost:14322";
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    const warn = vi.fn();
+  it("file operations, including binary failure", async () => {
     const sb = remote();
-    const runtime = new E2BSandboxExecutor(sb as never, { logger: { warn } });
-    await runtime.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("unreachable"));
-    expect(sb.files.write).toHaveBeenCalledWith("/etc/ssl/oma-vault-ca.crt", Buffer.from("CA"));
-    await runtime.setOutboundContext();
+    const runtime = new E2BSandboxExecutor(sb as never, { logger: { warn: vi.fn() } });
     await expect(runtime.readFile("/a")).resolves.toBe("text");
     await expect(runtime.writeFile("/a", "x")).resolves.toBe("/a");
     await expect(runtime.writeFileBytes("/b", new Uint8Array([1]))).resolves.toBe("/b");
@@ -357,22 +339,6 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(sb.commands.run.mock.calls.at(-1)?.[0]).toContain("a'\\''b");
     sb.commands.run.mockResolvedValueOnce({ stdout: "failed", stderr: "", exitCode: 1 });
     await expect(runtime.readFileBytes("/missing")).rejects.toThrow("readFileBytes failed");
-    await fs.unlink(caPath);
-  });
-
-  it("skips incomplete proxy config and reports CA upload failures for local and remote URLs", async () => {
-    const sb = remote();
-    const warn = vi.fn();
-    const runtime = new E2BSandboxExecutor(sb as never, { logger: { warn } });
-    await runtime.setOutboundContext();
-    process.env.OMA_VAULT_PROXY_URL = "https://proxy.example";
-    await runtime.setOutboundContext();
-    process.env.OMA_VAULT_CA_CERT = "/missing.pem";
-    await runtime.setOutboundContext();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("vault CA upload failed"));
-    process.env.OMA_VAULT_PROXY_URL = "http://127.0.0.1:1";
-    await runtime.setOutboundContext();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("unreachable"));
   });
 
   it("mounts S3 once, supports path-style policy/read-only, output bootstrap, and setup failures", async () => {

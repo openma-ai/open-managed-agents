@@ -6,15 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BoxRunSandbox, sandboxFactory } from "../src/boxrun";
 
 const originalFetch = globalThis.fetch;
-const originalProxy = process.env.OMA_VAULT_PROXY_URL;
-const originalCa = process.env.OMA_VAULT_CA_CERT;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  if (originalProxy === undefined) delete process.env.OMA_VAULT_PROXY_URL;
-  else process.env.OMA_VAULT_PROXY_URL = originalProxy;
-  if (originalCa === undefined) delete process.env.OMA_VAULT_CA_CERT;
-  else process.env.OMA_VAULT_CA_CERT = originalCa;
   vi.restoreAllMocks();
 });
 
@@ -188,60 +182,6 @@ describe("BoxRunSandbox", () => {
     nonRegular[156] = 53;
     installFetch((url) => url.endsWith("/boxes") ? json({ box_id: "box-3" }) : new Response(nonRegular, { status: 200 }));
     await expect(new BoxRunSandbox({ baseUrl: "http://boxrun" }).readFileBytes("/a")).rejects.toThrow("no regular file");
-  });
-
-  it("configures outbound proxy lazily and uploads its CA before first command", async () => {
-    const caPath = join(tmpdir(), `openma-boxrun-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_PROXY_URL = "http://proxy";
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    let uploaded = false;
-    const calls = installFetch((url, init) => {
-      if (url.endsWith("/boxes")) return json({ box_id: "box-1" });
-      if (init.method === "PUT") { uploaded = true; return new Response(null, { status: 204 }); }
-      if (url.endsWith("/exec")) {
-        expect(uploaded).toBe(true);
-        expect(JSON.parse(String(init.body)).env).toMatchObject({ HTTPS_PROXY: "http://proxy", NODE_EXTRA_CA_CERTS: "/etc/ssl/oma-vault-ca.crt" });
-        return json({ execution_id: "exec-1" });
-      }
-      return sse("event: exit\ndata: {\"exit_code\":0}\n\n");
-    });
-    const sandbox = new BoxRunSandbox({ baseUrl: "http://boxrun" });
-    await sandbox.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    await sandbox.exec("true");
-    expect(calls.mock.calls.some(([url]) => String(url).includes("path=%2Fetc%2Fssl"))).toBe(true);
-    await fs.unlink(caPath);
-  });
-
-  it("skips absent proxy settings and logs deferred CA upload failures", async () => {
-    delete process.env.OMA_VAULT_PROXY_URL;
-    delete process.env.OMA_VAULT_CA_CERT;
-    const sandbox = new BoxRunSandbox({ baseUrl: "http://boxrun" });
-    await expect(sandbox.setOutboundContext()).resolves.toBeUndefined();
-    process.env.OMA_VAULT_PROXY_URL = "http://proxy";
-    await expect(sandbox.setOutboundContext()).resolves.toBeUndefined();
-
-    process.env.OMA_VAULT_CA_CERT = "/missing/ca.pem";
-    const warn = vi.fn();
-    installFetch((url) => url.endsWith("/boxes") ? json({ box_id: "box-1" }) : new Response(null, { status: 204 }));
-    const failing = new BoxRunSandbox({ baseUrl: "http://boxrun", logger: { log: vi.fn(), warn } });
-    await failing.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    await failing.writeFile("/a", "x");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("vault CA upload failed"));
-
-    const caPath = join(tmpdir(), `openma-boxrun-upload-failure-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    installFetch((url, init) => {
-      if (url.endsWith("/boxes")) return json({ box_id: "box-upload-failure" });
-      if (init.method === "PUT") return new Response("no", { status: 500 });
-      throw new Error("unexpected");
-    });
-    const uploadFailure = new BoxRunSandbox({ baseUrl: "http://boxrun", logger: { log: vi.fn(), warn } });
-    await uploadFailure.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    await expect(uploadFailure.writeFile("/a", "x")).rejects.toThrow("writeFile /a failed");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("uploadFileBytes"));
-    await fs.unlink(caPath);
   });
 
   it("states unsupported mount semantics", async () => {

@@ -479,43 +479,6 @@ export class E2BSandboxExecutor
     this.commandSecrets.push({ prefix: commandPrefix, secrets });
   }
 
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    // Wire HTTPS_PROXY → oma-vault sidecar + upload its self-signed CA so
-    // node/curl/python trust the MITM cert. Requires (a) OMA_VAULT_PROXY_URL
-    // reachable from the E2B sandbox network — set to a public URL or a
-    // tunnel host; localhost won't resolve from inside the microVM —
-    // and (b) a sandbox template that lets `sudo` install / write a CA
-    // (most ubuntu-based templates do).
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-    if (proxyUrl.startsWith("http://localhost") || proxyUrl.startsWith("http://127.")) {
-      this.logger.warn(
-        `E2B: OMA_VAULT_PROXY_URL points at localhost (${proxyUrl}) — ` +
-        `unreachable from inside the E2B sandbox. Use a public URL or tunnel.`,
-      );
-    }
-    const inBoxCaPath = "/etc/ssl/oma-vault-ca.crt";
-    await this.setEnvVars({
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      NODE_EXTRA_CA_CERTS: inBoxCaPath,
-      SSL_CERT_FILE: inBoxCaPath,
-      CURL_CA_BUNDLE: inBoxCaPath,
-    });
-    // This executor is created only after the E2B sandbox exists, so the CA
-    // upload is immediate. Provider creation remains the only lazy boundary.
-    try {
-      const { promises: nodeFs } = await import("node:fs");
-      const buf = await nodeFs.readFile(caCertPath);
-      await this.sandbox.files.write(inBoxCaPath, buf);
-    } catch (err) {
-      this.logger.warn(`E2B vault CA upload failed: ${(err as Error).message}`);
-    }
-  }
-
   async readFile(path: string): Promise<string> {
     return this.sandbox.files.read(path);
   }

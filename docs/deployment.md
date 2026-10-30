@@ -7,7 +7,7 @@ is wired at startup.
 
 | Mode | One-liner | When to pick |
 |---|---|---|
-| **Self-host** | `docker compose up` (or `pnpm --filter main-node start`) — Node control plane + sqlite/pg + explicit isolated sandbox provider + `oma-vault` sidecar | Self-host, Fly.io / Render / VPS, no Cloudflare account, full control over data + binaries |
+| **Self-host** | `docker compose up` (or `pnpm --filter main-node start`) — Node control plane + sqlite/pg + explicit isolated sandbox provider | Self-host, Fly.io / Render / VPS, no Cloudflare account, full control over data + binaries |
 | **Fly.io** | `OPENMA_FLY_SANDBOX_PROVIDER=e2b OPENMA_FLY_DATA_MODE=sqlite pnpm setup:fly` — `main-fly` adapter + one always-on Machine + `/app/data` volume | Managed VM deployment of the portable Node topology without adopting Cloudflare primitives |
 | **CF local** | `pnpm dev` — `wrangler dev` on the main + agent workers with local D1/KV/R2/DO simulators | Develop against the CF runtime without touching prod; tests; one-off prod-shape repro |
 | **CF prod** | `pnpm deploy` (`scripts/deploy.sh`) — three workers (main / agent / integrations) on Cloudflare's network | Production at scale; you want CF to handle scaling, durability, edge presence; OK with vendor lock-in |
@@ -19,8 +19,8 @@ diff at a glance.
 
 ## Self-host
 
-**One process, one box.** Everything runs in a single Node process, with
-optional sidecar (`oma-vault`) for outbound credential injection.
+**One process, one box.** Everything runs in a single Node process, including
+the optional sandbox egress proxy (its own port) for CLI credential injection.
 
 ```
                      ┌──────── browser / curl / SDK ───────┐
@@ -41,17 +41,13 @@ optional sidecar (`oma-vault`) for outbound credential injection.
                                      │ provider API / VM boundary
                           ┌──────────┴──────────┐
                           ▼                     ▼
-                  isolated sandbox runtime    HTTPS_PROXY=http://oma-vault:14322
-                       (provider)                   │
-                                                  ▼
-                                    ┌──────────────────────────┐
-                                    │ oma-vault (apps/oma-vault)│
-                                    │ mockttp HTTPS MITM proxy  │
-                                    │ inject Authorization      │
-                                    └──────────────────────────┘
-                                                  │
-                                                  ▼
-                                          api.github.com etc.
+                  isolated sandbox runtime ── HTTPS_PROXY ──▶ oma-server
+                       (provider)                 egress proxy port
+                                                  (MITM only for hosts with a
+                                                   Session Vault credential)
+                                                          │
+                                                          ▼
+                                                  api.github.com etc.
 ```
 
 ### Components
@@ -65,7 +61,7 @@ optional sidecar (`oma-vault`) for outbound credential injection.
 | Event log | `SqlEventLog` (per-session events in shared `session_events` table) + `InProcessEventStreamHub` (sqlite mode) or `PgEventStreamHub` (pg mode, LISTEN/NOTIFY-backed) for SSE fan-out |
 | Sandbox | Required `SANDBOX_PROVIDER`: `litebox` (local Firecracker μVM), `boxrun`, `daytona`, `opensandbox`, or `e2b`; no non-isolated fallback |
 | Auth | `better-auth`; separate `auth.db` in SQLite mode, same server DB in Postgres/MySQL mode. `AUTH_DISABLED=1` bypasses for local demos |
-| Vault credential injection | Work-scoped HTTP MCP gateway for managed sandbox MCP; optional legacy `apps/oma-vault` sidecar is single-operator/advisory only |
+| Vault credential injection | Work-scoped HTTP MCP gateway for managed sandbox MCP; in-process sandbox egress proxy for CLIs (`SANDBOX_EGRESS_PROXY_*`, best effort) |
 | Memory mount | sandbox symlinks `/mnt/memory/<storeName>` → `<MEMORY_BLOB_DIR>/<storeId>/`. chokidar watcher reflects fs writes back into the SQL `memories` index |
 | Cron | `croner` per-minute scheduler; memory-version retention and eval/webhook sweeps run in-process |
 | Queue | not used — chokidar watcher replaces the R2-event Queue consumer |
@@ -79,7 +75,7 @@ optional sidecar (`oma-vault`) for outbound credential injection.
 cp .env.example .env
 $EDITOR .env  # BETTER_AUTH_SECRET + PLATFORM_ROOT_SECRET + isolated SANDBOX_PROVIDER and credentials
 
-# 2. Run (Docker compose: oma-server + oma-vault)
+# 2. Run (Docker compose: oma-server)
 docker compose -f docker-compose.yml up --build
 
 # 3. Sanity
@@ -121,8 +117,8 @@ ANTHROPIC_API_KEY=sk-... BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 - PG mode: `oma-server` itself is replica-safe (PG LISTEN/NOTIFY hub
   fans events out across replicas; `upsertFromEvent` is idempotent on
   sha256 etag). Caveats: `MEMORY_BLOB_DIR` must be on shared storage
-  (NFS/EFS/shared docker volume); `auth.db` and `oma-vault` are still
-  single-process (deferred). See `docs/self-host.md#running-multiple-oma-server-replicas-pg-mode-only`.
+  (NFS/EFS/shared docker volume); `auth.db` is still single-process
+  (deferred); replicas share `SANDBOX_EGRESS_CA_DIR`. See `docs/self-host.md#running-multiple-oma-server-replicas-pg-mode-only`.
 - Deployable Node entrypoints reject missing providers and the internal
   subprocess test adapter. Every agent tool execution must cross an isolated
   provider boundary.
@@ -307,7 +303,7 @@ pnpm deploy
 
 | Concern | Self-host | CF Local | CF Prod |
 |---|---|---|---|
-| Process count | 1 (oma-server) + 1 sidecar (oma-vault) | 2 wrangler dev (main + agent) | 3 workers (main + agent + integrations) |
+| Process count | 1 (oma-server) | 2 wrangler dev (main + agent) | 3 workers (main + agent + integrations) |
 | HTTP runtime | Hono on Node | workerd | workerd at edge |
 | SQL store | better-sqlite3 / postgres.js / mysql2 | D1 local sim | D1 (with optional shard router) |
 | KV / cache | none — SQL covers it | wrangler KV sim | CONFIG_KV |
@@ -316,7 +312,7 @@ pnpm deploy
 | Stream broadcast | InProcessEventStreamHub (sqlite) or PgEventStreamHub (pg, LISTEN/NOTIFY) for SSE | DO WS hibernation → SSE bridge | DO WS hibernation → SSE bridge |
 | Sandbox | explicit litebox / boxrun / daytona / e2b | Container DO via Docker | Container DO on CF Containers |
 | Auth | better-auth + selected SQL backend | better-auth + D1 local sim | better-auth + D1 + Email Workers + OAuth |
-| Vault inject | Work-scoped HTTP MCP gateway; legacy oma-vault is advisory | fenced outbound handler + HTTP MCP gateway | fenced outbound handler + HTTP MCP gateway |
+| Vault inject | Work-scoped HTTP MCP gateway; egress proxy is best effort | fenced outbound handler + HTTP MCP gateway | fenced outbound handler + HTTP MCP gateway |
 | Memory mount | symlink to LocalFsBlobStore + chokidar | R2 sim + mountBucket(localBucket:true) | R2 + s3fs + R2 Events → Queue → D1 |
 | Cron | `croner` per-minute scheduler (memory/eval/webhook jobs) | wrangler dev `--test-scheduled` | CF cron `* * * * *` |
 | Queue | none (chokidar replaces it) | wrangler queue sim | CF Queues + DLQ |
