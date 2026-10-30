@@ -33,6 +33,7 @@
     "@open-managed-agents/control-plane-node": "workspace:*",
     "@open-managed-agents/email": "workspace:*",
     "@open-managed-agents/event-log": "workspace:*",
+    "@open-managed-agents/managed-agents-adapters-http": "workspace:*",
     "@open-managed-agents/managed-runtime-sprites": "workspace:*",
     "@open-managed-agents/memory-store": "workspace:*",
     "@open-managed-agents/node-database": "workspace:*",

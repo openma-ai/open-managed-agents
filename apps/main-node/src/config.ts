@@ -10,6 +10,7 @@
 // are: the sandbox provider's own keys (SandboxFactory takes a
 // SandboxFactoryEnv), and nothing else.
 
+import { mcpOAuthPresetsFromEnvironment } from "@open-managed-agents/managed-agents-adapters-http";
 import { nanoid } from "nanoid";
 import { EMPTY_SANDBOX_IMAGE_CATALOG, parseSandboxImageCatalog } from "@open-managed-agents/sandbox";
 
@@ -227,6 +228,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     tunnels: { domainSuffix: env.TUNNEL_DOMAIN_SUFFIX ?? "tunnels.localhost" },
     skillSources: { allowHosts: skillSourceAllowHosts },
     integrationsInternalToken: env.INTEGRATIONS_INTERNAL_TOKEN,
+    mcpOAuthPresets: mcpOAuthPresetsFromEnvironment(env),
     email,
     feishuWsRunner: flag("FEISHU_WS_RUNNER"),
     cron: {
