@@ -57,6 +57,43 @@ describe("Cloudflare production Session relay route", () => {
       await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
     }
   });
+  it.each([
+    { cliId: "glab", target: "https://gitlab.com/api/v4/user", alias: "PRIVATE-TOKEN" },
+    { cliId: "gh", target: "https://api.github.com/user", alias: "X-Github-Token" },
+  ])("strips $cliId placeholder aliases in the production CF relay", async ({ cliId, target, alias }) => {
+    const api = async (path: string, body: unknown) => {
+      const response = await exports.default.fetch(new Request(`https://localhost${path}`, { method: "POST", headers: {
+        "x-api-key": "test-key", "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01",
+      }, body: JSON.stringify(body) }));
+      expect(response.status, await response.clone().text()).toBeLessThan(300); return response.json();
+    };
+    await exports.default.fetch(new Request("http://localhost/health"));
+    const vault = await api("/v1/vaults", { display_name: "CLI protocol" });
+    await api(`/v1/vaults/${vault.id}/credentials`, { auth: { type: "cap_cli", cli_id: cliId, token: "real-cli-token" } });
+    const id = `relay-cli-${crypto.randomUUID()}`;
+    await env.MAIN_DB.prepare(`INSERT INTO managed_sessions
+      (workspace_id,id,document,revision,agent_id,agent_version,environment_id,status,created_at,updated_at,archived_at)
+      VALUES ('default',?,?,1,'agent',1,'environment','idle',?,?,NULL)`)
+      .bind(id, JSON.stringify({ vaultIds: [vault.id] }), Date.now(), Date.now()).run();
+    const seen: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const request = input instanceof Request ? input : new Request(input);
+      expect(request.url).toBe(target); seen.push(request.headers); return new Response("ok");
+    });
+    const passes = createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now);
+    try {
+      const response = await exports.default.fetch(new Request("https://localhost/v1/oma/egress/forward", { method: "POST", headers: {
+        authorization: `Bearer ${await passes.issue({ workspaceId: "default", sessionId: id, ttlMs: 60000 })}`,
+        "x-oma-egress-target": target, "x-oma-egress-method": "GET",
+        "x-oma-egress-headers": JSON.stringify({ [alias]: "__cap_managed__", authorization: "Bearer __cap_managed__" }),
+      } }));
+      expect(response.status).toBe(200); expect(seen).toHaveLength(1);
+      expect(seen[0].get("authorization")).toBe("Bearer real-cli-token"); expect(seen[0].has(alias)).toBe(false);
+    } finally {
+      await env.MAIN_DB.prepare("DELETE FROM managed_sessions WHERE workspace_id='default' AND id=?").bind(id).run();
+    }
+  });
+
   it("accepts only the Session pass, uses the current D1 Session and denies archival", async () => {
     const health = await exports.default.fetch(new Request("http://localhost/health"));
     expect(health.status).toBe(200);

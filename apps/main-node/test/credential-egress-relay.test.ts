@@ -5,7 +5,7 @@ import { createCredentialEgressRelay, createEgressRelayPasses } from "../../../p
 import { buildCredentialEgressRoutes } from "../../../packages/managed-agents-adapters-http/src/credential-egress";
 import type { StoredCredential, CredentialStore } from "../../../packages/credential-store/src/index";
 
-function fixture() {
+function fixture(cliId?: string) {
   let vaultIds = ["vault"];
   let archivedAt: string | null = null;
   let exists = true;
@@ -18,6 +18,7 @@ function fixture() {
     id: "credential", vaultId: "vault", displayName: "test", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", archivedAt: null, metadata: {},
     auth: { type: "mcp_oauth", mcpServerUrl: "https://upstream.example/mcp", accessToken: "real-token", refresh: { refreshToken: "refresh-token", tokenEndpoint: "https://auth.example/token", clientId: "client", tokenEndpointAuth: { type: "none" } } },
   } };
+  if (cliId) row.credential.auth = { type: "cap_cli", cliId, token: "real-token" };
   const credentials: CredentialStore = {
     list: async ({ vaultId }) => vaultId === "vault" ? [row] : [],
     find: async () => row,
@@ -66,6 +67,18 @@ describe("credential relay shared HTTP contract", () => {
     expect(request.headers.get("authorization")).toBe("Bearer real-token");
     expect(request.headers.get("x-client")).toBe("keep");
     for (const header of ["proxy-authorization", "connection", "x-hop", "x-oma-egress-target"]) expect(request.headers.has(header)).toBe(false);
+  });
+
+  it.each([
+    { cliId: "glab", target: "https://gitlab.com/api/v4/user", alias: "PRIVATE-TOKEN" },
+    { cliId: "gh", target: "https://api.github.com/user", alias: "X-Github-Token" },
+  ])("applies $cliId spec header stripping before injecting the real token", async ({ cliId, target, alias }) => {
+    const f = fixture(cliId);
+    const response = await call(f, "/forward", { target, headers: { [alias]: "__cap_managed__", authorization: "Bearer __cap_managed__", "x-client": "keep" } });
+    expect(response.status).toBe(200);
+    expect(f.seen[0]!.headers.get("authorization")).toBe("Bearer real-token");
+    expect(f.seen[0]!.headers.has(alias)).toBe(false);
+    expect(f.seen[0]!.headers.get("x-client")).toBe("keep");
   });
 
   it("separates HEAD representation length from POST transport framing without changing native responses", async () => {

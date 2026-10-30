@@ -37,12 +37,16 @@ export const EGRESS_SANDBOX_CONTROL_HEADERS: readonly string[] = [
  */
 export function egressRequestHeaders(
   inbound: Headers,
-  input: { token: string | null; stripAuthorization: boolean },
+  input: { token: string | null; stripAuthorization: boolean; header?: import("@open-managed-agents/cap").HeaderInjectSpec },
 ): Headers {
   const headers = new Headers(inbound);
   for (const name of EGRESS_HOP_HEADERS) headers.delete(name);
   for (const name of EGRESS_SANDBOX_CONTROL_HEADERS) headers.delete(name);
   if (input.stripAuthorization) headers.delete("authorization");
-  if (input.token !== null) headers.set("authorization", `Bearer ${input.token}`);
+  for (const name of input.header?.strip ?? []) headers.delete(name);
+  if (input.token !== null) {
+    if (input.header) headers.set(input.header.set.name, input.header.set.value.replaceAll("${token}", input.token));
+    else headers.set("authorization", `Bearer ${input.token}`);
+  }
   return headers;
 }
