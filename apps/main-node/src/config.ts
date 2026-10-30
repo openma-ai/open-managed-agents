@@ -310,7 +310,6 @@ function sandboxEgressProxyConfig(
     publicUrl: publicUrl!,
     listenHost: env.SANDBOX_EGRESS_PROXY_HOST?.trim() || (env.HOST ?? "0.0.0.0"),
     listenPort,
-    caDir: env.SANDBOX_EGRESS_CA_DIR?.trim() || "./data/sandbox-egress-ca",
     passTtlMs,
   };
 }

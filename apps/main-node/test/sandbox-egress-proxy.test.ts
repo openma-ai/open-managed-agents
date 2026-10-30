@@ -294,7 +294,6 @@ describe("sandbox egress configuration", () => {
       publicUrl: "http://openma.example.com:8788",
       listenHost: "0.0.0.0",
       listenPort: 8788,
-      caDir: "./data/sandbox-egress-ca",
       passTtlMs: 86_400_000,
     });
   });
@@ -560,7 +559,7 @@ describe("shared sandbox egress CA", () => {
       credentials: memoryStore([mcpCredential("cred_a", "vlt_a", `https://localhost:${upstream.port}/mcp`, "shared-ca-token")]),
       fetch: async () => { throw new Error("unused"); }, clock: { now: () => new Date() }, log: { warn: () => {} },
     }, createSpecRegistry(builtinSpecs));
-    const start = async (sql: SqlClient, pod: string) => {
+    const start = async (sql: SqlClient) => {
       const caStore = new SqlEgressCaStore(sql, createNodeSecrets("shared-root").cipherFor("managed.sandbox-egress.ca"));
       const dependencies = {
         caStore, credentials: resolver,
@@ -569,7 +568,7 @@ describe("shared sandbox egress CA", () => {
       };
       const proxy = await startSandboxEgressProxy({
         publicUrl: "http://egress.example:8788", listenHost: "127.0.0.1", listenPort: 0,
-        caDir: join(dir, pod), passTtlMs: 60_000,
+        passTtlMs: 60_000,
       }, "shared-root", dependencies);
       const close = proxy.close;
       let closed = false;
@@ -586,8 +585,8 @@ describe("shared sandbox egress CA", () => {
 
   it("shares one encrypted CA across independent proxies and restart without a shared local directory", async () => {
     const { dir, sqlA, sqlB, upstream, start } = await replicas();
-    const a = await start(sqlA, "pod-a");
-    const b = await start(sqlB, "pod-b");
+    const a = await start(sqlA);
+    const b = await start(sqlB);
     const caFile = join(dir, "sandbox-trust-from-a.crt");
     await writeFile(caFile, a.settings.caCertificatePem);
     const pass = a.settings.passes.issue({ workspaceId: "ws_a", sessionId: "sesn_a", ttlMs: 60_000 });
@@ -599,7 +598,7 @@ describe("shared sandbox egress CA", () => {
     expect(b.settings.caCertificatePem).toBe(a.settings.caCertificatePem);
     await a.close();
     await b.close();
-    const restarted = await start(await createBetterSqlite3SqlClient(join(dir, "shared.sqlite")), "pod-c");
+    const restarted = await start(await createBetterSqlite3SqlClient(join(dir, "shared.sqlite")));
     expect(restarted.settings.caCertificatePem).toBe(a.settings.caCertificatePem);
     const rows = await sqlA.prepare("SELECT value FROM kv_entries").all<{ value: string }>();
     expect(rows.results).toHaveLength(1);
@@ -612,17 +611,17 @@ describe("shared sandbox egress CA", () => {
     await loadOrCreateEgressCa(join(dir, "local-ca"));
     if (operation === "read") await sqlA.exec("DROP TABLE kv_entries");
     else await sqlA.exec("CREATE TRIGGER reject_ca_write BEFORE INSERT ON kv_entries BEGIN SELECT RAISE(ABORT, 'ca_write_failed'); END");
-    await expect(start(sqlA, "local-ca")).rejects.toThrow();
+    await expect(start(sqlA)).rejects.toThrow();
   });
 
   it("fails startup when the shared CA cannot be decrypted rather than replacing it", async () => {
-    const { dir, sqlA, sqlB, start } = await replicas();
-    await start(sqlA, "first");
+    const { sqlA, sqlB, start } = await replicas();
+    await start(sqlA);
     const before = await sqlA.prepare("SELECT value FROM kv_entries").first<{ value: string }>();
     const wrongCipher = new SqlEgressCaStore(sqlB, createNodeSecrets("wrong-root").cipherFor("managed.sandbox-egress.ca"));
     await expect(startSandboxEgressProxy({
       publicUrl: "http://egress.example:8788", listenHost: "127.0.0.1", listenPort: 0,
-      caDir: join(dir, "other"), passTtlMs: 60_000,
+      passTtlMs: 60_000,
     }, "wrong-root", {
       caStore: wrongCipher, credentials: { outboundTarget: async () => null, forward: async () => { throw new Error("unused"); } },
       findSession: async () => null, claimsHost: () => false, log: { info: () => {}, warn: () => {}, error: () => {} },
@@ -648,7 +647,7 @@ describe("shared sandbox egress CA", () => {
     // key generation, but the losing INSERT must not overwrite the winner.
     await sqlA.exec(`CREATE TABLE ca_insert_audit (created INTEGER);
       CREATE TRIGGER count_ca_insert AFTER INSERT ON kv_entries BEGIN INSERT INTO ca_insert_audit VALUES (1); END`);
-    const [a, b] = await Promise.all([start(sqlA, "concurrent-a"), start(sqlB, "concurrent-b")]);
+    const [a, b] = await Promise.all([start(sqlA), start(sqlB)]);
     expect(a.settings.caCertificatePem).toBe(b.settings.caCertificatePem);
     const row = await sqlA.prepare("SELECT COUNT(*) AS count FROM kv_entries").first<{ count: number }>();
     expect(row!.count).toBe(1);
