@@ -18,6 +18,11 @@ import {
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
 
+/** Row is a turn continuation (client answer to a paused tool call). */
+const CONTINUATION_SQL = (alias: string) =>
+  `${alias}.events_json LIKE '%"type":"user.custom_tool_result"%' OR ` +
+  `${alias}.events_json LIKE '%"type":"user.tool_confirmation"%'`;
+
 /** Promise port over an Effect program. FiberFailure stays inside. */
 function runCoordinatorPort<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
   return Effect.runPromiseExit(effect).then((exit) => {
@@ -470,6 +475,7 @@ export class SqlSessionExecutionStore
     id: string;
     revision: number | string;
   } | null> {
+    const continuations = input.continuationsOnly === true;
     return this.sql.prepare(`
       SELECT candidate.workspace_id, candidate.session_id, candidate.id, candidate.revision
         FROM managed_session_executions AS candidate
@@ -480,12 +486,14 @@ export class SqlSessionExecutionStore
            AND candidate.lease_expires_at_ms <= ? AND candidate.owner_id <> ?))
          AND candidate.attempt_count < candidate.max_attempts
          AND candidate.deadline_at_ms > ?
+         ${continuations ? `AND (${CONTINUATION_SQL("candidate")})` : ""}
          AND NOT EXISTS (
            SELECT 1 FROM managed_session_executions AS earlier
             WHERE earlier.workspace_id = candidate.workspace_id
               AND earlier.session_id = candidate.session_id
               AND earlier.lane_id = candidate.lane_id
               AND earlier.state IN ('queued', 'running')
+              ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}
               AND (earlier.admitted_at_ms < candidate.admitted_at_ms
                 OR (earlier.admitted_at_ms = candidate.admitted_at_ms AND earlier.id < candidate.id))
          )

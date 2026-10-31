@@ -437,6 +437,9 @@ export class SessionDO extends DurableObject<Env> {
    * key shape.
    */
   private _threadAbortControllers = new Map<string, AbortController>();
+  /** Threads whose aborted turn already got its status_idle from the
+   *  user.interrupt handler; the turn's catch-all idle must not repeat it. */
+  private _interruptIdleOwned = new Set<string>();
 
   /** Execution authority lives in the tenant D1 outbox. The DO only owns a
    * lease while running one lane and never uses this map as durable state. */
@@ -1208,7 +1211,7 @@ export class SessionDO extends DurableObject<Env> {
         forceIdle: () => {
           // Status auto-derives to "idle" once recoverAgentTurn returns
           // and cf_agents_runs is empty. Just emit the trajectory event.
-          const idleEvent: SessionEvent = { type: "session.status_idle" };
+          const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
         },
@@ -1559,6 +1562,9 @@ export class SessionDO extends DurableObject<Env> {
       try {
       while (true) {
         this.broadcastedMessageIds.clear();
+        // Parked in requires_action: only the client's answers may run; a
+        // queued user.message waits for the paused turn to finish.
+        const awaitingClient = (this.state.pending_tool_calls?.length ?? 0) > 0;
         const result = await host.runOne(async (execution, fence, signal) => {
           this._executionFences.set(threadId, fence);
           const executionHistory = this.guardHistoryForExecution(history, fence);
@@ -1577,6 +1583,10 @@ export class SessionDO extends DurableObject<Env> {
                 await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
               } else if (event.type === "user.custom_tool_result") {
                 const customResult = event as UserCustomToolResultEvent;
+                // Late answer for a call that is already closed (interrupt
+                // settled it, or a duplicate POST): a second tool_result for
+                // one tool_use makes the provider 400 the whole transcript.
+                if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
                 const toolResultEvent: SessionEvent = {
                   type: "agent.tool_result",
                   tool_use_id: customResult.custom_tool_use_id,
@@ -1586,10 +1596,7 @@ export class SessionDO extends DurableObject<Env> {
                 };
                 executionHistory.append(toolResultEvent);
                 this.broadcastEvent(toolResultEvent, fence);
-                await this.processUserMessage({
-                  type: "user.message",
-                  content: [{ type: "text", text: "" }],
-                }, 0, true, signal, fence);
+                await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
               }
             }
             // `broadcastEvent` deliberately serializes the managed-runtime
@@ -1608,7 +1615,7 @@ export class SessionDO extends DurableObject<Env> {
               this._executionFences.delete(threadId);
             }
           }
-        });
+        }, { continuationsOnly: awaitingClient });
         if (result.type === "empty") {
           // Direct DO callers and pre-outbox deliveries may have a local
           // pending row but no D1 admission yet. Admit it once as a
@@ -1741,6 +1748,7 @@ export class SessionDO extends DurableObject<Env> {
               await this.handleToolConfirmation(event as UserToolConfirmationEvent, history);
             } else if (event.type === "user.custom_tool_result") {
               const customResult = event as UserCustomToolResultEvent;
+              if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) return;
               const toolResultEvent: SessionEvent = {
                 type: "agent.tool_result",
                 tool_use_id: customResult.custom_tool_use_id,
@@ -1753,11 +1761,7 @@ export class SessionDO extends DurableObject<Env> {
               };
               history.append(toolResultEvent);
               this.broadcastEvent(toolResultEvent);
-              const resumeMsg: UserMessageEvent = {
-                type: "user.message",
-                content: [{ type: "text", text: "" }],
-              };
-              await this.processUserMessage(resumeMsg, 0, true);
+              await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, history);
             }
           },
           {},
@@ -2400,9 +2404,15 @@ export class SessionDO extends DurableObject<Env> {
             stop_reason: { type: "end_turn" },
             ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
           };
+          if (hadActiveTurn) this._interruptIdleOwned.add(targetThread);
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
         }
+        // Custom tools are answered by the client, not harness.interruptPending.
+        // If we leave them open (common when interrupt lands in requires_action),
+        // a late user.custom_tool_result resumes the interrupted turn. Close
+        // every unpaired tool_use and clear pending_tool_calls unconditionally.
+        this.closeToolUsesAfterInterrupt(history);
         return new Response(null, { status: 202 });
       }
 
@@ -3229,7 +3239,6 @@ export class SessionDO extends DurableObject<Env> {
   private sessionSandboxRuntime(): SessionSandboxRuntime {
     return this.sandboxRuntime ??= new SessionSandboxRuntime({
       mode: async () => {
-        // LOCAL-DEV-ONLY shim (uncommitted): no docker on this box.
         const source = await this.env.MAIN_MCP?.resolveManagedSessionInputs({
           tenantId: this.state.tenant_id, sessionId: this.state.session_id,
         });
@@ -4341,6 +4350,7 @@ export class SessionDO extends DurableObject<Env> {
     executionFence?: SessionExecutionFence,
   ): Promise<void> {
     // Wrapped sandbox: per-method warmup happens inside any actual call.
+    if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) return;
     // Confirmation handlers may not even touch the sandbox depending on
     // tool type, so eager warmup is wasted; lazy is the right default.
     const sandbox = this.bindSandboxToExecution(
@@ -4453,17 +4463,116 @@ export class SessionDO extends DurableObject<Env> {
       this.broadcastEvent(toolResultEvent);
     }
 
-    // Remove the confirmed/denied call from pending
-    const remaining = pendingCalls.filter(p => p.toolCallId !== confirmation.tool_use_id);
-    this.setState({ ...this.state, pending_tool_calls: remaining });
+    // Remove the confirmed/denied call from pending, and only resume the
+    // model once every parallel call of the batch has a result.
+    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence);
+  }
 
+  /**
+   * A model step can emit several tool calls at once (parallel
+   * custom_tool_use / always_ask tool_use). Each one is answered by its own
+   * user event. Resuming the model after the FIRST answer replays a
+   * transcript with unmatched tool_use blocks, which providers reject
+   * (400 "tool_result without tool_use" / missing results) and the turn
+   * then loops through rescheduled+error. CMA semantics: stay
+   * idle(requires_action) listing the still-outstanding ids, and resume
+   * only when the whole batch is settled.
+   */
+  /**
+   * The aborted step's partial output can still land after user.interrupt
+   * (stream-end fixup persists it), including tool_use blocks. Left open,
+   * a client would answer them and the continuation would silently resume
+   * the interrupted turn. Close every unpaired call with an interrupted
+   * result; late answers are then dropped by toolUseAlreadyAnswered.
+   */
+  private closeToolUsesAfterInterrupt(history: HistoryStore, fence?: SessionExecutionFence): void {
+    try {
+      const events = history.getEvents();
+      const answered = new Set<string>();
+      for (const e of events) {
+        if (e.type === "agent.tool_result") {
+          const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+          if (id) answered.add(id);
+        }
+      }
+      for (const e of events) {
+        if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use") continue;
+        const id = (e as unknown as { id?: string }).id;
+        if (!id || answered.has(id)) continue;
+        const closed = {
+          type: "agent.tool_result",
+          tool_use_id: id,
+          content: "Interrupted by user before this tool call completed.",
+          is_error: true,
+          parent_event_id: id,
+        } as unknown as SessionEvent;
+        history.append(closed);
+        this.broadcastEvent(closed, fence);
+      }
+      if ((this.state.pending_tool_calls?.length ?? 0) > 0) {
+        this.setState({ ...this.state, pending_tool_calls: [] });
+      }
+    } catch (err) {
+      console.warn("[interrupt] closing open tool calls failed:", err);
+    }
+  }
+
+  private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
+    try {
+      return history.getEvents().some((e) =>
+        e.type === "agent.tool_result" &&
+        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+    } catch {
+      return false;
+    }
+  }
+
+  private async resumeWhenToolBatchSettled(
+    answeredId: string,
+    history: HistoryStore,
+    signal?: AbortSignal,
+    fence?: SessionExecutionFence,
+  ): Promise<void> {
+    const before = this.state.pending_tool_calls ?? [];
+    let resolved = new Set<string>([answeredId]);
+    if (before.length > 1) {
+      try {
+        for (const e of history.getEvents()) {
+          if (e.type === "agent.tool_result") {
+            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+            if (id) resolved.add(id);
+          }
+        }
+      } catch { resolved = new Set([answeredId]); }
+    }
+    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
+    this.setState({ ...this.state, pending_tool_calls: remaining });
+    if (remaining.length > 0) {
+      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
+      const anyCustom = remaining.some((p) => {
+        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
+        return !builtin.includes(name) && !name.startsWith("mcp_") &&
+          !name.startsWith("call_agent_") && !name.startsWith("memory_");
+      });
+      const idleEvent: SessionEvent = {
+        type: "session.status_idle",
+        stop_reason: {
+          type: "requires_action",
+          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
+          event_ids: remaining.map((p) => p.toolCallId),
+        },
+      } as SessionEvent;
+      history.append(idleEvent);
+      this.broadcastEvent(idleEvent, fence);
+      return;
+    }
     // Re-run the harness to continue the conversation
     // Use an empty user message — the history already has the tool result
     const resumeMsg: UserMessageEvent = {
       type: "user.message",
       content: [{ type: "text", text: "" }],
     };
-    await this.processUserMessage(resumeMsg, 0, true, parentSignal, executionFence);
+    await this.processUserMessage(resumeMsg, 0, true, signal, fence);
   }
 
   /**
@@ -5099,6 +5208,7 @@ export class SessionDO extends DurableObject<Env> {
     // Create the local abort controller before building tools. Preparation
     // itself can perform sandbox writes (for example MCP startup), so bind
     // those calls to the same parent execution fence as the model loop.
+    this._interruptIdleOwned.delete(turnThreadId);
     const abortController = new AbortController();
     this._threadAbortControllers.set(turnThreadId, abortController);
     const abortFromParent = () => abortController.abort(parentSignal?.reason);
@@ -5497,6 +5607,11 @@ export class SessionDO extends DurableObject<Env> {
         if (pendingCalls.length) {
           this.setState({ ...this.state, pending_tool_calls: pendingCalls });
         }
+      } else if ((this.state.pending_tool_calls?.length ?? 0) > 0) {
+        // The run finished without parking on a client action, so nothing is
+        // outstanding. A stale list would hold queued user.messages behind
+        // continuationsOnly claims forever.
+        this.setState({ ...this.state, pending_tool_calls: [] });
       }
 
       // Outcome self-evaluation loop. Phase 4 / AMA-aligned: delegated
@@ -5767,9 +5882,14 @@ export class SessionDO extends DurableObject<Env> {
       // use the generic event because they have no meaningful stop reason.
       // This also pairs with status_running so Console never remains stuck at
       // "Running" after a model/tool failure.
-      if (!idleEmitted) {
+      // A user.interrupt already emitted this turn's status_idle; emitting
+      // the catch-all one too produced two idles per interrupt.
+      const interruptOwnsIdle = abortController.signal.aborted &&
+        this._interruptIdleOwned.delete(turnThreadId);
+      if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence);
+      if (!idleEmitted && !interruptOwnsIdle) {
         try {
-          const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle" };
+          const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent, activeFence);
         } catch (err) {
@@ -6709,6 +6829,15 @@ export class SessionDO extends DurableObject<Env> {
         }
       } catch { /* skip */ }
     }
+    // Calls parked on the client (custom_tool_use awaiting
+    // user.custom_tool_result, always_ask awaiting user.tool_confirmation)
+    // are unpaired BY DESIGN and survive DO restarts via persisted state.
+    // Flushing them injected a synthetic "interrupted" result next to the
+    // real one the client posts later → duplicate tool_result → provider
+    // 400 "each tool_use must have a single result" + reschedule loop.
+    for (const pending of this.state.pending_tool_calls ?? []) {
+      usedIds.delete(pending.toolCallId);
+    }
     let flushed = 0;
     for (const [id, meta] of usedIds) {
       const isMcp = meta.type === "agent.mcp_tool_use";
@@ -6776,7 +6905,7 @@ export class SessionDO extends DurableObject<Env> {
         type: "session.status_rescheduled",
         reason: "DO eviction or restart — stream lost; re-send to continue.",
       } as unknown as SessionEvent;
-      const idleEvent = { type: "session.status_idle" } as unknown as SessionEvent;
+      const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
       // Events are best-effort post-cleanup; row is the source of truth.
       try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
       try { this.broadcastEvent(reschedEvent); } catch {}

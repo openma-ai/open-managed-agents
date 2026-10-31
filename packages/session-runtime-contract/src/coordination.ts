@@ -76,6 +76,14 @@ export interface ClaimSessionExecution {
   attemptId: string;
   claimedAt: string;
   leaseTtlMs: number;
+  /**
+   * Claim only turn continuations (user.custom_tool_result /
+   * user.tool_confirmation), letting them pass queued user.messages in the
+   * same lane. Set while the lane is parked in requires_action: a queued
+   * user.message must wait for the paused turn instead of starting a new
+   * turn over unmatched tool_use blocks.
+   */
+  continuationsOnly?: boolean;
 }
 
 export type ClaimSessionExecutionResult =

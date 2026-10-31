@@ -70,9 +70,13 @@ export class SessionExecutionHost {
     }
   }
 
-  async runOne(run: SessionExecutionRun): Promise<SessionExecutionHostResult> {
+  async runOne(
+    run: SessionExecutionRun,
+    options: { continuationsOnly?: boolean } = {},
+  ): Promise<SessionExecutionHostResult> {
     const claimed = await this.dependencies.store.claim({
       ...this.dependencies.scope,
+      ...(options.continuationsOnly ? { continuationsOnly: true } : {}),
       ownerId: this.dependencies.ownerId,
       attemptId: this.dependencies.ids.nextAttemptId(),
       claimedAt: this.dependencies.clock.now().toISOString(),

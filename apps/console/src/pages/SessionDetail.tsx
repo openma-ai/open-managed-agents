@@ -565,7 +565,7 @@ export function SessionDetail() {
     // Load canonical Managed Agents history. `next_page` is an opaque cursor;
     // do not parse it or depend on the old OMA `{seq, ts, data}` envelope.
     // Each page is applied as it arrives so long sessions render progressively.
-    void (async () => {
+    const loadHistory = async () => {
       let page: string | undefined;
       const seenPages = new Set<string>();
       const pageLimit = 100;
@@ -591,7 +591,8 @@ export function SessionDetail() {
           break;
         }
       }
-    })();
+    };
+    void loadHistory();
 
     // Connect the official Managed Agents async event stream. Reconnect only
     // transport/5xx failures; 4xx responses are terminal until navigation or
@@ -600,6 +601,7 @@ export function SessionDetail() {
     void (async () => {
       const backoffMs = [1_000, 2_000, 4_000, 8_000];
       let failures = 0;
+      let connected = false;
       while (!abort.signal.aborted) {
         try {
           const liveEvents = await managedApi.sessions.events.stream(
@@ -608,6 +610,12 @@ export function SessionDetail() {
             { signal: abort.signal },
           );
           failures = 0;
+          // The official stream has no replay, so anything emitted while the
+          // previous connection was down (tool results, status_idle, queue
+          // stamps) would be missing until a full reload. Re-list once the
+          // new stream is open; upsertSessionEvent dedupes by event id.
+          if (connected) void loadHistory();
+          connected = true;
           for await (const event of liveEvents) {
             if (abort.signal.aborted) break;
             addEvent(event as unknown as Record<string, unknown>);

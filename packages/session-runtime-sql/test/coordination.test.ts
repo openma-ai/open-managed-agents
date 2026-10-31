@@ -112,6 +112,23 @@ describe("SqlSessionExecutionCoordinator", () => {
     coordinator = new SqlSessionExecutionCoordinator(sql);
   });
 
+  it("continuationsOnly lets a tool answer pass a queued user.message and never claims the message", async () => {
+    await coordinator.admit(admitted("queued_msg", "session_01", at(1)));
+    await coordinator.admit({ execution: {
+      id: "tool_answer", workspaceId: "workspace_01", sessionId: "session_01", admittedAt: at(2),
+      events: [{ id: "tool_answer", type: "user.custom_tool_result", customToolUseId: "call_1",
+        content: [{ type: "text", text: "ok" }], processedAt: at(2) } as never],
+    } });
+    const parked = { ownerId: "do", claimedAt: at(3), leaseTtlMs: 10_000, continuationsOnly: true };
+    const first = await coordinator.claim({ ...parked, attemptId: "a1" });
+    expect(first.type === "claimed" && first.execution.id).toBe("tool_answer");
+    if (first.type !== "claimed") throw new Error("expected claim");
+    await coordinator.settle({ fence: first.fence, settledAt: at(4), outcome: "completed" });
+    expect((await coordinator.claim({ ...parked, attemptId: "a2", claimedAt: at(5) })).type).toBe("empty");
+    const normal = await coordinator.claim({ ownerId: "do", attemptId: "a3", claimedAt: at(6), leaseTtlMs: 10_000 });
+    expect(normal.type === "claimed" && normal.execution.id).toBe("queued_msg");
+  });
+
   it("claims a default-mode Session without preparing the optional checkpoint-only lock table", async () => {
     await sql.exec("DROP TABLE managed_session_claim_locks");
     await coordinator.admit(admitted("no-lock", "session_01", at(1)));
