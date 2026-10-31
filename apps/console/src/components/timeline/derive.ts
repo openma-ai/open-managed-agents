@@ -1,5 +1,6 @@
 import { formatDuration } from "../../lib/format";
 import type { Event } from "../../lib/events";
+import { isQueuedSessionEvent } from "../../lib/session-event-queue";
 import { eventTsMs } from "./eventTime";
 import type { Span, Turn, TurnTriggerKind } from "./types";
 
@@ -219,10 +220,14 @@ export function deriveSpans(events: Event[]): { spans: Span[]; totalMs: number }
     } else if (e.type === "user.message") {
       const md = (e as { metadata?: { harness?: string; kind?: string } }).metadata;
       const isWakeup = md?.harness === "schedule" && md?.kind === "wakeup";
+      const queued = isQueuedSessionEvent(e);
       pushSpan({
         key: `u-${i}`,
         family: isWakeup ? "wakeup" : "user",
-        label: isWakeup ? "user.message (wakeup)" : "user.message",
+        label: [
+          isWakeup ? "user.message (wakeup)" : "user.message",
+          queued ? "· queued" : "",
+        ].filter(Boolean).join(" "),
         startMs,
         durationMs: 0,
       });
@@ -313,6 +318,7 @@ export function bucketIntoTurns(events: Event[]): Turn[] {
         triggerTs: parseEventTs(e),
         events: [e],
         status: "running",
+        queued: isQueuedSessionEvent(e),
       };
       turns.push(current);
       continue;
@@ -327,6 +333,7 @@ export function bucketIntoTurns(events: Event[]): Turn[] {
         triggerTs: parseEventTs(e),
         events: [e],
         status: "running",
+        queued: isQueuedSessionEvent(e),
       };
       turns.push(current);
       continue;

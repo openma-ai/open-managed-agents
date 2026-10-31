@@ -6,18 +6,19 @@
  * the Console merges into its canonical event log before clearing the
  * optimistic outbox slot. The optional OpenMA `system.user_message_pending` /
  * `_promoted` / `_cancelled` stream frames are NOT a dependency and are never
- * required as a fallback.
+ * required as a fallback. Queued accepted events become processed through an
+ * in-place same-id update when the stream re-emits them with processed_at.
  */
 import { describe, expect, it } from "vitest";
 import {
   projectCanonicalChatTurns,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
-import { eventKey } from "./session-event-key";
 import {
   mergeSendResponseIntoOutbox,
   type SendResponse,
 } from "./session-send-outbox";
+import { upsertSessionEvent } from "./session-event-upsert";
 
 type WireEvent = WireSessionEvent & { id?: string };
 type SendResponseData = NonNullable<NonNullable<SendResponse>["data"]>;
@@ -26,18 +27,15 @@ function responseWith(events: WireEvent[]): SendResponse {
   return { data: events as unknown as SendResponseData };
 }
 
-/** Minimal production-shaped outbox: addEvent dedupes via eventKey/seenKeys. */
+/** Production-shaped outbox: addEvent appends/updates/dedupes by event id. */
 function createOutbox() {
-  const seenKeys = new Set<string>();
   const events: WireEvent[] = [];
   const addEvent = (event: Record<string, unknown>) => {
-    const wireEvent = event as WireEvent;
-    const key = eventKey(wireEvent);
-    if (seenKeys.has(key)) return;
-    seenKeys.add(key);
-    events.push(wireEvent);
+    const result = upsertSessionEvent(events, event as WireEvent);
+    if (result.action === "duplicate") return;
+    events.splice(0, events.length, ...result.events);
   };
-  return { events, seenKeys, addEvent };
+  return { events, addEvent };
 }
 
 function visibleUserTexts(events: WireEvent[], localPending: string | null): string[] {
@@ -156,5 +154,38 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
     expect(handoff.merged).toBe(0);
     expect(handoff.missingData).toBe(true);
     expect(handoff.localPending).toBe("a different pending message");
+  });
+});
+
+describe("queued send response (official processed_at contract)", () => {
+  it("keeps the bubble and transitions the same event id when processing lands", () => {
+    const text = "queued then processed";
+    const queued = {
+      type: "user.message",
+      id: "sevt_outbox_queued",
+      content: [{ type: "text", text }],
+      processed_at: null,
+    } as WireEvent;
+    const outbox = createOutbox();
+
+    const handoff = mergeSendResponseIntoOutbox(
+      responseWith([queued]),
+      { localPending: text, optimisticText: text },
+      outbox.addEvent,
+    );
+
+    expect(handoff.merged).toBe(1);
+    expect(outbox.events).toHaveLength(1);
+    expect(outbox.events[0]?.processed_at).toBeNull();
+
+    const processed = {
+      ...queued,
+      processed_at: new Date().toISOString(),
+    } as WireEvent;
+    outbox.addEvent(processed);
+
+    expect(outbox.events).toHaveLength(1);
+    expect(outbox.events[0]).toBe(processed);
+    expect(visibleUserTexts(outbox.events, handoff.localPending)).toEqual([text]);
   });
 });

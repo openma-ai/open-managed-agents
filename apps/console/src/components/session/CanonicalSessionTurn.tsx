@@ -7,6 +7,7 @@ import {
 } from "@openma/common/chat-ui";
 import type { CanonicalChatTurn } from "@openma/common/session-events/managed";
 import { Markdown } from "../Markdown";
+import { hasQueuedUserMessage } from "../../lib/session-event-queue";
 import {
   Tool,
   ToolContent,
@@ -26,13 +27,20 @@ export interface CanonicalSessionTurnProps {
  * This adapter is deliberately pure so SessionDetail never rebuilds chat UI.
  */
 export function projectCanonicalSessionTurn(turn: CanonicalChatTurn): AgentUITurnState {
+  // A queued user.message has no assistant output yet. Projecting it as
+  // "running" would make AgentChatView treat it as a live turn (working
+  // spinner / "Working for…"), while the official API says it is still
+  // waiting behind earlier events. Project it as a settled turn and let
+  // AgentUITurnView override the frame status to `queued`; once the same-id
+  // event is updated with processed_at, the regular running projection wins.
+  const queued = hasQueuedUserMessage(turn.rawEvents);
   return projectAcpChatTurn(
     {
       id: turn.id,
       promptText: turn.userText,
       events: turn.rawEvents.map((payload) => ({ payload })),
       assistantText: turn.render.assistantText,
-      status: canonicalTurnStatus(turn.status),
+      status: queued ? "complete" : canonicalTurnStatus(turn.status),
       errorMessage: turn.status === "errored"
         ? turn.render.notes.join("\n") || "The turn failed."
         : undefined,
@@ -46,8 +54,11 @@ export function CanonicalSessionTurn({
   projectedTurn = projectCanonicalSessionTurn(turn),
   sessionId,
 }: CanonicalSessionTurnProps) {
+  const queued = hasQueuedUserMessage(turn.rawEvents);
   return (
     <AgentUITurnView
+      className={queued ? "opacity-80" : undefined}
+      frameStatus={queued ? "queued" : undefined}
       labels={MANAGED_TURN_LABELS}
       sessionId={sessionId}
       slots={managedTurnSlots(turn)}

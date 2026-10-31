@@ -29,7 +29,8 @@ import {
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
 import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
-import { eventKey } from "../lib/session-event-key";
+import { isQueuedSessionEvent } from "../lib/session-event-queue";
+import { upsertSessionEvent } from "../lib/session-event-upsert";
 import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
@@ -157,7 +158,10 @@ export function SessionDetail() {
    *  auto-switch — the operator stays on whatever they're watching. */
   const [activeThreadId, setActiveThreadId] = useState<string>("sthr_primary");
   const [showTrajectory, setShowTrajectory] = useState(false);
-  const seenKeys = useRef(new Set<string>());
+  /** Synchronous mirror of `events` so addEvent can decide append/update/
+   *  duplicate before React commits. Session history paging + SSE can call
+   *  addEvent back-to-back; a state updater cannot drive side effects. */
+  const eventsRef = useRef<Event[]>([]);
 
   const addEvent = (e: Record<string, unknown>) => {
     const ev = e as Event;
@@ -323,9 +327,31 @@ export function SessionDetail() {
       });
     }
 
-    const key = eventKey(ev);
-    if (seenKeys.current.has(key)) return;
-    seenKeys.current.add(key);
+    // Optional OpenMA extensions. CF's SessionDO may still emit these
+    // pending-queue notifications, but the Console does not depend on them
+    // for the send/outbox path (official MA send response is authoritative).
+    // Ignore them so they never become unknown user-visible rows in the
+    // canonical events list.
+    if (
+      ev.type === "system.user_message_pending"
+      || ev.type === "system.user_message_promoted"
+      || ev.type === "system.user_message_cancelled"
+    ) {
+      return;
+    }
+
+    // Tag streamed events with arrival time so the timeline has a usable ts
+    // even before the server-side stored copy round-trips.
+    if (!ev.ts) ev.ts = new Date().toISOString();
+
+    // Official MA redelivers the same event id on the stream once a queued
+    // event is processed (processed_at null -> timestamp). Upsert replaces
+    // the stored copy in place; only a genuinely new event runs side effects.
+    const upserted = upsertSessionEvent(eventsRef.current, ev);
+    if (upserted.action === "duplicate") return;
+    eventsRef.current = upserted.events;
+    setEvents(upserted.events);
+    if (upserted.action === "update") return;
 
     if (ev.type === "session.status_running") setStatus("running");
     if (ev.type === "session.status_idle") setStatus("idle");
@@ -341,18 +367,6 @@ export function SessionDetail() {
       setStatus("idle");
     }
 
-    // Optional OpenMA extensions. CF's SessionDO may still emit these
-    // pending-queue notifications, but the Console does not depend on them
-    // for the send/outbox path (official MA send response is authoritative).
-    // Ignore them so they never become unknown user-visible rows in the
-    // canonical events list.
-    if (
-      ev.type === "system.user_message_pending"
-      || ev.type === "system.user_message_promoted"
-      || ev.type === "system.user_message_cancelled"
-    ) {
-      return;
-    }
     // Official-path handoff for the optimistic bubble: when the send
     // response carried no data (or SSE redelivers the canonical event),
     // the real user.message is what replaces it. This does NOT use
@@ -401,11 +415,6 @@ export function SessionDetail() {
     // its switch — keeping the events here costs the chat view nothing
     // and gives Timeline the full trajectory it needs.
 
-    // Tag streamed events with arrival time so the timeline has a usable ts
-    // even before the server-side stored copy round-trips.
-    if (!ev.ts) ev.ts = new Date().toISOString();
-
-    setEvents((prev) => [...prev, ev]);
   };
 
   useEffect(() => {
@@ -419,8 +428,8 @@ export function SessionDetail() {
     // explicit reset the user sees session A's content under session B's
     // URL until the SSE refill catches up. Hard refresh works because
     // it re-mounts the whole tree from a fresh state. Reported 2026-05-13.
-    seenKeys.current.clear();
     managedDeltaState.current = { kinds: new Map(), text: new Map() };
+    eventsRef.current = [];
     setEvents([]);
     setStreams(new Map());
     setThinkingStreams(new Map());
@@ -1223,7 +1232,6 @@ function SessionTransientActivity({
       {localPending ? (
         <EventRender
           event={{ type: "user.message", content: [{ type: "text", text: localPending }] } as Event}
-          livePending
         />
       ) : null}
       {Array.from(thinkingStreams.entries()).map(([id, text]) => (
@@ -1298,22 +1306,10 @@ function SessionTransientActivity({
 
 function EventRender({
   event,
-  livePending = false,
   pairedResult,
   modelErrorCause,
 }: {
   event: Event;
-  /**
-   * Caller-derived "no agent.* event has followed this user.* event
-   * yet on the same thread" hint. The wire-level processed_at_ms
-   * doesn't update live (no SSE re-broadcast on server UPDATE), so
-   * we combine: pending iff (livePending AND wire-level says NULL)
-   * OR (livePending true and we have no wire info yet). When livePending
-   * is false we KNOW the agent has responded — drop the hourglass
-   * regardless of wire state, otherwise the bubble would stay pending
-   * for the entire turn even while the agent is mid-stream.
-   */
-  livePending?: boolean;
   /**
    * The matching `agent.tool_result` (or `agent.mcp_tool_result`) for
    * an `agent.tool_use` (or `custom_tool_use` / `mcp_tool_use`) event,
@@ -1335,20 +1331,13 @@ function EventRender({
    */
   modelErrorCause?: { error: string; model?: string };
 }) {
-  // AMA pending lifecycle (set by event-log adapter from row.processed_at /
-  // row.cancelled_at). Cancelled events stay in the log for audit but
-  // the LLM never sees them (eventsToMessages skips); show them with
-  // strikethrough so operators know the user retracted them.
-  const meta = event as { processed_at_ms?: number | null; cancelled_at_ms?: number | null };
-  // The hourglass shows when BOTH conditions hold:
-  //   1. Caller says no later non-user event has arrived (livePending)
-  //   2. Wire-level processed_at_ms agrees (still null)
-  // Either condition flipping → no longer pending.
-  const isPending =
-    livePending &&
-    meta.processed_at_ms == null &&
-    meta.cancelled_at_ms == null;
-  const isCancelled = meta.cancelled_at_ms != null;
+  // Official Managed Agents queue state. `processed_at` is authoritative:
+  // null/undefined means still queued behind earlier events, a timestamp
+  // means processed. The optimistic localPending bubble is synthetic and has
+  // no wire event yet, so it naturally renders as queued here. OMA's
+  // processed_at_ms / cancelled_at_ms are intentionally ignored: the
+  // official API has no cancelled state for queued messages.
+  const isPending = isQueuedSessionEvent(event);
 
   switch (event.type) {
     case "user.message": {
@@ -1386,30 +1375,19 @@ function EventRender({
         );
       }
 
-      // Cancelled: render strikethrough + muted so the audit trail is
-      // visible without competing with live messages. Pending: dotted
-      // border + hourglass label since drainEventQueue hasn't picked it
-      // up yet. Live: default ai-elements user bubble (right-aligned,
-      // bg-secondary which we've aliased to OMA's bg-surface).
-      // Wireless: dropped the border-border-strong outline on both
-      // override states — line-through + opacity (cancelled) and the
-      // ⏳/Pending label above the bubble (pending) carry the signal
-      // without a per-bubble outline competing with the surrounding
-      // air.
-      const cancelledOverride = "line-through opacity-70";
+      // Queued: same muted/dim treatment as the optimistic localPending
+      // bubble, with an explicit label above it. Live: default ai-elements
+      // user bubble (right-aligned, bg-secondary aliased to bg-surface).
       const pendingOverride = "opacity-80";
       return (
         <Message from="user">
-          {(isPending || isCancelled) && (
+          {isPending && (
             <div className="text-xs text-fg-subtle text-right flex items-center justify-end gap-1">
-              {isPending && <span aria-hidden>⏳</span>}
-              {isCancelled && <span aria-hidden>✗</span>}
-              <span>{isCancelled ? "Retracted" : "Pending…"}</span>
+              <span aria-hidden>⏳</span>
+              <span>Queued…</span>
             </div>
           )}
-          <MessageContent
-            className={isCancelled ? cancelledOverride : isPending ? pendingOverride : undefined}
-          >
+          <MessageContent className={isPending ? pendingOverride : undefined}>
             {text}
           </MessageContent>
         </Message>

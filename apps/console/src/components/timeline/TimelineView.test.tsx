@@ -89,3 +89,26 @@ describe("TimelineView live append", () => {
     expect(screen.getAllByTitle("Expand")).toHaveLength(1);
   });
 });
+
+describe("TimelineView queued turns", () => {
+  it("marks a queued user.message and clears the badge when processed_at arrives", () => {
+    const t0 = Date.parse("2026-08-11T11:00:00.000Z");
+    const queued: Event = {
+      type: "user.message",
+      id: "sevt_queued",
+      content: [{ type: "text", text: "waiting" }],
+      processed_at: null,
+    };
+    const { container, rerender } = render(<TimelineView events={[queued]} />);
+
+    expect(container.querySelector("[data-timeline-turn-queued]")).toBeInTheDocument();
+
+    const processed: Event = {
+      ...queued,
+      processed_at: new Date(t0).toISOString(),
+    };
+    rerender(<TimelineView events={[processed]} />);
+
+    expect(container.querySelector("[data-timeline-turn-queued]")).toBeNull();
+  });
+});

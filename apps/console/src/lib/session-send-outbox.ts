@@ -34,9 +34,10 @@ export interface SendOutboxHandoffResult {
  * `system.user_message_pending` stream frames to repopulate the outbox.
  * A refresh or retry is the recovery path.
  *
- * `addEvent` is the component's canonical event sink: it dedupes by
- * `eventKey`, so when the stream later redelivers the same event id it is
- * dropped instead of rendering a second bubble.
+ * `addEvent` is the component's canonical event sink: when the stream later
+ * redelivers the same event id it either replaces the stored copy in place
+ * (queued -> processed transition) or is dropped as an identical duplicate,
+ * so the user never sees a second bubble.
  */
 export function mergeSendResponseIntoOutbox(
   response: SendResponse,
