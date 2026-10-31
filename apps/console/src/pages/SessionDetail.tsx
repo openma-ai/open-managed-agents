@@ -59,7 +59,8 @@ import {
 } from "../components/ai-elements/tool";
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
-import { SessionQueueDock, type QueueEditBeginResult, type SessionQueueDockItem } from "../components/session/SessionQueueDock";
+import { QueueDock, type QueuedPrompt } from "@openma/common/chat-ui";
+import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
 import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
 
@@ -756,10 +757,24 @@ export function SessionDetail() {
   // mode where a DO eviction killed an in-flight stream and no clean
   // status_idle was ever broadcast.
   const [interrupting, setInterrupting] = useState(false);
-  const { turns: canonicalTurns, queued: canonicalQueued } = useMemo(
-    () => projectCanonicalChat(events as WireSessionEvent[], { threadId: activeThreadId }),
-    [activeThreadId, events],
+  const {
+    turns: canonicalTurns,
+    queued: canonicalQueued,
+    activeTurnId,
+    sessionState: projectedSessionState,
+  } = useMemo(
+    () => projectCanonicalChat(events as WireSessionEvent[], {
+      threadId: activeThreadId,
+      // Host status is authoritative for settle: idle/terminated → no turn
+      // stays running (requires_action stays awaiting).
+      sessionStatus: status,
+    }),
+    [activeThreadId, events, status],
   );
+  /** Official requires_action: session idle, turn parked on tool calls. */
+  const needsAction = status !== "running" && projectedSessionState === "requires_action";
+  const activeTurn = activeTurnId ? canonicalTurns.find((turn) => turn.id === activeTurnId) : undefined;
+  const blockedToolNames = needsAction && activeTurn ? awaitedToolNames(activeTurn) : [];
   /** Stable filtered list for Timeline — avoid reallocating on every
    *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
    *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
@@ -854,16 +869,16 @@ export function SessionDetail() {
       markQueueBusy(messageId, null);
     }
   };
-  /** Enter-edit: cancel immediately; branch on the HTTP cancel body. */
-  const beginQueueEdit = async (messageId: string): Promise<QueueEditBeginResult> => {
+  /** Save an edit: compare-and-cancel the queued row, then re-enqueue the
+   * edited text (joins end of queue). If the server already started it, the
+   * edited text goes back to the composer instead. */
+  const updateQueued = async (messageId: string, text: string) => {
     const result = await cancelQueued(messageId, "editing");
-    if (result.cancelled) return { status: "allowed" };
-    if (result.reason === "failed") return { status: "failed" };
-    return { status: "abandoned", reason: result.reason };
-  };
-  /** Save after allowed cancel: re-enqueue the edited text (joins end of queue). */
-  const commitQueueEdit = async (_messageId: string, text: string) => {
-    await send(text);
+    if (result.cancelled) {
+      await send(text);
+      return;
+    }
+    abandonQueueEdit(messageId, text, result.reason);
   };
   const abandonQueueEdit = (_messageId: string, draft: string, reason: string) => {
     setComposerRestore({ text: draft, nonce: Date.now() });
@@ -873,19 +888,14 @@ export function SessionDetail() {
         : "Couldn't edit the queued message. Your text is in the composer.",
     );
   };
-  /** Escape after a successful cancel: put the original text back in the queue. */
-  const cancelQueueEdit = async (_messageId: string, originalText: string) => {
-    await send(originalText);
-  };
-  const queueDockItems: SessionQueueDockItem[] = [
+  const queueDockItems: QueuedPrompt[] = [
     ...canonicalQueued.map((item) => ({
       id: item.id,
-      key: item.id,
       text: item.text,
-      busy: queueBusy.get(item.id),
+      busy: queueBusy.has(item.id),
     })),
     ...(localPending !== null && localPendingQueued && activeThreadId === "sthr_primary"
-      ? [{ key: "optimistic", text: localPending, busy: "sending" as const }]
+      ? [{ id: "optimistic", text: localPending, busy: true }]
       : []),
   ];
   // A row that left the queue (started, steered, cancelled) drops its busy flag.
@@ -1004,7 +1014,10 @@ export function SessionDetail() {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
+          <StatusPill
+            label={needsAction ? "Needs action" : undefined}
+            status={needsAction ? "awaiting" : status as "idle" | "running" | "terminated" | "error" | string}
+          />
           {/* Trajectory outcome chip — only when the trajectory has actually
               finished. While the session is still running we let StatusPill
               carry the "Running…" signal alone (per Phase 3 spec) instead of
@@ -1208,14 +1221,24 @@ export function SessionDetail() {
         <ManagedSessionConversation
           afterTurns={transientActivity}
           composer={<>
-          <SessionQueueDock
-            items={queueDockItems}
-            onAbandonEdit={abandonQueueEdit}
-            onBeginEdit={beginQueueEdit}
-            onCancelEdit={cancelQueueEdit}
-            onCommitEdit={commitQueueEdit}
-            onRemove={(messageId) => void cancelQueued(messageId)}
-            onSteer={agentSteering && status === "running" ? steerQueued : undefined}
+          {/* Shared Backchat queue UI. Console has no reorder API, so no
+              reorder callback → no drag handle / arrows. Steer is the OpenMA
+              extension and only offered while running on steering agents. */}
+          <QueueDock
+            blocked={needsAction
+              ? {
+                  reason: "requires_action",
+                  toolNames: blockedToolNames,
+                  toolCallIds: activeTurn?.awaitingToolCallIds,
+                  onInterrupt: interrupt,
+                }
+              : undefined}
+            callbacks={{
+              update: updateQueued,
+              remove: async (messageId) => { await cancelQueued(messageId); },
+              ...(agentSteering && status === "running" ? { steer: steerQueued } : {}),
+            }}
+            prompts={queueDockItems}
           />
           <SessionComposer
             interrupting={interrupting}
@@ -1235,6 +1258,7 @@ export function SessionDetail() {
           />
           </>}
           empty={hasTransientActivity ? transientActivity : undefined}
+          activeTurnId={activeTurnId}
           sessionId={id}
           turns={canonicalTurns}
         />
