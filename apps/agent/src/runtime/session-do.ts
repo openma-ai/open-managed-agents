@@ -442,6 +442,8 @@ export class SessionDO extends DurableObject<Env> {
   /** Threads whose aborted turn already got its status_idle from the
    *  user.interrupt handler; the turn's catch-all idle must not repeat it. */
   private _interruptIdleOwned = new Set<string>();
+  /** Resolves when the turn owning the thread's current AbortController has fully settled (finally ran). */
+  private _turnSettled = new Map<AbortController, Promise<void>>();
 
 
   /** Execution authority lives in the tenant D1 outbox. The DO only owns a
@@ -2319,9 +2321,11 @@ export class SessionDO extends DurableObject<Env> {
           // calls are running" and processed_at stays null until applied.
           // Give the aborted turn a short grace (Codex: cancel token, then
           // bounded wait) to unwind its tools before we stamp the interrupt.
-          const graceUntil = Date.now() + INTERRUPT_GRACE_MS;
-          while (this._executionActiveLanes.has(targetThread) && Date.now() < graceUntil) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
+          // Wait on THIS turn's settlement, not lane activity: the lane may
+          // already be running the next queued user.message.
+          const settledTurn = this._turnSettled.get(ctrl);
+          if (settledTurn) {
+            await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
           }
         }
         const cancelTs = Date.now();
@@ -5282,6 +5286,8 @@ export class SessionDO extends DurableObject<Env> {
     // those calls to the same parent execution fence as the model loop.
     this._interruptIdleOwned.delete(turnThreadId);
     const abortController = new AbortController();
+    let resolveTurnSettled!: () => void;
+    this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
     const abortFromParent = () => abortController.abort(parentSignal?.reason);
     if (parentSignal?.aborted) abortFromParent();
@@ -5968,6 +5974,8 @@ export class SessionDO extends DurableObject<Env> {
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }
+      this._turnSettled.delete(abortController);
+      resolveTurnSettled();
       parentSignal?.removeEventListener("abort", abortFromParent);
       // Emit status_idle only after turn-scoped resources have settled. On a
       // successful turn this preserves its precise stop_reason; error paths
