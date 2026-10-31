@@ -1,7 +1,10 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 registerTestHarnesses();
 
@@ -227,19 +230,33 @@ describe("Boundary conditions", () => {
     const envObj = await createEnv();
     const session = await createSession(agent.id, envObj.id);
 
-    // Post a few events
-    for (let i = 0; i < 3; i++) {
-      await post(`/v1/oma/sessions/${session.id}/events`, {
-        events: [{ type: "user.message", content: [{ type: "text", text: `limit-msg-${i}` }] }],
-      });
+    const events = [
+      { id: "sevt_limit_0", type: "user.message", content: [{ type: "text", text: "limit-msg-0" }] },
+      { id: "sevt_limit_1", type: "user.message", content: [{ type: "text", text: "limit-msg-1" }] },
+      { id: "sevt_limit_2", type: "user.message", content: [{ type: "text", text: "limit-msg-2" }] },
+    ];
+    for (const event of events) {
+      const posted = await post(`/v1/oma/sessions/${session.id}/events`, { events: [event] });
+      expect(posted.status, await posted.text()).toBe(202);
     }
-    await new Promise((r) => setTimeout(r, 200));
 
-    const res = await get(`/v1/oma/sessions/${session.id}/events?limit=1000`, { Accept: "application/json" });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.data).toBeInstanceOf(Array);
-    expect(body.data.length).toBeGreaterThanOrEqual(3);
+    // 202 acknowledges the pending queue, not promotion into history. Only
+    // poll reads; rejected requests and harness errors must fail immediately.
+    let userMessages: any[] = [];
+    const deadline = Date.now() + 5000;
+    do {
+      const res = await get(`/v1/oma/sessions/${session.id}/events?limit=1000`, { Accept: "application/json" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.data).toBeInstanceOf(Array);
+      expect(body.data.filter((row: any) => row.type === "session.error")).toEqual([]);
+      userMessages = body.data.filter((row: any) => row.type === "user.message").map((row: any) => row.data);
+      if (userMessages.length >= events.length) break;
+      await new Promise((r) => setTimeout(r, 50));
+    } while (Date.now() < deadline);
+
+    expect(userMessages).toHaveLength(3);
+    expect(userMessages).toMatchObject(events);
   });
 
   it("memory with path containing slashes and dots", async () => {

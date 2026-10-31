@@ -70,6 +70,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build sandbox credential relay
+        run: pnpm --filter @open-managed-agents/main-node test:prepare
+
       - name: Verify server release surface
         run: |
           pnpm --filter @open-managed-agents/main-node typecheck

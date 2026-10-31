@@ -1,17 +1,21 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { z } from "zod";
-import type { McpOAuthCliService, McpOAuthCliSecrets, McpOAuthCliActor } from "@open-managed-agents/managed-agents-application";
 import { resolveApplicationPort, type ApplicationPortSource } from "../application-port-source";
+import {
+  mcpOAuthCliAuthorizeBodySchema,
+  mcpOAuthCliClaimBodySchema,
+} from "../contracts/mcp-oauth";
 import { apiError, invalidRequest, notFound } from "../errors";
-import { mcpOAuthAuthorizeBodySchema } from "../contracts/mcp-oauth";
+import type {
+  McpOAuthCliApplicationPort,
+  McpOAuthCliIdentity,
+  McpOAuthCliKeyHasher,
+} from "../ports/mcp-oauth";
 
 const CALLBACK_PATH = "/v1/oma/oauth/callback";
-const startSchema = mcpOAuthAuthorizeBodySchema.omit({ redirect_uri: true }).strict();
-const claimSchema = z.object({ flow_id: z.string().min(1), claim_token: z.string().min(1) }).strict();
 
 /** Must be mounted BEFORE auth. Only a valid sealed CLI discriminator is handled;
  * Console/invalid state falls through to the unchanged authenticated callback. */
-export function buildMcpOAuthCliCallback(source: ApplicationPortSource<McpOAuthCliService>): MiddlewareHandler {
+export function buildMcpOAuthCliCallback(source: ApplicationPortSource<McpOAuthCliApplicationPort>): MiddlewareHandler {
   return async (c, next) => {
     if (c.req.method !== "GET" || c.req.path !== CALLBACK_PATH || !c.req.query("state")) return next();
     try {
@@ -28,11 +32,11 @@ export function buildMcpOAuthCliCallback(source: ApplicationPortSource<McpOAuthC
   };
 }
 
-export function buildMcpOAuthCliRoutes(source: ApplicationPortSource<McpOAuthCliService>, secrets: Pick<McpOAuthCliSecrets, "hash">): Hono {
+export function buildMcpOAuthCliRoutes(source: ApplicationPortSource<McpOAuthCliApplicationPort>, secrets: McpOAuthCliKeyHasher): Hono {
   const app = new Hono();
   app.onError((_error, c) => c.json(apiError("MCP OAuth operation failed"), 500));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
-  async function actor(c: Context): Promise<McpOAuthCliActor | null> {
+  async function actor(c: Context): Promise<McpOAuthCliIdentity | null> {
     const key = c.req.header("x-api-key");
     const vars = c.var as { tenant_id?: string; user_id?: string };
     if (!key || !vars.tenant_id) return null;
@@ -41,7 +45,7 @@ export function buildMcpOAuthCliRoutes(source: ApplicationPortSource<McpOAuthCli
   app.post("/authorize", async (c) => {
     const identity = await actor(c);
     if (identity === null) return c.json(invalidRequest("CLI OAuth requires an authenticated x-api-key"), 400);
-    const parsed = startSchema.safeParse(await c.req.json().catch(() => null));
+    const parsed = mcpOAuthCliAuthorizeBodySchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json(invalidRequest("Invalid CLI OAuth authorization body"), 400);
     const input = parsed.data;
     const result = await resolveApplicationPort(source, c).start({ actor: identity, vaultId: input.vault_id, mcpServerUrl: input.mcp_server_url, callbackUri: `${new URL(c.req.url).origin}${CALLBACK_PATH}`, ...(input.client_id && { clientId: input.client_id }), ...(input.client_secret && { clientSecret: input.client_secret }), ...(input.credential_id && { credentialId: input.credential_id }) });
@@ -56,7 +60,7 @@ export function buildMcpOAuthCliRoutes(source: ApplicationPortSource<McpOAuthCli
   app.post("/result", async (c) => {
     const identity = await actor(c);
     if (identity === null) return c.json(invalidRequest("CLI OAuth requires an authenticated x-api-key"), 400);
-    const parsed = claimSchema.safeParse(await c.req.json().catch(() => null));
+    const parsed = mcpOAuthCliClaimBodySchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json(invalidRequest("Invalid CLI OAuth claim body"), 400);
     const result = await resolveApplicationPort(source, c).poll({ actor: identity, flowId: parsed.data.flow_id, claimToken: parsed.data.claim_token });
     switch (result.type) {
