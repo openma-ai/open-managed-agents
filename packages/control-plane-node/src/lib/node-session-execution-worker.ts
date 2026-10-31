@@ -177,9 +177,27 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       }
     }
 
+    // An interrupt with no turn running here (session parked in
+    // requires_action, #398) still has to reach the runner: it closes the
+    // pending calls and ends the turn (CMA). Admit it as its own execution.
+    const idleInterrupts = interruptEvents.filter((interrupt) => {
+      const laneId = interrupt.sessionThreadId ?? "sthr_primary";
+      return ![...this.#active.values()].some((active) =>
+        active.execution.workspaceId === input.workspaceId &&
+        active.execution.sessionId === input.sessionId &&
+        active.execution.laneId === laneId);
+    });
     const executionEvents = sessionExecutionEvents(input.events);
-    if (executionEvents.length === 0) return;
-    for (const batch of sessionExecutionEventBatches(input.events)) {
+    if (executionEvents.length === 0 && idleInterrupts.length === 0) return;
+    const batches = [
+      ...idleInterrupts.map((interrupt) => ({
+        id: interrupt.id,
+        laneId: interrupt.sessionThreadId ?? "sthr_primary",
+        events: [interrupt],
+      })),
+      ...(executionEvents.length === 0 ? [] : sessionExecutionEventBatches(input.events)),
+    ];
+    for (const batch of batches) {
       const admitted = await this.dependencies.coordinator.admit({
         execution: {
         id: batch.id,

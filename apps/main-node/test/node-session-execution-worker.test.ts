@@ -238,6 +238,30 @@ describe("NodeSessionExecutionWorker", () => {
     })).resolves.toMatchObject({ state: "cancelled" });
   });
 
+  it("runs an interrupt as its own execution when no turn is running (requires_action park, #398)", async () => {
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("interrupt_parked", "user.interrupt"));
+    await executor.waitForIdle();
+    expect(cancellations).toEqual([]);
+    expect(runs.map((run) => ({ id: run.executionId, events: run.events.map((event) => event.type) })))
+      .toEqual([{ id: "interrupt_parked", events: ["user.interrupt"] }]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "interrupt_parked" }))
+      .resolves.toMatchObject({ state: "completed" });
+  });
+
+  it("does not admit a running-turn interrupt as an extra execution", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input) => { runs.push(structuredClone(input)); await running; };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_busy"));
+    await Promise.resolve();
+    await executor.sessionEventsAccepted(accepted("interrupt_busy", "user.interrupt"));
+    release?.();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_busy"]);
+  });
+
   it("cancels only the thread lane named by an interrupt", async () => {
     const releases: Array<() => void> = [];
     const cancelledExecutions: string[] = [];

@@ -33,7 +33,7 @@ import {
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
-import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { decodeRuntimeProducedSessionEvent, encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
@@ -612,9 +612,49 @@ export class DefaultNodeManagedSessionRunner
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
         });
+    // Superseded-call closures belong before the new message in model
+    // history (tool_result must follow its tool_use), and are persisted.
+    let runtimeHistory = input.historyEvents;
+    if (supersededFrames.length > 0) {
+      const clock = (this.dependencies.sessionClocks ?? processSessionClocks)
+        .forSession(input.workspaceId, input.sessionId);
+      // Event history replays ORDER BY processed_at: the closures must sort
+      // before the message that superseded them (its processed_at was set by
+      // the driver when it began processing), else the next turn replays a
+      // tool_result after the user turn. Stamp them 1ms before the message;
+      // still strictly after the parked idle and its tool_use.
+      const batchIdSet = new Set(input.events.map((event) => event.id));
+      const messageAt = Math.min(...input.historyEvents
+        .filter((event) => batchIdSet.has(event.id) && event.type === "user.message")
+        .map((event) => Date.parse(event.processedAt ?? ""))
+        .filter((ms) => Number.isFinite(ms)));
+      const lastPriorAt = Math.max(...input.historyEvents
+        .filter((event) => !batchIdSet.has(event.id))
+        .map((event) => Date.parse(event.processedAt ?? ""))
+        .filter((ms) => Number.isFinite(ms)));
+      const closureAt = Number.isFinite(messageAt) && messageAt - 1 > lastPriorAt
+        ? new Date(messageAt - 1).toISOString()
+        : null;
+      const views: SessionEventView[] = [];
+      for (const frame of supersededFrames) {
+        const stamped = {
+          ...frame,
+          id: this.dependencies.ids.nextEventId(),
+          processed_at: closureAt ?? clock.stampIso(this.dependencies.clock.now().getTime()),
+        };
+        await input.output(stamped as never);
+        const view = decodeRuntimeProducedSessionEvent(stamped as never);
+        if (view !== null) views.push(view as SessionEventView);
+      }
+      const batchIds = new Set(input.events.map((event) => event.id));
+      const at = input.historyEvents.findIndex((event) => batchIds.has(event.id));
+      runtimeHistory = at < 0
+        ? [...input.historyEvents, ...views]
+        : [...input.historyEvents.slice(0, at), ...views, ...input.historyEvents.slice(at)];
+    }
     const runtime = new ManagedNodeHarnessRuntime({
       initialEvents: input.initialEvents,
-      events: input.historyEvents.filter((event) => managedEventThread(event) === "sthr_primary"),
+      events: runtimeHistory.filter((event) => managedEventThread(event) === "sthr_primary"),
       sandbox,
       abortSignal: abortController.signal,
       output: input.output,
@@ -623,7 +663,6 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
     });
-    for (const frame of supersededFrames) runtime.broadcast(frame as unknown as SessionEvent);
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
     let turnTools: HarnessContext["tools"] | undefined;

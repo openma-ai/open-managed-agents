@@ -228,6 +228,17 @@ describe("Node requires_action: queued user.message and mid-batch steer (#398)",
     expect(s.runs()).toBe(2);
   });
 
+  it("superseded-call closures sort before the superseding message in processed_at order (replay-safe)", async () => {
+    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }]);
+    await s.send([msg("u1")]);
+    const late = { ...msg("u2"), processedAt: at(5_000) } as Ev;
+    const out = await s.send([late]);
+    const closure = out.find((f) => f.type === "agent.tool_result")!;
+    expect(closure.processed_at).toBe(at(4_999));
+    const parkedIdle = s.wire.filter((f) => f.type === "session.status_idle")[0]!;
+    expect(Date.parse(closure.processed_at)).toBeGreaterThan(Date.parse(parkedIdle.processed_at));
+  });
+
   it("a user.message batched with an answer keeps the answer and closes only the rest", async () => {
     const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }, { id: "c2", type: "agent.custom_tool_use" }]);
     await s.send([msg("u1")]);
