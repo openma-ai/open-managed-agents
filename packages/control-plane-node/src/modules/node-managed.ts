@@ -787,9 +787,12 @@ export async function createManagedNodeRuntime(
       }),
     runner: managedRuntimeRunner,
   });
+  // Shared with /v1/oma/sessions pending cancel/steer so Console dock frames
+  // land on the same hub the managed event stream reads.
+  const managedSessionRealtime = new MemorySessionRealtimeHub();
   const managedRuntimeDriver = new DefaultNodeManagedSessionRuntimeDriver({
     engine: managedRuntimeEngine,
-    realtime: new MemorySessionRealtimeHub(),
+    realtime: managedSessionRealtime,
     projectionFor: (workspaceId) =>
       new SessionRuntimeProjectionApplicationService({
         workspaceId,
@@ -1363,6 +1366,8 @@ export async function createManagedNodeRuntime(
     managedRuntimeRunner,
     managedRuntimeReaders,
     managedSessionExecutionWorker,
+    managedSessionExecutionCoordinator,
+    managedSessionRealtime,
     managedSessionRuntimeStream,
     nodeSessionLifecycleHooks,
     managedSessionsComposition,

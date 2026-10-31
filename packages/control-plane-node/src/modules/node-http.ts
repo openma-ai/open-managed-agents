@@ -52,6 +52,7 @@ import { buildNodeRepos, SqlFeishuInstallationRepo, SqlFeishuPublicationRepo, Sq
 import { NodeInstallBridge, buildNodeProvidersForRequest } from "../lib/node-install-bridge.js";
 import { OmaVaultResolver } from "@open-managed-agents/oma-cap-adapter";
 import { NodeSessionRouter } from "../lib/node-session-router.js";
+import { SqlSessionExecutionStore } from "@open-managed-agents/session-runtime-sql";
 import { configureFeishuAgentTools, sqlSessionMetadataReader } from "../lib/feishu-agent-tools.js";
 import { nodeOutputsAdapter } from "../lib/node-outputs-adapter.js";
 import { createFsSessionOutputSource } from "../lib/fs-session-output-source.js";
@@ -123,6 +124,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     managedRuntimeRunner,
     managedRuntimeReaders,
     managedSessionRuntimeStream,
+    managedSessionExecutionCoordinator,
+    managedSessionRealtime,
     nodeSessionLifecycleHooks,
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
@@ -408,6 +411,106 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       store: sessionOutputs,
     },
   }));
+  // Console cancel/steer (same paths as CF managedSessionQueueRoutes).
+  // Managed sessions: shared SQL execution outbox + realtime lifecycle frames.
+  // Legacy harness sessions fall through to buildSessionRoutes → NodeSessionRouter.
+  const managedQueueStore = managedSessionExecutionCoordinator
+    ?? new SqlSessionExecutionStore(sql);
+  v1.delete("/oma/sessions/:sessionId/pending/:eventId", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const eventId = c.req.param("eventId");
+    const workspaceId = c.var.tenant_id;
+    const managed = await sql
+      .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
+      .bind(workspaceId, sessionId)
+      .first();
+    if (!managed) {
+      // Legacy /v1/oma session — SessionRouter owns the outbox.
+      const result = await sessionRouter.cancelPending(sessionId, eventId);
+      return new Response(result.body, {
+        status: result.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const cancelledAtMs = Date.now();
+    const cancelledAt = new Date(cancelledAtMs).toISOString();
+    const result = await managedQueueStore.cancelQueued({
+      workspaceId,
+      sessionId,
+      executionId: eventId,
+      cancelledAt,
+    });
+    if (result.type !== "cancelled") {
+      return c.json({
+        cancelled: false,
+        reason: result.reason,
+        id: eventId,
+        ...(result.execution?.attempt?.claimedAt
+          ? { processed_at: result.execution.attempt.claimedAt }
+          : result.execution?.settledAt
+            ? { processed_at: result.execution.settledAt }
+            : {}),
+      }, 409);
+    }
+    managedSessionRealtime?.publish({
+      workspaceId,
+      sessionId,
+      frame: {
+        event: {
+          type: "system.user_message_cancelled",
+          event_id: eventId,
+          pending_seq: 0,
+          session_thread_id: result.execution.laneId ?? "sthr_primary",
+          cancelled_at: cancelledAtMs,
+        } as never,
+      },
+    });
+    return c.json({ cancelled: true, id: eventId, cancelled_at: cancelledAt }, 200);
+  });
+  v1.post("/oma/sessions/:sessionId/pending/:eventId/steer", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const eventId = c.req.param("eventId");
+    const workspaceId = c.var.tenant_id;
+    const managed = await sql
+      .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
+      .bind(workspaceId, sessionId)
+      .first();
+    if (!managed) {
+      const result = await sessionRouter.steerPending(sessionId, eventId);
+      return new Response(result.body, {
+        status: result.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const found = await managedQueueStore.find({ workspaceId, executionId: eventId });
+    if (found === null || found.state !== "queued") {
+      return c.json({
+        cancelled: false,
+        reason: found?.state === "running" ? "already_processing" : "not_found",
+        id: eventId,
+      }, 409);
+    }
+    await managedQueueStore.steerQueued({
+      workspaceId,
+      sessionId,
+      executionId: eventId,
+      steeredAt: new Date().toISOString(),
+    });
+    managedSessionRealtime?.publish({
+      workspaceId,
+      sessionId,
+      frame: {
+        event: {
+          type: "system.user_message_steered",
+          event_id: eventId,
+          session_thread_id: found.laneId ?? "sthr_primary",
+          steered_at: Date.now(),
+        } as never,
+      },
+    });
+    return c.json({ event_id: eventId, steer: "requested" }, 202);
+  });
+
   v1.route("/oma/sessions", buildSessionRoutes({
     services,
     router: sessionRouter,
