@@ -905,6 +905,36 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     });
   });
 
+  // DELETE /v1/sessions/:id/pending/:event_id — OMA extension: remove one
+  // queued user.* event before it runs (Backchat queue "remove").
+  app.delete("/:id/pending/:event_id", async (c) => {
+    const services = resolveServices(deps.services, c);
+    const router = resolveRouter(deps.router, c);
+    const sessionId = c.req.param("id");
+    const sess = await services.sessions.get({ tenantId: c.var.tenant_id, sessionId });
+    if (!sess) return c.json({ error: "Session not found" }, 404);
+    const result = await router.cancelPending(sessionId, c.req.param("event_id"));
+    return new Response(result.body, {
+      status: result.status,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
+  // POST /v1/sessions/:id/pending/:event_id/steer — OMA extension: promote
+  // one queued user.message into the running turn (Backchat queue "Steer").
+  app.post("/:id/pending/:event_id/steer", async (c) => {
+    const services = resolveServices(deps.services, c);
+    const router = resolveRouter(deps.router, c);
+    const sessionId = c.req.param("id");
+    const sess = await services.sessions.get({ tenantId: c.var.tenant_id, sessionId });
+    if (!sess) return c.json({ error: "Session not found" }, 404);
+    const result = await router.steerPending(sessionId, c.req.param("event_id"));
+    return new Response(result.body, {
+      status: result.status,
+      headers: { "content-type": "application/json" },
+    });
+  });
+
   // ── LLM call body fetch ───────────────────────────────────────────────
   // GET /v1/sessions/:id/llm-calls/:event_id — read the persisted full
   // LLM request/response body for one span.model_request_end event.

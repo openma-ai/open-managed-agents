@@ -68,6 +68,7 @@
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/scheduler": "workspace:*",
+    "@open-managed-agents/session-event-store": "workspace:*",
     "@open-managed-agents/session-realtime": "workspace:*",
     "@open-managed-agents/session-realtime-memory": "workspace:*",
     "@open-managed-agents/session-resource-store": "workspace:*",

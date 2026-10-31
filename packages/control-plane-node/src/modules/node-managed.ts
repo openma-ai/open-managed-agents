@@ -63,7 +63,7 @@ import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
 import { SqlTunnelStore } from "@open-managed-agents/tunnel-store-sql";
 import { SqlUserProfileStore } from "@open-managed-agents/user-profile-store-sql";
 import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
-import { SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
+import { SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence, SqlSessionEventPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 import { createSqlSessionRuntimeReaders, ensureSessionExecutionClaimLockSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
 import { encodeRuntimeSessionEvent, AnthropicMessagesDreamCurator, ApplicationDreamMemoryWorkspace, ModelCardCatalogSource, CronDeploymentSchedulePlanner, EnvironmentAwareSessionEventDispatchRouter, EnvironmentAwareSessionEventStreamRouter, EnvironmentAwareSessionLifecycleRouter, TimerEnvironmentWorkAvailabilityWaiter, McpOAuthCredentialValidationProbe, inProcessDreamExecutionSchedulerModule, LocalTunnelProvisioner, SealedEnvironmentWorkSessionCredentialIssuer, StandardWebhookEnvironmentWorkWakeup, DeduplicatingDreamCurator, WebCryptoTunnelCertificateAuthority, WebCryptoTunnelTokenManager, WebCryptoMemoryContentDescriptor, ZipSkillPackageCompiler, synchronizeManagedSessionMemoryWorkspaces } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -787,14 +787,20 @@ export async function createManagedNodeRuntime(
       }),
     runner: managedRuntimeRunner,
   });
+  // Shared with /v1/oma/sessions pending cancel/steer so Console dock frames
+  // land on the same hub the managed event stream reads.
+  const managedSessionRealtime = new MemorySessionRealtimeHub();
   const managedRuntimeDriver = new DefaultNodeManagedSessionRuntimeDriver({
     engine: managedRuntimeEngine,
-    realtime: new MemorySessionRealtimeHub(),
+    realtime: managedSessionRealtime,
     projectionFor: (workspaceId) =>
       new SessionRuntimeProjectionApplicationService({
         workspaceId,
         persistence: new SqlSessionRuntimeProjectionPersistence(sql),
       }),
+    eventProcessing: {
+      storeFor: () => new SqlSessionEventPersistence(sql),
+    },
   });
   const managedSessionExecutionWorker = new NodeSessionExecutionWorker({
     coordinator: managedSessionExecutionCoordinator,
@@ -814,6 +820,9 @@ export async function createManagedNodeRuntime(
     leaseTtlMs: 30_000,
     heartbeatIntervalMs: 10_000,
     maxConcurrent: config.execution.concurrency,
+    eventProcessing: {
+      storeFor: () => new SqlSessionEventPersistence(sql),
+    },
     onError: (err) => logger.error(
       { err, op: "main-node.session_execution.background_failed" },
       "managed Session execution background operation failed",
@@ -1357,6 +1366,8 @@ export async function createManagedNodeRuntime(
     managedRuntimeRunner,
     managedRuntimeReaders,
     managedSessionExecutionWorker,
+    managedSessionExecutionCoordinator,
+    managedSessionRealtime,
     managedSessionRuntimeStream,
     nodeSessionLifecycleHooks,
     managedSessionsComposition,

@@ -133,6 +133,26 @@ describe("Harness execution flow", () => {
     expect(trIdx).toBeLessThan(amIdx);
   });
 
+  // #398 bug 3 (two_clients FOREVER_NULL): pending calls already closed by an
+  // agent.tool_result must not be listed in the requires_action idle.
+  it("requires_action idle lists only calls still open after the run", async () => {
+    const sessionId = await createSessionWith("stale-pending-partial");
+    await postAndWait(sessionId, "go");
+    await waitForIdle(sessionId);
+    const events = await collectReplayedEvents(sessionId);
+    const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
+    expect(idle?.stop_reason).toMatchObject({ type: "requires_action", event_ids: ["ctu_b"] });
+  });
+
+  it("all pending calls closed during the run -> end_turn, not requires_action", async () => {
+    const sessionId = await createSessionWith("stale-pending-all");
+    await postAndWait(sessionId, "go");
+    await waitForIdle(sessionId);
+    const events = await collectReplayedEvents(sessionId);
+    const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
+    expect(idle?.stop_reason?.type).toBe("end_turn");
+  });
+
   it("delayed harness completes and session returns to idle", async () => {
     const sessionId = await createSessionWith("delayed-harness");
     await postAndWait(sessionId, "wait", 500);

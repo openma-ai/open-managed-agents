@@ -238,6 +238,26 @@ export function decodeRuntimeEvent(
     raw.type === "agent.message_stream_end" ||
     raw.type === "agent.thinking_stream_end"
   ) return [];
+  if (
+    raw.type === "system.user_message_cancelled" ||
+    raw.type === "system.user_message_steered"
+  ) {
+    if (typeof raw.event_id !== "string" || raw.event_id.length === 0) return [];
+    const kind = raw.type === "system.user_message_cancelled" ? "cancelled" : "steered";
+    const at = kind === "cancelled" ? raw.cancelled_at : raw.steered_at;
+    const occurredAt = typeof at === "number" && Number.isFinite(at)
+      ? new Date(at).toISOString()
+      : typeof at === "string" ? at : new Date().toISOString();
+    return [{
+      type: "oma.queue_lifecycle",
+      kind,
+      eventId: raw.event_id,
+      ...(typeof raw.session_thread_id === "string" && {
+        sessionThreadId: raw.session_thread_id,
+      }),
+      occurredAt,
+    }];
+  }
   if (!OFFICIAL_RUNTIME_EVENT_TYPES.has(raw.type)) return [];
 
   const decoded = camelCaseRuntimeValue(raw) as Record<string, unknown>;

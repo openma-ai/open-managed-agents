@@ -3,6 +3,7 @@ import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, 
 import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import {
@@ -118,6 +119,7 @@ import {
   SqlSessionResourceSecretSource,
   SqlSessionSource,
   SqlSessionRuntimeProjectionPersistence,
+  SqlSessionEventPersistence,
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -705,6 +707,44 @@ const tenantsRoutes = new Hono<{
   });
   return invokePackage(c, app);
 });
+
+/**
+ * OMA queue extension for Managed sessions: remove or steer one queued
+ * user.message. The SessionDO (execution host keyed by workspace+session)
+ * owns the queue; it updates the D1 execution outbox and broadcasts the
+ * `system.user_message_cancelled` / `system.user_message_steered` frames that
+ * openma-common decodes into OpenMA queue-lifecycle events.
+ */
+const managedSessionQueueRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; tenantDb: D1Database };
+}>();
+async function forwardManagedQueueAction(
+  c: Context<{ Bindings: Env; Variables: { tenant_id: string; tenantDb: D1Database } }>,
+  method: "DELETE" | "POST",
+  suffix: string,
+): Promise<Response> {
+  const sessionId = c.req.param("sessionId") ?? "";
+  const eventId = c.req.param("eventId") ?? "";
+  const workspaceId = c.var.tenant_id;
+  const row = await c.var.tenantDb
+    .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
+    .bind(workspaceId, sessionId)
+    .first();
+  if (!row) return c.json({ error: "Session not found" }, 404);
+  const res = await new CfManagedRuntimeFetcher(c.env).fetch(
+    `https://managed-runtime/sessions/${encodeURIComponent(sessionId)}/pending/${encodeURIComponent(eventId)}${suffix}`,
+    { method, headers: { "x-oma-workspace-id": workspaceId } },
+  );
+  return new Response(await res.text(), {
+    status: res.status,
+    headers: { "content-type": "application/json" },
+  });
+}
+managedSessionQueueRoutes.delete("/:sessionId/pending/:eventId", (c) =>
+  forwardManagedQueueAction(c, "DELETE", ""));
+managedSessionQueueRoutes.post("/:sessionId/pending/:eventId/steer", (c) =>
+  forwardManagedQueueAction(c, "POST", "/steer"));
 
 const legacySessionsRoutes = new Hono<{
   Bindings: Env;
@@ -1351,6 +1391,7 @@ app.all("/openai/*", c => c.json({ error: {
 
 app.route("/v1/sessions", managedSessionsRoutes);
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
+app.route("/v1/oma/sessions", managedSessionQueueRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
 app.route("/v1/vaults", managedVaultsRoutes);
 app.route("/v1/vaults", managedCredentialsRoutes);
@@ -1852,6 +1893,31 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       if (result.type === "execution_fence_lost") return { type: "version_conflict" };
     }
     return { type: "version_conflict" };
+  }
+
+  async managedSessionEventsMarkProcessed(opts: {
+    workspaceId: string;
+    sessionId: string;
+    eventIds: string[];
+    processedAt: string;
+  }): Promise<
+    | { type: "marked"; events: unknown[] }
+    | { type: "not_found" }
+  > {
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(
+      opts.workspaceId,
+    );
+    const store = new SqlSessionEventPersistence(new CfD1SqlClient(tenantDb));
+    const { markSessionEventsProcessed } = await import(
+      "@open-managed-agents/managed-agents-application"
+    );
+    const marked = await markSessionEventsProcessed(store, {
+      workspaceId: opts.workspaceId,
+      sessionId: opts.sessionId,
+      eventIds: opts.eventIds,
+      processedAt: opts.processedAt,
+    });
+    return { type: "marked", events: marked };
   }
 
   async mcpForward(opts: {

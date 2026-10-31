@@ -162,9 +162,9 @@ function DetailPanel({
           <div key={idx} className="border border-border/60 rounded">
             <div className="px-3 py-1.5 border-b border-border/60 bg-bg-surface/40 flex items-center gap-2 text-xs font-mono">
               <span className="text-fg-muted">{ev.type}</span>
-              {typeof ev.processed_at === "string" && (
+              {typeof ev.ts === "string" && (
                 <span className="text-fg-subtle ml-auto">
-                  {new Date(ev.processed_at).toISOString().slice(11, 23)}
+                  {new Date(ev.ts).toISOString().slice(11, 23)}
                 </span>
               )}
             </div>
@@ -405,6 +405,15 @@ const TurnCard = memo(function TurnCard({
         </Button>
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TRIGGER_DOT[turn.triggerKind]}`} />
         <span className="font-mono text-fg-muted">{TRIGGER_LABEL[turn.triggerKind]}</span>
+        {turn.queued && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-warning-subtle px-2 py-0.5 font-medium text-warning"
+            data-timeline-turn-queued
+          >
+            <span aria-hidden>⏳</span>
+            queued
+          </span>
+        )}
         {triggerTitleText && (
           <span className="text-fg-subtle truncate max-w-md italic">"{triggerTitleText}"</span>
         )}
@@ -421,7 +430,9 @@ const TurnCard = memo(function TurnCard({
               {tokens.cacheRead > 0 && ` ⚡${tokens.cacheRead}`}
             </span>
           )}
-          <span className={STATUS_TEXT[turn.status]}>{turn.status}</span>
+          <span className={turn.queued ? "text-warning" : STATUS_TEXT[turn.status]}>
+            {turn.queued ? "queued" : turn.status}
+          </span>
         </span>
       </div>
 

@@ -330,6 +330,36 @@ export class CfSessionRouter implements SessionRouter {
     return { status: res.status, body: await res.text() };
   }
 
+  async cancelPending(
+    sessionId: string,
+    eventId: string,
+  ): Promise<{ status: number; body: string }> {
+    const binding = await this.bindingForSession(sessionId);
+    if (!binding) {
+      return { status: 503, body: JSON.stringify({ error: "binding unavailable" }) };
+    }
+    const res = await binding.fetch(
+      `https://sandbox/sessions/${sessionId}/pending/${encodeURIComponent(eventId)}`,
+      { method: "DELETE" },
+    );
+    return { status: res.status, body: await res.text() };
+  }
+
+  async steerPending(
+    sessionId: string,
+    eventId: string,
+  ): Promise<{ status: number; body: string }> {
+    const binding = await this.bindingForSession(sessionId);
+    if (!binding) {
+      return { status: 503, body: JSON.stringify({ error: "binding unavailable" }) };
+    }
+    const res = await binding.fetch(
+      `https://sandbox/sessions/${sessionId}/pending/${encodeURIComponent(eventId)}/steer`,
+      { method: "POST" },
+    );
+    return { status: res.status, body: await res.text() };
+  }
+
   async getLlmCallBody(
     tenantId: string,
     sessionId: string,

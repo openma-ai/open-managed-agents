@@ -162,11 +162,59 @@ export class PiHarness implements HarnessInterface {
     const abort = () => agent.abort();
     ctx.runtime.abortSignal?.addEventListener("abort", abort, { once: true });
 
+    // Steering (OMA "Steer" on a queued message): hand explicitly requested
+    // queued user messages to Pi's native steering queue. Pi drains it after
+    // the current assistant turn and before stopping, so a steered message
+    // always joins this run instead of starting a new one.
+    let steerTimer: ReturnType<typeof setInterval> | undefined;
+    let steerPolling: Promise<void> | null = null;
+    const pollSteering = () => {
+      if (steerPolling || !ctx.runtime.takeSteeringInputs || !ctx.pi) return steerPolling;
+      steerPolling = pollSteeringOnce();
+      return steerPolling;
+    };
+    const pollSteeringOnce = async () => {
+      const take = ctx.runtime.takeSteeringInputs;
+      const pi = ctx.pi;
+      if (!take || !pi) return;
+      try {
+        const steered = await take();
+        if (steered.length > 0) {
+          const converted = modelMessagesToPi(
+            await eventsToMessagesAsync(steered, ctx.fileFetcher),
+            pi.model,
+          );
+          for (const message of converted) agent.steer(message);
+        }
+      } catch (err) {
+        console.warn("[pi-loop] steering poll failed", err);
+      } finally {
+        steerPolling = null;
+      }
+    };
+    if (ctx.runtime.takeSteeringInputs) {
+      steerTimer = setInterval(() => void pollSteering(), 250);
+    }
+
     try {
-      const run = () => agent.continue();
+      const run = async () => {
+        await agent.continue();
+        // A poll that promoted a steered message just as the run ended must
+        // not lose it: finish that poll and keep the run going.
+        if (steerTimer !== undefined) {
+          clearInterval(steerTimer);
+          steerTimer = undefined;
+          await steerPolling;
+          await pollSteering();
+          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted) {
+            await agent.continue();
+          }
+        }
+      };
       if (ctx.runtime.keepAliveWhile) await ctx.runtime.keepAliveWhile(run);
       else await run();
     } finally {
+      if (steerTimer !== undefined) clearInterval(steerTimer);
       unsubscribe();
       ctx.runtime.abortSignal?.removeEventListener("abort", abort);
       await closeLiveStreams(ctx, state, ctx.runtime.abortSignal?.aborted ? "aborted" : "completed");

@@ -237,12 +237,12 @@ describe("SessionEventsApplicationService", () => {
     });
     await service.sendSessionEvents({
       sessionId: "session_01",
-      events: [{ type: "system.message", content: [{ type: "text", text: "First" }] }],
+      events: [{ type: "user.tool_result", toolUseId: "tool_01", content: [{ type: "text", text: "First" }] }],
     });
     now = new Date("2026-08-26T06:00:00.000Z");
     await service.sendSessionEvents({
       sessionId: "session_01",
-      events: [{ type: "system.message", content: [{ type: "text", text: "Second" }] }],
+      events: [{ type: "user.tool_result", toolUseId: "tool_02", content: [{ type: "text", text: "Second" }] }],
     });
 
     const first = await service.listSessionEvents({
@@ -271,7 +271,8 @@ describe("SessionEventsApplicationService", () => {
         events: [
           {
             id: "event_01",
-            type: "system.message",
+            type: "user.tool_result",
+            toolUseId: "tool_01",
             content: [{ type: "text", text: "First" }],
             processedAt: "2026-08-26T05:00:00.000Z",
           },

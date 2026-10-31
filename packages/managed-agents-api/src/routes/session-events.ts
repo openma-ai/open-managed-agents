@@ -72,7 +72,8 @@ export function buildSessionEventRoutes(
         data: result.page.events.map(toSessionEventResponse),
         next_page: result.page.nextCursor ?? null,
       };
-    } catch {
+    } catch (err) {
+      console.error("[session-events] invalid page mapping", err instanceof Error ? err.message : String(err));
       return c.json(apiError("Application returned an invalid session event page"), 500);
     }
 

@@ -10,6 +10,7 @@ import { Markdown } from "../components/Markdown";
 import { formatDuration, formatRelative, shortenId } from "../lib/format";
 import { Badge, StatusPill } from "../components/Badge";
 import { Modal } from "../components/Modal";
+import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { AgentIcon, ClockIcon, DurationIcon, EnvIcon, VaultIcon } from "../components/icons";
 import { FilesPanel, ResourcePanel } from "./session-detail/Panels";
@@ -25,10 +26,22 @@ import {
   type ManagedDeltaState,
 } from "../lib/managed-stream";
 import {
-  projectCanonicalChatTurns,
+  projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
+import {
+  decodeOmaQueueCancelResponse,
+  type OmaQueueCancelResponse,
+} from "@openma/common/gui";
 import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
+import { isQueuedSessionEvent } from "../lib/session-event-queue";
+import { upsertSessionEvent } from "../lib/session-event-upsert";
+import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
+import {
+  encodeGuiInterrupt,
+  encodeGuiUserMessage,
+  ingestManagedWireEvent,
+} from "../lib/managed-event-bridge";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
 // Console-specific renderers used only inside OpenMA UI host slots.
@@ -47,22 +60,12 @@ import {
 } from "../components/ai-elements/tool";
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
+import { QueueDock, type QueuedPrompt } from "@openma/common/chat-ui";
+import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
+import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
-
-/** A user.* event sitting in the server-side pending_events queue.
- *  Maintained client-side via system.user_message_pending /
- *  _promoted / _cancelled SSE frames. Server is authoritative on what's
- *  pending; client mirrors the row for outbox rendering only. */
-interface PendingEntry {
-  event_id: string;
-  pending_seq: number;
-  enqueued_at: number;
-  session_thread_id: string;
-  /** The full canonical user.* event the server enqueued. */
-  event: Event;
-}
 
 function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -85,6 +88,7 @@ function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
 export function SessionDetail() {
   const { id } = useParams();
   const managedApi = useManagedApi();
+  const { apiRaw } = useApi();
   const { t } = useI18n();
   const [events, setEvents] = useState<Event[]>([]);
   /** In-flight assistant streams keyed by message_id. Each entry holds
@@ -105,17 +109,35 @@ export function SessionDetail() {
   const [toolInputStreams, setToolInputStreams] = useState<Map<string, { name?: string; partial: string }>>(new Map());
   const [view, setView] = useState<View>("chat");
   const [sending, setSending] = useState(false);
-  // Optimistic outbox slot — what the user typed, between hitting Send
-  // and the server-side pending broadcast (system.user_message_pending)
-  // arriving over SSE. Without this, hitting Send clears the input
-  // field instantly and the user stares at a blank conversation for the
-  // 100-500ms POST → SSE roundtrip. With it, the message appears in the
-  // queued-state EventBubble immediately and is replaced by the server's
-  // pending row the moment SSE delivers it. Single slot is intentional
-  // (we never let two POSTs be in flight at once — Send is disabled
-  // while `sending`). Set to null when SSE confirms or POST settles.
+  // Optimistic outbox slot — what the user typed between hitting Send and
+  // the official send response's accepted events being merged into
+  // `events`. Without this, hitting Send clears the input field instantly
+  // and the user stares at a blank conversation for the roundtrip. With it,
+  // the message appears immediately. send() merges response.data first and
+  // clears this slot only after a successful merge; empty data keeps it (no
+  // pending-frame fallback). Single slot is intentional (we never let two
+  // POSTs be in flight at once — Send is disabled while `sending`).
   const [localPending, setLocalPending] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
+  /** True when the optimistic send was made mid-turn, so its echo belongs in
+   *  the queue dock (Backchat) rather than in the transcript. */
+  const [localPendingQueued, setLocalPendingQueued] = useState(false);
+  /** Queue rows with a local action awaiting the server's lifecycle event. */
+  const [queueBusy, setQueueBusy] = useState<Map<string, "removing" | "steering" | "editing">>(new Map());
+  /** Agent advertises OpenMA steering (metadata "oma.session.steering"). */
+  const [agentSteering, setAgentSteering] = useState(false);
+  /** Edit lost the race (server already started the item): the edited text
+   *  goes back to the composer so it can be sent as a new message. */
+  const [composerRestore, setComposerRestore] = useState<{ text: string; nonce: number } | null>(null);
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!composerNotice) return;
+    const timer = setTimeout(() => setComposerNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [composerNotice]);
+  /** GET /v1/sessions/:id answered 404 / not_found_error. Other failures
+   *  (network, 5xx) keep the existing toast-and-continue handling. */
+  const [notFound, setNotFound] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<{
     title?: string | null;
     environmentId?: string;
@@ -168,31 +190,32 @@ export function SessionDetail() {
    *  the events array at render time. SSE-driven new threads don't
    *  auto-switch — the operator stays on whatever they're watching. */
   const [activeThreadId, setActiveThreadId] = useState<string>("sthr_primary");
-  /** Server-mirrored pending queue, keyed by event_id. Populated from
-   *  the initial GET /pending plus live system.user_message_pending /
-   *  _promoted / _cancelled SSE frames. Pending entries render as a
-   *  separate "outbox" section at the bottom of the timeline; once the
-   *  server promotes the row (system.user_message_promoted), the entry
-   *  is removed from this map and the canonical user.* event takes its
-   *  place in the events array via the regular SSE broadcast. */
-  const [pendingByEventId, setPendingByEventId] = useState<Map<string, PendingEntry>>(new Map());
   const [showTrajectory, setShowTrajectory] = useState(false);
-  const seenKeys = useRef(new Set<string>());
-
-  // Dedup key for SSE re-delivery + initial-fetch overlap. `id` is stamped
-  // on every event by the server (sevt-* for tool_results / stream events;
-  // toolCallId for tool_use overrides) so it's a uniqueness guarantee
-  // across the wire. The previous content-based key dropped legitimate
-  // distinct events whose payloads happened to be byte-identical (two
-  // back-to-back `gh repo list` calls both timing out with the same
-  // 401 stderr was the repro). Fallback only kicks in for legacy events
-  // that pre-date stamping.
-  const eventKey = (e: Event) =>
-    (e as { id?: string }).id
-    ?? `${e.type}:${JSON.stringify(e.content || e.tool_use_id || e.error || "").slice(0, 120)}`;
+  /** Synchronous mirror of `events` so addEvent can decide append/update/
+   *  duplicate before React commits. Session history paging + SSE can call
+   *  addEvent back-to-back; a state updater cannot drive side effects. */
+  const eventsRef = useRef<Event[]>([]);
 
   const addEvent = (e: Record<string, unknown>) => {
-    const ev = e as Event;
+    // Stream delta / chunk frames stay on the wire shape for live overlays.
+    // Everything else crosses the CMA→OpenMA boundary so GUI never sees
+    // Managed `processed_at`.
+    const wireType = typeof e.type === "string" ? e.type : "";
+    const isLiveStreamFrame =
+      wireType === "event_start"
+      || wireType === "event_delta"
+      || wireType === "event_end"
+      || wireType.endsWith("_chunk")
+      || wireType.endsWith("_stream_start")
+      || wireType.endsWith("_stream_end")
+      || wireType === "agent.tool_use_input_stream_start"
+      || wireType === "agent.tool_use_input_chunk"
+      || wireType === "agent.tool_use_input_stream_end";
+    const ev = (
+      isLiveStreamFrame
+        ? (e as Event)
+        : (ingestManagedWireEvent(e, { sessionId: id ?? "unknown" }) ?? (e as Event))
+    );
 
     // Managed Agents v2 streaming uses an event_start/event_delta pair for
     // both assistant text and thinking. Keep the correlation state outside
@@ -355,12 +378,38 @@ export function SessionDetail() {
       });
     }
 
-    const key = eventKey(ev);
-    if (seenKeys.current.has(key)) return;
-    seenKeys.current.add(key);
+    // Optional OpenMA extensions. CF's SessionDO may still emit these
+    // pending-queue notifications, but the Console does not depend on them
+    // for the send/outbox path (official MA send response is authoritative).
+    // Ignore them so they never become unknown user-visible rows in the
+    // canonical events list. Queue-lifecycle frames (cancelled / steered)
+    // arrive here already decoded by openma-common as OpenMA
+    // `turn.cancelled` / `turn.steered` events and are kept: the canonical
+    // projection uses them to drop or absorb queued rows.
+    if (
+      ev.type === "system.user_message_pending"
+      || ev.type === "system.user_message_promoted"
+    ) {
+      return;
+    }
 
-    if (ev.type === "session.status_running") setStatus("running");
-    if (ev.type === "session.status_idle") setStatus("idle");
+    // Tag streamed events with arrival time so the timeline has a usable ts
+    // even before the server-side stored copy round-trips.
+    if (!ev.ts) ev.ts = new Date().toISOString();
+
+    // Official MA redelivers the same event id once a queued event is
+    // processed. Decode maps that to turn.queued → user.message (delivery
+    // processed). Upsert replaces/repositions; only append runs side effects.
+    const upserted = upsertSessionEvent(eventsRef.current, ev);
+    if (upserted.action === "duplicate") return;
+    eventsRef.current = upserted.events;
+    setEvents(upserted.events);
+    if (upserted.action === "update") return;
+
+    // addEvent ingests through the OpenMA codec: CMA session.status_running /
+    // status_idle arrive as OpenMA session.running / session.idle.
+    if (ev.type === "session.running") setStatus("running");
+    if (ev.type === "session.idle") setStatus("idle");
     // session.error → idle: defense-in-depth for the catch-all status_idle
     // emit (processUserMessage finally) in case a future code path forgets
     // to pair status_running with status_idle. Note: do NOT also map
@@ -371,87 +420,22 @@ export function SessionDetail() {
     // for the retry attempt naturally restores the pill.
     if (ev.type === "session.error") {
       setStatus("idle");
-      // session.error implies the active turn is dead; the harness won't
-      // pick anything else off the queue until the next user.message.
-      // Drop the outbox so the user doesn't see ghosts of inputs that
-      // can never run on this session state.
-      setPendingByEventId(new Map());
     }
 
-    // AMA-spec pending-queue notifications. The server is authoritative
-    // on what's queued; we mirror its state into pendingByEventId so the
-    // outbox renders without polling /pending.
-    if (ev.type === "system.user_message_pending") {
-      const p = ev as unknown as {
-        event_id: string;
-        pending_seq: number;
-        enqueued_at: number;
-        session_thread_id: string;
-        event: Event;
-      };
-      // Server claimed our optimistic outbox slot — drop the client-only
-      // mirror so we don't double-render the same user message (server
-      // entry has more metadata + a stable event_id; ours has neither).
-      const inner = p.event;
-      const innerText =
-        inner && (inner as { content?: Array<{ type?: string; text?: string }> }).content
-          ?.find((c) => c.type === "text")?.text;
-      if (innerText) setLocalPending((cur) => (cur === innerText ? null : cur));
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          const next = new Map(prev);
-          next.set(p.event_id, {
-            event_id: p.event_id,
-            pending_seq: p.pending_seq,
-            enqueued_at: p.enqueued_at,
-            session_thread_id: p.session_thread_id ?? "sthr_primary",
-            event: p.event,
-          });
-          return next;
-        });
+    // Official-path handoff for the optimistic bubble: when the send
+    // response carried no data (or SSE redelivers the canonical event),
+    // the real user.message is what replaces it. This does NOT use
+    // OpenMA pending frames.
+    if (ev.type === "user.message" || ev.type === "turn.queued") {
+      const blocks = Array.isArray(ev.content) ? ev.content : [];
+      const text =
+        (typeof (ev as { text?: unknown }).text === "string"
+          ? (ev as { text: string }).text
+          : undefined)
+        ?? blocks.find((block) => block.type === "text")?.text;
+      if (typeof text === "string") {
+        setLocalPending((cur) => (cur === text ? null : cur));
       }
-      // System frame — don't add to events list. The canonical user.*
-      // event arrives separately at drain time.
-      return;
-    }
-    if (ev.type === "system.user_message_promoted") {
-      const p = ev as unknown as { event_id?: string };
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          if (!prev.has(p.event_id!)) return prev;
-          const next = new Map(prev);
-          next.delete(p.event_id!);
-          return next;
-        });
-      }
-      return;
-    }
-    if (ev.type === "system.user_message_cancelled") {
-      const p = ev as unknown as { event_id?: string };
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          if (!prev.has(p.event_id!)) return prev;
-          const next = new Map(prev);
-          next.delete(p.event_id!);
-          return next;
-        });
-      }
-      return;
-    }
-    // user.interrupt also clears the outbox client-side (server emits
-    // _cancelled per row above; this is defensive for the case where the
-    // SDK posts user.interrupt without a thread filter and we want to
-    // drop everything for the active thread).
-    if (ev.type === "user.interrupt") {
-      const tid = (ev as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-      setPendingByEventId((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Map(prev);
-        for (const [k, v] of prev) {
-          if (v.session_thread_id === tid) next.delete(k);
-        }
-        return next;
-      });
     }
     // Live-update the thread selector when a sub-agent spawns. We don't
     // auto-switch the operator's view — they stay on whatever they're
@@ -490,11 +474,6 @@ export function SessionDetail() {
     // its switch — keeping the events here costs the chat view nothing
     // and gives Timeline the full trajectory it needs.
 
-    // Tag streamed events with arrival time so the timeline has a usable ts
-    // even before the server-side stored copy round-trips.
-    if (!ev.ts) ev.ts = new Date().toISOString();
-
-    setEvents((prev) => [...prev, ev]);
   };
 
   useEffect(() => {
@@ -508,14 +487,15 @@ export function SessionDetail() {
     // explicit reset the user sees session A's content under session B's
     // URL until the SSE refill catches up. Hard refresh works because
     // it re-mounts the whole tree from a fresh state. Reported 2026-05-13.
-    seenKeys.current.clear();
     managedDeltaState.current = { kinds: new Map(), text: new Map() };
+    eventsRef.current = [];
     setEvents([]);
     setStreams(new Map());
     setThinkingStreams(new Map());
     setToolInputStreams(new Map());
     setAgentId("");
     setSessionMeta({});
+    setNotFound(false);
     setLinear(null);
     setSlack(null);
     setEditingTitle(false);
@@ -525,13 +505,22 @@ export function SessionDetail() {
     setTrajectory(undefined);
     setThreads([]);
     setActiveThreadId("sthr_primary");
-    setPendingByEventId(new Map());
     setLocalPending(null);
 
     // Load session info
     managedApi.sessions.retrieve(id)
       .then((s) => {
         setAgentId(s.agent?.id || "");
+        const snapshotMeta = (s.agent as { metadata?: Record<string, string> } | undefined)?.metadata;
+        if (snapshotMeta) {
+          setAgentSteering(snapshotMeta["oma.session.steering"] === "enabled");
+        } else if (s.agent?.id) {
+          managedApi.agents.retrieve(s.agent.id)
+            .then((agent) => setAgentSteering(
+              (agent.metadata as Record<string, string> | undefined)?.["oma.session.steering"] === "enabled",
+            ))
+            .catch(() => setAgentSteering(false));
+        }
         setStatus(s.status);
         setSessionMeta({
           title: s.title ?? null,
@@ -579,12 +568,14 @@ export function SessionDetail() {
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (isSessionNotFoundError(error)) setNotFound(true);
+      });
 
     // Load canonical Managed Agents history. `next_page` is an opaque cursor;
     // do not parse it or depend on the old OMA `{seq, ts, data}` envelope.
     // Each page is applied as it arrives so long sessions render progressively.
-    void (async () => {
+    const loadHistory = async () => {
       let page: string | undefined;
       const seenPages = new Set<string>();
       const pageLimit = 100;
@@ -599,9 +590,9 @@ export function SessionDetail() {
             page,
           });
           for (const managedEvent of res.data) {
-            const e = managedEvent as unknown as Event;
-            if (!e.ts && typeof e.processed_at === "string") e.ts = e.processed_at;
-            addEvent(e);
+            // addEvent runs ingestManagedWireEvent (strips processed_at,
+            // projects delivery / turn.queued).
+            addEvent(managedEvent as unknown as Record<string, unknown>);
           }
           if (!res.next_page || seenPages.has(res.next_page)) break;
           seenPages.add(res.next_page);
@@ -610,7 +601,8 @@ export function SessionDetail() {
           break;
         }
       }
-    })();
+    };
+    void loadHistory();
 
     // Connect the official Managed Agents async event stream. Reconnect only
     // transport/5xx failures; 4xx responses are terminal until navigation or
@@ -619,6 +611,7 @@ export function SessionDetail() {
     void (async () => {
       const backoffMs = [1_000, 2_000, 4_000, 8_000];
       let failures = 0;
+      let connected = false;
       while (!abort.signal.aborted) {
         try {
           const liveEvents = await managedApi.sessions.events.stream(
@@ -627,6 +620,12 @@ export function SessionDetail() {
             { signal: abort.signal },
           );
           failures = 0;
+          // The official stream has no replay, so anything emitted while the
+          // previous connection was down (tool results, status_idle, queue
+          // stamps) would be missing until a full reload. Re-list once the
+          // new stream is open; upsertSessionEvent dedupes by event id.
+          if (connected) void loadHistory();
+          connected = true;
           for await (const event of liveEvents) {
             if (abort.signal.aborted) break;
             addEvent(event as unknown as Record<string, unknown>);
@@ -672,7 +671,10 @@ export function SessionDetail() {
     const text = messageText.trim();
     if (!text && !files?.length) return;
     if (!id) return;
-    setLocalPending(text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : ""));
+    const optimisticText =
+      text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : "");
+    setLocalPending(optimisticText);
+    setLocalPendingQueued(status === "running");
     setSending(true);
     try {
       // Upload attachments first so the user.message can reference them
@@ -719,19 +721,36 @@ export function SessionDetail() {
         });
       }
 
-      await managedApi.sessions.events.send(id, {
-        events: [{ type: "user.message", content }],
+      const encoded = encodeGuiUserMessage({
+        sessionId: id,
+        content,
+        text: text || undefined,
+        sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
       });
-      // POST resolved → server already inserted the row + broadcast
-      // system.user_message_pending. The outbox map will pick it up
-      // (and likely already has by the time await unblocks here).
-      // Clear our local slot so we don't double-render with the server
-      // entry — but only if the server's pending hasn't already cleared
-      // it via the system.user_message_pending handler.
-      setLocalPending((cur) => (cur === text ? null : cur));
+      if (!encoded.ok) {
+        toast.error(encoded.error);
+        setLocalPending(null);
+        setSending(false);
+        return;
+      }
+      const response = await managedApi.sessions.events.send(id, {
+        events: [encoded.wire as { type: "user.message"; content: typeof content }],
+      });
+      // Official MA contract: the send response carries the accepted
+      // user.message events in response.data. Merge them into the canonical
+      // log first; addEvent dedupes by id so the same event arriving later
+      // over SSE cannot double-render. Only after a successful merge do we
+      // drop the optimistic slot. Empty data keeps the optimistic bubble
+      // visible — there is no pending-frame fallback.
+      const handoff = mergeSendResponseIntoOutbox(
+        response,
+        { localPending: optimisticText, optimisticText },
+        addEvent,
+      );
+      setLocalPending(handoff.localPending);
     } catch {
       // api() already toasted the error; clear the optimistic slot so
-      // the user doesn't keep seeing a "stuck" pending row that will
+      // the user doesn't keep seeing a "stuck" optimistic row that will
       // never actually run.
       setLocalPending(null);
     }
@@ -745,10 +764,24 @@ export function SessionDetail() {
   // mode where a DO eviction killed an in-flight stream and no clean
   // status_idle was ever broadcast.
   const [interrupting, setInterrupting] = useState(false);
-  const canonicalTurns = useMemo(
-    () => projectCanonicalChatTurns(events as WireSessionEvent[], { threadId: activeThreadId }),
-    [activeThreadId, events],
+  const {
+    turns: canonicalTurns,
+    queued: canonicalQueued,
+    activeTurnId,
+    sessionState: projectedSessionState,
+  } = useMemo(
+    () => projectCanonicalChat(events as WireSessionEvent[], {
+      threadId: activeThreadId,
+      // Host status is authoritative for settle: idle/terminated → no turn
+      // stays running (requires_action stays awaiting).
+      sessionStatus: status,
+    }),
+    [activeThreadId, events, status],
   );
+  /** Official requires_action: session idle, turn parked on tool calls. */
+  const needsAction = status !== "running" && projectedSessionState === "requires_action";
+  const activeTurn = activeTurnId ? canonicalTurns.find((turn) => turn.id === activeTurnId) : undefined;
+  const blockedToolNames = needsAction && activeTurn ? awaitedToolNames(activeTurn) : [];
   /** Stable filtered list for Timeline — avoid reallocating on every
    *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
    *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
@@ -764,17 +797,126 @@ export function SessionDetail() {
     if (!id) return;
     setInterrupting(true);
     try {
+      const encoded = encodeGuiInterrupt({
+        sessionId: id,
+        sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
+      });
+      if (!encoded.ok) {
+        console.error("interrupt encode failed", encoded.error);
+        setInterrupting(false);
+        return;
+      }
       await managedApi.sessions.events.send(id, {
-        events: [{
-            type: "user.interrupt",
-            ...(activeThreadId !== "sthr_primary" ? { session_thread_id: activeThreadId } : {}),
-          }],
+        events: [encoded.wire as { type: "user.interrupt"; session_thread_id?: string }],
       });
     } catch (e) {
       console.error("interrupt failed", e);
     }
     setInterrupting(false);
   };
+
+  const markQueueBusy = (messageId: string, state: "removing" | "steering" | "editing" | null) => {
+    setQueueBusy((prev) => {
+      const next = new Map(prev);
+      if (state) next.set(messageId, state);
+      else next.delete(messageId);
+      return next;
+    });
+  };
+  /**
+   * Compare-and-cancel via DELETE pending. Body is OmaQueueCancelResponse
+   * (openma-common): `{ cancelled: true, id }` vs
+   * `{ cancelled: false, reason, id, processed_at? }`. Stream still emits
+   * turn.cancelled on success as backup for other observers.
+   */
+  const cancelQueued = async (
+    messageId: string,
+    busy: "removing" | "editing" = "removing",
+  ): Promise<OmaQueueCancelResponse | { cancelled: false; reason: "failed"; id: string }> => {
+    if (!id) return { cancelled: false, reason: "failed", id: messageId };
+    markQueueBusy(messageId, busy);
+    try {
+      const res = await fetch(
+        `/v1/oma/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(messageId)}`,
+        {
+          method: "DELETE",
+          credentials: "include",
+          headers: {
+            "anthropic-beta": CONSOLE_API_BETAS,
+            ...(getActiveTenantId() ? { "x-active-tenant": getActiveTenantId()! } : {}),
+          },
+        },
+      );
+      const raw = await res.json().catch(() => null);
+      const decoded = decodeOmaQueueCancelResponse(raw);
+      if (decoded) {
+        if (!decoded.cancelled) markQueueBusy(messageId, null);
+        return decoded;
+      }
+      markQueueBusy(messageId, null);
+      if (res.status === 409) {
+        return { cancelled: false, reason: "already_processing", id: messageId };
+      }
+      return { cancelled: false, reason: "failed", id: messageId };
+    } catch {
+      markQueueBusy(messageId, null);
+      return { cancelled: false, reason: "failed", id: messageId };
+    }
+  };
+  const steerQueued = async (messageId: string) => {
+    if (!id) return;
+    markQueueBusy(messageId, "steering");
+    try {
+      const res = await apiRaw(
+        `/v1/oma/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(messageId)}/steer`,
+        { method: "POST" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      markQueueBusy(messageId, null);
+    }
+  };
+  /** Save an edit: compare-and-cancel the queued row, then re-enqueue the
+   * edited text (joins end of queue). If the server already started it, the
+   * edited text goes back to the composer instead. */
+  const updateQueued = async (messageId: string, text: string) => {
+    const result = await cancelQueued(messageId, "editing");
+    if (result.cancelled) {
+      await send(text);
+      return;
+    }
+    abandonQueueEdit(messageId, text, result.reason);
+  };
+  const abandonQueueEdit = (_messageId: string, draft: string, reason: string) => {
+    setComposerRestore({ text: draft, nonce: Date.now() });
+    setComposerNotice(
+      reason === "already_processing" || reason === "already_completed"
+        ? "Already sent, can't edit. Your text is in the composer: send it as a new message."
+        : "Couldn't edit the queued message. Your text is in the composer.",
+    );
+  };
+  const queueDockItems: QueuedPrompt[] = [
+    ...canonicalQueued.map((item) => ({
+      id: item.id,
+      text: item.text,
+      busy: queueBusy.has(item.id),
+    })),
+    ...(localPending !== null && localPendingQueued && activeThreadId === "sthr_primary"
+      ? [{ id: "optimistic", text: localPending, busy: true }]
+      : []),
+  ];
+  // A row that left the queue (started, steered, cancelled) drops its busy flag.
+  useEffect(() => {
+    setQueueBusy((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(canonicalQueued.map((item) => item.id));
+      const next = new Map([...prev].filter(([key]) => live.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [canonicalQueued]);
+  const composerPlaceholder = status === "running"
+    ? queueDockItems.length > 0 ? `${queueDockItems.length} queued…` : "Add to queue…"
+    : "Send a message…";
 
   const saveTitle = async () => {
     if (!id) return;
@@ -793,27 +935,26 @@ export function SessionDetail() {
     }
   };
 
-  const activePendingEntries = Array.from(pendingByEventId.values())
-    .filter((entry) => entry.session_thread_id === activeThreadId)
-    .sort((a, b) => a.pending_seq - b.pending_seq);
   const hasTransientActivity = (
-    (localPending !== null && activeThreadId === "sthr_primary")
-    || activePendingEntries.length > 0
+    (localPending !== null && !localPendingQueued && activeThreadId === "sthr_primary")
     || thinkingStreams.size > 0
     || toolInputStreams.size > 0
     || streams.size > 0
     || status === "running"
   );
   const transientActivity = (
-    <SessionTransientActivity
-      localPending={activeThreadId === "sthr_primary" ? localPending : null}
-      pendingEntries={activePendingEntries}
-      running={status === "running"}
-      streams={streams}
-      thinkingStreams={thinkingStreams}
-      toolInputStreams={toolInputStreams}
-    />
+    <>
+      <SessionTransientActivity
+        localPending={activeThreadId === "sthr_primary" && !localPendingQueued ? localPending : null}
+        running={status === "running"}
+        streams={streams}
+        thinkingStreams={thinkingStreams}
+        toolInputStreams={toolInputStreams}
+      />
+    </>
   );
+
+  if (notFound) return <SessionNotFound id={id} />;
 
   return (
     <div className="flex flex-col h-full">
@@ -882,7 +1023,10 @@ export function SessionDetail() {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <StatusPill status={status as "idle" | "running" | "terminated" | "error" | string} />
+          <StatusPill
+            label={needsAction ? "Needs action" : undefined}
+            status={needsAction ? "awaiting" : status as "idle" | "running" | "terminated" | "error" | string}
+          />
           {/* Trajectory outcome chip — only when the trajectory has actually
               finished. While the session is still running we let StatusPill
               carry the "Running…" signal alone (per Phase 3 spec) instead of
@@ -1085,8 +1229,31 @@ export function SessionDetail() {
       {view === "chat" ? (
         <ManagedSessionConversation
           afterTurns={transientActivity}
-          composer={<SessionComposer
+          composer={<>
+          {/* Shared Backchat queue UI. Console has no reorder API, so no
+              reorder callback → no drag handle / arrows. Steer is the OpenMA
+              extension and only offered while running on steering agents. */}
+          <QueueDock
+            blocked={needsAction
+              ? {
+                  reason: "requires_action",
+                  toolNames: blockedToolNames,
+                  toolCallIds: activeTurn?.awaitingToolCallIds,
+                  onInterrupt: interrupt,
+                }
+              : undefined}
+            callbacks={{
+              update: updateQueued,
+              remove: async (messageId) => { await cancelQueued(messageId); },
+              ...(agentSteering && status === "running" ? { steer: steerQueued } : {}),
+            }}
+            prompts={queueDockItems}
+          />
+          <SessionComposer
             interrupting={interrupting}
+            placeholder={composerPlaceholder}
+            notice={composerNotice}
+            restoreDraft={composerRestore}
             onError={(error) => toast.error(error.message)}
             onStop={() => void interrupt()}
             onSubmit={async ({ text, files }) => {
@@ -1097,8 +1264,10 @@ export function SessionDetail() {
             }}
             running={status === "running"}
             sending={sending}
-          />}
+          />
+          </>}
           empty={hasTransientActivity ? transientActivity : undefined}
+          activeTurnId={activeTurnId}
           sessionId={id}
           turns={canonicalTurns}
         />
@@ -1264,9 +1433,13 @@ function SessionDurationBadge({ events }: { events: Event[] }) {
   let first = Infinity;
   let last = -Infinity;
   for (const e of events) {
-    const ts = (e as { processed_at?: string }).processed_at;
-    if (typeof ts !== "string") continue;
-    const t = new Date(ts).getTime();
+    const raw =
+      (typeof e.ts === "string" ? e.ts : undefined)
+      ?? (typeof (e as { occurred_at?: unknown }).occurred_at === "string"
+        ? (e as { occurred_at: string }).occurred_at
+        : undefined);
+    if (!raw) continue;
+    const t = new Date(raw).getTime();
     if (!Number.isFinite(t)) continue;
     if (t < first) first = t;
     if (t > last) last = t;
@@ -1295,14 +1468,12 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
 
 function SessionTransientActivity({
   localPending,
-  pendingEntries,
   running,
   streams,
   thinkingStreams,
   toolInputStreams,
 }: {
   localPending: string | null;
-  pendingEntries: PendingEntry[];
   running: boolean;
   streams: ReadonlyMap<string, string>;
   thinkingStreams: ReadonlyMap<string, string>;
@@ -1313,16 +1484,8 @@ function SessionTransientActivity({
       {localPending ? (
         <EventRender
           event={{ type: "user.message", content: [{ type: "text", text: localPending }] } as Event}
-          livePending
         />
       ) : null}
-      {pendingEntries.map((entry) => (
-        <EventRender
-          event={entry.event}
-          key={`pending-${entry.event_id}`}
-          livePending
-        />
-      ))}
       {Array.from(thinkingStreams.entries()).map(([id, text]) => (
         <Reasoning defaultOpen isStreaming key={`think-${id}`}>
           <ReasoningTrigger />
@@ -1395,22 +1558,10 @@ function SessionTransientActivity({
 
 function EventRender({
   event,
-  livePending = false,
   pairedResult,
   modelErrorCause,
 }: {
   event: Event;
-  /**
-   * Caller-derived "no agent.* event has followed this user.* event
-   * yet on the same thread" hint. The wire-level processed_at_ms
-   * doesn't update live (no SSE re-broadcast on server UPDATE), so
-   * we combine: pending iff (livePending AND wire-level says NULL)
-   * OR (livePending true and we have no wire info yet). When livePending
-   * is false we KNOW the agent has responded — drop the hourglass
-   * regardless of wire state, otherwise the bubble would stay pending
-   * for the entire turn even while the agent is mid-stream.
-   */
-  livePending?: boolean;
   /**
    * The matching `agent.tool_result` (or `agent.mcp_tool_result`) for
    * an `agent.tool_use` (or `custom_tool_use` / `mcp_tool_use`) event,
@@ -1432,22 +1583,12 @@ function EventRender({
    */
   modelErrorCause?: { error: string; model?: string };
 }) {
-  // AMA pending lifecycle (set by event-log adapter from row.processed_at /
-  // row.cancelled_at). Cancelled events stay in the log for audit but
-  // the LLM never sees them (eventsToMessages skips); show them with
-  // strikethrough so operators know the user retracted them.
-  const meta = event as { processed_at_ms?: number | null; cancelled_at_ms?: number | null };
-  // The hourglass shows when BOTH conditions hold:
-  //   1. Caller says no later non-user event has arrived (livePending)
-  //   2. Wire-level processed_at_ms agrees (still null)
-  // Either condition flipping → no longer pending.
-  const isPending =
-    livePending &&
-    meta.processed_at_ms == null &&
-    meta.cancelled_at_ms == null;
-  const isCancelled = meta.cancelled_at_ms != null;
+  // OpenMA delivery / turn.queued is authoritative for queue UI.
+  // CMA processed_at is never consulted here (stripped at ingest).
+  const isPending = isQueuedSessionEvent(event);
 
   switch (event.type) {
+    case "turn.queued":
     case "user.message": {
       // Wakeups synthesized by the schedule tool's onScheduledWakeup callback
       // also wire-type as user.message (per EventBase metadata convention),
@@ -1483,30 +1624,19 @@ function EventRender({
         );
       }
 
-      // Cancelled: render strikethrough + muted so the audit trail is
-      // visible without competing with live messages. Pending: dotted
-      // border + hourglass label since drainEventQueue hasn't picked it
-      // up yet. Live: default ai-elements user bubble (right-aligned,
-      // bg-secondary which we've aliased to OMA's bg-surface).
-      // Wireless: dropped the border-border-strong outline on both
-      // override states — line-through + opacity (cancelled) and the
-      // ⏳/Pending label above the bubble (pending) carry the signal
-      // without a per-bubble outline competing with the surrounding
-      // air.
-      const cancelledOverride = "line-through opacity-70";
+      // Queued: same muted/dim treatment as the optimistic localPending
+      // bubble, with an explicit label above it. Live: default ai-elements
+      // user bubble (right-aligned, bg-secondary aliased to bg-surface).
       const pendingOverride = "opacity-80";
       return (
         <Message from="user">
-          {(isPending || isCancelled) && (
+          {isPending && (
             <div className="text-xs text-fg-subtle text-right flex items-center justify-end gap-1">
-              {isPending && <span aria-hidden>⏳</span>}
-              {isCancelled && <span aria-hidden>✗</span>}
-              <span>{isCancelled ? "Retracted" : "Pending…"}</span>
+              <span aria-hidden>⏳</span>
+              <span>Queued…</span>
             </div>
           )}
-          <MessageContent
-            className={isCancelled ? cancelledOverride : isPending ? pendingOverride : undefined}
-          >
+          <MessageContent className={isPending ? pendingOverride : undefined}>
             {text}
           </MessageContent>
         </Message>
@@ -1651,4 +1781,33 @@ function EventRender({
     default:
       return null;
   }
+}
+
+/** True only for a missing session (404 / not_found_error); network and 5xx
+ *  errors stay on the generic error path. */
+export function isSessionNotFoundError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.code === "not_found_error");
+}
+
+export function SessionNotFound({ id }: { id?: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center p-8" data-testid="session-not-found">
+      <EmptyState
+        size="lg"
+        kind="session"
+        title="Session not found"
+        body={
+          <>
+            No session with id <code className="font-mono">{id}</code> exists in this
+            workspace. It may have been deleted, or the link is wrong.
+          </>
+        }
+        action={
+          <Link to="/sessions" className="text-sm text-brand underline-offset-2 hover:underline">
+            Back to Sessions
+          </Link>
+        }
+      />
+    </div>
+  );
 }

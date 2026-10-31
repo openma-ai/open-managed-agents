@@ -7,6 +7,7 @@ import {
 } from "@openma/common/chat-ui";
 import type { CanonicalChatTurn } from "@openma/common/session-events/managed";
 import { Markdown } from "../Markdown";
+import { hasQueuedUserMessage } from "../../lib/session-event-queue";
 import {
   Tool,
   ToolContent,
@@ -25,14 +26,31 @@ export interface CanonicalSessionTurnProps {
  * Managed owns the wire vocabulary; OpenMA common owns the conversation turn.
  * This adapter is deliberately pure so SessionDetail never rebuilds chat UI.
  */
-export function projectCanonicalSessionTurn(turn: CanonicalChatTurn): AgentUITurnState {
+export function projectCanonicalSessionTurn(
+  turn: CanonicalChatTurn,
+  options: { activeTurnId?: string } = {},
+): AgentUITurnState {
+  // A queued user.message / turn.queued has no assistant output yet.
+  // Projecting it as "running" would make AgentChatView treat it as a live
+  // turn. Project it as settled and let AgentUITurnView override the frame
+  // status to `queued`; once delivery upgrades to processed, running wins.
+  const queued = hasQueuedUserMessage(turn.rawEvents);
   return projectAcpChatTurn(
     {
       id: turn.id,
       promptText: turn.userText,
       events: turn.rawEvents.map((payload) => ({ payload })),
       assistantText: turn.render.assistantText,
-      status: canonicalTurnStatus(turn.status),
+      // Real duration from the turn's own event timestamps (processed_at).
+      ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
+      ...(turn.endedAt ? { endedAt: turn.endedAt } : {}),
+      status: queued
+        ? "complete"
+        // Only the projection's single active turn may animate; any other
+        // turn still marked running is a stale fragment and is shown settled.
+        : turn.status === "running" && options.activeTurnId !== undefined && options.activeTurnId !== turn.id
+          ? "complete"
+          : canonicalTurnStatus(turn.status),
       errorMessage: turn.status === "errored"
         ? turn.render.notes.join("\n") || "The turn failed."
         : undefined,
@@ -46,14 +64,19 @@ export function CanonicalSessionTurn({
   projectedTurn = projectCanonicalSessionTurn(turn),
   sessionId,
 }: CanonicalSessionTurnProps) {
+  const queued = hasQueuedUserMessage(turn.rawEvents);
   return (
+    <div className="contents" data-canonical-turn-status={turn.status}>
     <AgentUITurnView
+      className={queued ? "opacity-80" : undefined}
+      frameStatus={queued ? "queued" : undefined}
       labels={MANAGED_TURN_LABELS}
       sessionId={sessionId}
       slots={managedTurnSlots(turn)}
       thoughts="history"
       turn={projectedTurn}
     />
+    </div>
   );
 }
 
@@ -105,7 +128,23 @@ function managedTurnSlots(source: CanonicalChatTurn): AgentUITurnSlots {
         </ToolContent>
       </Tool>
     ),
-    renderAfterAnswer: () => source.status !== "errored" ? source.render.notes.map((note, index) => (
+    renderAfterAnswer: () => source.status !== "errored" ? [
+      ...(source.status === "awaiting" ? [
+        <p
+          className="rounded-md bg-warning-subtle px-3 py-2 text-sm text-warning"
+          data-turn-needs-action="true"
+          key={`${source.id}:needs-action`}
+          role="status"
+        >
+          {needsActionText(source)}
+        </p>,
+      ] : []),
+      ...(source.status === "interrupted" ? [
+        <p className="text-xs text-fg-muted" data-turn-interrupted="true" key={`${source.id}:interrupted`}>
+          Stopped
+        </p>,
+      ] : []),
+      ...source.render.notes.map((note, index) => (
       <p
         className="rounded-md bg-warning-subtle px-3 py-2 text-sm text-warning"
         key={`${source.id}:note:${index}`}
@@ -113,15 +152,45 @@ function managedTurnSlots(source: CanonicalChatTurn): AgentUITurnSlots {
       >
         {note}
       </p>
-    )) : null,
+    )),
+    ] : null,
   };
+}
+
+/** Tool names the turn is parked on (requires_action). */
+export function awaitedToolNames(turn: CanonicalChatTurn): string[] {
+  // Official requires_action: the latest idle's stop_reason.event_ids lists
+  // the calls still blocking. The rendered tool list can hold more than one
+  // row per call (use + result updates), so resolve one name per call id and
+  // collapse equal names into "name ×N".
+  const nameById = new Map<string, string>();
+  for (const id of turn.awaitingToolCallIds ?? []) nameById.set(id, "tool");
+  for (const tool of turn.render.tools) {
+    if (!nameById.has(tool.toolCallId)) continue;
+    const name = tool.toolName || tool.title;
+    if (name) nameById.set(tool.toolCallId, name);
+  }
+  const counts = new Map<string, number>();
+  for (const name of nameById.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return [...counts].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name));
+}
+
+function needsActionText(turn: CanonicalChatTurn): string {
+  const names = awaitedToolNames(turn);
+  return names.length > 0
+    ? `Needs action · waiting on ${names.join(", ")}`
+    : "Needs action · waiting on a tool result";
 }
 
 function canonicalTurnStatus(status: CanonicalChatTurn["status"]) {
   switch (status) {
     case "completed": return "complete" as const;
     case "errored": return "error" as const;
-    case "terminated": return "cancelled" as const;
+    case "terminated":
+    case "interrupted": return "cancelled" as const;
+    // Parked on requires_action: not finished, not working; the shared
+    // turn view renders it without a spinner or terminal status line.
+    case "awaiting": return "awaiting" as const;
     default: return "running" as const;
   }
 }

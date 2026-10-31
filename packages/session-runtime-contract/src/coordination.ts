@@ -76,6 +76,14 @@ export interface ClaimSessionExecution {
   attemptId: string;
   claimedAt: string;
   leaseTtlMs: number;
+  /**
+   * Claim only turn continuations (user.custom_tool_result /
+   * user.tool_confirmation), letting them pass queued user.messages in the
+   * same lane. Set while the lane is parked in requires_action: a queued
+   * user.message must wait for the paused turn instead of starting a new
+   * turn over unmatched tool_use blocks.
+   */
+  continuationsOnly?: boolean;
 }
 
 export type ClaimSessionExecutionResult =
@@ -118,6 +126,34 @@ export interface SessionExecutionStorePort {
     laneId?: string;
     requestedAt: string;
   }): Promise<{ type: "requested" | "idle" }>;
+  /** Remove one queued execution before it is claimed (Backchat queue
+   *  "remove"). An interrupt never cancels queued executions; this is the
+   *  only per-item cancel. */
+  /** Compare-and-cancel: succeeds only while state is `queued`. When the
+   *  item already left the queue, `not_queued.reason` tells the client why
+   *  (already_processing / already_cancelled / already_completed / not_found)
+   *  so an edit race can branch on the HTTP response immediately. */
+  cancelQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    cancelledAt: string;
+  }): Promise<
+    | { type: "cancelled"; execution: SessionExecution }
+    | {
+        type: "not_queued";
+        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+        execution?: SessionExecution;
+      }
+  >;
+  /** Absorb one queued execution into the running turn (steering). The
+   *  row settles as completed so it never runs as its own turn. */
+  steerQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    steeredAt: string;
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }>;
   cancelSession(input: {
     workspaceId: string;
     sessionId: string;

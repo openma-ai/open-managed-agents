@@ -126,6 +126,9 @@ export interface PendingQueueRepo {
   /** Cancel every active row for a thread. Returns the cancelled rows
    *  so the caller can broadcast per-row notifications. */
   cancelAllForThread(threadId: string, cancelledAtMs: number): PendingRow[];
+  /** Cancel one active row by event id. Returns the row, or null when it
+   *  was already drained/cancelled (the caller then reports 409). */
+  cancelByEventId(eventId: string, cancelledAtMs: number): PendingRow | null;
   /** List rows for a thread (active by default). */
   list(threadId: string, includeCancelled?: boolean): PendingRow[];
   /** Cross-thread count of active rows. */

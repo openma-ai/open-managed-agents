@@ -18,6 +18,11 @@ import {
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
 
+/** Row is a turn continuation (client answer to a paused tool call). */
+const CONTINUATION_SQL = (alias: string) =>
+  `${alias}.events_json LIKE '%"type":"user.custom_tool_result"%' OR ` +
+  `${alias}.events_json LIKE '%"type":"user.tool_confirmation"%'`;
+
 /** Promise port over an Effect program. FiberFailure stays inside. */
 function runCoordinatorPort<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
   return Effect.runPromiseExit(effect).then((exit) => {
@@ -470,6 +475,7 @@ export class SqlSessionExecutionStore
     id: string;
     revision: number | string;
   } | null> {
+    const continuations = input.continuationsOnly === true;
     return this.sql.prepare(`
       SELECT candidate.workspace_id, candidate.session_id, candidate.id, candidate.revision
         FROM managed_session_executions AS candidate
@@ -480,12 +486,14 @@ export class SqlSessionExecutionStore
            AND candidate.lease_expires_at_ms <= ? AND candidate.owner_id <> ?))
          AND candidate.attempt_count < candidate.max_attempts
          AND candidate.deadline_at_ms > ?
+         ${continuations ? `AND (${CONTINUATION_SQL("candidate")})` : ""}
          AND NOT EXISTS (
            SELECT 1 FROM managed_session_executions AS earlier
             WHERE earlier.workspace_id = candidate.workspace_id
               AND earlier.session_id = candidate.session_id
               AND earlier.lane_id = candidate.lane_id
               AND earlier.state IN ('queued', 'running')
+              ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}
               AND (earlier.admitted_at_ms < candidate.admitted_at_ms
                 OR (earlier.admitted_at_ms = candidate.admitted_at_ms AND earlier.id < candidate.id))
          )
@@ -749,6 +757,63 @@ export class SqlSessionExecutionStore
     }));
   }
 
+  async cancelQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    cancelledAt: string;
+  }): Promise<
+    | { type: "cancelled"; execution: SessionExecution }
+    | {
+        type: "not_queued";
+        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+        execution?: SessionExecution;
+      }
+  > {
+    const cancelledAt = timestamp(input.cancelledAt, "queued cancellation");
+    const row = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET state = 'cancelled', settled_at_ms = ?,
+             failure = 'removed from queue', revision = revision + 1
+       WHERE workspace_id = ? AND session_id = ? AND id = ? AND state = 'queued'
+      RETURNING ${columns()}
+    `).bind(cancelledAt, input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    if (row !== null) return { type: "cancelled", execution: toExecution(row) };
+    const current = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND id = ?
+      LIMIT 1
+    `).bind(input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    if (current === null) return { type: "not_queued", reason: "not_found" };
+    const execution = toExecution(current);
+    const reason =
+      current.state === "running" ? "already_processing" as const
+      : current.state === "cancelled" ? "already_cancelled" as const
+      : current.state === "completed" ? "already_completed" as const
+      : "already_processing" as const;
+    return { type: "not_queued", reason, execution };
+  }
+
+  async steerQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    steeredAt: string;
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }> {
+    const steeredAt = timestamp(input.steeredAt, "queued steering");
+    const row = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET state = 'completed', settled_at_ms = ?,
+             failure = NULL, revision = revision + 1
+       WHERE workspace_id = ? AND session_id = ? AND id = ? AND state = 'queued'
+      RETURNING ${columns()}
+    `).bind(steeredAt, input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    return row === null ? { type: "not_queued" } : { type: "steered", execution: toExecution(row) };
+  }
+
   async requestInterrupt(input: {
     workspaceId: string;
     sessionId: string;
@@ -756,21 +821,8 @@ export class SqlSessionExecutionStore
     requestedAt: string;
   }): Promise<{ type: "requested" | "idle" }> {
     const requestedAt = timestamp(input.requestedAt, "interrupt request");
-    const queued = this.sql.prepare(`
-      UPDATE managed_session_executions
-         SET state = 'cancelled', settled_at_ms = ?,
-             interrupt_requested_at_ms = COALESCE(interrupt_requested_at_ms, ?),
-             failure = 'interrupted before execution', revision = revision + 1
-       WHERE workspace_id = ? AND session_id = ? AND state = 'queued'
-         AND (? IS NULL OR lane_id = ?)
-    `).bind(
-      requestedAt,
-      requestedAt,
-      input.workspaceId,
-      input.sessionId,
-      input.laneId ?? null,
-      input.laneId ?? null,
-    );
+    // Queued executions survive an interrupt (Backchat policy): only the
+    // running turn is cancelled, and the lane drains the queue next.
     const expired = this.sql.prepare(`
       UPDATE managed_session_executions
          SET state = 'cancelled', settled_at_ms = ?,
@@ -804,7 +856,7 @@ export class SqlSessionExecutionStore
       input.laneId ?? null,
       input.laneId ?? null,
     );
-    const results = await this.sql.batch([queued, expired, active]);
+    const results = await this.sql.batch([expired, active]);
     return results.reduce((total, result) => total + result.meta.changes, 0) === 0
       ? { type: "idle" }
       : { type: "requested" };

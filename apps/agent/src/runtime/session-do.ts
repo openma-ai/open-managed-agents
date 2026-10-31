@@ -18,6 +18,7 @@ import {
   logWarn,
   log,
   generateEventId,
+  createMonotonicClock,
   generateOutcomeId,
   classifyExternalError,
   AuthError,
@@ -120,7 +121,7 @@ import {
 import { resolveAppendablePrompts } from "./appendable-prompts";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
-import { SqliteHistory, InMemoryHistory } from "./history";
+import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
 import {
   loadManagedSessionResources,
@@ -339,6 +340,8 @@ const INITIAL_SESSION_STATE: SessionState = {
 // `sessions.turn_id`. See _ensureCfAgentsSchema() below.
 const STATE_ROW_ID = "cf_state_row_id";
 const KEEP_ALIVE_INTERVAL_MS = 30_000;
+/** Bounded wait for an aborted turn to unwind tools before the interrupt is stamped. */
+const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
 
 /** Next cron fire strictly after `nowMs`. `getNextDate` can return the current
@@ -437,6 +440,12 @@ export class SessionDO extends DurableObject<Env> {
    * key shape.
    */
   private _threadAbortControllers = new Map<string, AbortController>();
+  /** Threads whose aborted turn already got its status_idle from the
+   *  user.interrupt handler; the turn's catch-all idle must not repeat it. */
+  private _interruptIdleOwned = new Set<string>();
+  /** Resolves when the turn owning the thread's current AbortController has fully settled (finally ran). */
+  private _turnSettled = new Map<AbortController, Promise<void>>();
+
 
   /** Execution authority lives in the tenant D1 outbox. The DO only owns a
    * lease while running one lane and never uses this map as durable state. */
@@ -669,6 +678,8 @@ export class SessionDO extends DurableObject<Env> {
   private sandbox: SandboxExecutor | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
+  private readonly processedClock = createMonotonicClock();
   /** Per-warmup random tag mirrored to /tmp/.oma-warm in the container.
    *  Lets the wrapSandboxWithLazyWarmup proxy detect a recycled container
    *  (CF Sandbox can die independently of SessionDO via OOM, sleepAfter,
@@ -1208,7 +1219,7 @@ export class SessionDO extends DurableObject<Env> {
         forceIdle: () => {
           // Status auto-derives to "idle" once recoverAgentTurn returns
           // and cf_agents_runs is empty. Just emit the trajectory event.
-          const idleEvent: SessionEvent = { type: "session.status_idle" };
+          const idleEvent: SessionEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
         },
@@ -1394,7 +1405,7 @@ export class SessionDO extends DurableObject<Env> {
     row: PendingRow,
     history: HistoryStore,
   ): void {
-    const nowMs = Date.now();
+    const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
     const event = JSON.parse(row.data) as SessionEvent;
     event.processed_at = nowIso;
@@ -1407,6 +1418,8 @@ export class SessionDO extends DurableObject<Env> {
     }
     if (!promoted) history.append(event);
     this.pending!.delete(row.pending_seq);
+    // Canonical D1 stamp (null → processed_at) before live re-emit.
+    this.markAcceptedEventsProcessed([row.event_id], nowIso);
     this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
@@ -1415,6 +1428,48 @@ export class SessionDO extends DurableObject<Env> {
       processed_at: nowIso,
       session_thread_id: row.session_thread_id,
     } as SystemUserMessagePromotedEvent);
+  }
+
+  /**
+   * Steering: absorb every queued user.message on this lane into the running
+   * turn. The execution outbox row settles as completed (so it never runs as
+   * its own turn), the local row is promoted with the official CMA stamp and
+   * re-emit, and `system.user_message_steered` tells clients it joined the
+   * current turn. Rows another host already claimed are left alone.
+   */
+  /** Queued event ids the user asked to steer into the running turn. */
+  private readonly _steerRequested = new Set<string>();
+
+  private async takeSteeringInputs(threadId: string, history: HistoryStore): Promise<SessionEvent[]> {
+    const store = await this.getExecutionStore();
+    const out: SessionEvent[] = [];
+    for (const row of this.pending!.list(threadId)) {
+      // Only rows the user explicitly promoted (Backchat "Steer"); the rest
+      // keep their place in the queue.
+      if (row.type !== "user.message" || !this._steerRequested.has(row.event_id)) continue;
+      this._steerRequested.delete(row.event_id);
+      if (store !== null) {
+        const result = await store.steerQueued({
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          executionId: row.event_id,
+          steeredAt: new Date().toISOString(),
+        });
+        if (result.type !== "steered") continue;
+      }
+      // Steered frame first so clients place the stamped re-emit inside the
+      // running turn instead of briefly deferring it as the next turn.
+      this.broadcastEvent({
+        type: "system.user_message_steered",
+        event_id: row.event_id,
+        session_thread_id: row.session_thread_id,
+        steered_at: Date.now(),
+      } as unknown as SessionEvent);
+      this.promotePendingRow(row, history);
+      const event = JSON.parse(row.data) as SessionEvent;
+      out.push(event);
+    }
+    return out;
   }
 
   private async drainEventQueue(threadId: string = "sthr_primary"): Promise<void> {
@@ -1460,7 +1515,7 @@ export class SessionDO extends DurableObject<Env> {
         legacyRows.push({ seq: row.seq as number, data: row.data as string });
       }
       for (const lr of legacyRows) {
-        const nowMs = Date.now();
+        const nowMs = this.processedClock.nowMs();
         const nowIso = new Date(nowMs).toISOString();
         let event: SessionEvent;
         try {
@@ -1515,6 +1570,9 @@ export class SessionDO extends DurableObject<Env> {
       try {
       while (true) {
         this.broadcastedMessageIds.clear();
+        // Parked in requires_action: only the client's answers may run; a
+        // queued user.message waits for the paused turn to finish.
+        const awaitingClient = (this.state.pending_tool_calls?.length ?? 0) > 0;
         const result = await host.runOne(async (execution, fence, signal) => {
           this._executionFences.set(threadId, fence);
           const executionHistory = this.guardHistoryForExecution(history, fence);
@@ -1533,6 +1591,10 @@ export class SessionDO extends DurableObject<Env> {
                 await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
               } else if (event.type === "user.custom_tool_result") {
                 const customResult = event as UserCustomToolResultEvent;
+                // Late answer for a call that is already closed (interrupt
+                // settled it, or a duplicate POST): a second tool_result for
+                // one tool_use makes the provider 400 the whole transcript.
+                if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, executionHistory)) continue;
                 const toolResultEvent: SessionEvent = {
                   type: "agent.tool_result",
                   tool_use_id: customResult.custom_tool_use_id,
@@ -1542,10 +1604,7 @@ export class SessionDO extends DurableObject<Env> {
                 };
                 executionHistory.append(toolResultEvent);
                 this.broadcastEvent(toolResultEvent, fence);
-                await this.processUserMessage({
-                  type: "user.message",
-                  content: [{ type: "text", text: "" }],
-                }, 0, true, signal, fence);
+                await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, executionHistory, signal, fence);
               }
             }
             // `broadcastEvent` deliberately serializes the managed-runtime
@@ -1564,7 +1623,7 @@ export class SessionDO extends DurableObject<Env> {
               this._executionFences.delete(threadId);
             }
           }
-        });
+        }, { continuationsOnly: awaitingClient });
         if (result.type === "empty") {
           // Direct DO callers and pre-outbox deliveries may have a local
           // pending row but no D1 admission yet. Admit it once as a
@@ -1574,7 +1633,10 @@ export class SessionDO extends DurableObject<Env> {
           break;
         }
         if (result.type === "completed") continue;
-        if (result.type === "cancelled") break;
+        // An interrupt cancels only the running execution; queued ones
+        // survive and drain next (Backchat policy). After cancelSession the
+        // queue is empty and the next runOne returns "empty".
+        if (result.type === "cancelled") continue;
         if (result.type === "failed") {
           const errorEvent: SessionEvent = {
             type: "session.error",
@@ -1612,7 +1674,7 @@ export class SessionDO extends DurableObject<Env> {
       // AMA spec: processed_at = "wall-clock ingestion time, when the
       // agent picks the event up — not when the turn finishes". The
       // INSERT below carries this value verbatim into the events row.
-      const nowMs = Date.now();
+      const nowMs = this.processedClock.nowMs();
       const nowIso = new Date(nowMs).toISOString();
       const event = JSON.parse(row.data) as SessionEvent;
       event.processed_at = nowIso;
@@ -1659,6 +1721,9 @@ export class SessionDO extends DurableObject<Env> {
       // filled) so live consumers that key on user.message see the
       // promoted copy with the right wall-clock. Mirror what the
       // pre-refactor broadcastEvent path did at append time.
+      if (typeof eventId === "string" && eventId.length > 0) {
+        this.markAcceptedEventsProcessed([eventId], nowIso);
+      }
       this.broadcastEvent(event);
       // Promotion notification — lets new clients drop the outbox bubble
       // and render the new events-log row. Includes the assigned seq so
@@ -1691,6 +1756,7 @@ export class SessionDO extends DurableObject<Env> {
               await this.handleToolConfirmation(event as UserToolConfirmationEvent, history);
             } else if (event.type === "user.custom_tool_result") {
               const customResult = event as UserCustomToolResultEvent;
+              if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) return;
               const toolResultEvent: SessionEvent = {
                 type: "agent.tool_result",
                 tool_use_id: customResult.custom_tool_use_id,
@@ -1703,11 +1769,7 @@ export class SessionDO extends DurableObject<Env> {
               };
               history.append(toolResultEvent);
               this.broadcastEvent(toolResultEvent);
-              const resumeMsg: UserMessageEvent = {
-                type: "user.message",
-                content: [{ type: "text", text: "" }],
-              };
-              await this.processUserMessage(resumeMsg, 0, true);
+              await this.resumeWhenToolBatchSettled(customResult.custom_tool_use_id, history);
             }
           },
           {},
@@ -1755,7 +1817,10 @@ export class SessionDO extends DurableObject<Env> {
         // running the turn), and pending_events is already cleared.
         // Status auto-derives from sessions.turn_id once the
         // RuntimeAdapter.endTurn callback fires.
-        break; // Stop draining on error — let the client decide what to do
+        // A user interrupt only ends the active turn; queued messages keep
+        // draining. Any other failure stops the drain so the client decides.
+        if (isUserInterrupt) continue;
+        break;
       }
       // Promoted row is in events with processed_at set; pending row is
       // deleted. Loop back for the next pending event on this thread.
@@ -1830,7 +1895,7 @@ export class SessionDO extends DurableObject<Env> {
       (e) => {
         const ev = e as SessionEvent & { id?: string; processed_at?: string };
         if (!ev.id) ev.id = `sevt_${generateEventId()}`;
-        if (!ev.processed_at) ev.processed_at = new Date().toISOString();
+        if (!ev.processed_at) ev.processed_at = this.processedClock.nowIso();
       },
       this.env.MEMORY_BUCKET ?? null,
       `t/${tenantId}/sessions/${this._state.session_id}/events/`,
@@ -2228,12 +2293,9 @@ export class SessionDO extends DurableObject<Env> {
         //   1. Abort the in-flight turn for the target thread (only that
         //      thread — siblings keep running). If no session_thread_id
         //      is set, defaults to primary.
-        //   2. Flush queued user.* events for that thread (mark
-        //      cancelled_at). AMA's BetaManagedAgentsRetryStatusExhausted
-        //      doc says "queued inputs are flushed and the session
-        //      returns to idle"; user.interrupt mirrors that semantic.
-        //      eventsToMessages skips cancelled events so they never
-        //      reach the LLM context.
+        //   2. Keep queued user.* events: they drain after the interrupted
+        //      turn ends (matches Backchat's SessionManager.cancel). Only
+        //      explicit DELETE /pending/:event_id cancels a queued row.
         //   3. Append the user.interrupt event itself + idle marker.
         const targetThread =
           (body as unknown as { session_thread_id?: string })
@@ -2254,26 +2316,28 @@ export class SessionDO extends DurableObject<Env> {
           });
         }
         if (ctrl) {
+          // The handler owns the interrupted turn's idle from here on.
+          this._interruptIdleOwned.add(targetThread);
           ctrl.abort();
           this._threadAbortControllers.delete(targetThread);
+          // Official CMA: "the interrupt can take longer to apply while tool
+          // calls are running" and processed_at stays null until applied.
+          // Give the aborted turn a short grace (Codex: cancel token, then
+          // bounded wait) to unwind its tools before we stamp the interrupt.
+          // Wait on THIS turn's settlement, not lane activity: the lane may
+          // already be running the next queued user.message.
+          const settledTurn = this._turnSettled.get(ctrl);
+          if (settledTurn) {
+            await Promise.race([settledTurn, new Promise((resolve) => setTimeout(resolve, INTERRUPT_GRACE_MS))]);
+          }
         }
         const cancelTs = Date.now();
-        // Cancel rows in the AMA-spec pending_events queue and broadcast
-        // a per-row notification so live consumers can strike-through the
-        // outbox bubble.
-        const cancelledRows = this.pending!.cancelAllForThread(
-          targetThread,
-          cancelTs,
-        );
-        for (const row of cancelledRows) {
-          this.broadcastEvent({
-            type: "system.user_message_cancelled",
-            pending_seq: row.pending_seq,
-            event_id: row.event_id,
-            session_thread_id: row.session_thread_id,
-            cancelled_at: cancelTs,
-          } as SystemUserMessageCancelledEvent);
-        }
+        // Queued user.* events SURVIVE an interrupt (Backchat policy): the
+        // interrupt aborts only the active turn, then the drain loop picks
+        // the next queued row and the official CMA stamp/re-emit applies.
+        // Nothing is left with processed_at null forever. Callers that want
+        // to drop a queued message use DELETE /v1/sessions/:id/pending/:event_id,
+        // which emits system.user_message_cancelled for that row.
         // Legacy back-compat: pre-3a3e7ec sessions may still have user.*
         // rows sitting in `events` with processed_at IS NULL. The legacy
         // partial pending-index on `events` would otherwise pick them up
@@ -2293,7 +2357,7 @@ export class SessionDO extends DurableObject<Env> {
           this.ctx.storage.sql.exec("SELECT changes() AS affected_rows").one()
             .affected_rows ?? 0,
         );
-        const cancelledCount = cancelledRows.length + legacyCancelledCount;
+        const cancelledCount = legacyCancelledCount;
         const settledRequests: string[] = [];
         if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
           const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
@@ -2325,7 +2389,7 @@ export class SessionDO extends DurableObject<Env> {
             for (const requestId of settled) {
               // Reuse the same error extension emitted by orphan-tool recovery.
               const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
-                content: [{ type: "text", text: "Cancelled by user" }], is_error: true,
+                content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
                 ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
               };
               history.append(result);
@@ -2333,15 +2397,58 @@ export class SessionDO extends DurableObject<Env> {
             }
           }
         }
-        history.append(body as UserInterruptEvent);
+        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+        const interruptAt = this.processedClock.nowIso();
+        if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
+        interrupt.processed_at = interruptAt;
+        this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
+        history.append(interrupt);
+        // Claude Managed Agents: user.interrupt itself appears on the stream.
+        this.broadcastEventIgnoringExecutionFence(interrupt);
         // Emit status_idle when interrupt actually changed thread state:
         // either an active turn was aborted, or queued events were
         // cancelled. Skip when both are false (no-op interrupt) — that
         // case had been emitting a duplicate status_idle right after a
         // natural-end one, observed 2026-05-11 sess-y5saq (seq 93 idle
         // stop_reason=end_turn, seq 95 idle stop_reason=None).
-        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0 || settledRequests.length > 0;
-        if (shouldEmitIdle) {
+        // Scope: only synchronous calls of this thread's current turn that
+        // never got a result. Anything that already returned (including a
+        // future async/background handle) is untouched; OpenMA has no async
+        // tool handles today, and their lifecycle is deliberately not tied to
+        // interrupt (separate design).
+        // Close every still-open tool_use / custom_tool_use / confirmation
+        // BEFORE the idle so the turn never ends in requires_action and a
+        // late answer cannot resume it (findings.md §3/§4).
+        const closedCount = this.closeToolUsesAfterInterrupt(history, undefined, targetThread);
+        // Decide idle from durable history, not only the in-memory controller.
+        // After DO eviction / wrangler HMR / a concurrent interrupt that already
+        // deleted the controller, hadActiveTurn can be false while the last
+        // status is still running — skipping idle leaves the session stuck
+        // (race NOT_SETTLED, interrupt-v2 double_interrupt). Official CMA:
+        // interrupt ends the turn with status_idle end_turn.
+        // True no-op: already idle end_turn and nothing was closed/cancelled.
+        let lastStatusType: string | undefined;
+        let lastStop: string | undefined;
+        for (const e of history.getEvents()) {
+          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
+          if (e.type === "session.status_running" || e.type === "session.status_idle") {
+            lastStatusType = e.type;
+            lastStop = e.type === "session.status_idle"
+              ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
+              : undefined;
+          }
+        }
+        const lastIsRunning = lastStatusType === "session.status_running";
+        const emitIdle =
+          closedCount > 0 ||
+          settledRequests.length > 0 ||
+          cancelledCount > 0 ||
+          hadActiveTurn ||
+          lastIsRunning ||
+          (lastStatusType === "session.status_idle" && lastStop !== "end_turn");
+        if (emitIdle) {
+          // If a zombie turn's finally still runs, suppress its catch-all idle.
+          if (lastIsRunning || hadActiveTurn) this._interruptIdleOwned.add(targetThread);
           // stop_reason is required on session.status_idle per Anthropic
           // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
           // without it. Anthropic's StopReason union has no `interrupted`
@@ -2354,7 +2461,10 @@ export class SessionDO extends DurableObject<Env> {
             ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
           };
           history.append(idleEvent);
-          this.broadcastEvent(idleEvent);
+          // Interrupt ends the turn's execution fence; broadcastEvent would
+          // drop this as stale and never project to D1 (GET /events reads D1).
+          // Force-publish lifecycle idle without a fence.
+          this.broadcastEventIgnoringExecutionFence(idleEvent);
         }
         return new Response(null, { status: 202 });
       }
@@ -2364,6 +2474,9 @@ export class SessionDO extends DurableObject<Env> {
         const tcThread =
           (tc as unknown as { session_thread_id?: string }).session_thread_id ??
           "sthr_primary";
+        if (this.toolUseAlreadyAnswered(tc.tool_use_id, history)) {
+          return this.acceptNoEffectAnswer(tc, history);
+        }
         this._stampEventForPending(tc);
         const enqueued = this.enqueuePendingIfNew(tc);
         if (enqueued) this._broadcastPendingFrame(tc, tcThread);
@@ -2382,6 +2495,14 @@ export class SessionDO extends DurableObject<Env> {
         const ctrThread =
           (customResult as unknown as { session_thread_id?: string })
             .session_thread_id ?? "sthr_primary";
+        if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) {
+          return this.acceptNoEffectAnswer(customResult, history);
+        }
+        if (!this.toolUseExists(customResult.custom_tool_use_id, history)) {
+          return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
+            message: `custom_tool_use_id ${customResult.custom_tool_use_id} does not match any tool use in this session` } }),
+            { status: 400, headers: { "content-type": "application/json" } });
+        }
         this._stampEventForPending(customResult);
         const enqueued = this.enqueuePendingIfNew(customResult);
         if (enqueued) this._broadcastPendingFrame(customResult, ctrThread);
@@ -2538,11 +2659,13 @@ export class SessionDO extends DurableObject<Env> {
       // (no headers) = Anthropic-spec behavior: no replay, only spec event
       // types broadcast. `Last-Event-ID` is SSE-native resume — its
       // presence implies replay-from-seq regardless of x-oma-replay.
-      const includeChunks =
-        (request.headers.get("x-oma-include") ?? "")
-          .split(",")
-          .map((s) => s.trim())
-          .includes("chunks");
+      const includes = (request.headers.get("x-oma-include") ?? "")
+        .split(",")
+        .map((s) => s.trim());
+      const includeChunks = includes.includes("chunks");
+      // Managed stream adapter opts into the OMA queue-lifecycle extension
+      // (system.user_message_cancelled / _steered) without the chunk firehose.
+      const includeQueue = includes.includes("queue_lifecycle");
       const replayHeader = request.headers.get("x-oma-replay") === "1";
       const lastEventIdRaw = request.headers.get("Last-Event-ID");
       const lastEventId = lastEventIdRaw !== null
@@ -2556,8 +2679,11 @@ export class SessionDO extends DurableObject<Env> {
       // Pass undefined (not []) when no tags so the runtime skips the
       // tag-array path entirely — empty-tags semantics differ across CF
       // runtime versions and the cleanest contract is "no tags arg".
-      if (includeChunks) {
-        this.ctx.acceptWebSocket(pair[1], ["chunks"]);
+      if (includeChunks || includeQueue) {
+        this.ctx.acceptWebSocket(pair[1], [
+          ...(includeChunks ? ["chunks"] : []),
+          ...(includeQueue ? ["queue_lifecycle"] : []),
+        ]);
       } else {
         this.ctx.acceptWebSocket(pair[1]);
       }
@@ -2653,6 +2779,81 @@ export class SessionDO extends DurableObject<Env> {
     //   { data: [ { pending_seq, enqueued_at, type, event_id,
     //               session_thread_id, cancelled_at, data } ] }
     // Ordered by pending_seq ASC. Cancelled rows omitted by default.
+    if (request.method === "POST" && url.pathname.startsWith("/pending/") && url.pathname.endsWith("/steer")) {
+      const eventId = decodeURIComponent(url.pathname.slice("/pending/".length, -"/steer".length));
+      const row = this.pending!.list("sthr_primary").find((r) => r.event_id === eventId)
+        ?? this.pending!.threadsWithPending().flatMap((t) => this.pending!.list(t)).find((r) => r.event_id === eventId);
+      const conflict = (message: string, reason?: string) => new Response(
+        JSON.stringify({ type: "error", error: { type: "invalid_request_error", message }, ...(reason ? { reason } : {}) }),
+        { status: 409, headers: { "content-type": "application/json" } },
+      );
+      if (!row) return conflict("Queued message already started or was removed", "already_processed");
+      const agent = await this.getThreadAgentConfig(row.session_thread_id);
+      if (!agentAdvertisesSteering(agent)) return conflict("This agent does not support steering; the message stays queued");
+      this._steerRequested.add(eventId);
+      return new Response(JSON.stringify({ event_id: eventId, steer: "requested" }),
+        { status: 202, headers: { "content-type": "application/json" } });
+    }
+    if (request.method === "DELETE" && url.pathname.startsWith("/pending/")) {
+      const eventId = decodeURIComponent(url.pathname.slice("/pending/".length));
+      const cancelledAt = Date.now();
+      const cancelledAtIso = new Date(cancelledAt).toISOString();
+      // Compare-and-cancel: the D1 execution outbox is the queue authority.
+      // Response body is the edit-race contract (openma-common documents it):
+      //   { cancelled: true, id, cancelled_at }  — still queued, removed
+      //   { cancelled: false, reason, id, processed_at? } — too late
+      // On success we also broadcast system.user_message_cancelled so stream
+      // observers stay in sync with the HTTP outcome.
+      const store = await this.getExecutionStore();
+      type NotQueuedReason = "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+      let notQueued: { reason: NotQueuedReason; processedAt?: string } | null = null;
+      let durableCancelled = store === null;
+      if (store !== null) {
+        const result = await store.cancelQueued({
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          executionId: eventId,
+          cancelledAt: cancelledAtIso,
+        });
+        if (result.type === "cancelled") {
+          durableCancelled = true;
+          this._steerRequested.delete(eventId);
+        } else {
+          durableCancelled = false;
+          notQueued = {
+            reason: result.reason,
+            ...(result.execution?.attempt?.claimedAt
+              ? { processedAt: result.execution.attempt.claimedAt }
+              : result.execution?.settledAt
+                ? { processedAt: result.execution.settledAt }
+                : {}),
+          };
+        }
+      }
+      const localRow = durableCancelled ? this.pending!.cancelByEventId(eventId, cancelledAt) : null;
+      if (store === null && localRow === null) {
+        durableCancelled = false;
+        notQueued = { reason: "not_found" };
+      }
+      if (!durableCancelled) {
+        return new Response(JSON.stringify({
+          cancelled: false,
+          reason: notQueued?.reason ?? "already_processing",
+          id: eventId,
+          ...(notQueued?.processedAt ? { processed_at: notQueued.processedAt } : {}),
+        }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+      const row = localRow ?? { pending_seq: 0, event_id: eventId, session_thread_id: "sthr_primary" };
+      this.broadcastEvent({
+        type: "system.user_message_cancelled",
+        pending_seq: row.pending_seq,
+        event_id: row.event_id,
+        session_thread_id: row.session_thread_id,
+        cancelled_at: cancelledAt,
+      } as SystemUserMessageCancelledEvent);
+      return new Response(JSON.stringify({ cancelled: true, id: row.event_id, cancelled_at: cancelledAtIso }),
+        { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (request.method === "GET" && url.pathname === "/pending") {
       const threadId =
         url.searchParams.get("session_thread_id") ?? "sthr_primary";
@@ -3189,6 +3390,14 @@ export class SessionDO extends DurableObject<Env> {
           const error = new Error("session execution fence is no longer valid");
           error.name = "ExecutionFenceLostError";
           throw error;
+        }
+        // Stale worker result: the interrupt already closed this call with a
+        // synthetic interrupted result. Drop it so the model history
+        // never gets two results for one tool_use (Codex/Claude SDK: output
+        // of an aborted tool is discarded).
+        if (event.type === "agent.tool_result") {
+          const id = (event as unknown as { tool_use_id?: string }).tool_use_id;
+          if (id && this.toolUseAlreadyAnswered(id, history)) return;
         }
         history.append(event);
       },
@@ -3853,6 +4062,31 @@ export class SessionDO extends DurableObject<Env> {
       : new Error(`Managed Memory synchronization failed: ${String(lastError)}`);
   }
 
+  /**
+   * Publish an event to live sockets + managed D1 projection without the
+   * execution-fence gate. Used by the user.interrupt path: requestInterrupt
+   * invalidates the turn fence before we emit idle / synthetic tool results,
+   * and GET /v1/sessions/:id/events reads the D1 projection (not DO SQLite).
+   */
+  private broadcastEventIgnoringExecutionFence(event: SessionEvent) {
+    const data = JSON.stringify(event);
+    const isQueueLifecycle =
+      event.type === "system.user_message_cancelled" ||
+      (event.type as string) === "system.user_message_steered";
+    const sockets = isSpecEvent(event.type)
+      ? this.ctx.getWebSockets()
+      : isQueueLifecycle
+        ? [...new Set([
+            ...this.ctx.getWebSockets("chunks"),
+            ...this.ctx.getWebSockets("queue_lifecycle"),
+          ])]
+        : this.ctx.getWebSockets("chunks");
+    for (const ws of sockets) {
+      try { ws.send(data); } catch { /* closed */ }
+    }
+    this.projectManagedRuntimeEvent(event, undefined);
+  }
+
   private broadcastEvent(
     event: SessionEvent,
     explicitFence?: SessionExecutionFence,
@@ -3870,9 +4104,17 @@ export class SessionDO extends DurableObject<Env> {
     // receive only Anthropic-spec event types. Keeps the spec-default
     // wire contract clean for clients using the official Anthropic SDK
     // against an OMA server.
+    const isQueueLifecycle =
+      event.type === "system.user_message_cancelled" ||
+      (event.type as string) === "system.user_message_steered";
     const sockets = isSpecEvent(event.type)
       ? this.ctx.getWebSockets()
-      : this.ctx.getWebSockets("chunks");
+      : isQueueLifecycle
+        ? [...new Set([
+            ...this.ctx.getWebSockets("chunks"),
+            ...this.ctx.getWebSockets("queue_lifecycle"),
+          ])]
+        : this.ctx.getWebSockets("chunks");
     for (const ws of sockets) {
       try {
         ws.send(data);
@@ -3923,6 +4165,38 @@ export class SessionDO extends DurableObject<Env> {
    * the three queue-input types, so the value stays absent until drain
    * stamps it explicitly.
    */
+
+  /**
+   * Stamp queued accepted inputs in the canonical D1 log once this DO
+   * starts processing them, then re-broadcast the same ids with
+   * `processed_at` set (Claude Managed Agents semantics).
+   */
+  private markAcceptedEventsProcessed(
+    eventIds: string[],
+    processedAt: string,
+  ): void {
+    const binding = this.env.MAIN_MCP;
+    const workspaceId = this._state?.tenant_id;
+    const sessionId = this._state?.session_id;
+    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return;
+    const ids = [...new Set(eventIds.filter((id) => id.length > 0))];
+    if (ids.length === 0) return;
+    this._managedProjectionChain = this._managedProjectionChain
+      .then(async () => {
+        await binding.managedSessionEventsMarkProcessed!({
+          workspaceId,
+          sessionId,
+          eventIds: ids,
+          processedAt,
+        });
+      })
+      .catch((err) => {
+        console.warn(
+          `[session_do] markAcceptedEventsProcessed failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   private _stampEventForPending(event: SessionEvent): void {
     const e = event as SessionEvent & { id?: string; processed_at?: string };
     if (!e.id) {
@@ -4173,6 +4447,7 @@ export class SessionDO extends DurableObject<Env> {
     executionFence?: SessionExecutionFence,
   ): Promise<void> {
     // Wrapped sandbox: per-method warmup happens inside any actual call.
+    if (this.toolUseAlreadyAnswered(confirmation.tool_use_id, history)) return;
     // Confirmation handlers may not even touch the sandbox depending on
     // tool type, so eager warmup is wasted; lazy is the right default.
     const sandbox = this.bindSandboxToExecution(
@@ -4285,17 +4560,154 @@ export class SessionDO extends DurableObject<Env> {
       this.broadcastEvent(toolResultEvent);
     }
 
-    // Remove the confirmed/denied call from pending
-    const remaining = pendingCalls.filter(p => p.toolCallId !== confirmation.tool_use_id);
-    this.setState({ ...this.state, pending_tool_calls: remaining });
+    // Remove the confirmed/denied call from pending, and only resume the
+    // model once every parallel call of the batch has a result.
+    await this.resumeWhenToolBatchSettled(confirmation.tool_use_id, history, parentSignal, executionFence);
+  }
 
+  /**
+   * A model step can emit several tool calls at once (parallel
+   * custom_tool_use / always_ask tool_use). Each one is answered by its own
+   * user event. Resuming the model after the FIRST answer replays a
+   * transcript with unmatched tool_use blocks, which providers reject
+   * (400 "tool_result without tool_use" / missing results) and the turn
+   * then loops through rescheduled+error. CMA semantics: stay
+   * idle(requires_action) listing the still-outstanding ids, and resume
+   * only when the whole batch is settled.
+   */
+  /**
+   * The aborted step's partial output can still land after user.interrupt
+   * (stream-end fixup persists it), including tool_use blocks. Left open,
+   * a client would answer them and the continuation would silently resume
+   * the interrupted turn. Close every unpaired call with an interrupted
+   * result; late answers are then dropped by toolUseAlreadyAnswered.
+   */
+  private closeToolUsesAfterInterrupt(history: HistoryStore, fence?: SessionExecutionFence, threadId = "sthr_primary"): number {
+    let closedCount = 0;
+    const closedIds = new Set<string>();
+    try {
+      const events = history.getEvents();
+      const answered = new Set<string>();
+      for (const e of events) {
+        if (e.type === "agent.tool_result") {
+          const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+          if (id) answered.add(id);
+        }
+      }
+      for (const e of events) {
+        if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use") continue;
+        if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== threadId) continue;
+        const id = (e as unknown as { id?: string }).id;
+        if (!id || answered.has(id)) continue;
+        closedIds.add(id);
+        // Same shape as the existing interruptPending settle path above
+        // (agent.tool_result, is_error, interrupted); openma-common
+        // decodes it to the existing OpenMA `tool.failed`. No new fields.
+        const thread = (e as { session_thread_id?: string }).session_thread_id;
+        const closed = {
+          type: "agent.tool_result",
+          tool_use_id: id,
+          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
+          is_error: true,
+          ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
+        } as unknown as SessionEvent;
+        history.append(closed);
+        if (fence === undefined) this.broadcastEventIgnoringExecutionFence(closed);
+        else this.broadcastEvent(closed, fence);
+        closedCount++;
+      }
+      const before = this.state.pending_tool_calls ?? [];
+      const remaining = before.filter((pending) => !closedIds.has(pending.toolCallId));
+      if (remaining.length !== before.length) {
+        this.setState({ ...this.state, pending_tool_calls: remaining });
+      }
+    } catch (err) {
+      console.warn("[interrupt] closing open tool calls failed:", err);
+    }
+    return closedCount;
+  }
+
+  private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
+    try {
+      return history.getEvents().some((e) =>
+        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
+        (e as unknown as { id?: string }).id === toolUseId);
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Official CMA: "A second result for the same call is accepted and has no
+   * effect." An answer for a call that is already closed (interrupt, or a
+   * duplicate POST) is stored with processed_at stamped and echoed, but is
+   * NOT enqueued: no model-history append, no loop wake, no status change.
+   */
+  private acceptNoEffectAnswer(event: SessionEvent, history: HistoryStore): Response {
+    const e = event as SessionEvent & { id?: string; processed_at?: string };
+    if (!e.id) e.id = `sevt_${generateEventId()}`;
+    e.processed_at = this.processedClock.nowIso();
+    history.append(e);
+    this.broadcastEvent(e);
+    return new Response(null, { status: 202 });
+  }
+
+  private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
+    try {
+      return history.getEvents().some((e) =>
+        e.type === "agent.tool_result" &&
+        (e as unknown as { tool_use_id?: string }).tool_use_id === toolUseId);
+    } catch {
+      return false;
+    }
+  }
+
+  private async resumeWhenToolBatchSettled(
+    answeredId: string,
+    history: HistoryStore,
+    signal?: AbortSignal,
+    fence?: SessionExecutionFence,
+  ): Promise<void> {
+    const before = this.state.pending_tool_calls ?? [];
+    let resolved = new Set<string>([answeredId]);
+    if (before.length > 1) {
+      try {
+        for (const e of history.getEvents()) {
+          if (e.type === "agent.tool_result") {
+            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+            if (id) resolved.add(id);
+          }
+        }
+      } catch { resolved = new Set([answeredId]); }
+    }
+    const remaining = before.filter((p) => !resolved.has(p.toolCallId));
+    this.setState({ ...this.state, pending_tool_calls: remaining });
+    if (remaining.length > 0) {
+      const builtin = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
+      const anyCustom = remaining.some((p) => {
+        const name = resolveProxiedToolCall(p.toolName, p.args).toolName;
+        return !builtin.includes(name) && !name.startsWith("mcp_") &&
+          !name.startsWith("call_agent_") && !name.startsWith("memory_");
+      });
+      const idleEvent: SessionEvent = {
+        type: "session.status_idle",
+        stop_reason: {
+          type: "requires_action",
+          action_type: anyCustom ? "custom_tool_result" : "tool_confirmation",
+          event_ids: remaining.map((p) => p.toolCallId),
+        },
+      } as SessionEvent;
+      history.append(idleEvent);
+      this.broadcastEvent(idleEvent, fence);
+      return;
+    }
     // Re-run the harness to continue the conversation
     // Use an empty user message — the history already has the tool result
     const resumeMsg: UserMessageEvent = {
       type: "user.message",
       content: [{ type: "text", text: "" }],
     };
-    await this.processUserMessage(resumeMsg, 0, true, parentSignal, executionFence);
+    await this.processUserMessage(resumeMsg, 0, true, signal, fence);
   }
 
   /**
@@ -4931,7 +5343,10 @@ export class SessionDO extends DurableObject<Env> {
     // Create the local abort controller before building tools. Preparation
     // itself can perform sandbox writes (for example MCP startup), so bind
     // those calls to the same parent execution fence as the model loop.
+    this._interruptIdleOwned.delete(turnThreadId);
     const abortController = new AbortController();
+    let resolveTurnSettled!: () => void;
+    this._turnSettled.set(abortController, new Promise<void>((resolve) => { resolveTurnSettled = resolve; }));
     this._threadAbortControllers.set(turnThreadId, abortController);
     const abortFromParent = () => abortController.abort(parentSignal?.reason);
     if (parentSignal?.aborted) abortFromParent();
@@ -5252,6 +5667,9 @@ export class SessionDO extends DurableObject<Env> {
       runtime: {
         history,
         sandbox,
+        ...(agentAdvertisesSteering(agent)
+          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId, history) }
+          : {}),
         broadcast: (event) => {
           history.append(event);
           this.broadcastEvent(event, activeFence);
@@ -5290,12 +5708,48 @@ export class SessionDO extends DurableObject<Env> {
         this.setState({ ...this.state, session_init_done: true });
       }
 
+      // Interrupt-vs-wake race: a tool answer admitted just before a
+      // user.interrupt may still start this turn after the interrupt already
+      // closed its calls and emitted idle end_turn. Official CMA: the
+      // interrupt ends the turn; only a new user.message resumes. So if the
+      // newest user input on this thread is the interrupt, do not sample.
+      // https://platform.claude.com/docs/en/managed-agents/events-and-streaming
+      {
+        let lastUserType: string | undefined;
+        for (const e of history.getEvents()) {
+          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== turnThreadId) continue;
+          if (e.type === "user.interrupt" || e.type === "user.message" ||
+              e.type === "user.tool_confirmation" || e.type === "user.custom_tool_result") lastUserType = e.type;
+        }
+        if (lastUserType === "user.interrupt") {
+          this._interruptIdleOwned.add(turnThreadId);
+          abortController.abort();
+          return;
+        }
+      }
+
       // Broadcast running status
       const runningEvent: SessionEvent = { type: "session.status_running" };
       history.append(runningEvent);
       this.broadcastEvent(runningEvent, activeFence);
 
       await harness.run(ctx);
+
+      // A parked call can already be closed by the time the run returns
+      // (steer/interrupt closed it with a tool_result, or the client answered
+      // during the batch). Announcing it as requires_action would park the
+      // session on a call whose late answer is no-effect, leaving queued
+      // user.messages unprocessed forever (#398 two_clients FOREVER_NULL).
+      if (ctx.runtime.pendingConfirmations?.length) {
+        const answered = new Set<string>();
+        for (const e of history.getEvents()) {
+          if (e.type === "agent.tool_result") {
+            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+            if (id) answered.add(id);
+          }
+        }
+        ctx.runtime.pendingConfirmations = ctx.runtime.pendingConfirmations.filter((id) => !answered.has(id));
+      }
 
       // Store any pending tool calls in session metadata for confirmation flow
       if (ctx.runtime.pendingConfirmations?.length) {
@@ -5326,6 +5780,11 @@ export class SessionDO extends DurableObject<Env> {
         if (pendingCalls.length) {
           this.setState({ ...this.state, pending_tool_calls: pendingCalls });
         }
+      } else if ((this.state.pending_tool_calls?.length ?? 0) > 0) {
+        // The run finished without parking on a client action, so nothing is
+        // outstanding. A stale list would hold queued user.messages behind
+        // continuationsOnly claims forever.
+        this.setState({ ...this.state, pending_tool_calls: [] });
       }
 
       // Outcome self-evaluation loop. Phase 4 / AMA-aligned: delegated
@@ -5590,15 +6049,22 @@ export class SessionDO extends DurableObject<Env> {
       if (this._threadAbortControllers.get(turnThreadId) === abortController) {
         this._threadAbortControllers.delete(turnThreadId);
       }
+      this._turnSettled.delete(abortController);
+      resolveTurnSettled();
       parentSignal?.removeEventListener("abort", abortFromParent);
       // Emit status_idle only after turn-scoped resources have settled. On a
       // successful turn this preserves its precise stop_reason; error paths
       // use the generic event because they have no meaningful stop reason.
       // This also pairs with status_running so Console never remains stuck at
       // "Running" after a model/tool failure.
-      if (!idleEmitted) {
+      // A user.interrupt already emitted this turn's status_idle; emitting
+      // the catch-all one too produced two idles per interrupt.
+      const interruptOwnsIdle = abortController.signal.aborted &&
+        this._interruptIdleOwned.delete(turnThreadId);
+      if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
+      if (!idleEmitted && !interruptOwnsIdle) {
         try {
-          const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle" };
+          const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent, activeFence);
         } catch (err) {
@@ -6209,7 +6675,7 @@ export class SessionDO extends DurableObject<Env> {
    * Schedule logic itself is verbatim from cf-agents v0.11.2.
    */
   private async _scheduleNextAlarm(): Promise<void> {
-    const nowMs = Date.now();
+    const nowMs = this.processedClock.nowMs();
     const hungCutoffSec = Math.floor(nowMs / 1000) - HUNG_SCHEDULE_TIMEOUT_SECONDS;
     const readyRows = this.ctx.storage.sql
       .exec<{ time: number }>(
@@ -6538,6 +7004,15 @@ export class SessionDO extends DurableObject<Env> {
         }
       } catch { /* skip */ }
     }
+    // Calls parked on the client (custom_tool_use awaiting
+    // user.custom_tool_result, always_ask awaiting user.tool_confirmation)
+    // are unpaired BY DESIGN and survive DO restarts via persisted state.
+    // Flushing them injected a synthetic "interrupted" result next to the
+    // real one the client posts later → duplicate tool_result → provider
+    // 400 "each tool_use must have a single result" + reschedule loop.
+    for (const pending of this.state.pending_tool_calls ?? []) {
+      usedIds.delete(pending.toolCallId);
+    }
     let flushed = 0;
     for (const [id, meta] of usedIds) {
       const isMcp = meta.type === "agent.mcp_tool_use";
@@ -6605,7 +7080,7 @@ export class SessionDO extends DurableObject<Env> {
         type: "session.status_rescheduled",
         reason: "DO eviction or restart — stream lost; re-send to continue.",
       } as unknown as SessionEvent;
-      const idleEvent = { type: "session.status_idle" } as unknown as SessionEvent;
+      const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
       // Events are best-effort post-cleanup; row is the source of truth.
       try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
       try { this.broadcastEvent(reschedEvent); } catch {}
@@ -6650,3 +7125,9 @@ export class SessionDO extends DurableObject<Env> {
 
 // ── Schedule type (cf-agents-compatible) ───────────────────────────────
 type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
+
+/** OMA steering advertisement for built-in harnesses, the CF counterpart of
+ *  an ACP agent's `_session/steering` capability. */
+export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
+  return agent?.metadata?.["oma.session.steering"] === "enabled";
+}

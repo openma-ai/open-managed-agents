@@ -67,6 +67,8 @@ function store(overrides: Partial<SessionExecutionStorePort> = {}) {
       execution: { ...current, state: input.outcome },
     })),
     requestInterrupt: vi.fn(),
+    cancelQueued: vi.fn(),
+    steerQueued: vi.fn(),
     cancelSession: vi.fn(),
     find: vi.fn(),
     ...overrides,

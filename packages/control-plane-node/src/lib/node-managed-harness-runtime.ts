@@ -1,3 +1,4 @@
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import type { ModelMessage } from "ai";
 import type {
   HarnessRuntime,
@@ -242,6 +243,9 @@ export interface ManagedNodeHarnessRuntimeInput {
   output(frame: unknown): Promise<void>;
   clock: { now(): Date };
   ids: { nextEventId(): string };
+  /** When set, stamps come from the shared per-session clock (#398). */
+  sessionScope?: { workspaceId: string; sessionId: string };
+  sessionClocks?: SessionClockRegistry;
 }
 
 /** History is read back `ORDER BY processed_at` (millisecond precision) and
@@ -268,6 +272,9 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   /** Number of `agent.*` events (tool calls, messages, thinking) produced so far:
    * a turn that produced none has no side effects and is safe to re-run. */
   agentEventCount = 0;
+  /** Tool calls the harness left for the client (custom tools / `ask`
+   * permission): the turn parks in requires_action on them. */
+  pendingConfirmations: string[] = [];
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
     this.history = new ManagedNodeHistoryStore(
@@ -277,7 +284,11 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     this.sandbox = input.sandbox;
     this.abortSignal = input.abortSignal;
     this.applicationHistoryEvents = structuredClone(input.events);
-    this.nextStamp = createStrictlyIncreasingEventStamp(input.clock);
+    const scope = input.sessionScope;
+    this.nextStamp = scope
+      ? () => (input.sessionClocks ?? processSessionClocks).forSession(scope.workspaceId, scope.sessionId)
+        .stampIso(input.clock.now().getTime())
+      : createStrictlyIncreasingEventStamp(input.clock);
     this.usageLedger = createNodeHarnessUsageLedger();
   }
 

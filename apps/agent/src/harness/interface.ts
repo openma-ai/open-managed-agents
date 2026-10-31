@@ -113,6 +113,14 @@ export interface HarnessInterface {
 
 export interface HarnessRuntime {
   history: HistoryStore;
+  /**
+   * Steering (optional). Called by the loop at each model-step boundary.
+   * Returns queued user.message events the platform just absorbed into this
+   * turn (already appended to history, stamped and re-emitted). Undefined
+   * when the agent does not advertise steering: mid-turn messages then stay
+   * queued and run as the next turn.
+   */
+  takeSteeringInputs?: () => Promise<SessionEvent[]>;
   sandbox: SandboxPort;
   /**
    * Append an event to history AND broadcast to WS subscribers. The single

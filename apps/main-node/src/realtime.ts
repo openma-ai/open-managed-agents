@@ -3,7 +3,7 @@
 // the control plane runs as several replicas.
 
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
-import { generateEventId } from "@open-managed-agents/shared";
+import { generateEventId, sessionMonotonicClock } from "@open-managed-agents/shared";
 import type { SessionEvent } from "@open-managed-agents/shared";
 
 import {
@@ -46,6 +46,6 @@ function eventLog(sql: NodeDatabase["sql"], sessionId: string): SqlEventLog {
   return new SqlEventLog(sql, sessionId, (e) => {
     const ev = e as SessionEvent & { id?: string; processed_at?: string };
     if (!ev.id) ev.id = `sevt_${generateEventId()}`;
-    if (!ev.processed_at) ev.processed_at = new Date().toISOString();
+    if (!ev.processed_at) ev.processed_at = sessionMonotonicClock(sessionId).nowIso();
   });
 }

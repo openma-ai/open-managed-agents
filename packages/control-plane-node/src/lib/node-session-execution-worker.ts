@@ -19,6 +19,9 @@ import {
   emitDbBoundaryLog,
   withDbBoundary,
 } from "@open-managed-agents/sql-client";
+import { markSessionEventsProcessed } from "@open-managed-agents/managed-agents-application";
+import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import { Effect, Fiber } from "effect";
 import { interruptFiber, runSupervised } from "./supervised-fiber.js";
 
@@ -41,6 +44,8 @@ export interface NodeSessionExecutionRuntime {
 }
 
 export interface NodeSessionExecutionWorkerDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   coordinator: SessionExecutionCoordinatorPort;
   context: SessionExecutionContextSourcePort;
   runtime: NodeSessionExecutionRuntime;
@@ -52,6 +57,9 @@ export interface NodeSessionExecutionWorkerDependencies {
   pollIntervalMs?: number;
   maxConcurrent?: number;
   onError?(error: Error): void;
+  eventProcessing?: {
+    storeFor(workspaceId: string): SessionEventProcessingStore;
+  };
 }
 
 interface ActiveExecution {
@@ -121,13 +129,36 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     void interruptFiber(fiber);
   }
 
+  /** Per-session monotonic clock shared with the managed runtime (#398):
+   * interrupt and idle stamps never tie or regress; fake clocks still drive it. */
+  #sessionClock(workspaceId: string, sessionId: string): { nowIso(): string } {
+    const clock = (this.dependencies.sessionClocks ?? processSessionClocks).forSession(workspaceId, sessionId);
+    return { nowIso: () => clock.stampIso(this.dependencies.clock.now().getTime()) };
+  }
+
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (input.events.length === 0) return;
-    for (const interrupt of input.events.filter(
+    const sessionClock = this.#sessionClock(input.workspaceId, input.sessionId);
+    const interruptEvents = input.events.filter(
       (event) => event.type === "user.interrupt",
-    )) {
-      const requestedAt = interrupt.processedAt ??
-        this.dependencies.clock.now().toISOString();
+    );
+    if (
+      interruptEvents.length > 0 &&
+      this.dependencies.eventProcessing !== undefined
+    ) {
+      const processedAt = sessionClock.nowIso();
+      await markSessionEventsProcessed(
+        this.dependencies.eventProcessing.storeFor(input.workspaceId),
+        {
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          eventIds: interruptEvents.map((event) => event.id),
+          processedAt,
+        },
+      );
+    }
+    for (const interrupt of interruptEvents) {
+      const requestedAt = interrupt.processedAt ?? sessionClock.nowIso();
       const laneId = interrupt.sessionThreadId ?? undefined;
       await this.dependencies.coordinator.requestInterrupt({
         workspaceId: input.workspaceId,
@@ -146,9 +177,27 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       }
     }
 
+    // An interrupt with no turn running here (session parked in
+    // requires_action, #398) still has to reach the runner: it closes the
+    // pending calls and ends the turn (CMA). Admit it as its own execution.
+    const idleInterrupts = interruptEvents.filter((interrupt) => {
+      const laneId = interrupt.sessionThreadId ?? "sthr_primary";
+      return ![...this.#active.values()].some((active) =>
+        active.execution.workspaceId === input.workspaceId &&
+        active.execution.sessionId === input.sessionId &&
+        active.execution.laneId === laneId);
+    });
     const executionEvents = sessionExecutionEvents(input.events);
-    if (executionEvents.length === 0) return;
-    for (const batch of sessionExecutionEventBatches(input.events)) {
+    if (executionEvents.length === 0 && idleInterrupts.length === 0) return;
+    const batches = [
+      ...idleInterrupts.map((interrupt) => ({
+        id: interrupt.id,
+        laneId: interrupt.sessionThreadId ?? "sthr_primary",
+        events: [interrupt],
+      })),
+      ...(executionEvents.length === 0 ? [] : sessionExecutionEventBatches(input.events)),
+    ];
+    for (const batch of batches) {
       const admitted = await this.dependencies.coordinator.admit({
         execution: {
         id: batch.id,
@@ -161,6 +210,15 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         events: batch.events,
         },
       });
+      // Re-delivery of the same accepted batch (queued inputs have no
+      // processedAt, so admittedAt falls back to the clock and differs):
+      // same session, lane and payload (processedAt aside) is a replay, not a conflict (#398).
+      if (admitted.type === "conflict" &&
+        admitted.execution.sessionId === input.sessionId &&
+        admitted.execution.laneId === batch.laneId &&
+        samePayloadIgnoringProcessedAt(admitted.execution.events, batch.events)) {
+        continue;
+      }
       if (admitted.type === "conflict") {
         throw new Error(
           `Session Execution ${batch.id} conflicts with an existing admission`,
@@ -426,4 +484,16 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       reason,
     });
   }
+}
+
+function samePayloadIgnoringProcessedAt(left: readonly unknown[], right: readonly unknown[]): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>)
+      .filter((key) => key !== "processedAt" && (value as Record<string, unknown>)[key] !== undefined)
+      .sort()
+      .map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+  };
+  return JSON.stringify(left.map(canonical)) === JSON.stringify(right.map(canonical));
 }

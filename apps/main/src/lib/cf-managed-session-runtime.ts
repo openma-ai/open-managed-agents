@@ -145,7 +145,9 @@ export class CfManagedSessionRuntimeAdapter
   ): AsyncIterable<StreamSessionEvent> {
     const deltaTypes = new Set(input.deltaEventTypes ?? []);
     const decoder = new RuntimeEventStreamDecoder(deltaTypes);
-    const seenCanonicalEventIds = new Set<string>();
+    // Same-id re-emit is allowed when `processed_at` changes (queued →
+    // stamped). Track the last seen processing stamp per id.
+    const seenCanonicalProcessedAt = new Map<string, string | null>();
     let replay = false;
     for (;;) {
       let response: Response;
@@ -158,6 +160,8 @@ export class CfManagedSessionRuntimeAdapter
               Connection: "Upgrade",
               Upgrade: "websocket",
               "x-oma-workspace-id": input.workspaceId,
+              // OMA queue-lifecycle extension frames (live only).
+              "x-oma-include": "queue_lifecycle",
               ...(replay && { "x-oma-replay": "1" }),
             },
           },
@@ -192,24 +196,29 @@ export class CfManagedSessionRuntimeAdapter
             (raw as { session_thread_id?: unknown }).session_thread_id !==
               input.threadId)
         ) continue;
-        const rawEvent = raw as { id?: unknown; type?: unknown };
+        const rawEvent = raw as { id?: unknown; type?: unknown; processed_at?: unknown };
         const canonicalEventId =
           typeof rawEvent.id === "string" ? rawEvent.id : undefined;
-        if (
-          canonicalEventId !== undefined &&
-          seenCanonicalEventIds.has(canonicalEventId)
-        ) continue;
-        if (canonicalEventId !== undefined) {
-          seenCanonicalEventIds.add(canonicalEventId);
+        const processedAt =
+          rawEvent.processed_at === null || typeof rawEvent.processed_at === "string"
+            ? (rawEvent.processed_at as string | null)
+            : undefined;
+        if (canonicalEventId !== undefined && processedAt !== undefined) {
+          const previous = seenCanonicalProcessedAt.get(canonicalEventId);
+          if (previous !== undefined && previous === processedAt) continue;
+          seenCanonicalProcessedAt.set(canonicalEventId, processedAt);
+        } else if (canonicalEventId !== undefined) {
+          if (seenCanonicalProcessedAt.has(canonicalEventId)) continue;
+          seenCanonicalProcessedAt.set(canonicalEventId, null);
         }
         for (const event of decoder.decode(raw)) yield event;
+        // Idle is not a stream-end signal: clients may keep listening for
+        // the next turn. Only terminated/deleted close this subscription.
         if (
-          rawEvent.type === "session.status_idle" ||
           rawEvent.type === "session.status_terminated" ||
           rawEvent.type === "session.deleted" ||
           ("threadId" in input &&
-            (rawEvent.type === "session.thread_status_idle" ||
-              rawEvent.type === "session.thread_status_terminated"))
+            rawEvent.type === "session.thread_status_terminated")
         ) return;
       }
       replay = true;
