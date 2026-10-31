@@ -50,7 +50,8 @@ function scriptedSource(opts: {
       const outcome = opts.replaces.shift() ?? "replaced";
       if (outcome === "throw") throw new Error("d1 unavailable");
       if (outcome === "conflict") return { type: "revision_conflict", actualRevision: expectedRevision + 1 };
-      return { type: "replaced", record: { revision: expectedRevision + 1, credential: next } };
+      lastFind = { revision: expectedRevision + 1, credential: next };
+      return { type: "replaced", record: lastFind };
     },
   };
   return { source, writes };
@@ -73,6 +74,7 @@ function stubTokenEndpoint(...bodies: Array<() => Response>) {
 function portsFor(store: CredentialStore): ManagedCredentialResolverPorts {
   return {
     credentials: store,
+    vaults: { find: async () => ({ vault: { archivedAt: null } }) },
     fetch: (input, init) => tokenEndpoint(input, init),
     clock: { now: () => new Date("2026-09-02T00:00:00.000Z") },
     log: { warn: () => {} },

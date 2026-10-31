@@ -5,6 +5,7 @@
 import type {
   CredentialLocation,
   ReplaceCredentialResult,
+  StoredCredential,
 } from "@open-managed-agents/credential-store";
 import type { Credential } from "@open-managed-agents/domain/credentials";
 import type { ManagedCredentialResolverPorts } from "./ports";
@@ -140,6 +141,20 @@ function storedRefreshToken(credential: Credential): string | null {
   }
 }
 
+/**
+ * A current authority check, not a cancellation fence for calls already sent.
+ * Both stores must remain readable; failures propagate rather than falling back.
+ */
+export async function findActiveCredential(
+  ports: Pick<ManagedCredentialResolverPorts, "credentials" | "vaults">,
+  location: CredentialLocation,
+): Promise<StoredCredential | null> {
+  const vault = await ports.vaults.find(location);
+  if (vault === null || vault.vault.archivedAt !== null) return null;
+  const current = await ports.credentials.find(location);
+  return current !== null && current.credential.archivedAt === null ? current : null;
+}
+
 /** Attempts to persist one rotation before giving up. */
 const ROTATION_WRITE_ATTEMPTS = 3;
 
@@ -154,8 +169,10 @@ const ROTATION_WRITE_ATTEMPTS = 3;
  * rotate refresh tokens invalidate the stored one once they issue a new one,
  * so a rotation that cannot be saved is an error, never a silent success.
  *
- * Returns the token to retry with, or null when the provider refused the
- * refresh (the caller surfaces the upstream's 401).
+ * Returns a currently authorized token to retry with, or null when refresh
+ * was refused or the credential/Vault is no longer active. Issued rotations
+ * are still persisted after archive, retaining the archived state; saving a
+ * rotation is not permission to dispatch it.
  */
 export async function refreshCredential(
   ports: ManagedCredentialResolverPorts,
@@ -170,8 +187,13 @@ export async function refreshCredential(
     vaultId: refresh.vaultId,
     credentialId: refresh.credentialId,
   };
-  let current = await store.find(location);
+  let current = await findActiveCredential(ports, location);
   if (current === null) return null;
+  const activeWinner = async (): Promise<string | null> => {
+    const active = await findActiveCredential(ports, location);
+    const token = active === null ? null : bearerOf(active.credential.auth);
+    return token !== null && token !== staleToken ? token : null;
+  };
   // Another call may already have rotated it.
   const live = bearerOf(current.credential.auth);
   if (live !== null && live !== staleToken) return live;
@@ -189,9 +211,7 @@ export async function refreshCredential(
       failure.code = exchanged.oauthError;
     }
     // A parallel refresh may have won and rotated the refresh token.
-    const after = await store.find(location);
-    const winner = after === null ? null : bearerOf(after.credential.auth);
-    return winner !== null && winner !== staleToken ? winner : null;
+    return activeWinner();
   }
   const tokens = exchanged.tokens!;
   let lastFailure = "revision conflict";
@@ -207,10 +227,12 @@ export async function refreshCredential(
       lastFailure = error instanceof Error ? error.name : "Error";
       const reread = await store.find(location);
       if (reread === null) break;
+      const winnerToken = bearerOf(reread.credential.auth);
+      if (winnerToken !== null && winnerToken !== staleToken) return activeWinner();
       current = reread;
       continue;
     }
-    if (replaced.type === "replaced") return tokens.accessToken;
+    if (replaced.type === "replaced") return activeWinner();
     if (replaced.type === "not_found") {
       lastFailure = "credential deleted";
       break;
@@ -221,8 +243,9 @@ export async function refreshCredential(
       break;
     }
     const winnerToken = bearerOf(winner.credential.auth);
-    if (winnerToken !== null && winnerToken !== staleToken) return winnerToken;
-    // The conflicting write did not rotate the token: keep ours.
+    if (winnerToken !== null && winnerToken !== staleToken) return activeWinner();
+    // Preserve issued tokens even on an archived revision, without reactivating
+    // it. Persistence does not grant permission to return or dispatch the token.
     current = winner;
   }
   throw new Error(
