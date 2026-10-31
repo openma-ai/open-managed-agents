@@ -18,6 +18,7 @@ describe("Managed Agents HTTP application-port boundary", () => {
       "../src/routes/environment-work.ts",
       "../src/routes/environments.ts",
       "../src/routes/files.ts",
+      "../src/routes/mcp-oauth-cli.ts",
       "../src/routes/mcp-oauth.ts",
       "../src/routes/memories.ts",
       "../src/routes/memory-stores.ts",

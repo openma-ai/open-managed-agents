@@ -72,3 +72,41 @@ export interface McpOAuthApplicationPort {
   authorize(command: AuthorizeMcpOAuthCommand): Promise<AuthorizeMcpOAuthResult>;
   complete(command: CompleteMcpOAuthCommand): Promise<CompleteMcpOAuthResult>;
 }
+
+/** CLI rendezvous identity: browser cookies alone cannot authorize a claim. */
+export interface McpOAuthCliIdentity {
+  workspaceId: string;
+  userId: string | null;
+  keyHash: string;
+}
+
+export interface McpOAuthCliKeyHasher {
+  hash(value: string): Promise<string>;
+}
+
+/** CLI OAuth inbound boundary, independent of its rendezvous implementation. */
+export interface McpOAuthCliApplicationPort {
+  start(command: Omit<AuthorizeMcpOAuthCommand, "userId" | "returnTo"> & {
+    actor: McpOAuthCliIdentity;
+  }): Promise<Exclude<AuthorizeMcpOAuthResult, { type: "redirect" }> | {
+    type: "started";
+    flowId: string;
+    claimToken: string;
+    authorizationUrl: string;
+    expiresAt: string;
+  }>;
+  callback(command: {
+    state: string;
+    code?: string;
+    error?: string;
+    callbackUri: string;
+  }): Promise<{ type: "completed" | "invalid_flow" } | null>;
+  poll(command: {
+    actor: McpOAuthCliIdentity;
+    flowId: string;
+    claimToken: string;
+  }): Promise<
+    | { type: "pending" | "invalid_flow" | "failed" }
+    | { type: "ready"; credentialId: string }
+  >;
+}

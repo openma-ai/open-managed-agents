@@ -13,3 +13,14 @@ export const mcpOAuthAuthorizeBodySchema = z
     client_secret: z.string().min(1).optional(),
   })
   .strict();
+
+export const mcpOAuthCliAuthorizeBodySchema = mcpOAuthAuthorizeBodySchema
+  .omit({ redirect_uri: true })
+  .strict();
+
+export const mcpOAuthCliClaimBodySchema = z
+  .object({
+    flow_id: z.string().min(1),
+    claim_token: z.string().min(1),
+  })
+  .strict();
