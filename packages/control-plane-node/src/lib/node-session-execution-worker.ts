@@ -19,6 +19,9 @@ import {
   emitDbBoundaryLog,
   withDbBoundary,
 } from "@open-managed-agents/sql-client";
+import { markSessionEventsProcessed } from "@open-managed-agents/managed-agents-application";
+import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
+import { createMonotonicClock, type MonotonicClock } from "@open-managed-agents/shared";
 import { Effect, Fiber } from "effect";
 import { interruptFiber, runSupervised } from "./supervised-fiber.js";
 
@@ -56,7 +59,6 @@ export interface NodeSessionExecutionWorkerDependencies {
     storeFor(workspaceId: string): SessionEventProcessingStore;
   };
 }
-
 
 interface ActiveExecution {
   execution: SessionExecution;
@@ -125,8 +127,27 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     void interruptFiber(fiber);
   }
 
+  /** Per-session monotonic guard over the injected clock (#398): interrupt
+   * stamps never tie or regress within a session, fake clocks still drive it. */
+  readonly #sessionClocks = new Map<string, MonotonicClock>();
+
+  #sessionClock(workspaceId: string, sessionId: string): MonotonicClock {
+    const key = `${workspaceId}\u0000${sessionId}`;
+    let clock = this.#sessionClocks.get(key);
+    if (clock === undefined) {
+      clock = createMonotonicClock(() => this.dependencies.clock.now().getTime());
+      if (this.#sessionClocks.size >= 10_000) {
+        const oldest = this.#sessionClocks.keys().next().value;
+        if (oldest !== undefined) this.#sessionClocks.delete(oldest);
+      }
+      this.#sessionClocks.set(key, clock);
+    }
+    return clock;
+  }
+
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (input.events.length === 0) return;
+    const sessionClock = this.#sessionClock(input.workspaceId, input.sessionId);
     const interruptEvents = input.events.filter(
       (event) => event.type === "user.interrupt",
     );
@@ -134,7 +155,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       interruptEvents.length > 0 &&
       this.dependencies.eventProcessing !== undefined
     ) {
-      const processedAt = this.dependencies.clock.now().toISOString();
+      const processedAt = sessionClock.nowIso();
       await markSessionEventsProcessed(
         this.dependencies.eventProcessing.storeFor(input.workspaceId),
         {
@@ -146,8 +167,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       );
     }
     for (const interrupt of interruptEvents) {
-      const requestedAt = interrupt.processedAt ??
-        this.dependencies.clock.now().toISOString();
+      const requestedAt = interrupt.processedAt ?? sessionClock.nowIso();
       const laneId = interrupt.sessionThreadId ?? undefined;
       await this.dependencies.coordinator.requestInterrupt({
         workspaceId: input.workspaceId,

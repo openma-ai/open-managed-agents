@@ -446,6 +446,40 @@ export class DefaultNodeManagedSessionRuntimeDriver
     );
   }
 
+  /** Stamp the queued inputs this accept delivers (official MA: queued
+   * `processed_at: null` -> stamped when the runtime starts processing them),
+   * then re-emit them with the same id on the live stream. */
+  private async markQueuedInputsProcessed(
+    input: ExecuteNodeManagedSessionEvents,
+  ): Promise<void> {
+    const processing = this.dependencies.eventProcessing;
+    if (processing === undefined) return;
+    const eventIds = input.events
+      .filter((event) => isQueuedSessionEventType(event.type))
+      .map((event) => event.id);
+    if (eventIds.length === 0) return;
+    await markSessionEventsProcessed(
+      processing.storeFor(input.workspaceId),
+      {
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        eventIds,
+        processedAt: this.nextEventStamp(input),
+      },
+      {
+        emit: (events) => {
+          for (const event of events) {
+            this.realtime.publish({
+              workspaceId: input.workspaceId,
+              sessionId: input.sessionId,
+              frame: { event: event as unknown as StreamSessionEvent },
+            });
+          }
+        },
+      },
+    );
+  }
+
   private nextEventStamp(scope: { workspaceId: string; sessionId: string }): string {
     let stamp = this.eventStamps.get(scope);
     if (stamp === undefined) {

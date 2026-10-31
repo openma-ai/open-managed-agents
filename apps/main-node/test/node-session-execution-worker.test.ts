@@ -509,6 +509,33 @@ describe("NodeSessionExecutionWorker", () => {
     } as Parameters<typeof executor.sessionEventsAccepted>[0]);
   });
 
+  it("stamps same-ms interrupts strictly increasing per session over the injected clock (#398)", async () => {
+    const requested: string[] = [];
+    const stamped: string[] = [];
+    const executor = worker("node_01", {
+      coordinator: Object.assign(Object.create(coordinator), {
+        requestInterrupt: async (input: { requestedAt: string }) => { requested.push(input.requestedAt); },
+      }),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (input: { eventIds: string[]; processedAt: string }) => {
+            stamped.push(input.processedAt);
+            return input.eventIds.map((id) => ({ id, type: "user.interrupt", processedAt: input.processedAt })) as never;
+          },
+        }),
+      },
+    });
+    const interrupt = (id: string) => ({
+      ...accepted(id, "user.interrupt"),
+      events: [{ id, type: "user.interrupt" }],
+    }) as Parameters<typeof executor.sessionEventsAccepted>[0];
+    await executor.sessionEventsAccepted(interrupt("i1"));
+    await executor.sessionEventsAccepted(interrupt("i2"));
+    const all = [stamped[0], requested[0], stamped[1], requested[1]].map((t) => Date.parse(t!));
+    expect(all[0]).toBe(now.getTime());
+    for (let i = 1; i < all.length; i++) expect(all[i]).toBeGreaterThan(all[i - 1]!);
+  });
+
   it("does not cancel active work belonging to another session", async () => {
     let release: (() => void) | undefined;
     runtime.run = async () => {

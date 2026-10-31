@@ -1497,6 +1497,9 @@ importers:
       '@open-managed-agents/scheduler':
         specifier: workspace:*
         version: link:../scheduler
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
       '@open-managed-agents/session-realtime':
         specifier: workspace:*
         version: link:../session-realtime
