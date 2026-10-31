@@ -89,7 +89,8 @@ export type ManagedNodeConfirmableToolUse = Extract<
   { type: "agent.tool_use" | "agent.mcp_tool_use" }
 >;
 
-import type { SessionClockRegistry } from "@open-managed-agents/shared";
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
+import { answeredToolCallIds, outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -483,7 +484,9 @@ export class DefaultNodeManagedSessionRunner
           await input.output({
             ...frame,
             id: this.dependencies.ids.nextEventId(),
-            processed_at: this.dependencies.clock.now().toISOString(),
+            processed_at: (this.dependencies.sessionClocks ?? processSessionClocks)
+              .forSession(input.workspaceId, input.sessionId)
+              .stampIso(this.dependencies.clock.now().getTime()),
           });
         }
       }
@@ -506,6 +509,31 @@ export class DefaultNodeManagedSessionRunner
       throw new Error(
         `Managed Node runner does not yet support ${event.type}`,
       );
+    }
+    // requires_action answers (CMA): only answers to the parked idle's
+    // outstanding calls have effect. A late answer to a closed call is a
+    // no-effect (already stamped processed_at on accept); a partial batch
+    // re-announces the remaining ids without sampling.
+    let remainingAfterAnswers: string[] | null = null;
+    const actionable = input.events.filter((candidate) => candidate.type !== "system.message");
+    if (actionable.length > 0 && actionable.every((candidate) =>
+      candidate.type === "user.custom_tool_result" || candidate.type === "user.tool_confirmation")) {
+      const batchIds = new Set(input.events.map((candidate) => candidate.id));
+      const priorWire = input.historyEvents
+        .filter((candidate) => !batchIds.has(candidate.id))
+        .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string });
+      const before = outstandingRequiresAction(priorWire);
+      const closedBefore = answeredToolCallIds(priorWire);
+      const answeredNow = new Set(actionable.map((candidate) =>
+        candidate.type === "user.custom_tool_result" ? candidate.customToolUseId
+          : candidate.type === "user.tool_confirmation" ? candidate.toolUseId : ""));
+      // Every call in the batch was already closed (interrupt/steer/earlier
+      // answer): no effect, nothing resumes.
+      if ([...answeredNow].every((id) => closedBefore.has(id))) return;
+      if (before !== null) {
+        if (![...answeredNow].some((id) => before.includes(id))) return;
+        remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
+      }
     }
     const rawSandbox = this.sandboxes.get(input);
     if (rawSandbox === undefined) {
@@ -581,11 +609,17 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
     });
-    runtime.broadcastProducedEvent({ type: "session.status_running" });
+    const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
+    if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
     try {
-      if (event.type === "user.tool_confirmation") {
+      for (const event of input.events) {
+        if (event.type !== "user.tool_confirmation") continue;
+        if (remainingAfterAnswers !== null && answeredToolCallIds(input.historyEvents
+          .filter((candidate) => candidate.id !== event.id)
+          .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string }))
+          .has(event.toolUseId)) continue;
         const toolUse = findLastMatching(
           input.historyEvents,
           (candidate): candidate is ManagedNodeConfirmableToolUse =>
@@ -731,7 +765,7 @@ export class DefaultNodeManagedSessionRunner
           }
         }
       };
-      await runHarness();
+      if (!parkedStill) await runHarness();
       if (event.type === "user.define_outcome") {
         const maxIterations = Math.min(
           20,
@@ -910,9 +944,16 @@ export class DefaultNodeManagedSessionRunner
         });
       }
       if (!leaseLost) {
+        const failed = runFailed || finalizationError !== undefined;
+        const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
+          runtime.pendingConfirmations,
+          runtime.history.getEvents() as unknown as Array<{ type?: string }>,
+        );
         runtime.broadcastProducedEvent({
           type: "session.status_idle",
-          stopReason: { type: runFailed || finalizationError !== undefined ? "retries_exhausted" : "end_turn" },
+          stopReason: failed ? { type: "retries_exhausted" }
+            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
+            : { type: "end_turn" },
         });
       }
       try {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import type { SessionEvent } from "@open-managed-agents/shared";
+import { createSessionClockRegistry, type SessionEvent } from "@open-managed-agents/shared";
 import type {
   Environment,
   Session,
@@ -156,6 +156,7 @@ interface RunnerConstructor {
     clock: { now(): Date };
     ids: { nextEventId(): string };
     runtimeGenerations?: { next(): string };
+    sessionClocks?: unknown;
   }): NodeManagedSessionRunner & { connectedSandbox(input: { workspaceId: string; sessionId: string }): SandboxExecutor | null };
 }
 
@@ -170,6 +171,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       destroy: vi.fn(async () => { order.push("destroy"); }),
     } as unknown as SandboxExecutor;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => {
@@ -221,6 +223,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     };
     const destroy = vi.fn(async () => undefined);
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({ destroy } as unknown as SandboxExecutor),
@@ -252,6 +255,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const preparedResourceCounts: number[] = [];
     let generation = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => {
@@ -455,6 +459,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let nextId = 0;
     let runs = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({}) as SandboxExecutor,
@@ -529,6 +534,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     };
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({} as SandboxExecutor),
@@ -618,6 +624,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let nextId = 0;
     const contexts: Array<{ acceptedEvents: unknown[] }> = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({} as SandboxExecutor),
@@ -715,6 +722,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let runs = 0;
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: {
         execute: async (input) => {
@@ -819,6 +827,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let nextId = 0;
     const evaluations: object[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: {
         evaluate: async (input) => {
           evaluations.push(input);
@@ -947,6 +956,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const iterations: number[] = [];
     const contexts: unknown[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: {
         evaluate: async (input) => {
           iterations.push(input.iteration);
@@ -1048,6 +1058,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let runs = 0;
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => sandbox,
@@ -1142,6 +1153,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({}) as SandboxExecutor,
@@ -1183,6 +1195,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const built: string[] = [];
     const destroyed: string[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async ({ workspaceId }) => {
@@ -1235,6 +1248,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let finishCreate: ((sandbox: SandboxExecutor) => void) | undefined;
     let destroyed = false;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: () => {
@@ -1276,6 +1290,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: ({ signal }) => {

@@ -272,6 +272,9 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   /** Number of `agent.*` events (tool calls, messages, thinking) produced so far:
    * a turn that produced none has no side effects and is safe to re-run. */
   agentEventCount = 0;
+  /** Tool calls the harness left for the client (custom tools / `ask`
+   * permission): the turn parks in requires_action on them. */
+  pendingConfirmations: string[] = [];
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
     this.history = new ManagedNodeHistoryStore(
