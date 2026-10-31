@@ -691,7 +691,7 @@ connection.
 |---|---|---|
 | Cloudflare transparent HTTP/HTTPS | `enforced`, live credentials | `enableInternet = false`; every lookup checks the exact active runtime fence; revoke installs a deny handler |
 | Cloudflare or Node harness-in-sandbox HTTP MCP | scoped gateway | ACP receives proxy URLs plus the current Work `sessions_token`; the upstream URL/token are omitted |
-| Node/Docker transparent proxy | `advisory` | the legacy `oma-vault` env proxy is bypassable and not safe as a multi-tenant boundary |
+| Node/Docker transparent proxy | `best_effort` | the in-process sandbox egress proxy selects only in the Session's Vaults, but proxy environment variables are bypassable: not an isolation boundary |
 | E2B / Daytona / LiteBox | provider-dependent | current generic adapters are advisory; a deployment may inject a native enforced adapter through the Port after conformance |
 | BoxRun | `unsupported` | fail closed until its deployed API proves the required creation-time network/secret controls |
 

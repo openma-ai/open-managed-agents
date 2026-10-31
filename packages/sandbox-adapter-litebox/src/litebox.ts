@@ -27,7 +27,7 @@ import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-manag
 import { promises as fs, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
 import { rejectPreparedBase } from "@open-managed-agents/sandbox";
@@ -129,29 +129,6 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   registerCommandSecrets(commandPrefix: string, secrets: Record<string, string>): void {
     this.commandSecrets.push({ prefix: commandPrefix, secrets });
-  }
-
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    // BoxLite supports network — we route via env vars same as the
-    // LocalSubprocess path. The CA cert lives on the host though, so
-    // copy it into the box on first exec via ensureBox.
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-
-    const inBoxCaPath = "/etc/ssl/oma-vault-ca.crt";
-    await this.setEnvVars({
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      NODE_EXTRA_CA_CERTS: inBoxCaPath,
-      SSL_CERT_FILE: inBoxCaPath,
-      CURL_CA_BUNDLE: inBoxCaPath,
-    });
-    // Schedule the CA upload on first ensureBox call. We keep it as a
-    // pending action because the box may not exist yet.
-    this.pendingCaUpload = { hostPath: caCertPath, guestPath: inBoxCaPath };
   }
 
   async mountMemoryStore(opts: {
@@ -293,8 +270,6 @@ export class LiteBoxSandbox implements SandboxExecutor {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  private pendingCaUpload: { hostPath: string; guestPath: string } | null = null;
-
   private async ensureBox(): Promise<LiteBoxInstance> {
     if (this.boxPromise) return this.boxPromise;
     this.boxPromise = (async () => {
@@ -330,19 +305,6 @@ export class LiteBoxSandbox implements SandboxExecutor {
         throw new Error(
           `LiteBoxSandbox could not initialize /workspace: ${workspace.stderr || workspace.stdout}`,
         );
-      }
-      // Apply pending CA cert upload now that the box exists (a no-op exec
-      // forces lazy creation per BoxLite's contract).
-      if (this.pendingCaUpload) {
-        const { hostPath, guestPath } = this.pendingCaUpload;
-        try {
-          await box.copyIn(hostPath, guestPath);
-        } catch (err) {
-          this.logger.warn(
-            `vault CA cert upload failed (${(err as Error).message}); ` +
-            `outbound TLS through oma-vault will fail with cert errors`,
-          );
-        }
       }
       return box;
     })();
@@ -393,16 +355,17 @@ async function removeBestEffort(path: string, recursive = false): Promise<void> 
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   rejectPreparedBase("litebox", ctx.preparedBase);
   return new LiteBoxSandbox({
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryMib: env.LITEBOX_MEMORY_MIB ? Number(env.LITEBOX_MEMORY_MIB) : undefined,
     cpus: env.LITEBOX_CPUS ? Number(env.LITEBOX_CPUS) : undefined,
-    name: `oma-${ctx.sessionId}`,
+    name: ctx.allocationId === undefined ? `oma-${ctx.sessionId}`
+      : `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
     scratchRoot: ctx.workdir,
   });
-};
+}, { capabilities: { allocationIsolation: true } });

@@ -10,6 +10,7 @@ describe("Managed Agents HTTP application-port boundary", () => {
   it("resolves every application port from the current request context", () => {
     expect(Object.keys(routeSources).sort()).toEqual([
       "../src/routes/agents.ts",
+      "../src/routes/cap-cli-device-flow.ts",
       "../src/routes/credentials.ts",
       "../src/routes/deployment-runs.ts",
       "../src/routes/deployments.ts",
@@ -17,6 +18,8 @@ describe("Managed Agents HTTP application-port boundary", () => {
       "../src/routes/environment-work.ts",
       "../src/routes/environments.ts",
       "../src/routes/files.ts",
+      "../src/routes/mcp-oauth-cli.ts",
+      "../src/routes/mcp-oauth.ts",
       "../src/routes/memories.ts",
       "../src/routes/memory-stores.ts",
       "../src/routes/memory-versions.ts",

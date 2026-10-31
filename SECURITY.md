@@ -23,7 +23,7 @@ you in the advisory unless you prefer to remain anonymous.
 
 In scope:
 - The runtime (`apps/agent`, `apps/main`, `apps/main-node`,
-  `apps/integrations`, `apps/oma-vault`)
+  `apps/integrations`)
 - Published packages (`@openma/cli`, `@openma/sdk`)
 - Self-host deployment paths documented in `docs/self-host.md`
 

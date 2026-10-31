@@ -41,8 +41,6 @@ function queueBox() {
 const originalEnv = {
   memory: process.env.MEMORY_BLOB_DIR,
   outputs: process.env.FILES_BLOB_DIR,
-  proxy: process.env.OMA_VAULT_PROXY_URL,
-  ca: process.env.OMA_VAULT_CA_CERT,
 };
 
 function restore(name: string, value: string | undefined) {
@@ -55,19 +53,43 @@ beforeEach(() => {
   sdk.options.length = 0;
   delete process.env.MEMORY_BLOB_DIR;
   delete process.env.FILES_BLOB_DIR;
-  delete process.env.OMA_VAULT_PROXY_URL;
-  delete process.env.OMA_VAULT_CA_CERT;
 });
 
 afterEach(() => {
   restore("MEMORY_BLOB_DIR", originalEnv.memory);
   restore("FILES_BLOB_DIR", originalEnv.outputs);
-  restore("OMA_VAULT_PROXY_URL", originalEnv.proxy);
-  restore("OMA_VAULT_CA_CERT", originalEnv.ca);
   vi.restoreAllMocks();
 });
 
 describe("LiteBoxSandbox", () => {
+  it("isolates factory allocation names and late stop while preserving legacy Session naming", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "oma-litebox-allocation-"));
+    let finishStop!: () => void;
+    const oldBox = queueBox(); const freshBox = queueBox(); const legacyBox = queueBox();
+    oldBox.stop.mockImplementation(() => new Promise<void>(resolve => { finishStop = resolve; }));
+    const context = { sessionId: "same-logical-session", workspaceId: "workspace", environmentId: "env", workdir: root };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_a" }, {});
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_b" }, {});
+    const legacy = await sandboxFactory(context, {});
+    try {
+      await a.exec("initial"); await b.exec("initial"); await legacy.exec("initial");
+      expect(sdk.options[0]!.name).not.toBe(sdk.options[1]!.name);
+      expect(sdk.options[0]!.name).toMatch(/^oma-[a-f0-9]{30,32}$/);
+      expect(sdk.options[2]!.name).toBe("oma-same-logical-session");
+      expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+      const deleting = a.destroy!();
+      await vi.waitFor(() => expect(oldBox.stop).toHaveBeenCalledOnce());
+      expect(await b.exec("while old stop is pending")).toBe("ok");
+      finishStop(); await deleting;
+      expect(freshBox.stop).not.toHaveBeenCalled();
+      expect(legacyBox.stop).not.toHaveBeenCalled();
+      expect(await b.exec("after old stop")).toBe("ok");
+    } finally {
+      finishStop?.();
+      await b.destroy?.(); await legacy.destroy?.();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
   it("creates lazily once with default options and executes commands", async () => {
     const box = queueBox();
     const sandbox = new LiteBoxSandbox();
@@ -216,39 +238,6 @@ describe("LiteBoxSandbox", () => {
     rm.mockRestore();
     await cleanupFailure.destroy();
     expect(cleanup.copyOut).toHaveBeenCalled();
-  });
-
-  it("wires the outbound proxy and makes CA upload best-effort", async () => {
-    const caPath = join(tmpdir(), `openma-litebox-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_PROXY_URL = "http://proxy";
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    const box = queueBox();
-    const sandbox = new LiteBoxSandbox();
-    await sandbox.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    await sandbox.exec("x");
-    expect(box.copyIn).toHaveBeenCalledWith(caPath, "/etc/ssl/oma-vault-ca.crt");
-    const shellCall = box.exec.mock.calls.find(([command]) => command === "sh");
-    expect(shellCall?.[2]).toMatchObject({ HTTPS_PROXY: "http://proxy", SSL_CERT_FILE: "/etc/ssl/oma-vault-ca.crt" });
-    await sandbox.destroy();
-
-    const warn = vi.fn();
-    const failing = queueBox();
-    failing.copyIn.mockRejectedValueOnce(new Error("copy failed"));
-    const uploadFailure = new LiteBoxSandbox({ logger: { warn, log: vi.fn() } });
-    await uploadFailure.setOutboundContext();
-    await uploadFailure.exec("x");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("copy failed"));
-    await uploadFailure.destroy();
-    await fs.unlink(caPath);
-  });
-
-  it("skips incomplete outbound proxy settings", async () => {
-    const sandbox = new LiteBoxSandbox();
-    await expect(sandbox.setOutboundContext()).resolves.toBeUndefined();
-    process.env.OMA_VAULT_PROXY_URL = "http://proxy";
-    await expect(sandbox.setOutboundContext()).resolves.toBeUndefined();
-    await sandbox.destroy();
   });
 
   it("destroy is repeatable and absorbs stop, create, and scratch cleanup failures", async () => {

@@ -1,6 +1,6 @@
 import { buildOpenAIAgentsProtocolApi, OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, createManagedSessionMapping, createSandboxOptionalSessionMapping, resolveSessionSandboxMode } from "@open-managed-agents/openai-agents-compat";
-import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
+import { CapCliDeviceFlowApplicationService, McpOAuthCliService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -27,6 +27,10 @@ import {
 } from "@open-managed-agents/http-routes";
 import {
   buildAgentRoutes as buildManagedAgentRoutes,
+  buildCapCliDeviceFlowRoutes,
+  buildMcpOAuthRoutes,
+  buildMcpOAuthCliRoutes,
+  buildMcpOAuthCliCallback,
   buildCredentialRoutes as buildManagedCredentialRoutes,
   buildDeploymentRoutes as buildManagedDeploymentRoutes,
   buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes,
@@ -46,6 +50,7 @@ import {
   buildUserProfileRoutes as buildManagedUserProfileRoutes,
   buildManagedSessionsApi,
 } from "@open-managed-agents/managed-agents-api";
+import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
 import {
   SessionRuntimeProjectionApplicationService,
   type SessionEnvironmentSourcePort,
@@ -103,11 +108,19 @@ import {
 import {
   createCloudflareManagedAgentsApp,
 } from "@open-managed-agents/platform-cloudflare";
-import { buildOmaModelsHttpRoutes } from "@open-managed-agents/managed-agents-adapters-http";
+import {
+  HttpMcpOAuth,
+  buildOmaModelsHttpRoutes,
+  mcpOAuthPresetsFromEnvironment,
+  parseConsoleOrigins,
+  webCryptoMcpOAuthPkce,
+  webCryptoMcpOAuthCliSecrets,
+} from "@open-managed-agents/managed-agents-adapters-http";
 import type { CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
 import type { DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
 import type { EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
 import {
+  SqlMcpOAuthCliStore,
   SqlDeploymentAgentSource,
   SqlDeploymentVaultSource,
   SqlFileMetadataPersistence,
@@ -175,7 +188,6 @@ import {
 import { validateAgentLimits } from "./lib/limits";
 import { listMemberships, hasMembership } from "./auth-config";
 import legacyEnvironmentsRoutes from "./routes/environments";
-import oauthRoutes from "./routes/oauth";
 import capCliOauthRoutes from "./routes/cap-cli-oauth";
 import legacyMemoryRoutes from "./routes/memory";
 import dreamsRoutes from "./routes/dreams";
@@ -192,18 +204,19 @@ import statsRoutes from "./routes/stats";
 import inferenceProxyRoutes from "./routes/inference-proxy";
 import { createCloudflareAccessLossRuntime } from "./lib/mcp-access-loss";
 import mcpProxyRoutes, {
-  createManagedMcpProxyCredentialSource,
+  createManagedCredentialResolver,
   resolveProxyTargetByTenant,
   resolveOutboundCredentialByHost,
   forwardWithRefresh,
 } from "./routes/mcp-proxy";
+import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
 import {
   resolveGithubCredentials,
   resolveManagedGithubCredentials,
 } from "./lib/github-creds";
 import { buildCfScheduler } from "./lib/cf-scheduler-jobs";
 import { buildCfMemoryQueue, dispatchCfMemoryQueueBatch } from "./lib/cf-queue-handlers";
-import { logError, recordEvent, errFields } from "@open-managed-agents/shared";
+import { logError, logWarn, recordEvent, errFields } from "@open-managed-agents/shared";
 import { globalErrorHandler, requestMetricsMiddleware } from "./lib/observability";
 import { errorEnvelopeMiddleware } from "./lib/error-envelope";
 import type { R2EventMessage } from "@open-managed-agents/shared";
@@ -276,6 +289,29 @@ app.get("/auth-info", (c) => {
     turnstile_site_key: c.env.TURNSTILE_SITE_KEY ?? null,
   });
 });
+
+// A sealed CLI flow alone can finish the provider callback. All other
+// callback states fall through to normal Console authentication below.
+app.use("/v1/oma/oauth/callback", buildMcpOAuthCliCallback((context) => managedMcpOAuthCliFor((context as AppCtx).env)));
+
+// Session-scoped credential relay authenticates its own opaque pass, never ambient API credentials.
+app.route("/v1/oma/egress", buildCredentialEgressRoutes(async context => {
+  const env = (context as AppCtx).env;
+  if (!env.PLATFORM_ROOT_SECRET) throw new Error("Credential relay is not configured");
+  const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+  return createCredentialEgressRelay({
+    passes: createEgressRelayPasses(env.PLATFORM_ROOT_SECRET, Date.now),
+    findSession: async claims => {
+      const db = await buildCfTenantDbProvider(env).resolve(claims.workspaceId);
+      return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
+    },
+    credentials: {
+      outboundTarget: async (scope, hostname) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(scope.workspaceId)).outboundTarget(scope, hostname),
+      forward: async (workspaceId, target, send) => createManagedCredentialResolver(env, await buildCfTenantDbProvider(env).resolve(workspaceId)).forward(workspaceId, target, send),
+    },
+    send: request => fetch(request),
+  });
+}));
 
 // API routes (require authentication)
 app.use("/v1/*", authMiddleware);
@@ -576,14 +612,14 @@ const managedVaultsRoutes = buildManagedVaultRoutes(context => managedVaultsPort
 
 const managedCredentialValidation = new McpOAuthCredentialValidationProbe();
 function managedCredentialsPortFor(context: AppCtx) {
-  const request = context.var as {
-    tenant_id: string;
-    tenantDb: D1Database;
-  };
-  const credentialCrypto = context.env.PLATFORM_ROOT_SECRET === undefined
+  const request = context.var as { tenant_id: string; tenantDb: D1Database };
+  return managedCredentialsPortOn(context.env, request.tenant_id, request.tenantDb);
+}
+function managedCredentialsPortOn(env: Env, workspaceId: string, tenantDb: D1Database) {
+  const credentialCrypto = env.PLATFORM_ROOT_SECRET === undefined
     ? null
     : new WebCryptoAesGcm(
-        context.env.PLATFORM_ROOT_SECRET,
+        env.PLATFORM_ROOT_SECRET,
         "managed.vault.credentials",
       );
   const cipher: CredentialDocumentCipher = {
@@ -605,8 +641,8 @@ function managedCredentialsPortFor(context: AppCtx) {
     },
   };
   return createCloudflareManagedAgentsApp({
-    workspaceId: request.tenant_id,
-    sql: new CfD1SqlClient(request.tenantDb),
+    workspaceId,
+    sql: new CfD1SqlClient(tenantDb),
     credentialCipher: cipher,
     credentialValidation: managedCredentialValidation,
   }, {
@@ -620,6 +656,62 @@ function managedCredentialsPortFor(context: AppCtx) {
 }
 
 const managedCredentialsRoutes = buildManagedCredentialRoutes(context => managedCredentialsPortFor(context as AppCtx));
+
+// OpenMA extension: OAuth device flow that ends in a managed cap_cli credential.
+const capCliDeviceFlow = createBuiltinCapDeviceFlow({
+  fetch: (input, init) => fetch(input, init),
+});
+const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
+  const ctx = context as AppCtx;
+  const secret = ctx.env.PLATFORM_ROOT_SECRET;
+  if (secret === undefined) {
+    throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+  }
+  return new CapCliDeviceFlowApplicationService({
+    workspaceId: (ctx.var as { tenant_id: string }).tenant_id,
+    credentials: managedCredentialsPortFor(ctx),
+    deviceFlow: capCliDeviceFlow,
+    cipher: new WebCryptoAesGcm(secret, "managed.vault.cap_cli_device_flow"),
+    clock: { now: () => new Date() },
+  });
+});
+
+// OpenMA extension: browser MCP OAuth that ends in a managed mcp_oauth credential.
+function managedMcpOAuthOn(env: Env, workspaceId: string, tenantDb: D1Database) {
+  const secret = env.PLATFORM_ROOT_SECRET;
+  if (secret === undefined) {
+    throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+  }
+  return new McpOAuthApplicationService({
+    workspaceId,
+    credentials: managedCredentialsPortOn(env, workspaceId, tenantDb),
+    oauth: new HttpMcpOAuth({
+      fetch: (input, init) => fetch(input, init),
+      clock: { now: () => new Date() },
+      presets: mcpOAuthPresetsFromEnvironment(env as unknown as Record<string, string | undefined>),
+      log: { warn: (fields, message) => logWarn(fields, message) },
+    }),
+    pkce: webCryptoMcpOAuthPkce,
+    cipher: new WebCryptoAesGcm(secret, "managed.vault.mcp_oauth_state"),
+    clock: { now: () => new Date() },
+    log: { warn: (fields, message) => logWarn(fields, message) },
+  });
+}
+const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => {
+  const ctx = context as AppCtx;
+  return managedMcpOAuthOn(ctx.env, ctx.var.tenant_id, ctx.var.tenantDb);
+}, { consoleOrigins: (context) => parseConsoleOrigins((context as AppCtx).env.CONSOLE_ORIGINS) });
+function managedMcpOAuthCliFor(env: Env) {
+  if (!env.PLATFORM_ROOT_SECRET) throw new Error("PLATFORM_ROOT_SECRET is required for MCP OAuth");
+  return new McpOAuthCliService({
+    store: new SqlMcpOAuthCliStore(new CfD1SqlClient(env.MAIN_DB), { now: () => new Date() }),
+    application: async (workspaceId) => managedMcpOAuthOn(env, workspaceId, await buildCfTenantDbProvider(env).resolve(workspaceId)),
+    cipher: new WebCryptoAesGcm(env.PLATFORM_ROOT_SECRET, "managed.vault.mcp_oauth_cli"),
+    secrets: webCryptoMcpOAuthCliSecrets,
+    clock: { now: () => new Date() },
+  });
+}
+const managedMcpOAuthCliRoutes = buildMcpOAuthCliRoutes((context) => managedMcpOAuthCliFor((context as AppCtx).env), webCryptoMcpOAuthCliSecrets);
 
 const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) => {
   return managedCoreApplicationFor(context)
@@ -814,7 +906,7 @@ async function managedMcpSources(env: Env, workspaceId: string) {
   const tenantDb = await buildCfTenantDbProvider(env).resolve(workspaceId);
   return {
     sessionSource: new SqlSessionSource(new CfD1SqlClient(tenantDb)),
-    credentialSource: createManagedMcpProxyCredentialSource(env, tenantDb),
+    credentialSource: createManagedCredentialResolver(env, tenantDb),
   };
 }
 
@@ -1355,6 +1447,8 @@ app.route("/v1/oma/sessions", legacySessionsRoutes);
 app.route("/v1/vaults", managedVaultsRoutes);
 app.route("/v1/vaults", managedCredentialsRoutes);
 app.route("/v1/user_profiles", managedUserProfilesRoutes);
+// OpenMA extension, mounted ahead of the legacy catch-all Vault router.
+app.route("/v1/oma/vaults", managedCapCliDeviceFlowRoutes);
 app.route("/v1/oma/vaults", legacyVaultsRoutes);
 app.route("/v1/oma/cap-cli/oauth", capCliOauthRoutes);
 app.route("/v1/memory_stores", managedMemoryStoresRoutes);
@@ -1444,7 +1538,8 @@ app.route("/v1/oma/evals", evalsRoutes);
 app.route("/v1/oma/cost_report", costReportRoutes);
 app.route("/v1/oma/integrations", integrationsRoutes);
 app.route("/v1/oma/runtimes", runtimesRoutes);
-app.route("/v1/oma/oauth", oauthRoutes);
+app.route("/v1/oma/oauth/cli", managedMcpOAuthCliRoutes);
+app.route("/v1/oma/oauth", managedMcpOAuthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
 // Cloudflare sandboxes run one container image; there is no operator image
 // catalog, so the list is empty and `_oma.sandbox_image` is rejected.
@@ -1617,6 +1712,39 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
           id: row.id,
         })),
       },
+    };
+  }
+
+  /**
+   * CLI placeholder environment (cap spec `bootstrap.env`) for a v1 managed
+   * Session's sandbox, from the session's managed `cap_cli` credentials.
+   * Placeholders only; real tokens stay here and are injected at egress.
+   * `not_found` means the session is not a managed one.
+   */
+  async resolveManagedCapCliEnvironment(opts: {
+    tenantId: string;
+    sessionId: string;
+  }): Promise<{ type: "found"; env: Record<string, string> } | { type: "not_found" }> {
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(opts.tenantId);
+    // Look the session up before touching the managed credential store, so a
+    // legacy `/v1/oma` Session never depends on managed-only configuration
+    // (PLATFORM_ROOT_SECRET) and keeps its previous warmup behaviour.
+    const session = await withMissingManagedSessionSchemaFallback(
+      () => new SqlSessionSource(new CfD1SqlClient(tenantDb))
+        .find({ workspaceId: opts.tenantId, sessionId: opts.sessionId }),
+      async () => null,
+    );
+    if (session === null || session.archivedAt !== null) {
+      return { type: "not_found" };
+    }
+    if (session.vaultIds.length === 0) return { type: "found", env: {} };
+    return {
+      type: "found",
+      env: await createManagedCredentialResolver(this.env, tenantDb).placeholderEnvironment({
+        workspaceId: opts.tenantId,
+        sessionId: opts.sessionId,
+        vaultIds: session.vaultIds,
+      }),
     };
   }
 
@@ -2025,79 +2153,36 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     );
   }
 
-  /**
-   * Lightweight credential lookup for the transparent outbound proxy.
-   * Returns just the auth token + type for the host, or null if no
-   * credential matches. The agent worker injects the Authorization header
-   * itself and forwards the request transparently — body and response
-   * never cross the RPC boundary, preserving HEAD Content-Length, SigV4
-   * signed headers, chunked encoding, streaming, etc.
-   *
-   * Replaces the body-buffered `outboundForward` for the common-case
-   * Bearer-injection path. `outboundForward` remains for callers that
-   * need 401-refresh-and-retry (mcp_oauth with refresh_token), since
-   * that requires keeping the refresh token in main worker.
-   *
-   * Security model change: agent worker briefly holds the bearer token
-   * in memory during a single request handler invocation. Container
-   * still never sees plaintext (auth header is added on agent worker
-   * side, the SDK's TLS-MITM re-encrypts back to container). Trade-off
-   * vs the body-buffered path: agent worker compromise can leak tokens
-   * observed during the brief window; in exchange, we get a working
-   * transparent proxy.
-   */
-  async lookupOutboundCredential(opts: {
-    tenantId: string;
-    sessionId: string;
-    hostname: string;
-    runtimeFence?: {
-      environmentId: string;
-      workId: string;
-      ownerId: string;
-      generation: number;
-      token: string;
+  /** Native outbound adapter transport for the shared HTTPS relay core.
+   * Only requests and responses cross this boundary, never Vault tokens. */
+  async credentialEgress(scope: {
+    tenantId: string; sessionId: string;
+    runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+  }, action: "resolve" | "forward", request: Request): Promise<Response> {
+    const { createCredentialEgressRelay, createEgressRelayPasses } = await import("@open-managed-agents/managed-credential-resolver");
+    if (!this.env.PLATFORM_ROOT_SECRET) return new Response("Credential relay unavailable", { status: 503 });
+    const fence = scope.runtimeFence === undefined ? null : {
+      workspaceId: scope.tenantId, sessionId: scope.sessionId, ...scope.runtimeFence, expiresAt: new Date(0).toISOString(),
     };
-  }): Promise<{ type: "bearer"; token: string } | null> {
-    const fence = opts.runtimeFence === undefined
-      ? null
-      : {
-          workspaceId: opts.tenantId,
-          environmentId: opts.runtimeFence.environmentId,
-          sessionId: opts.sessionId,
-          workId: opts.runtimeFence.workId,
-          ownerId: opts.runtimeFence.ownerId,
-          generation: opts.runtimeFence.generation,
-          token: opts.runtimeFence.token,
-          // SQL validation uses the database expiry; the caller cannot choose it.
-          expiresAt: new Date(0).toISOString(),
-        };
-    const runtimeFences = fence === null
-      ? null
-      : new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
-    const services = await getCfServicesForTenant(this.env, opts.tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      opts.tenantId,
-    );
-    const cred = await resolveOutboundCredentialByHost(
-      this.env,
-      services,
-      opts.tenantId,
-      opts.sessionId,
-      opts.hostname,
-      sessionSource,
-      credentialSource,
-    );
-    // Re-check after the tenant lookup so expiry/reclaim during a slow Vault
-    // read cannot release a credential to the stale owner.
-    if (fence !== null && !await runtimeFences!.isCurrent(fence)) {
-      throw new Error("stale runtime credential-egress fence");
-    }
-    if (!cred) return null;
-    return { type: "bearer", token: cred.upstreamToken };
+    const fences = new SqlRuntimeResourceFencePort(new CfD1SqlClient(this.env.MAIN_DB));
+    if (fence !== null && !await fences.isCurrent(fence)) return new Response("Credential relay denied", { status: 403 });
+    const db = await buildCfTenantDbProvider(this.env).resolve(scope.tenantId);
+    const passes = createEgressRelayPasses(this.env.PLATFORM_ROOT_SECRET, Date.now);
+    const relay = createCredentialEgressRelay({
+      passes, credentials: createManagedCredentialResolver(this.env, db),
+      findSession: async claims => {
+        if (fence !== null && !await fences.isCurrent(fence)) return null;
+        return new SqlSessionSource(new CfD1SqlClient(db)).find(claims);
+      },
+      send: req => fetch(req),
+    });
+    return relay.handle(action, new Request(`https://credential-relay.invalid/v1/oma/egress/${action}`, {
+      method: "POST", headers: {
+        authorization: `Bearer ${await passes.issue({ workspaceId: scope.tenantId, sessionId: scope.sessionId, ttlMs: 60000 })}`,
+        "x-oma-egress-target": request.url, "x-oma-egress-method": request.method,
+        "x-oma-egress-headers": JSON.stringify(Object.fromEntries(request.headers)),
+      }, body: action === "forward" && !["GET", "HEAD"].includes(request.method) ? await request.arrayBuffer() : null,
+    }));
   }
 
   /**
@@ -2183,121 +2268,4 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
   }
 
 
-  /**
-   * Outbound counterpart to `mcpForward` for sandbox-side HTTPS calls
-   * (anything the cloud agent's container does via fetch / curl). The
-   * agent worker's outbound interceptor (apps/agent/src/oma-sandbox.ts)
-   * passes only `(tenantId, sessionId, hostname, request bytes)`; we
-   * resolve the matching vault credential live, inject Authorization,
-   * and fetch upstream. The agent's container never sees the credential
-   * and the agent worker never even loads it into memory.
-   *
-   * Body is passed as a string for now (sandbox HTTPS calls in OMA are
-   * typically JSON-shaped; binary uploads to upstream APIs are rare and
-   * can be added by widening to ArrayBuffer when a real use case lands).
-   * Pass-through when no credential matches: same behavior as the legacy
-   * snapshot-based path — public APIs and pre-authenticated URLs work.
-   */
-  async outboundForward(opts: {
-    tenantId: string;
-    sessionId: string;
-    /** Full upstream URL the sandbox is trying to reach. */
-    url: string;
-    method: string;
-    headers: Record<string, string>;
-    /**
-     * Request body as raw bytes. ArrayBuffer over the RPC wire — preserves
-     * binary content (wheels, tarballs, image layers) that string body
-     * silently mangled via UTF-8 decode. CF Worker RPC supports
-     * ArrayBuffer via structured-clone-like serialization. Per-call size
-     * is capped (~32 MB) — multi-GB streaming uploads still need a
-     * dedicated path.
-     */
-    body: ArrayBuffer | null;
-  }): Promise<{
-    status: number;
-    headers: Record<string, string>;
-    body: ArrayBuffer;
-  }> {
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(opts.url);
-    } catch {
-      return {
-        status: 400,
-        headers: { "content-type": "application/json" },
-        body: new TextEncoder().encode('{"error":"invalid url"}').buffer as ArrayBuffer,
-      };
-    }
-
-    const services = await getCfServicesForTenant(this.env, opts.tenantId);
-    const { sessionSource, credentialSource } = await managedMcpSources(
-      this.env,
-      opts.tenantId,
-    );
-    const cred = await resolveOutboundCredentialByHost(
-      this.env,
-      services,
-      opts.tenantId,
-      opts.sessionId,
-      parsedUrl.hostname,
-      sessionSource,
-      credentialSource,
-    );
-
-    const inboundHeaders = new Headers(opts.headers);
-
-    if (!cred) {
-      // No matching credential — pass through without injection. Public
-      // APIs and pre-authenticated URLs work this way; matches old
-      // behavior of the snapshot interceptor (host miss → no header).
-      // We still strip the CF-edge headers for cleanliness.
-      inboundHeaders.delete("host");
-      inboundHeaders.delete("cf-connecting-ip");
-      inboundHeaders.delete("cf-ray");
-      inboundHeaders.delete("x-forwarded-for");
-      inboundHeaders.delete("x-forwarded-proto");
-      inboundHeaders.delete("x-real-ip");
-      const upstreamReq = new Request(opts.url, {
-        method: opts.method,
-        headers: inboundHeaders,
-        body: ["GET", "HEAD"].includes(opts.method) ? undefined : opts.body,
-      });
-      const res = await fetch(upstreamReq);
-      const respHeaders: Record<string, string> = {};
-      res.headers.forEach((v, k) => {
-        respHeaders[k] = v;
-      });
-      return {
-        status: res.status,
-        headers: respHeaders,
-        body: await res.arrayBuffer(),
-      };
-    }
-
-    // Override target.upstreamUrl with the actual URL the sandbox wants
-    // to hit (resolveOutboundCredentialByHost only knows the credential's
-    // mcp_server_url, but for outbound the caller might be hitting any
-    // path on that host). forwardWithRefresh injects token + auto-refreshes
-    // on 401 if the credential is mcp_oauth.
-    const target = { ...cred, upstreamUrl: opts.url };
-    const res = await forwardWithRefresh(
-      services,
-      opts.tenantId,
-      target,
-      opts.method,
-      inboundHeaders,
-      opts.body,
-      { sessionId: opts.sessionId, callerKind: "rpc-outbound" },
-    );
-    const respHeaders: Record<string, string> = {};
-    res.headers.forEach((v, k) => {
-      respHeaders[k] = v;
-    });
-    return {
-      status: res.status,
-      headers: respHeaders,
-      body: await res.arrayBuffer(),
-    };
-  }
 }

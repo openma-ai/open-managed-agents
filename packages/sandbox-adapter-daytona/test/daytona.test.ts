@@ -45,8 +45,6 @@ type FakeClient = ReturnType<typeof fixture>["client"];
 const originalEnv = {
   key: process.env.DAYTONA_API_KEY,
   url: process.env.DAYTONA_API_URL,
-  proxy: process.env.OMA_VAULT_PROXY_URL,
-  ca: process.env.OMA_VAULT_CA_CERT,
 };
 
 function restore(name: string, value: string | undefined) {
@@ -59,15 +57,11 @@ beforeEach(() => {
   fixture();
   delete process.env.DAYTONA_API_KEY;
   delete process.env.DAYTONA_API_URL;
-  delete process.env.OMA_VAULT_PROXY_URL;
-  delete process.env.OMA_VAULT_CA_CERT;
 });
 
 afterEach(() => {
   restore("DAYTONA_API_KEY", originalEnv.key);
   restore("DAYTONA_API_URL", originalEnv.url);
-  restore("OMA_VAULT_PROXY_URL", originalEnv.proxy);
-  restore("OMA_VAULT_CA_CERT", originalEnv.ca);
   vi.restoreAllMocks();
 });
 
@@ -79,6 +73,19 @@ const bucket = {
 };
 
 describe("DaytonaSandbox", () => {
+  it("provides isolated allocations whose delayed cleanup targets only their SDK instance", async () => {
+    const first = fixture();
+    expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    const context = { workspaceId: "workspace", sessionId: "session", environmentId: "env", workdir: "/workspace" };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_a" }, { DAYTONA_API_KEY: "fake-key" }); await a.exec("initial");
+    const second = fixture();
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_b" }, { DAYTONA_API_KEY: "fake-key" }); await b.exec("initial");
+    await a.destroy?.();
+    expect(first.client.delete).toHaveBeenCalledWith(first.sandbox);
+    expect(second.client.delete).not.toHaveBeenCalled();
+    expect(await b.exec("still running")).toBe("ok");
+    await b.destroy?.();
+  });
   it("loads the SDK lazily, uses stable labels/defaults, and only creates once", async () => {
     const { client, process: { executeCommand: remote } } = fixture();
     process.env.DAYTONA_API_KEY = "env-key";
@@ -150,55 +157,6 @@ describe("DaytonaSandbox", () => {
     expect(fileSystem.downloadFile).toHaveBeenNthCalledWith(2, "/absolute.bin");
     expect(fileSystem.uploadFile.mock.calls[0]?.[0].toString()).toBe("hello");
     expect(fileSystem.uploadFile.mock.calls[1]?.[0]).toEqual(Buffer.from([4]));
-  });
-
-  it("configures local and remote outbound proxies and uploads the CA", async () => {
-    const { fileSystem } = fixture();
-    const caPath = join(tmpdir(), `openma-daytona-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_PROXY_URL = "http://127.0.0.1:14322";
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    const warn = vi.fn();
-    const log = vi.fn();
-    const sandbox = new DaytonaSandbox({ sessionId: "s", apiKey: "key", logger: { warn, log } });
-    await sandbox.setOutboundContext({ tenantId: "t", sessionId: "s" });
-    await sandbox.exec("x");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("unreachable"));
-    expect(fileSystem.createFolder).toHaveBeenCalledWith("/etc/ssl", "0755");
-    expect(fileSystem.uploadFile).toHaveBeenCalledWith(Buffer.from("CA"), "/etc/ssl/oma-vault-ca.crt");
-    expect(log).toHaveBeenCalledWith("uploaded vault CA cert (2 bytes)");
-
-    process.env.OMA_VAULT_PROXY_URL = "https://proxy.example";
-    const remote = new DaytonaSandbox({ sessionId: "s2", apiKey: "key", logger: { warn, log } });
-    await remote.setOutboundContext();
-    await remote.exec("x");
-    expect(warn).toHaveBeenCalledTimes(1);
-    await fs.unlink(caPath);
-  });
-
-  it("skips incomplete proxy config and makes CA preparation best-effort", async () => {
-    const absent = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
-    await expect(absent.setOutboundContext()).resolves.toBeUndefined();
-    process.env.OMA_VAULT_PROXY_URL = "https://proxy";
-    await expect(absent.setOutboundContext()).resolves.toBeUndefined();
-
-    process.env.OMA_VAULT_CA_CERT = "/missing.pem";
-    const warn = vi.fn();
-    const failingRead = new DaytonaSandbox({ sessionId: "s", apiKey: "key", logger: { warn, log: vi.fn() } });
-    await failingRead.setOutboundContext();
-    await failingRead.exec("x");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("vault CA upload failed"));
-
-    const caPath = join(tmpdir(), `openma-daytona-folder-${process.pid}.pem`);
-    await fs.writeFile(caPath, "CA");
-    process.env.OMA_VAULT_CA_CERT = caPath;
-    const { fileSystem } = fixture();
-    fileSystem.createFolder.mockRejectedValueOnce(new Error("exists"));
-    const existingFolder = new DaytonaSandbox({ sessionId: "s", apiKey: "key" });
-    await existingFolder.setOutboundContext();
-    await existingFolder.exec("x");
-    expect(fileSystem.uploadFile).toHaveBeenCalled();
-    await fs.unlink(caPath);
   });
 
   it("mounts a shared bucket once for memory and outputs, with writable and read-only links", async () => {

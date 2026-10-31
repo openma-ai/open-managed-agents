@@ -1,6 +1,6 @@
 // SandboxOrchestrator — single entry point both runtimes use to provision
-// a session sandbox + its environment (vault outbound, memory mounts,
-// session outputs mount, optional workspace backup/restore).
+// a session sandbox + its environment (memory mounts, session outputs
+// mount, optional workspace backup/restore).
 //
 // Replaces the per-runtime plumbing that used to live separately in
 //   - apps/agent/src/oma-sandbox.ts (CF setOutboundContext / setBackupContext / snapshot)
@@ -42,8 +42,6 @@ export interface SandboxCapabilities {
   enforceReadOnlyMemory: boolean;
   /** Can mountSessionOutputs surface writes back through the host? */
   hasSessionOutputs: boolean;
-  /** Can vault outbound (HTTPS_PROXY + CA) be installed? */
-  hasVaultOutbound: boolean;
   /** Can the workspace be backed up + restored across sandbox lifetimes? */
   hasWorkspaceBackup: boolean;
 }
@@ -143,7 +141,6 @@ export class DefaultSandboxOrchestrator implements SandboxOrchestrator {
     return {
       enforceReadOnlyMemory: typeof sandbox.mountMemoryStore === "function",
       hasSessionOutputs: supportsSessionOutputMount(sandbox),
-      hasVaultOutbound: typeof sandbox.setOutboundContext === "function",
       hasWorkspaceBackup:
         this.deps.backups !== null &&
         this.deps.backups !== undefined &&
@@ -153,23 +150,7 @@ export class DefaultSandboxOrchestrator implements SandboxOrchestrator {
   }
 
   async provision(sandbox: SandboxExecutor, input: ProvisionInput): Promise<void> {
-    // 1. Vault outbound — set HTTPS_PROXY + upload CA before any exec.
-    //    Provider's setOutboundContext is responsible for the no-op when
-    //    the OMA_VAULT_* env vars are unset.
-    if (sandbox.setOutboundContext) {
-      try {
-        await sandbox.setOutboundContext({
-          tenantId: input.tenantId,
-          sessionId: input.sessionId,
-        });
-      } catch (err) {
-        this.deps.logger?.warn(
-          `[sandbox-orchestrator] setOutboundContext failed: ${(err as Error).message} — outbound TLS through oma-vault may not work`,
-        );
-      }
-    }
-
-    // 2. Backup context (CF only) + best-effort restore.
+    // 1. Backup context (CF only) + best-effort restore.
     if (input.environmentId && supportsManagedWorkspaceLifecycle(sandbox)) {
       await sandbox.setBackupContext({
         tenantId: input.tenantId,
@@ -199,7 +180,7 @@ export class DefaultSandboxOrchestrator implements SandboxOrchestrator {
       }
     }
 
-    // 3. Mount memory stores.
+    // 2. Mount memory stores.
     if (input.memoryMounts?.length && sandbox.mountMemoryStore) {
       for (const m of input.memoryMounts) {
         try {
@@ -218,7 +199,7 @@ export class DefaultSandboxOrchestrator implements SandboxOrchestrator {
       }
     }
 
-    // 4. Mount session outputs.
+    // 3. Mount session outputs.
     if (input.mountOutputs) {
       if (!supportsSessionOutputMount(sandbox)) {
         throw new Error(

@@ -66,10 +66,16 @@ function translatePortableStatement(input: string): PortableStatement {
     ? portable.slice(0, returningMatch.index).trimEnd()
     : portable;
 
-  const doNothing = /\s+ON\s+CONFLICT\s*(?:\([^)]*\))?\s+DO\s+NOTHING\s*$/i;
-  if (doNothing.test(text)) {
-    text = text.replace(doNothing, "");
-    text = text.replace(/^(\s*)INSERT\s+INTO\b/i, "$1INSERT IGNORE INTO");
+  const doNothing = /\s+ON\s+CONFLICT\s*(?:\(([^)]*)\))?\s+DO\s+NOTHING\s*$/i;
+  const noOp = text.match(doNothing);
+  if (noOp) {
+    text = text.slice(0, noOp.index).trimEnd();
+    // INSERT IGNORE also suppresses invalid values and other write failures.
+    // Only duplicate keys may be ignored: preserve the winner with a strict
+    // no-op update instead (the pool disables CLIENT_FOUND_ROWS).
+    const column = noOp[1]?.split(",")[0]?.trim()
+      ?? quoteIdentifier(parseInsert(text).columns[0]);
+    text += ` ON DUPLICATE KEY UPDATE ${column} = ${column}`;
     return { text, returning, upsert: true, parameterOrder: null };
   }
 

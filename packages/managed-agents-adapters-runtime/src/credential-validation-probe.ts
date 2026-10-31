@@ -85,6 +85,7 @@ export class McpOAuthCredentialValidationProbe
   async validate(
     input: ProbeCredentialValidation,
   ): Promise<CredentialValidationProbe> {
+    rejectCapCli(input.credential.auth);
     try {
       return await this.inspect(input);
     } catch {
@@ -317,6 +318,7 @@ export class IndeterminateCredentialValidationProbe
     input: ProbeCredentialValidation,
   ): Promise<CredentialValidationProbe> {
     const auth = input.credential.auth;
+    rejectCapCli(auth);
     return {
       hasRefreshToken:
         auth.type === "mcp_oauth" &&
@@ -351,6 +353,17 @@ function sealProbe(
   return sealed;
 }
 
+/**
+ * `cap_cli` (OpenMA extension) is a CLI credential, not an MCP one: there is
+ * no MCP endpoint to probe. The application refuses it before calling a
+ * probe; reaching a probe with one is a programming error.
+ */
+function rejectCapCli(auth: CredentialAuth): void {
+  if (auth.type === "cap_cli") {
+    throw new TypeError("cap_cli credentials cannot be MCP-validated");
+  }
+}
+
 function hasRefreshToken(auth: CredentialAuth): boolean {
   return (
     auth.type === "mcp_oauth" &&
@@ -383,6 +396,11 @@ function collectSecrets(auth: CredentialAuth, secrets: string[]): void {
   }
   if (auth.type === "static_bearer") {
     rememberSecret(secrets, auth.token);
+    return;
+  }
+  if (auth.type === "cap_cli") {
+    rememberSecret(secrets, auth.token);
+    rememberSecret(secrets, auth.refreshToken ?? null);
     return;
   }
   rememberSecret(secrets, auth.secretValue);

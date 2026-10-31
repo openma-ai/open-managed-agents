@@ -32,6 +32,7 @@ import type {
   CredentialValidationProbePort,
   CredentialValidationRotation,
 } from "./validation";
+import type { CredentialCliCatalogPort } from "./cli-catalog";
 import type { CredentialVaultSourcePort } from "./vault-source";
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -84,6 +85,16 @@ function decodeCredentialCursor(
 
 function resolveCreateAuth(input: CredentialAuthInput): CredentialAuth {
   if (input.type === "static_bearer") return { ...input };
+  if (input.type === "cap_cli") {
+    return {
+      type: input.type,
+      cliId: input.cliId,
+      token: input.token,
+      ...(input.refreshToken !== undefined && { refreshToken: input.refreshToken }),
+      ...(input.expiresAt !== undefined && { expiresAt: input.expiresAt }),
+      ...(input.extras !== undefined && { extras: { ...input.extras } }),
+    };
+  }
   if (input.type === "environment_variable") {
     return {
       type: input.type,
@@ -119,6 +130,13 @@ function resolveCreateAuth(input: CredentialAuthInput): CredentialAuth {
 function toAuthView(auth: CredentialAuth): CredentialAuthView {
   if (auth.type === "static_bearer") {
     return { type: auth.type, mcpServerUrl: auth.mcpServerUrl };
+  }
+  if (auth.type === "cap_cli") {
+    return {
+      type: auth.type,
+      cliId: auth.cliId,
+      ...(auth.expiresAt !== undefined && { expiresAt: auth.expiresAt }),
+    };
   }
   if (auth.type === "environment_variable") {
     return {
@@ -252,6 +270,22 @@ function patchAuth(
       }),
     };
   }
+  if (current.type === "cap_cli" && update.type === "cap_cli") {
+    const { extras, ...rest } = current;
+    const nextExtras =
+      update.extras === undefined
+        ? extras
+        : update.extras === null
+          ? undefined
+          : { ...update.extras };
+    return {
+      ...rest,
+      ...(update.token !== undefined && { token: update.token }),
+      ...(update.refreshToken !== undefined && { refreshToken: update.refreshToken }),
+      ...(update.expiresAt !== undefined && { expiresAt: update.expiresAt }),
+      ...(nextExtras !== undefined && { extras: nextExtras }),
+    };
+  }
   if (current.type === "mcp_oauth" && update.type === "mcp_oauth") {
     return {
       ...current,
@@ -270,6 +304,7 @@ export interface CredentialsApplicationServiceDependencies {
   store: CredentialStore;
   vaults: CredentialVaultSourcePort;
   validation: CredentialValidationProbePort;
+  cliCatalog: CredentialCliCatalogPort;
   clock: { now(): Date };
   ids: { nextCredentialId(): string };
 }
@@ -287,6 +322,15 @@ export class CredentialsApplicationService implements CredentialsApplicationPort
       vaultId: command.vaultId,
     });
     if (vault === null || vault.archivedAt !== null) return { type: "not_found" };
+    if (
+      command.auth.type === "cap_cli" &&
+      !this.dependencies.cliCatalog.has(command.auth.cliId)
+    ) {
+      return {
+        type: "invalid_request",
+        message: `Unknown cap_cli cli_id "${command.auth.cliId}"`,
+      };
+    }
     const timestamp = this.dependencies.clock.now().toISOString();
     const credential: Credential = {
       id: this.dependencies.ids.nextCredentialId(),
@@ -446,6 +490,12 @@ export class CredentialsApplicationService implements CredentialsApplicationPort
       credentialId: command.credentialId,
     });
     if (record === null) return { type: "not_found" };
+    if (record.credential.auth.type === "cap_cli") {
+      return {
+        type: "invalid_request",
+        message: "cap_cli credentials are not MCP credentials and cannot be validated",
+      };
+    }
     const validation = await this.dependencies.validation.validate({
       workspaceId: this.dependencies.workspaceId,
       credential: record.credential,

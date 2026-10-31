@@ -34,6 +34,32 @@ describe("IndeterminateCredentialValidationProbe", () => {
   });
 });
 
+describe("cap_cli credentials (OpenMA extension)", () => {
+  it("are refused by every probe instead of degrading to indeterminate", async () => {
+    const credential: Credential = {
+      id: "vcrd_cap",
+      archivedAt: null,
+      auth: { type: "cap_cli", cliId: "gh", token: "gho_secret" },
+      createdAt: "2026-08-26T00:00:00.000Z",
+      metadata: {},
+      updatedAt: "2026-08-26T00:00:00.000Z",
+      vaultId: "vlt_01",
+    };
+    for (const subject of [
+      new IndeterminateCredentialValidationProbe(),
+      new McpOAuthCredentialValidationProbe({
+        fetch: async () => {
+          throw new Error("no network for cap_cli");
+        },
+      }),
+    ]) {
+      await expect(
+        subject.validate({ workspaceId: "workspace_01", credential }),
+      ).rejects.toThrow("cap_cli credentials cannot be MCP-validated");
+    }
+  });
+});
+
 describe("McpOAuthCredentialValidationProbe", () => {
   it("does not log, and does not build error strings from request data", async () => {
     const fs = (await import("node:" + "fs")) as {

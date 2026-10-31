@@ -11,14 +11,6 @@
 //
 // Auth: pass apiKey in opts OR set DAYTONA_API_KEY in process.env.
 //
-// Outbound credential injection (oma-vault): on first sandbox creation we
-// upload OMA_VAULT_CA_CERT into the box at /etc/ssl/oma-vault-ca.crt, then
-// every exec gets HTTP(S)_PROXY / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-// CURL_CA_BUNDLE pointing at the proxy + uploaded cert. The proxy URL must
-// be reachable from inside the Daytona sandbox network — set OMA_VAULT_
-// PROXY_URL to a public host (or a tunneled URL like ngrok) when running
-// remote.
-//
 // Memory store mount via s3fs: when MEMORY_S3_* env vars are set, we
 // install s3fs-fuse on first sandbox creation and mount the bucket at
 // /mnt/_oma_storage. mountMemoryStore({storeName, storeId}) then symlinks
@@ -31,7 +23,6 @@
 
 import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
 import { readS3MemoryBucket, rejectPreparedBase } from "@open-managed-agents/sandbox";
-import { promises as fs } from "node:fs";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
 
@@ -159,35 +150,6 @@ export class DaytonaSandbox implements SandboxExecutor {
     this.commandSecrets.push({ prefix: commandPrefix, secrets });
   }
 
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-    // Defer the actual cert upload until the sandbox is created — we need
-    // the box to exist before we can fs.uploadFile into it. The proxy URL
-    // must be reachable from inside the Daytona sandbox network; if it's
-    // a localhost URL the operator probably wants ngrok / a public URL
-    // for remote deploys.
-    if (proxyUrl.startsWith("http://localhost") || proxyUrl.startsWith("http://127.")) {
-      this.logger.warn(
-        `[daytona] OMA_VAULT_PROXY_URL points at localhost (${proxyUrl}) — ` +
-        `this is unreachable from inside Daytona's network. Set a public URL ` +
-        `or tunnel the vault (e.g. ngrok http 14322).`,
-      );
-    }
-    this.pendingCaUpload = { hostPath: caCertPath };
-    const inBoxCaPath = "/etc/ssl/oma-vault-ca.crt";
-    await this.setEnvVars({
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      NODE_EXTRA_CA_CERTS: inBoxCaPath,
-      SSL_CERT_FILE: inBoxCaPath,
-      CURL_CA_BUNDLE: inBoxCaPath,
-    });
-  }
-
   async readFile(path: string): Promise<string> {
     const sb = await this.ensureSandbox();
     const buf = await sb.fs.downloadFile(this.normalise(path));
@@ -302,7 +264,6 @@ export class DaytonaSandbox implements SandboxExecutor {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  private pendingCaUpload: { hostPath: string } | null = null;
   private memoryBucketMounted = false;
 
   private async ensureSandbox(): Promise<DaytonaSandboxInstance> {
@@ -336,23 +297,6 @@ export class DaytonaSandbox implements SandboxExecutor {
       });
       this.logger.log(`sandbox ${sb.id} ready`);
 
-      // Apply pending CA upload now that the box exists. Fire-and-forget
-      // so a CA-less image doesn't block the harness on first exec; if
-      // upload fails the per-exec env vars still point at the missing path
-      // and outbound TLS will fail with cert errors — surfaced naturally.
-      if (this.pendingCaUpload) {
-        try {
-          const buf = await fs.readFile(this.pendingCaUpload.hostPath);
-          await sb.fs.createFolder("/etc/ssl", "0755").catch(() => { /* exists */ });
-          await sb.fs.uploadFile(buf, "/etc/ssl/oma-vault-ca.crt");
-          this.logger.log(`uploaded vault CA cert (${buf.byteLength} bytes)`);
-        } catch (err) {
-          this.logger.warn(
-            `vault CA upload failed: ${(err as Error).message} — outbound ` +
-            `TLS through oma-vault will fail with cert errors`,
-          );
-        }
-      }
       return sb;
     })();
     return this.sandboxPromise;
@@ -428,7 +372,7 @@ function shellEscape(s: string): string {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   // This adapter targets the legacy client surface, which has no supported
   // sandbox-to-snapshot capture; a requested base must not be ignored.
   rejectPreparedBase("daytona", ctx.preparedBase);
@@ -440,4 +384,4 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
   });
-};
+}, { capabilities: { allocationIsolation: true } });

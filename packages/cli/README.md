@@ -35,6 +35,21 @@ oma api                              # HTTP API quick reference
 
 Run `oma --help` for the full command tree.
 
+## MCP OAuth connection
+
+Run `oma connect linear --vault <vault-id>` (or pass an MCP server URL). The CLI
+POSTs authorization with your configured API key, opens the returned provider
+URL, then polls with an independent private claim credential. If the browser
+cannot open automatically, use the printed URL. You do not need to sign in to
+the Console in that browser.
+
+The provider continues to use the service's registered `/v1/oma/oauth/callback`;
+there is no random localhost listener or new loopback registration requirement.
+Claims expire after 10 minutes and are single-use, bound to the original API
+key and workspace. Only the new credential ID is returned, never its tokens.
+`oma api mcp` shows the POST endpoints. Do not put API keys, client secrets or
+claim credentials in browser URLs.
+
 ## Local daemon power management
 
 `oma bridge daemon` automatically keeps the machine available for local tasks

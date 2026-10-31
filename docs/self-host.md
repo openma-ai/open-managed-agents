@@ -100,7 +100,7 @@ already have than introduce a new SQLite footprint.
 cp .env.example .env
 $EDITOR .env  # set ANTHROPIC_API_KEY
 
-# 2. Start — brings up postgres:16-alpine + oma-server + oma-vault
+# 2. Start — brings up postgres:16-alpine + oma-server
 docker compose -f docker-compose.postgres.yml up -d --build
 
 # 3. Sanity check — note backends.db reports postgres
@@ -116,10 +116,6 @@ What changes vs the SQLite stack:
 - `oma-server` reads `DATABASE_URL=postgres://oma:oma@postgres:5432/oma`
   (set in `docker-compose.postgres.yml`); the same SqlClient port serves
   every store package, so business code is identical.
-- `oma-vault` follows the same dispatch — when `DATABASE_URL` is a
-  postgres URL the sidecar reads credentials from PG (otherwise it falls
-  back to the bundled SQLite path). The two services MUST agree on the
-  backend or vault credential injection won't see anything to inject.
 - A `postgres:16-alpine` service ships with the compose, persisted on a
   named volume `oma-pgdata`. No host port published; only `oma-server`
   reaches it on the bridge network. Add `ports: ["5432:5432"]` if you
@@ -206,23 +202,17 @@ Hard requirements before you scale out:
      `S3BlobStore` adapter and a per-store-leased `S3PollAdapter`
      replaces chokidar. Multi-replica safe by construction (only the
      lease holder polls a given store at a time).
-2. **`oma-vault` is stateless and can also replicate.** It's a
-   per-request DB lookup + header inject — no caches, no per-process
-   state beyond the on-disk CA. To run N copies, mount the same
-   `OMA_VAULT_CA_DIR` into every replica (the first one to boot
-   generates `ca.{crt,key}` under an O_EXCL `ca.lock`; the others
-   wait+read), put a Service / LB in front, and set
-   `OMA_VAULT_PROXY_URL=http://oma-vault:14322` (or your LB DNS) on
-   sandboxes. **Constraint:** all vault replicas MUST share the same
-   CA key — sandboxes that trust one CA but get TLS-terminated by a
-   replica with a different CA will see cert errors. The shared
-   `./data/oma-vault-ca` volume + lock-on-create handles this.
-   `docker-compose.postgres.yml` ships with a commented
-   `deploy.replicas: 3` example on the `oma-vault` service.
+2. **Credential interception belongs to each sandbox, not each server replica.**
+   Local relays use independent sandbox CAs; native outbound adapters use the
+   same authorization/forwarding core. Control planes expose only ordinary
+   HTTPS `/v1/oma/egress/resolve` and `/forward`, with the shared database and
+   root secret for Session authorization. No extra listener or shared CA is
+   needed. Upgrade/re-prepare sandboxes to install the new local relay. Old
+   shared CA KV rows are inert and are not deleted by this upgrade.
 
 Sticky cookies are NOT required for `/v1/*`, `/auth/*`, or outbound
 sandbox traffic — the SSE fanout is replica-agnostic, better-auth is
-on the shared PG, and the vault is stateless.
+on the shared PG, and the egress proxy reads Vaults from the shared database.
 
 ### S3-backed memory store (multi-replica friendly)
 
@@ -252,7 +242,6 @@ from `docker-compose.postgres.yml` and override `DATABASE_URL` in
 ```bash
 # .env
 DATABASE_URL=postgres://user:pw@my-pg.internal:5432/oma_prod
-# OMA_VAULT_DATABASE_URL=...   # if you want the vault sidecar to use a different DB
 ```
 
 The schema bootstraps on first start (`CREATE TABLE IF NOT EXISTS`
@@ -450,10 +439,6 @@ Things I'd document if I were the on-call who got paged:
   filtering happens at routing time, not at build time. To disable a
   tool entirely, omit it from `agent.tools`; the harness will see it
   but never invoke it.
-- **`oma-vault` won't see PG credentials if you set `DATABASE_URL`
-  on `oma-server` only.** Both services share the same store; if you
-  want vault credential injection on PG, both must point at PG. The
-  PG compose handles this for you; if you customise, mirror the env.
 - **First boot from an old `oma.db`.** The unified-runtime refactor
   added two columns to `sessions` (`turn_id`, `turn_started_at`).
   main-node runs `ALTER TABLE … ADD COLUMN` idempotently on every
@@ -513,13 +498,13 @@ The same demo works on the Postgres compose unchanged.
 | `browser` tool | ✗  CF-only (uses @cloudflare/playwright) |
 | Memory stores | ✓ legacy `/v1/oma` mount + watcher; official `/v1/sessions` local harness mounts immutable read-only snapshots and rejects `read_write` until reverse sync is configured |
 | `/v1/vaults` + `/v1/vaults/:id/credentials` full CRUD + `mcp_oauth_validate` | ✓ via package |
-| Vault credential injection for outbound MCP / API calls | ✓ via `oma-vault` sidecar (uses `@open-managed-agents/vault-forward`) |
+| Vault credential injection for outbound MCP / API calls | ✓ HTTP MCP gateway; sandbox-owned local relay or native outbound adapter through ordinary HTTPS |
 | `/v1/api_keys` mint / list / revoke (SHA-256 hashed in `api_keys` table) | ✓ |
 | `/v1/me` + `/v1/me/tenants` + `/v1/me/cli-tokens` | ✓ |
 | `/v1/tenants` create workspace + membership | ✓ (no shard assign — CF-only) |
 | `/v1/oma/*` mirror namespace | ✓ |
 | Postgres backend (DATABASE_URL=postgres://...) | ✓ same code path as SQLite |
-| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; `oma-vault` is stateless and replicable; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
+| Multi-instance oma-server (PG / MySQL mode) | ✓ PG `LISTEN/NOTIFY` or SQL-tailing SSE fanout (`OMA_REALTIME_FANOUT`); better-auth on the shared database; sandbox-owned relay/native egress with independent trust; needs shared `MEMORY_BLOB_DIR` or `MEMORY_S3_*` |
 | Multi-tenant authentication (better-auth) | ✓ email+password + OTP, AUTH_DISABLED=1 escape |
 | Console UI (vite dev or built `dist`) | ✓ talks to main-node via `/auth/*` + `/v1/*` |
 | Integrations (linear / github / slack) — read-side CRUD on publications, installations, dispatch rules | ✓ wired via `@open-managed-agents/integrations-adapters-node` (set `PLATFORM_ROOT_SECRET`). |
@@ -578,17 +563,17 @@ When enabled, the first session with a given setup still starts cold. Once its o
 - **Cost:** each build runs one extra sandbox for the duration of the setup, and snapshots are stored, billed and expired by the provider under its own policy. Rebuilding a key appends a new build under the same snapshot name; OpenMA does not delete old snapshots.
 - Each server process builds a given key at most once at a time. Two replicas may occasionally build the same key concurrently; the result is the same and only one extra builder is spent.
 
-Vault credentials of type `environment_variable` are set in the sandbox of every session that attaches the Vault (an earlier Vault wins on a name clash), so the agent's commands can read them. The sandbox holds the real value: there is no egress proxy substituting it, and `networking` / `injection_location` are not enforced, so only store secrets the agent may see.
+Vault credentials of type `environment_variable` are set in the sandbox of every session that attaches the Vault (an earlier Vault wins on a name clash), so the agent's commands can read them. The sandbox holds the real value: the egress proxy does not substitute environment variables, and `networking` / `injection_location` are not enforced, so only store secrets the agent may see.
 
 ### Per-provider capability matrix
 
-| Provider | bash | fs | net | `/mnt/memory` | `/mnt/outputs` | vault CA | workspace backup |
+| Provider | bash | fs | net | `/mnt/memory` | `/mnt/outputs` | egress proxy | workspace backup |
 |---|---|---|---|---|---|---|---|
-| `LiteBox` | ✓ | ✓ | ✓ | ✓ (host bind-mount via SimpleBox volumes) | ✓ | ✓ (CA copyIn on first exec) | ✓ (tar via exec + readFileBytes) |
-| `Daytona` | ✓ | ✓ | ✓ | ✓ (s3fs, requires `MEMORY_S3_*`) | ✓ (single-bucket layout: outputs under `session-outputs/<tenant>/<session>/`) | ✓ (CA upload on box create) | ✓ (tar via exec + readFileBytes) |
-| `E2B` | ✓ | ✓ | ✓ | ✓ (s3fs, requires `MEMORY_S3_*` + template with s3fs) | ✓ (same bucket, session-outputs prefix) | ⚠ (template must allow sudo writes to /etc/ssl/) | ✓ (tar via exec + readFileBytes) |
-| `BoxRun` | ✓ | ✓ | ✓ | ✗ (HTTP API has no mount primitive — use a custom image with s3fs preinstalled) | ✗ (same — no host-bind primitive) | ✓ (CA upload via tar PUT) | ⚠ (best-effort tar via exec) |
-| `OpenSandbox` | ✓ | ✓ | ✓ | ✗ | ✗ (generic managed runtime can collect outputs) | ✗ | ✗ |
+| `LiteBox` | ✓ | ✓ | ✓ | ✓ (host bind-mount via SimpleBox volumes) | ✓ | ✓ (env + CA file) | ✓ (tar via exec + readFileBytes) |
+| `Daytona` | ✓ | ✓ | ✓ | ✓ (s3fs, requires `MEMORY_S3_*`) | ✓ (single-bucket layout: outputs under `session-outputs/<tenant>/<session>/`) | ✓ (env + CA file) | ✓ (tar via exec + readFileBytes) |
+| `E2B` | ✓ | ✓ | ✓ | ✓ (s3fs, requires `MEMORY_S3_*` + template with s3fs) | ✓ (same bucket, session-outputs prefix) | ✓ (env + CA file) | ✓ (tar via exec + readFileBytes) |
+| `BoxRun` | ✓ | ✓ | ✓ | ✗ (HTTP API has no mount primitive — use a custom image with s3fs preinstalled) | ✗ (same — no host-bind primitive) | ✓ (env + CA file) | ⚠ (best-effort tar via exec) |
+| `OpenSandbox` | ✓ | ✓ | ✓ | ✗ | ✗ (generic managed runtime can collect outputs) | ✓ (env + CA file) | ✗ |
 | `CloudflareSandbox` | ✓ | ✓ | ✓ | ✓ (R2 + FUSE) | ✓ | ✓ (interceptHttps + outboundHandlers) | ✓ (squashfs to R2 backup bucket) |
 
 Read-only memory mounts: Daytona and E2B enforce read-only on their mounted view. LiteBox honors the `readOnly` flag on its volume mount. CloudflareSandbox does not enforce ro at the FS layer — the harness's write tool checks `assertWritable` and refuses writes regardless of provider.
@@ -614,69 +599,62 @@ Session and server declaration, then overwrites the Work bearer with the
 upstream Vault credential. The upstream URL and credential are not given to
 the sandbox.
 
-### Legacy transparent `oma-vault` sidecar
+### Sandbox credential relay (CLI credentials, best effort)
 
-The sidecar below is retained for single-operator/local compatibility. It is
-**advisory, not a multi-tenant security boundary**: a process can ignore proxy
-environment variables, and the current CONNECT path cannot prove which
-Session/Work generation originated a request. Do not use it for an untrusted
-multi-tenant `required` credential-egress profile. A production Node/Docker
-transparent deployment needs an isolated network plus a scoped, fenced egress
-gateway that passes ADR 0007 conformance.
+Attach Vaults to a Session; no proxy configuration is required. The sandbox
+owns interception, CA files, environment, process installation and health.
+Node-compatible sandboxes run the bundled `@open-managed-agents/sandbox-egress`
+entrypoint on loopback. Each sandbox generates its own CA and gets proxy/CA
+environment variables plus placeholders such as `GITHUB_TOKEN=__cap_managed__`.
+Providers with native outbound interception implement the same capability
+without a local Node relay (Cloudflare uses its native handler).
 
-When a cooperating sandbox bash runs `curl https://api.github.com/...`, the
-legacy sidecar injects
-the matching vault credential as an `Authorization: Bearer ...` header
-without exposing the token to that process. Unlike the Cloudflare fenced
-interceptor, this alone does not prevent bypass or safely attribute tenants.
+The request path is CLI → localhost relay → ordinary HTTPS control-plane
+`/v1/oma/egress/forward` → upstream. `/resolve` returns only interception
+metadata, never credentials. The control plane validates the expiring Session
+pass, active Session and current Vault bindings for every request. It alone
+injects the real token and persists refresh rotation. A 401 refreshes once;
+only successful refresh replays the complete buffered body. Failed refresh
+and 403 never resend. Metadata and upstream headers are separate; hop/proxy
+auth headers are stripped. Responses preserve status and stream bytes.
 
-How it works:
+There is no control-plane CONNECT listener, additional TCP port, shared CA,
+or CA KV dependency. Sandboxes need access only to the ordinary HTTPS API
+(`PUBLIC_BASE_URL` on Node) and public upstreams for non-injected traffic.
+Non-injected traffic passes locally; a previously intercepted host is not
+silently downgraded after Vault removal. Missing/expired passes return 401,
+inactive Sessions and removed credential bindings return 403, and relay
+failures return errors rather than falling back to direct placeholder traffic.
 
-```
-sandbox bash
-  ├── HTTPS_PROXY=http://oma-vault:14322
-  ├── NODE_EXTRA_CA_CERTS=/app/data/oma-vault-ca/ca.crt
-  ├── SSL_CERT_FILE=/app/data/oma-vault-ca/ca.crt
-  └── curl https://api.github.com/user
-              │
-              ▼
-       oma-vault (mockttp HTTPS MITM proxy)
-       ├── Strip incoming Authorization (zero-trust)
-       ├── Look up credential matching api.github.com host
-       ├── Inject Authorization: Bearer <vault token>
-       └── Forward to upstream
-                  │
-                  ▼
-           api.github.com  ← sees real Authorization header
-```
+Build the standalone entrypoint before running a source checkout:
+`pnpm --filter @open-managed-agents/sandbox-egress build`. The Node Docker
+build does this automatically. Local relay installation requires a working
+Node runtime in the sandbox; missing runtime or readiness fails preparation
+explicitly. Warm preparation renews the Session pass, updates placeholders,
+and probes/restarts a dead relay. Removing all Vaults clears installed env
+and stops the relay; sandbox destruction also stops it.
 
-Set up:
+The Node managed-session runner applies this lifecycle to every configured
+SandboxPort factory. Standalone resource-runtime compositions (E2B, Daytona,
+Sprites, Modal, Vercel, Blaxel, BoxLite and Superserve) can pass
+`createSandboxCredentialEgress({ resolve, revoke })` from the sandbox-egress
+package as their `credentialEgress` option. `resolve` supplies the current
+Session Vault ids, HTTPS endpoint, pass issuer and placeholder resolver;
+`revoke` must invalidate control-plane authorization before sandbox cleanup.
+These compositions do not enable credential access by default. The common
+adapter advertises live, advisory HTTPS injection and rejects `required`
+enforcement; use a provider-native implementation for that requirement.
+No provider-specific SDK or credential resolver is bundled into the local relay.
 
-```bash
-# 1. Create a vault.
-VID=$(curl -s -X POST localhost:8787/v1/vaults \
-  -H 'content-type: application/json' \
-  -d '{"name":"github-prod"}' | jq -r .id)
+The local CA private key belongs to the sandbox, not the control plane.
+Existing centralized CA rows are unused and are not deleted. Re-prepare old
+sandboxes when upgrading. A leaked relay pass authorizes that Session until
+expiry or archival, so treat it as a sandbox capability.
 
-# 2. Add a static_bearer credential bound to api.github.com.
-curl -s -X POST localhost:8787/v1/vaults/$VID/credentials \
-  -H 'content-type: application/json' \
-  -d '{
-    "display_name":"github-pat",
-    "auth":{
-      "type":"static_bearer",
-      "token":"ghp_xxx",
-      "mcp_server_url":"https://api.github.com"
-    }
-  }'
-
-# 3. Run an agent. Its bash `curl https://api.github.com/user` will see
-#    the credential injected; the model never sees the raw token.
-```
-
-The CA at `./data/oma-vault-ca/ca.crt` is regenerated on first vault
-start and persisted across restarts. Sandboxes mounted with the shared
-`./data` volume pick it up automatically through `OMA_VAULT_CA_CERT`.
+This is credential injection, not network isolation. Processes can bypass
+proxy env, certificate pinning can reject local MITM, SSH/non-HTTP protocols
+are not intercepted, and WebSocket upgrades are not supported. Remote
+provider live certification remains necessary before claiming support.
 
 ## Architecture
 
@@ -763,10 +741,6 @@ ANTHROPIC_API_KEY=sk-... BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 # Terminal 2: console (Vite dev server, proxies /v1 + /auth → :8787)
 VITE_API_TARGET=http://localhost:8787 pnpm dev:console
 # → http://localhost:5173
-
-# Terminal 3 (optional): oma-vault — outbound credential injection
-DATABASE_PATH=$(pwd)/data/oma.db OMA_VAULT_CA_DIR=$(pwd)/data/oma-vault-ca \
-  pnpm --filter @open-managed-agents/oma-vault start
 ```
 
 Open `http://localhost:5173` (dev) or `http://localhost:8787` (docker),

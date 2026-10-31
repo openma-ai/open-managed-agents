@@ -38,8 +38,9 @@ import { composeSystemPrompt } from "@open-managed-agents/agent/harness/platform
 import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/assembly/skill-config";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 
-import { buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { createBuiltinCapDeviceFlow } from "@open-managed-agents/oma-cap-adapter";
+import { buildMcpOAuthCliRoutes, buildMcpOAuthCliCallback, buildCapCliDeviceFlowRoutes, buildMcpOAuthRoutes, buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
+import { McpOAuthCliService, CapCliDeviceFlowApplicationService, McpOAuthApplicationService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -63,7 +64,7 @@ import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
 import { SqlTunnelStore } from "@open-managed-agents/tunnel-store-sql";
 import { SqlUserProfileStore } from "@open-managed-agents/user-profile-store-sql";
 import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
-import { SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
+import { SqlMcpOAuthCliStore, SqlDeploymentAgentSource, SqlDeploymentVaultSource, SqlEnvironmentPersistence, SqlFileMetadataPersistence, SqlMemoryStoreSource, SqlManagedSessionsComposition, SqlPersistedSessionEventStream, SqlReplicatedSessionEventStream, SqlSessionEnvironmentSource, SqlSessionSource, SqlSessionRuntimeProjectionPersistence } from "@open-managed-agents/managed-agents-adapters-sql";
 import { createSqlSessionRuntimeReaders, ensureSessionExecutionClaimLockSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
 import { encodeRuntimeSessionEvent, AnthropicMessagesDreamCurator, ApplicationDreamMemoryWorkspace, ModelCardCatalogSource, CronDeploymentSchedulePlanner, EnvironmentAwareSessionEventDispatchRouter, EnvironmentAwareSessionEventStreamRouter, EnvironmentAwareSessionLifecycleRouter, TimerEnvironmentWorkAvailabilityWaiter, McpOAuthCredentialValidationProbe, inProcessDreamExecutionSchedulerModule, LocalTunnelProvisioner, SealedEnvironmentWorkSessionCredentialIssuer, StandardWebhookEnvironmentWorkWakeup, DeduplicatingDreamCurator, WebCryptoTunnelCertificateAuthority, WebCryptoTunnelTokenManager, WebCryptoMemoryContentDescriptor, ZipSkillPackageCompiler, synchronizeManagedSessionMemoryWorkspaces } from "@open-managed-agents/managed-agents-adapters-runtime";
@@ -87,6 +88,12 @@ import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { allowAllLegacyHarnessTools, toLegacyHarnessAgentConfig, toLegacyHarnessEnvironmentConfig, resolveNodeManagedAuxiliaryToolModel } from "../lib/node-managed-agent-codec.js";
 import { NodeManagedConfirmedToolExecutor } from "../lib/node-managed-confirmed-tool-executor.js";
 import { NodeManagedOutcomeEvaluator } from "../lib/node-managed-outcome-evaluator.js";
+import { ManagedCredentialResolver, createCredentialEgressRelay, createEgressRelayPasses } from "@open-managed-agents/managed-credential-resolver";
+import { HttpMcpOAuth, webCryptoMcpOAuthPkce, webCryptoMcpOAuthCliSecrets } from "@open-managed-agents/managed-agents-adapters-http";
+import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
+import { prepareSandboxEgress } from "@open-managed-agents/sandbox-egress";
+import { sendDirectHttps } from "@open-managed-agents/sandbox-egress/direct-https";
+import { buildCredentialEgressRoutes } from "@open-managed-agents/managed-agents-adapters-http";
 import { ApplicationBackedNodeManagedSessionRuntimeEngine, DefaultNodeManagedSessionRuntimeDriver, NodeManagedSessionRuntimeAdapter } from "../lib/node-managed-session-runtime.js";
 import { DefaultNodeManagedSessionRunner } from "../lib/node-managed-session-runner.js";
 import {
@@ -161,63 +168,19 @@ export async function createManagedNodeRuntime(
         (candidate) => candidate.name === input.serverName,
       );
       if (server === undefined || server.type !== "url") return null;
-      for (const vaultId of managedContext.session.vaultIds) {
-        const records = await managedCredentialStore.list({
-          workspaceId: input.tenantId,
-          vaultId,
-          includeArchived: false,
-          limit: 100,
-        });
-        for (const record of records) {
-          const credential = record.credential;
-          const auth = credential.auth;
-          if (
-            (auth.type !== "static_bearer" && auth.type !== "mcp_oauth")
-            || auth.mcpServerUrl !== server.url
-          ) continue;
-          const accessToken = auth.type === "static_bearer"
-            ? auth.token
-            : auth.accessToken;
-          if (!accessToken) continue;
-          const target: NodeMcpProxyTarget = {
-            upstreamUrl: server.url,
-            accessToken,
-          };
-          if (auth.type === "mcp_oauth" && auth.refresh?.refreshToken) {
-            const tokenEndpointAuth = auth.refresh.tokenEndpointAuth;
-            target.refresh = {
-              refreshToken: auth.refresh.refreshToken,
-              tokenEndpoint: auth.refresh.tokenEndpoint,
-              clientId: auth.refresh.clientId,
-              clientSecret: tokenEndpointAuth.type === "none"
-                ? undefined
-                : tokenEndpointAuth.clientSecret ?? undefined,
-            };
-            target.onRefreshed = async (tokens) => {
-              await managedCredentialStore.replace({
-                workspaceId: input.tenantId,
-                vaultId,
-                credentialId: credential.id,
-                expectedRevision: record.revision,
-                next: {
-                  ...credential,
-                  auth: {
-                    ...auth,
-                    accessToken: tokens.access_token,
-                    refresh: {
-                      ...auth.refresh!,
-                      refreshToken: tokens.refresh_token,
-                    },
-                  },
-                  updatedAt: new Date().toISOString(),
-                },
-              });
-            };
-          }
-          return target;
-        }
-      }
-      return null;
+      const target = await managedCredentialResolver.mcpTarget({
+        workspaceId: input.tenantId,
+        sessionId: input.sessionId,
+        vaultIds: managedContext.session.vaultIds,
+      }, server.url);
+      if (target === null) return null;
+      return {
+        upstreamUrl: target.upstreamUrl,
+        accessToken: target.upstreamToken,
+        managed: {
+          forward: (send) => managedCredentialResolver.forward(input.tenantId, target, send),
+        },
+      };
     }
 
     const session = await sessionsService.get({
@@ -514,6 +477,7 @@ export async function createManagedNodeRuntime(
     }),
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
     buildSandbox: createManagedSandboxBuilder({
+      capabilities: components.sandbox.capabilities,
       images: config.sandbox.images,
       workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
       build: buildSandbox,
@@ -596,6 +560,21 @@ export async function createManagedNodeRuntime(
           ? {}
           : { authorizeMemoryMutation: () => isManagedSessionExecutionFenceActive(executionFence) }),
         ...(signal === undefined ? {} : { signal }),
+      });
+    },
+    // Cold preparation calls this last (after repository clones); warm reuse
+    // calls it again to renew the pass and honor the current Vault bindings.
+    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup }) => {
+      if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
+        throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
+      }
+      await prepareSandboxEgress({
+        sandbox,
+        registerCleanup,
+        scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
+        placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
+        relay: { endpoint: config.http.publicBaseUrl ?? "https://unavailable.invalid", pass: "" },
+        issuePass: () => relayPasses!.issue({ workspaceId, sessionId: session.id, ttlMs: 86_400_000 }),
       });
     },
     synchronizeSandbox: async ({
@@ -1205,6 +1184,27 @@ export async function createManagedNodeRuntime(
   };
   const managedCredentialValidation = new McpOAuthCredentialValidationProbe();
   const managedCredentialStore = new SqlCredentialStore(sql, managedCredentialCipher);
+  const capSpecs = createSpecRegistry(builtinSpecs);
+  const managedCredentialResolver = new ManagedCredentialResolver({
+    credentials: managedCredentialStore,
+    vaults: new SqlVaultStore(sql),
+    fetch: (request, init) => fetch(request, init),
+    clock: { now: () => new Date() },
+    log: { warn: (fields, message) => logger.warn(fields, message) },
+  }, capSpecs);
+  const relayPasses = platformRootSecret ? createEgressRelayPasses(platformRootSecret, Date.now) : null;
+  const managedCredentialEgressRoutes = buildCredentialEgressRoutes(() => {
+    if (!relayPasses) throw new Error("Credential relay is not configured");
+    return createCredentialEgressRelay({
+      passes: relayPasses,
+      credentials: managedCredentialResolver,
+      findSession: async input => {
+        const session = (await managedRuntimeReaders.executionContext.find(input))?.session;
+        return session === undefined ? null : { vaultIds: session.vaultIds, archivedAt: session.archivedAt };
+      },
+      send: sendDirectHttps,
+    });
+  });
   // One managed platform graph per process. Every official application
   // module is installed on the same workspace App, so a workspace has one
   // App, one clock, one id generator and one set of stores. `modules` runs on
@@ -1344,6 +1344,69 @@ export async function createManagedNodeRuntime(
       .port(managedAgentsPortTokens.credentials),
   );
 
+  // OpenMA extension: OAuth device flow that ends in a managed cap_cli credential.
+  const managedCapCliFlowCipher = secrets === null
+    ? null
+    : secrets.cipherFor("managed.vault.cap_cli_device_flow");
+  const capCliDeviceFlow = createBuiltinCapDeviceFlow({
+    fetch: (input, init) => globalThis.fetch(input, init),
+  });
+  const managedCapCliDeviceFlowRoutes = buildCapCliDeviceFlowRoutes((context) => {
+    if (managedCapCliFlowCipher === null) {
+      throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+    }
+    const workspaceId = (context.var as { tenant_id: string }).tenant_id;
+    return new CapCliDeviceFlowApplicationService({
+      workspaceId,
+      credentials: managedPlatform
+        .app({ workspaceId })
+        .port(managedAgentsPortTokens.credentials),
+      deviceFlow: capCliDeviceFlow,
+      cipher: managedCapCliFlowCipher,
+      clock: { now: () => new Date() },
+    });
+  });
+
+  // OpenMA extension: browser MCP OAuth that ends in a managed mcp_oauth credential.
+  const managedMcpOAuthStateCipher = secrets === null
+    ? null
+    : secrets.cipherFor("managed.vault.mcp_oauth_state");
+  const mcpOAuth = new HttpMcpOAuth({
+    fetch: (input, init) => globalThis.fetch(input, init),
+    clock: { now: () => new Date() },
+    presets: config.mcpOAuthPresets,
+    log: { warn: (fields, message) => logger.warn(fields, message) },
+  });
+  const managedMcpOAuthFor = (workspaceId: string) => {
+    if (managedMcpOAuthStateCipher === null) {
+      throw new Error("PLATFORM_ROOT_SECRET is required for managed Vault credentials");
+    }
+    return new McpOAuthApplicationService({
+      workspaceId,
+      credentials: managedPlatform
+        .app({ workspaceId })
+        .port(managedAgentsPortTokens.credentials),
+      oauth: mcpOAuth,
+      pkce: webCryptoMcpOAuthPkce,
+      cipher: managedMcpOAuthStateCipher,
+      clock: { now: () => new Date() },
+      log: { warn: (fields, message) => logger.warn(fields, message) },
+    });
+  };
+  const managedMcpOAuthRoutes = buildMcpOAuthRoutes((context) => managedMcpOAuthFor((context.var as { tenant_id: string }).tenant_id), { consoleOrigins: config.http.consoleOrigins });
+  const managedMcpOAuthCli = () => {
+    if (!secrets) throw new Error("PLATFORM_ROOT_SECRET is required for MCP OAuth");
+    return new McpOAuthCliService({
+      store: new SqlMcpOAuthCliStore(sql, { now: () => new Date() }),
+      application: managedMcpOAuthFor,
+      cipher: secrets.cipherFor("managed.vault.mcp_oauth_cli"),
+      secrets: webCryptoMcpOAuthCliSecrets,
+      clock: { now: () => new Date() },
+    });
+  };
+  const managedMcpOAuthCliRoutes = buildMcpOAuthCliRoutes(managedMcpOAuthCli, webCryptoMcpOAuthCliSecrets);
+  const managedMcpOAuthCliCallback = buildMcpOAuthCliCallback(managedMcpOAuthCli);
+
   const managedUserProfilesRoutes = buildManagedUserProfileRoutes((context) =>
     managedPlatform
       .app({ workspaceId: (context.var as { tenant_id: string }).tenant_id })
@@ -1351,6 +1414,7 @@ export async function createManagedNodeRuntime(
   );
 
   return {
+    managedCredentialEgressRoutes,
     resolveNodeMcpProxyTarget,
     resolveNodeInferenceUpstream,
     managedAcpCapabilities,
@@ -1379,6 +1443,10 @@ export async function createManagedNodeRuntime(
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
+    managedMcpOAuthRoutes,
+    managedMcpOAuthCliRoutes,
+    managedMcpOAuthCliCallback,
     managedUserProfilesRoutes,
   };
 }

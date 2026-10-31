@@ -725,9 +725,8 @@ export class CloudflareSandbox
    * session's identifying context (tenantId, sessionId). The handler runs
    * in the agent worker scope; on every outbound HTTPS request the
    * sandbox makes, it RPCs to main with these identifiers, main does the
-   * vault lookup live and returns the bearer to this trusted handler long
-   * enough to construct the upstream request. The untrusted container never
-   * receives it in memory, env, or checkpoints (see oma-sandbox.ts).
+   * validates the current Session/fence and forwards through the shared
+   * relay core. Neither the container nor this adapter receives a Vault token.
    */
   async setOutboundContext(opts: {
     tenantId: string;

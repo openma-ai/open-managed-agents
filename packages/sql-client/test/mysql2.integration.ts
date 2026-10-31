@@ -22,6 +22,12 @@ beforeAll(async () => {
       id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
       item_name VARCHAR(255) NOT NULL
     );
+    CREATE TABLE ca_kv_boundary (
+      tenant_id VARCHAR(191) NOT NULL,
+      \`key\` VARCHAR(191) NOT NULL,
+      value VARCHAR(64) NOT NULL,
+      PRIMARY KEY (tenant_id, \`key\`)
+    );
     CREATE TABLE portable_claims (
       workspace_id VARCHAR(191) NOT NULL,
       id VARCHAR(191) NOT NULL,
@@ -44,6 +50,7 @@ beforeEach(async () => {
     DELETE FROM adapter_audit;
     DELETE FROM adapter_items;
     DELETE FROM portable_claims;
+    DELETE FROM ca_kv_boundary;
     ALTER TABLE adapter_audit AUTO_INCREMENT = 1;
     ALTER TABLE adapter_items AUTO_INCREMENT = 1;
   `);
@@ -177,6 +184,18 @@ describe("Mysql2SqlClient", () => {
       client.prepare("SELECT expires_at FROM portable_claims WHERE workspace_id = ? AND id = ?")
         .bind("ws", "job").first(),
     ).resolves.toEqual({ expires_at: 100 });
+  });
+
+  it("keeps the first quoted composite-key value while rejecting invalid create-only writes", async () => {
+    const insert = `INSERT INTO ca_kv_boundary (tenant_id, "key", value)
+      VALUES (?, ?, ?) ON CONFLICT (tenant_id, "key") DO NOTHING`;
+    await client.prepare(insert).bind("platform", "ca", "winner").run();
+    expect((await client.prepare(insert).bind("platform", "ca", "loser").run()).meta.changes).toBe(0);
+    expect(await client.prepare('SELECT value FROM ca_kv_boundary WHERE tenant_id = ? AND "key" = ?')
+      .bind("platform", "ca").first()).toEqual({ value: "winner" });
+    await expect(client.prepare(insert).bind("platform", "null-value", null).run()).rejects.toThrow();
+    await expect(client.prepare(insert).bind("platform", "too-long", "x".repeat(65)).run()).rejects.toThrow();
+    expect(await client.prepare("SELECT COUNT(*) AS n FROM ca_kv_boundary").first()).toEqual({ n: 1 });
   });
 
   it("emulates conditional UPDATE RETURNING atomically for lease claims", async () => {

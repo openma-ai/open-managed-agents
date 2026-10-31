@@ -6,16 +6,65 @@ import {
 } from "@open-managed-agents/mcp-access-loss";
 import {
   forwardWithRefresh,
+  type ForwardOpts,
   type OauthRefreshMetadata,
   type RefreshedTokens,
 } from "@open-managed-agents/vault-forward";
+import type { ForwardOutcome } from "@open-managed-agents/managed-credential-resolver";
 import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 
 export interface NodeMcpProxyTarget {
   upstreamUrl: string;
   accessToken: string;
+  /** Legacy `/v1/oma` Vault credential refresh. */
   refresh?: OauthRefreshMetadata;
   onRefreshed?: (tokens: RefreshedTokens) => Promise<void>;
+  /** Managed v1 credential: the shared resolver owns refresh and retry. */
+  managed?: {
+    forward(send: (token: string) => Promise<Response>): Promise<ForwardOutcome>;
+  };
+}
+
+/**
+ * One proxied exchange: managed targets go through the shared resolver,
+ * legacy ones through vault-forward. `send` injects the token; it may run
+ * twice, so `body` must be buffered.
+ */
+async function forwardTarget(
+  target: NodeMcpProxyTarget,
+  send: (token: string) => Promise<Response>,
+  fetcher: typeof fetch | undefined,
+  onFinal: ForwardOpts["onFinal"],
+): Promise<Response> {
+  if (target.managed === undefined) {
+    return forwardWithRefresh({
+      send,
+      accessToken: target.accessToken,
+      refresh: target.refresh,
+      onRefreshed: target.onRefreshed,
+      fetcher,
+      onFinal,
+    });
+  }
+  const outcome = await target.managed.forward(send);
+  if (onFinal === undefined) return outcome.response;
+  const bodyText = await outcome.response.text();
+  await onFinal({
+    status: outcome.response.status,
+    bodyText,
+    refreshed: outcome.refreshed,
+    refreshFailed: outcome.refreshFailed,
+    refreshFailureCode: outcome.refreshFailureCode,
+  });
+  const headers = new Headers(outcome.response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.delete("transfer-encoding");
+  return new Response(bodyText, {
+    status: outcome.response.status,
+    statusText: outcome.response.statusText,
+    headers,
+  });
 }
 
 export interface NodeHttpMcpProxyDependencies {
@@ -74,8 +123,9 @@ export function createNodeMcpProxyBinding(
         })
         : undefined;
       const headers = new Headers(request.headers);
-      return forwardWithRefresh({
-        send: (accessToken) =>
+      return forwardTarget(
+        target,
+        (accessToken) =>
           sendMcpUpstream({
             upstreamUrl: target.upstreamUrl,
             method: request.method,
@@ -84,12 +134,9 @@ export function createNodeMcpProxyBinding(
             accessToken,
             fetcher: dependencies.fetcher,
           }),
-        accessToken: target.accessToken,
-        refresh: target.refresh,
-        onRefreshed: target.onRefreshed,
-        fetcher: dependencies.fetcher,
-        onFinal: hooks?.onFinal,
-      });
+        dependencies.fetcher,
+        hooks?.onFinal,
+      );
     },
   };
 }
@@ -126,8 +173,9 @@ export function buildNodeHttpMcpProxyRoutes(
         requestBody: mcpRequestBodyText(body),
       })
       : undefined;
-    return forwardWithRefresh({
-      send: (accessToken) =>
+    return forwardTarget(
+      target,
+      (accessToken) =>
         sendMcpUpstream({
           upstreamUrl: target.upstreamUrl,
           method: context.req.method,
@@ -136,12 +184,9 @@ export function buildNodeHttpMcpProxyRoutes(
           accessToken,
           fetcher: dependencies.fetcher,
         }),
-      accessToken: target.accessToken,
-      refresh: target.refresh,
-      onRefreshed: target.onRefreshed,
-      fetcher: dependencies.fetcher,
-      onFinal: hooks?.onFinal,
-    });
+      dependencies.fetcher,
+      hooks?.onFinal,
+    );
   });
   return routes;
 }

@@ -41,9 +41,8 @@ Rate limits and destination policy remain necessary blast-radius controls.
 |---|---|---|
 | Harness in sandbox → HTTP MCP gateway, Cloudflare and Node | implemented | current Work token + exact Session/server/Vault resolution; upstream bearer is replaced |
 | Cloudflare transparent HTTP/HTTPS egress | enforced | Internet disabled, outbound handler required, complete runtime fence checked before and after Vault lookup, revoke swaps to deny handler |
-| Node/Docker `oma-vault` transparent sidecar | legacy/advisory | proxy environment variables are bypassable; hostname-only lookup is not a multi-tenant security boundary |
-| E2B, Daytona, LiteBox | provider-dependent | only `enforced` after a native network/substitution adapter passes conformance; current generic proxy-env adapters are advisory |
-| BoxRun | unsupported | no proven network/secret creation-time wire point in the current adapter |
+| Node sandbox egress proxy (all Node providers) | best effort | signed per-Session pass, selection only in the Session's Vaults via the shared resolver; proxy environment variables are bypassable, so it injects but does not confine egress |
+| E2B, Daytona, LiteBox, BoxRun, OpenSandbox, Sprites (`enforced`) | not implemented | only after a native network/substitution adapter passes conformance |
 
 The portable policy/lifecycle contract is `CredentialEgressPort`; it is an
 OpenMA Runtime Host extension and does not add fields to the official Managed
@@ -69,7 +68,7 @@ Agents Work/Environment protocol. See
               │   exposes three entrypoints:             │
               │   ① HTTP /v1/oma/mcp-proxy/<sid>/<server>│
               │   ② McpProxyRpc.mcpForward (RPC)         │
-              │   ③ McpProxyRpc.outboundForward (RPC)    │
+              │   ③ McpProxyRpc.credentialEgress (RPC)    │
               └────┬─────────────┬────────────┬─────────┘
                    │             │            │
        ┌───────────┘             │            └───────────┐
@@ -93,7 +92,7 @@ Agents Work/Environment protocol. See
 | **Local-runtime ACP child** (`claude-agent-acp` spawned by the user's daemon) | `(sid, server_name, agent api key)` | HTTP `POST /v1/oma/mcp-proxy/<sid>/<server>` with its API key | Daemon already has an apiKey from `oma bridge setup`. HTTP works over the public network |
 | **Self-hosted Work / harness in sandbox** | `(sid, server_name, sessions_token)` | HTTP `POST /v1/oma/mcp-proxy/<sid>/<server>` with the current Work bearer | Reuses the official Work secret; middleware verifies the current claim before routing |
 | **Cloud agent DO** (cloud-side `generateText` loop) | `(tenantId, sid, server_name)` | `env.MAIN_MCP.mcpForward(...)` via Cloudflare service-binding RPC | Binding scope IS the auth — only Workers configured with `services[].entrypoint = "McpProxyRpc"` can invoke it. No apiKey to manage |
-| **Cloudflare sandbox container** (transparent HTTPS) | The full upstream URL it wants to fetch — that's it | trusted outbound handler calls fenced `lookupOutboundCredential(...)`, strips caller auth, then fetches upstream | runtime fence and forced interception are the authorization boundary |
+| **Cloudflare sandbox container** (transparent HTTPS) | The full upstream URL it wants to fetch — that's it | native outbound handler forwards requests to fenced `credentialEgress(...)`; only the control plane injects Vault tokens | runtime fence and forced interception are the authorization boundary |
 
 The gateway paths converge on the same Session/Vault resolution and
 `@open-managed-agents/vault-forward` behavior:
@@ -149,16 +148,16 @@ Production incident response can answer "who called what when" without per-call-
 
 - **Real upstream OAuth providers** with quirks (Notion's scope-on-refresh, Slack's webhook-style auth, GitHub App installation tokens that aren't OAuth) need provider-specific handling. The current refresh path covers the standard OAuth 2.1 `grant_type=refresh_token` shape; one-off providers may need their own refresh helper.
 
-- **Streaming uploads** through `outboundForward` — the RPC body type is `string | null`, so multi-MB binary uploads from sandbox `curl -F file=@big.pdf` would need the body type widened to `ArrayBuffer | ReadableStream` first. OMA's current use cases don't trip this.
+- **Request buffering** — the credential relay buffers binary request bytes so a successful 401 refresh can replay once. Response bodies remain streams. Very large uploads need a bounded replay-storage policy.
 
 - **Rate limiting** — there's no per-credential / per-session quota in mcp-proxy. A misbehaving agent can spam an upstream MCP server until it rate-limits the entire tenant. Future work; not currently a production blocker because OMA traffic is well below any upstream's free-tier limits.
 
-- **Legacy self-host `oma-vault` is not a multi-tenant isolation boundary.**
-  `HTTP_PROXY`/`HTTPS_PROXY` are cooperative settings and the current sidecar
-  cannot attribute an arbitrary CONNECT request to a Work generation. Use the
+- **The Node sandbox egress proxy is not an isolation boundary.**
+  `HTTP_PROXY`/`HTTPS_PROXY` are cooperative settings; the proxy attributes a
+  CONNECT to a Session (signed pass) but not to a Work generation. Use the
   HTTP MCP gateway for managed in-sandbox MCP traffic. Do not advertise
   transparent Node/Docker egress as `required` until an isolated network and a
-  scoped, fenced sidecar adapter pass the ADR 0007 conformance matrix.
+  scoped, fenced egress adapter pass the ADR 0007 conformance matrix.
 
 ## Deploy ordering invariant
 

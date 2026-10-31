@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
+import { connectMcpOAuth } from "./mcp-connect.js";
 import { homedir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, chmodSync } from "node:fs";
@@ -1151,7 +1152,7 @@ const commands: Cmd[] = [
   {
     group: "MCP Servers", match: ["connect"], needsArg: true,
     usage: "oma connect <server|url> --vault <id>", desc: "Connect via OAuth",
-    http: "GET    /v1/oma/oauth/authorize?mcp_server_url=X&vault_id=Y (redirect)",
+    http: "POST   /v1/oma/oauth/cli/authorize {mcp_server_url,vault_id}; POST /v1/oma/oauth/cli/result {flow_id,claim_token}",
     async run(config, args) {
       const vaultId = flag(args, "--vault");
       if (!vaultId) { console.error("Usage: oma connect <server> --vault <vault-id>"); process.exit(1); }
@@ -2225,33 +2226,16 @@ function resolveServerUrl(nameOrUrl: string): string {
 }
 
 async function connectMcp(config: Config, mcpServerUrl: string, vaultId: string) {
-  const port = 19284 + Math.floor(Math.random() * 1000);
-  const redirectUri = `http://localhost:${port}/callback`;
-  const authUrl = `${config.baseUrl}/v1/oma/oauth/authorize?mcp_server_url=${encodeURIComponent(mcpServerUrl)}&vault_id=${encodeURIComponent(vaultId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-
-  console.log(`Opening browser...\n  ${authUrl}\n`);
-  try {
-    const p = process.platform;
-    if (p === "darwin") execSync(`open "${authUrl}"`);
-    else if (p === "linux") execSync(`xdg-open "${authUrl}"`);
-    else if (p === "win32") execSync(`start "${authUrl}"`);
-  } catch {}
-
-  return new Promise<void>((resolve) => {
-    const server = createServer((req: any, res: any) => {
-      const url = new URL(req.url || "/", `http://localhost:${port}`);
-      if (url.pathname === "/callback") {
-        const service = url.searchParams.get("service");
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(`<html><body><h2>Connected${service ? ` to ${service}` : ""}!</h2><script>window.close()</script></body></html>`);
-        console.log(`Connected to ${service || mcpServerUrl}`);
-        server.close();
-        resolve();
-      }
-    });
-    server.listen(port);
-    setTimeout(() => { console.log("Timed out."); server.close(); resolve(); }, 300000);
-  });
+  await connectMcpOAuth({
+    request: (path, init) => apiFetch(config, path, init),
+    print: (text) => console.log(text),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    openBrowser: (url) => {
+      if (process.platform === "darwin") execFileSync("open", [url], { stdio: "ignore" });
+      else if (process.platform === "linux") execFileSync("xdg-open", [url], { stdio: "ignore" });
+      else if (process.platform === "win32") execFileSync("rundll32", ["url.dll,FileProtocolHandler", url], { stdio: "ignore" });
+    },
+  }, { serverUrl: mcpServerUrl, vaultId });
 }
 
 // ─── API Reference (derived from commands + extras) ───

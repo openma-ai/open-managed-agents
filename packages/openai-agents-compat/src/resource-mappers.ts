@@ -226,6 +226,8 @@ export function toCredentialRotation(auth: ResourceObject): CredentialAuthUpdate
 export function credentialResource(credential: CredentialView, name?: string): ResourceObject {
   const auth = credential.auth;
   if (auth.type === "environment_variable") throw new Error("Environment variable credentials are not MCP credentials");
+  // OpenMA cap_cli credentials have no OpenAI Agents representation.
+  if (auth.type === "cap_cli") throw new Error("cap_cli credentials are not MCP credentials");
   return {
     id: credential.id, object: "vault.credential", vault_id: credential.vaultId, name: name ?? credential.displayName ?? credential.id,
     created_at: seconds(credential.createdAt), updated_at: seconds(credential.updatedAt),

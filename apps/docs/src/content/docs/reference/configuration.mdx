@@ -150,7 +150,8 @@ type CredentialAuth =
   | { type: 'static_bearer'; token: string; mcp_server_url: string }
   | { type: 'mcp_oauth'; access_token: string; refresh_token?: string;
       token_endpoint?: string; expires_at?: string; mcp_server_url: string }
-  | { type: 'cap_cli'; cli_id: string; token: string };  // e.g. cli_id: "gh", "glab", "aws"
+  | { type: 'cap_cli'; cli_id: string; token: string;    // OpenMA extension; e.g. cli_id: "gh", "glab", "aws"
+      refresh_token?: string; expires_at?: string; extras?: Record<string, string> };
 ```
 
 Binding to a host happens via the credential, not the vault: a `static_bearer` / `mcp_oauth` credential matches by parsing the request hostname against `mcp_server_url`; a `cap_cli` credential matches by `cli_id` lookup in the cap spec registry. Up to 20 credentials per vault. Tokens are AES-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` and never returned via the API once written.

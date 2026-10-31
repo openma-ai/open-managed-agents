@@ -144,6 +144,11 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     managedPlatform,
     managedVaultsRoutes,
     managedCredentialsRoutes,
+    managedCapCliDeviceFlowRoutes,
+    managedMcpOAuthRoutes,
+    managedMcpOAuthCliRoutes,
+    managedMcpOAuthCliCallback,
+    managedCredentialEgressRoutes,
     managedUserProfilesRoutes,
     services,
     apiKeyStorage,
@@ -291,6 +296,9 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     ensureTenantForUser: (s) => ensureTenantSqlite(sql, s.userId, s.name, s.email),
   });
 
+  app.route("/v1/oma/egress", managedCredentialEgressRoutes);
+  app.use("/v1/oma/oauth/callback", managedMcpOAuthCliCallback);
+
   const v1 = new Hono<{
     Variables: {
       tenant_id: string;
@@ -435,6 +443,10 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/vaults", managedVaultsRoutes);
   v1.route("/vaults", managedCredentialsRoutes);
   v1.route("/user_profiles", managedUserProfilesRoutes);
+  // OpenMA extension, mounted ahead of the legacy Vault routes.
+  v1.route("/oma/vaults", managedCapCliDeviceFlowRoutes);
+  v1.route("/oma/oauth/cli", managedMcpOAuthCliRoutes);
+  v1.route("/oma/oauth", managedMcpOAuthRoutes);
   v1.route("/oma/vaults", buildLegacyVaultRoutes({ services }));
   v1.route("/memory_stores", managedMemoryStoresRoutes);
   v1.route("/memory_stores", managedMemoriesRoutes);

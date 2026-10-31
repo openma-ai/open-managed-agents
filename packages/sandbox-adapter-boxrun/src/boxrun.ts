@@ -41,6 +41,7 @@
 import type { SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import { rejectPreparedBase } from "@open-managed-agents/sandbox";
+import { createHash } from "node:crypto";
 
 const moduleLogger = getLogger("boxrun-sandbox");
 
@@ -65,6 +66,8 @@ export interface BoxRunSandboxOptions {
   /** Used to name the box for operator visibility — boxes named
    *  `oma-<sessionId>` are easy to spot in `boxlite list`. Optional. */
   sessionId?: string;
+  /** Exact physical allocation name, separate from the logical Session id. */
+  name?: string;
   /** Logger. */
   logger?: { warn: (msg: string, ctx?: unknown) => void; log: (msg: string) => void };
 }
@@ -196,26 +199,6 @@ export class BoxRunSandbox implements SandboxExecutor {
     this.envVars = { ...this.envVars, ...envVars };
   }
 
-  async setOutboundContext(_opts?: { tenantId: string; sessionId: string }): Promise<void> {
-    // BoxRun: VM-level network — same env-var pattern as LocalSubprocess /
-    // LiteBox. CA cert is uploaded into the box on the first writeFile —
-    // we stash the host path here and apply on box creation.
-    const proxyUrl = process.env.OMA_VAULT_PROXY_URL;
-    const caCertPath = process.env.OMA_VAULT_CA_CERT;
-    if (!proxyUrl || !caCertPath) return;
-    const inBoxCaPath = "/etc/ssl/oma-vault-ca.crt";
-    await this.setEnvVars({
-      HTTP_PROXY: proxyUrl,
-      HTTPS_PROXY: proxyUrl,
-      http_proxy: proxyUrl,
-      https_proxy: proxyUrl,
-      NODE_EXTRA_CA_CERTS: inBoxCaPath,
-      SSL_CERT_FILE: inBoxCaPath,
-      CURL_CA_BUNDLE: inBoxCaPath,
-    });
-    this.pendingCaUpload = { hostPath: caCertPath, guestPath: inBoxCaPath };
-  }
-
   async mountMemoryStore(_opts: {
     storeName: string;
     storeId: string;
@@ -255,8 +238,6 @@ export class BoxRunSandbox implements SandboxExecutor {
     return extractFirstRegularFile(tarBytes);
   }
 
-  private pendingCaUpload: { hostPath: string; guestPath: string } | null = null;
-
   async destroy(): Promise<void> {
     // Idempotent — DELETE on a never-created box returns 404 which we
     // treat as already-gone. Best-effort: log warnings, don't throw.
@@ -291,7 +272,8 @@ export class BoxRunSandbox implements SandboxExecutor {
     const body: Record<string, unknown> = {
       image: this.opts.image ?? "node:22-slim",
     };
-    if (this.opts.sessionId) body.name = `oma-${this.opts.sessionId.slice(0, 30)}`;
+    if (this.opts.name !== undefined) body.name = this.opts.name;
+    else if (this.opts.sessionId) body.name = `oma-${this.opts.sessionId.slice(0, 30)}`;
     if (this.opts.cpus) body.cpus = this.opts.cpus;
     if (this.opts.memoryMib) body.memory_mib = this.opts.memoryMib;
     const res = await this.fetch(`/boxes`, {
@@ -304,34 +286,7 @@ export class BoxRunSandbox implements SandboxExecutor {
     }
     const box = (await res.json()) as { box_id: string };
     this.logger.log(`box created ${box.box_id} (${body.image})`);
-    // Apply the deferred CA upload from setOutboundContext so outbound TLS
-    // through oma-vault works on the very first exec. Best-effort —
-    // missing CA only breaks vault-mediated outbound, not the box itself.
-    if (this.pendingCaUpload) {
-      try {
-        const { promises: nodeFs } = await import("node:fs");
-        const buf = await nodeFs.readFile(this.pendingCaUpload.hostPath);
-        await this.uploadFileBytes(box.box_id, this.pendingCaUpload.guestPath, new Uint8Array(buf));
-        this.pendingCaUpload = null;
-      } catch (err) {
-        this.logger.warn(`vault CA upload failed: ${(err as Error).message}`);
-      }
-    }
     return box.box_id;
-  }
-
-  private async uploadFileBytes(boxId: string, path: string, bytes: Uint8Array): Promise<void> {
-    const { dir, name } = tarUploadTarget(path);
-    const tar = packSingleFileTar(name, bytes);
-    const res = await this.fetch(
-      `/boxes/${boxId}/files?path=${encodeURIComponent(dir)}&overwrite=true`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/x-tar" },
-        body: tar,
-      },
-    );
-    if (!res.ok) throw new Error(`boxrun uploadFileBytes ${path} failed: ${res.status}`);
   }
 
   private fetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -451,7 +406,7 @@ function extractFirstRegularFile(tar: Uint8Array): Uint8Array {
 // map and never reads BOXRUN_* env vars itself. Each env var the BoxRun
 // adapter cares about is read here, in the adapter's own file.
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   rejectPreparedBase("boxrun", ctx.preparedBase);
   const baseUrl = env.BOXRUN_URL;
   if (!baseUrl) {
@@ -468,5 +423,8 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
     memoryMib: env.BOXRUN_MEMORY_MIB ? Number(env.BOXRUN_MEMORY_MIB) : undefined,
     bearerToken: env.BOXRUN_TOKEN,
     sessionId: ctx.sessionId,
+    ...(ctx.allocationId === undefined ? {} : {
+      name: `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,
+    }),
   });
-};
+}, { capabilities: { allocationIsolation: true } });

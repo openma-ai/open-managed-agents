@@ -3,7 +3,8 @@
  * database into `managed_agents` / `managed_agent_versions`.
  *
  * Run it on every D1 database that holds agents before applying migration
- * 0024_drop_legacy_agents, which refuses to drop tables that still have rows.
+ * 0024_drop_legacy_agents, which retains empty legacy tables and refuses to
+ * proceed while any legacy rows remain.
  * Node deployments do not need it: main-node moves the rows itself on start.
  *
  * Usage:

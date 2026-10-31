@@ -45,6 +45,7 @@ import {
   type RuntimeAdapter,
 } from "@open-managed-agents/session-runtime";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
+import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -1981,7 +1982,7 @@ export class SessionDO extends DurableObject<Env> {
       // — i.e. plaintext secrets visible to anyone with KV-read access in
       // the agent worker scope. Post-refactor the interceptor RPCs into
       // main on each call (apps/agent/src/oma-sandbox.ts → env.MAIN_MCP
-      // .outboundForward), main does the live vault lookup, and the agent
+      // .credentialEgress), main does the live vault lookup, and the agent
       // worker never holds plaintext credentials. See file-level comment
       // on apps/agent/src/oma-sandbox.ts for the full rationale.
 
@@ -3705,40 +3706,51 @@ export class SessionDO extends DurableObject<Env> {
       }
 
       // CLI auth lives in main worker via cap_cli credentials — sandbox
-      // outbound handler RPCs to MAIN_MCP.lookupOutboundCredential on
+      // outbound handler RPCs to MAIN_MCP.credentialEgress on
       // every HTTPS request, main resolves cap spec + token, injects
       // Bearer at proxy. Sandbox never holds plaintext token in env or
       // memory. Sentinel env vars (e.g. GITHUB_TOKEN=__cap_managed__) are
       // set here from the cap spec's bootstrap.env so CLIs that refuse to
       // dial out without a token-shaped env value still try; the proxy
       // replaces the sentinel-bearing Authorization header at HTTPS time.
-      const vaultIds = this.state.vault_ids;
-      if (vaultIds.length && sandbox.setEnvVars) {
-        try {
-          const { builtinSpecs, createSpecRegistry } = await import("@open-managed-agents/cap");
-          const registry = createSpecRegistry(builtinSpecs);
-          const sentinelEnv: Record<string, string> = {};
-          const creds = await this.getVaultCredentials(vaultIds);
-          for (const cred of creds) {
-            if (cred.auth?.type !== "cap_cli" || !cred.auth.cli_id) continue;
-            const spec = registry.byCliId(cred.auth.cli_id);
-            if (!spec?.bootstrap?.env) continue;
-            for (const [k, v] of Object.entries(spec.bootstrap.env)) {
-              // First cap_cli for a given env var wins. Sentinels are
-              // identical across credentials anyway (all `__cap_managed__`),
-              // so collisions are no-op in practice.
-              if (!(k in sentinelEnv)) sentinelEnv[k] = v;
+      // v1 managed Sessions keep credentials in the managed Vault store, which
+      // only the main worker reads; it returns the placeholders. Legacy
+      // `/v1/oma` Sessions (not_found) keep the vault snapshot path unchanged.
+      await applyCapCliPlaceholderEnvironment({
+        source: this.env.MAIN_MCP,
+        tenantId: this.state.tenant_id,
+        sessionId: this.state.session_id,
+        sandbox,
+        legacy: async () => {
+          const vaultIds = this.state.vault_ids;
+          if (vaultIds.length && sandbox.setEnvVars) {
+            try {
+              const { builtinSpecs, createSpecRegistry } = await import("@open-managed-agents/cap");
+              const registry = createSpecRegistry(builtinSpecs);
+              const sentinelEnv: Record<string, string> = {};
+              const creds = await this.getVaultCredentials(vaultIds);
+              for (const cred of creds) {
+                if (cred.auth?.type !== "cap_cli" || !cred.auth.cli_id) continue;
+                const spec = registry.byCliId(cred.auth.cli_id);
+                if (!spec?.bootstrap?.env) continue;
+                for (const [k, v] of Object.entries(spec.bootstrap.env)) {
+                  // First cap_cli for a given env var wins. Sentinels are
+                  // identical across credentials anyway (all `__cap_managed__`),
+                  // so collisions are no-op in practice.
+                  if (!(k in sentinelEnv)) sentinelEnv[k] = v;
+                }
+              }
+              if (Object.keys(sentinelEnv).length > 0) {
+                await sandbox.setEnvVars(sentinelEnv);
+              }
+            } catch (err) {
+              console.error(
+                `[session-do] cap sentinel env injection failed (continuing without): ${(err as Error).message}`,
+              );
             }
           }
-          if (Object.keys(sentinelEnv).length > 0) {
-            await sandbox.setEnvVars(sentinelEnv);
-          }
-        } catch (err) {
-          console.error(
-            `[session-do] cap sentinel env injection failed (continuing without): ${(err as Error).message}`,
-          );
-        }
-      }
+        },
+      });
 
       // Hand backup context to OmaSandbox so its onActivityExpired hook
       // (sleepAfter teardown) writes the final /workspace snapshot scoped

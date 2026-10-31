@@ -263,6 +263,7 @@ export default defineConfig({
       { find: "@open-managed-agents/cap/test-fakes", replacement: "./packages/cap/src/test-fakes.ts" },
       { find: "@open-managed-agents/cap", replacement: "./packages/cap/src/index.ts" },
       { find: "@open-managed-agents/oma-cap-adapter", replacement: "./packages/oma-cap-adapter/src/index.ts" },
+      { find: "@open-managed-agents/managed-credential-resolver", replacement: "./packages/managed-credential-resolver/src/index.ts" },
 
       // ─── environment-images (irregular subpath layout) ────────────────
       { find: "@open-managed-agents/environment-images/memory", replacement: "./packages/environment-images/src/adapters/memory/index.ts" },

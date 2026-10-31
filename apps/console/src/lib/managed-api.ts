@@ -225,6 +225,45 @@ export type OpenMaEnvironment = BetaEnvironment & {
   _oma?: { sandbox_image?: string };
 };
 type EnvironmentWriteExtension = { _oma?: OpenMaEnvironmentExtension };
+
+/** OpenMA extension credential auth: a CLI Auth Protocol (`cap_cli`)
+ * credential for a builtin CLI spec. Not part of the Anthropic contract. */
+export interface OpenMaCapCliCreateAuth {
+  type: "cap_cli";
+  cli_id: string;
+  token: string;
+  refresh_token?: string | null;
+  expires_at?: string | null;
+  extras?: Record<string, string>;
+}
+export interface OpenMaCapCliResponseAuth {
+  type: "cap_cli";
+  cli_id: string;
+  expires_at?: string | null;
+}
+export type OpenMaCredential = Omit<BetaManagedAgentsCredential, "auth"> & {
+  auth: BetaManagedAgentsCredential["auth"] | OpenMaCapCliResponseAuth;
+};
+export type OpenMaCredentialCreateParams = Omit<CredentialCreateParams, "auth"> & {
+  auth: CredentialCreateParams["auth"] | OpenMaCapCliCreateAuth;
+};
+/** OpenMA extension: `POST /v1/oma/vaults/:id/cap_cli_device_flow`. */
+export interface OpenMaCapCliDeviceFlow {
+  type: "cap_cli_device_flow";
+  cli_id: string;
+  flow_token: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  interval_seconds: number;
+  expires_at: string;
+}
+/** OpenMA extension: `POST /v1/oma/vaults/:id/cap_cli_device_flow/poll`. */
+export type OpenMaCapCliDeviceFlowPoll =
+  | { status: "pending" | "expired" | "denied" }
+  | { status: "slow_down"; interval_seconds: number; flow_token: string }
+  | { status: "error"; oauth_error: string; description?: string }
+  | { status: "ready"; credential_id: string };
 type QueryValue = string | number | boolean | readonly string[] | null | undefined;
 
 function appendQueryValue(
@@ -591,7 +630,7 @@ export function createManagedApiClient(
           vaultId: string,
           params: WithoutBetas<CredentialListParams> = {},
         ) =>
-          request<ManagedPage<BetaManagedAgentsCredential>>(
+          request<ManagedPage<OpenMaCredential>>(
             buildManagedApiUrl(
               `/v1/vaults/${id(vaultId)}/credentials`,
               params as Record<string, QueryValue>,
@@ -603,9 +642,9 @@ export function createManagedApiClient(
           ),
         create: (
           vaultId: string,
-          params: WithoutBetas<CredentialCreateParams>,
+          params: WithoutBetas<OpenMaCredentialCreateParams>,
         ) =>
-          request<BetaManagedAgentsCredential>(
+          request<OpenMaCredential>(
             `/v1/vaults/${id(vaultId)}/credentials`,
             json(params),
           ),
@@ -625,10 +664,23 @@ export function createManagedApiClient(
             { method: "DELETE" },
           ),
         archive: (credentialId: string, params: { vault_id: string }) =>
-          request<BetaManagedAgentsCredential>(
+          request<OpenMaCredential>(
             `/v1/vaults/${id(params.vault_id)}/credentials/${id(credentialId)}/archive`,
             json({}),
           ),
+        /** OpenMA extension: OAuth device flow ending in a cap_cli credential. */
+        capCliDeviceFlow: {
+          start: (vaultId: string, params: { cli_id: string }) =>
+            request<OpenMaCapCliDeviceFlow>(
+              `/v1/oma/vaults/${id(vaultId)}/cap_cli_device_flow`,
+              json(params),
+            ),
+          poll: (vaultId: string, params: { flow_token: string }) =>
+            request<OpenMaCapCliDeviceFlowPoll>(
+              `/v1/oma/vaults/${id(vaultId)}/cap_cli_device_flow/poll`,
+              json(params),
+            ),
+        },
         mcpOAuthValidate: (
           credentialId: string,
           params: { vault_id: string },

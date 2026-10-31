@@ -1,3 +1,4 @@
+export { SqlMcpOAuthCliStore } from "./mcp-oauth-cli-store";
 export { SqlAgentPersistence } from "./agents-sql-persistence";
 export type { CredentialDocumentCipher } from "./credential-document-cipher";
 export type { DeploymentResourceSecretCipher } from "./deployment-resource-secret-cipher";

@@ -148,7 +148,7 @@ export interface Env {
   // secrets already live, never in the agent's DO. Optional because main
   // worker doesn't have this binding (it's the target, not a caller).
   //
-  // `outboundForward` is the sandbox-side equivalent: any HTTPS request
+  // `credentialEgress` is the sandbox-side equivalent: any HTTPS request
   // the cloud agent's container makes is intercepted by oma-sandbox.ts
   // and routed through here for vault-credential injection by hostname
   // match. Same "credentials only ever live in main" property.
@@ -167,6 +167,14 @@ export interface Env {
             resources: readonly (Readonly<Record<string, unknown>> & { type: string })[];
           };
         }
+      | { type: "not_found" }
+    >;
+    /** CLI placeholder env for a v1 managed Session; `not_found` for others. */
+    resolveManagedCapCliEnvironment(opts: {
+      tenantId: string;
+      sessionId: string;
+    }): Promise<
+      | { type: "found"; env: Record<string, string> }
       | { type: "not_found" }
     >;
     downloadManagedSessionFile(opts: {
@@ -252,35 +260,10 @@ export interface Env {
       headers: Record<string, string>;
       body: string | null;
     }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
-    outboundForward(opts: {
-      tenantId: string;
-      sessionId: string;
-      url: string;
-      method: string;
-      headers: Record<string, string>;
-      body: ArrayBuffer | null;
-    }): Promise<{ status: number; headers: Record<string, string>; body: ArrayBuffer }>;
-    /**
-     * Lightweight credential lookup for the transparent outbound proxy.
-     * Returns the bearer token to inject for `hostname`, or null if no
-     * vault credential matches. Used by oma-sandbox.ts inject_vault_creds
-     * to keep body + response off the RPC wire (preserves HEAD,
-     * streaming, SigV4 signed headers, etc).
-     */
-    lookupOutboundCredential(opts: {
-      tenantId: string;
-      sessionId: string;
-      hostname: string;
-      /** Present for Managed Runtime traffic. Legacy SessionDO callers may
-       * omit it; enforced provider adapters always supply the full claim. */
-      runtimeFence?: {
-        environmentId: string;
-        workId: string;
-        ownerId: string;
-        generation: number;
-        token: string;
-      };
-    }): Promise<{ type: "bearer"; token: string } | null>;
+    credentialEgress(scope: {
+      tenantId: string; sessionId: string;
+      runtimeFence?: { environmentId: string; workId: string; ownerId: string; generation: number; token: string };
+    }, action: "resolve" | "forward", request: Request): Promise<Response>;
     /**
      * Per-repo GitHub credential lookup for the network-layer proxy
      * (oma-sandbox.ts githubAuthHandler). Returns the picked token +
@@ -318,6 +301,9 @@ export interface Env {
   // Public URL of the integrations gateway (used to build redirect URLs to
   // OAuth callbacks etc. when the gateway is on a different host).
   INTEGRATIONS_PUBLIC_URL?: string;
+  /** Comma-separated origins a Console runs on besides this worker's own;
+   * MCP OAuth only returns to (and reports to) those origins. */
+  CONSOLE_ORIGINS?: string;
   // Used by integrations subsystem to sign tokens at rest. Gateway's value.
   PLATFORM_ROOT_SECRET?: string;
   /** Optional organization-level Managed Agents webhook wake-up endpoint.

@@ -18,7 +18,7 @@ export function resourcesFixture(runtime?: ResourceRuntimeFiles) {
   const environmentStore = new MemoryEnvironmentStore();
   const agents = new AgentsApplicationService({ ...shared, store: agentStore, ids: { nextAgentId: () => `agent_${sequence++}` } });
   const vaults = new VaultsApplicationService({ ...shared, store: vaultStore, ids: { nextVaultId: () => `vault_${sequence++}` } });
-  const credentials = new CredentialsApplicationService({ ...shared, store: credentialStore, vaults: { find: async input => (await vaultStore.find(input))?.vault ?? null }, ids: { nextCredentialId: () => `credential_${sequence++}` }, validation: { validate: async () => ({ hasRefreshToken: false, mcpProbe: null, refresh: null, status: "indeterminate" }) } });
+  const credentials = new CredentialsApplicationService({ ...shared, store: credentialStore, vaults: { find: async input => (await vaultStore.find(input))?.vault ?? null }, ids: { nextCredentialId: () => `credential_${sequence++}` }, cliCatalog: { has: () => false }, validation: { validate: async () => ({ hasRefreshToken: false, mcpProbe: null, refresh: null, status: "indeterminate" }) } });
   const environments = new EnvironmentsApplicationService({ ...shared, store: environmentStore, ids: { nextEnvironmentId: () => `environment_${sequence++}` } });
   const blobs = new Map<string, Uint8Array>();
   const content: FileContentStore = {

@@ -142,6 +142,7 @@ describe("CredentialsApplicationService", () => {
           status: "indeterminate" as const,
         }),
       },
+      cliCatalog: { has: (cliId: string) => cliId === "gh" },
       clock: { now: () => new Date("2026-08-26T19:00:00.000Z") },
       ids: { nextCredentialId: () => "vcrd_01" },
     });
@@ -198,6 +199,7 @@ describe("CredentialsApplicationService", () => {
           status: "indeterminate" as const,
         }),
       },
+      cliCatalog: { has: (cliId: string) => cliId === "gh" },
       clock: { now: () => now },
       ids: { nextCredentialId: () => "vcrd_01" },
     });
@@ -284,6 +286,7 @@ describe("CredentialsApplicationService", () => {
           },
         }),
       },
+      cliCatalog: { has: (cliId: string) => cliId === "gh" },
       clock: { now: () => new Date("2026-08-26T00:00:00.000Z") },
       ids: { nextCredentialId: () => "vcrd_rotate" },
     });
@@ -344,6 +347,7 @@ describe("CredentialsApplicationService", () => {
           },
         }),
       },
+      cliCatalog: { has: (cliId: string) => cliId === "gh" },
       clock: { now: () => new Date("2026-08-26T00:00:00.000Z") },
       ids: { nextCredentialId: () => "vcrd_fail" },
     });
@@ -377,5 +381,116 @@ describe("CredentialsApplicationService", () => {
           : "validation rejected a store failure",
       );
     }
+  });
+
+  describe("cap_cli (OpenMA extension)", () => {
+    function capService(persistence: InMemoryCredentialPersistence) {
+      let validations = 0;
+      const service = new CredentialsApplicationService({
+        workspaceId: "workspace_01",
+        store: persistence,
+        vaults,
+        validation: {
+          validate: async () => {
+            validations += 1;
+            throw new Error("cap_cli must never reach the MCP probe");
+          },
+        },
+        cliCatalog: { has: (cliId: string) => cliId === "gh" },
+        clock: { now: () => new Date("2026-08-26T19:00:00.000Z") },
+        ids: { nextCredentialId: () => "vcrd_cap" },
+      });
+      return { service, validations: () => validations };
+    }
+
+    it("stores the tokens and returns a view without them", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const { service } = capService(persistence);
+      const created = await service.createCredential({
+        vaultId: "vlt_01",
+        auth: {
+          type: "cap_cli",
+          cliId: "gh",
+          token: "gho_secret_token",
+          refreshToken: "ghr_secret_refresh",
+          expiresAt: "2026-08-27T19:00:00.000Z",
+          extras: { scope: "repo" },
+        },
+      });
+      expect(created).toEqual({
+        type: "created",
+        credential: {
+          id: "vcrd_cap",
+          archivedAt: null,
+          auth: { type: "cap_cli", cliId: "gh", expiresAt: "2026-08-27T19:00:00.000Z" },
+          createdAt: "2026-08-26T19:00:00.000Z",
+          metadata: {},
+          updatedAt: "2026-08-26T19:00:00.000Z",
+          vaultId: "vlt_01",
+        },
+      });
+      expect(persistence.records.get("workspace_01:vlt_01:vcrd_cap")?.credential.auth)
+        .toEqual({
+          type: "cap_cli",
+          cliId: "gh",
+          token: "gho_secret_token",
+          refreshToken: "ghr_secret_refresh",
+          expiresAt: "2026-08-27T19:00:00.000Z",
+          extras: { scope: "repo" },
+        });
+      expect(JSON.stringify(created)).not.toContain("secret");
+    });
+
+    it("rejects a cli_id the CLI catalog does not know", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const { service } = capService(persistence);
+      expect(
+        await service.createCredential({
+          vaultId: "vlt_01",
+          auth: { type: "cap_cli", cliId: "not-a-cli", token: "t" },
+        }),
+      ).toEqual({ type: "invalid_request", message: 'Unknown cap_cli cli_id "not-a-cli"' });
+      expect(persistence.records.size).toBe(0);
+    });
+
+    it("rotates tokens in place, clears extras on null, and keeps cliId immutable", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const { service } = capService(persistence);
+      await service.createCredential({
+        vaultId: "vlt_01",
+        auth: { type: "cap_cli", cliId: "gh", token: "old", extras: { a: "b" } },
+      });
+      const updated = await service.updateCredential({
+        vaultId: "vlt_01",
+        credentialId: "vcrd_cap",
+        auth: { type: "cap_cli", token: "new", refreshToken: "r2", extras: null },
+      });
+      expect(updated.type).toBe("updated");
+      expect(persistence.records.get("workspace_01:vlt_01:vcrd_cap")?.credential.auth)
+        .toEqual({ type: "cap_cli", cliId: "gh", token: "new", refreshToken: "r2" });
+      expect(
+        await service.updateCredential({
+          vaultId: "vlt_01",
+          credentialId: "vcrd_cap",
+          auth: { type: "static_bearer", token: "x" },
+        }),
+      ).toEqual({ type: "invalid_request", message: "Credential auth type is immutable" });
+    });
+
+    it("refuses MCP validation without calling the probe", async () => {
+      const persistence = new InMemoryCredentialPersistence();
+      const { service, validations } = capService(persistence);
+      await service.createCredential({
+        vaultId: "vlt_01",
+        auth: { type: "cap_cli", cliId: "gh", token: "t" },
+      });
+      expect(
+        await service.validateCredential({ vaultId: "vlt_01", credentialId: "vcrd_cap" }),
+      ).toEqual({
+        type: "invalid_request",
+        message: "cap_cli credentials are not MCP credentials and cannot be validated",
+      });
+      expect(validations()).toBe(0);
+    });
   });
 });
