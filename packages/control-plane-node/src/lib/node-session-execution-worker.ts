@@ -52,7 +52,11 @@ export interface NodeSessionExecutionWorkerDependencies {
   pollIntervalMs?: number;
   maxConcurrent?: number;
   onError?(error: Error): void;
+  eventProcessing?: {
+    storeFor(workspaceId: string): SessionEventProcessingStore;
+  };
 }
+
 
 interface ActiveExecution {
   execution: SessionExecution;
@@ -123,9 +127,25 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
 
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {
     if (input.events.length === 0) return;
-    for (const interrupt of input.events.filter(
+    const interruptEvents = input.events.filter(
       (event) => event.type === "user.interrupt",
-    )) {
+    );
+    if (
+      interruptEvents.length > 0 &&
+      this.dependencies.eventProcessing !== undefined
+    ) {
+      const processedAt = this.dependencies.clock.now().toISOString();
+      await markSessionEventsProcessed(
+        this.dependencies.eventProcessing.storeFor(input.workspaceId),
+        {
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          eventIds: interruptEvents.map((event) => event.id),
+          processedAt,
+        },
+      );
+    }
+    for (const interrupt of interruptEvents) {
       const requestedAt = interrupt.processedAt ??
         this.dependencies.clock.now().toISOString();
       const laneId = interrupt.sessionThreadId ?? undefined;

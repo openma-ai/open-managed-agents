@@ -118,6 +118,7 @@ import {
   SqlSessionResourceSecretSource,
   SqlSessionSource,
   SqlSessionRuntimeProjectionPersistence,
+  SqlSessionEventPersistence,
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -1852,6 +1853,31 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       if (result.type === "execution_fence_lost") return { type: "version_conflict" };
     }
     return { type: "version_conflict" };
+  }
+
+  async managedSessionEventsMarkProcessed(opts: {
+    workspaceId: string;
+    sessionId: string;
+    eventIds: string[];
+    processedAt: string;
+  }): Promise<
+    | { type: "marked"; events: unknown[] }
+    | { type: "not_found" }
+  > {
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(
+      opts.workspaceId,
+    );
+    const store = new SqlSessionEventPersistence(new CfD1SqlClient(tenantDb));
+    const { markSessionEventsProcessed } = await import(
+      "@open-managed-agents/managed-agents-application"
+    );
+    const marked = await markSessionEventsProcessed(store, {
+      workspaceId: opts.workspaceId,
+      sessionId: opts.sessionId,
+      eventIds: opts.eventIds,
+      processedAt: opts.processedAt,
+    });
+    return { type: "marked", events: marked };
   }
 
   async mcpForward(opts: {

@@ -25,7 +25,7 @@ import {
   type ManagedDeltaState,
 } from "../lib/managed-stream";
 import {
-  projectCanonicalChatTurns,
+  projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
 import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
@@ -671,8 +671,8 @@ export function SessionDetail() {
   // mode where a DO eviction killed an in-flight stream and no clean
   // status_idle was ever broadcast.
   const [interrupting, setInterrupting] = useState(false);
-  const canonicalTurns = useMemo(
-    () => projectCanonicalChatTurns(events as WireSessionEvent[], { threadId: activeThreadId }),
+  const { turns: canonicalTurns, queued: canonicalQueued } = useMemo(
+    () => projectCanonicalChat(events as WireSessionEvent[], { threadId: activeThreadId }),
     [activeThreadId, events],
   );
   /** Stable filtered list for Timeline — avoid reallocating on every
@@ -721,19 +721,27 @@ export function SessionDetail() {
 
   const hasTransientActivity = (
     (localPending !== null && activeThreadId === "sthr_primary")
+    || canonicalQueued.length > 0
     || thinkingStreams.size > 0
     || toolInputStreams.size > 0
     || streams.size > 0
     || status === "running"
   );
   const transientActivity = (
-    <SessionTransientActivity
-      localPending={activeThreadId === "sthr_primary" ? localPending : null}
-      running={status === "running"}
-      streams={streams}
-      thinkingStreams={thinkingStreams}
-      toolInputStreams={toolInputStreams}
-    />
+    <>
+      {canonicalQueued.map((item) => (
+        <div className="chat-turn-frame mx-auto w-full max-w-3xl min-w-0" key={item.id}>
+          <EventRender event={item.raw as Event} />
+        </div>
+      ))}
+      <SessionTransientActivity
+        localPending={activeThreadId === "sthr_primary" ? localPending : null}
+        running={status === "running"}
+        streams={streams}
+        thinkingStreams={thinkingStreams}
+        toolInputStreams={toolInputStreams}
+      />
+    </>
   );
 
   return (

@@ -11,6 +11,7 @@ import type {
   SessionEventsApplicationPort,
 } from "../ports/session-events";
 import type { SessionEventLogStore } from "@open-managed-agents/session-event-store";
+import { sessionEventSortTime } from "@open-managed-agents/session-event-store";
 import type { SessionSourcePort } from "./session-source";
 import type { SessionEventStreamPort } from "./stream";
 import type { SessionEventDispatchPort } from "../session-execution/events";
@@ -61,8 +62,11 @@ function encodeEventCursor(
   event: { id: string; processedAt?: string | null },
   order: EventCursor["order"],
 ): string | null {
-  if (event.processedAt == null) return null;
-  return `session-events.${order}.${encodeCursorPart(event.processedAt)}.${encodeCursorPart(event.id)}`;
+  // Queued inputs have no public processing time; page by their stored
+  // ordering time so a page boundary on a queued event stays resumable.
+  const position = sessionEventSortTime(event);
+  if (position == null) return null;
+  return `session-events.${order}.${encodeCursorPart(position)}.${encodeCursorPart(event.id)}`;
 }
 
 function decodeEventCursor(value: string): EventCursor | null {
@@ -97,41 +101,59 @@ export interface SessionEventsApplicationServiceDependencies {
   ids: { nextEventId(): string; nextOutcomeId(): string };
 }
 
+/**
+ * Event types whose `processed_at` stays null while the input is queued and is
+ * stamped by the runtime once it processes the event (Claude Managed Agents
+ * semantics). Every other sendable type is processed on receipt.
+ */
+export const QUEUED_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "user.message",
+  "user.interrupt",
+  "user.tool_confirmation",
+  "system.message",
+]);
+
+export function isQueuedSessionEventType(type: string): boolean {
+  return QUEUED_SESSION_EVENT_TYPES.has(type);
+}
+
 function toSentEvent(
   event: SendableSessionEvent,
   id: string,
-  processedAt: string,
+  receivedAt: string,
   nextOutcomeId: () => string,
 ): SentSessionEvent {
   switch (event.type) {
     case "user.message":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: null };
     case "user.interrupt":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: null };
     case "user.tool_confirmation":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: null };
     case "user.custom_tool_result":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: receivedAt };
     case "user.define_outcome":
       return {
         ...event,
         id,
         maxIterations: event.maxIterations ?? null,
         outcomeId: nextOutcomeId(),
-        processedAt,
+        processedAt: receivedAt,
       };
     case "user.tool_result":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: receivedAt };
     case "system.message":
-      return { ...event, id, processedAt };
+      return { ...event, id, processedAt: null };
   }
 }
 
 function applyAcceptedEvents(
   current: import("../domain/session").Session,
   events: SentSessionEvent[],
+  acceptedAt: string,
 ): import("../domain/session").Session {
   const next = structuredClone(current);
+  if (acceptedAt > next.updatedAt) next.updatedAt = acceptedAt;
   for (const event of events) {
     if (
       event.type === "user.define_outcome" &&
@@ -173,12 +195,12 @@ export class SessionEventsApplicationService
       return { type: "invalid_request", message: "Idempotent input requires a nonempty key and event batch" };
     }
     const prefix = command.idempotencyKey === undefined ? null : await sessionInputIdentityPrefix(this.dependencies.workspaceId, command.sessionId, command.idempotencyKey);
-    const processedAt = this.dependencies.clock.now().toISOString();
+    const acceptedAt = this.dependencies.clock.now().toISOString();
     const events = command.events.map((event, index) =>
       toSentEvent(
         event,
         prefix === null ? this.dependencies.ids.nextEventId() : `${prefix}${index}`,
-        processedAt,
+        acceptedAt,
         () => this.dependencies.ids.nextOutcomeId(),
       ),
     );
@@ -217,12 +239,23 @@ export class SessionEventsApplicationService
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
         return { type: "version_conflict", message: "Session changed after input validation; retrieve the session before retrying" };
       }
+      // A self-hosted Environment Worker consumes the canonical log directly
+      // and reports no per-input processing signal (and deployed workers
+      // require a timestamp on every event), so its inputs keep the
+      // stamped-on-receipt behaviour. Runtimes under Session execution
+      // (Cloudflare SessionDO, Node runtime) stamp queued inputs through
+      // `markSessionEventsProcessed` when they process them.
+      const accepted = execution.environment?.config?.type === "self_hosted"
+        ? events.map((event) => event.processedAt == null
+          ? { ...event, processedAt: acceptedAt } as SentSessionEvent
+          : event)
+        : events;
       const appended = await this.dependencies.store.append({
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         expectedRevision: execution.revision,
-        events,
-        nextSession: applyAcceptedEvents(execution.session, events),
+        events: accepted,
+        nextSession: applyAcceptedEvents(execution.session, accepted, acceptedAt),
       });
       if (appended.type === "not_found") return { type: "not_found" };
       if (appended.type === "revision_conflict") continue;

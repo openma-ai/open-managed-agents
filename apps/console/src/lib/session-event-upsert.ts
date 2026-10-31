@@ -4,7 +4,7 @@ import { eventKey, type EventKeyInput } from "./session-event-key";
  * Result of applying an incoming event to the canonical event list.
  *
  * - append:    a new event was added at the end
- * - update:    an existing event was replaced in place (same position)
+ * - update:    an existing event was replaced and re-positioned
  * - duplicate: nothing changed
  */
 export type SessionEventUpsertAction = "append" | "update" | "duplicate";
@@ -37,8 +37,9 @@ function processedAt(event: UpsertableEvent): string | null {
  * Rules:
  *   - unseen key           -> append
  *   - same key, processed_at moved from null to a value (or otherwise
- *     changed to a non-null value) -> replace the stored copy in place so the
- *     event keeps its position and local annotations
+ *     changed to a non-null value) -> replace AND re-position at the end so
+ *     the stamped event sits after the turn that was already running when
+ *     it was queued (Claude Managed Agents ordering)
  *   - same key, no newer processed_at -> duplicate (do not downgrade a
  *     processed event back to queued when an older echo arrives late)
  *
@@ -62,13 +63,11 @@ export function upsertSessionEvent<T extends UpsertableEvent>(
     incomingProcessedAt !== null && incomingProcessedAt !== existingProcessedAt;
 
   if (!processedAtChanged) {
-    // Identical duplicate (or a late queued echo of an already-processed
-    // event). Keep the current array reference; callers use `duplicate` to
-    // skip side effects and React work.
     return { events: events as T[], action: "duplicate" };
   }
 
-  const next = events.slice();
-  next[index] = incoming;
+  // Remove the queued copy, then append the stamped copy so it lands after
+  // any events that arrived while it was waiting (running turn replies, etc.).
+  const next = events.filter((_, i) => i !== index).concat(incoming);
   return { events: next, action: "update" };
 }

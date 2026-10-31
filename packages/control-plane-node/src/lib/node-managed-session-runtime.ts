@@ -30,6 +30,11 @@ import {
 import type {
   SessionRuntimeProjectionApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
+import {
+  isQueuedSessionEventType,
+  markSessionEventsProcessed,
+} from "@open-managed-agents/managed-agents-application";
+import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
 import type {
   SessionRealtimeHub,
   SessionRealtimeWriter,
@@ -106,6 +111,10 @@ export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
    * with `retries_exhausted`. Startup has produced no agent side effects.
    * `cancel` aborts the backoff and the in-flight attempt. */
   startRetry?: { attempts: number; delayMs(attempt: number): number };
+  /** Stamps queued accepted inputs when this host starts processing them. */
+  eventProcessing?: {
+    storeFor(workspaceId: string): SessionEventProcessingStore;
+  };
 }
 
 export interface NodeManagedSessionRunnerAcceptInput
@@ -307,6 +316,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
     this.startAborts.set(input, abortController);
     const signal = abortController.signal;
     try {
+      await this.markQueuedInputsProcessed(input);
       const retry = this.dependencies.startRetry ?? {
         attempts: 3,
         delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),

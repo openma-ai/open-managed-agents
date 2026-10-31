@@ -9,14 +9,26 @@ import type {
   AppendSessionEventsResult,
   ListPersistedSessionEvents,
   ListPersistedSessionThreadEvents,
+  MarkSessionEventsProcessed,
+  SessionEventProcessingStore,
   SessionEventStore,
 } from "@open-managed-agents/session-event-store";
+import { rememberSessionEventSortTime } from "@open-managed-agents/session-event-store";
 import {
   sessionExecutionEventBatches,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 
 interface SessionEventRow {
   document: string;
+  processed_at: number | string;
+}
+
+function decodeRow(row: SessionEventRow): SessionEventView {
+  const event = decodeSessionEventDocument(row.document).event;
+  return rememberSessionEventSortTime(
+    event,
+    new Date(Number(row.processed_at)).toISOString(),
+  );
 }
 
 interface SessionRevisionRow {
@@ -31,11 +43,13 @@ function timestamp(value: string): number {
   return milliseconds;
 }
 
-function requiredProcessedAt(event: SentSessionEvent): string {
-  if (event.processedAt == null) {
-    throw new Error(`Session event ${event.id} has no processing time`);
-  }
-  return event.processedAt;
+/**
+ * Storage ordering time. Queued inputs have no processing time yet; they are
+ * positioned at acceptance (the next Session `updatedAt`) until the runtime
+ * stamps them, at which point `markProcessed` moves them to processing time.
+ */
+function sortTime(event: SentSessionEvent, acceptedAt: string): string {
+  return event.processedAt ?? acceptedAt;
 }
 
 function relatedThreadId(event: SentSessionEvent): string | null {
@@ -70,7 +84,7 @@ export interface SqlSessionEventStoreOptions {
 }
 
 export class SqlSessionEventStore
-  implements SessionEventStore
+  implements SessionEventStore, SessionEventProcessingStore
 {
   constructor(
     private readonly client: SqlClient,
@@ -106,7 +120,7 @@ export class SqlSessionEventStore
             event.id,
             event.type,
             encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }),
-            timestamp(requiredProcessedAt(event)),
+            timestamp(sortTime(event, input.nextSession.updatedAt)),
             input.workspaceId,
             input.sessionId,
             input.expectedRevision,
@@ -168,7 +182,7 @@ export class SqlSessionEventStore
     input: AppendSessionEvents,
   ): Promise<AppendSessionEventsResult> {
     const executionBatches = sessionExecutionEventBatches(input.events);
-    const controlTimestamp = requiredProcessedAt(input.events[0]!);
+    const controlTimestamp = sortTime(input.events[0]!, input.nextSession.updatedAt);
     const policy = this.options.executionPolicy ?? {
       maxAttempts: 10,
       timeoutMs: 60 * 60 * 1_000,
@@ -228,15 +242,16 @@ export class SqlSessionEventStore
         event.id,
         event.type,
         encodeSessionEventDocument(event, { revision: input.expectedRevision + 1, index }),
-        timestamp(requiredProcessedAt(event)),
+        timestamp(sortTime(event, input.nextSession.updatedAt)),
         input.workspaceId,
         input.sessionId,
         input.expectedRevision,
       )
     );
     const outbox = executionBatches.map((batch) => {
-      const admittedAt = requiredProcessedAt(
+      const admittedAt = sortTime(
         batch.events.find((event) => event.type !== "system.message")!,
+        input.nextSession.updatedAt,
       );
       const admittedAtMs = timestamp(admittedAt);
       const deadlineAtMs = admittedAtMs + policy.timeoutMs;
@@ -372,6 +387,52 @@ export class SqlSessionEventStore
     };
   }
 
+  async markProcessed(
+    input: MarkSessionEventsProcessed,
+  ): Promise<SessionEventView[]> {
+    const processedAtMs = timestamp(input.processedAt);
+    const out: SessionEventView[] = [];
+    for (const eventId of new Set(input.eventIds)) {
+      const row = await this.client.prepare(
+        `SELECT document, processed_at FROM managed_session_events
+          WHERE workspace_id = ? AND session_id = ? AND id = ?`,
+      ).bind(input.workspaceId, input.sessionId, eventId).first<SessionEventRow>();
+      if (row === null) continue;
+      const decoded = decodeSessionEventDocument(row.document);
+      if (decoded.event.processedAt != null) {
+        out.push(decodeRow(row));
+        continue;
+      }
+      const event = { ...decoded.event, processedAt: input.processedAt } as SessionEventView;
+      const document = decoded.position === undefined
+        ? JSON.stringify(event)
+        : encodeSessionEventDocument(event, decoded.position, decoded.executionId);
+      // Compare-and-set on the queued document so concurrent stampers keep
+      // the first processing time.
+      const result = await this.client.prepare(
+        `UPDATE managed_session_events SET document = ?, processed_at = ?
+          WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?`,
+      ).bind(
+        document,
+        processedAtMs,
+        input.workspaceId,
+        input.sessionId,
+        eventId,
+        row.document,
+      ).run();
+      if (result.meta.changes === 1) {
+        out.push(rememberSessionEventSortTime(event, input.processedAt));
+        continue;
+      }
+      const current = await this.client.prepare(
+        `SELECT document, processed_at FROM managed_session_events
+          WHERE workspace_id = ? AND session_id = ? AND id = ?`,
+      ).bind(input.workspaceId, input.sessionId, eventId).first<SessionEventRow>();
+      if (current !== null) out.push(decodeRow(current));
+    }
+    return out;
+  }
+
   async list(input: ListPersistedSessionEvents): Promise<SessionEventView[]> {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Session event list limit must be a positive integer");
@@ -423,7 +484,7 @@ export class SqlSessionEventStore
     parameters.push(input.limit);
     const rows = await this.client
       .prepare(
-        `SELECT document
+        `SELECT document, processed_at
            FROM managed_session_events
           WHERE ${conditions.join(" AND ")}
           ORDER BY processed_at ${direction}, id ${direction}
@@ -431,9 +492,7 @@ export class SqlSessionEventStore
       )
       .bind(...parameters)
       .all<SessionEventRow>();
-    return (rows.results ?? []).map(
-      (row) => decodeSessionEventDocument(row.document).event,
-    );
+    return (rows.results ?? []).map(decodeRow);
   }
 
   async listThread(
@@ -468,7 +527,7 @@ export class SqlSessionEventStore
     parameters.push(input.limit);
     const rows = await this.client
       .prepare(
-        `SELECT document
+        `SELECT document, processed_at
            FROM managed_session_events
           WHERE ${conditions.join(" AND ")}
           ORDER BY processed_at ASC, id ASC
@@ -476,8 +535,6 @@ export class SqlSessionEventStore
       )
       .bind(...parameters)
       .all<SessionEventRow>();
-    return (rows.results ?? []).map(
-      (row) => decodeSessionEventDocument(row.document).event,
-    );
+    return (rows.results ?? []).map(decodeRow);
   }
 }

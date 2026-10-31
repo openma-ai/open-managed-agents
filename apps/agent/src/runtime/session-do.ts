@@ -1407,6 +1407,8 @@ export class SessionDO extends DurableObject<Env> {
     }
     if (!promoted) history.append(event);
     this.pending!.delete(row.pending_seq);
+    // Canonical D1 stamp (null → processed_at) before live re-emit.
+    this.markAcceptedEventsProcessed([row.event_id], nowIso);
     this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
@@ -1659,6 +1661,9 @@ export class SessionDO extends DurableObject<Env> {
       // filled) so live consumers that key on user.message see the
       // promoted copy with the right wall-clock. Mirror what the
       // pre-refactor broadcastEvent path did at append time.
+      if (typeof eventId === "string" && eventId.length > 0) {
+        this.markAcceptedEventsProcessed([eventId], nowIso);
+      }
       this.broadcastEvent(event);
       // Promotion notification — lets new clients drop the outbox bubble
       // and render the new events-log row. Includes the assigned seq so
@@ -2333,7 +2338,14 @@ export class SessionDO extends DurableObject<Env> {
             }
           }
         }
-        history.append(body as UserInterruptEvent);
+        const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+        const interruptAt = new Date().toISOString();
+        if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
+        interrupt.processed_at = interruptAt;
+        this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
+        history.append(interrupt);
+        // Claude Managed Agents: user.interrupt itself appears on the stream.
+        this.broadcastEvent(interrupt);
         // Emit status_idle when interrupt actually changed thread state:
         // either an active turn was aborted, or queued events were
         // cancelled. Skip when both are false (no-op interrupt) — that
@@ -3923,6 +3935,38 @@ export class SessionDO extends DurableObject<Env> {
    * the three queue-input types, so the value stays absent until drain
    * stamps it explicitly.
    */
+
+  /**
+   * Stamp queued accepted inputs in the canonical D1 log once this DO
+   * starts processing them, then re-broadcast the same ids with
+   * `processed_at` set (Claude Managed Agents semantics).
+   */
+  private markAcceptedEventsProcessed(
+    eventIds: string[],
+    processedAt: string,
+  ): void {
+    const binding = this.env.MAIN_MCP;
+    const workspaceId = this._state?.tenant_id;
+    const sessionId = this._state?.session_id;
+    if (!binding?.managedSessionEventsMarkProcessed || !workspaceId || !sessionId) return;
+    const ids = [...new Set(eventIds.filter((id) => id.length > 0))];
+    if (ids.length === 0) return;
+    this._managedProjectionChain = this._managedProjectionChain
+      .then(async () => {
+        await binding.managedSessionEventsMarkProcessed!({
+          workspaceId,
+          sessionId,
+          eventIds: ids,
+          processedAt,
+        });
+      })
+      .catch((err) => {
+        console.warn(
+          `[session_do] markAcceptedEventsProcessed failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   private _stampEventForPending(event: SessionEvent): void {
     const e = event as SessionEvent & { id?: string; processed_at?: string };
     if (!e.id) {

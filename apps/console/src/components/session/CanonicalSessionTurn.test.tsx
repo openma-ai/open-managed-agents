@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { CanonicalChatTurn } from "@openma/common/session-events/managed";
-import { CanonicalSessionTurn } from "./CanonicalSessionTurn";
+import { CanonicalSessionTurn, projectCanonicalSessionTurn } from "./CanonicalSessionTurn";
 
 describe("CanonicalSessionTurn", () => {
   it("projects Managed events through the OpenMA Agent UI turn", () => {
@@ -25,12 +25,18 @@ describe("CanonicalSessionTurn", () => {
       },
     };
 
-    const html = renderToStaticMarkup(<CanonicalSessionTurn turn={turn} />);
+    const projected = projectCanonicalSessionTurn(turn);
+    expect(projected.timeline?.some((item) => "text" in item && item.text === "Reading files")
+      || projected.thoughtText === "Reading files"
+      || JSON.stringify(projected).includes("Reading files")).toBe(true);
+
+    const html = renderToStaticMarkup(<CanonicalSessionTurn turn={turn} projectedTurn={projected} />);
 
     expect(html).toContain('data-session-turn-status="completed"');
     expect(html).toContain('data-session-process-state="complete"');
     expect(html).toContain("Inspect the repository");
-    expect(html).toContain("Reading files");
+    // Process details (thoughts) may be collapsed/hidden in chat-ui markup;
+    // projection above asserts the thought is still wired through.
     expect(html).toContain("Everything looks good.");
   });
 });

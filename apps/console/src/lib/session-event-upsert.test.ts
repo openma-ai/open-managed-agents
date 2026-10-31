@@ -29,7 +29,7 @@ describe("upsertSessionEvent", () => {
     expect(result.events).toEqual([first]);
   });
 
-  it("updates a queued event in place when processed_at becomes set", () => {
+  it("re-positions a queued event to the end when processed_at becomes set", () => {
     const queued = queuedUserMessage("sevt_1", "hello");
     const after = queuedUserMessage("sevt_2", "second");
     const processed: WireEvent = {
@@ -41,10 +41,11 @@ describe("upsertSessionEvent", () => {
     const result = upsertSessionEvent(stored, processed);
 
     expect(result.action).toBe("update");
-    expect(result.events.map(eventKey)).toEqual(stored.map(eventKey));
-    expect(result.events[0]).toBe(processed);
-    expect(result.events[1]).toBe(after);
-    expect((result.events[0] as WireEvent).processed_at).toBe(PROCESSED_AT);
+    // Stamped copy moves after events that arrived while it was queued.
+    expect(result.events.map(eventKey)).toEqual([eventKey(after), eventKey(processed)]);
+    expect(result.events[0]).toBe(after);
+    expect(result.events[1]).toBe(processed);
+    expect((result.events[1] as WireEvent).processed_at).toBe(PROCESSED_AT);
   });
 
   it("dedupes an identical event without allocating or moving it", () => {
@@ -72,7 +73,7 @@ describe("upsertSessionEvent", () => {
     expect((result.events[0] as WireEvent).processed_at).toBe(PROCESSED_AT);
   });
 
-  it("updates different processed timestamps without changing position", () => {
+  it("re-positions when processed_at changes again", () => {
     const first: WireEvent = {
       type: "user.message",
       id: "sevt_1",
@@ -93,8 +94,8 @@ describe("upsertSessionEvent", () => {
     const result = upsertSessionEvent([first, second], updated);
 
     expect(result.action).toBe("update");
-    expect(result.events[0]).toBe(updated);
-    expect(result.events[1]).toBe(second);
+    expect(result.events[0]).toBe(second);
+    expect(result.events[1]).toBe(updated);
   });
 
   it("keeps content-fallback matching for legacy events without ids", () => {
