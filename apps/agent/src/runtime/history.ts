@@ -68,7 +68,100 @@ export type FileResolver = (file_id: string) => Promise<ResolvedFile | null>;
  * tests, in-memory sub-agents, and anywhere a synchronous projection is
  * required.
  */
-export function eventsToMessages(events: SessionEvent[]): ModelMessage[] {
+/**
+ * Codex-style history repair (codex-rs context_manager/normalize.rs): a
+ * tool_use that never got a result but is followed by user.interrupt or a
+ * later user.message was cut off by an interrupt. Insert the same synthetic
+ * `agent.tool_result {is_error, "Cancelled by user"}` the interrupt handler
+ * emits, right before that boundary, so the next model request always has
+ * valid tool_use/tool_result pairing. A trailing unanswered tool_use (still
+ * genuinely pending in requires_action) is left alone.
+ */
+/** Official CMA (session-threads): text of the error result that closes a
+ * pending tool call on interrupt. */
+export const INTERRUPTED_TOOL_RESULT_TEXT = "Tool execution was interrupted before completion. Please retry.";
+
+/**
+ * Shared core (CF SessionDO + Node runner): events to append when a
+ * user.interrupt lands on a thread parked in requires_action. Official CMA
+ * (session-threads): each pending tool call is closed with an error result
+ * whose text is INTERRUPTED_TOOL_RESULT_TEXT and the thread re-emits
+ * session.status_idle end_turn without sampling the model. Returns [] when the
+ * thread is not parked (a running turn closes itself; idle is a no-op).
+ * Synchronous calls only: anything that already returned is untouched.
+ */
+export function interruptRequiresActionClosure(events: SessionEvent[], threadId = "sthr_primary"): SessionEvent[] {
+  const thread = (e: SessionEvent) => (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
+  const mine = events.filter((e) => thread(e) === threadId);
+  const lastStatus = [...mine].reverse().find((e) => typeof e.type === "string" && e.type.startsWith("session.status_"));
+  if (lastStatus?.type !== "session.status_idle"
+    || (lastStatus as { stop_reason?: { type?: string } }).stop_reason?.type !== "requires_action") return [];
+  const answered = new Set<string>();
+  for (const e of mine) {
+    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result") {
+      const id = (e as { tool_use_id?: string; mcp_tool_use_id?: string }).tool_use_id
+        ?? (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
+      if (id) answered.add(id);
+    }
+  }
+  const extra = threadId !== "sthr_primary" ? { session_thread_id: threadId } : {};
+  const out: SessionEvent[] = [];
+  for (const e of mine) {
+    if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use" && e.type !== "agent.mcp_tool_use") continue;
+    const id = (e as { id?: string }).id;
+    if (!id || answered.has(id)) continue;
+    out.push({
+      type: e.type === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
+      ...(e.type === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
+      content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
+      is_error: true,
+      ...extra,
+    } as unknown as SessionEvent);
+  }
+  out.push({ type: "session.status_idle", stop_reason: { type: "end_turn" }, ...extra } as SessionEvent);
+  return out;
+}
+
+export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {
+  const answered = new Set<string>();
+  for (const e of events) {
+    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result") {
+      const id = (e as { tool_use_id?: string; mcp_tool_use_id?: string }).tool_use_id
+        ?? (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
+      if (id) answered.add(id);
+    }
+  }
+  let open: SessionEvent[] = [];
+  let changed = false;
+  const out: SessionEvent[] = [];
+  for (const e of events) {
+    if ((e.type === "user.interrupt" || e.type === "user.message") && open.length > 0) {
+      for (const use of open) {
+        const id = (use as { id?: string }).id as string;
+        const thread = (use as { session_thread_id?: string }).session_thread_id;
+        out.push({
+          type: use.type === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
+          ...(use.type === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
+          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
+          is_error: true,
+          ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
+        } as unknown as SessionEvent);
+        answered.add(id);
+      }
+      open = [];
+      changed = true;
+    }
+    out.push(e);
+    if (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") {
+      const id = (e as { id?: string }).id;
+      if (id && !answered.has(id)) open.push(e);
+    }
+  }
+  return changed ? out : events;
+}
+
+export function eventsToMessages(inputEvents: SessionEvent[]): ModelMessage[] {
+  const events = normalizeInterruptedToolCalls(inputEvents);
   // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
   // event. Resolves the cross-window lookup problem.
   const toolNameById = new Map<string, string>();
@@ -164,6 +257,7 @@ export async function eventsToMessagesAsync(
   resolver?: FileResolver,
 ): Promise<ModelMessage[]> {
   if (!resolver) return eventsToMessages(events);
+  events = normalizeInterruptedToolCalls(events);
 
   // Pre-pass: gather toolName for every toolCallId emitted by ANY tool_use
   // event. Resolves the cross-window lookup problem.

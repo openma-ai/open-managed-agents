@@ -32,6 +32,9 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
+import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import type { SessionEvent } from "@open-managed-agents/shared";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
@@ -467,7 +470,20 @@ export class DefaultNodeManagedSessionRunner
 
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
     if (input.events.some((event) => event.type === "user.interrupt")) {
-      this.abortControllers.get(input)?.abort();
+      const active = this.abortControllers.get(input);
+      active?.abort();
+      if (active === undefined) {
+        // Parked in requires_action: close the pending calls and end the
+        // turn without sampling (shared core with CF SessionDO).
+        const wire = input.historyEvents.map((event) => encodeRuntimeHistoryEvent(event) as SessionEvent);
+        for (const frame of interruptRequiresActionClosure(wire)) {
+          await input.output({
+            ...frame,
+            id: this.dependencies.ids.nextEventId(),
+            processed_at: this.dependencies.clock.now().toISOString(),
+          });
+        }
+      }
       return;
     }
     const event = findLastMatching(

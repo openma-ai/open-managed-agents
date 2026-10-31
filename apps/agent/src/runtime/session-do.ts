@@ -120,7 +120,7 @@ import {
 import { resolveAppendablePrompts } from "./appendable-prompts";
 import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf";
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
-import { SqliteHistory, InMemoryHistory } from "./history";
+import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
 import {
   loadManagedSessionResources,
@@ -339,6 +339,8 @@ const INITIAL_SESSION_STATE: SessionState = {
 // `sessions.turn_id`. See _ensureCfAgentsSchema() below.
 const STATE_ROW_ID = "cf_state_row_id";
 const KEEP_ALIVE_INTERVAL_MS = 30_000;
+/** Bounded wait for an aborted turn to unwind tools before the interrupt is stamped. */
+const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
 
 /** Next cron fire strictly after `nowMs`. `getNextDate` can return the current
@@ -440,6 +442,7 @@ export class SessionDO extends DurableObject<Env> {
   /** Threads whose aborted turn already got its status_idle from the
    *  user.interrupt handler; the turn's catch-all idle must not repeat it. */
   private _interruptIdleOwned = new Set<string>();
+
 
   /** Execution authority lives in the tenant D1 outbox. The DO only owns a
    * lease while running one lane and never uses this map as durable state. */
@@ -2308,8 +2311,18 @@ export class SessionDO extends DurableObject<Env> {
           });
         }
         if (ctrl) {
+          // The handler owns the interrupted turn's idle from here on.
+          this._interruptIdleOwned.add(targetThread);
           ctrl.abort();
           this._threadAbortControllers.delete(targetThread);
+          // Official CMA: "the interrupt can take longer to apply while tool
+          // calls are running" and processed_at stays null until applied.
+          // Give the aborted turn a short grace (Codex: cancel token, then
+          // bounded wait) to unwind its tools before we stamp the interrupt.
+          const graceUntil = Date.now() + INTERRUPT_GRACE_MS;
+          while (this._executionActiveLanes.has(targetThread) && Date.now() < graceUntil) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
         }
         const cancelTs = Date.now();
         // Queued user.* events SURVIVE an interrupt (Backchat policy): the
@@ -2369,7 +2382,7 @@ export class SessionDO extends DurableObject<Env> {
             for (const requestId of settled) {
               // Reuse the same error extension emitted by orphan-tool recovery.
               const result: SessionEvent & { is_error: true } = { type: "agent.tool_result", tool_use_id: requestId,
-                content: [{ type: "text", text: "Cancelled by user" }], is_error: true,
+                content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }], is_error: true,
                 ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
               };
               history.append(result);
@@ -2391,7 +2404,16 @@ export class SessionDO extends DurableObject<Env> {
         // case had been emitting a duplicate status_idle right after a
         // natural-end one, observed 2026-05-11 sess-y5saq (seq 93 idle
         // stop_reason=end_turn, seq 95 idle stop_reason=None).
-        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0 || settledRequests.length > 0;
+        // Scope: only synchronous calls of this thread's current turn that
+        // never got a result. Anything that already returned (including a
+        // future async/background handle) is untouched; OpenMA has no async
+        // tool handles today, and their lifecycle is deliberately not tied to
+        // interrupt (separate design).
+        // Close every still-open tool_use / custom_tool_use / confirmation
+        // BEFORE the idle so the turn never ends in requires_action and a
+        // late answer cannot resume it (findings.md §3/§4).
+        const closedCount = this.closeToolUsesAfterInterrupt(history, undefined, targetThread);
+        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0 || settledRequests.length > 0 || closedCount > 0;
         if (shouldEmitIdle) {
           // stop_reason is required on session.status_idle per Anthropic
           // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
@@ -2404,15 +2426,9 @@ export class SessionDO extends DurableObject<Env> {
             stop_reason: { type: "end_turn" },
             ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
           };
-          if (hadActiveTurn) this._interruptIdleOwned.add(targetThread);
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
         }
-        // Custom tools are answered by the client, not harness.interruptPending.
-        // If we leave them open (common when interrupt lands in requires_action),
-        // a late user.custom_tool_result resumes the interrupted turn. Close
-        // every unpaired tool_use and clear pending_tool_calls unconditionally.
-        this.closeToolUsesAfterInterrupt(history);
         return new Response(null, { status: 202 });
       }
 
@@ -2421,6 +2437,9 @@ export class SessionDO extends DurableObject<Env> {
         const tcThread =
           (tc as unknown as { session_thread_id?: string }).session_thread_id ??
           "sthr_primary";
+        if (this.toolUseAlreadyAnswered(tc.tool_use_id, history)) {
+          return this.acceptNoEffectAnswer(tc, history);
+        }
         this._stampEventForPending(tc);
         const enqueued = this.enqueuePendingIfNew(tc);
         if (enqueued) this._broadcastPendingFrame(tc, tcThread);
@@ -2439,6 +2458,14 @@ export class SessionDO extends DurableObject<Env> {
         const ctrThread =
           (customResult as unknown as { session_thread_id?: string })
             .session_thread_id ?? "sthr_primary";
+        if (this.toolUseAlreadyAnswered(customResult.custom_tool_use_id, history)) {
+          return this.acceptNoEffectAnswer(customResult, history);
+        }
+        if (!this.toolUseExists(customResult.custom_tool_use_id, history)) {
+          return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error",
+            message: `custom_tool_use_id ${customResult.custom_tool_use_id} does not match any tool use in this session` } }),
+            { status: 400, headers: { "content-type": "application/json" } });
+        }
         this._stampEventForPending(customResult);
         const enqueued = this.enqueuePendingIfNew(customResult);
         if (enqueued) this._broadcastPendingFrame(customResult, ctrThread);
@@ -3326,6 +3353,14 @@ export class SessionDO extends DurableObject<Env> {
           const error = new Error("session execution fence is no longer valid");
           error.name = "ExecutionFenceLostError";
           throw error;
+        }
+        // Stale worker result: the interrupt already closed this call with a
+        // synthetic interrupted result. Drop it so the model history
+        // never gets two results for one tool_use (Codex/Claude SDK: output
+        // of an aborted tool is discarded).
+        if (event.type === "agent.tool_result") {
+          const id = (event as unknown as { tool_use_id?: string }).tool_use_id;
+          if (id && this.toolUseAlreadyAnswered(id, history)) return;
         }
         history.append(event);
       },
@@ -4485,7 +4520,9 @@ export class SessionDO extends DurableObject<Env> {
    * the interrupted turn. Close every unpaired call with an interrupted
    * result; late answers are then dropped by toolUseAlreadyAnswered.
    */
-  private closeToolUsesAfterInterrupt(history: HistoryStore, fence?: SessionExecutionFence): void {
+  private closeToolUsesAfterInterrupt(history: HistoryStore, fence?: SessionExecutionFence, threadId = "sthr_primary"): number {
+    let closedCount = 0;
+    const closedIds = new Set<string>();
     try {
       const events = history.getEvents();
       const answered = new Set<string>();
@@ -4497,28 +4534,59 @@ export class SessionDO extends DurableObject<Env> {
       }
       for (const e of events) {
         if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use") continue;
+        if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== threadId) continue;
         const id = (e as unknown as { id?: string }).id;
         if (!id || answered.has(id)) continue;
+        closedIds.add(id);
         // Same shape as the existing interruptPending settle path above
-        // (agent.tool_result, is_error, "Cancelled by user"); openma-common
+        // (agent.tool_result, is_error, interrupted); openma-common
         // decodes it to the existing OpenMA `tool.failed`. No new fields.
         const thread = (e as { session_thread_id?: string }).session_thread_id;
         const closed = {
           type: "agent.tool_result",
           tool_use_id: id,
-          content: [{ type: "text", text: "Cancelled by user" }],
+          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
           is_error: true,
           ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
         } as unknown as SessionEvent;
         history.append(closed);
         this.broadcastEvent(closed, fence);
+        closedCount++;
       }
-      if ((this.state.pending_tool_calls?.length ?? 0) > 0) {
-        this.setState({ ...this.state, pending_tool_calls: [] });
+      const before = this.state.pending_tool_calls ?? [];
+      const remaining = before.filter((pending) => !closedIds.has(pending.toolCallId));
+      if (remaining.length !== before.length) {
+        this.setState({ ...this.state, pending_tool_calls: remaining });
       }
     } catch (err) {
       console.warn("[interrupt] closing open tool calls failed:", err);
     }
+    return closedCount;
+  }
+
+  private toolUseExists(toolUseId: string, history: HistoryStore): boolean {
+    try {
+      return history.getEvents().some((e) =>
+        (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") &&
+        (e as unknown as { id?: string }).id === toolUseId);
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Official CMA: "A second result for the same call is accepted and has no
+   * effect." An answer for a call that is already closed (interrupt, or a
+   * duplicate POST) is stored with processed_at stamped and echoed, but is
+   * NOT enqueued: no model-history append, no loop wake, no status change.
+   */
+  private acceptNoEffectAnswer(event: SessionEvent, history: HistoryStore): Response {
+    const e = event as SessionEvent & { id?: string; processed_at?: string };
+    if (!e.id) e.id = `sevt_${generateEventId()}`;
+    e.processed_at = new Date().toISOString();
+    history.append(e);
+    this.broadcastEvent(e);
+    return new Response(null, { status: 202 });
   }
 
   private toolUseAlreadyAnswered(toolUseId: string, history: HistoryStore): boolean {
@@ -5890,7 +5958,7 @@ export class SessionDO extends DurableObject<Env> {
       // the catch-all one too produced two idles per interrupt.
       const interruptOwnsIdle = abortController.signal.aborted &&
         this._interruptIdleOwned.delete(turnThreadId);
-      if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence);
+      if (interruptOwnsIdle) this.closeToolUsesAfterInterrupt(history, activeFence, turnThreadId);
       if (!idleEmitted && !interruptOwnsIdle) {
         try {
           const idleEvent: SessionEvent = completedIdleEvent ?? { type: "session.status_idle", stop_reason: { type: "end_turn" } };
