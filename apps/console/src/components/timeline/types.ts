@@ -127,7 +127,7 @@ export interface Turn {
   events: Event[];
   status: TurnStatus;
   /** True while the trigger user event is still queued under the official
-   *  Managed Agents processed_at contract. Recomputed from the updated event
+   *  OpenMA delivery / turn.queued contract. Recomputed from the updated event
    *  in place, so the badge disappears when the same id becomes processed. */
   queued?: boolean;
   /** Wall-clock ms epoch when the turn closed; undefined while still running. */

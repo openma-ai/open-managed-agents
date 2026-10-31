@@ -13,9 +13,8 @@ import type { Span, Turn, TurnTriggerKind } from "./types";
  * markers. Each span carries its source events so the side detail panel
  * can show the underlying JSON without re-walking the stream.
  *
- * timestamp basis is `processed_at` (millisecond ISO string set by
- * SessionDO at write time). The legacy `ts` field may be an ISO string
- * or unix SECONDS — see eventTsMs.
+ * timestamp basis is OpenMA `occurred_at` / client `ts` (see eventTsMs).
+ * CMA `processed_at` is not consulted.
  */
 export function deriveSpans(events: Event[]): { spans: Span[]; totalMs: number } {
   const tsMs = (e: Event): number | null => {

@@ -21,7 +21,7 @@
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/integrations-core": "workspace:*",
-    "@openma/common": "^0.12.0",
+    "@openma/common": "^0.13.0",
     "@openma/sdk": "workspace:*",
     "@radix-ui/react-collapsible": "^1.1.20",
     "@radix-ui/react-dialog": "^1.1.15",

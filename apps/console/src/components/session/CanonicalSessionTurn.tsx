@@ -27,12 +27,10 @@ export interface CanonicalSessionTurnProps {
  * This adapter is deliberately pure so SessionDetail never rebuilds chat UI.
  */
 export function projectCanonicalSessionTurn(turn: CanonicalChatTurn): AgentUITurnState {
-  // A queued user.message has no assistant output yet. Projecting it as
-  // "running" would make AgentChatView treat it as a live turn (working
-  // spinner / "Working for…"), while the official API says it is still
-  // waiting behind earlier events. Project it as a settled turn and let
-  // AgentUITurnView override the frame status to `queued`; once the same-id
-  // event is updated with processed_at, the regular running projection wins.
+  // A queued user.message / turn.queued has no assistant output yet.
+  // Projecting it as "running" would make AgentChatView treat it as a live
+  // turn. Project it as settled and let AgentUITurnView override the frame
+  // status to `queued`; once delivery upgrades to processed, running wins.
   const queued = hasQueuedUserMessage(turn.rawEvents);
   return projectAcpChatTurn(
     {

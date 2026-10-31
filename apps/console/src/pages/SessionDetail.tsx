@@ -32,6 +32,11 @@ import { ManagedSessionConversation } from "../components/session/ManagedSession
 import { isQueuedSessionEvent } from "../lib/session-event-queue";
 import { upsertSessionEvent } from "../lib/session-event-upsert";
 import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
+import {
+  encodeGuiInterrupt,
+  encodeGuiUserMessage,
+  ingestManagedWireEvent,
+} from "../lib/managed-event-bridge";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
 // Console-specific renderers used only inside OpenMA UI host slots.
@@ -164,7 +169,25 @@ export function SessionDetail() {
   const eventsRef = useRef<Event[]>([]);
 
   const addEvent = (e: Record<string, unknown>) => {
-    const ev = e as Event;
+    // Stream delta / chunk frames stay on the wire shape for live overlays.
+    // Everything else crosses the CMA→OpenMA boundary so GUI never sees
+    // Managed `processed_at`.
+    const wireType = typeof e.type === "string" ? e.type : "";
+    const isLiveStreamFrame =
+      wireType === "event_start"
+      || wireType === "event_delta"
+      || wireType === "event_end"
+      || wireType.endsWith("_chunk")
+      || wireType.endsWith("_stream_start")
+      || wireType.endsWith("_stream_end")
+      || wireType === "agent.tool_use_input_stream_start"
+      || wireType === "agent.tool_use_input_chunk"
+      || wireType === "agent.tool_use_input_stream_end";
+    const ev = (
+      isLiveStreamFrame
+        ? (e as Event)
+        : (ingestManagedWireEvent(e, { sessionId: id ?? "unknown" }) ?? (e as Event))
+    );
 
     // Managed Agents v2 streaming uses an event_start/event_delta pair for
     // both assistant text and thinking. Keep the correlation state outside
@@ -344,9 +367,9 @@ export function SessionDetail() {
     // even before the server-side stored copy round-trips.
     if (!ev.ts) ev.ts = new Date().toISOString();
 
-    // Official MA redelivers the same event id on the stream once a queued
-    // event is processed (processed_at null -> timestamp). Upsert replaces
-    // the stored copy in place; only a genuinely new event runs side effects.
+    // Official MA redelivers the same event id once a queued event is
+    // processed. Decode maps that to turn.queued → user.message (delivery
+    // processed). Upsert replaces/repositions; only append runs side effects.
     const upserted = upsertSessionEvent(eventsRef.current, ev);
     if (upserted.action === "duplicate") return;
     eventsRef.current = upserted.events;
@@ -371,9 +394,13 @@ export function SessionDetail() {
     // response carried no data (or SSE redelivers the canonical event),
     // the real user.message is what replaces it. This does NOT use
     // OpenMA pending frames.
-    if (ev.type === "user.message") {
+    if (ev.type === "user.message" || ev.type === "turn.queued") {
       const blocks = Array.isArray(ev.content) ? ev.content : [];
-      const text = blocks.find((block) => block.type === "text")?.text;
+      const text =
+        (typeof (ev as { text?: unknown }).text === "string"
+          ? (ev as { text: string }).text
+          : undefined)
+        ?? blocks.find((block) => block.type === "text")?.text;
       if (typeof text === "string") {
         setLocalPending((cur) => (cur === text ? null : cur));
       }
@@ -518,9 +545,9 @@ export function SessionDetail() {
             page,
           });
           for (const managedEvent of res.data) {
-            const e = managedEvent as unknown as Event;
-            if (!e.ts && typeof e.processed_at === "string") e.ts = e.processed_at;
-            addEvent(e);
+            // addEvent runs ingestManagedWireEvent (strips processed_at,
+            // projects delivery / turn.queued).
+            addEvent(managedEvent as unknown as Record<string, unknown>);
           }
           if (!res.next_page || seenPages.has(res.next_page)) break;
           seenPages.add(res.next_page);
@@ -640,8 +667,20 @@ export function SessionDetail() {
         });
       }
 
+      const encoded = encodeGuiUserMessage({
+        sessionId: id,
+        content,
+        text: text || undefined,
+        sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
+      });
+      if (!encoded.ok) {
+        toast.error(encoded.error);
+        setLocalPending(null);
+        setSending(false);
+        return;
+      }
       const response = await managedApi.sessions.events.send(id, {
-        events: [{ type: "user.message", content }],
+        events: [encoded.wire as { type: "user.message"; content: typeof content }],
       });
       // Official MA contract: the send response carries the accepted
       // user.message events in response.data. Merge them into the canonical
@@ -690,11 +729,17 @@ export function SessionDetail() {
     if (!id) return;
     setInterrupting(true);
     try {
+      const encoded = encodeGuiInterrupt({
+        sessionId: id,
+        sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
+      });
+      if (!encoded.ok) {
+        console.error("interrupt encode failed", encoded.error);
+        setInterrupting(false);
+        return;
+      }
       await managedApi.sessions.events.send(id, {
-        events: [{
-            type: "user.interrupt",
-            ...(activeThreadId !== "sthr_primary" ? { session_thread_id: activeThreadId } : {}),
-          }],
+        events: [encoded.wire as { type: "user.interrupt"; session_thread_id?: string }],
       });
     } catch (e) {
       console.error("interrupt failed", e);
@@ -1193,9 +1238,13 @@ function SessionDurationBadge({ events }: { events: Event[] }) {
   let first = Infinity;
   let last = -Infinity;
   for (const e of events) {
-    const ts = (e as { processed_at?: string }).processed_at;
-    if (typeof ts !== "string") continue;
-    const t = new Date(ts).getTime();
+    const raw =
+      (typeof e.ts === "string" ? e.ts : undefined)
+      ?? (typeof (e as { occurred_at?: unknown }).occurred_at === "string"
+        ? (e as { occurred_at: string }).occurred_at
+        : undefined);
+    if (!raw) continue;
+    const t = new Date(raw).getTime();
     if (!Number.isFinite(t)) continue;
     if (t < first) first = t;
     if (t > last) last = t;
@@ -1339,15 +1388,12 @@ function EventRender({
    */
   modelErrorCause?: { error: string; model?: string };
 }) {
-  // Official Managed Agents queue state. `processed_at` is authoritative:
-  // null/undefined means still queued behind earlier events, a timestamp
-  // means processed. The optimistic localPending bubble is synthetic and has
-  // no wire event yet, so it naturally renders as queued here. OMA's
-  // processed_at_ms / cancelled_at_ms are intentionally ignored: the
-  // official API has no cancelled state for queued messages.
+  // OpenMA delivery / turn.queued is authoritative for queue UI.
+  // CMA processed_at is never consulted here (stripped at ingest).
   const isPending = isQueuedSessionEvent(event);
 
   switch (event.type) {
+    case "turn.queued":
     case "user.message": {
       // Wakeups synthesized by the schedule tool's onScheduledWakeup callback
       // also wire-type as user.message (per EventBase metadata convention),

@@ -58,15 +58,15 @@ describe("CanonicalSessionTurn queued state", () => {
     },
   };
 
-  it("renders a queued canonical user.message, then transitions in place on processed_at", () => {
+  it("renders a queued turn.queued, then transitions in place on delivery processed", () => {
     const queued: CanonicalChatTurn = {
       ...baseTurn,
       rawEvents: [
         {
-          type: "user.message",
+          type: "turn.queued",
           id: "sevt_queued",
           content: [{ type: "text", text: "still waiting" }],
-          processed_at: null,
+          delivery: "queued",
         },
       ],
     };
@@ -80,8 +80,10 @@ describe("CanonicalSessionTurn queued state", () => {
       ...queued,
       rawEvents: [
         {
-          ...queued.rawEvents[0],
-          processed_at: "2026-10-31T12:00:00.000Z",
+          type: "user.message",
+          id: "sevt_queued",
+          content: [{ type: "text", text: "still waiting" }],
+          delivery: "processed",
         },
       ],
     };

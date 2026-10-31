@@ -15,36 +15,25 @@ export interface SessionEventUpsertResult<T> {
 }
 
 type UpsertableEvent = EventKeyInput & {
-  processed_at?: unknown;
-  data?: { processed_at?: unknown } | null;
+  type?: unknown;
+  delivery?: unknown;
+  data?: { delivery?: unknown } | null;
 };
 
-function processedAt(event: UpsertableEvent): string | null {
-  const value = event.processed_at ?? event.data?.processed_at;
-  if (typeof value === "string") return value;
-  if (value === null || value === undefined) return null;
-  return String(value);
+function deliveryOf(event: UpsertableEvent): "queued" | "processed" | "other" {
+  if (event.type === "turn.queued") return "queued";
+  const d = event.delivery ?? event.data?.delivery;
+  if (d === "queued") return "queued";
+  if (d === "processed") return "processed";
+  return "other";
 }
 
 /**
- * Apply an incoming wire event to the canonical event list.
+ * Apply an incoming GUI event (post-decode) to the canonical event list.
  *
- * SSE redelivers events, and the official send response echoes the accepted
- * `user.message` that the stream later re-emits with `processed_at` set. The
- * old `seenKeys` set treated the second copy as a duplicate and dropped it,
- * leaving queued events stuck queued forever.
- *
- * Rules:
- *   - unseen key           -> append
- *   - same key, processed_at moved from null to a value (or otherwise
- *     changed to a non-null value) -> replace AND re-position at the end so
- *     the stamped event sits after the turn that was already running when
- *     it was queued (Claude Managed Agents ordering)
- *   - same key, no newer processed_at -> duplicate (do not downgrade a
- *     processed event back to queued when an older echo arrives late)
- *
- * Matching uses the same `eventKey` contract as the rest of the Console:
- * official `id` when present, content fallback for legacy unstamped events.
+ * Same-id upgrades: `turn.queued` / `delivery:queued` → `user.message` /
+ * `delivery:processed` replace and re-position at the end (official CMA
+ * ordering after a mid-turn queue). Never consults CMA `processed_at`.
  */
 export function upsertSessionEvent<T extends UpsertableEvent>(
   events: readonly T[],
@@ -57,17 +46,19 @@ export function upsertSessionEvent<T extends UpsertableEvent>(
   }
 
   const existing = events[index];
-  const existingProcessedAt = processedAt(existing);
-  const incomingProcessedAt = processedAt(incoming);
-  const processedAtChanged =
-    incomingProcessedAt !== null && incomingProcessedAt !== existingProcessedAt;
+  const existingDelivery = deliveryOf(existing);
+  const incomingDelivery = deliveryOf(incoming);
+  const upgraded =
+    existingDelivery === "queued" && incomingDelivery === "processed";
+  const typeUpgraded =
+    existing.type === "turn.queued" && incoming.type === "user.message";
 
-  if (!processedAtChanged) {
+  if (!upgraded && !typeUpgraded) {
+    // Same key without a queue→processed upgrade: treat as duplicate so we
+    // never downgrade a processed event back to queued.
     return { events: events as T[], action: "duplicate" };
   }
 
-  // Remove the queued copy, then append the stamped copy so it lands after
-  // any events that arrived while it was waiting (running turn replies, etc.).
   const next = events.filter((_, i) => i !== index).concat(incoming);
   return { events: next, action: "update" };
 }

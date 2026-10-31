@@ -7,7 +7,8 @@
  * optimistic outbox slot. The optional OpenMA `system.user_message_pending` /
  * `_promoted` / `_cancelled` stream frames are NOT a dependency and are never
  * required as a fallback. Queued accepted events become processed through an
- * in-place same-id update when the stream re-emits them with processed_at.
+ * in-place same-id update when the stream re-emits them as user.message
+ * (OpenMA delivery: processed) after turn.queued.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -52,7 +53,7 @@ function acceptedUserMessage(text: string, id: string): WireEvent {
     type: "user.message",
     id,
     content: [{ type: "text", text }],
-    processed_at: new Date().toISOString(),
+    delivery: "processed",
   };
 }
 
@@ -157,14 +158,14 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
   });
 });
 
-describe("queued send response (official processed_at contract)", () => {
+describe("queued send response (OpenMA delivery / turn.queued)", () => {
   it("keeps the bubble and transitions the same event id when processing lands", () => {
     const text = "queued then processed";
     const queued = {
-      type: "user.message",
+      type: "turn.queued",
       id: "sevt_outbox_queued",
       content: [{ type: "text", text }],
-      processed_at: null,
+      delivery: "queued",
     } as WireEvent;
     const outbox = createOutbox();
 
@@ -176,11 +177,13 @@ describe("queued send response (official processed_at contract)", () => {
 
     expect(handoff.merged).toBe(1);
     expect(outbox.events).toHaveLength(1);
-    expect(outbox.events[0]?.processed_at).toBeNull();
+    expect(outbox.events[0]?.delivery).toBe("queued");
 
     const processed = {
-      ...queued,
-      processed_at: new Date().toISOString(),
+      type: "user.message",
+      id: "sevt_outbox_queued",
+      content: [{ type: "text", text }],
+      delivery: "processed",
     } as WireEvent;
     outbox.addEvent(processed);
 

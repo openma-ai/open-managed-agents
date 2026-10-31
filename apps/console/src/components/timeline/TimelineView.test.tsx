@@ -11,22 +11,23 @@ function turnEvents(turn: number, startIso: string): Event[] {
     {
       type: "user.message",
       content: [{ type: "text", text: `msg-${turn}` }],
-      processed_at: new Date(t0).toISOString(),
+      delivery: "processed",
+      ts: new Date(t0).toISOString(),
     },
     {
       type: "agent.message",
       content: [{ type: "text", text: `reply-${turn}` }],
-      processed_at: new Date(t0 + 100).toISOString(),
+      ts: new Date(t0 + 100).toISOString(),
     },
     {
       type: "session.status_idle",
-      processed_at: new Date(t0 + 200).toISOString(),
+      ts: new Date(t0 + 200).toISOString(),
     },
   ];
 }
 
 describe("eventTsMs", () => {
-  it("parses ISO ts when processed_at is absent", () => {
+  it("parses ISO ts", () => {
     const ms = eventTsMs({
       type: "agent.message",
       ts: "2026-08-11T12:00:00.500Z",
@@ -34,13 +35,22 @@ describe("eventTsMs", () => {
     expect(ms).toBe(Date.parse("2026-08-11T12:00:00.500Z"));
   });
 
-  it("prefers processed_at over ts", () => {
+  it("prefers occurred_at over ts", () => {
+    const ms = eventTsMs({
+      type: "agent.message",
+      occurred_at: "2026-08-11T12:00:01.000Z",
+      ts: "2026-08-11T12:00:00.000Z",
+    } as Event);
+    expect(ms).toBe(Date.parse("2026-08-11T12:00:01.000Z"));
+  });
+
+  it("ignores CMA processed_at", () => {
     const ms = eventTsMs({
       type: "agent.message",
       processed_at: "2026-08-11T12:00:01.000Z",
       ts: "2026-08-11T12:00:00.000Z",
-    });
-    expect(ms).toBe(Date.parse("2026-08-11T12:00:01.000Z"));
+    } as Event);
+    expect(ms).toBe(Date.parse("2026-08-11T12:00:00.000Z"));
   });
 
   it("treats numeric ts as unix seconds", () => {
@@ -91,21 +101,25 @@ describe("TimelineView live append", () => {
 });
 
 describe("TimelineView queued turns", () => {
-  it("marks a queued user.message and clears the badge when processed_at arrives", () => {
+  it("marks a queued turn.queued and clears the badge when delivery processed arrives", () => {
     const t0 = Date.parse("2026-08-11T11:00:00.000Z");
     const queued: Event = {
-      type: "user.message",
+      type: "turn.queued",
       id: "sevt_queued",
       content: [{ type: "text", text: "waiting" }],
-      processed_at: null,
+      delivery: "queued",
+      ts: new Date(t0).toISOString(),
     };
     const { container, rerender } = render(<TimelineView events={[queued]} />);
 
     expect(container.querySelector("[data-timeline-turn-queued]")).toBeInTheDocument();
 
     const processed: Event = {
-      ...queued,
-      processed_at: new Date(t0).toISOString(),
+      type: "user.message",
+      id: "sevt_queued",
+      content: [{ type: "text", text: "waiting" }],
+      delivery: "processed",
+      ts: new Date(t0).toISOString(),
     };
     rerender(<TimelineView events={[processed]} />);
 

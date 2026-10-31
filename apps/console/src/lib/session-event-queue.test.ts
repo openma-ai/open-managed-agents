@@ -1,21 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { hasQueuedUserMessage, isQueuedSessionEvent } from "./session-event-queue";
 
-const PROCESSED_AT = "2026-10-31T12:00:00.000Z";
-
 describe("isQueuedSessionEvent", () => {
+  it("treats turn.queued as queued", () => {
+    expect(isQueuedSessionEvent({ type: "turn.queued" })).toBe(true);
+  });
+
   it.each(["user.message", "user.interrupt", "user.tool_confirmation", "system.message"])(
-    "treats %s with null/undefined processed_at as queued",
+    "treats %s with delivery queued as queued",
     (type) => {
-      expect(isQueuedSessionEvent({ type, processed_at: null })).toBe(true);
-      expect(isQueuedSessionEvent({ type })).toBe(true);
+      expect(isQueuedSessionEvent({ type, delivery: "queued" })).toBe(true);
+      expect(isQueuedSessionEvent({ type, data: { delivery: "queued" } })).toBe(true);
     },
   );
 
   it.each(["user.message", "user.interrupt", "user.tool_confirmation", "system.message"])(
-    "treats %s with processed_at set as processed",
+    "treats %s with delivery processed as processed",
     (type) => {
-      expect(isQueuedSessionEvent({ type, processed_at: PROCESSED_AT })).toBe(false);
+      expect(isQueuedSessionEvent({ type, delivery: "processed" })).toBe(false);
+      expect(isQueuedSessionEvent({ type, data: { delivery: "processed" } })).toBe(false);
     },
   );
 
@@ -23,28 +26,20 @@ describe("isQueuedSessionEvent", () => {
     "user.define_outcome",
     "user.custom_tool_result",
     "user.tool_result",
-  ])("treats %s as processed on receipt even without processed_at", (type) => {
-    expect(isQueuedSessionEvent({ type, processed_at: null })).toBe(false);
+  ])("treats %s as processed on receipt even without delivery", (type) => {
+    expect(isQueuedSessionEvent({ type, delivery: "queued" })).toBe(false);
     expect(isQueuedSessionEvent({ type })).toBe(false);
   });
 
   it("never queues agent, session, or span events", () => {
-    expect(isQueuedSessionEvent({ type: "agent.message", processed_at: null })).toBe(false);
-    expect(isQueuedSessionEvent({ type: "session.status_running", processed_at: null })).toBe(false);
+    expect(isQueuedSessionEvent({ type: "agent.message", delivery: "queued" })).toBe(false);
+    expect(isQueuedSessionEvent({ type: "session.status_running" })).toBe(false);
     expect(isQueuedSessionEvent({ type: "span.model_request_start" })).toBe(false);
   });
 
-  it("ignores the OpenMA-only processed_at_ms field", () => {
-    expect(
-      isQueuedSessionEvent({ type: "user.message", processed_at_ms: Date.parse(PROCESSED_AT) }),
-    ).toBe(true);
-  });
-
-  it("supports legacy transport payloads that nest processed_at under data", () => {
-    expect(isQueuedSessionEvent({ type: "user.message", data: { processed_at: null } })).toBe(true);
-    expect(
-      isQueuedSessionEvent({ type: "user.message", data: { processed_at: PROCESSED_AT } }),
-    ).toBe(false);
+  it("ignores CMA processed_at (GUI must not consult it)", () => {
+    expect(isQueuedSessionEvent({ type: "user.message", processed_at: null })).toBe(false);
+    expect(isQueuedSessionEvent({ type: "user.message", processed_at: "2026-10-31T12:00:00.000Z" })).toBe(false);
   });
 });
 
@@ -52,14 +47,20 @@ describe("hasQueuedUserMessage", () => {
   it("detects a queued trigger inside canonical turn rawEvents", () => {
     expect(
       hasQueuedUserMessage([
-        { type: "user.message", processed_at: null },
-        { type: "agent.message", processed_at: PROCESSED_AT },
+        { type: "turn.queued" },
+        { type: "agent.message", delivery: "processed" },
       ]),
     ).toBe(true);
     expect(
       hasQueuedUserMessage([
-        { type: "user.message", processed_at: PROCESSED_AT },
-        { type: "agent.message", processed_at: PROCESSED_AT },
+        { type: "user.message", delivery: "queued" },
+        { type: "agent.message" },
+      ]),
+    ).toBe(true);
+    expect(
+      hasQueuedUserMessage([
+        { type: "user.message", delivery: "processed" },
+        { type: "agent.message" },
       ]),
     ).toBe(false);
   });
@@ -67,8 +68,8 @@ describe("hasQueuedUserMessage", () => {
   it("does not mark a running turn queued because a non-message user event is queued", () => {
     expect(
       hasQueuedUserMessage([
-        { type: "user.message", processed_at: PROCESSED_AT },
-        { type: "user.tool_confirmation", processed_at: null },
+        { type: "user.message", delivery: "processed" },
+        { type: "user.tool_confirmation", delivery: "queued" },
       ]),
     ).toBe(false);
   });

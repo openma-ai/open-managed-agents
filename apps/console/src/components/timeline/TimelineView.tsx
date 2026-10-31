@@ -162,9 +162,9 @@ function DetailPanel({
           <div key={idx} className="border border-border/60 rounded">
             <div className="px-3 py-1.5 border-b border-border/60 bg-bg-surface/40 flex items-center gap-2 text-xs font-mono">
               <span className="text-fg-muted">{ev.type}</span>
-              {typeof ev.processed_at === "string" && (
+              {typeof ev.ts === "string" && (
                 <span className="text-fg-subtle ml-auto">
-                  {new Date(ev.processed_at).toISOString().slice(11, 23)}
+                  {new Date(ev.ts).toISOString().slice(11, 23)}
                 </span>
               )}
             </div>
