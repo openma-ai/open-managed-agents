@@ -2417,8 +2417,35 @@ export class SessionDO extends DurableObject<Env> {
         // BEFORE the idle so the turn never ends in requires_action and a
         // late answer cannot resume it (findings.md §3/§4).
         const closedCount = this.closeToolUsesAfterInterrupt(history, undefined, targetThread);
-        const shouldEmitIdle = hadActiveTurn || cancelledCount > 0 || settledRequests.length > 0 || closedCount > 0;
-        if (shouldEmitIdle) {
+        // Decide idle from durable history, not only the in-memory controller.
+        // After DO eviction / wrangler HMR / a concurrent interrupt that already
+        // deleted the controller, hadActiveTurn can be false while the last
+        // status is still running — skipping idle leaves the session stuck
+        // (race NOT_SETTLED, interrupt-v2 double_interrupt). Official CMA:
+        // interrupt ends the turn with status_idle end_turn.
+        // True no-op: already idle end_turn and nothing was closed/cancelled.
+        let lastStatusType: string | undefined;
+        let lastStop: string | undefined;
+        for (const e of history.getEvents()) {
+          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
+          if (e.type === "session.status_running" || e.type === "session.status_idle") {
+            lastStatusType = e.type;
+            lastStop = e.type === "session.status_idle"
+              ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
+              : undefined;
+          }
+        }
+        const lastIsRunning = lastStatusType === "session.status_running";
+        const emitIdle =
+          closedCount > 0 ||
+          settledRequests.length > 0 ||
+          cancelledCount > 0 ||
+          hadActiveTurn ||
+          lastIsRunning ||
+          (lastStatusType === "session.status_idle" && lastStop !== "end_turn");
+        if (emitIdle) {
+          // If a zombie turn's finally still runs, suppress its catch-all idle.
+          if (lastIsRunning || hadActiveTurn) this._interruptIdleOwned.add(targetThread);
           // stop_reason is required on session.status_idle per Anthropic
           // spec — pydantic v2 in @anthropic-ai/sdk-python rejects events
           // without it. Anthropic's StopReason union has no `interrupted`
