@@ -901,10 +901,9 @@ export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
   },
 };
 
-/** Declares no capabilities: many E2B-compatible services cannot snapshot.
- * A composition that knows its service can opts in with
- * `withSandboxFactoryCapabilities(sandboxFactory, { preparedBase: true })`. */
-export const sandboxFactory: SandboxFactory = (
+/** Each create receives a new provider-assigned id; no Session-name attach.
+ * Snapshot support remains opt-in for E2B-compatible services. */
+export const sandboxFactory: SandboxFactory = Object.assign((
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
-) => sandboxProvider.create(ctx, env);
+) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });

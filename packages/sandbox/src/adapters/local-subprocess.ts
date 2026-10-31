@@ -724,7 +724,7 @@ class BackgroundProcess implements ProcessHandle {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0]) => {
   rejectSandboxImageSelection("local-subprocess", ctx.image);
   rejectPreparedBase("local-subprocess", ctx.preparedBase);
   return new LocalSubprocessSandbox({
@@ -732,4 +732,4 @@ export const sandboxFactory: SandboxFactory = async (ctx) => {
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
   });
-};
+}, { capabilities: { allocationIsolation: true } });

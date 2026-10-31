@@ -10,12 +10,16 @@ import type {
   Session,
 } from "@open-managed-agents/managed-agents-application";
 import type { PreparedSandboxBases } from "./prepared-sandbox-bases";
+import type { SandboxFactoryCapabilities } from "@open-managed-agents/sandbox";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 
-type SandboxScope = Pick<SandboxFactoryContext, "environmentId" | "workspaceId" | "image" | "preparedBase">;
+type SandboxScope = Pick<SandboxFactoryContext, "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId">;
 
 export interface ManagedSandboxBuilderDependencies {
   /** Operator SANDBOX_IMAGES catalog; empty when unset. */
   images?: SandboxImageCatalog;
+  capabilities?: SandboxFactoryCapabilities;
   /** Per-session host workdir for a session id. */
   workdir(sessionId: string): string;
   /** The foundation's factory call: shared memory/outputs ctx plus scope. */
@@ -36,6 +40,7 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
   const images = dependencies.images ?? EMPTY_SANDBOX_IMAGE_CATALOG;
   return async (input: {
     workspaceId: string;
+    allocationId?: string;
     session: Pick<Session, "id"> & { agent?: Pick<Session["agent"], "openma"> };
     environment: Pick<Environment, "id" | "openma"> & { config?: Environment["config"] };
   }): Promise<SandboxExecutor> => {
@@ -44,12 +49,18 @@ export function createManagedSandboxBuilder(dependencies: ManagedSandboxBuilderD
       input.environment.openma?.sandboxImage,
       input.environment.id,
     );
+    if (input.allocationId !== undefined && dependencies.capabilities?.allocationIsolation !== true) {
+      throw new Error("Managed checkpoint_restore requires a sandbox factory with allocation isolation");
+    }
     const scope = {
+      ...(input.allocationId === undefined ? {} : { allocationId: input.allocationId }),
       workspaceId: input.workspaceId,
       environmentId: input.environment.id,
       ...(image !== undefined && { image }),
     };
-    const workdir = dependencies.workdir(input.session.id);
+    const sessionWorkdir = dependencies.workdir(input.session.id);
+    const workdir = input.allocationId === undefined ? sessionWorkdir : join(sessionWorkdir, "allocations",
+      createHash("sha256").update(JSON.stringify([input.workspaceId, input.environment.id, input.session.id, input.allocationId])).digest("hex"));
     const build = (preparedBase?: SandboxFactoryContext["preparedBase"]) =>
       dependencies.build(input.session.id, workdir, preparedBase === undefined ? scope : { ...scope, preparedBase });
     const preparedBases = dependencies.preparedBases;

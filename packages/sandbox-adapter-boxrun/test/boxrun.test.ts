@@ -33,6 +33,49 @@ function installFetch(handler: (url: string, init: RequestInit) => Response | Pr
 }
 
 describe("BoxRunSandbox", () => {
+  it("isolates factory allocation names and targets delayed deletion by captured box ID", async () => {
+    const boxes = new Map<string, string>(); const names: string[] = []; const deleted: string[] = [];
+    let finishDelete!: () => void; let markDeleting!: () => void;
+    const deletingStarted = new Promise<void>(resolve => { markDeleting = resolve; });
+    installFetch(async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === "/boxes" && init.method === "POST") {
+        const name = JSON.parse(String(init.body)).name as string;
+        if ([...boxes.values()].includes(name)) return json({ error: "name already exists" }, 409);
+        const id = `box-${names.length + 1}`; names.push(name); boxes.set(id, name);
+        return json({ box_id: id });
+      }
+      const id = /\/boxes\/([^/]+)/.exec(path)?.[1];
+      if (init.method === "DELETE" && id) {
+        deleted.push(id); markDeleting();
+        await new Promise<void>(resolve => { finishDelete = resolve; });
+        boxes.delete(id); return new Response(null, { status: 204 });
+      }
+      if (path.endsWith("/exec")) {
+        if (!id || !boxes.has(id)) return json({ error: "not found" }, 404);
+        return json({ execution_id: "exec" });
+      }
+      if (path.endsWith("/output")) return sse('event: stdout\ndata: {"data":"b2s="}\n\n', 'event: exit\ndata: {"exit_code":0}\n\n');
+      throw new Error(`unexpected ${url}`);
+    });
+    const context = { sessionId: "same-logical-session", workspaceId: "workspace", environmentId: "env", workdir: "/workspace" };
+    const env = { BOXRUN_URL: "http://provider.test" };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_a" }, env);
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_b" }, env);
+    const legacy = await sandboxFactory(context, env);
+    await a.exec("initial"); await b.exec("initial"); await legacy.exec("initial");
+    expect(names).toHaveLength(3);
+    expect(names[0]).not.toBe(names[1]);
+    expect(names[0]).toMatch(/^oma-[a-f0-9]{30,32}$/);
+    expect(names[2]).toBe("oma-same-logical-session");
+    expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    const deleting = a.destroy!(); await deletingStarted;
+    expect(await b.exec("while old delete is pending")).toContain("ok");
+    finishDelete(); await deleting;
+    expect(deleted).toEqual(["box-1"]);
+    expect(boxes.has("box-2")).toBe(true);
+    expect(await b.exec("after old delete")).toContain("ok");
+  });
   it("validates configuration and the factory maps provider settings", async () => {
     expect(() => new BoxRunSandbox({ baseUrl: "" })).toThrow("baseUrl required");
     await expect(sandboxFactory({ sessionId: "session-abcdefghijklmnopqrstuvwxyz12345" } as never, {})).rejects.toThrow("BOXRUN_URL");

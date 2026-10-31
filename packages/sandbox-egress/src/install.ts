@@ -58,6 +58,8 @@ export async function prepareSandboxEgress(input: {
   sandbox: SandboxPort;
   scope: { workspaceId: string; sessionId: string; vaultIds: readonly string[] };
   relay: { endpoint: string; pass: string; ca?: string };
+  /** Managed hosts own cleanup separately from the revoked execution view. */
+  registerCleanup?(cleanup: (sandbox: SandboxPort) => Promise<void>): void;
   issuePass(): Promise<string>;
   placeholders(scope: { workspaceId: string; sessionId: string; vaultIds: readonly string[] }): Promise<Record<string, string>>;
 }): Promise<PreparedSandboxEgress> {
@@ -89,11 +91,17 @@ export async function prepareSandboxEgress(input: {
   await sandbox.exec(`chmod 600 ${quote(`${directory}/binding.next.json`)} && mv ${quote(`${directory}/binding.next.json`)} ${quote(`${directory}/binding.json`)}`, 5000);
   const ready = `${directory}/ready.json`;
   if (sandbox.destroy && !lifecycles.has(sandbox)) {
-    const destroy = sandbox.destroy.bind(sandbox);
-    sandbox.destroy = async () => {
-      try { await sandbox.exec(`node -e ${quote(`try{process.kill(JSON.parse(require('fs').readFileSync(${JSON.stringify(ready)})).pid,'SIGTERM')}catch{}`)}`, 3000); }
-      finally { await destroy(); }
+    const cleanup = async (target: SandboxPort) => {
+      await target.exec(`node -e ${quote(`try{process.kill(JSON.parse(require('fs').readFileSync(${JSON.stringify(ready)})).pid,'SIGTERM')}catch{}`)}`, 3000);
     };
+    if (input.registerCleanup !== undefined) input.registerCleanup(cleanup);
+    else {
+      const destroy = sandbox.destroy.bind(sandbox);
+      sandbox.destroy = async () => {
+        try { await cleanup(sandbox); }
+        finally { await destroy(); }
+      };
+    }
     lifecycles.add(sandbox);
   }
   const probe = `const fs=require('fs'),http=require('http');try{const r=JSON.parse(fs.readFileSync(${JSON.stringify(ready)}));process.kill(r.pid,0);const q=http.get({host:'127.0.0.1',port:r.port,path:'/health',timeout:1000},s=>{s.resume();process.exit(s.statusCode===200?0:1)});q.on('error',()=>process.exit(1));q.on('timeout',()=>{q.destroy();process.exit(1)})}catch{process.exit(1)}`;

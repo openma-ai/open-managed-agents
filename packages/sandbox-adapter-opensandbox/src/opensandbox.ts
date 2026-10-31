@@ -308,4 +308,7 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
     return allocate(ctx, env, checkpoint.checkpointId);
   },
 };
-export const sandboxFactory: SandboxFactory = (ctx, env) => sandboxProvider.create(ctx, env);
+// Every create owns a fresh provider ID; resume and destroy use captured IDs.
+export const sandboxFactory: SandboxFactory = Object.assign((
+  ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1],
+) => sandboxProvider.create(ctx, env), { capabilities: { allocationIsolation: true } });

@@ -372,7 +372,7 @@ function shellEscape(s: string): string {
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   // This adapter targets the legacy client surface, which has no supported
   // sandbox-to-snapshot capture; a requested base must not be ignored.
   rejectPreparedBase("daytona", ctx.preparedBase);
@@ -384,4 +384,4 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryBucket: readS3MemoryBucket(env),
   });
-};
+}, { capabilities: { allocationIsolation: true } });

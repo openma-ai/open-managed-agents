@@ -4,11 +4,51 @@ import { sandboxProvider } from "../../../packages/sandbox-adapter-opensandbox/s
 import { mockSdkServer } from "../../../packages/sandbox-adapter-opensandbox/test/sdk-http";
 import { SpritesRuntime } from "../../../packages/managed-runtime-sprites/src/sprites";
 import type { SandboxPort } from "@open-managed-agents/sandbox";
+import { LocalSubprocessSandbox } from "../../../packages/sandbox/src/adapters/local-subprocess";
+import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner";
+import { mkdtemp, rm } from "node:fs/promises";
+import { resolve, join } from "node:path";
 const scope = { workspaceId: "workspace", sessionId: "session", vaultIds: ["vault"] };
 const input = (sandbox: SandboxPort) => ({ sandbox, scope, relay: { endpoint: "https://control.example", pass: "" }, issuePass: async () => "session-pass", placeholders: async () => ({ GITHUB_TOKEN: "__cap_managed__" }) });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("sandbox credential egress installation boundary", () => {
+  it.each(["stop", "refresh failure", "cold refresh failure"])("terminates a real local health relay on %s after refresh revocation", async (reason) => {
+    const root = await mkdtemp(resolve(".egress-lifecycle-"));
+    const raw = new LocalSubprocessSandbox({ workdir: root });
+    const write = raw.writeFile.bind(raw);
+    raw.writeFile = (path, content) => write(path, path.endsWith("/relay.cjs")
+      ? `const fs=require('fs'),http=require('http'),path=require('path');const dir=process.argv[2];const s=http.createServer((q,r)=>r.end('ok'));s.listen(0,'127.0.0.1',()=>fs.writeFileSync(path.join(dir,'ready.json'),JSON.stringify({pid:process.pid,port:s.address().port,caFile:path.join(dir,'ca.crt'),caBundleFile:path.join(dir,'ca-bundle.crt')})));process.on('SIGTERM',()=>s.close(()=>process.exit(0)));`
+      : content);
+    let pid = 0; let fail = false;
+    const runner = new DefaultNodeManagedSessionRunner({
+      buildSandbox: async () => raw, probeSandbox: async () => "alive",
+      refreshSandboxEnvironment: async ({ sandbox, registerCleanup }) => {
+        if (fail) throw new Error("refresh failed");
+        const ready = await prepareSandboxEgress({ ...input(sandbox), registerCleanup });
+        pid = ready.pid!;
+        if (reason === "cold refresh failure") throw new Error("cold refresh failed");
+      },
+      outcomes: {} as never, confirmedTools: {} as never, buildModel: async () => ({} as never), buildTools: async () => ({}),
+      buildHarness: () => ({ run: async () => {} }), buildHarnessContext: async () => ({} as never),
+      clock: { now: () => new Date() }, ids: { nextEventId: () => "event_egress" },
+    });
+    const start = { workspaceId: "workspace", sessionId: "session", session: { id: "session", agent: { skills: [] }, resources: [] } as never,
+      environment: { id: "env", config: {} } as never, initialEvents: [] };
+    try {
+      if (reason === "cold refresh failure") await expect(runner.start(start)).rejects.toThrow("cold refresh failed");
+      else {
+        await runner.start(start); process.kill(pid, 0);
+        if (reason === "stop") await runner.stop(start);
+        else { fail = true; await expect(runner.start(start)).rejects.toThrow("refresh failed"); }
+      }
+      await vi.waitFor(() => { expect(() => process.kill(pid, 0)).toThrow(); });
+    } finally {
+      if (pid) { try { process.kill(pid, "SIGTERM"); } catch {} }
+      await raw.destroy(); await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses native outbound capability without installing a Node process or local CA", async () => {
     const env: Record<string, string> = {};
     const native = { exec: vi.fn(async () => ""), readFile: async () => "", writeFile: vi.fn(async path => path), setEnvVars: async values => { Object.assign(env, values); }, prepareCredentialEgress: vi.fn(async () => {}), clearCredentialEgress: vi.fn(async () => {}) };

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sandbox as SdkSandbox } from "@alibaba-group/opensandbox";
-import { OpenSandbox, optionsFromEnvironment, sandboxProvider } from "../src/index";
-import { completed, mockSdkServer } from "./sdk-http";
+import { OpenSandbox, optionsFromEnvironment, sandboxProvider, sandboxFactory } from "../src/index";
+import { completed, mockSdkServer, sandboxInfo } from "./sdk-http";
 
 const ctx = { sessionId: "session-test", workdir: "/workspace" };
 const env = { OPENSANDBOX_DOMAIN: "control.test:8080", OPENSANDBOX_API_KEY: "provider-secret" };
@@ -19,6 +19,37 @@ afterEach(async () => {
 });
 
 describe("OpenSandbox official SDK adapter", () => {
+  it("keeps factory cold allocations independent and resumes each captured provider handle", async () => {
+    const server = mockSdkServer(); const physical = new Set<string>(); let creates = 0;
+    server.override = call => {
+      if (call.method === "POST" && call.url.pathname.endsWith("/sandboxes")) {
+        const id = `sb-${++creates}`; physical.add(id);
+        return Response.json({ ...sandboxInfo(), id }, { status: 202 });
+      }
+      const id = /\/sandboxes\/([^/]+)$/.exec(call.url.pathname)?.[1];
+      if (id && call.method === "GET") return physical.has(id)
+        ? Response.json({ ...sandboxInfo(), id }) : Response.json({ message: "not found" }, { status: 404 });
+      if (id && call.method === "DELETE") { physical.delete(id); return new Response(null, { status: 204 }); }
+    };
+    const first = { ...ctx, allocationId: "runtime_a" }; const second = { ...ctx, allocationId: "runtime_b" };
+    const a = await sandboxFactory(first, env) as OpenSandbox;
+    const b = await sandboxFactory(second, env) as OpenSandbox;
+    allocations.push(a, b);
+    expect(a.runtimeHandle().runtimeId).toBe("sb-1");
+    expect(b.runtimeHandle().runtimeId).toBe("sb-2");
+    const resumedA = await sandboxProvider.resume(a.runtimeHandle(), first, env);
+    const resumedB = await sandboxProvider.resume(b.runtimeHandle(), second, env);
+    allocations.push(resumedA, resumedB);
+    expect(resumedA.runtimeHandle()).toEqual(a.runtimeHandle());
+    expect(resumedB.runtimeHandle()).toEqual(b.runtimeHandle());
+    await a.destroy();
+    expect(physical).toEqual(new Set(["sb-2"]));
+    expect(await resumedB.status()).toBe("running");
+    expect(await b.exec("still running")).toBe("");
+    expect(server.calls.filter(call => call.method === "DELETE").map(call => call.url.pathname)).toEqual(["/v1/sandboxes/sb-1"]);
+    expect(server.calls.filter(call => call.method === "POST" && call.url.pathname.endsWith("/sandboxes")).map(call => (call.body as { metadata: Record<string, string> }).metadata["oma-session-id"])).toEqual(["session-test", "session-test"]);
+    expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+  });
   it("creates, executes and transfers binary files through the real SDK", async () => {
     const server = mockSdkServer();
     server.commands = [{ type: "stdout", text: "hello\n" }, { type: "stderr", text: "warning\n" }, completed];
