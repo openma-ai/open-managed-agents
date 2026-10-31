@@ -159,10 +159,20 @@ function managedTurnSlots(source: CanonicalChatTurn): AgentUITurnSlots {
 
 /** Tool names the turn is parked on (requires_action). */
 export function awaitedToolNames(turn: CanonicalChatTurn): string[] {
-  const ids = new Set(turn.awaitingToolCallIds ?? []);
-  return turn.render.tools
-    .filter((tool) => ids.has(tool.toolCallId))
-    .map((tool) => tool.toolName || tool.title || "tool");
+  // Official requires_action: the latest idle's stop_reason.event_ids lists
+  // the calls still blocking. The rendered tool list can hold more than one
+  // row per call (use + result updates), so resolve one name per call id and
+  // collapse equal names into "name ×N".
+  const nameById = new Map<string, string>();
+  for (const id of turn.awaitingToolCallIds ?? []) nameById.set(id, "tool");
+  for (const tool of turn.render.tools) {
+    if (!nameById.has(tool.toolCallId)) continue;
+    const name = tool.toolName || tool.title;
+    if (name) nameById.set(tool.toolCallId, name);
+  }
+  const counts = new Map<string, number>();
+  for (const name of nameById.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return [...counts].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name));
 }
 
 function needsActionText(turn: CanonicalChatTurn): string {
