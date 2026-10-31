@@ -2401,7 +2401,7 @@ export class SessionDO extends DurableObject<Env> {
         this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
         history.append(interrupt);
         // Claude Managed Agents: user.interrupt itself appears on the stream.
-        this.broadcastEvent(interrupt);
+        this.broadcastEventIgnoringExecutionFence(interrupt);
         // Emit status_idle when interrupt actually changed thread state:
         // either an active turn was aborted, or queued events were
         // cancelled. Skip when both are false (no-op interrupt) — that
@@ -2458,7 +2458,10 @@ export class SessionDO extends DurableObject<Env> {
             ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
           };
           history.append(idleEvent);
-          this.broadcastEvent(idleEvent);
+          // Interrupt ends the turn's execution fence; broadcastEvent would
+          // drop this as stale and never project to D1 (GET /events reads D1).
+          // Force-publish lifecycle idle without a fence.
+          this.broadcastEventIgnoringExecutionFence(idleEvent);
         }
         return new Response(null, { status: 202 });
       }
@@ -4056,6 +4059,31 @@ export class SessionDO extends DurableObject<Env> {
       : new Error(`Managed Memory synchronization failed: ${String(lastError)}`);
   }
 
+  /**
+   * Publish an event to live sockets + managed D1 projection without the
+   * execution-fence gate. Used by the user.interrupt path: requestInterrupt
+   * invalidates the turn fence before we emit idle / synthetic tool results,
+   * and GET /v1/sessions/:id/events reads the D1 projection (not DO SQLite).
+   */
+  private broadcastEventIgnoringExecutionFence(event: SessionEvent) {
+    const data = JSON.stringify(event);
+    const isQueueLifecycle =
+      event.type === "system.user_message_cancelled" ||
+      (event.type as string) === "system.user_message_steered";
+    const sockets = isSpecEvent(event.type)
+      ? this.ctx.getWebSockets()
+      : isQueueLifecycle
+        ? [...new Set([
+            ...this.ctx.getWebSockets("chunks"),
+            ...this.ctx.getWebSockets("queue_lifecycle"),
+          ])]
+        : this.ctx.getWebSockets("chunks");
+    for (const ws of sockets) {
+      try { ws.send(data); } catch { /* closed */ }
+    }
+    this.projectManagedRuntimeEvent(event, undefined);
+  }
+
   private broadcastEvent(
     event: SessionEvent,
     explicitFence?: SessionExecutionFence,
@@ -4581,7 +4609,8 @@ export class SessionDO extends DurableObject<Env> {
           ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
         } as unknown as SessionEvent;
         history.append(closed);
-        this.broadcastEvent(closed, fence);
+        if (fence === undefined) this.broadcastEventIgnoringExecutionFence(closed);
+        else this.broadcastEvent(closed, fence);
         closedCount++;
       }
       const before = this.state.pending_tool_calls ?? [];
