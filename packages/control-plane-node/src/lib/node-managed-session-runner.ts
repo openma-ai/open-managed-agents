@@ -90,7 +90,7 @@ export type ManagedNodeConfirmableToolUse = Extract<
 >;
 
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
-import { answeredToolCallIds, outstandingRequiresAction, stillPending } from "./requires-action.js";
+import { answeredToolCallIds, outstandingRequiresAction, stillPending, supersedeRequiresActionFrames } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -535,6 +535,20 @@ export class DefaultNodeManagedSessionRunner
         remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
       }
     }
+    // A user.message to a parked thread (#398): close the calls the batch
+    // does not answer, then run the message as the next turn. Never strands
+    // the message behind a pause, never samples over unmatched tool_use.
+    let supersededFrames: ReturnType<typeof supersedeRequiresActionFrames> = [];
+    if (remainingAfterAnswers === null && actionable.some((candidate) => candidate.type === "user.message")) {
+      const batchIds = new Set(input.events.map((candidate) => candidate.id));
+      const priorWire = input.historyEvents
+        .filter((candidate) => !batchIds.has(candidate.id))
+        .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string });
+      const answeredInBatch = new Set(actionable.flatMap((candidate) =>
+        candidate.type === "user.custom_tool_result" ? [candidate.customToolUseId]
+          : candidate.type === "user.tool_confirmation" ? [candidate.toolUseId] : []));
+      supersededFrames = supersedeRequiresActionFrames(priorWire, answeredInBatch);
+    }
     const rawSandbox = this.sandboxes.get(input);
     if (rawSandbox === undefined) {
       throw new Error(`Session ${input.sessionId} sandbox was not started`);
@@ -609,6 +623,7 @@ export class DefaultNodeManagedSessionRunner
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
     });
+    for (const frame of supersededFrames) runtime.broadcast(frame as unknown as SessionEvent);
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
     let turnTools: HarnessContext["tools"] | undefined;

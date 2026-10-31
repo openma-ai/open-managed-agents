@@ -861,6 +861,51 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     expect(stopped).toBe(true);
   });
 
+  it("stamps a late user.tool_confirmation processed_at and re-emits it with the same id even when the runner returns early as no-effect (#398)", async () => {
+    const marked: Array<{ eventIds: string[]; processedAt: string }> = [];
+    const published: Array<{ id: string; type: string; processedAt: string | null }> = [];
+    const realtime = new MemorySessionRealtimeHub();
+    const publish = realtime.publish.bind(realtime);
+    realtime.publish = ((input: { frame: { event?: { id: string; type: string; processedAt: string | null } } }) => {
+      if (input.frame.event) published.push(input.frame.event);
+      return publish(input as never);
+    }) as typeof realtime.publish;
+    let engineAccepted = 0;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async () => {},
+        stop: async () => {},
+        // runner no-effect path: the call was already closed, nothing runs
+        accept: async () => { engineAccepted += 1; },
+        archiveThread: async () => {},
+      },
+      realtime,
+      projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      sessionClocks: createSessionClockRegistry(),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (command: { eventIds: string[]; processedAt: string }) => {
+            marked.push({ eventIds: [...command.eventIds], processedAt: command.processedAt });
+            return command.eventIds.map((id) => ({
+              id, type: "user.tool_confirmation", toolUseId: "sevt_closed", result: "allow",
+              processedAt: command.processedAt,
+            }));
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+    await driver.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [{ id: "sevt_late_confirm", type: "user.tool_confirmation", toolUseId: "sevt_closed",
+        result: "allow", processedAt: null } as never],
+    });
+    expect(engineAccepted).toBe(1);
+    expect(marked).toEqual([{ eventIds: ["sevt_late_confirm"], processedAt: "2026-08-26T05:00:00.000Z" }]);
+    expect(published.filter((e) => e.id === "sevt_late_confirm"))
+      .toEqual([expect.objectContaining({ id: "sevt_late_confirm", processedAt: "2026-08-26T05:00:00.000Z" })]);
+  });
+
   it("lazy-starts a fresh engine from accepted event context", async () => {
     const calls: object[] = [];
     const engine: RuntimeEngine = {

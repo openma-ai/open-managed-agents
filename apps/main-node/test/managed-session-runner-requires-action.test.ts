@@ -210,3 +210,69 @@ describe("Node managed runner requires_action (CMA parity, #398)", () => {
     void s;
   });
 });
+
+describe("Node requires_action: queued user.message and mid-batch steer (#398)", () => {
+  it("a user.message to a parked session closes the unanswered calls and runs as the next turn", async () => {
+    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }, { id: "a2", type: "agent.tool_use" }]);
+    await s.send([msg("u1")]);
+    const out = await s.send([msg("u2")]);
+    expect(types(out)).toEqual(["agent.tool_result", "agent.tool_result", "session.status_running", "session.status_idle"]);
+    expect(out.slice(0, 2).map((f) => f.tool_use_id)).toEqual(["c1", "a2"]);
+    for (const f of out.slice(0, 2)) expect(f.is_error).toBe(true);
+    expect(idleOf(out)).toEqual([{ type: "end_turn" }]);
+    expect(s.runs()).toBe(2);
+    // late answers to the superseded calls are no-effect
+    expect(await s.send([customResult("u3", "c1")])).toEqual([]);
+    expect(await s.send([confirm("u4", "a2", "allow")])).toEqual([]);
+    expect(s.executions).toEqual([]);
+    expect(s.runs()).toBe(2);
+  });
+
+  it("a user.message batched with an answer keeps the answer and closes only the rest", async () => {
+    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }, { id: "c2", type: "agent.custom_tool_use" }]);
+    await s.send([msg("u1")]);
+    // answers c1 after the park (partial), then a message arrives for the rest
+    const p = await s.send([customResult("u2", "c1")]);
+    expect(idleOf(p)).toEqual([{ type: "requires_action", event_ids: ["c2"] }]);
+    const out = await s.send([msg("u3")]);
+    expect(out.filter((f) => f.type === "agent.tool_result").map((f) => f.tool_use_id)).toEqual(["c2"]);
+    expect(idleOf(out)).toEqual([{ type: "end_turn" }]);
+  });
+
+  it("steer closing parallel calls mid-batch: the final idle omits closed ids (CF bug 3 / 85d17d1 parity)", async () => {
+    let nextId = 0;
+    const runner = new DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
+      outcomes: { evaluate: async () => { throw new Error("unexpected"); } },
+      confirmedTools: { execute: async () => ({ content: [], isError: false }) },
+      buildSandbox: async () => ({}) as SandboxExecutor,
+      buildModel: async () => ({}),
+      buildTools: async () => ({}),
+      buildHarness: () => ({
+        run: async (ctx: { runtime: { broadcast(e: unknown): void; pendingConfirmations: string[] } }) => {
+          // parallel batch: w1, w2 (ask) + c3 (custom); a promoted steer closes w1, w2
+          for (const id of ["w1", "w2"]) {
+            ctx.runtime.broadcast({ id, type: "agent.tool_use", name: "write_file", input: {}, evaluated_permission: "ask" });
+            ctx.runtime.pendingConfirmations.push(id);
+          }
+          ctx.runtime.broadcast({ id: "c3", type: "agent.custom_tool_use", name: "t", input: {} });
+          ctx.runtime.pendingConfirmations.push("c3");
+          for (const id of ["w1", "w2"]) {
+            ctx.runtime.broadcast({ type: "agent.tool_result", tool_use_id: id, content: [{ type: "text", text: "superseded" }], is_error: true });
+          }
+        },
+      }),
+      buildHarnessContext: async (input: unknown) => input,
+      clock: { now: () => new Date(T0) },
+      ids: { nextEventId: () => `sevt_${++nextId}` },
+    } as unknown as ConstructorParameters<typeof DefaultNodeManagedSessionRunner>[0]);
+    await runner.start({ workspaceId: "workspace_01", sessionId: session.id, session, environment, initialEvents: [] });
+    const out: Frame[] = [];
+    await runner.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [msg("u1")], initialEvents: [], historyEvents: [msg("u1") as SessionEventView],
+      output: async (frame) => { out.push(frame as Frame); },
+    });
+    expect(idleOf(out)).toEqual([{ type: "requires_action", event_ids: ["c3"] }]);
+  });
+});
