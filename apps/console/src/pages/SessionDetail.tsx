@@ -29,6 +29,8 @@ import {
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
 import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
+import { eventKey } from "../lib/session-event-key";
+import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
 import type { Trajectory, TrajectoryOutcome } from "../lib/trajectory";
 import { rewardHeadline, outcomeToStatusTone } from "../lib/trajectory";
 // Console-specific renderers used only inside OpenMA UI host slots.
@@ -106,14 +108,16 @@ export function SessionDetail() {
   const [view, setView] = useState<View>("chat");
   const [sending, setSending] = useState(false);
   // Optimistic outbox slot — what the user typed, between hitting Send
-  // and the server-side pending broadcast (system.user_message_pending)
-  // arriving over SSE. Without this, hitting Send clears the input
-  // field instantly and the user stares at a blank conversation for the
-  // 100-500ms POST → SSE roundtrip. With it, the message appears in the
-  // queued-state EventBubble immediately and is replaced by the server's
-  // pending row the moment SSE delivers it. Single slot is intentional
-  // (we never let two POSTs be in flight at once — Send is disabled
-  // while `sending`). Set to null when SSE confirms or POST settles.
+  // and either the send response's accepted events being merged into
+  // `events` or the server-side pending broadcast
+  // (system.user_message_pending) arriving over SSE. Without this, hitting
+  // Send clears the input field instantly and the user stares at a blank
+  // conversation for the roundtrip. With it, the message appears in the
+  // queued-state EventBubble immediately. Node/Docker returns the accepted
+  // user.message in the POST response and never emits pending frames, so
+  // send() merges first and clears this slot afterwards. Single slot is
+  // intentional (we never let two POSTs be in flight at once — Send is
+  // disabled while `sending`).
   const [localPending, setLocalPending] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
   const [sessionMeta, setSessionMeta] = useState<{
@@ -178,18 +182,6 @@ export function SessionDetail() {
   const [pendingByEventId, setPendingByEventId] = useState<Map<string, PendingEntry>>(new Map());
   const [showTrajectory, setShowTrajectory] = useState(false);
   const seenKeys = useRef(new Set<string>());
-
-  // Dedup key for SSE re-delivery + initial-fetch overlap. `id` is stamped
-  // on every event by the server (sevt-* for tool_results / stream events;
-  // toolCallId for tool_use overrides) so it's a uniqueness guarantee
-  // across the wire. The previous content-based key dropped legitimate
-  // distinct events whose payloads happened to be byte-identical (two
-  // back-to-back `gh repo list` calls both timing out with the same
-  // 401 stderr was the repro). Fallback only kicks in for legacy events
-  // that pre-date stamping.
-  const eventKey = (e: Event) =>
-    (e as { id?: string }).id
-    ?? `${e.type}:${JSON.stringify(e.content || e.tool_use_id || e.error || "").slice(0, 120)}`;
 
   const addEvent = (e: Record<string, unknown>) => {
     const ev = e as Event;
@@ -672,7 +664,9 @@ export function SessionDetail() {
     const text = messageText.trim();
     if (!text && !files?.length) return;
     if (!id) return;
-    setLocalPending(text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : ""));
+    const optimisticText =
+      text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : "");
+    setLocalPending(optimisticText);
     setSending(true);
     try {
       // Upload attachments first so the user.message can reference them
@@ -719,16 +713,22 @@ export function SessionDetail() {
         });
       }
 
-      await managedApi.sessions.events.send(id, {
+      const response = await managedApi.sessions.events.send(id, {
         events: [{ type: "user.message", content }],
       });
-      // POST resolved → server already inserted the row + broadcast
-      // system.user_message_pending. The outbox map will pick it up
-      // (and likely already has by the time await unblocks here).
-      // Clear our local slot so we don't double-render with the server
-      // entry — but only if the server's pending hasn't already cleared
-      // it via the system.user_message_pending handler.
-      setLocalPending((cur) => (cur === text ? null : cur));
+      // The Node/Docker runtime returns the accepted user.message in
+      // response.data and never emits system.user_message_pending. Merge
+      // those events into the canonical log first; addEvent dedupes by id
+      // so the same event arriving later over SSE cannot double-render.
+      // Only after the merge do we drop the optimistic slot. Legacy
+      // Cloudflare 202/null responses have no data to merge, so this still
+      // clears localPending and leaves the pending SSE path untouched.
+      const handoff = mergeSendResponseIntoOutbox(
+        response,
+        { localPending: optimisticText, optimisticText },
+        addEvent,
+      );
+      setLocalPending(handoff.localPending);
     } catch {
       // api() already toasted the error; clear the optimistic slot so
       // the user doesn't keep seeing a "stuck" pending row that will
