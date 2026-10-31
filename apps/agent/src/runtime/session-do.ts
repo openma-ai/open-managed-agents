@@ -18,6 +18,7 @@ import {
   logWarn,
   log,
   generateEventId,
+  createMonotonicClock,
   generateOutcomeId,
   classifyExternalError,
   AuthError,
@@ -677,6 +678,8 @@ export class SessionDO extends DurableObject<Env> {
   private sandbox: SandboxExecutor | null = null;
   private wrappedSandbox: SandboxExecutor | null = null;
   private sandboxRuntime: SessionSandboxRuntime | null = null;
+  /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
+  private readonly processedClock = createMonotonicClock();
   /** Per-warmup random tag mirrored to /tmp/.oma-warm in the container.
    *  Lets the wrapSandboxWithLazyWarmup proxy detect a recycled container
    *  (CF Sandbox can die independently of SessionDO via OOM, sleepAfter,
@@ -1402,7 +1405,7 @@ export class SessionDO extends DurableObject<Env> {
     row: PendingRow,
     history: HistoryStore,
   ): void {
-    const nowMs = Date.now();
+    const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
     const event = JSON.parse(row.data) as SessionEvent;
     event.processed_at = nowIso;
@@ -1512,7 +1515,7 @@ export class SessionDO extends DurableObject<Env> {
         legacyRows.push({ seq: row.seq as number, data: row.data as string });
       }
       for (const lr of legacyRows) {
-        const nowMs = Date.now();
+        const nowMs = this.processedClock.nowMs();
         const nowIso = new Date(nowMs).toISOString();
         let event: SessionEvent;
         try {
@@ -1671,7 +1674,7 @@ export class SessionDO extends DurableObject<Env> {
       // AMA spec: processed_at = "wall-clock ingestion time, when the
       // agent picks the event up — not when the turn finishes". The
       // INSERT below carries this value verbatim into the events row.
-      const nowMs = Date.now();
+      const nowMs = this.processedClock.nowMs();
       const nowIso = new Date(nowMs).toISOString();
       const event = JSON.parse(row.data) as SessionEvent;
       event.processed_at = nowIso;
@@ -1892,7 +1895,7 @@ export class SessionDO extends DurableObject<Env> {
       (e) => {
         const ev = e as SessionEvent & { id?: string; processed_at?: string };
         if (!ev.id) ev.id = `sevt_${generateEventId()}`;
-        if (!ev.processed_at) ev.processed_at = new Date().toISOString();
+        if (!ev.processed_at) ev.processed_at = this.processedClock.nowIso();
       },
       this.env.MEMORY_BUCKET ?? null,
       `t/${tenantId}/sessions/${this._state.session_id}/events/`,
@@ -2395,7 +2398,7 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
         const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
-        const interruptAt = new Date().toISOString();
+        const interruptAt = this.processedClock.nowIso();
         if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
         interrupt.processed_at = interruptAt;
         this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
@@ -4643,7 +4646,7 @@ export class SessionDO extends DurableObject<Env> {
   private acceptNoEffectAnswer(event: SessionEvent, history: HistoryStore): Response {
     const e = event as SessionEvent & { id?: string; processed_at?: string };
     if (!e.id) e.id = `sevt_${generateEventId()}`;
-    e.processed_at = new Date().toISOString();
+    e.processed_at = this.processedClock.nowIso();
     history.append(e);
     this.broadcastEvent(e);
     return new Response(null, { status: 202 });
@@ -6656,7 +6659,7 @@ export class SessionDO extends DurableObject<Env> {
    * Schedule logic itself is verbatim from cf-agents v0.11.2.
    */
   private async _scheduleNextAlarm(): Promise<void> {
-    const nowMs = Date.now();
+    const nowMs = this.processedClock.nowMs();
     const hungCutoffSec = Math.floor(nowMs / 1000) - HUNG_SCHEDULE_TIMEOUT_SECONDS;
     const readyRows = this.ctx.storage.sql
       .exec<{ time: number }>(

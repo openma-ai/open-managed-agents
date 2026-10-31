@@ -69,7 +69,12 @@ export class CfDoEventLog implements EventLogRepo {
     // stamp now. Drain-promoted user.* events arrive here with
     // event.processed_at already set on the JSON payload (drain stamps it
     // before INSERT), and the row column gets the same wall-clock.
-    const processedAt = Date.now();
+    // Prefer the wire stamp (monotonic per session, see createMonotonicClock)
+    // so the DO column and the D1 projection agree on order.
+    const wire = Date.parse(
+      (event as unknown as { processed_at?: string }).processed_at ?? "",
+    );
+    const processedAt = Number.isFinite(wire) ? wire : Date.now();
 
     if (fullData.length <= SPILL_THRESHOLD_BYTES || !this.r2) {
       // Small enough OR no R2 binding (in-memory tests, non-CF deploys).
