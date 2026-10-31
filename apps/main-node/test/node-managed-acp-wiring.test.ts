@@ -1,9 +1,13 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { getRequestListener } from "@hono/node-server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
+import { createEgressCertificateAuthority, loadOrCreateEgressCa } from "../../../packages/sandbox-egress/src/ca";
+import { NodeSessionExecutionWorker } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
 import { createNodeControlPlane } from "../src/control-plane";
@@ -36,9 +40,9 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
 });
 `;
 
-async function listen(server: ReturnType<typeof createServer>) {
+async function listen(server: ReturnType<typeof createServer>, protocol = "http") {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-  return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return `${protocol}://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 async function close(server: ReturnType<typeof createServer>) {
   server.closeAllConnections();
@@ -47,8 +51,8 @@ async function close(server: ReturnType<typeof createServer>) {
 
 describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
   it.each(["root", "v1", "missing-card", "unsupported-protocol", "queued-inputs", "recovered-queued-inputs"] as const)("enforces scoped model/MCP wiring and native resume: %s", async variant => {
-    const artifactRoot = resolve(".test-artifacts"); await mkdir(artifactRoot, { recursive: true });
-    const root = await mkdtemp(join(artifactRoot, "managed-acp-"));
+    const root = await mkdtemp(join(tmpdir(), "oma-managed-acp-"));
+    const controlCA = await createEgressCertificateAuthority(await loadOrCreateEgressCa(join(root, "control-ca")));
     const upstreamRequests: Array<{ path: string; headers: Record<string, unknown>; body: string }> = [];
     let releaseFirstModel!: () => void;
     const firstModelGate = new Promise<void>(resolve => { releaseFirstModel = resolve; });
@@ -65,8 +69,16 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
     });
     const upstreamUrl = await listen(upstream);
     let cp: Awaited<ReturnType<typeof createNodeControlPlane>> | undefined;
-    const gateway = createServer();
-    const base = await listen(gateway);
+    const gateway = createHttpsServer(await controlCA.leafFor("127.0.0.1"));
+    const base = await listen(gateway, "https");
+    // Observe the real worker, without replacing execution or SQL behavior.
+    // status_idle precedes coordinator settlement, so it is not a drain signal.
+    let worker: NodeSessionExecutionWorker | undefined;
+    const poll = NodeSessionExecutionWorker.prototype.poll;
+    const polling = vi.spyOn(NodeSessionExecutionWorker.prototype, "poll").mockImplementation(function () {
+      worker = this;
+      return poll.call(this);
+    });
     const sandbox = new LocalSubprocessSandbox({ workdir: join(root, "workspace"), outputsRoot: join(root, "outputs") });
     await sandbox.setEnvVars({ ANTHROPIC_API_KEY: "inherited-test-provider-key" });
     let releaseSandbox!: () => void;
@@ -91,7 +103,7 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       await request(`/v1/vaults/${vault.id}/credentials`, { display_name: "MaxCompute", auth: { type: "static_bearer", mcp_server_url: upstreamUrl + "/mcp", token: "maxcompute-server-secret" } });
       await request(`/v1/vaults/${vault.id}/credentials`, { display_name: "Forbidden raw env", auth: { type: "environment_variable", secret_name: "MAXCOMPUTE_TOKEN", secret_value: "raw-vault-test-secret", networking: { type: "unrestricted" } } });
       const env = await request("/v1/environments", { name: "sandbox", config: { type: "cloud", networking: { type: "unrestricted" } } });
-      const agent = await request("/v1/agents", { name: "Claude sandbox", model: "workspace-model", system: "Pinned instructions", tools: [{ type: "mcp_toolset", mcp_server_name: "maxcompute" }], mcp_servers: [{ name: "maxcompute", type: "url", url: upstreamUrl + "/mcp" }], _oma: { harness: "acp-sandbox", acp: { agent: { id: "claude-acp", command: process.execPath, args: ["-e", variant === "recovered-queued-inputs" ? fakeAgent.replace("fs.mkdirSync(require('node:path').dirname(native), { recursive: true });", "").replace("fs.writeFileSync(native, 'prior-turn');", "// Deliberately lose native state but retain the ACP checkpoint.") : fakeAgent], cwd: "/workspace" } } } });
+      const agent = await request("/v1/agents", { name: "Claude sandbox", model: "workspace-model", system: "Pinned instructions", tools: [{ type: "mcp_toolset", mcp_server_name: "maxcompute" }], mcp_servers: [{ name: "maxcompute", type: "url", url: upstreamUrl + "/mcp" }], _oma: { harness: "acp-sandbox", acp: { agent: { id: "claude-acp", command: process.execPath, env: { NODE_EXTRA_CA_CERTS: join(root, "control-ca", "ca.crt") }, args: ["-e", variant === "recovered-queued-inputs" ? fakeAgent.replace("fs.mkdirSync(require('node:path').dirname(native), { recursive: true });", "").replace("fs.writeFileSync(native, 'prior-turn');", "// Deliberately lose native state but retain the ACP checkpoint.") : fakeAgent], cwd: "/workspace" } } } });
       const session = await request("/v1/sessions", { agent: { type: "agent", id: agent.id, version: agent.version }, environment_id: env.id, vault_ids: [vault.id] });
       // Credential creation may probe MCP; measure only execution traffic.
       upstreamRequests.length = 0;
@@ -199,8 +211,16 @@ describe("Node managed ACP wiring (fake ACP/model, real spawner)", () => {
       expect(upstreamRequests).toHaveLength(4);
     } finally {
       releaseFirstModel();
-      await cp?.stop("test"); await close(gateway); await close(upstream);
-      await rm(root, { recursive: true, force: true });
+      releaseSandbox();
+      try {
+        await worker?.waitForIdle();
+        await cp?.stop("test");
+        await sandbox.destroy();
+        await close(gateway); await close(upstream);
+        await rm(root, { recursive: true, force: true });
+      } finally {
+        polling.mockRestore();
+      }
     }
   }, 20_000);
 });
