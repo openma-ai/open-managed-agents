@@ -53,19 +53,6 @@ import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
 
-/** A user.* event sitting in the server-side pending_events queue.
- *  Maintained client-side via system.user_message_pending /
- *  _promoted / _cancelled SSE frames. Server is authoritative on what's
- *  pending; client mirrors the row for outbox rendering only. */
-interface PendingEntry {
-  event_id: string;
-  pending_seq: number;
-  enqueued_at: number;
-  session_thread_id: string;
-  /** The full canonical user.* event the server enqueued. */
-  event: Event;
-}
-
 function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -107,17 +94,14 @@ export function SessionDetail() {
   const [toolInputStreams, setToolInputStreams] = useState<Map<string, { name?: string; partial: string }>>(new Map());
   const [view, setView] = useState<View>("chat");
   const [sending, setSending] = useState(false);
-  // Optimistic outbox slot — what the user typed, between hitting Send
-  // and either the send response's accepted events being merged into
-  // `events` or the server-side pending broadcast
-  // (system.user_message_pending) arriving over SSE. Without this, hitting
-  // Send clears the input field instantly and the user stares at a blank
-  // conversation for the roundtrip. With it, the message appears in the
-  // queued-state EventBubble immediately. Node/Docker returns the accepted
-  // user.message in the POST response and never emits pending frames, so
-  // send() merges first and clears this slot afterwards. Single slot is
-  // intentional (we never let two POSTs be in flight at once — Send is
-  // disabled while `sending`).
+  // Optimistic outbox slot — what the user typed between hitting Send and
+  // the official send response's accepted events being merged into
+  // `events`. Without this, hitting Send clears the input field instantly
+  // and the user stares at a blank conversation for the roundtrip. With it,
+  // the message appears immediately. send() merges response.data first and
+  // clears this slot only after a successful merge; empty data keeps it (no
+  // pending-frame fallback). Single slot is intentional (we never let two
+  // POSTs be in flight at once — Send is disabled while `sending`).
   const [localPending, setLocalPending] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
   const [sessionMeta, setSessionMeta] = useState<{
@@ -172,14 +156,6 @@ export function SessionDetail() {
    *  the events array at render time. SSE-driven new threads don't
    *  auto-switch — the operator stays on whatever they're watching. */
   const [activeThreadId, setActiveThreadId] = useState<string>("sthr_primary");
-  /** Server-mirrored pending queue, keyed by event_id. Populated from
-   *  the initial GET /pending plus live system.user_message_pending /
-   *  _promoted / _cancelled SSE frames. Pending entries render as a
-   *  separate "outbox" section at the bottom of the timeline; once the
-   *  server promotes the row (system.user_message_promoted), the entry
-   *  is removed from this map and the canonical user.* event takes its
-   *  place in the events array via the regular SSE broadcast. */
-  const [pendingByEventId, setPendingByEventId] = useState<Map<string, PendingEntry>>(new Map());
   const [showTrajectory, setShowTrajectory] = useState(false);
   const seenKeys = useRef(new Set<string>());
 
@@ -363,87 +339,30 @@ export function SessionDetail() {
     // for the retry attempt naturally restores the pill.
     if (ev.type === "session.error") {
       setStatus("idle");
-      // session.error implies the active turn is dead; the harness won't
-      // pick anything else off the queue until the next user.message.
-      // Drop the outbox so the user doesn't see ghosts of inputs that
-      // can never run on this session state.
-      setPendingByEventId(new Map());
     }
 
-    // AMA-spec pending-queue notifications. The server is authoritative
-    // on what's queued; we mirror its state into pendingByEventId so the
-    // outbox renders without polling /pending.
-    if (ev.type === "system.user_message_pending") {
-      const p = ev as unknown as {
-        event_id: string;
-        pending_seq: number;
-        enqueued_at: number;
-        session_thread_id: string;
-        event: Event;
-      };
-      // Server claimed our optimistic outbox slot — drop the client-only
-      // mirror so we don't double-render the same user message (server
-      // entry has more metadata + a stable event_id; ours has neither).
-      const inner = p.event;
-      const innerText =
-        inner && (inner as { content?: Array<{ type?: string; text?: string }> }).content
-          ?.find((c) => c.type === "text")?.text;
-      if (innerText) setLocalPending((cur) => (cur === innerText ? null : cur));
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          const next = new Map(prev);
-          next.set(p.event_id, {
-            event_id: p.event_id,
-            pending_seq: p.pending_seq,
-            enqueued_at: p.enqueued_at,
-            session_thread_id: p.session_thread_id ?? "sthr_primary",
-            event: p.event,
-          });
-          return next;
-        });
-      }
-      // System frame — don't add to events list. The canonical user.*
-      // event arrives separately at drain time.
+    // Optional OpenMA extensions. CF's SessionDO may still emit these
+    // pending-queue notifications, but the Console does not depend on them
+    // for the send/outbox path (official MA send response is authoritative).
+    // Ignore them so they never become unknown user-visible rows in the
+    // canonical events list.
+    if (
+      ev.type === "system.user_message_pending"
+      || ev.type === "system.user_message_promoted"
+      || ev.type === "system.user_message_cancelled"
+    ) {
       return;
     }
-    if (ev.type === "system.user_message_promoted") {
-      const p = ev as unknown as { event_id?: string };
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          if (!prev.has(p.event_id!)) return prev;
-          const next = new Map(prev);
-          next.delete(p.event_id!);
-          return next;
-        });
+    // Official-path handoff for the optimistic bubble: when the send
+    // response carried no data (or SSE redelivers the canonical event),
+    // the real user.message is what replaces it. This does NOT use
+    // OpenMA pending frames.
+    if (ev.type === "user.message") {
+      const blocks = Array.isArray(ev.content) ? ev.content : [];
+      const text = blocks.find((block) => block.type === "text")?.text;
+      if (typeof text === "string") {
+        setLocalPending((cur) => (cur === text ? null : cur));
       }
-      return;
-    }
-    if (ev.type === "system.user_message_cancelled") {
-      const p = ev as unknown as { event_id?: string };
-      if (p.event_id) {
-        setPendingByEventId((prev) => {
-          if (!prev.has(p.event_id!)) return prev;
-          const next = new Map(prev);
-          next.delete(p.event_id!);
-          return next;
-        });
-      }
-      return;
-    }
-    // user.interrupt also clears the outbox client-side (server emits
-    // _cancelled per row above; this is defensive for the case where the
-    // SDK posts user.interrupt without a thread filter and we want to
-    // drop everything for the active thread).
-    if (ev.type === "user.interrupt") {
-      const tid = (ev as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-      setPendingByEventId((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Map(prev);
-        for (const [k, v] of prev) {
-          if (v.session_thread_id === tid) next.delete(k);
-        }
-        return next;
-      });
     }
     // Live-update the thread selector when a sub-agent spawns. We don't
     // auto-switch the operator's view — they stay on whatever they're
@@ -517,7 +436,6 @@ export function SessionDetail() {
     setTrajectory(undefined);
     setThreads([]);
     setActiveThreadId("sthr_primary");
-    setPendingByEventId(new Map());
     setLocalPending(null);
 
     // Load session info
@@ -716,13 +634,12 @@ export function SessionDetail() {
       const response = await managedApi.sessions.events.send(id, {
         events: [{ type: "user.message", content }],
       });
-      // The Node/Docker runtime returns the accepted user.message in
-      // response.data and never emits system.user_message_pending. Merge
-      // those events into the canonical log first; addEvent dedupes by id
-      // so the same event arriving later over SSE cannot double-render.
-      // Only after the merge do we drop the optimistic slot. Legacy
-      // Cloudflare 202/null responses have no data to merge, so this still
-      // clears localPending and leaves the pending SSE path untouched.
+      // Official MA contract: the send response carries the accepted
+      // user.message events in response.data. Merge them into the canonical
+      // log first; addEvent dedupes by id so the same event arriving later
+      // over SSE cannot double-render. Only after a successful merge do we
+      // drop the optimistic slot. Empty data keeps the optimistic bubble
+      // visible — there is no pending-frame fallback.
       const handoff = mergeSendResponseIntoOutbox(
         response,
         { localPending: optimisticText, optimisticText },
@@ -731,7 +648,7 @@ export function SessionDetail() {
       setLocalPending(handoff.localPending);
     } catch {
       // api() already toasted the error; clear the optimistic slot so
-      // the user doesn't keep seeing a "stuck" pending row that will
+      // the user doesn't keep seeing a "stuck" optimistic row that will
       // never actually run.
       setLocalPending(null);
     }
@@ -793,12 +710,8 @@ export function SessionDetail() {
     }
   };
 
-  const activePendingEntries = Array.from(pendingByEventId.values())
-    .filter((entry) => entry.session_thread_id === activeThreadId)
-    .sort((a, b) => a.pending_seq - b.pending_seq);
   const hasTransientActivity = (
     (localPending !== null && activeThreadId === "sthr_primary")
-    || activePendingEntries.length > 0
     || thinkingStreams.size > 0
     || toolInputStreams.size > 0
     || streams.size > 0
@@ -807,7 +720,6 @@ export function SessionDetail() {
   const transientActivity = (
     <SessionTransientActivity
       localPending={activeThreadId === "sthr_primary" ? localPending : null}
-      pendingEntries={activePendingEntries}
       running={status === "running"}
       streams={streams}
       thinkingStreams={thinkingStreams}
@@ -1295,14 +1207,12 @@ function RelativeTimeBadge({ iso }: { iso: string }) {
 
 function SessionTransientActivity({
   localPending,
-  pendingEntries,
   running,
   streams,
   thinkingStreams,
   toolInputStreams,
 }: {
   localPending: string | null;
-  pendingEntries: PendingEntry[];
   running: boolean;
   streams: ReadonlyMap<string, string>;
   thinkingStreams: ReadonlyMap<string, string>;
@@ -1316,13 +1226,6 @@ function SessionTransientActivity({
           livePending
         />
       ) : null}
-      {pendingEntries.map((entry) => (
-        <EventRender
-          event={entry.event}
-          key={`pending-${entry.event_id}`}
-          livePending
-        />
-      ))}
       {Array.from(thinkingStreams.entries()).map(([id, text]) => (
         <Reasoning defaultOpen isStreaming key={`think-${id}`}>
           <ReasoningTrigger />

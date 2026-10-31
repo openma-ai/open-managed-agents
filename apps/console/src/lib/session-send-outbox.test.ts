@@ -1,10 +1,12 @@
 /**
  * Regression tests for https://github.com/openma-ai/open-managed-agents/issues/398
  *
- * Node/Docker returns the accepted user.message in the POST /events response
- * and never emits `system.user_message_pending`. The Console must merge that
- * response into its canonical event log before clearing the optimistic
- * outbox slot, and must dedupe a later SSE redelivery of the same event id.
+ * The Console follows the official Managed Agents send-response path only:
+ * POST /events returns the accepted `user.message` in `response.data`, which
+ * the Console merges into its canonical event log before clearing the
+ * optimistic outbox slot. The optional OpenMA `system.user_message_pending` /
+ * `_promoted` / `_cancelled` stream frames are NOT a dependency and are never
+ * required as a fallback.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -69,8 +71,10 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
     );
 
     expect(handoff.merged).toBe(1);
+    expect(handoff.missingData).toBe(false);
     expect(handoff.localPending).toBeNull();
-    expect(visibleUserTexts(outbox.events, handoff.localPending)).toContain(text);
+    // The only visible user bubble comes from the merged accepted event.
+    expect(visibleUserTexts(outbox.events, handoff.localPending)).toEqual([text]);
   });
 
   it("merges the accepted event before clearing the optimistic slot", () => {
@@ -119,9 +123,9 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
     ["missing data", {}],
     ["empty data", { data: [] }],
   ])(
-    "clears localPending as the legacy CF fallback when the response is %s",
+    "keeps the optimistic bubble when the response has no accepted events (%s)",
     (_label, response) => {
-      const text = "hello from cloudflare";
+      const text = "hello without send data";
       const outbox = createOutbox();
 
       const handoff = mergeSendResponseIntoOutbox(
@@ -131,8 +135,12 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
       );
 
       expect(handoff.merged).toBe(0);
-      expect(handoff.localPending).toBeNull();
+      expect(handoff.missingData).toBe(true);
+      // Keep the optimistic bubble: no blank window, and no pending-frame
+      // fallback is needed or attempted.
+      expect(handoff.localPending).toBe(text);
       expect(outbox.events).toHaveLength(0);
+      expect(visibleUserTexts(outbox.events, handoff.localPending)).toEqual([text]);
     },
   );
 
@@ -145,6 +153,8 @@ describe("mergeSendResponseIntoOutbox (issue #398)", () => {
       outbox.addEvent,
     );
 
+    expect(handoff.merged).toBe(0);
+    expect(handoff.missingData).toBe(true);
     expect(handoff.localPending).toBe("a different pending message");
   });
 });

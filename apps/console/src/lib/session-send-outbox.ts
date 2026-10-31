@@ -14,20 +14,25 @@ export interface SendOutboxHandoffResult {
   merged: number;
   /** Value the optimistic slot should hold after the handoff. */
   localPending: string | null;
+  /** True when the response carried no accepted events to merge. */
+  missingData: boolean;
 }
 
 /**
- * Hand off a successful POST /v1/sessions/:id/events response to the outbox.
+ * Hand off the official Managed Agents POST /v1/sessions/:id/events response
+ * to the outbox.
  *
- * The Node/Docker runtime returns the accepted user.message in
- * `response.data` and does NOT emit a `system.user_message_pending` SSE
- * frame. Merge those events into the canonical event log BEFORE clearing
- * the optimistic localPending slot, otherwise the user bubble disappears
- * until the next refresh (#398).
+ * Under the official MA contract the response returns the accepted
+ * `user.message` event(s) in `response.data`. Merge those events into the
+ * canonical event log BEFORE clearing the optimistic `localPending` slot,
+ * otherwise the user bubble disappears until the next refresh (#398).
  *
- * Legacy Cloudflare responses can omit `data` (202/null edge). There is
- * nothing to merge in that case; clearing localPending keeps the existing
- * fallback behavior and lets the pending SSE frames populate the outbox.
+ * Empty or missing `data` is unexpected under the official MA contract.
+ * When there is nothing to merge, keep the optimistic bubble as-is instead
+ * of clearing it: clearing would reintroduce the #398 blank-window
+ * regression, and the Console does not fall back to OpenMA's optional
+ * `system.user_message_pending` stream frames to repopulate the outbox.
+ * A refresh or retry is the recovery path.
  *
  * `addEvent` is the component's canonical event sink: it dedupes by
  * `eventKey`, so when the stream later redelivers the same event id it is
@@ -52,7 +57,13 @@ export function mergeSendResponseIntoOutbox(
 
   return {
     merged: events.length,
+    // Only clear the optimistic slot once accepted events are in the log.
+    // With no data, keep the bubble visible rather than waiting on
+    // optional pending frames.
     localPending:
-      handoff.localPending === handoff.optimisticText ? null : handoff.localPending,
+      events.length > 0 && handoff.localPending === handoff.optimisticText
+        ? null
+        : handoff.localPending,
+    missingData: events.length === 0,
   };
 }
