@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "test:node": "vitest run --config test/vitest.node.config.ts"
+  },
   "dependencies": {
     "@open-managed-agents/cap": "workspace:*",
     "@open-managed-agents/credential-store": "workspace:*",

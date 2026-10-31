@@ -1,7 +1,7 @@
 import type { SpecRegistry } from "@open-managed-agents/cap";
 import type { StoredCredential } from "@open-managed-agents/credential-store";
 import type { ManagedCredentialResolverPorts } from "./ports";
-import { refreshCredential } from "./refresh";
+import { findActiveCredential, refreshCredential } from "./refresh";
 import {
   placeholderEnvironment,
   selectMcpTarget,
@@ -123,14 +123,21 @@ export class ManagedCredentialResolver {
     }
     const failure: { code: string | null } = { code: null };
     const fresh = await this.refresh(workspaceId, target, target.upstreamToken, failure);
-    if (fresh === null) {
+    if (fresh === null || await findActiveCredential(this.ports, {
+      workspaceId, vaultId: target.refresh.vaultId, credentialId: target.refresh.credentialId,
+    }) === null) {
       return { response: first, refreshed: false, refreshFailed: true, refreshFailureCode: failure.code };
     }
+    // No awaited cleanup between the final authority check and dispatch. This
+    // does not cancel calls already dispatched when a later archive completes.
     try {
-      await first.body?.cancel();
-    } catch {
-      /* already consumed */
+      return { response: await send(fresh), refreshed: true, refreshFailed: false, refreshFailureCode: null };
+    } finally {
+      try {
+        await first.body?.cancel();
+      } catch {
+        /* already consumed */
+      }
     }
-    return { response: await send(fresh), refreshed: true, refreshFailed: false, refreshFailureCode: null };
   }
 }
