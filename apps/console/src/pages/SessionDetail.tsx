@@ -401,8 +401,10 @@ export function SessionDetail() {
     setEvents(upserted.events);
     if (upserted.action === "update") return;
 
-    if (ev.type === "session.status_running") setStatus("running");
-    if (ev.type === "session.status_idle") setStatus("idle");
+    // addEvent ingests through the OpenMA codec: CMA session.status_running /
+    // status_idle arrive as OpenMA session.running / session.idle.
+    if (ev.type === "session.running") setStatus("running");
+    if (ev.type === "session.idle") setStatus("idle");
     // session.error → idle: defense-in-depth for the catch-all status_idle
     // emit (processUserMessage finally) in case a future code path forgets
     // to pair status_running with status_idle. Note: do NOT also map
