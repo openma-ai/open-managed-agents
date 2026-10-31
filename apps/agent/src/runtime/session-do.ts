@@ -1419,6 +1419,48 @@ export class SessionDO extends DurableObject<Env> {
     } as SystemUserMessagePromotedEvent);
   }
 
+  /**
+   * Steering: absorb every queued user.message on this lane into the running
+   * turn. The execution outbox row settles as completed (so it never runs as
+   * its own turn), the local row is promoted with the official CMA stamp and
+   * re-emit, and `system.user_message_steered` tells clients it joined the
+   * current turn. Rows another host already claimed are left alone.
+   */
+  /** Queued event ids the user asked to steer into the running turn. */
+  private readonly _steerRequested = new Set<string>();
+
+  private async takeSteeringInputs(threadId: string, history: HistoryStore): Promise<SessionEvent[]> {
+    const store = await this.getExecutionStore();
+    const out: SessionEvent[] = [];
+    for (const row of this.pending!.list(threadId)) {
+      // Only rows the user explicitly promoted (Backchat "Steer"); the rest
+      // keep their place in the queue.
+      if (row.type !== "user.message" || !this._steerRequested.has(row.event_id)) continue;
+      this._steerRequested.delete(row.event_id);
+      if (store !== null) {
+        const result = await store.steerQueued({
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          executionId: row.event_id,
+          steeredAt: new Date().toISOString(),
+        });
+        if (result.type !== "steered") continue;
+      }
+      // Steered frame first so clients place the stamped re-emit inside the
+      // running turn instead of briefly deferring it as the next turn.
+      this.broadcastEvent({
+        type: "system.user_message_steered",
+        event_id: row.event_id,
+        session_thread_id: row.session_thread_id,
+        steered_at: Date.now(),
+      } as unknown as SessionEvent);
+      this.promotePendingRow(row, history);
+      const event = JSON.parse(row.data) as SessionEvent;
+      out.push(event);
+    }
+    return out;
+  }
+
   private async drainEventQueue(threadId: string = "sthr_primary"): Promise<void> {
     // Sync re-entry mutex per thread — two callers for the same thread
     // can't both reach the SQL pending lookup before either marks a
@@ -1576,7 +1618,10 @@ export class SessionDO extends DurableObject<Env> {
           break;
         }
         if (result.type === "completed") continue;
-        if (result.type === "cancelled") break;
+        // An interrupt cancels only the running execution; queued ones
+        // survive and drain next (Backchat policy). After cancelSession the
+        // queue is empty and the next runOne returns "empty".
+        if (result.type === "cancelled") continue;
         if (result.type === "failed") {
           const errorEvent: SessionEvent = {
             type: "session.error",
@@ -1760,7 +1805,10 @@ export class SessionDO extends DurableObject<Env> {
         // running the turn), and pending_events is already cleared.
         // Status auto-derives from sessions.turn_id once the
         // RuntimeAdapter.endTurn callback fires.
-        break; // Stop draining on error — let the client decide what to do
+        // A user interrupt only ends the active turn; queued messages keep
+        // draining. Any other failure stops the drain so the client decides.
+        if (isUserInterrupt) continue;
+        break;
       }
       // Promoted row is in events with processed_at set; pending row is
       // deleted. Loop back for the next pending event on this thread.
@@ -2233,12 +2281,9 @@ export class SessionDO extends DurableObject<Env> {
         //   1. Abort the in-flight turn for the target thread (only that
         //      thread — siblings keep running). If no session_thread_id
         //      is set, defaults to primary.
-        //   2. Flush queued user.* events for that thread (mark
-        //      cancelled_at). AMA's BetaManagedAgentsRetryStatusExhausted
-        //      doc says "queued inputs are flushed and the session
-        //      returns to idle"; user.interrupt mirrors that semantic.
-        //      eventsToMessages skips cancelled events so they never
-        //      reach the LLM context.
+        //   2. Keep queued user.* events: they drain after the interrupted
+        //      turn ends (matches Backchat's SessionManager.cancel). Only
+        //      explicit DELETE /pending/:event_id cancels a queued row.
         //   3. Append the user.interrupt event itself + idle marker.
         const targetThread =
           (body as unknown as { session_thread_id?: string })
@@ -2263,22 +2308,12 @@ export class SessionDO extends DurableObject<Env> {
           this._threadAbortControllers.delete(targetThread);
         }
         const cancelTs = Date.now();
-        // Cancel rows in the AMA-spec pending_events queue and broadcast
-        // a per-row notification so live consumers can strike-through the
-        // outbox bubble.
-        const cancelledRows = this.pending!.cancelAllForThread(
-          targetThread,
-          cancelTs,
-        );
-        for (const row of cancelledRows) {
-          this.broadcastEvent({
-            type: "system.user_message_cancelled",
-            pending_seq: row.pending_seq,
-            event_id: row.event_id,
-            session_thread_id: row.session_thread_id,
-            cancelled_at: cancelTs,
-          } as SystemUserMessageCancelledEvent);
-        }
+        // Queued user.* events SURVIVE an interrupt (Backchat policy): the
+        // interrupt aborts only the active turn, then the drain loop picks
+        // the next queued row and the official CMA stamp/re-emit applies.
+        // Nothing is left with processed_at null forever. Callers that want
+        // to drop a queued message use DELETE /v1/sessions/:id/pending/:event_id,
+        // which emits system.user_message_cancelled for that row.
         // Legacy back-compat: pre-3a3e7ec sessions may still have user.*
         // rows sitting in `events` with processed_at IS NULL. The legacy
         // partial pending-index on `events` would otherwise pick them up
@@ -2298,7 +2333,7 @@ export class SessionDO extends DurableObject<Env> {
           this.ctx.storage.sql.exec("SELECT changes() AS affected_rows").one()
             .affected_rows ?? 0,
         );
-        const cancelledCount = cancelledRows.length + legacyCancelledCount;
+        const cancelledCount = legacyCancelledCount;
         const settledRequests: string[] = [];
         if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
           const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
@@ -2550,11 +2585,13 @@ export class SessionDO extends DurableObject<Env> {
       // (no headers) = Anthropic-spec behavior: no replay, only spec event
       // types broadcast. `Last-Event-ID` is SSE-native resume — its
       // presence implies replay-from-seq regardless of x-oma-replay.
-      const includeChunks =
-        (request.headers.get("x-oma-include") ?? "")
-          .split(",")
-          .map((s) => s.trim())
-          .includes("chunks");
+      const includes = (request.headers.get("x-oma-include") ?? "")
+        .split(",")
+        .map((s) => s.trim());
+      const includeChunks = includes.includes("chunks");
+      // Managed stream adapter opts into the OMA queue-lifecycle extension
+      // (system.user_message_cancelled / _steered) without the chunk firehose.
+      const includeQueue = includes.includes("queue_lifecycle");
       const replayHeader = request.headers.get("x-oma-replay") === "1";
       const lastEventIdRaw = request.headers.get("Last-Event-ID");
       const lastEventId = lastEventIdRaw !== null
@@ -2568,8 +2605,11 @@ export class SessionDO extends DurableObject<Env> {
       // Pass undefined (not []) when no tags so the runtime skips the
       // tag-array path entirely — empty-tags semantics differ across CF
       // runtime versions and the cleanest contract is "no tags arg".
-      if (includeChunks) {
-        this.ctx.acceptWebSocket(pair[1], ["chunks"]);
+      if (includeChunks || includeQueue) {
+        this.ctx.acceptWebSocket(pair[1], [
+          ...(includeChunks ? ["chunks"] : []),
+          ...(includeQueue ? ["queue_lifecycle"] : []),
+        ]);
       } else {
         this.ctx.acceptWebSocket(pair[1]);
       }
@@ -2665,6 +2705,81 @@ export class SessionDO extends DurableObject<Env> {
     //   { data: [ { pending_seq, enqueued_at, type, event_id,
     //               session_thread_id, cancelled_at, data } ] }
     // Ordered by pending_seq ASC. Cancelled rows omitted by default.
+    if (request.method === "POST" && url.pathname.startsWith("/pending/") && url.pathname.endsWith("/steer")) {
+      const eventId = decodeURIComponent(url.pathname.slice("/pending/".length, -"/steer".length));
+      const row = this.pending!.list("sthr_primary").find((r) => r.event_id === eventId)
+        ?? this.pending!.threadsWithPending().flatMap((t) => this.pending!.list(t)).find((r) => r.event_id === eventId);
+      const conflict = (message: string, reason?: string) => new Response(
+        JSON.stringify({ type: "error", error: { type: "invalid_request_error", message }, ...(reason ? { reason } : {}) }),
+        { status: 409, headers: { "content-type": "application/json" } },
+      );
+      if (!row) return conflict("Queued message already started or was removed", "already_processed");
+      const agent = await this.getThreadAgentConfig(row.session_thread_id);
+      if (!agentAdvertisesSteering(agent)) return conflict("This agent does not support steering; the message stays queued");
+      this._steerRequested.add(eventId);
+      return new Response(JSON.stringify({ event_id: eventId, steer: "requested" }),
+        { status: 202, headers: { "content-type": "application/json" } });
+    }
+    if (request.method === "DELETE" && url.pathname.startsWith("/pending/")) {
+      const eventId = decodeURIComponent(url.pathname.slice("/pending/".length));
+      const cancelledAt = Date.now();
+      const cancelledAtIso = new Date(cancelledAt).toISOString();
+      // Compare-and-cancel: the D1 execution outbox is the queue authority.
+      // Response body is the edit-race contract (openma-common documents it):
+      //   { cancelled: true, id, cancelled_at }  — still queued, removed
+      //   { cancelled: false, reason, id, processed_at? } — too late
+      // On success we also broadcast system.user_message_cancelled so stream
+      // observers stay in sync with the HTTP outcome.
+      const store = await this.getExecutionStore();
+      type NotQueuedReason = "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+      let notQueued: { reason: NotQueuedReason; processedAt?: string } | null = null;
+      let durableCancelled = store === null;
+      if (store !== null) {
+        const result = await store.cancelQueued({
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          executionId: eventId,
+          cancelledAt: cancelledAtIso,
+        });
+        if (result.type === "cancelled") {
+          durableCancelled = true;
+          this._steerRequested.delete(eventId);
+        } else {
+          durableCancelled = false;
+          notQueued = {
+            reason: result.reason,
+            ...(result.execution?.attempt?.claimedAt
+              ? { processedAt: result.execution.attempt.claimedAt }
+              : result.execution?.settledAt
+                ? { processedAt: result.execution.settledAt }
+                : {}),
+          };
+        }
+      }
+      const localRow = durableCancelled ? this.pending!.cancelByEventId(eventId, cancelledAt) : null;
+      if (store === null && localRow === null) {
+        durableCancelled = false;
+        notQueued = { reason: "not_found" };
+      }
+      if (!durableCancelled) {
+        return new Response(JSON.stringify({
+          cancelled: false,
+          reason: notQueued?.reason ?? "already_processing",
+          id: eventId,
+          ...(notQueued?.processedAt ? { processed_at: notQueued.processedAt } : {}),
+        }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+      const row = localRow ?? { pending_seq: 0, event_id: eventId, session_thread_id: "sthr_primary" };
+      this.broadcastEvent({
+        type: "system.user_message_cancelled",
+        pending_seq: row.pending_seq,
+        event_id: row.event_id,
+        session_thread_id: row.session_thread_id,
+        cancelled_at: cancelledAt,
+      } as SystemUserMessageCancelledEvent);
+      return new Response(JSON.stringify({ cancelled: true, id: row.event_id, cancelled_at: cancelledAtIso }),
+        { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (request.method === "GET" && url.pathname === "/pending") {
       const threadId =
         url.searchParams.get("session_thread_id") ?? "sthr_primary";
@@ -3114,6 +3229,7 @@ export class SessionDO extends DurableObject<Env> {
   private sessionSandboxRuntime(): SessionSandboxRuntime {
     return this.sandboxRuntime ??= new SessionSandboxRuntime({
       mode: async () => {
+        // LOCAL-DEV-ONLY shim (uncommitted): no docker on this box.
         const source = await this.env.MAIN_MCP?.resolveManagedSessionInputs({
           tenantId: this.state.tenant_id, sessionId: this.state.session_id,
         });
@@ -3882,9 +3998,17 @@ export class SessionDO extends DurableObject<Env> {
     // receive only Anthropic-spec event types. Keeps the spec-default
     // wire contract clean for clients using the official Anthropic SDK
     // against an OMA server.
+    const isQueueLifecycle =
+      event.type === "system.user_message_cancelled" ||
+      (event.type as string) === "system.user_message_steered";
     const sockets = isSpecEvent(event.type)
       ? this.ctx.getWebSockets()
-      : this.ctx.getWebSockets("chunks");
+      : isQueueLifecycle
+        ? [...new Set([
+            ...this.ctx.getWebSockets("chunks"),
+            ...this.ctx.getWebSockets("queue_lifecycle"),
+          ])]
+        : this.ctx.getWebSockets("chunks");
     for (const ws of sockets) {
       try {
         ws.send(data);
@@ -5296,6 +5420,9 @@ export class SessionDO extends DurableObject<Env> {
       runtime: {
         history,
         sandbox,
+        ...(agentAdvertisesSteering(agent)
+          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId, history) }
+          : {}),
         broadcast: (event) => {
           history.append(event);
           this.broadcastEvent(event, activeFence);
@@ -6694,3 +6821,9 @@ export class SessionDO extends DurableObject<Env> {
 
 // ── Schedule type (cf-agents-compatible) ───────────────────────────────
 type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
+
+/** OMA steering advertisement for built-in harnesses, the CF counterpart of
+ *  an ACP agent's `_session/steering` capability. */
+export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
+  return agent?.metadata?.["oma.session.steering"] === "enabled";
+}

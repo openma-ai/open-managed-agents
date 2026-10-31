@@ -600,7 +600,7 @@ describe("SqlSessionExecutionCoordinator", () => {
     });
   });
 
-  it("flushes queued work, keeps the first interrupt intent, and terminalizes an expired owner", async () => {
+  it("keeps queued work, keeps the first interrupt intent, and terminalizes an expired owner", async () => {
     await coordinator.admit(admitted("active", "session_a", at(1)));
     await coordinator.admit(admitted("queued", "session_a", at(2)));
     await coordinator.claim({
@@ -632,13 +632,96 @@ describe("SqlSessionExecutionCoordinator", () => {
     await expect(coordinator.find({
       workspaceId: "workspace_01",
       executionId: "queued",
-    })).resolves.toMatchObject({ state: "cancelled", settledAt: at(5) });
+    })).resolves.toMatchObject({ state: "queued", settledAt: null });
+    // The queued item survives the interrupt and drains next.
     await expect(coordinator.claim({
       ownerId: "replacement",
       attemptId: "replacement_attempt",
       claimedAt: at(7),
       leaseTtlMs: 30_000,
-    })).resolves.toEqual({ type: "empty" });
+    })).resolves.toMatchObject({ type: "claimed", execution: { id: "queued" } });
+  });
+
+  it("removes one queued execution and refuses to cancel started work", async () => {
+    await coordinator.admit(admitted("running", "session_q", at(1)));
+    await coordinator.admit(admitted("queued_a", "session_q", at(2)));
+    await coordinator.admit(admitted("queued_b", "session_q", at(3)));
+    await coordinator.claim({ ownerId: "node", attemptId: "a1", claimedAt: at(4), leaseTtlMs: 30_000 });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "running", cancelledAt: at(5),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_processing" });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "queued_a", cancelledAt: at(5),
+    })).resolves.toMatchObject({ type: "cancelled", execution: { id: "queued_a", state: "cancelled" } });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "queued_a", cancelledAt: at(6),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_cancelled" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "queued_b" }))
+      .resolves.toMatchObject({ state: "queued" });
+  });
+
+  it("cancelQueued response discriminates cancelled vs already_processing for the edit race", async () => {
+    await coordinator.admit(admitted("q_late", "session_c", at(1)));
+    await coordinator.admit(admitted("q_ok", "session_c", at(2)));
+    // Claim drains FIFO: q_late becomes running; q_ok stays queued.
+    await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(3), leaseTtlMs: 30_000 });
+    const ok = await coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_c", executionId: "q_ok", cancelledAt: at(4),
+    });
+    expect(ok).toMatchObject({ type: "cancelled", execution: { id: "q_ok", state: "cancelled" } });
+    // HTTP shape the Console branches on: cancelled true vs false + reason.
+    expect({ cancelled: true as const, id: "q_ok", cancelled_at: at(4) }.cancelled).toBe(true);
+    const late = await coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_c", executionId: "q_late", cancelledAt: at(5),
+    });
+    expect(late).toMatchObject({ type: "not_queued", reason: "already_processing", execution: { id: "q_late", state: "running" } });
+    const httpLate = {
+      cancelled: false as const,
+      reason: late.type === "not_queued" ? late.reason : "not_found",
+      id: "q_late",
+      processed_at: late.type === "not_queued"
+        ? (late.execution?.attempt?.claimedAt ?? late.execution?.settledAt ?? undefined)
+        : undefined,
+    };
+    expect(httpLate).toMatchObject({ cancelled: false, reason: "already_processing", id: "q_late" });
+    expect(httpLate.processed_at).toBeTruthy();
+  });
+
+  it("edit race: cancel after the item was promoted is rejected and the original runs unchanged", async () => {
+    await coordinator.admit(admitted("queued_edit", "session_r", at(1)));
+    // The host dequeues the item while the user is still editing it.
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    expect(claimed).toMatchObject({ type: "claimed", execution: { id: "queued_edit" } });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_edit", cancelledAt: at(3),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_processing" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "queued_edit" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
+  it("edit race: cancel after steer is rejected", async () => {
+    await coordinator.admit(admitted("queued_steer", "session_r", at(1)));
+    await expect(coordinator.steerQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", steeredAt: at(2),
+    })).resolves.toMatchObject({ type: "steered" });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", cancelledAt: at(3),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_completed" });
+  });
+
+  it("edit race: concurrent claim and cancel have exactly one winner", async () => {
+    await coordinator.admit(admitted("queued_both", "session_r", at(1)));
+    const [claim, cancel] = await Promise.all([
+      coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 }),
+      coordinator.cancelQueued({
+        workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_both", cancelledAt: at(2),
+      }),
+    ]);
+    const claimWon = claim.type === "claimed";
+    const cancelWon = cancel.type === "cancelled";
+    expect(claimWon !== cancelWon).toBe(true);
+    const row = await coordinator.find({ workspaceId: "workspace_01", executionId: "queued_both" });
+    expect(row?.state).toBe(claimWon ? "running" : "cancelled");
   });
 
   it("has a single atomic winner when replicas race for one execution", async () => {

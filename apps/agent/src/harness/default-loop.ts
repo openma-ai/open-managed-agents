@@ -437,6 +437,8 @@ export class DefaultHarness implements HarnessInterface {
       // NoOutputGeneratedError. Keep the real error so the turn fails with it.
       let streamError: unknown;
       let stepSawFirstChunk = false;
+      const steerInsertions: Array<{ at: number; messages: ModelMessage[] }> = [];
+      let steerInsertedCount = 0;
 
       const streamStartedAt = Date.now();
       console.log(`[stream] streamText START model=${modelId} messages=${finalMessages.length} tools=${Object.keys(cached.tools ?? {}).length}`);
@@ -483,6 +485,33 @@ export class DefaultHarness implements HarnessInterface {
       providerOptions,
       stopWhen: stepCountIs(100),
       abortSignal: runtime.abortSignal,
+      // Steering: at each step boundary absorb queued user messages into
+      // this turn. AI SDK rebuilds step input from the initial messages
+      // plus response messages, so remember where each steer landed and
+      // splice it back in on every later step.
+      ...(runtime.takeSteeringInputs
+        ? {
+            prepareStep: async ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {
+              if (stepNumber > 0) {
+                const steered = await runtime.takeSteeringInputs!();
+                if (steered.length > 0) {
+                  const converted = await eventsToMessagesAsync(steered, ctx.fileFetcher);
+                  steerInsertions.push({ at: messages.length - steerInsertedCount, messages: converted });
+                  steerInsertedCount += converted.length;
+                }
+              }
+              if (steerInsertions.length === 0) return undefined;
+              const out: ModelMessage[] = [];
+              let cursor = 0;
+              for (const ins of steerInsertions) {
+                out.push(...messages.slice(cursor, ins.at), ...ins.messages);
+                cursor = ins.at;
+              }
+              out.push(...messages.slice(cursor));
+              return { messages: out };
+            },
+          }
+        : {}),
 
       onChunk: ({ chunk }) => {
         // First chunk of this step → emit span.model_first_token. Pair via

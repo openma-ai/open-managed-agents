@@ -149,6 +149,13 @@ export class InMemoryPendingQueue implements PendingQueueRepo {
     return out;
   }
 
+  cancelByEventId(eventId: string, cancelledAtMs: number): PendingRow | null {
+    const r = this.rows.find((r) => r.event_id === eventId && r.cancelled_at == null);
+    if (!r) return null;
+    r.cancelled_at = cancelledAtMs;
+    return { ...r };
+  }
+
   list(threadId: string, includeCancelled = false): PendingRow[] {
     return this.rows
       .filter(

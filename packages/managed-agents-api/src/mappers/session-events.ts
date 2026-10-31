@@ -699,6 +699,15 @@ export function toSessionEventResponse(event: SessionEventView): object {
 
 export function toStreamSessionEventResponse(event: StreamSessionEvent): object {
   switch (event.type) {
+    case "oma.queue_lifecycle":
+      return {
+        type: `system.user_message_${event.kind}`,
+        event_id: event.eventId,
+        ...(event.sessionThreadId !== undefined && {
+          session_thread_id: event.sessionThreadId,
+        }),
+        [event.kind === "cancelled" ? "cancelled_at" : "steered_at"]: event.occurredAt,
+      };
     case "event_start":
       return {
         type: event.type,

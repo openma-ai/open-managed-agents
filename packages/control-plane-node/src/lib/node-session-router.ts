@@ -10,6 +10,7 @@ import type { SessionEvent, StoredEvent } from "@open-managed-agents/shared";
 import { buildTrajectory, type SessionRecord, type EnvironmentConfig } from "@open-managed-agents/shared";
 import { isSpecEvent } from "@open-managed-agents/api-types";
 import { getLogger } from "@open-managed-agents/observability";
+import { SqlSessionExecutionStore } from "@open-managed-agents/session-runtime-sql";
 
 const moduleLog = getLogger("node-session-router");
 import type {
@@ -443,6 +444,62 @@ export class NodeSessionRouter implements SessionRouter {
     return {
       status: 200,
       body: JSON.stringify({ data: [], has_more: false }),
+    };
+  }
+
+  async cancelPending(
+    sessionId: string,
+    eventId: string,
+  ): Promise<{ status: number; body: string }> {
+    // Same queue authority as CF: the managed_session_executions outbox.
+    const row = await this.deps.sql
+      .prepare(`SELECT tenant_id FROM sessions WHERE id = ?`)
+      .bind(sessionId)
+      .first<{ tenant_id: string }>();
+    if (!row) return { status: 404, body: JSON.stringify({ error: "Session not found" }) };
+    const cancelledAt = new Date().toISOString();
+    const result = await new SqlSessionExecutionStore(this.deps.sql).cancelQueued({
+      workspaceId: row.tenant_id,
+      sessionId,
+      executionId: eventId,
+      cancelledAt,
+    });
+    if (result.type !== "cancelled") {
+      return {
+        status: 409,
+        body: JSON.stringify({
+          cancelled: false,
+          reason: result.reason,
+          id: eventId,
+          ...(result.execution?.attempt?.claimedAt
+            ? { processed_at: result.execution.attempt.claimedAt }
+            : result.execution?.settledAt
+              ? { processed_at: result.execution.settledAt }
+              : {}),
+        }),
+      };
+    }
+    this.deps.hub.publish(sessionId, {
+      type: "system.user_message_cancelled",
+      event_id: eventId,
+      session_thread_id: result.execution.laneId ?? "sthr_primary",
+      cancelled_at: Date.parse(cancelledAt),
+    } as unknown as SessionEvent);
+    return {
+      status: 200,
+      body: JSON.stringify({ cancelled: true, id: eventId, cancelled_at: cancelledAt }),
+    };
+  }
+
+  async steerPending(
+    _sessionId: string,
+    _eventId: string,
+  ): Promise<{ status: number; body: string }> {
+    // Node starts every accepted user.message immediately, so nothing is ever
+    // left queued to steer; same 409 contract as CF.
+    return {
+      status: 409,
+      body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Queued message already started or was removed" }, reason: "already_processed" }),
     };
   }
 

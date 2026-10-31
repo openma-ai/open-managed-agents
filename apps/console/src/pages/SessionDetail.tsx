@@ -28,6 +28,10 @@ import {
   projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
+import {
+  decodeOmaQueueCancelResponse,
+  type OmaQueueCancelResponse,
+} from "@openma/common/gui";
 import { ManagedSessionConversation } from "../components/session/ManagedSessionConversation";
 import { isQueuedSessionEvent } from "../lib/session-event-queue";
 import { upsertSessionEvent } from "../lib/session-event-upsert";
@@ -55,6 +59,8 @@ import {
 } from "../components/ai-elements/tool";
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
+import { SessionQueueDock, type QueueEditBeginResult, type SessionQueueDockItem } from "../components/session/SessionQueueDock";
+import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
 
 type View = "chat" | "timeline";
@@ -80,6 +86,7 @@ function waitForStreamRetry(ms: number, signal: AbortSignal): Promise<void> {
 export function SessionDetail() {
   const { id } = useParams();
   const managedApi = useManagedApi();
+  const { apiRaw } = useApi();
   const { t } = useI18n();
   const [events, setEvents] = useState<Event[]>([]);
   /** In-flight assistant streams keyed by message_id. Each entry holds
@@ -110,6 +117,22 @@ export function SessionDetail() {
   // POSTs be in flight at once — Send is disabled while `sending`).
   const [localPending, setLocalPending] = useState<string | null>(null);
   const [agentId, setAgentId] = useState("");
+  /** True when the optimistic send was made mid-turn, so its echo belongs in
+   *  the queue dock (Backchat) rather than in the transcript. */
+  const [localPendingQueued, setLocalPendingQueued] = useState(false);
+  /** Queue rows with a local action awaiting the server's lifecycle event. */
+  const [queueBusy, setQueueBusy] = useState<Map<string, "removing" | "steering" | "editing">>(new Map());
+  /** Agent advertises OpenMA steering (metadata "oma.session.steering"). */
+  const [agentSteering, setAgentSteering] = useState(false);
+  /** Edit lost the race (server already started the item): the edited text
+   *  goes back to the composer so it can be sent as a new message. */
+  const [composerRestore, setComposerRestore] = useState<{ text: string; nonce: number } | null>(null);
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!composerNotice) return;
+    const timer = setTimeout(() => setComposerNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [composerNotice]);
   const [sessionMeta, setSessionMeta] = useState<{
     title?: string | null;
     environmentId?: string;
@@ -354,11 +377,13 @@ export function SessionDetail() {
     // pending-queue notifications, but the Console does not depend on them
     // for the send/outbox path (official MA send response is authoritative).
     // Ignore them so they never become unknown user-visible rows in the
-    // canonical events list.
+    // canonical events list. Queue-lifecycle frames (cancelled / steered)
+    // arrive here already decoded by openma-common as OpenMA
+    // `turn.cancelled` / `turn.steered` events and are kept: the canonical
+    // projection uses them to drop or absorb queued rows.
     if (
       ev.type === "system.user_message_pending"
       || ev.type === "system.user_message_promoted"
-      || ev.type === "system.user_message_cancelled"
     ) {
       return;
     }
@@ -478,6 +503,16 @@ export function SessionDetail() {
     managedApi.sessions.retrieve(id)
       .then((s) => {
         setAgentId(s.agent?.id || "");
+        const snapshotMeta = (s.agent as { metadata?: Record<string, string> } | undefined)?.metadata;
+        if (snapshotMeta) {
+          setAgentSteering(snapshotMeta["oma.session.steering"] === "enabled");
+        } else if (s.agent?.id) {
+          managedApi.agents.retrieve(s.agent.id)
+            .then((agent) => setAgentSteering(
+              (agent.metadata as Record<string, string> | undefined)?.["oma.session.steering"] === "enabled",
+            ))
+            .catch(() => setAgentSteering(false));
+        }
         setStatus(s.status);
         setSessionMeta({
           title: s.title ?? null,
@@ -621,6 +656,7 @@ export function SessionDetail() {
     const optimisticText =
       text || (files?.length ? (files.length === 1 ? "🖼️ Image" : `🖼️ ${files.length} images`) : "");
     setLocalPending(optimisticText);
+    setLocalPendingQueued(status === "running");
     setSending(true);
     try {
       // Upload attachments first so the user.message can reference them
@@ -747,6 +783,114 @@ export function SessionDetail() {
     setInterrupting(false);
   };
 
+  const markQueueBusy = (messageId: string, state: "removing" | "steering" | "editing" | null) => {
+    setQueueBusy((prev) => {
+      const next = new Map(prev);
+      if (state) next.set(messageId, state);
+      else next.delete(messageId);
+      return next;
+    });
+  };
+  /**
+   * Compare-and-cancel via DELETE pending. Body is OmaQueueCancelResponse
+   * (openma-common): `{ cancelled: true, id }` vs
+   * `{ cancelled: false, reason, id, processed_at? }`. Stream still emits
+   * turn.cancelled on success as backup for other observers.
+   */
+  const cancelQueued = async (
+    messageId: string,
+    busy: "removing" | "editing" = "removing",
+  ): Promise<OmaQueueCancelResponse | { cancelled: false; reason: "failed"; id: string }> => {
+    if (!id) return { cancelled: false, reason: "failed", id: messageId };
+    markQueueBusy(messageId, busy);
+    try {
+      const res = await fetch(
+        `/v1/oma/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(messageId)}`,
+        {
+          method: "DELETE",
+          credentials: "include",
+          headers: {
+            "anthropic-beta": CONSOLE_API_BETAS,
+            ...(getActiveTenantId() ? { "x-active-tenant": getActiveTenantId()! } : {}),
+          },
+        },
+      );
+      const raw = await res.json().catch(() => null);
+      const decoded = decodeOmaQueueCancelResponse(raw);
+      if (decoded) {
+        if (!decoded.cancelled) markQueueBusy(messageId, null);
+        return decoded;
+      }
+      markQueueBusy(messageId, null);
+      if (res.status === 409) {
+        return { cancelled: false, reason: "already_processing", id: messageId };
+      }
+      return { cancelled: false, reason: "failed", id: messageId };
+    } catch {
+      markQueueBusy(messageId, null);
+      return { cancelled: false, reason: "failed", id: messageId };
+    }
+  };
+  const steerQueued = async (messageId: string) => {
+    if (!id) return;
+    markQueueBusy(messageId, "steering");
+    try {
+      const res = await apiRaw(
+        `/v1/oma/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(messageId)}/steer`,
+        { method: "POST" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      markQueueBusy(messageId, null);
+    }
+  };
+  /** Enter-edit: cancel immediately; branch on the HTTP cancel body. */
+  const beginQueueEdit = async (messageId: string): Promise<QueueEditBeginResult> => {
+    const result = await cancelQueued(messageId, "editing");
+    if (result.cancelled) return { status: "allowed" };
+    if (result.reason === "failed") return { status: "failed" };
+    return { status: "abandoned", reason: result.reason };
+  };
+  /** Save after allowed cancel: re-enqueue the edited text (joins end of queue). */
+  const commitQueueEdit = async (_messageId: string, text: string) => {
+    await send(text);
+  };
+  const abandonQueueEdit = (_messageId: string, draft: string, reason: string) => {
+    setComposerRestore({ text: draft, nonce: Date.now() });
+    setComposerNotice(
+      reason === "already_processing" || reason === "already_completed"
+        ? "Already sent, can't edit. Your text is in the composer: send it as a new message."
+        : "Couldn't edit the queued message. Your text is in the composer.",
+    );
+  };
+  /** Escape after a successful cancel: put the original text back in the queue. */
+  const cancelQueueEdit = async (_messageId: string, originalText: string) => {
+    await send(originalText);
+  };
+  const queueDockItems: SessionQueueDockItem[] = [
+    ...canonicalQueued.map((item) => ({
+      id: item.id,
+      key: item.id,
+      text: item.text,
+      busy: queueBusy.get(item.id),
+    })),
+    ...(localPending !== null && localPendingQueued && activeThreadId === "sthr_primary"
+      ? [{ key: "optimistic", text: localPending, busy: "sending" as const }]
+      : []),
+  ];
+  // A row that left the queue (started, steered, cancelled) drops its busy flag.
+  useEffect(() => {
+    setQueueBusy((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(canonicalQueued.map((item) => item.id));
+      const next = new Map([...prev].filter(([key]) => live.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [canonicalQueued]);
+  const composerPlaceholder = status === "running"
+    ? queueDockItems.length > 0 ? `${queueDockItems.length} queued…` : "Add to queue…"
+    : "Send a message…";
+
   const saveTitle = async () => {
     if (!id) return;
     setSavingTitle(true);
@@ -765,8 +909,7 @@ export function SessionDetail() {
   };
 
   const hasTransientActivity = (
-    (localPending !== null && activeThreadId === "sthr_primary")
-    || canonicalQueued.length > 0
+    (localPending !== null && !localPendingQueued && activeThreadId === "sthr_primary")
     || thinkingStreams.size > 0
     || toolInputStreams.size > 0
     || streams.size > 0
@@ -774,13 +917,8 @@ export function SessionDetail() {
   );
   const transientActivity = (
     <>
-      {canonicalQueued.map((item) => (
-        <div className="chat-turn-frame mx-auto w-full max-w-3xl min-w-0" key={item.id}>
-          <EventRender event={item.raw as Event} />
-        </div>
-      ))}
       <SessionTransientActivity
-        localPending={activeThreadId === "sthr_primary" ? localPending : null}
+        localPending={activeThreadId === "sthr_primary" && !localPendingQueued ? localPending : null}
         running={status === "running"}
         streams={streams}
         thinkingStreams={thinkingStreams}
@@ -1059,8 +1197,21 @@ export function SessionDetail() {
       {view === "chat" ? (
         <ManagedSessionConversation
           afterTurns={transientActivity}
-          composer={<SessionComposer
+          composer={<>
+          <SessionQueueDock
+            items={queueDockItems}
+            onAbandonEdit={abandonQueueEdit}
+            onBeginEdit={beginQueueEdit}
+            onCancelEdit={cancelQueueEdit}
+            onCommitEdit={commitQueueEdit}
+            onRemove={(messageId) => void cancelQueued(messageId)}
+            onSteer={agentSteering && status === "running" ? steerQueued : undefined}
+          />
+          <SessionComposer
             interrupting={interrupting}
+            placeholder={composerPlaceholder}
+            notice={composerNotice}
+            restoreDraft={composerRestore}
             onError={(error) => toast.error(error.message)}
             onStop={() => void interrupt()}
             onSubmit={async ({ text, files }) => {
@@ -1071,7 +1222,8 @@ export function SessionDetail() {
             }}
             running={status === "running"}
             sending={sending}
-          />}
+          />
+          </>}
           empty={hasTransientActivity ? transientActivity : undefined}
           sessionId={id}
           turns={canonicalTurns}

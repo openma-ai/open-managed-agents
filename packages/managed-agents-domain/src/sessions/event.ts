@@ -390,8 +390,25 @@ export type SessionEventView =
 
 export type SessionEventDeltaType = "agent.message" | "agent.thinking";
 
+/**
+ * OMA extension (live stream only, never persisted in history): lifecycle of
+ * one server-queued user.message. `cancelled` = removed from the queue before
+ * it ran (explicit remove or edit); `steered` = absorbed into the running
+ * turn. Serialized as `system.user_message_cancelled` /
+ * `system.user_message_steered`; openma-common decodes them into OpenMA
+ * `turn.cancelled` / `turn.steered`.
+ */
+export interface OmaQueueLifecycleStreamEvent {
+  type: "oma.queue_lifecycle";
+  kind: "cancelled" | "steered";
+  eventId: string;
+  sessionThreadId?: string;
+  occurredAt: string;
+}
+
 export type StreamSessionEvent =
   | SessionEventView
+  | OmaQueueLifecycleStreamEvent
   | {
       type: "event_start";
       event: { id: string; type: SessionEventDeltaType };

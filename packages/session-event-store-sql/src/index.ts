@@ -284,29 +284,9 @@ export class SqlSessionEventStore
         );
     });
     const interrupt = [...interruptLanes].flatMap((laneId) => [
-          this.client.prepare(
-            `UPDATE managed_session_executions
-                SET state = 'cancelled', settled_at_ms = ?,
-                    interrupt_requested_at_ms = COALESCE(interrupt_requested_at_ms, ?),
-                    failure = 'interrupted before execution',
-                    revision = revision + 1
-              WHERE workspace_id = ? AND session_id = ? AND state = 'queued'
-                AND (? IS NULL OR lane_id = ?)
-                AND EXISTS (
-                  SELECT 1 FROM managed_sessions
-                   WHERE workspace_id = ? AND id = ? AND revision = ?
-                )`,
-          ).bind(
-            timestamp(controlTimestamp),
-            timestamp(controlTimestamp),
-            input.workspaceId,
-            input.sessionId,
-            laneId,
-            laneId,
-            input.workspaceId,
-            input.sessionId,
-            input.expectedRevision,
-          ),
+          // Queued executions survive an interrupt (Backchat policy); only
+          // the running execution is cancelled. Per-item removal goes
+          // through SessionExecutionStorePort.cancelQueued.
           this.client.prepare(
             `UPDATE managed_session_executions
                 SET state = 'cancelled', settled_at_ms = ?,

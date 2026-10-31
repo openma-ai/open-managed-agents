@@ -421,6 +421,26 @@ export class CfDoPendingQueue implements PendingQueueRepo {
     return rows;
   }
 
+  cancelByEventId(eventId: string, cancelledAtMs: number): PendingRow | null {
+    for (const r of this.sql.exec(
+      `SELECT pending_seq, enqueued_at, session_thread_id, type, event_id, data
+         FROM pending_events WHERE event_id = ? AND cancelled_at IS NULL LIMIT 1`,
+      eventId,
+    )) {
+      this.sql.exec(`UPDATE pending_events SET cancelled_at = ? WHERE pending_seq = ?`, cancelledAtMs, r.pending_seq);
+      return {
+        pending_seq: r.pending_seq as number,
+        enqueued_at: r.enqueued_at as number,
+        session_thread_id: r.session_thread_id as string,
+        type: r.type as string,
+        event_id: r.event_id as string,
+        data: r.data as string,
+        cancelled_at: cancelledAtMs,
+      };
+    }
+    return null;
+  }
+
   /**
    * List pending rows for a thread. Default: only active (non-cancelled).
    * Pass `includeCancelled = true` to include cancelled-but-not-yet-pruned

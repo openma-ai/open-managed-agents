@@ -1,5 +1,5 @@
 const BASE = "";
-const CONSOLE_API_BETAS = [
+export const CONSOLE_API_BETAS = [
   "managed-agents-2026-04-01",
   "files-api-2025-04-14",
   "skills-2025-10-02",

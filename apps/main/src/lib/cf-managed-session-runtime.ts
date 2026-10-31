@@ -160,6 +160,8 @@ export class CfManagedSessionRuntimeAdapter
               Connection: "Upgrade",
               Upgrade: "websocket",
               "x-oma-workspace-id": input.workspaceId,
+              // OMA queue-lifecycle extension frames (live only).
+              "x-oma-include": "queue_lifecycle",
               ...(replay && { "x-oma-replay": "1" }),
             },
           },
