@@ -89,6 +89,60 @@ function client(sprite: FakeSprite): SpritesClientPort {
 }
 
 describe("Sprites managed runtime provider", () => {
+  it("keeps allocation generations separate while legacy Session allocation remains retained", async () => {
+    const physical = new Map<string, FakeSprite>();
+    const sdk: SpritesClientPort = {
+      getSprite: async name => {
+        if (!physical.has(name)) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        return physical.get(name)!;
+      },
+      createSprite: async (name, options) => {
+        const sprite = new FakeSprite(name); sprite.labels = options?.labels ?? [];
+        physical.set(name, sprite); return sprite;
+      },
+      deleteSprite: async name => { physical.delete(name); },
+    };
+    const context = { sessionId: "session", workspaceId: "workspace", environmentId: "env", workdir: "/workspace" };
+    const a = await createSpritesSandbox({ ...context, allocationId: "runtime_a" }, {}, { client: sdk });
+    const b = await createSpritesSandbox({ ...context, allocationId: "runtime_b" }, {}, { client: sdk });
+    expect(a.runtimeHandle()).not.toEqual(b.runtimeHandle());
+    await a.destroy(); expect(await b.status()).toBe("running");
+    const legacy = await createSpritesSandbox(context, {}, { client: sdk });
+    const retained = await createSpritesSandbox(context, {}, { client: sdk });
+    expect(legacy.runtimeHandle()).toEqual(retained.runtimeHandle());
+    await b.destroy(); await legacy.destroy();
+  });
+
+  it("resumes an allocation-scoped handle only with its matching allocation context", async () => {
+    const physical = new Map<string, FakeSprite>();
+    const provider = createSpritesProvider({ client: {
+      getSprite: async name => {
+        if (!physical.has(name)) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        return physical.get(name)!;
+      },
+      createSprite: async (name, options) => {
+        const sprite = new FakeSprite(name); sprite.labels = options?.labels ?? [];
+        physical.set(name, sprite); return sprite;
+      },
+      deleteSprite: async name => { physical.delete(name); },
+    } });
+    const context = { sessionId: scope.sessionId, workspaceId: scope.workspaceId, environmentId: scope.environmentId, workdir: "/workspace", allocationId: "runtime_a" };
+    const acquisition = {
+      scope, fence,
+      plan: { workspaceStrategy: "retained_runtime", outputStrategy: null, runtimeCheckpoint: null,
+        driver: { type: "ama_worker", process: { command: "worker" } } },
+      workspace: { bindingId: "binding", mountPath: "/workspace" }, outputs: null, credentialEgress: null,
+      environment: { type: "base", identity: "sprites:preinstalled", artifact: { type: "preinstalled" } },
+      signal: new AbortController().signal,
+    } as const;
+    const runtime = await provider.create(context, {}, acquisition);
+    const resumed = await provider.resume(runtime.runtimeHandle(), context, {}, acquisition);
+    expect(resumed.runtimeHandle()).toEqual(runtime.runtimeHandle());
+    expect(await resumed.status()).toBe("running");
+    await expect(provider.resume(runtime.runtimeHandle(), { ...context, allocationId: "runtime_b" }, {}, acquisition)).rejects.toThrow(/ownership/);
+    await resumed.destroy();
+  });
+
   it("scopes registered repository credentials to matching Sprite commands", async () => {
     const sprite = new FakeSprite("oma-owned");
     const runtime = new (await import("../src/sprites")).SpritesRuntime({

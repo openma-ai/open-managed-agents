@@ -73,6 +73,19 @@ const bucket = {
 };
 
 describe("DaytonaSandbox", () => {
+  it("provides isolated allocations whose delayed cleanup targets only their SDK instance", async () => {
+    const first = fixture();
+    expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    const context = { workspaceId: "workspace", sessionId: "session", environmentId: "env", workdir: "/workspace" };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_a" }, { DAYTONA_API_KEY: "fake-key" }); await a.exec("initial");
+    const second = fixture();
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_b" }, { DAYTONA_API_KEY: "fake-key" }); await b.exec("initial");
+    await a.destroy?.();
+    expect(first.client.delete).toHaveBeenCalledWith(first.sandbox);
+    expect(second.client.delete).not.toHaveBeenCalled();
+    expect(await b.exec("still running")).toBe("ok");
+    await b.destroy?.();
+  });
   it("loads the SDK lazily, uses stable labels/defaults, and only creates once", async () => {
     const { client, process: { executeCommand: remote } } = fixture();
     process.env.DAYTONA_API_KEY = "env-key";

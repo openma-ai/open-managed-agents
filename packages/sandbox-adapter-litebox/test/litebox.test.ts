@@ -62,6 +62,34 @@ afterEach(() => {
 });
 
 describe("LiteBoxSandbox", () => {
+  it("isolates factory allocation names and late stop while preserving legacy Session naming", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "oma-litebox-allocation-"));
+    let finishStop!: () => void;
+    const oldBox = queueBox(); const freshBox = queueBox(); const legacyBox = queueBox();
+    oldBox.stop.mockImplementation(() => new Promise<void>(resolve => { finishStop = resolve; }));
+    const context = { sessionId: "same-logical-session", workspaceId: "workspace", environmentId: "env", workdir: root };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_a" }, {});
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_shared_prefix_b" }, {});
+    const legacy = await sandboxFactory(context, {});
+    try {
+      await a.exec("initial"); await b.exec("initial"); await legacy.exec("initial");
+      expect(sdk.options[0]!.name).not.toBe(sdk.options[1]!.name);
+      expect(sdk.options[0]!.name).toMatch(/^oma-[a-f0-9]{30,32}$/);
+      expect(sdk.options[2]!.name).toBe("oma-same-logical-session");
+      expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+      const deleting = a.destroy!();
+      await vi.waitFor(() => expect(oldBox.stop).toHaveBeenCalledOnce());
+      expect(await b.exec("while old stop is pending")).toBe("ok");
+      finishStop(); await deleting;
+      expect(freshBox.stop).not.toHaveBeenCalled();
+      expect(legacyBox.stop).not.toHaveBeenCalled();
+      expect(await b.exec("after old stop")).toBe("ok");
+    } finally {
+      finishStop?.();
+      await b.destroy?.(); await legacy.destroy?.();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
   it("creates lazily once with default options and executes commands", async () => {
     const box = queueBox();
     const sandbox = new LiteBoxSandbox();

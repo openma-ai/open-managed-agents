@@ -27,7 +27,7 @@ import type { ProcessHandle, SandboxExecutor, SandboxFactory } from "@open-manag
 import { promises as fs, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { getLogger } from "@open-managed-agents/observability";
 import { rejectPreparedBase } from "@open-managed-agents/sandbox";
@@ -355,16 +355,17 @@ async function removeBestEffort(path: string, recursive = false): Promise<void> 
 
 // ── Factory (DIP entry point) ───────────────────────────────────────
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   rejectPreparedBase("litebox", ctx.preparedBase);
   return new LiteBoxSandbox({
     // An Environment-selected catalog image overrides the process default.
     image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     memoryMib: env.LITEBOX_MEMORY_MIB ? Number(env.LITEBOX_MEMORY_MIB) : undefined,
     cpus: env.LITEBOX_CPUS ? Number(env.LITEBOX_CPUS) : undefined,
-    name: `oma-${ctx.sessionId}`,
+    name: ctx.allocationId === undefined ? `oma-${ctx.sessionId}`
+      : `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,
     memoryRoot: ctx.memoryRoot,
     outputsRoot: ctx.outputsRoot,
     scratchRoot: ctx.workdir,
   });
-};
+}, { capabilities: { allocationIsolation: true } });

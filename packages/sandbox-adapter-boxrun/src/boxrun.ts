@@ -41,6 +41,7 @@
 import type { SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
 import { rejectPreparedBase } from "@open-managed-agents/sandbox";
+import { createHash } from "node:crypto";
 
 const moduleLogger = getLogger("boxrun-sandbox");
 
@@ -65,6 +66,8 @@ export interface BoxRunSandboxOptions {
   /** Used to name the box for operator visibility — boxes named
    *  `oma-<sessionId>` are easy to spot in `boxlite list`. Optional. */
   sessionId?: string;
+  /** Exact physical allocation name, separate from the logical Session id. */
+  name?: string;
   /** Logger. */
   logger?: { warn: (msg: string, ctx?: unknown) => void; log: (msg: string) => void };
 }
@@ -269,7 +272,8 @@ export class BoxRunSandbox implements SandboxExecutor {
     const body: Record<string, unknown> = {
       image: this.opts.image ?? "node:22-slim",
     };
-    if (this.opts.sessionId) body.name = `oma-${this.opts.sessionId.slice(0, 30)}`;
+    if (this.opts.name !== undefined) body.name = this.opts.name;
+    else if (this.opts.sessionId) body.name = `oma-${this.opts.sessionId.slice(0, 30)}`;
     if (this.opts.cpus) body.cpus = this.opts.cpus;
     if (this.opts.memoryMib) body.memory_mib = this.opts.memoryMib;
     const res = await this.fetch(`/boxes`, {
@@ -402,7 +406,7 @@ function extractFirstRegularFile(tar: Uint8Array): Uint8Array {
 // map and never reads BOXRUN_* env vars itself. Each env var the BoxRun
 // adapter cares about is read here, in the adapter's own file.
 
-export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+export const sandboxFactory: SandboxFactory = Object.assign(async (ctx: Parameters<SandboxFactory>[0], env: Parameters<SandboxFactory>[1]) => {
   rejectPreparedBase("boxrun", ctx.preparedBase);
   const baseUrl = env.BOXRUN_URL;
   if (!baseUrl) {
@@ -419,5 +423,8 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
     memoryMib: env.BOXRUN_MEMORY_MIB ? Number(env.BOXRUN_MEMORY_MIB) : undefined,
     bearerToken: env.BOXRUN_TOKEN,
     sessionId: ctx.sessionId,
+    ...(ctx.allocationId === undefined ? {} : {
+      name: `oma-${createHash("sha256").update(JSON.stringify([ctx.workspaceId, ctx.environmentId, ctx.sessionId, ctx.allocationId])).digest("hex").slice(0, 30)}`,
+    }),
   });
-};
+}, { capabilities: { allocationIsolation: true } });

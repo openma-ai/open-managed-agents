@@ -477,6 +477,7 @@ export async function createManagedNodeRuntime(
     }),
     sandboxMode: ({ session }) => resolveSessionSandboxMode(session, openAIAgentsSecrets),
     buildSandbox: createManagedSandboxBuilder({
+      capabilities: components.sandbox.capabilities,
       images: config.sandbox.images,
       workdir: (sessionId) => join(config.paths.sandboxWorkdir, sessionId),
       build: buildSandbox,
@@ -563,12 +564,13 @@ export async function createManagedNodeRuntime(
     },
     // Cold preparation calls this last (after repository clones); warm reuse
     // calls it again to renew the pass and honor the current Vault bindings.
-    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox }) => {
+    refreshSandboxEnvironment: async ({ workspaceId, session, sandbox, registerCleanup }) => {
       if (session.vaultIds.length > 0 && (!relayPasses || !config.http.publicBaseUrl)) {
         throw new Error("Vault credential egress requires PLATFORM_ROOT_SECRET and the ordinary HTTPS PUBLIC_BASE_URL");
       }
       await prepareSandboxEgress({
         sandbox,
+        registerCleanup,
         scope: { workspaceId, sessionId: session.id, vaultIds: session.vaultIds },
         placeholders: (scope) => managedCredentialResolver.placeholderEnvironment(scope),
         relay: { endpoint: config.http.publicBaseUrl ?? "https://unavailable.invalid", pass: "" },

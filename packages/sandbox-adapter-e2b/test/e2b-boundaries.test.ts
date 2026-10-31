@@ -83,6 +83,19 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe("E2BSandboxExecutor boundaries", () => {
+  it("provides isolated cold allocations without reconnecting or killing the next SDK instance", async () => {
+    const old = remote({ sandboxId: "sandbox-a" }); const fresh = remote({ sandboxId: "sandbox-b" });
+    sdk.create.mockResolvedValueOnce(old).mockResolvedValueOnce(fresh);
+    expect(sandboxFactory.capabilities?.allocationIsolation).toBe(true);
+    const context = { workspaceId: "workspace", sessionId: "session", environmentId: "env", workdir: "/workspace" };
+    const a = await sandboxFactory({ ...context, allocationId: "runtime_a" }, { E2B_API_KEY: "fake-key" });
+    const b = await sandboxFactory({ ...context, allocationId: "runtime_b" }, { E2B_API_KEY: "fake-key" });
+    await a.destroy?.();
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(old.kill).toHaveBeenCalledOnce(); expect(fresh.kill).not.toHaveBeenCalled();
+    expect(await b.exec("still running")).toBe("ok");
+    await b.destroy?.();
+  });
   it("covers runtime identity, status, lease, suspend, resume, and checkpoint validation", async () => {
     const sb = remote();
     const runtime = new E2BSandboxExecutor(sb as never, {});
@@ -401,7 +414,7 @@ describe("E2BSandboxExecutor boundaries", () => {
   });
 
   it("declares no prepared-base capability; compositions opt in explicitly", () => {
-    expect(sandboxFactory.capabilities).toBeUndefined();
+    expect(sandboxFactory.capabilities?.preparedBase).toBeUndefined();
   });
 
   it("uses an Environment-selected catalog image as the template instead of SANDBOX_IMAGE", async () => {

@@ -1,8 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
+import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
+import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
+import { createManagedSandboxBuilder } from "../../../packages/control-plane-node/src/lib/node-managed-sandbox-builder.js";
 import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 import { prepareSandboxEgress } from "../../../packages/sandbox-egress/src/install";
 import { createEgressRelayPasses } from "../../../packages/managed-credential-resolver/src/relay";
-import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import type { SandboxExecutor, SandboxLiveness } from "@open-managed-agents/sandbox";
+import type { WorkspacePersistencePort } from "@open-managed-agents/runtime-resource-contract";
+import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner.js";
+import { NodeManagedWorkspaceCheckpoints } from "../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints.js";
+import { createSpritesSandbox, type SpritesClientPort, type SpriteSdkPort } from "../../../packages/managed-runtime-sprites/src/sprites.js";
+import { DaytonaSandbox } from "../../../packages/sandbox-adapter-daytona/src/daytona.js";
+
+// Seed only the optional SDK boundary; exec, destroy and egress stay real.
+function allocatedDaytonaSandbox(state: {
+  creates: number; deletes: number; commands: string[];
+  beforeCommand?(command: string): Promise<void>;
+}) {
+  const sandbox = new DaytonaSandbox({ sessionId: session.id, apiKey: "fake-test-key", logger: { log() {}, warn() {} } });
+  const sdk = {
+    create: async () => {
+      state.creates++;
+      return {
+        id: `sandbox_${state.creates}`,
+        process: { executeCommand: async (command: string) => {
+          state.commands.push(command);
+          await state.beforeCommand?.(command);
+          const stdout = command.includes("EGRESS_READY:")
+            ? 'EGRESS_READY:{"pid":123,"port":4567,"caFile":"/workspace/ca.pem","caBundleFile":"/workspace/ca-bundle.pem"}'
+            : command.includes("EGRESS_DIR:") ? "EGRESS_DIR:/workspace/.oma-egress" : "ok";
+          return { exitCode: 0, result: "", artifacts: { stdout } };
+        } },
+        fs: {
+          uploadFile: async () => {}, downloadFile: async () => Buffer.from(""), createFolder: async () => {},
+        },
+      };
+    },
+    delete: async () => { state.deletes++; },
+  };
+  const boundary = sandbox as unknown as { daytona: typeof sdk; sandboxPromise: ReturnType<typeof sdk.create> };
+  boundary.daytona = sdk;
+  boundary.sandboxPromise = sdk.create();
+  return sandbox;
+}
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type {
   Environment,
@@ -286,6 +326,515 @@ describe("DefaultNodeManagedSessionRunner", () => {
     } finally {
       await runner.stop({ workspaceId: "workspace_01", sessionId: session.id });
     }
+  });
+
+  async function warmRefreshFixture(options: {
+    liveness?: SandboxLiveness;
+    destroy?: () => Promise<void>;
+    releaseFails?: boolean;
+  } = {}) {
+    const fence = {
+      workspaceId: "workspace_01", sessionId: session.id, executionId: "execution_01",
+      attemptId: "attempt_01", ownerId: "worker_01", generation: 1,
+      expiresAt: "2026-08-26T03:00:00.000Z",
+    };
+    const canonical = { id: "wsc_canonical", contentHash: `sha256:${"a".repeat(64)}`, revision: 1 };
+    const bindings = new Map<string, Parameters<WorkspacePersistencePort["release"]>[0]>();
+    const allocations: Array<{ sandbox: SandboxExecutor; bytes: string; destroyed: boolean }> = [];
+    const released: string[] = [];
+    const prepared: string[] = [];
+    let refresh: () => Promise<void> = async () => {};
+    const checkpoints = new NodeManagedWorkspaceCheckpoints({ sql: {} as never, blobs: {} as never, intervalMs: 30_000 });
+    vi.spyOn(checkpoints, "active").mockResolvedValue({ candidate: canonical, publishedAtMs: 1_000 });
+    vi.spyOn(checkpoints, "port").mockImplementation((sandbox) => {
+      const allocation = allocations.find((entry) => entry.sandbox === sandbox)!;
+      const port: WorkspacePersistencePort = {
+        capabilities: async () => ({ strategies: ["checkpoint_restore"] }),
+        materialize: async ({ scope, fence, activeCheckpoint, idempotencyKey }) => {
+          expect(activeCheckpoint).toEqual(canonical);
+          const binding = { bindingId: idempotencyKey, mountPath: "/workspace" as const };
+          bindings.set(binding.bindingId, { scope, fence, binding });
+          return binding;
+        },
+        attach: async ({ binding }) => {
+          expect(bindings.has(binding.bindingId)).toBe(true);
+          allocation.bytes = "canonical workspace";
+        },
+        checkpoint: async () => { throw new Error("unexpected checkpoint publication"); },
+        release: async (input) => {
+          expect(input).toEqual(bindings.get(input.binding.bindingId));
+          bindings.delete(input.binding.bindingId);
+          released.push(input.binding.bindingId);
+          if (options.releaseFails) throw new Error("binding release failed");
+        },
+      };
+      return port;
+    });
+    const runner = new DefaultNodeManagedSessionRunner({
+      workspaceCheckpoints: checkpoints,
+      probeSandbox: async () => options.liveness ?? "alive",
+      buildSandbox: async () => {
+        const allocation = { sandbox: {} as SandboxExecutor, bytes: "", destroyed: false };
+        allocation.sandbox = {
+          destroy: async () => { allocation.destroyed = true; await options.destroy?.(); },
+        } as SandboxExecutor;
+        allocations.push(allocation);
+        return allocation.sandbox;
+      },
+      prepareSandbox: async ({ sandbox }) => {
+        prepared.push(allocations.find((entry) => entry.sandbox === sandbox)!.bytes);
+      },
+      refreshSandboxEnvironment: async () => refresh(),
+      outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
+      confirmedTools: { execute: async () => { throw new Error("unexpected tool execution"); } },
+      buildModel: async () => { throw new Error("unexpected model build"); },
+      buildTools: async () => { throw new Error("unexpected tool build"); },
+      buildHarness: () => ({ run: async () => { throw new Error("unexpected harness run"); } }),
+      buildHarnessContext: async () => { throw new Error("unexpected harness context"); },
+      clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+      ids: { nextEventId: () => "event_refresh" },
+      runtimeGenerations: { next: () => `runtime_${allocations.length + 1}` },
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = (signal?: AbortSignal) => runner.start({
+      ...scope, session, environment, initialEvents: [], signal,
+      executionFence: { ...fence, attemptId: "attempt_02", generation: 2 },
+    });
+    await runner.start({ ...scope, session, environment, initialEvents: [], executionFence: fence });
+    return { runner, scope, start, allocations, bindings, released, prepared,
+      setRefresh: (next: () => Promise<void>) => { refresh = next; } };
+  }
+
+  it.each(["alive", "unknown"] as const)("cold-restores on the next start after a warm refresh fails despite %s liveness", async (liveness) => {
+    const fixture = await warmRefreshFixture({ liveness });
+    const failure = new Error("environment refresh failed");
+    fixture.allocations[0]!.bytes = "uncommitted bytes";
+    fixture.setRefresh(async () => { throw failure; });
+
+    await expect(fixture.start()).rejects.toBe(failure);
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBeNull();
+    expect(fixture.bindings.size).toBe(0);
+    expect(fixture.released).toEqual(["runtime_1"]);
+    expect(fixture.allocations[0]!.destroyed).toBe(true);
+    expect(fixture.allocations).toHaveLength(1);
+
+    fixture.setRefresh(async () => {});
+    await fixture.start();
+    expect(fixture.allocations).toHaveLength(2);
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBe(fixture.allocations[1]!.sandbox);
+    expect(fixture.prepared).toEqual(["canonical workspace", "canonical workspace"]);
+    expect([...fixture.bindings.keys()]).toEqual(["runtime_2"]);
+    await fixture.runner.stop(fixture.scope);
+    expect(fixture.bindings.size).toBe(0);
+  });
+
+  it("keeps a successfully refreshed warm sandbox and its workspace binding", async () => {
+    const fixture = await warmRefreshFixture();
+    let refreshes = 0;
+    fixture.setRefresh(async () => { refreshes++; });
+    await fixture.start();
+    expect(refreshes).toBe(1);
+    expect(fixture.allocations).toHaveLength(1);
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBe(fixture.allocations[0]!.sandbox);
+    expect([...fixture.bindings.keys()]).toEqual(["runtime_1"]);
+    expect(fixture.released).toEqual([]);
+    expect(fixture.prepared).toEqual(["canonical workspace"]);
+    await fixture.runner.stop(fixture.scope);
+  });
+
+  it.each(["parent signal", "runner.cancel"])("discards the old binding when warm refresh is cancelled by %s", async (source) => {
+    const fixture = await warmRefreshFixture();
+    let finishRefresh!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    fixture.setRefresh(() => {
+      markStarted();
+      return new Promise<void>((resolve) => { finishRefresh = resolve; });
+    });
+    const controller = new AbortController();
+    const pending = fixture.start(controller.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError", message: "lease_lost" });
+    await started;
+    if (source === "parent signal") controller.abort(Object.assign(new Error("lease_lost"), { name: "AbortError" }));
+    else fixture.runner.cancel({ ...fixture.scope, reason: "lease_lost" });
+    finishRefresh();
+    await rejected;
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBeNull();
+    expect(fixture.bindings.size).toBe(0);
+    expect(fixture.allocations[0]!.destroyed).toBe(true);
+    fixture.setRefresh(async () => {});
+    await fixture.start();
+    finishRefresh();
+    await Promise.resolve();
+    expect(fixture.allocations).toHaveLength(2);
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBe(fixture.allocations[1]!.sandbox);
+    expect([...fixture.bindings.keys()]).toEqual(["runtime_2"]);
+    await fixture.runner.stop(fixture.scope);
+  });
+
+  it("preserves the refresh failure and destroys the sandbox even when binding release rejects", async () => {
+    const fixture = await warmRefreshFixture({ releaseFails: true });
+    const failure = new Error("environment refresh failed");
+    fixture.setRefresh(async () => { throw failure; });
+    await expect(fixture.start()).rejects.toBe(failure);
+    expect(fixture.runner.connectedSandbox(fixture.scope)).toBeNull();
+    expect(fixture.bindings.size).toBe(0);
+    expect(fixture.allocations[0]!.destroyed).toBe(true);
+    fixture.setRefresh(async () => {});
+    await fixture.start();
+    expect(fixture.allocations).toHaveLength(2);
+    await fixture.runner.stop(fixture.scope).catch(() => {});
+  });
+
+  it("bounds failed warm refresh cleanup when sandbox destruction never settles", async () => {
+    const fixture = await warmRefreshFixture({ destroy: () => new Promise<void>(() => {}) });
+    const failure = new Error("environment refresh failed");
+    fixture.setRefresh(async () => { throw failure; });
+    vi.useFakeTimers();
+    try {
+      const pending = fixture.start();
+      const rejected = expect(pending).rejects.toBe(failure);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(fixture.runner.connectedSandbox(fixture.scope)).toBeNull();
+      expect(fixture.bindings.size).toBe(0);
+      expect(fixture.allocations[0]!.destroyed).toBe(true);
+      fixture.setRefresh(async () => {});
+      await expect(fixture.start()).rejects.toThrow(/cleanup/i);
+      expect(fixture.allocations).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  function adapterRefreshRunner(
+    buildSandbox: () => Promise<SandboxExecutor>,
+    refreshSandboxEnvironment: (input: { sandbox: SandboxExecutor; registerCleanup(cleanup: (sandbox: SandboxExecutor) => Promise<void>): void }) => Promise<void>,
+  ) {
+    return new DefaultNodeManagedSessionRunner({
+      buildSandbox, refreshSandboxEnvironment, probeSandbox: async () => "alive",
+      outcomes: { evaluate: async () => { throw new Error("unexpected outcome"); } },
+      confirmedTools: { execute: async () => { throw new Error("unexpected tool"); } },
+      buildModel: async () => { throw new Error("unexpected model"); },
+      buildTools: async () => ({}), buildHarness: () => ({ run: async () => {} }),
+      buildHarnessContext: async () => { throw new Error("unexpected harness"); },
+      clock: { now: () => new Date() }, ids: { nextEventId: () => "event_refresh" },
+    });
+  }
+
+  it.each(["stop", "refresh failure"])("allows cold allocation after %s cleanup rejects but physical deletion succeeds", async (reason) => {
+    let builds = 0; let destroys = 0; let failRefresh = false;
+    const cleanupFailure = new Error("relay cleanup transport failed");
+    const refreshFailure = new Error("original refresh failure");
+    const runner = adapterRefreshRunner(async () => {
+      builds++;
+      return { destroy: async () => { destroys++; } } as SandboxExecutor;
+    }, async ({ registerCleanup }) => {
+      if (failRefresh) throw refreshFailure;
+      registerCleanup(async () => { throw cleanupFailure; });
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = () => runner.start({ ...scope, session, environment, initialEvents: [] });
+    await start();
+    if (reason === "stop") await expect(runner.stop(scope)).rejects.toBe(cleanupFailure);
+    else { failRefresh = true; await expect(start()).rejects.toBe(refreshFailure); }
+    expect(destroys).toBe(1);
+    expect(runner.connectedSandbox(scope)).toBeNull();
+    failRefresh = false;
+    await start();
+    expect(builds).toBe(2);
+    await expect(runner.stop(scope)).rejects.toBe(cleanupFailure);
+    expect(destroys).toBe(2);
+  });
+
+  it("blocks Sprites reallocation until the timed-out physical deletion completes", async () => {
+    const deletion = deferred();
+    let current: SpriteSdkPort | undefined;
+    let creates = 0;
+    let lookups = 0;
+    const client: SpritesClientPort = {
+      getSprite: async () => {
+        lookups++;
+        if (!current) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        return current;
+      },
+      createSprite: async (name, options) => {
+        creates++;
+        const files = new Map<string, string>();
+        const sprite = {
+          name, labels: options?.labels ?? [],
+          filesystem: () => ({
+            readFile: async (path: string) => files.get(path),
+            writeFile: async (path: string, data: string) => { files.set(path, data); },
+            mkdir: async () => {},
+          }),
+          execFileHTTP: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          closeControlConnection: () => {},
+          check: async () => ({ status: current === sprite ? "running" : "deleted" }),
+          updateNetworkPolicy: async () => {},
+          spawn: () => { throw new Error("unexpected process"); }, delete: async () => {},
+        } as SpriteSdkPort;
+        current = sprite;
+        return sprite;
+      },
+      deleteSprite: async () => { await deletion.promise; current = undefined; },
+    };
+    let failRefresh = false;
+    const runner = adapterRefreshRunner(
+      () => createSpritesSandbox({ sessionId: session.id, workdir: "/workspace" }, {}, { client }),
+      async () => { if (failRefresh) throw new Error("refresh failure"); },
+    );
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = () => runner.start({ ...scope, session, environment, initialEvents: [] });
+    await start();
+    const old = runner.connectedSandbox(scope)!;
+    await old.writeFile("/workspace/dirty.txt", "uncommitted");
+    failRefresh = true;
+    vi.useFakeTimers();
+    try {
+      const pending = start();
+      const rejected = expect(pending).rejects.toThrow("refresh failure");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(runner.connectedSandbox(scope)).toBeNull();
+      failRefresh = false;
+      const previousLookups = lookups;
+      await expect(start()).rejects.toThrow(/cleanup/i);
+      expect(lookups).toBe(previousLookups);
+      expect(creates).toBe(1);
+      deletion.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await start();
+      const fresh = runner.connectedSandbox(scope)!;
+      expect(creates).toBe(2);
+      expect(await fresh.readFile("/workspace/dirty.txt")).toBeUndefined();
+      expect(await (fresh as SandboxExecutor & { status(): Promise<string> }).status()).toBe("running");
+      await runner.stop(scope);
+    } finally {
+      deletion.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("revokes cancelled production egress refresh before it can resurrect a Daytona sandbox", async () => {
+    const daytonaSdk = { creates: 0, deletes: 0, commands: [] as string[] };
+    const lookup = deferred<Record<string, string>>();
+    const resolving = deferred();
+    const completed = deferred();
+    let warm = false;
+    let refreshError: unknown;
+    const runner = adapterRefreshRunner(async () => {
+      const sandbox = allocatedDaytonaSandbox(daytonaSdk);
+      await sandbox.exec("allocate initial");
+      return sandbox;
+    }, async ({ sandbox }) => {
+      if (!warm) return;
+      try {
+        await prepareSandboxEgress({
+          sandbox, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
+          relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+          placeholders: async () => { resolving.resolve(); return lookup.promise; },
+        });
+      } catch (error) { refreshError = error; throw error; }
+      finally { completed.resolve(); }
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = () => runner.start({ ...scope, session, environment, initialEvents: [] });
+    await start();
+    warm = true;
+    vi.useFakeTimers();
+    try {
+      const pending = start();
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError", message: "lease_lost" });
+      await resolving.promise;
+      runner.cancel({ ...scope, reason: "lease_lost" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(runner.connectedSandbox(scope)).toBeNull();
+      warm = false;
+      await expect(start()).rejects.toThrow(/cleanup/i);
+      lookup.resolve({ TOKEN: "placeholder" });
+      await completed.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(refreshError).toMatchObject({ name: "SandboxExecutionFencedError" });
+      expect(daytonaSdk.creates).toBe(1);
+      expect(daytonaSdk.deletes).toBe(1);
+      expect(daytonaSdk.commands).toEqual(["allocate initial"]);
+      await start();
+      expect(daytonaSdk.creates).toBe(2);
+      await runner.stop(scope);
+      expect(daytonaSdk.deletes).toBe(2);
+    } finally {
+      lookup.resolve({ TOKEN: "placeholder" });
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains an already-issued Daytona refresh command before deletion and reallocation", async () => {
+    const command = deferred();
+    const issued = deferred();
+    const sdk = {
+      creates: 0, deletes: 0, commands: [] as string[],
+      beforeCommand: async () => { issued.resolve(); await command.promise; },
+    };
+    let warm = false;
+    const runner = adapterRefreshRunner(async () => allocatedDaytonaSandbox(sdk), async ({ sandbox }) => {
+      if (warm) await sandbox.exec("refresh command");
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = () => runner.start({ ...scope, session, environment, initialEvents: [] });
+    await start();
+    warm = true;
+    vi.useFakeTimers();
+    try {
+      const pending = start();
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError", message: "lease_lost" });
+      await issued.promise;
+      runner.cancel({ ...scope, reason: "lease_lost" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+      expect(sdk.deletes).toBe(0);
+      warm = false;
+      await expect(start()).rejects.toThrow(/cleanup/i);
+      command.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sdk.deletes).toBe(1);
+      await start();
+      expect(sdk.creates).toBe(2);
+      await runner.stop(scope);
+    } finally {
+      command.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("deletes a real Daytona sandbox after production egress wraps its refresh-view destroy", async () => {
+    const sdk = { creates: 0, deletes: 0, commands: [] as string[] };
+    let failRefresh = false;
+    const runner = adapterRefreshRunner(async () => allocatedDaytonaSandbox(sdk), async ({ sandbox, registerCleanup }) => {
+      if (failRefresh) throw new Error("refresh failure");
+      await prepareSandboxEgress({
+        sandbox, registerCleanup, scope: { workspaceId: "workspace_01", sessionId: session.id, vaultIds: ["vault_test"] },
+        relay: { endpoint: "https://example.test", pass: "" }, issuePass: async () => "fake-pass",
+        placeholders: async () => ({ TOKEN: "placeholder" }),
+      });
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const start = () => runner.start({ ...scope, session, environment, initialEvents: [] });
+    await start();
+    await start();
+    expect(sdk.creates).toBe(1);
+    failRefresh = true;
+    await expect(start()).rejects.toThrow("refresh failure");
+    expect(sdk.deletes).toBe(1);
+    failRefresh = false;
+    await start();
+    expect(sdk.creates).toBe(2);
+    await runner.stop(scope);
+    expect(sdk.deletes).toBe(2);
+  });
+
+  it("keeps a new SQL lease owner's Sprite alive after the old owner's delayed cleanup", async () => {
+    const sql = await createBetterSqlite3SqlClient(":memory:");
+    await ensureSessionExecutionCoordinatorSchema(sql);
+    const coordinator = new SqlSessionExecutionCoordinator(sql, { serializeSessionClaims: true });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    const now = Date.parse("2026-10-31T00:00:00Z");
+    await coordinator.admit({ execution: { ...scope, id: "execution_handoff", admittedAt: new Date(now).toISOString(),
+      events: [{ id: "event_handoff", type: "user.message", content: [{ type: "text", text: "hello" }] }] as never } });
+    const first = await coordinator.claim({ ...scope, ownerId: "replica_a", attemptId: "attempt_a", claimedAt: new Date(now + 1).toISOString(), leaseTtlMs: 1_000 });
+    if (first.type !== "claimed") throw new Error("expected first claim");
+    const physical = new Map<string, SpriteSdkPort>();
+    const files = new Map<string, Map<string, string>>();
+    const client: SpritesClientPort = {
+      getSprite: async (name) => {
+        if (!physical.has(name)) throw Object.assign(new Error("not found"), { statusCode: 404 });
+        return physical.get(name)!;
+      },
+      createSprite: async (name, options) => {
+        const bytes = new Map<string, string>(); files.set(name, bytes);
+        const sprite = {
+          name, labels: options?.labels ?? [],
+          filesystem: () => ({ readFile: async (path: string) => bytes.get(path), writeFile: async (path: string, data: string) => { bytes.set(path, data); }, mkdir: async () => {} }),
+          execFileHTTP: async () => ({ stdout: "", stderr: "", exitCode: 0 }), closeControlConnection() {},
+          check: async () => ({ status: physical.has(name) ? "running" : "deleted" }), updateNetworkPolicy: async () => {},
+        } as SpriteSdkPort;
+        physical.set(name, sprite); return sprite;
+      },
+      deleteSprite: async (name) => { physical.delete(name); },
+    };
+    const checkpoints = new NodeManagedWorkspaceCheckpoints({ sql, blobs: {} as never, intervalMs: 30_000 });
+    vi.spyOn(checkpoints, "active").mockResolvedValue({ candidate: { id: "wsc_canonical", contentHash: `sha256:${"a".repeat(64)}`, revision: 1 }, publishedAtMs: now });
+    vi.spyOn(checkpoints, "port").mockImplementation((sandbox) => ({
+      materialize: async ({ activeCheckpoint }) => { expect(activeCheckpoint?.id).toBe("wsc_canonical"); return { bindingId: crypto.randomUUID(), mountPath: "/workspace" }; },
+      attach: async () => { await sandbox.writeFile("/workspace/canonical.txt", "canonical"); }, release: async () => {},
+    } as WorkspacePersistencePort));
+    const buildSandbox = createManagedSandboxBuilder({
+      capabilities: { allocationIsolation: true }, workdir: () => "/workspace",
+      build: (sessionId, workdir, ctx) => createSpritesSandbox({ ...ctx, sessionId, workdir }, {}, { client }),
+    } as Parameters<typeof createManagedSandboxBuilder>[0]);
+    const gate = deferred(); const began = deferred(); let warm = false;
+    const base = { workspaceCheckpoints: checkpoints, buildSandbox, probeSandbox: async () => "alive" as const,
+      outcomes: {} as never, confirmedTools: {} as never, buildModel: async () => ({} as never), buildTools: async () => ({}),
+      buildHarness: () => ({ run: async () => {} }), buildHarnessContext: async () => ({} as never), clock: { now: () => new Date(now) }, ids: { nextEventId: () => "event_test" } };
+    const a = new DefaultNodeManagedSessionRunner({ ...base, refreshSandboxEnvironment: async () => { if (warm) { began.resolve(); await gate.promise; } } });
+    const b = new DefaultNodeManagedSessionRunner(base);
+    await a.start({ ...scope, session, environment, initialEvents: [], executionFence: first.fence });
+    const old = a.connectedSandbox(scope)!;
+    await old.writeFile("/workspace/dirty.txt", "uncommitted"); warm = true;
+    vi.useFakeTimers();
+    try {
+      const pending = a.start({ ...scope, session, environment, initialEvents: [], executionFence: first.fence });
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError", message: "lease_lost" });
+      await began.promise;
+      const second = await coordinator.claim({ ...scope, ownerId: "replica_b", attemptId: "attempt_b", claimedAt: new Date(now + 1002).toISOString(), leaseTtlMs: 30_000 });
+      if (second.type !== "claimed") throw new Error("expected second claim");
+      a.cancel({ ...scope, reason: "lease_lost" }); await vi.advanceTimersByTimeAsync(5_000); await rejected;
+      await b.start({ ...scope, session, environment, initialEvents: [], executionFence: second.fence });
+      const fresh = b.connectedSandbox(scope)!;
+      expect(physical.size).toBe(2);
+      expect(await fresh.readFile("/workspace/canonical.txt")).toBe("canonical");
+      expect(await fresh.readFile("/workspace/dirty.txt")).toBeUndefined();
+      gate.resolve(); await vi.advanceTimersByTimeAsync(0);
+      expect(physical.size).toBe(1);
+      expect(await (fresh as SandboxExecutor & { status(): Promise<string> }).status()).toBe("running");
+      expect((await coordinator.renew({ fence: second.fence, renewedAt: new Date(now + 1004).toISOString(), leaseTtlMs: 30_000 })).type).toBe("renewed");
+      await b.stop(scope);
+    } finally { gate.resolve(); vi.useRealTimers(); await sql.close?.(); }
+  });
+
+  it("runs registered lifecycle cleanup before destroying a sandbox replaced during execution", async () => {
+    const order: string[] = []; let builds = 0; let lost = false;
+    const runner = new DefaultNodeManagedSessionRunner({
+      buildSandbox: async () => {
+        const id = ++builds;
+        return { exec: async () => { if (id === 1) { lost = true; throw new Error("command unavailable"); } return "ok"; },
+          destroy: async () => { order.push(`destroy_${id}`); } } as SandboxExecutor;
+      },
+      probeSandbox: async () => lost ? "lost" : "alive",
+      refreshSandboxEnvironment: async ({ registerCleanup }) => {
+        const id = builds;
+        registerCleanup(async () => { order.push(`cleanup_${id}`); });
+      },
+      outcomes: {} as never, confirmedTools: {} as never, buildModel: async () => ({} as never), buildTools: async () => ({}),
+      buildHarnessContext: async input => input as never,
+      buildHarness: () => ({ run: async context => { await (context as unknown as { sandbox: SandboxExecutor }).sandbox.exec("first command"); } }),
+      harnessRetry: { attempts: 1, delayMs: () => 0 },
+      clock: { now: () => new Date() }, ids: { nextEventId: () => crypto.randomUUID() },
+    });
+    const scope = { workspaceId: "workspace_01", sessionId: session.id };
+    await runner.start({ ...scope, session, environment, initialEvents: [] });
+    const event = { id: "event_message", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: new Date().toISOString() } as const;
+    await runner.accept({ ...scope, session, environment, initialEvents: [], events: [event], historyEvents: [event], output: async () => {} }).catch(() => {});
+    expect(builds).toBe(2);
+    expect(order.slice(0, 2)).toEqual(["cleanup_1", "destroy_1"]);
+    await runner.stop(scope);
   });
 
   it("destroys a new sandbox when Session input preparation fails", async () => {

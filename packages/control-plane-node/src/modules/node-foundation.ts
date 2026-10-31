@@ -269,7 +269,7 @@ export async function createNodeFoundation(
     workdir: string,
     scope: Pick<
       import("@open-managed-agents/sandbox").SandboxFactoryContext,
-      "environmentId" | "workspaceId" | "image" | "preparedBase"
+      "environmentId" | "workspaceId" | "image" | "preparedBase" | "allocationId"
     > = {},
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
     return components.sandbox(
