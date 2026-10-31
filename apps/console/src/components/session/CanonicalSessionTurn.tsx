@@ -41,6 +41,9 @@ export function projectCanonicalSessionTurn(
       promptText: turn.userText,
       events: turn.rawEvents.map((payload) => ({ payload })),
       assistantText: turn.render.assistantText,
+      // Real duration from the turn's own event timestamps (processed_at).
+      ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
+      ...(turn.endedAt ? { endedAt: turn.endedAt } : {}),
       status: queued
         ? "complete"
         // Only the projection's single active turn may animate; any other
@@ -175,9 +178,9 @@ function canonicalTurnStatus(status: CanonicalChatTurn["status"]) {
     case "errored": return "error" as const;
     case "terminated":
     case "interrupted": return "cancelled" as const;
-    // Parked on requires_action: not finished, but not working either, so
-    // it must not animate.
-    case "awaiting": return "unknown" as const;
+    // Parked on requires_action: not finished, not working; the shared
+    // turn view renders it without a spinner or terminal status line.
+    case "awaiting": return "awaiting" as const;
     default: return "running" as const;
   }
 }
