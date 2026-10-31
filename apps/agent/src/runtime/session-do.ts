@@ -5643,6 +5643,26 @@ export class SessionDO extends DurableObject<Env> {
         this.setState({ ...this.state, session_init_done: true });
       }
 
+      // Interrupt-vs-wake race: a tool answer admitted just before a
+      // user.interrupt may still start this turn after the interrupt already
+      // closed its calls and emitted idle end_turn. Official CMA: the
+      // interrupt ends the turn; only a new user.message resumes. So if the
+      // newest user input on this thread is the interrupt, do not sample.
+      // https://platform.claude.com/docs/en/managed-agents/events-and-streaming
+      {
+        let lastUserType: string | undefined;
+        for (const e of history.getEvents()) {
+          if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== turnThreadId) continue;
+          if (e.type === "user.interrupt" || e.type === "user.message" ||
+              e.type === "user.tool_confirmation" || e.type === "user.custom_tool_result") lastUserType = e.type;
+        }
+        if (lastUserType === "user.interrupt") {
+          this._interruptIdleOwned.add(turnThreadId);
+          abortController.abort();
+          return;
+        }
+      }
+
       // Broadcast running status
       const runningEvent: SessionEvent = { type: "session.status_running" };
       history.append(runningEvent);
