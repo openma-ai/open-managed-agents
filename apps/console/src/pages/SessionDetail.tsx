@@ -10,6 +10,7 @@ import { Markdown } from "../components/Markdown";
 import { formatDuration, formatRelative, shortenId } from "../lib/format";
 import { Badge, StatusPill } from "../components/Badge";
 import { Modal } from "../components/Modal";
+import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { AgentIcon, ClockIcon, DurationIcon, EnvIcon, VaultIcon } from "../components/icons";
 import { FilesPanel, ResourcePanel } from "./session-detail/Panels";
@@ -134,6 +135,9 @@ export function SessionDetail() {
     const timer = setTimeout(() => setComposerNotice(null), 5000);
     return () => clearTimeout(timer);
   }, [composerNotice]);
+  /** GET /v1/sessions/:id answered 404 / not_found_error. Other failures
+   *  (network, 5xx) keep the existing toast-and-continue handling. */
+  const [notFound, setNotFound] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<{
     title?: string | null;
     environmentId?: string;
@@ -491,6 +495,7 @@ export function SessionDetail() {
     setToolInputStreams(new Map());
     setAgentId("");
     setSessionMeta({});
+    setNotFound(false);
     setLinear(null);
     setSlack(null);
     setEditingTitle(false);
@@ -563,7 +568,9 @@ export function SessionDetail() {
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (isSessionNotFoundError(error)) setNotFound(true);
+      });
 
     // Load canonical Managed Agents history. `next_page` is an opaque cursor;
     // do not parse it or depend on the old OMA `{seq, ts, data}` envelope.
@@ -946,6 +953,8 @@ export function SessionDetail() {
       />
     </>
   );
+
+  if (notFound) return <SessionNotFound id={id} />;
 
   return (
     <div className="flex flex-col h-full">
@@ -1772,4 +1781,33 @@ function EventRender({
     default:
       return null;
   }
+}
+
+/** True only for a missing session (404 / not_found_error); network and 5xx
+ *  errors stay on the generic error path. */
+export function isSessionNotFoundError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.code === "not_found_error");
+}
+
+export function SessionNotFound({ id }: { id?: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center p-8" data-testid="session-not-found">
+      <EmptyState
+        size="lg"
+        kind="session"
+        title="Session not found"
+        body={
+          <>
+            No session with id <code className="font-mono">{id}</code> exists in this
+            workspace. It may have been deleted, or the link is wrong.
+          </>
+        }
+        action={
+          <Link to="/sessions" className="text-sm text-brand underline-offset-2 hover:underline">
+            Back to Sessions
+          </Link>
+        }
+      />
+    </div>
+  );
 }
