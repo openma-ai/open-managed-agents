@@ -4499,12 +4499,16 @@ export class SessionDO extends DurableObject<Env> {
         if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use") continue;
         const id = (e as unknown as { id?: string }).id;
         if (!id || answered.has(id)) continue;
+        // Same shape as the existing interruptPending settle path above
+        // (agent.tool_result, is_error, "Cancelled by user"); openma-common
+        // decodes it to the existing OpenMA `tool.failed`. No new fields.
+        const thread = (e as { session_thread_id?: string }).session_thread_id;
         const closed = {
           type: "agent.tool_result",
           tool_use_id: id,
-          content: "Interrupted by user before this tool call completed.",
+          content: [{ type: "text", text: "Cancelled by user" }],
           is_error: true,
-          parent_event_id: id,
+          ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
         } as unknown as SessionEvent;
         history.append(closed);
         this.broadcastEvent(closed, fence);
