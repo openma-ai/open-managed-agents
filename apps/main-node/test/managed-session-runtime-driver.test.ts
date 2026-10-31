@@ -906,6 +906,82 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       .toEqual([expect.objectContaining({ id: "sevt_late_confirm", processedAt: "2026-08-26T05:00:00.000Z" })]);
   });
 
+  describe("user.message while parked in requires_action stays queued (CMA, #398)", () => {
+    const parked = () => [
+      { id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: "2026-08-26T04:00:00.000Z" },
+      { id: "c1", type: "agent.custom_tool_use", name: "t", input: {}, processedAt: "2026-08-26T04:00:01.000Z" },
+      { id: "c2", type: "agent.custom_tool_use", name: "t", input: {}, processedAt: "2026-08-26T04:00:01.001Z" },
+      { id: "i1", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c1", "c2"] }, processedAt: "2026-08-26T04:00:02.000Z" },
+    ] as Array<Record<string, unknown>>;
+    const harness = (history: Array<Record<string, unknown>>) => {
+      const marked: string[][] = [];
+      const accepted: string[][] = [];
+      const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+        engine: {
+          start: async () => {},
+          stop: async () => {},
+          accept: async (input: { events: Array<{ id: string }> }) => { accepted.push(input.events.map((e) => e.id)); },
+          archiveThread: async () => {},
+          planQueuedInputs: async (input: { events: never[] }) =>
+            runtimeModule.planRequiresActionQueue(history, input.events),
+        },
+        realtime: new MemorySessionRealtimeHub(),
+        projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+        clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+        sessionClocks: createSessionClockRegistry(),
+        eventProcessing: {
+          storeFor: () => ({
+            markProcessed: async (command: { eventIds: string[]; processedAt: string }) => {
+              marked.push([...command.eventIds]);
+              for (const e of history) if (command.eventIds.includes(e.id as string)) e.processedAt = command.processedAt;
+              return [];
+            },
+          }),
+        },
+      } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+      const send = async (event: Record<string, unknown>) => {
+        history.push({ ...event, processedAt: null });
+        await driver.accept({ workspaceId: "workspace_01", sessionId: session.id, session, environment,
+          events: [{ ...event, processedAt: null } as never] });
+      };
+      return { send, marked, accepted, history };
+    };
+    const message = { id: "u2", type: "user.message", content: [{ type: "text", text: "also" }] };
+    const answer = (id: string, call: string) => ({ id, type: "user.custom_tool_result", customToolUseId: call, content: [{ type: "text", text: "42" }] });
+
+    it("message stays queued (processed_at null, no run) until every pending call is answered, then resumes with it", async () => {
+      const h = harness(parked());
+      await h.send(message);
+      expect(h.accepted).toEqual([]);
+      expect(h.marked).toEqual([]);
+      expect(h.history.find((e) => e.id === "u2")?.processedAt).toBeNull();
+      await h.send(answer("r1", "c1"));
+      // partial answer: re-announce only; the message is still queued
+      expect(h.accepted).toEqual([["r1"]]);
+      h.history.push({ id: "i2", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c2"] }, processedAt: "2026-08-26T05:00:00.500Z" });
+      expect(h.history.find((e) => e.id === "u2")?.processedAt).toBeNull();
+      await h.send(answer("r2", "c2"));
+      expect(h.accepted).toEqual([["r1"], ["r2", "u2"]]);
+      // answers are stamped on receipt; only the released message is stamped now
+      expect(h.marked).toEqual([["u2"]]);
+      expect(h.history.find((e) => e.id === "u2")?.processedAt).not.toBeNull();
+    });
+
+    it("interrupt while parked ends the turn first, then the queued message drains as its own run (CF parity)", async () => {
+      const h = harness(parked());
+      await h.send(message);
+      await h.send({ id: "x1", type: "user.interrupt" });
+      expect(h.accepted).toEqual([["x1"], ["u2"]]);
+      expect(h.marked.at(-1)).toEqual(["u2"]);
+    });
+
+    it("a message to an unparked session runs normally", async () => {
+      const h = harness([{ id: "i0", type: "session.status_idle", stopReason: { type: "end_turn" }, processedAt: "2026-08-26T04:00:00.000Z" }]);
+      await h.send(message);
+      expect(h.accepted).toEqual([["u2"]]);
+    });
+  });
+
   it("lazy-starts a fresh engine from accepted event context", async () => {
     const calls: object[] = [];
     const engine: RuntimeEngine = {

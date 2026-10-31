@@ -42,6 +42,9 @@ import type {
 import { randomUUID } from "node:crypto";
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import { ScopedSessionMap } from "./scoped-session-map.js";
+import { managedEventThread } from "./node-managed-subagents.js";
+import { outstandingRequiresAction } from "./requires-action.js";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
   executionFence?: SessionExecutionFence;
@@ -94,6 +97,15 @@ export interface NodeManagedSessionRuntimeEngine {
     executionFence?: SessionExecutionFence;
   }): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
+  /** requires_action queueing (CMA, #398): which batch user.message ids must
+   * stay queued (processed_at null) because the thread remains parked, and
+   * which earlier still-queued messages this batch releases. */
+  planQueuedInputs?(input: AcceptNodeManagedSessionEvents): Promise<QueuedInputPlan>;
+}
+
+export interface QueuedInputPlan {
+  defer: string[];
+  release: AcceptNodeManagedSessionEvents["events"];
 }
 
 export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
@@ -164,6 +176,14 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
     } finally {
       this.outputs.delete(input);
     }
+  }
+
+  async planQueuedInputs(input: AcceptNodeManagedSessionEvents): Promise<QueuedInputPlan> {
+    const history = await this.dependencies
+      .historyFor(input.workspaceId)
+      .loadSessionRuntimeHistory({ sessionId: input.sessionId });
+    if (history.type === "not_found") return { defer: [], release: [] };
+    return planRequiresActionQueue(history.events, input.events);
   }
 
   async accept(input: AcceptNodeManagedSessionEvents): Promise<void> {
@@ -316,7 +336,20 @@ export class DefaultNodeManagedSessionRuntimeDriver
     this.startAborts.set(input, abortController);
     const signal = abortController.signal;
     try {
-      await this.markQueuedInputsProcessed(input);
+      const plan = await this.dependencies.engine.planQueuedInputs?.(input) ??
+        { defer: [], release: [] };
+      const deferred = new Set(plan.defer);
+      const interrupting = input.events.some((event) => event.type === "user.interrupt");
+      // Answers that unpark the thread carry the queued messages into the
+      // resumed run (consumed at its next LLM call). An interrupt ends the
+      // turn first; the queued messages then drain as their own run (CF).
+      const runEvents = [
+        ...input.events.filter((event) => !deferred.has(event.id)),
+        ...(interrupting ? [] : plan.release),
+      ];
+      const run = { ...input, events: runEvents };
+      await this.markQueuedInputsProcessed(run);
+      if (!runEvents.some((event) => event.type !== "system.message")) return;
       const retry = this.dependencies.startRetry ?? {
         attempts: 3,
         delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
@@ -364,12 +397,21 @@ export class DefaultNodeManagedSessionRuntimeDriver
         await this.finishCancelledStart(input, signal, announcedRetry);
         throw abortedError(signal);
       }
-      const { executionFence: _executionFence, ...accepted } = input;
+      const { executionFence: _executionFence, ...accepted } = run;
       await this.dependencies.engine.accept({
         ...accepted,
         ...(fence !== undefined && { executionFence: fence }),
       });
       await this.outputChains.get(input);
+      if (interrupting && plan.release.length > 0 && !signal.aborted) {
+        const drain = { ...accepted, events: plan.release };
+        await this.markQueuedInputsProcessed(drain);
+        await this.dependencies.engine.accept({
+          ...drain,
+          ...(fence !== undefined && { executionFence: fence }),
+        });
+        await this.outputChains.get(input);
+      }
     } finally {
       if (this.startAborts.get(input) === abortController) {
         this.startAborts.delete(input);
@@ -783,4 +825,38 @@ export function untilAborted<T>(
  * operator removed from SANDBOX_IMAGES stays broken until it is edited. */
 function isNonRetryableStartError(error: unknown): boolean {
   return error instanceof Error && error.name === "SandboxImageUnavailableError";
+}
+
+type PlanWireEvent = { type?: string; id?: string; [key: string]: unknown };
+
+/** Pure planner for requires_action queueing over the primary thread. */
+export function planRequiresActionQueue(
+  history: readonly unknown[],
+  batch: AcceptNodeManagedSessionEvents["events"],
+): QueuedInputPlan {
+  const batchIds = new Set(batch.map((event) => event.id));
+  const primary = (history as Array<{ id: string; type: string; processedAt?: string | null }>)
+    .filter((event) => managedEventThread(event as never) === "sthr_primary");
+  const prior = primary
+    .filter((event) => !batchIds.has(event.id))
+    .map((event) => encodeRuntimeHistoryEvent(event as never) as unknown as PlanWireEvent);
+  const before = outstandingRequiresAction(prior);
+  if (before === null) return { defer: [], release: [] };
+  const answered = new Set(batch.flatMap((event) => {
+    const e = event as { type: string; customToolUseId?: string; toolUseId?: string };
+    return e.type === "user.custom_tool_result" && e.customToolUseId ? [e.customToolUseId]
+      : e.type === "user.tool_confirmation" && e.toolUseId ? [e.toolUseId] : [];
+  }));
+  const remaining = before.filter((id) => !answered.has(id));
+  const interrupting = batch.some((event) => event.type === "user.interrupt");
+  if (remaining.length > 0 && !interrupting) {
+    return {
+      defer: batch.filter((event) => event.type === "user.message").map((event) => event.id),
+      release: [],
+    };
+  }
+  const release = primary.filter((event) =>
+    event.type === "user.message" && !batchIds.has(event.id) &&
+    (event.processedAt === null || event.processedAt === undefined));
+  return { defer: [], release: release as unknown as AcceptNodeManagedSessionEvents["events"] };
 }

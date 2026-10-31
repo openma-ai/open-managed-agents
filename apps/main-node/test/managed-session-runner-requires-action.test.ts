@@ -211,46 +211,8 @@ describe("Node managed runner requires_action (CMA parity, #398)", () => {
   });
 });
 
-describe("Node requires_action: queued user.message and mid-batch steer (#398)", () => {
-  it("a user.message to a parked session closes the unanswered calls and runs as the next turn", async () => {
-    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }, { id: "a2", type: "agent.tool_use" }]);
-    await s.send([msg("u1")]);
-    const out = await s.send([msg("u2")]);
-    expect(types(out)).toEqual(["agent.tool_result", "agent.tool_result", "session.status_running", "session.status_idle"]);
-    expect(out.slice(0, 2).map((f) => f.tool_use_id)).toEqual(["c1", "a2"]);
-    for (const f of out.slice(0, 2)) expect(f.is_error).toBe(true);
-    expect(idleOf(out)).toEqual([{ type: "end_turn" }]);
-    expect(s.runs()).toBe(2);
-    // late answers to the superseded calls are no-effect
-    expect(await s.send([customResult("u3", "c1")])).toEqual([]);
-    expect(await s.send([confirm("u4", "a2", "allow")])).toEqual([]);
-    expect(s.executions).toEqual([]);
-    expect(s.runs()).toBe(2);
-  });
-
-  it("superseded-call closures sort before the superseding message in processed_at order (replay-safe)", async () => {
-    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }]);
-    await s.send([msg("u1")]);
-    const late = { ...msg("u2"), processedAt: at(5_000) } as Ev;
-    const out = await s.send([late]);
-    const closure = out.find((f) => f.type === "agent.tool_result")!;
-    expect(closure.processed_at).toBe(at(4_999));
-    const parkedIdle = s.wire.filter((f) => f.type === "session.status_idle")[0]!;
-    expect(Date.parse(closure.processed_at)).toBeGreaterThan(Date.parse(parkedIdle.processed_at));
-  });
-
-  it("a user.message batched with an answer keeps the answer and closes only the rest", async () => {
-    const s = await setup([{ id: "c1", type: "agent.custom_tool_use" }, { id: "c2", type: "agent.custom_tool_use" }]);
-    await s.send([msg("u1")]);
-    // answers c1 after the park (partial), then a message arrives for the rest
-    const p = await s.send([customResult("u2", "c1")]);
-    expect(idleOf(p)).toEqual([{ type: "requires_action", event_ids: ["c2"] }]);
-    const out = await s.send([msg("u3")]);
-    expect(out.filter((f) => f.type === "agent.tool_result").map((f) => f.tool_use_id)).toEqual(["c2"]);
-    expect(idleOf(out)).toEqual([{ type: "end_turn" }]);
-  });
-
-  it("steer closing parallel calls mid-batch: the final idle omits closed ids (CF bug 3 / 85d17d1 parity)", async () => {
+describe("Node requires_action: calls closed mid-batch (#398)", () => {
+  it("calls closed mid-batch by the harness are omitted from the final idle (CF 85d17d1 parity)", async () => {
     let nextId = 0;
     const runner = new DefaultNodeManagedSessionRunner({
       sessionClocks: createSessionClockRegistry(),
@@ -261,7 +223,7 @@ describe("Node requires_action: queued user.message and mid-batch steer (#398)",
       buildTools: async () => ({}),
       buildHarness: () => ({
         run: async (ctx: { runtime: { broadcast(e: unknown): void; pendingConfirmations: string[] } }) => {
-          // parallel batch: w1, w2 (ask) + c3 (custom); a promoted steer closes w1, w2
+          // parallel batch: w1, w2 (ask) + c3 (custom); the harness closes w1, w2 itself
           for (const id of ["w1", "w2"]) {
             ctx.runtime.broadcast({ id, type: "agent.tool_use", name: "write_file", input: {}, evaluated_permission: "ask" });
             ctx.runtime.pendingConfirmations.push(id);

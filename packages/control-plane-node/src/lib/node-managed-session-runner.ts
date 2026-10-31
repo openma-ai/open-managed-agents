@@ -33,7 +33,7 @@ import {
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
-import { decodeRuntimeProducedSessionEvent, encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
@@ -90,7 +90,7 @@ export type ManagedNodeConfirmableToolUse = Extract<
 >;
 
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
-import { answeredToolCallIds, outstandingRequiresAction, stillPending, supersedeRequiresActionFrames } from "./requires-action.js";
+import { answeredToolCallIds, outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -535,20 +535,6 @@ export class DefaultNodeManagedSessionRunner
         remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
       }
     }
-    // A user.message to a parked thread (#398): close the calls the batch
-    // does not answer, then run the message as the next turn. Never strands
-    // the message behind a pause, never samples over unmatched tool_use.
-    let supersededFrames: ReturnType<typeof supersedeRequiresActionFrames> = [];
-    if (remainingAfterAnswers === null && actionable.some((candidate) => candidate.type === "user.message")) {
-      const batchIds = new Set(input.events.map((candidate) => candidate.id));
-      const priorWire = input.historyEvents
-        .filter((candidate) => !batchIds.has(candidate.id))
-        .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string });
-      const answeredInBatch = new Set(actionable.flatMap((candidate) =>
-        candidate.type === "user.custom_tool_result" ? [candidate.customToolUseId]
-          : candidate.type === "user.tool_confirmation" ? [candidate.toolUseId] : []));
-      supersededFrames = supersedeRequiresActionFrames(priorWire, answeredInBatch);
-    }
     const rawSandbox = this.sandboxes.get(input);
     if (rawSandbox === undefined) {
       throw new Error(`Session ${input.sessionId} sandbox was not started`);
@@ -612,49 +598,9 @@ export class DefaultNodeManagedSessionRunner
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
         });
-    // Superseded-call closures belong before the new message in model
-    // history (tool_result must follow its tool_use), and are persisted.
-    let runtimeHistory = input.historyEvents;
-    if (supersededFrames.length > 0) {
-      const clock = (this.dependencies.sessionClocks ?? processSessionClocks)
-        .forSession(input.workspaceId, input.sessionId);
-      // Event history replays ORDER BY processed_at: the closures must sort
-      // before the message that superseded them (its processed_at was set by
-      // the driver when it began processing), else the next turn replays a
-      // tool_result after the user turn. Stamp them 1ms before the message;
-      // still strictly after the parked idle and its tool_use.
-      const batchIdSet = new Set(input.events.map((event) => event.id));
-      const messageAt = Math.min(...input.historyEvents
-        .filter((event) => batchIdSet.has(event.id) && event.type === "user.message")
-        .map((event) => Date.parse(event.processedAt ?? ""))
-        .filter((ms) => Number.isFinite(ms)));
-      const lastPriorAt = Math.max(...input.historyEvents
-        .filter((event) => !batchIdSet.has(event.id))
-        .map((event) => Date.parse(event.processedAt ?? ""))
-        .filter((ms) => Number.isFinite(ms)));
-      const closureAt = Number.isFinite(messageAt) && messageAt - 1 > lastPriorAt
-        ? new Date(messageAt - 1).toISOString()
-        : null;
-      const views: SessionEventView[] = [];
-      for (const frame of supersededFrames) {
-        const stamped = {
-          ...frame,
-          id: this.dependencies.ids.nextEventId(),
-          processed_at: closureAt ?? clock.stampIso(this.dependencies.clock.now().getTime()),
-        };
-        await input.output(stamped as never);
-        const view = decodeRuntimeProducedSessionEvent(stamped as never);
-        if (view !== null) views.push(view as SessionEventView);
-      }
-      const batchIds = new Set(input.events.map((event) => event.id));
-      const at = input.historyEvents.findIndex((event) => batchIds.has(event.id));
-      runtimeHistory = at < 0
-        ? [...input.historyEvents, ...views]
-        : [...input.historyEvents.slice(0, at), ...views, ...input.historyEvents.slice(at)];
-    }
     const runtime = new ManagedNodeHarnessRuntime({
       initialEvents: input.initialEvents,
-      events: runtimeHistory.filter((event) => managedEventThread(event) === "sthr_primary"),
+      events: input.historyEvents.filter((event) => managedEventThread(event) === "sthr_primary"),
       sandbox,
       abortSignal: abortController.signal,
       output: input.output,

@@ -58,30 +58,3 @@ export function knownToolCallIds(events: readonly WireEvent[]): Set<string> {
   }
   return ids;
 }
-
-export const SUPERSEDED_TOOL_RESULT_TEXT =
-  "Tool call was not answered before the user sent a new message; it was cancelled.";
-
-/** A user.message reaching a thread parked in requires_action (#398): the
- * paused turn cannot resume over unmatched tool_use blocks, so the calls the
- * batch does not answer are closed with an error agent.tool_result /
- * agent.mcp_tool_result and the message starts the next turn. Late answers to
- * those ids are then no-effect. Returns [] when the thread is not parked. */
-export function supersedeRequiresActionFrames(
-  events: readonly WireEvent[],
-  answeredInBatch: ReadonlySet<string>,
-  threadId = "sthr_primary",
-): WireEvent[] {
-  const outstanding = outstandingRequiresAction(events, threadId);
-  if (outstanding === null) return [];
-  const extra = threadId !== "sthr_primary" ? { session_thread_id: threadId } : {};
-  const kind = new Map<string, string>();
-  for (const e of events) if (typeof e.id === "string" && typeof e.type === "string") kind.set(e.id, e.type);
-  return outstanding.filter((id) => !answeredInBatch.has(id)).map((id) => ({
-    type: kind.get(id) === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
-    ...(kind.get(id) === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
-    content: [{ type: "text", text: SUPERSEDED_TOOL_RESULT_TEXT }],
-    is_error: true,
-    ...extra,
-  }));
-}
