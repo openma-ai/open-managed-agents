@@ -169,7 +169,7 @@ export function VaultDetail() {
     if (!id) return;
     if (
       !confirm(
-        "Archive this vault? All its credentials will also be archived. Archive is one-way.",
+        "Archive this vault? Its credentials will not be archived, but this vault cannot be used for credential injection after archive. Archive is one-way.",
       )
     )
       return;
