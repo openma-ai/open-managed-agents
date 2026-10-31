@@ -5735,6 +5735,22 @@ export class SessionDO extends DurableObject<Env> {
 
       await harness.run(ctx);
 
+      // A parked call can already be closed by the time the run returns
+      // (steer/interrupt closed it with a tool_result, or the client answered
+      // during the batch). Announcing it as requires_action would park the
+      // session on a call whose late answer is no-effect, leaving queued
+      // user.messages unprocessed forever (#398 two_clients FOREVER_NULL).
+      if (ctx.runtime.pendingConfirmations?.length) {
+        const answered = new Set<string>();
+        for (const e of history.getEvents()) {
+          if (e.type === "agent.tool_result") {
+            const id = (e as unknown as { tool_use_id?: string }).tool_use_id;
+            if (id) answered.add(id);
+          }
+        }
+        ctx.runtime.pendingConfirmations = ctx.runtime.pendingConfirmations.filter((id) => !answered.has(id));
+      }
+
       // Store any pending tool calls in session metadata for confirmation flow
       if (ctx.runtime.pendingConfirmations?.length) {
         // Collect pending tool call details from the last harness run events
