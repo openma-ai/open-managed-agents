@@ -40,7 +40,7 @@ import type {
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
 import { randomUUID } from "node:crypto";
-import { createStrictlyIncreasingEventStamp } from "./node-managed-harness-runtime.js";
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
@@ -97,6 +97,8 @@ export interface NodeManagedSessionRuntimeEngine {
 }
 
 export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   engine: NodeManagedSessionRuntimeEngine;
   realtime: SessionRealtimeHub;
   projectionFor(
@@ -248,7 +250,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
   private readonly starts = new ScopedSessionMap<Promise<void>>();
   private readonly executionFences = new ScopedSessionMap<SessionExecutionFence>();
   private readonly startAborts = new ScopedSessionMap<AbortController>();
-  private readonly eventStamps = new ScopedSessionMap<() => string>();
   private readonly realtime: SessionRealtimeHub;
 
   constructor(
@@ -297,7 +298,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
       await this.outputChains.get(input);
     } finally {
       this.starts.delete(input);
-      this.eventStamps.delete(input);
       this.closeSession(input);
     }
   }
@@ -481,16 +481,9 @@ export class DefaultNodeManagedSessionRuntimeDriver
   }
 
   private nextEventStamp(scope: { workspaceId: string; sessionId: string }): string {
-    let stamp = this.eventStamps.get(scope);
-    if (stamp === undefined) {
-      stamp = createStrictlyIncreasingEventStamp(
-        this.dependencies.clock ?? { now: () => new Date() },
-      );
-      this.eventStamps.set(scope, stamp);
-    }
-    return stamp();
+    const reading = (this.dependencies.clock ?? { now: () => new Date() }).now().getTime();
+    return (this.dependencies.sessionClocks ?? processSessionClocks).forSession(scope.workspaceId, scope.sessionId).stampIso(reading);
   }
-
 
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void> {
     return this.dependencies.engine.archiveThread(input);

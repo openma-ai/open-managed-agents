@@ -89,6 +89,7 @@ export type ManagedNodeConfirmableToolUse = Extract<
   { type: "agent.tool_use" | "agent.mcp_tool_use" }
 >;
 
+import type { SessionClockRegistry } from "@open-managed-agents/shared";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -138,6 +139,8 @@ export interface ManagedNodeOutcomeEvaluationPort {
 }
 
 export interface DefaultNodeManagedSessionRunnerDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   /**
    * In-place retry of a harness failure while the turn has produced no
    * `agent.*` event (e.g. the model call failed before producing output). Each
@@ -575,6 +578,8 @@ export class DefaultNodeManagedSessionRunner
       output: input.output,
       clock: this.dependencies.clock,
       ids: this.dependencies.ids,
+      sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
+      sessionClocks: this.dependencies.sessionClocks,
     });
     runtime.broadcastProducedEvent({ type: "session.status_running" });
     let turnTools: HarnessContext["tools"] | undefined;

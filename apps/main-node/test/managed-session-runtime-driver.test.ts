@@ -1,3 +1,4 @@
+import { createSessionClockRegistry } from "@open-managed-agents/shared";
 import { describe, expect, it } from "vitest";
 import type {
   Environment,
@@ -121,6 +122,7 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       clock: { now: () => new Date("2026-08-26T00:30:00.000Z") },
       ids: { nextEventId: options.nextEventId ?? (() => `event_start_failure_0${++id}`) },
       startRetry: { attempts: 3, delayMs: options.delayMs ?? (() => 0) },
+      sessionClocks: createSessionClockRegistry(),
     });
     const accept = () => driver.accept({
       workspaceId: "workspace_01", sessionId: session.id, session, environment,

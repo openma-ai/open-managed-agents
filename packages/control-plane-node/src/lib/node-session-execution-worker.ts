@@ -21,7 +21,7 @@ import {
 } from "@open-managed-agents/sql-client";
 import { markSessionEventsProcessed } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
-import { createMonotonicClock, type MonotonicClock } from "@open-managed-agents/shared";
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import { Effect, Fiber } from "effect";
 import { interruptFiber, runSupervised } from "./supervised-fiber.js";
 
@@ -44,6 +44,8 @@ export interface NodeSessionExecutionRuntime {
 }
 
 export interface NodeSessionExecutionWorkerDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   coordinator: SessionExecutionCoordinatorPort;
   context: SessionExecutionContextSourcePort;
   runtime: NodeSessionExecutionRuntime;
@@ -127,22 +129,11 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     void interruptFiber(fiber);
   }
 
-  /** Per-session monotonic guard over the injected clock (#398): interrupt
-   * stamps never tie or regress within a session, fake clocks still drive it. */
-  readonly #sessionClocks = new Map<string, MonotonicClock>();
-
-  #sessionClock(workspaceId: string, sessionId: string): MonotonicClock {
-    const key = `${workspaceId}\u0000${sessionId}`;
-    let clock = this.#sessionClocks.get(key);
-    if (clock === undefined) {
-      clock = createMonotonicClock(() => this.dependencies.clock.now().getTime());
-      if (this.#sessionClocks.size >= 10_000) {
-        const oldest = this.#sessionClocks.keys().next().value;
-        if (oldest !== undefined) this.#sessionClocks.delete(oldest);
-      }
-      this.#sessionClocks.set(key, clock);
-    }
-    return clock;
+  /** Per-session monotonic clock shared with the managed runtime (#398):
+   * interrupt and idle stamps never tie or regress; fake clocks still drive it. */
+  #sessionClock(workspaceId: string, sessionId: string): { nowIso(): string } {
+    const clock = (this.dependencies.sessionClocks ?? processSessionClocks).forSession(workspaceId, sessionId);
+    return { nowIso: () => clock.stampIso(this.dependencies.clock.now().getTime()) };
   }
 
   async sessionEventsAccepted(input: AcceptedSessionEvents): Promise<void> {

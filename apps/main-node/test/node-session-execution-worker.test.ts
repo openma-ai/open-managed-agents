@@ -10,6 +10,9 @@ import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionCoordinator,
 } from "@open-managed-agents/session-runtime-sql/coordination";
+import { createSessionClockRegistry } from "@open-managed-agents/shared";
+import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-memory";
+import { DefaultNodeManagedSessionRuntimeDriver } from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { ConnectionLost, Deadlock } from "@open-managed-agents/sql-client/db-errors";
 import {
@@ -123,6 +126,7 @@ describe("NodeSessionExecutionWorker", () => {
       leaseTtlMs: 30_000,
       heartbeatIntervalMs: 10_000,
       maxConcurrent: 4,
+      sessionClocks: createSessionClockRegistry(),
       ...overrides,
     });
   }
@@ -534,6 +538,55 @@ describe("NodeSessionExecutionWorker", () => {
     const all = [stamped[0], requested[0], stamped[1], requested[1]].map((t) => Date.parse(t!));
     expect(all[0]).toBe(now.getTime());
     for (let i = 1; i < all.length; i++) expect(all[i]).toBeGreaterThan(all[i - 1]!);
+  });
+
+  it("stamps worker interrupts and driver idle from ONE per-session clock: strictly increasing with a frozen clock (#398)", async () => {
+    const sessionClocks = createSessionClockRegistry();
+    const stamps: Array<{ type: string; at: string }> = [];
+    const executor = worker("node_01", {
+      sessionClocks,
+      coordinator: Object.assign(Object.create(coordinator), { requestInterrupt: async () => {} }),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (input: { eventIds: string[]; processedAt: string }) => {
+            stamps.push({ type: "user.interrupt", at: input.processedAt });
+            return input.eventIds.map((id) => ({ id, type: "user.interrupt", processedAt: input.processedAt })) as never;
+          },
+        }),
+      },
+    });
+    const driver = new DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async () => { throw new Error("start failed"); },
+        stop: async () => {}, accept: async () => {}, archiveThread: async () => {},
+      },
+      realtime: new MemorySessionRealtimeHub(),
+      projectionFor: () => ({
+        recordSessionRuntimeEvents: async (command) => {
+          for (const event of command.events) stamps.push({ type: event.type, at: event.processedAt });
+          return { type: "recorded", session };
+        },
+      }),
+      clock: { now: () => now },
+      ids: { nextEventId: (() => { let n = 0; return () => `sevt-${++n}`; })() },
+      startRetry: { attempts: 1, delayMs: () => 0 },
+      sessionClocks,
+    } as ConstructorParameters<typeof DefaultNodeManagedSessionRuntimeDriver>[0]);
+    const interrupt = (id: string) => ({ ...accepted(id, "user.interrupt"), events: [{ id, type: "user.interrupt" }] }) as Parameters<typeof executor.sessionEventsAccepted>[0];
+
+    await executor.sessionEventsAccepted(interrupt("sevt_interrupt_1"));
+    await driver.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [{ id: "evt_in", type: "user.message", content: [{ type: "text", text: "x" }], processedAt: now.toISOString() }],
+    } as Parameters<typeof driver.accept>[0]).catch(() => {});
+    await executor.sessionEventsAccepted(interrupt("sevt_interrupt_2"));
+
+    expect(stamps.map((s) => s.type)).toContain("session.status_idle");
+    expect(stamps[0]!.type).toBe("user.interrupt");
+    expect(stamps.at(-1)!.type).toBe("user.interrupt");
+    const ms = stamps.map((s) => Date.parse(s.at));
+    expect(ms[0]).toBe(now.getTime());
+    for (let i = 1; i < ms.length; i++) expect(ms[i]).toBeGreaterThan(ms[i - 1]!);
   });
 
   it("does not cancel active work belonging to another session", async () => {
