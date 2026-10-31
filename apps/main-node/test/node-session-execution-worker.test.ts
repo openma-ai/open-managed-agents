@@ -249,6 +249,16 @@ describe("NodeSessionExecutionWorker", () => {
       .resolves.toMatchObject({ state: "completed" });
   });
 
+  it("treats re-delivery of a queued batch (no processedAt, clock moved) as a replay, not a 500 conflict (#398)", async () => {
+    const executor = worker();
+    const queued = { ...accepted("event_queued"), events: [{ ...accepted("event_queued").events[0], processedAt: null }] } as unknown as Parameters<typeof executor.sessionEventsAccepted>[0];
+    await executor.sessionEventsAccepted(queued);
+    now = new Date(now.getTime() + 1_000);
+    await expect(executor.sessionEventsAccepted(queued)).resolves.toBeUndefined();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_queued"]);
+  });
+
   it("does not admit a running-turn interrupt as an extra execution", async () => {
     let release: (() => void) | undefined;
     const running = new Promise<void>((resolve) => { release = resolve; });

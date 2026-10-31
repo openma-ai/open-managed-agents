@@ -210,6 +210,15 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         events: batch.events,
         },
       });
+      // Re-delivery of the same accepted batch (queued inputs have no
+      // processedAt, so admittedAt falls back to the clock and differs):
+      // same session, lane and payload (processedAt aside) is a replay, not a conflict (#398).
+      if (admitted.type === "conflict" &&
+        admitted.execution.sessionId === input.sessionId &&
+        admitted.execution.laneId === batch.laneId &&
+        samePayloadIgnoringProcessedAt(admitted.execution.events, batch.events)) {
+        continue;
+      }
       if (admitted.type === "conflict") {
         throw new Error(
           `Session Execution ${batch.id} conflicts with an existing admission`,
@@ -475,4 +484,16 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       reason,
     });
   }
+}
+
+function samePayloadIgnoringProcessedAt(left: readonly unknown[], right: readonly unknown[]): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>)
+      .filter((key) => key !== "processedAt" && (value as Record<string, unknown>)[key] !== undefined)
+      .sort()
+      .map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+  };
+  return JSON.stringify(left.map(canonical)) === JSON.stringify(right.map(canonical));
 }
