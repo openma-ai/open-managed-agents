@@ -345,7 +345,14 @@ function buildMessages(
 
   const flushAssistant = () => {
     if (pendingAssistantContent.length > 0) {
-      messages.push({ role: "assistant", content: pendingAssistantContent });
+      // DeepSeek Anthropic-compat (and strict Anthropic validators): any text
+      // AFTER tool_use in the same assistant message makes the following
+      // tool_result look unpaired ("tool_use ids were found without
+      // tool_result blocks immediately after"). Keep tool-calls last —
+      // same as @ai-sdk/anthropic moveToolUseBlocksToEnd.
+      const toolCalls = pendingAssistantContent.filter((part) => part.type === "tool-call");
+      const other = pendingAssistantContent.filter((part) => part.type !== "tool-call");
+      messages.push({ role: "assistant", content: [...other, ...toolCalls] });
       pendingAssistantContent = [];
     }
   };
@@ -461,7 +468,14 @@ async function buildMessagesAsync(
 
   const flushAssistant = () => {
     if (pendingAssistantContent.length > 0) {
-      messages.push({ role: "assistant", content: pendingAssistantContent });
+      // DeepSeek Anthropic-compat (and strict Anthropic validators): any text
+      // AFTER tool_use in the same assistant message makes the following
+      // tool_result look unpaired ("tool_use ids were found without
+      // tool_result blocks immediately after"). Keep tool-calls last —
+      // same as @ai-sdk/anthropic moveToolUseBlocksToEnd.
+      const toolCalls = pendingAssistantContent.filter((part) => part.type === "tool-call");
+      const other = pendingAssistantContent.filter((part) => part.type !== "tool-call");
+      messages.push({ role: "assistant", content: [...other, ...toolCalls] });
       pendingAssistantContent = [];
     }
   };

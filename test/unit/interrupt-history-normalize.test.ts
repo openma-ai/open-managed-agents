@@ -85,3 +85,46 @@ describe("normalizeInterruptedToolCalls: no-op idle interrupt (official CMA)", (
     expect(out.filter((e) => e.type === "agent.tool_result").map((e) => e.tool_use_id)).toEqual(["t1"]);
   });
 });
+
+describe("eventsToMessages: DeepSeek tool_use-must-be-last (pressure two_clients)", () => {
+  it("reorders assistant content so tool-calls follow any interleaved mid-open agent.message text", () => {
+    // Repro shape from interrupt-tip pressure FAILs: tool_use events, then
+    // agent.message text from a continued step / concurrent steer reply,
+    // then the real tool_result. Without reordering, DeepSeek Anthropic-
+    // compat 400s: "tool_use ids were found without tool_result blocks
+    // immediately after" (text sits between tool_use and tool_result).
+    const events: any[] = [
+      { type: "user.message", id: "m1", content: [{ type: "text", text: "scaffold" }] },
+      { type: "agent.custom_tool_use", id: "c1", name: "run", input: { cmd: "true" } },
+      { type: "agent.custom_tool_use", id: "c2", name: "write_file", input: { path: "a" } },
+      { type: "agent.message", id: "a1", content: [{ type: "text", text: "I'll scaffold." }] },
+      { type: "agent.message", id: "a2", content: [{ type: "text", text: "A0" }] },
+      { type: "agent.tool_result", tool_use_id: "c2", content: [{ type: "text", text: "wrote" }] },
+      { type: "agent.tool_result", tool_use_id: "c1", content: [{ type: "text", text: "ok" }] },
+    ];
+    const msgs = eventsToMessages(events as never) as any[];
+    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    const parts = msgs[1].content as any[];
+    const types = parts.map((p) => p.type);
+    expect(types.filter((t) => t === "text").length).toBe(2);
+    expect(types.filter((t) => t === "tool-call").length).toBe(2);
+    // Every tool-call must sit after every non-tool part (moveToolUseBlocksToEnd).
+    const lastText = types.lastIndexOf("text");
+    const firstTool = types.indexOf("tool-call");
+    expect(firstTool).toBeGreaterThan(lastText);
+    expect(types.slice(firstTool).every((t) => t === "tool-call")).toBe(true);
+    const results = msgs[2].content as any[];
+    expect(results.map((p) => p.toolCallId).sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("keeps already-trailing tool-calls stable (text then tools)", () => {
+    const events: any[] = [
+      { type: "user.message", id: "m1", content: [{ type: "text", text: "go" }] },
+      { type: "agent.message", id: "a1", content: [{ type: "text", text: "sure" }] },
+      { type: "agent.tool_use", id: "t1", name: "bash", input: {} },
+      { type: "agent.tool_result", tool_use_id: "t1", content: [{ type: "text", text: "done" }] },
+    ];
+    const parts = (eventsToMessages(events as never) as any[])[1].content as any[];
+    expect(parts.map((p) => p.type)).toEqual(["text", "tool-call"]);
+  });
+});
