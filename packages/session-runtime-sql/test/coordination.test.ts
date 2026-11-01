@@ -348,6 +348,69 @@ describe("SqlSessionExecutionCoordinator", () => {
     })).rejects.toThrow("Claimed Session Execution has no attempt");
   });
 
+  it("emits MySQL-safe index DDL and probes columns through information_schema", async () => {
+    const executed: string[] = [];
+    const prepared: Array<{ sql: string; params: unknown[] }> = [];
+    const executionColumns = [
+      "workspace_id", "session_id", "lane_id", "id", "admitted_at_ms",
+      "events_json", "events_fingerprint", "state", "attempt_id", "owner_id",
+      "generation", "attempt_count", "max_attempts", "deadline_at_ms",
+      "claimed_at_ms", "lease_expires_at_ms", "interrupt_requested_at_ms",
+      "settled_at_ms", "failure", "revision",
+    ];
+    const statement = (query: string) => {
+      let params: unknown[] = [];
+      const bound = {
+        bind: (...values: unknown[]) => {
+          params = values;
+          return bound;
+        },
+        run: async () => ({ meta: { changes: 0 } }),
+        first: async () => {
+          prepared.push({ sql: query, params: [...params] });
+          return params[1] === "managed_session_executions_claim_idx"
+            ? { present: 1 }
+            : null;
+        },
+        all: async () => {
+          prepared.push({ sql: query, params: [...params] });
+          const names = query.includes("information_schema.COLUMNS")
+            ? query.includes("managed_session_executions")
+              ? executionColumns
+              : ["workspace_id", "session_id", "claim_token", "version", "holder_execution_id"]
+            : [];
+          return { results: names.map((name) => ({ name })) };
+        },
+      };
+      return bound;
+    };
+    const mysqlSql = {
+      prepare: statement,
+      batch: async () => [],
+      exec: async (query: string) => {
+        executed.push(query);
+      },
+    } as unknown as SqlClient;
+
+    await ensureSessionExecutionCoordinatorSchema(mysqlSql, "mysql");
+
+    expect(executed.some((ddl) => /CREATE INDEX IF NOT EXISTS/i.test(ddl))).toBe(false);
+    // The existing claim index is skipped instead of recreated.
+    expect(executed.some((ddl) => ddl.includes("managed_session_executions_claim_idx"))).toBe(false);
+    expect(executed).toEqual(expect.arrayContaining([
+      expect.stringContaining("CREATE INDEX managed_session_executions_session_idx"),
+      expect.stringContaining(
+        "ALTER TABLE managed_session_executions ADD COLUMN held_after_exhausted_ms BIGINT",
+      ),
+    ]));
+    expect(prepared).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sql: expect.stringContaining("information_schema.statistics"),
+        params: ["managed_session_executions", "managed_session_executions_claim_idx"],
+      }),
+    ]));
+  });
+
   it("fails admission if the inserted execution cannot be read back", async () => {
     const store = new SqlSessionExecutionCoordinator(fakeSql());
     store.find = async () => null;

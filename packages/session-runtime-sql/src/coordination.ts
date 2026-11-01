@@ -113,42 +113,44 @@ export async function upgradeSessionClaimLockColumns(
   }
 }
 
+function columnNameSet(rows: Array<{ name?: string }> | undefined): Set<string> {
+  return new Set(
+    (rows ?? [])
+      .map((row) => row.name?.toLowerCase())
+      .filter((name): name is string => typeof name === "string"),
+  );
+}
+
 async function claimLockColumnNames(
   sql: SqlClient,
   dialect?: "sqlite" | "mysql" | "postgres",
 ): Promise<Set<string> | null> {
-  const collect = (rows: Array<{ name?: string }> | undefined) =>
-    new Set(
-      (rows ?? [])
-        .map((row) => row.name?.toLowerCase())
-        .filter((name): name is string => typeof name === "string"),
-    );
   if (dialect === "postgres") {
     const rows = await sql.prepare(
       `SELECT column_name AS name FROM information_schema.columns
         WHERE table_name = 'managed_session_claim_locks'`,
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   }
   if (dialect === "mysql") {
     const rows = await sql.prepare(
       `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'managed_session_claim_locks'`,
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   }
   try {
     const rows = await sql.prepare(
       "PRAGMA table_info(managed_session_claim_locks)",
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   } catch {
     try {
       const rows = await sql.prepare(
         `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'managed_session_claim_locks'`,
       ).all<{ name?: string }>();
-      return collect(rows.results);
+      return columnNameSet(rows.results);
     } catch {
       return null;
     }
@@ -157,6 +159,7 @@ async function claimLockColumnNames(
 
 export async function ensureSessionExecutionCoordinatorSchema(
   sql: SqlClient,
+  dialect?: "sqlite" | "mysql" | "postgres",
 ): Promise<void> {
   // Create the table first.  Index DDL is deferred until after the additive
   // upgrade below so an old SQLite table without `lane_id` can be upgraded
@@ -167,20 +170,23 @@ export async function ensureSessionExecutionCoordinatorSchema(
   // earlier preview of this contract.  `CREATE TABLE IF NOT EXISTS` quite
   // correctly leaves those tables untouched, but a subsequent INSERT would
   // then fail on the newly required lease columns.  SQLite/D1 expose
-  // `PRAGMA table_info`; PostgreSQL does not, so the probe is intentionally
-  // best-effort and the real PG migrations remain the source of truth there.
+  // `PRAGMA table_info`; MySQL uses information_schema; PostgreSQL does not
+  // need the probe here, so it is intentionally best-effort and the real PG
+  // migrations remain the source of truth there.
   let existing: Set<string> | null = null;
   try {
-    const result = await sql
-      .prepare("PRAGMA table_info(managed_session_executions)")
-      .all<{ name?: string }>();
-    existing = new Set(
-      (result.results ?? [])
-        .map((column) => column.name)
-        .filter((name): name is string => typeof name === "string"),
-    );
+    const result = dialect === "mysql"
+      ? await sql.prepare(
+        `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'managed_session_executions'`,
+      ).all<{ name?: string }>()
+      : await sql
+        .prepare("PRAGMA table_info(managed_session_executions)")
+        .all<{ name?: string }>();
+    existing = columnNameSet(result.results);
   } catch {
-    // PostgreSQL (and non-SQLite adapters) use their own migration runner.
+    // Non-SQLite adapters that cannot probe fall through to migrations.
   }
   if (existing !== null && existing.size > 0) {
     const additions: Array<[string, string]> = [
@@ -206,8 +212,39 @@ export async function ensureSessionExecutionCoordinatorSchema(
       }
     }
   }
-  for (const statement of schemaStatements.slice(1)) await sql.exec(statement);
-  await upgradeSessionClaimLockColumns(sql);
+  for (const statement of schemaStatements.slice(1)) {
+    await ensureIndex(sql, statement, dialect);
+  }
+  await upgradeSessionClaimLockColumns(sql, dialect);
+}
+
+/** MySQL has no `CREATE INDEX IF NOT EXISTS`; probe the catalog and emit a
+ * plain CREATE INDEX only when the index is missing. SQLite/Postgres keep
+ * the idempotent DDL used by their migration paths. */
+async function ensureIndex(
+  sql: SqlClient,
+  statement: string,
+  dialect?: "sqlite" | "mysql" | "postgres",
+): Promise<void> {
+  if (dialect !== "mysql" || !statement.startsWith("CREATE INDEX IF NOT EXISTS ")) {
+    await sql.exec(statement);
+    return;
+  }
+  const match = /^CREATE INDEX IF NOT EXISTS (\S+)\s+ON\s+(\S+)/.exec(statement);
+  if (match === null) {
+    await sql.exec(statement);
+    return;
+  }
+  const [, indexName, tableName] = match;
+  const existing = await sql.prepare(
+    `SELECT 1 AS present FROM information_schema.statistics
+      WHERE table_schema = DATABASE()
+        AND table_name = ?
+        AND index_name = ?
+      LIMIT 1`,
+  ).bind(tableName, indexName).first<{ present?: number }>();
+  if (existing !== null) return;
+  await sql.exec(statement.replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX"));
 }
 
 interface ExecutionRow {

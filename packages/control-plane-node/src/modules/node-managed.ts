@@ -345,7 +345,7 @@ export async function createManagedNodeRuntime(
 
   // Drizzle baseline may predate held_after_exhausted_ms; additive ensure is
   // idempotent and required before claim SQL references the column.
-  await ensureSessionExecutionCoordinatorSchema(sql);
+  await ensureSessionExecutionCoordinatorSchema(sql, foundation.dialect);
   if (config.workspace.strategy === "checkpoint_restore") {
     await ensureSessionExecutionClaimLockSchema(sql, foundation.dialect);
   }
