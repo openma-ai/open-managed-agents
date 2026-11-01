@@ -108,6 +108,14 @@ export function interruptRequiresActionClosure(
   return [];
 }
 
+// No-op idle interrupt (official CMA: "Against an already-idle session an
+// interrupt is normally a no-op"): a user.interrupt logged while parked in
+// idle requires_action also passes through here, but cannot corrupt the parked
+// turn. `answered` is collected from the WHOLE log first, and the DO resumes
+// the parked turn (resumeWhenToolBatchSettled) only once every pending id has
+// its agent.tool_result, so each parked id is already answered by the time a
+// sample is built and is never closed with a synthetic result.
+// See test/unit/interrupt-history-normalize.test.ts.
 export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {
   const answered = new Set<string>();
   for (const e of events) {

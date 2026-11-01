@@ -48,3 +48,40 @@ describe("interruptRequiresActionClosure (shared CF/Node core)", () => {
     expect(interruptRequiresActionClosure([{ type: "session.status_idle", stop_reason: { type: "end_turn" } }] as never)).toEqual([]);
   });
 });
+
+describe("normalizeInterruptedToolCalls: no-op idle interrupt (official CMA)", () => {
+  const parked: any[] = [
+    { type: "user.message", id: "m1", content: [{ type: "text", text: "go" }] },
+    { type: "session.status_running" },
+    { type: "agent.custom_tool_use", id: "c1", name: "run_tests", input: {} },
+    { type: "agent.tool_use", id: "t1", name: "bash", input: {} },
+    { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1", "t1"] } },
+    { type: "user.interrupt", id: "x1" },
+    { type: "user.custom_tool_result", custom_tool_use_id: "c1", content: [{ type: "text", text: "ok" }] },
+    // DO converts the settle answer to agent.tool_result on drain
+    { type: "agent.tool_result", tool_use_id: "c1", content: "ok" },
+    { type: "user.tool_confirmation", tool_use_id: "t1", result: "allow" },
+    { type: "agent.tool_result", tool_use_id: "t1", content: "done" },
+  ];
+  it("parked turn settles cleanly: no synthetic result, each id paired once with the real answer", () => {
+    expect(normalizeInterruptedToolCalls(parked as never)).toBe(parked);
+    const parts = eventsToMessages(parked as never).flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+    const results = parts.filter((p: any) => p.type === "tool-result");
+    expect(results.map((p: any) => p.toolCallId).sort()).toEqual(["c1", "t1"]);
+    expect(JSON.stringify(results)).not.toContain("interrupted before completion");
+  });
+  it("partially settled (resume not yet allowed) still synthesizes nothing for the answered id", () => {
+    const partial = parked.slice(0, 8);
+    const out = normalizeInterruptedToolCalls(partial as never) as any[];
+    expect(out.filter((e) => e.type === "agent.tool_result" && e.tool_use_id === "c1")).toHaveLength(1);
+  });
+  it("still closes open calls when the interrupt hits a running turn", () => {
+    const events: any[] = [
+      { type: "session.status_running" },
+      { type: "agent.tool_use", id: "t1", name: "bash", input: {} },
+      { type: "user.interrupt", id: "x1" },
+    ];
+    const out = normalizeInterruptedToolCalls(events as never) as any[];
+    expect(out.filter((e) => e.type === "agent.tool_result").map((e) => e.tool_use_id)).toEqual(["t1"]);
+  });
+});
