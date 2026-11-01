@@ -19,10 +19,15 @@ export const BUDGET_NOT_GREATER_THAN_CONSUMED =
 export const BUDGET_CREATE_ONLY =
   "budget can only be set when the session is created; it can be changed or removed (budget: null) but not added";
 
-/** Consumed list cost in cents, from the session's latest usage snapshot. */
-export function consumedListCostCents(session: Session): bigint {
+const PICO_PER_CENT = 10_000_000_000n;
+
+/** Exact consumed list cost in picodollars from the session's latest usage
+ * snapshot (falls back to the rounded cents when no exact value exists). */
+export function consumedListCostPico(session: Session): bigint {
+  const exact = session.usage?.listCostPico;
+  if (typeof exact === "string" && /^\d+$/.test(exact)) return BigInt(exact);
   const amount = session.usage?.listCost?.amountMinor;
-  return amount !== undefined && /^\d+$/.test(amount) ? BigInt(amount) : 0n;
+  return amount !== undefined && /^\d+$/.test(amount) ? BigInt(amount) * PICO_PER_CENT : 0n;
 }
 
 /**
@@ -38,7 +43,7 @@ export function validateBudgetUpdate(
 ): string | null {
   if (next === undefined || next === null) return null;
   if (current.budget === null || current.budget === undefined) return BUDGET_CREATE_ONLY;
-  if (BigInt(next.amountMinor) <= consumedListCostCents(current)) {
+  if (BigInt(next.amountMinor) * PICO_PER_CENT <= consumedListCostPico(current)) {
     return BUDGET_NOT_GREATER_THAN_CONSUMED;
   }
   return null;
@@ -56,7 +61,7 @@ export function sessionPausedAtBudget(
   if (latestIdleStopReason !== "budget_reached") return false;
   if (session.status !== "idle") return false;
   if (session.budget === null || session.budget === undefined) return false;
-  return BigInt(session.budget.amountMinor) <= consumedListCostCents(session);
+  return BigInt(session.budget.amountMinor) * PICO_PER_CENT <= consumedListCostPico(session);
 }
 
 export function budgetSettleOnlyMessage(): string {

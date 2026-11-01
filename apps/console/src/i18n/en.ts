@@ -218,6 +218,14 @@ export const en: Messages = {
   },
 
   modelCards: {
+    pricing: "List pricing",
+    pricingHint: "(USD per 1M tokens; empty = unpriced, budgets inactive)",
+    priceInput: "Input",
+    priceOutput: "Output",
+    priceCacheRead: "Cache read",
+    priceCacheWrite: "Cache write",
+    pricingRequired: "Input and output prices are required when pricing is set.",
+    pricingInvalid: "Prices must be USD amounts with at most 6 decimals.",
     newModelCard: "+ New model card",
     searchModelCards: "Search model cards…",
     noMatchingModelCards: "No matching model cards",

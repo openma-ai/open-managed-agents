@@ -143,7 +143,12 @@ export type SessionExecutionCoordinatorPort = SessionExecutionStorePort;
 export function sessionExecutionEvents(
   events: readonly SentSessionEvent[],
 ): SentSessionEvent[] {
-  const executable = events.filter((event) => event.type !== "user.interrupt");
+  const executable = events.filter((event) =>
+    event.type !== "user.interrupt" &&
+    // A budget `session.updated` is control-only unless it resumes a
+    // budget_reached pause.
+    !(event.type === "session.updated" && event.resume !== true)
+  );
   return executable.some((event) => event.type !== "system.message")
     ? executable
     : [];
@@ -187,6 +192,7 @@ export function sessionExecutionEventBatches(
     if (event.type === "user.interrupt" || event.type === "system.message") {
       continue;
     }
+    if (event.type === "session.updated" && event.resume !== true) continue;
     const laneId = "sessionThreadId" in event
       ? event.sessionThreadId ?? "sthr_primary"
       : "sthr_primary";

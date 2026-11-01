@@ -1529,6 +1529,16 @@ export class SessionDO extends DurableObject<Env> {
           try {
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
+              if (rawEvent.type === "session.updated") {
+                // Budget resume: continue from history, no new user input.
+                if (rawEvent.resume === true) {
+                  await this.processUserMessage({
+                    type: "user.message",
+                    content: [{ type: "text", text: "" }],
+                  }, 0, true, signal, fence);
+                }
+                continue;
+              }
               // Execution rows use the Managed Agents domain shape. The DO
               // runtime uses the legacy wire shape, so this is the one
               // explicit protocol projection at the host boundary.
@@ -2363,6 +2373,16 @@ export class SessionDO extends DurableObject<Env> {
           };
           history.append(idleEvent);
           this.broadcastEvent(idleEvent);
+        }
+        return new Response(null, { status: 202 });
+      }
+
+      if (body.type === ("session.updated" as SessionEvent["type"])) {
+        // Budget update that lifted a budget_reached pause. The canonical
+        // event and its continuation execution are already in D1 (store
+        // append + outbox); just wake the primary lane to claim it.
+        if ((body as unknown as { resume?: boolean }).resume === true) {
+          this.drainEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -4168,6 +4188,7 @@ export class SessionDO extends DurableObject<Env> {
         cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
       }),
       list_cost: runtimeListCost(consumedListCostPico(events, gate.pricing)),
+      list_cost_pico: consumedListCostPico(events, gate.pricing).toString(),
     };
   }
 

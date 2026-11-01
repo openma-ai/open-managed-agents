@@ -490,7 +490,10 @@ export class DefaultNodeManagedSessionRunner
       event.type !== "user.custom_tool_result" &&
       event.type !== "user.tool_result" &&
       event.type !== "user.tool_confirmation" &&
-      event.type !== "user.define_outcome"
+      event.type !== "user.define_outcome" &&
+      // A budget update that lifted a budget_reached pause: continue the
+      // harness from history with no new user input.
+      !(event.type === "session.updated" && event.resume === true)
     ) {
       throw new Error(
         `Managed Node runner does not yet support ${event.type}`,

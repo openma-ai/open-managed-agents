@@ -302,6 +302,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     return {
       ...usage,
       listCost: { amountMinor: picoToCentsString(pico), currency: "USD" as const },
+      listCostPico: pico.toString(),
     };
   }
 

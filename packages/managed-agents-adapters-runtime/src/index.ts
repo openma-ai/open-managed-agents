@@ -497,6 +497,15 @@ export function encodeRuntimeSessionEvent(
       };
     case "system.message":
       return { ...base, type: event.type, content: event.content };
+    case "session.updated":
+      return {
+        ...base,
+        type: event.type,
+        budget: event.budget === null
+          ? null
+          : { amount_minor: event.budget.amountMinor, currency: event.budget.currency },
+        ...(event.resume === true && { resume: true }),
+      };
   }
 }
 

@@ -23,6 +23,11 @@ import type {
   SessionExecutionContextSourcePort,
 } from "@open-managed-agents/session-runtime-contract/context";
 
+import type {
+  RecordBudgetUpdateCommand,
+  RecordBudgetUpdateResult,
+} from "../ports/session-events";
+
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
@@ -253,11 +258,49 @@ export class SessionEventsApplicationService
     throw new Error("Session changed concurrently while accepting events");
   }
 
-  private async pausedAtBudget(
-    sessionId: string,
-    session: import("../domain/session").Session,
-  ): Promise<boolean> {
-    if (session.budget == null || session.status !== "idle") return false;
+  async recordBudgetUpdate(
+    command: RecordBudgetUpdateCommand,
+  ): Promise<RecordBudgetUpdateResult> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const execution = await this.dependencies.execution.find({
+        workspaceId: this.dependencies.workspaceId,
+        sessionId: command.sessionId,
+      });
+      if (execution === null) return { type: "not_found" };
+      const stop = await this.latestIdleStopReason(command.sessionId);
+      const resume = sessionPausedAtBudget(command.previous, stop)
+        && !sessionPausedAtBudget(execution.session, stop);
+      const event: SentSessionEvent = {
+        id: this.dependencies.ids.nextEventId(),
+        type: "session.updated",
+        processedAt: this.dependencies.clock.now().toISOString(),
+        budget: execution.session.budget ?? null,
+        ...(resume && { resume: true }),
+      };
+      const appended = await this.dependencies.store.append({
+        workspaceId: this.dependencies.workspaceId,
+        sessionId: command.sessionId,
+        expectedRevision: execution.revision,
+        events: [event],
+        nextSession: execution.session,
+      });
+      if (appended.type === "not_found") return { type: "not_found" };
+      if (appended.type === "revision_conflict") continue;
+      if (resume) {
+        await this.dependencies.dispatch.sessionEventsAccepted({
+          workspaceId: this.dependencies.workspaceId,
+          sessionId: command.sessionId,
+          session: appended.session,
+          environment: execution.environment,
+          events: appended.events,
+        });
+      }
+      return { type: "recorded", resumed: resume };
+    }
+    throw new Error("Session changed concurrently while recording a budget update");
+  }
+
+  private async latestIdleStopReason(sessionId: string): Promise<string | null> {
     const [latestIdle] = await this.dependencies.store.list({
       workspaceId: this.dependencies.workspaceId,
       sessionId,
@@ -265,11 +308,19 @@ export class SessionEventsApplicationService
       order: "desc",
       types: ["session.status_idle"],
     });
-    const stop = latestIdle !== undefined && "stopReason" in latestIdle
+    return latestIdle !== undefined && "stopReason" in latestIdle
       ? (latestIdle as { stopReason?: { type?: string } | null }).stopReason?.type ?? null
       : null;
-    return sessionPausedAtBudget(session, stop);
   }
+
+  private async pausedAtBudget(
+    sessionId: string,
+    session: import("../domain/session").Session,
+  ): Promise<boolean> {
+    if (session.budget == null || session.status !== "idle") return false;
+    return sessionPausedAtBudget(session, await this.latestIdleStopReason(sessionId));
+  }
+
 
   async listSessionEvents(
     query: ListSessionEventsQuery,

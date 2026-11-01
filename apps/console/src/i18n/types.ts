@@ -234,6 +234,14 @@ export interface Messages {
 
   // Model cards list
   modelCards: {
+    pricing: string;
+    pricingHint: string;
+    priceInput: string;
+    priceOutput: string;
+    priceCacheRead: string;
+    priceCacheWrite: string;
+    pricingRequired: string;
+    pricingInvalid: string;
     newModelCard: string;
     searchModelCards: string;
     noMatchingModelCards: string;

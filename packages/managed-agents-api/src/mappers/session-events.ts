@@ -359,6 +359,14 @@ export function toSentSessionEventResponse(event: SentSessionEvent): object {
           text: block.text,
         })),
       };
+    case "session.updated":
+      return {
+        ...base,
+        type: event.type,
+        budget: event.budget === null
+          ? null
+          : { type: "limit", max_list_cost: fromMonetaryAmount(event.budget) },
+      };
   }
 }
 

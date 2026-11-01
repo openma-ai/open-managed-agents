@@ -216,6 +216,14 @@ export const zhCN: Messages = {
   },
 
   modelCards: {
+    pricing: "标价",
+    pricingHint: "（每百万 token 美元；留空为未定价，预算不生效）",
+    priceInput: "输入",
+    priceOutput: "输出",
+    priceCacheRead: "缓存读取",
+    priceCacheWrite: "缓存写入",
+    pricingRequired: "设置定价时必须填写输入和输出价格。",
+    pricingInvalid: "价格必须是最多 6 位小数的美元金额。",
     newModelCard: "+ 新建模型卡",
     searchModelCards: "搜索模型卡…",
     noMatchingModelCards: "没有匹配的模型卡",
