@@ -142,3 +142,44 @@ describe("eventsToMessages: DeepSeek tool_use-must-be-last (pressure two_clients
     expect(parts.map((p) => p.type)).toEqual(["text", "tool-call"]);
   });
 });
+
+describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool_result", () => {
+  it("synthesizes before intervening user.message and drops the late real result", () => {
+    const events: any[] = [
+      { type: "user.message", id: "m0", content: [{ type: "text", text: "go" }] },
+      { type: "agent.custom_tool_use", id: "c1", name: "run", input: {} },
+      { type: "agent.message", id: "a1", content: [{ type: "text", text: "working" }] },
+      { type: "user.message", id: "m1", content: [{ type: "text", text: "B1" }] },
+      { type: "agent.tool_result", tool_use_id: "c1", content: [{ type: "text", text: "late real" }] },
+    ];
+    const out = normalizeInterruptedToolCalls(events as never) as any[];
+    expect(out.map((e) => e.type)).toEqual([
+      "user.message", "agent.custom_tool_use", "agent.message",
+      "agent.tool_result", "user.message",
+    ]);
+    expect(out[3].tool_use_id).toBe("c1");
+    expect(out[3].is_error).toBe(true);
+    expect(JSON.stringify(out[3].content)).toContain("interrupted before completion");
+    // Model sample: assistant+tools, tool results, user — never user between.
+    const msgs = eventsToMessages(events as never) as any[];
+    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+    const toolMsg = msgs[2].content as any[];
+    expect(toolMsg.map((p) => p.toolCallId)).toEqual(["c1"]);
+  });
+
+  it("idle requires_action interrupt keeps later real settle (wire no-op)", () => {
+    const events: any[] = [
+      { type: "agent.custom_tool_use", id: "c1", name: "run", input: {} },
+      { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1"] } },
+      { type: "user.interrupt", id: "x1" },
+      { type: "agent.tool_result", tool_use_id: "c1", content: [{ type: "text", text: "real" }] },
+    ];
+    const out = normalizeInterruptedToolCalls(events as never) as any[];
+    expect(out).toBe(events); // no synth; real answer preserved
+    const parts = eventsToMessages(events as never).flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+    const results = parts.filter((p: any) => p.type === "tool-result");
+    expect(results).toHaveLength(1);
+    expect(JSON.stringify(results[0])).toContain("real");
+    expect(JSON.stringify(results[0])).not.toContain("interrupted before completion");
+  });
+});
