@@ -1,3 +1,8 @@
+import {
+  consumedListCostPico,
+  picoToCentsString,
+  type SessionBudgetGate,
+} from "@open-managed-agents/agent/harness/budget";
 import type { ModelMessage } from "ai";
 import type {
   HarnessRuntime,
@@ -281,6 +286,25 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     this.usageLedger = createNodeHarnessUsageLedger();
   }
 
+  private budgetGate: SessionBudgetGate | null = null;
+
+  /** Bind the execution's budget gate so usage snapshots carry list_cost. */
+  setBudgetGate(gate: SessionBudgetGate | null): void {
+    this.budgetGate = gate;
+  }
+
+  /** Session usage snapshot; `listCost` (whole cents) is present only when
+   * the model card is priced and the session has a budget. */
+  usageSnapshot() {
+    const usage = ledgerToManagedSessionUsage(this.usageLedger);
+    if (this.budgetGate === null) return usage;
+    const pico = consumedListCostPico(this.history.getEvents(), this.budgetGate.pricing);
+    return {
+      ...usage,
+      listCost: { amountMinor: picoToCentsString(pico), currency: "USD" as const },
+    };
+  }
+
   reportUsage = async (
     input_tokens: number,
     output_tokens: number,
@@ -288,7 +312,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     creditHarnessUsage(this.usageLedger, { input_tokens, output_tokens });
     this.broadcastProducedEvent({
       type: "session.usage",
-      usage: ledgerToManagedSessionUsage(this.usageLedger),
+      usage: this.usageSnapshot(),
     });
   };
 
@@ -339,7 +363,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     if (cc === 0 && cr === 0) return;
     this.broadcastProducedEvent({
       type: "session.usage",
-      usage: ledgerToManagedSessionUsage(this.usageLedger),
+      usage: this.usageSnapshot(),
     });
   }
 

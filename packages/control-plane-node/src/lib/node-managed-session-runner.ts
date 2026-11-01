@@ -32,6 +32,11 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
+import {
+  createSessionBudgetGate,
+  type SessionBudgetGate,
+} from "@open-managed-agents/agent/harness/budget";
+import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
@@ -184,6 +189,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     executionFence: SessionExecutionFence;
   }): Promise<void>;
   buildModel(input: ManagedRunnerContext): Promise<HarnessContext["model"]>;
+  /** List prices of the session's model card; null = unpriced. Session
+   * budgets are enforced only when this AND `session.budget` are set. */
+  resolveModelPricing?(input: ManagedRunnerContext): Promise<ModelPricing | null>;
   buildTools(
     input: ManagedRunnerContext & ManagedRunnerSubagentContext & { sandbox: SandboxExecutor },
   ): Promise<HarnessContext["tools"]>;
@@ -561,6 +569,7 @@ export class DefaultNodeManagedSessionRunner
       ids: this.dependencies.ids,
     });
     runtime.broadcastProducedEvent({ type: "session.status_running" });
+    let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
     try {
@@ -678,6 +687,20 @@ export class DefaultNodeManagedSessionRunner
           model,
           tools,
         });
+        if (harnessContext.budget === undefined) {
+          const sessionBudget = input.session.budget ?? null;
+          const pricing = sessionBudget === null
+            ? null
+            : await this.dependencies.resolveModelPricing?.(context) ?? null;
+          harnessContext.budget = createSessionBudgetGate(
+            sessionBudget === null
+              ? null
+              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
+            pricing,
+          );
+        }
+        budgetGate = harnessContext.budget ?? null;
+        runtime.setBudgetGate(budgetGate);
         const retry = this.dependencies.harnessRetry ??
           { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
         for (let attempt = 1; ; attempt += 1) {
@@ -888,7 +911,26 @@ export class DefaultNodeManagedSessionRunner
           },
         });
       }
-      if (!leaseLost) {
+      if (
+        !leaseLost && !runFailed && finalizationError === undefined
+        && budgetGate?.reached === true
+      ) {
+        // Official budget stop: thread idle → usage snapshot → session idle,
+        // each with stop_reason budget_reached.
+        const stopReason = { type: "budget_reached" as const };
+        runtime.broadcastProducedEvent({
+          type: "session.thread_status_idle",
+          agentName: input.session.agent.name,
+          sessionThreadId: "sthr_primary",
+          stopReason,
+        });
+        runtime.broadcastProducedEvent({
+          type: "session.usage",
+          usage: runtime.usageSnapshot(),
+          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
+        });
+        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+      } else if (!leaseLost) {
         runtime.broadcastProducedEvent({
           type: "session.status_idle",
           stopReason: { type: runFailed || finalizationError !== undefined ? "retries_exhausted" : "end_turn" },

@@ -113,3 +113,4 @@ export * from "./credentials/persistence";
 export * from "./credentials/validation";
 export * from "./credentials/vault-source";
 export type * from "./ports";
+export * from "./sessions/budget";

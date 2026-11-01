@@ -643,6 +643,12 @@ export async function createManagedNodeRuntime(
         executionId: input.executionFence.executionId,
       }, "Completed Session output could not be published as an Agents API artifact");
     }),
+    resolveModelPricing: async ({ workspaceId, session }) => {
+      const model = session.agent.model as string | { id: string };
+      const handle = typeof model === "string" ? model : model.id;
+      const card = await modelCardsService.findByModelId({ tenantId: workspaceId, modelId: handle });
+      return card && !card.archived_at ? card.pricing ?? null : null;
+    },
     buildModel: async ({ workspaceId, session }) => {
       if (session.agent.openma?.harness === "acp-sandbox") {
         await resolveHostedModel(workspaceId, session.agent.model);

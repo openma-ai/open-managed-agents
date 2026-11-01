@@ -1,3 +1,8 @@
+import {
+  BUDGET_SETTLE_EVENT_TYPES,
+  budgetSettleOnlyMessage,
+  sessionPausedAtBudget,
+} from "../sessions/budget";
 import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type {
   SendableSessionEvent,
@@ -214,6 +219,16 @@ export class SessionEventsApplicationService
       if (execution.session.archivedAt != null) {
         return { type: "invalid_request", message: `Session ${command.sessionId} is archived and cannot receive new events` };
       }
+      // Budget settle-only window: at the cap only settle events are
+      // accepted; an interrupt is accepted, ignored and never persisted.
+      let acceptedEvents = events;
+      if (await this.pausedAtBudget(command.sessionId, execution.session)) {
+        if (events.some((event) => !(BUDGET_SETTLE_EVENT_TYPES as readonly string[]).includes(event.type))) {
+          return { type: "invalid_request", message: budgetSettleOnlyMessage() };
+        }
+        acceptedEvents = events.filter((event) => event.type !== "user.interrupt");
+        if (acceptedEvents.length === 0) return { type: "accepted", events: [] };
+      }
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
         return { type: "version_conflict", message: "Session changed after input validation; retrieve the session before retrying" };
       }
@@ -221,8 +236,8 @@ export class SessionEventsApplicationService
         workspaceId: this.dependencies.workspaceId,
         sessionId: command.sessionId,
         expectedRevision: execution.revision,
-        events,
-        nextSession: applyAcceptedEvents(execution.session, events),
+        events: acceptedEvents,
+        nextSession: applyAcceptedEvents(execution.session, acceptedEvents),
       });
       if (appended.type === "not_found") return { type: "not_found" };
       if (appended.type === "revision_conflict") continue;
@@ -236,6 +251,24 @@ export class SessionEventsApplicationService
       return { type: "accepted", events: appended.events };
     }
     throw new Error("Session changed concurrently while accepting events");
+  }
+
+  private async pausedAtBudget(
+    sessionId: string,
+    session: import("../domain/session").Session,
+  ): Promise<boolean> {
+    if (session.budget == null || session.status !== "idle") return false;
+    const [latestIdle] = await this.dependencies.store.list({
+      workspaceId: this.dependencies.workspaceId,
+      sessionId,
+      limit: 1,
+      order: "desc",
+      types: ["session.status_idle"],
+    });
+    const stop = latestIdle !== undefined && "stopReason" in latestIdle
+      ? (latestIdle as { stopReason?: { type?: string } | null }).stopReason?.type ?? null
+      : null;
+    return sessionPausedAtBudget(session, stop);
   }
 
   async listSessionEvents(

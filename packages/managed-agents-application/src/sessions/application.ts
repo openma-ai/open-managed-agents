@@ -1,3 +1,4 @@
+import { validateBudgetUpdate } from "./budget";
 import type { Agent } from "../domain/agent";
 import type { Session, SessionAgent } from "../domain/session";
 import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
@@ -459,6 +460,11 @@ export class SessionsApplicationService
       sessionId: command.sessionId,
     });
     if (current === null) return { type: "not_found" };
+
+    const budgetError = validateBudgetUpdate(current.session, command.budget);
+    if (budgetError !== null) {
+      return { type: "invalid_request", message: budgetError };
+    }
 
     const updatesAgent = command.agent?.tools !== undefined
       || command.agent?.mcpServers !== undefined;

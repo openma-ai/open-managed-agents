@@ -13,10 +13,28 @@ export interface ModelCard {
   custom_headers?: Record<string, string>; // custom HTTP headers (compatible providers)
   /** Pi-native serializable Model fields for custom/catalog overrides. */
   pi_config?: Record<string, unknown>;
+  /** List prices used to compute a session's `list_cost`. Absent = unpriced:
+   * session budgets are inactive for sessions on this card. */
+  pricing?: ModelPricing;
   is_default?: boolean;
   created_at: string;
   updated_at?: string;
   archived_at?: string;
+}
+
+/**
+ * Model list prices, in USD per million tokens, as decimal strings
+ * (e.g. "3", "0.30"). `version` versions the shape; `effective_at` records when
+ * these prices took effect (informational, ISO-8601).
+ */
+export interface ModelPricing {
+  version: 1;
+  currency: "USD";
+  effective_at?: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cache_read_per_mtok?: string;
+  cache_write_per_mtok?: string;
 }
 
 // --- Agent ---

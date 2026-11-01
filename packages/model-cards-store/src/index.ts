@@ -12,6 +12,7 @@
 //   import { createInMemoryModelCardService } from "@open-managed-agents/model-cards-store/test-fakes";
 
 export * from "./types";
+export * from "./pricing";
 export * from "./errors";
 export * from "./ports";
 export * from "./resolve-credentials";

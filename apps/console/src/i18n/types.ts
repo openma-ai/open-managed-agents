@@ -182,6 +182,13 @@ export interface Messages {
     noMatchingSessions: string;
     noSessionsYet: string;
     editTitle: string;
+    budgetCost: string;
+    budgetCap: string;
+    budgetUnpriced: string;
+    budgetNone: string;
+    budgetEdit: string;
+    budgetRemove: string;
+    budgetInvalid: string;
     untitledSession: string;
     sessionTitle: string;
   };

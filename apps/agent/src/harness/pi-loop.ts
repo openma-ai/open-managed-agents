@@ -1,3 +1,4 @@
+import { budgetExhausted } from "./budget";
 import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import {
   type Api,
@@ -83,6 +84,12 @@ export class PiHarness implements HarnessInterface {
       throw new ModelError("Pi harness requires a tenant-scoped Pi model runtime");
     }
 
+    // Pre-request budget gate: at the cap, make no model call at all.
+    if (budgetExhausted(ctx.budget, ctx.runtime.history.getEvents())) {
+      ctx.budget!.reached = true;
+      return;
+    }
+
     await this.compactIfInsufficientOutputRoom(ctx);
     const proactivelyCompacted = await this.compactBeforeTurn(ctx);
     let outcome = await this.runAgentOnce(ctx);
@@ -95,6 +102,7 @@ export class PiHarness implements HarnessInterface {
       if (recovered) outcome = await this.runAgentOnce(ctx);
     }
 
+    if (ctx.budget?.reached) return;
     if (outcome.providerFailure && !ctx.runtime.abortSignal?.aborted) {
       const failure = outcome.providerFailure;
       const detail = failure.errorMessage?.trim();
@@ -143,12 +151,25 @@ export class PiHarness implements HarnessInterface {
         thinkingLevel: ctx.pi!.thinkingLevel,
       },
       sessionId: ctx.session_id,
-      streamFn: (model, context, options) =>
-        ctx.pi!.models.streamSimple(
+      streamFn: (model, context, options) => {
+        // Every follow-up request inside the Pi loop (after tool results)
+        // passes the same pre-request gate. At the cap the request is
+        // issued with an already-aborted signal so no tokens are spent.
+        if (budgetExhausted(ctx.budget, ctx.runtime.history.getEvents())) {
+          ctx.budget!.reached = true;
+          agent.abort();
+          return ctx.pi!.models.streamSimple(
+            model,
+            context,
+            { ...withPiRuntimeRequestOptions(ctx.pi!, options, context), signal: AbortSignal.abort() },
+          );
+        }
+        return ctx.pi!.models.streamSimple(
           model,
           context,
           withPiRuntimeRequestOptions(ctx.pi!, options, context),
-        ),
+        );
+      },
       toolExecution: "parallel",
     });
     toolAssembly.attach(agent);

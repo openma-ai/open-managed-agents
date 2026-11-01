@@ -9,7 +9,7 @@ import type {
   ModelCardRepo,
   ModelCardUpdateFields,
 } from "./ports";
-import { apiKeyPreview, ModelCardRow } from "./types";
+import { apiKeyPreview, ModelCardRow, type ModelPricing } from "./types";
 
 export interface ModelCardServiceDeps {
   repo: ModelCardRepo;
@@ -81,6 +81,8 @@ export class ModelCardService {
     customHeaders?: Record<string, string> | null;
     /** Pi-native serializable Model fields. No OpenMA semantic translation. */
     piConfig?: Record<string, unknown> | null;
+    /** List prices; null/omitted = unpriced. */
+    pricing?: ModelPricing | null;
     /** When true, atomically clears any existing default before inserting. */
     makeDefault?: boolean;
   }): Promise<ModelCardRow> {
@@ -94,6 +96,7 @@ export class ModelCardService {
       baseUrl: opts.baseUrl ?? null,
       customHeaders: opts.customHeaders ?? null,
       piConfig: opts.piConfig ?? null,
+      pricing: opts.pricing ?? null,
       apiKeyCipher,
       apiKeyPreview: apiKeyPreview(opts.apiKey),
       isDefault: !!opts.makeDefault,
@@ -115,6 +118,8 @@ export class ModelCardService {
     customHeaders?: Record<string, string> | null;
     /** Pass null to restore Pi catalog/default model configuration. */
     piConfig?: Record<string, unknown> | null;
+    /** Pass null to clear pricing (card becomes unpriced). */
+    pricing?: ModelPricing | null;
     /** New plaintext api_key. Service derives + stores cipher + preview. */
     apiKey?: string;
     /** Atomically clears other defaults if true (per partial UNIQUE). */
@@ -128,6 +133,7 @@ export class ModelCardService {
     if (opts.baseUrl !== undefined) update.baseUrl = opts.baseUrl;
     if (opts.customHeaders !== undefined) update.customHeaders = opts.customHeaders;
     if (opts.piConfig !== undefined) update.piConfig = opts.piConfig;
+    if (opts.pricing !== undefined) update.pricing = opts.pricing;
     if (opts.isDefault !== undefined) update.isDefault = opts.isDefault;
     if (opts.apiKey !== undefined) {
       update.apiKeyCipher = await this.crypto.encrypt(opts.apiKey);
