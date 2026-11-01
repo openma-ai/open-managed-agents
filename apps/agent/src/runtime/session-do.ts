@@ -62,8 +62,11 @@ import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-r
 import {
   budgetReachedEvents,
   createSessionBudgetGate,
+  gateExhausted,
+  recordModelEgress,
   runtimeListCost,
   type SessionBudgetGate,
+  type TokenUsage,
 } from "@open-managed-agents/domain/sessions";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
 import { isSpecEvent } from "@open-managed-agents/api-types";
@@ -3378,6 +3381,49 @@ export class SessionDO extends DurableObject<Env> {
           output_tokens: this.state.output_tokens,
         },
         outcome_evaluations: outcomeEvaluations,
+      });
+    }
+
+    // POST /model-egress — harness-in-sandbox inference gateway metering.
+    // Main's /v1/oma/inference-proxy calls this so OpenSandbox model egress
+    // shares the same SessionBudgetGate + list_cost_pico store as Pi.
+    if (request.method === "POST" && url.pathname === "/model-egress") {
+      const body = (await request.json().catch(() => null)) as {
+        action?: "check" | "record";
+        usage?: TokenUsage;
+      } | null;
+      const action = body?.action;
+      if (action !== "check" && action !== "record") {
+        return Response.json({ error: "action required (check|record)" }, { status: 400 });
+      }
+      let gate = this.activeBudgetGate;
+      if (!gate) {
+        const handle = this.agentModelHandle(
+          (this.state.agent_snapshot ?? { model: this.env.ANTHROPIC_MODEL }) as AgentConfig,
+        );
+        gate = await this.resolveBudgetGate(handle);
+      }
+      if (!gate) {
+        return Response.json({ active: false, exhausted: false, list_cost_pico: null });
+      }
+      if (action === "check") {
+        const exhausted = gateExhausted(gate);
+        if (exhausted) gate.reached = true;
+        return Response.json({
+          active: true,
+          exhausted,
+          reached: gate.reached,
+          list_cost_pico: gate.list_cost_pico,
+        });
+      }
+      const usage = body?.usage ?? {};
+      recordModelEgress(gate, usage);
+      if (gateExhausted(gate)) gate.reached = true;
+      return Response.json({
+        active: true,
+        exhausted: gateExhausted(gate),
+        reached: gate.reached,
+        list_cost_pico: gate.list_cost_pico,
       });
     }
 

@@ -5,8 +5,8 @@
 //             budget_reached frames, ListCostPicoStore port
 //   adapter — CF / Node implement ListCostPicoStore only (load/save the
 //             same `list_cost_pico` string; no second names, no gate logic)
-//   harness — Pi `meterPiRuntime` only: wrap models → gateExhausted /
-//             recordModelEgress
+//   egress  — Pi `meterPiRuntime` AND harness-in-sandbox inference-proxy
+//             (`withHostedInferenceBudget` → gateExhausted / recordModelEgress)
 //
 // ACTIVE only when max_list_cost AND model-card pricing both exist.
 

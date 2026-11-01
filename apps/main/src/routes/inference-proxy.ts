@@ -21,8 +21,10 @@ import {
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
 import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
+import { withHostedInferenceBudget } from "@open-managed-agents/inference-proxy";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
+import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
 
 import { apiKeyToTenantId } from "./mcp-proxy";
 
@@ -100,6 +102,38 @@ export async function resolveSessionModelUpstream(
   }
 }
 
+/** Session DO model-egress hooks: same SessionBudgetGate / list_cost_pico as Pi. */
+async function cfSessionBudgetHooks(
+  env: Env,
+  sessionId: string,
+): Promise<import("@open-managed-agents/inference-proxy").HostedInferenceBudgetHooks | null> {
+  const binding = resolveSessionSandboxFetcher(env);
+  if (!binding) return null;
+  const call = async (action: "check" | "record", usage?: Record<string, number>) => {
+    const res = await binding.fetch(`https://sandbox/sessions/${sessionId}/model-egress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(usage ? { action, usage } : { action }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as {
+      active?: boolean;
+      exhausted?: boolean;
+    };
+  };
+  return {
+    allowRequest: async () => {
+      const result = await call("check");
+      // Binding/DO unavailable → do not invent a second counter; allow the call.
+      if (!result || result.active === false) return true;
+      return result.exhausted !== true;
+    },
+    recordUsage: async (usage) => {
+      await call("record", usage as Record<string, number>);
+    },
+  };
+}
+
 export async function forwardHttpInferenceProxyRequest(input: {
   env: Env;
   services: Services;
@@ -122,13 +156,16 @@ export async function forwardHttpInferenceProxyRequest(input: {
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.arrayBuffer();
-  return sendHostedInference({
-    upstream,
-    method,
-    subPath: input.subPath,
-    inboundHeaders: input.request.headers,
-    body,
-  });
+  const budget = await cfSessionBudgetHooks(input.env, input.sessionId);
+  return withHostedInferenceBudget(budget, () =>
+    sendHostedInference({
+      upstream,
+      method,
+      subPath: input.subPath,
+      inboundHeaders: input.request.headers,
+      body,
+    }),
+  );
 }
 
 const app = new Hono<{

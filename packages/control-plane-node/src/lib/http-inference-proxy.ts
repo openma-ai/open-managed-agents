@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { ResolvedSessionModelUpstream } from "@open-managed-agents/inference-proxy";
+import { withHostedInferenceBudget } from "@open-managed-agents/inference-proxy";
 import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
+import { nodeHostedInferenceBudgetHooks } from "./node-session-budget-gates.js";
 
 export type NodeInferenceUpstream = ResolvedSessionModelUpstream;
 
@@ -32,14 +34,17 @@ export function buildNodeHttpInferenceProxyRoutes(
     const body = ["GET", "HEAD"].includes(method.toUpperCase())
       ? null
       : await context.req.raw.arrayBuffer();
-    return sendHostedInference({
-      upstream,
-      method,
-      subPath,
-      inboundHeaders: context.req.raw.headers,
-      body,
-      fetcher: dependencies.fetcher,
-    });
+    const budget = nodeHostedInferenceBudgetHooks(sessionId);
+    return withHostedInferenceBudget(budget, () =>
+      sendHostedInference({
+        upstream,
+        method,
+        subPath,
+        inboundHeaders: context.req.raw.headers,
+        body,
+        fetcher: dependencies.fetcher,
+      }),
+    );
   });
   return routes;
 }

@@ -2,6 +2,8 @@
 // Domain owns SessionBudgetGate, `list_cost_pico`, ListCostPicoStore, and
 // budget_reached. This module re-exports that API and wraps Pi `models` so
 // every real request hits gateExhausted / recordModelEgress.
+// Harness-in-sandbox OpenSandbox egress is metered the same way at the
+// host inference-proxy (withHostedInferenceBudget → Session DO / Node gate).
 import type { ModelPricing, SessionEvent } from "@open-managed-agents/api-types";
 import {
   type BudgetAmount,

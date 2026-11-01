@@ -371,3 +371,13 @@ export function planHostedInferenceRequest(
   }
   return { url: upstreamUrl, method: input.method, headers: outbound, body };
 }
+
+export {
+  inferenceUsageFromJson,
+  inferenceUsageFromSse,
+  observeInferenceResponseUsage,
+  withHostedInferenceBudget,
+  type InferenceTokenUsage,
+  type HostedInferenceBudgetHooks,
+} from "./usage.js";
+

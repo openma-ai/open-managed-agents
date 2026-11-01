@@ -40,6 +40,10 @@ import {
   createSessionBudgetGate,
   type SessionBudgetGate,
 } from "@open-managed-agents/domain/sessions";
+import {
+  clearNodeSessionBudgetGate,
+  registerNodeSessionBudgetGate,
+} from "./node-session-budget-gates.js";
 import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
@@ -781,6 +785,8 @@ export class DefaultNodeManagedSessionRunner
         budgetGate = harnessContext.budget ?? null;
         runtime.setBudgetGate(budgetGate);
         subagentContext.subagents?.setBudgetGate?.(budgetGate);
+        // Harness-in-sandbox inference-proxy meters via the same gate.
+        registerNodeSessionBudgetGate(input.session.id, budgetGate);
         const retry = this.dependencies.harnessRetry ??
           { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
         for (let attempt = 1; ; attempt += 1) {
@@ -1039,6 +1045,7 @@ export class DefaultNodeManagedSessionRunner
           });
         }
       } finally {
+        clearNodeSessionBudgetGate(input.session.id);
         // ADR 0005: keep the sandbox lease through drain, checkpoint and
         // output publication, not only while the harness runs.
         await stopHeartbeat();
