@@ -244,8 +244,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/integrations-core
       '@openma/common':
-        specifier: file:./openma-common-0.13.1-dev.3.tgz
-        version: file:apps/console/openma-common-0.13.1-dev.3.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: file:./openma-common-0.13.1-dev.4.tgz
+        version: file:apps/console/openma-common-0.13.1-dev.4.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -7047,8 +7047,8 @@ packages:
       react-dom:
         optional: true
 
-  '@openma/common@file:apps/console/openma-common-0.13.1-dev.3.tgz':
-    resolution: {integrity: sha512-9uWxd9fWz21iyNiD/5UwPPUSBgM+xDGWo8SGjxw05IttKohWU7TrccGDRREgvoyhSwUCM5kVzkOapJ7KrRs00w==, tarball: file:apps/console/openma-common-0.13.1-dev.3.tgz}
+  '@openma/common@file:apps/console/openma-common-0.13.1-dev.4.tgz':
+    resolution: {integrity: sha512-zVgJYScRWxAqK7hjD6Bj1VVa6RkNWY9lN2Ha7rjC4NCR8E3ryUrpyzT7sWnm+MX0zuTBZ2eJ9eTkXstyAgQ9Aw==, tarball: file:apps/console/openma-common-0.13.1-dev.4.tgz}
     version: 0.13.1-dev.3
     engines: {node: '>=20'}
     peerDependencies:
@@ -17148,7 +17148,7 @@ snapshots:
       - '@types/react-dom'
       - supports-color
 
-  '@openma/common@file:apps/console/openma-common-0.13.1-dev.3.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/common@file:apps/console/openma-common-0.13.1-dev.4.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

@@ -61,6 +61,7 @@ import {
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
 import { QueueDock, type QueuedPrompt } from "@openma/common/chat-ui";
+import { settleOnlySendFailureNotice } from "../lib/send-rejection";
 import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
 import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
@@ -749,11 +750,18 @@ export function SessionDetail() {
         addEvent,
       );
       setLocalPending(handoff.localPending);
-    } catch {
+    } catch (error) {
       // api() already toasted the error; clear the optimistic slot so
       // the user doesn't keep seeing a "stuck" optimistic row that will
       // never actually run.
       setLocalPending(null);
+      // Settle-only 400 (requires_action): not queued; put the text back in
+      // the composer so the user can resend after the action settles.
+      const notice = settleOnlySendFailureNotice(error);
+      if (notice && messageText.trim()) {
+        setComposerRestore({ text: messageText, nonce: Date.now() });
+        setComposerNotice(notice);
+      }
     }
     setSending(false);
   };
@@ -888,6 +896,9 @@ export function SessionDetail() {
       id: item.id,
       text: item.text,
       busy: queueBusy.has(item.id),
+      // Retained after retries_exhausted: advances with the next events and
+      // cannot be withdrawn — QueueDock hides edit/remove for it.
+      ...(item.retained ? { retained: true } : {}),
     })),
     ...(localPending !== null && localPendingQueued && activeThreadId === "sthr_primary"
       ? [{ id: "optimistic", text: localPending, busy: true }]
