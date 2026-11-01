@@ -26,9 +26,7 @@ describe("CanonicalSessionTurn", () => {
     };
 
     const projected = projectCanonicalSessionTurn(turn);
-    expect(projected.timeline?.some((item) => "text" in item && item.text === "Reading files")
-      || projected.thoughtText === "Reading files"
-      || JSON.stringify(projected).includes("Reading files")).toBe(true);
+    expect(JSON.stringify(projected.items)).toContain("Reading files");
 
     const html = renderToStaticMarkup(<CanonicalSessionTurn turn={turn} projectedTurn={projected} />);
 

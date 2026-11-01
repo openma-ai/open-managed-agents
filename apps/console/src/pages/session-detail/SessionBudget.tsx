@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useI18n } from "../../i18n";
 import {
   budgetUpdateBody,
@@ -40,15 +42,17 @@ export function SessionBudget({
       </span>
       {editing ? (
         <>
-          <input
+          <Input
             aria-label={t.sessions.budgetCap}
-            className="w-24 rounded border border-border bg-bg px-1 py-0.5"
+            className="h-6 w-24 px-1 py-0.5 text-xs"
             value={draft}
             placeholder="$10.00"
             onChange={(e) => setDraft(e.target.value)}
           />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => {
               const cents = dollarsToCents(draft);
               if (cents === null) setError(t.sessions.budgetInvalid);
@@ -56,18 +60,18 @@ export function SessionBudget({
             }}
           >
             {t.common.save}
-          </button>
-          <button type="button" onClick={() => setEditing(false)}>{t.common.cancel}</button>
+          </Button>
+          <Button type="button" variant="ghost" size="xs" onClick={() => setEditing(false)}>{t.common.cancel}</Button>
         </>
       ) : cap ? (
         <>
           <span>
             {t.sessions.budgetCap}: <span className="text-fg">{centsToDollars(cap.amount)}</span>
           </span>
-          <button type="button" onClick={() => { setDraft(centsToDollars(cap.amount)); setEditing(true); }}>
+          <Button type="button" variant="ghost" size="xs" onClick={() => { setDraft(centsToDollars(cap.amount)); setEditing(true); }}>
             {t.sessions.budgetEdit}
-          </button>
-          <button type="button" onClick={() => void save(null)}>{t.sessions.budgetRemove}</button>
+          </Button>
+          <Button type="button" variant="ghost" size="xs" onClick={() => void save(null)}>{t.sessions.budgetRemove}</Button>
         </>
       ) : (
         <span>{t.sessions.budgetNone}</span>

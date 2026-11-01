@@ -17,15 +17,40 @@ import type { Event } from "./events";
 
 const STRIP_KEYS = new Set(["processed_at"]);
 
-function stripCmaFields<T extends Record<string, unknown>>(record: T): T {
-  const next = { ...record };
+type ManagedWireEvent = Parameters<typeof decodeManagedSessionEvent>[0];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Boundary guard: the decoder validates the payload; we only need a typed record. */
+function isManagedWireEvent(value: Record<string, unknown>): value is Record<string, unknown> & ManagedWireEvent {
+  return typeof value.type === "string";
+}
+
+function stripCmaFields(record: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...record };
   for (const key of STRIP_KEYS) delete next[key];
-  if (next.data && typeof next.data === "object" && !Array.isArray(next.data)) {
-    const data = { ...(next.data as Record<string, unknown>) };
+  if (isRecord(next.data)) {
+    const data = { ...next.data };
     delete data.processed_at;
     next.data = data;
   }
   return next;
+}
+
+/** Console Event requires a string `type`; content is narrowed to its accepted shapes. */
+function toGuiEvent(record: Record<string, unknown>): Event {
+  const { type, content, ...rest } = record;
+  const event: Event = { ...rest, type: typeof type === "string" ? type : "" };
+  if (typeof content === "string") event.content = content;
+  else if (Array.isArray(content)) {
+    event.content = content.filter(
+      (block): block is { type: string; text: string } =>
+        isRecord(block) && typeof block.type === "string",
+    );
+  }
+  return event;
 }
 
 /**
@@ -46,7 +71,7 @@ export function openmaToGuiEvent(openma: OpenMAEvent): Event {
   const content = data.content;
   const text = typeof data.text === "string" ? data.text : undefined;
 
-  const gui: Event = stripCmaFields({
+  const gui: Event = toGuiEvent(stripCmaFields({
     type: openma.type,
     id: openma.event_id,
     event_id: openma.event_id,
@@ -67,7 +92,7 @@ export function openmaToGuiEvent(openma: OpenMAEvent): Event {
     ...(typeof data.tool_call_id === "string" ? { tool_use_id: data.tool_call_id } : {}),
     ...(typeof data.decision === "string" ? { result: data.decision } : {}),
     ...(typeof data.message === "string" ? { deny_message: data.message } : {}),
-  });
+  }));
   return gui;
 }
 
@@ -87,11 +112,13 @@ export function ingestManagedWireEvent(
   const decoded =
     type === "event_start" || type === "event_delta" || type === "event_end"
       ? null
-      : decodeManagedSessionEvent(raw, context);
+      : isManagedWireEvent(raw)
+        ? decodeManagedSessionEvent(raw, context)
+        : null;
 
   if (!decoded) {
     // Pass through stream frames / unknown shapes without processed_at.
-    const passthrough = stripCmaFields({ ...raw }) as Event;
+    const passthrough = toGuiEvent(stripCmaFields({ ...raw }));
     if (!passthrough.ts && typeof raw.ts === "string") passthrough.ts = raw.ts;
     return passthrough;
   }
@@ -105,7 +132,7 @@ export function ingestManagedWireEvent(
   delete extras.id;
   delete extras.processed_at;
   delete extras.content;
-  return stripCmaFields({ ...extras, ...gui }) as Event;
+  return toGuiEvent(stripCmaFields({ ...extras, ...gui }));
 }
 
 export function encodeGuiUserMessage(input: {

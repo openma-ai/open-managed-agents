@@ -431,9 +431,7 @@ export function SessionDetail() {
     if (ev.type === "user.message" || ev.type === "turn.queued") {
       const blocks = Array.isArray(ev.content) ? ev.content : [];
       const text =
-        (typeof (ev as { text?: unknown }).text === "string"
-          ? (ev as { text: string }).text
-          : undefined)
+        (typeof ev.text === "string" ? ev.text : undefined)
         ?? blocks.find((block) => block.type === "text")?.text;
       if (typeof text === "string") {
         setLocalPending((cur) => (cur === text ? null : cur));
@@ -1449,9 +1447,7 @@ function SessionDurationBadge({ events }: { events: Event[] }) {
   for (const e of events) {
     const raw =
       (typeof e.ts === "string" ? e.ts : undefined)
-      ?? (typeof (e as { occurred_at?: unknown }).occurred_at === "string"
-        ? (e as { occurred_at: string }).occurred_at
-        : undefined);
+      ?? (typeof e.occurred_at === "string" ? e.occurred_at : undefined);
     if (!raw) continue;
     const t = new Date(raw).getTime();
     if (!Number.isFinite(t)) continue;

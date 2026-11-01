@@ -14,6 +14,8 @@ export type ListedSessionEvent = {
   id?: unknown;
   type?: unknown;
   processed_at?: unknown;
+  /** Listed events carry their payload; reconcile ignores it. */
+  content?: unknown;
   stop_reason?: { type?: unknown } | null;
   error?: { retry_status?: { type?: unknown } | null } | null;
 };
