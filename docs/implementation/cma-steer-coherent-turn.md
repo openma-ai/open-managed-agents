@@ -34,7 +34,7 @@ wrong for CMA-aligned sessions.
    (`user.tool_confirmation`, `user.tool_result`, `user.custom_tool_result`,
    `user.interrupt`). A `user.message` is **400** `invalid_request_error`
    (official CMA). Not deferred/queued. `budget_reached` is typed; gate
-   applies whenever that idle stop exists (emitter may still be incomplete).
+   applies whenever that idle stop exists (gate applies whenever that idle stop is present; emitter may still be incomplete).
 4. **Retry hold (not flush):** while `retry_status: retrying` /
    `session.status_rescheduled`, do **not** flush unstamped mid-turn
    inputs, and do **not** start a new agent turn from them. Leave them
@@ -119,8 +119,8 @@ only on `SessionExecutionStorePort` (ADR 0006):
 
 ## Settle-only window (official CMA — owner lock 2026-11-01)
 
-While the session is **idle** with `stop_reason: requires_action` (and
-`budget_reached` when/if enforced), **only settle events** are accepted:
+While the session is **idle** with `stop_reason: requires_action` or
+`budget_reached`, **only settle events** are accepted:
 
 - `user.tool_confirmation`
 - `user.tool_result`
@@ -135,9 +135,10 @@ A `user.message` in that window is **HTTP 400** `invalid_request_error`
 - Managed `SessionEventsApplicationService.sendSessionEvents`
 - Legacy Node `SessionRouter.appendEvent` (propagated by HTTP `POST /events`)
 
-**`budget_reached`:** typed in the domain stop_reason union; **no emitter and
-no gate yet** — document as a remaining gap until budgets are advertised on
-the wire.
+**`budget_reached`:** typed in the domain stop_reason union. The settle-only
+**gate is enforced** whenever that idle stop is present (CF / Node / application).
+Emitter may still be incomplete — remaining gap is advertising budgets on the
+wire, not the 400 gate.
 
 ## CF exhausted / terminal wire (aligned 2026-11-01)
 
