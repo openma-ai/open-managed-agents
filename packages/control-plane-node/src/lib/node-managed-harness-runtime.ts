@@ -332,11 +332,10 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   usageSnapshot() {
     const usage = ledgerToManagedSessionUsage(this.usageLedger);
     if (this.budgetGate === null) return usage;
-    const pico = this.budgetGate.consumedPico;
     return {
       ...usage,
-      listCost: { amountMinor: picoToCentsString(pico), currency: "USD" as const },
-      listCostPico: pico.toString(),
+      listCost: { amountMinor: picoToCentsString(BigInt(this.budgetGate.list_cost_pico)), currency: "USD" as const },
+      list_cost_pico: this.budgetGate.list_cost_pico,
     };
   }
 

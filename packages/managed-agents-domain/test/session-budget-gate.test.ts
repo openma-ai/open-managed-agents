@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSessionBudgetGate,
   gateExhausted,
+  memoryListCostPicoStore,
   picoToCentsString,
   recordModelEgress,
   requestListCostPico,
@@ -22,11 +23,13 @@ describe("domain SessionBudgetGate", () => {
     expect(picoToCentsString(pico)).toBe("2205");
   });
 
-  it("is the single egress meter for parent + subagent", () => {
-    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing)!;
+  it("persists list_cost_pico only through the store port", () => {
+    const store = memoryListCostPicoStore();
+    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, store)!;
     recordModelEgress(gate, { input_tokens: 500_000 });
     recordModelEgress(gate, { input_tokens: 600_000 });
-    expect(picoToCentsString(gate.consumedPico)).toBe("330");
+    expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("330");
+    expect(store.load()).toBe(gate.list_cost_pico);
     expect(gateExhausted(gate)).toBe(true);
   });
 });

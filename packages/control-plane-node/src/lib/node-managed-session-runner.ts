@@ -757,18 +757,25 @@ export class DefaultNodeManagedSessionRunner
           const pricing = sessionBudget === null
             ? null
             : await this.dependencies.resolveModelPricing?.(context) ?? null;
-          // Domain gate; Node only loads/saves the pico counter (session.usage.listCostPico).
+          // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
+          const store = {
+            load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+            save: (list_cost_pico: string): void => {
+              const usage = { ...runtime.usageSnapshot(), list_cost_pico };
+              if (input.session.usage) {
+                input.session.usage.list_cost_pico = list_cost_pico;
+              } else {
+                input.session.usage = { list_cost_pico };
+              }
+              runtime.broadcastProducedEvent({ type: "session.usage", usage });
+            },
+          };
           harnessContext.budget = createSessionBudgetGate(
             sessionBudget === null
               ? null
               : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
             pricing,
-            {
-              consumedPico: input.session.usage?.listCostPico ?? null,
-              onEgress: () => {
-                runtime.broadcastProducedEvent({ type: "session.usage", usage: runtime.usageSnapshot() });
-              },
-            },
+            store,
           );
         }
         budgetGate = harnessContext.budget ?? null;

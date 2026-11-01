@@ -1,15 +1,11 @@
-// Harness adapter over the domain session budget gate.
-//
-// Domain (`@open-managed-agents/domain/sessions`) owns SessionBudgetGate,
-// list_cost math, and the budget_reached stop sequence. This module re-exports
-// that API and adds the Pi-only model egress wrapper (`meterPiRuntime`) so
-// every real model request (parent + subagent, loop + compaction) is gated
-// and metered. CF SessionDO and the Node runner only create/persist the gate.
-import type { ModelPricing } from "@open-managed-agents/api-types";
-import type { SessionEvent } from "@open-managed-agents/api-types";
+// Pi egress adapter over the domain session budget gate.
+// Domain owns SessionBudgetGate, `list_cost_pico`, ListCostPicoStore, and
+// budget_reached. This module re-exports that API and wraps Pi `models` so
+// every real request hits gateExhausted / recordModelEgress.
+import type { ModelPricing, SessionEvent } from "@open-managed-agents/api-types";
 import {
   type BudgetAmount,
-  type BudgetReachedFrame,
+  type ListCostPicoStore,
   type ListPricing,
   type SessionBudgetGate,
   type TokenUsage,
@@ -19,6 +15,7 @@ import {
   centsToPico,
   createSessionBudgetGate as domainCreateSessionBudgetGate,
   gateExhausted,
+  memoryListCostPicoStore,
   parseUsdPrice,
   picoToCentsString,
   recordModelEgress,
@@ -31,24 +28,23 @@ export {
   budgetExhausted,
   centsToPico,
   gateExhausted,
+  memoryListCostPicoStore,
   parseUsdPrice,
   picoToCentsString,
   recordModelEgress,
   requestListCostPico,
   runtimeListCost,
 };
-export type { BudgetAmount, ListPricing, SessionBudgetGate, TokenUsage };
+export type { BudgetAmount, ListCostPicoStore, ListPricing, SessionBudgetGate, TokenUsage };
 
-/** ModelPricing (api-types) is the same shape as domain ListPricing. */
 export function createSessionBudgetGate(
   budget: BudgetAmount | null | undefined,
   pricing: ModelPricing | ListPricing | null | undefined,
-  seed: { consumedPico?: string | bigint | null; onEgress?: (consumedPico: bigint) => void } = {},
+  store: ListCostPicoStore,
 ): SessionBudgetGate | null {
-  return domainCreateSessionBudgetGate(budget, pricing as ListPricing | null | undefined, seed);
+  return domainCreateSessionBudgetGate(budget, pricing as ListPricing | null | undefined, store);
 }
 
-/** Wire SessionEvent frames for the stop sequence (caller stamps ids/ts). */
 export function budgetReachedEvents(input: {
   sessionThreadId?: string | null;
   usage: Record<string, unknown>;
@@ -56,8 +52,6 @@ export function budgetReachedEvents(input: {
 }): SessionEvent[] {
   return domainBudgetReachedEvents(input) as unknown as SessionEvent[];
 }
-
-export type { BudgetReachedFrame };
 
 interface PiUsageLike { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
 interface PiResultLike { usage?: PiUsageLike }
@@ -77,10 +71,7 @@ const METERED = new WeakMap<object, { gate: SessionBudgetGate; models: object }>
 const STREAMING = new Set(["stream", "streamSimple"]);
 const COMPLETING = new Set(["complete", "completeSimple"]);
 
-/**
- * Pi model egress: wrap `pi.models` so every request is gated and metered
- * against the domain SessionBudgetGate. Idempotent per (models, gate).
- */
+/** Pi model egress: every request is gated/metered against the domain gate. */
 export function meterPiRuntime<T extends { models: object }>(
   pi: T,
   gate: SessionBudgetGate | null | undefined,
@@ -126,18 +117,4 @@ export function meterPiRuntime<T extends { models: object }>(
   });
   METERED.set(target, { gate, models });
   return { ...pi, models };
-}
-
-/** @deprecated History rebuild; prefer gate.consumedPico. Kept for callers mid-migration. */
-export function consumedListCostPico(
-  events: readonly SessionEvent[],
-  pricing: ModelPricing,
-): bigint {
-  let total = 0n;
-  for (const event of events) {
-    if (event.type !== "span.model_request_end") continue;
-    const usage = (event as { model_usage?: TokenUsage }).model_usage;
-    if (usage) total += requestListCostPico(usage, pricing as ListPricing);
-  }
-  return total;
 }

@@ -4549,11 +4549,18 @@ export class SessionDO extends DurableObject<Env> {
       const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
       const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
       const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
-      // Domain gate; CF only loads/saves the pico counter (DO state).
-      const gate = createSessionBudgetGate({ amount: budget.amountMinor, currency: budget.currency }, pricing, {
-        consumedPico: this.state.list_cost_pico ?? null,
-        onEgress: (pico: bigint) => this.setState({ ...this.state, list_cost_pico: pico.toString() }),
-      });
+      // Domain gate; CF ListCostPicoStore persists domain property list_cost_pico.
+      const store = {
+        load: (): string | null => this.state.list_cost_pico ?? null,
+        save: (list_cost_pico: string): void => {
+          this.setState({ ...this.state, list_cost_pico });
+        },
+      };
+      const gate = createSessionBudgetGate(
+        { amount: budget.amountMinor, currency: budget.currency },
+        pricing,
+        store,
+      );
       this.activeBudgetGate = gate;
       return gate;
     } catch (err) {
@@ -4580,8 +4587,8 @@ export class SessionDO extends DurableObject<Env> {
       ...(totals.cache_creation_input_tokens > 0 && {
         cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
       }),
-      list_cost: runtimeListCost(gate.consumedPico),
-      list_cost_pico: gate.consumedPico.toString(),
+      list_cost: runtimeListCost(BigInt(gate.list_cost_pico)),
+      list_cost_pico: gate.list_cost_pico,
     };
   }
 

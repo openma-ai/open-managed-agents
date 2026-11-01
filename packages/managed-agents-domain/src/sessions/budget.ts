@@ -1,16 +1,16 @@
 // Session list-cost budget (official `budget.max_list_cost`).
 //
-// ACTIVE only when the session has a max_list_cost AND the model card has
-// pricing. Bookkeeping lives at MODEL EGRESS: SessionBudgetGate is the
-// session-scoped meter. CF and Node differ ONLY in where the pico counter is
-// stored (Durable Object `list_cost_pico` vs `session.usage.listCostPico`);
-// adapters load/save that total. Gate, accounting, and budget_reached are
-// identical domain code — no CF- or Node-specific budget rules.
+// Layers:
+//   domain  — SessionBudgetGate, property `list_cost_pico`, pricing math,
+//             budget_reached frames, ListCostPicoStore port
+//   adapter — CF / Node implement ListCostPicoStore only (load/save the
+//             same `list_cost_pico` string; no second names, no gate logic)
+//   harness — Pi `meterPiRuntime` only: wrap models → gateExhausted /
+//             recordModelEgress
 //
-// Picodollars (1e-12 USD) as BigInt: price strings parse to micro-USD per
-// million tokens, so tokens × price is exact.
+// ACTIVE only when max_list_cost AND model-card pricing both exist.
 
-const PICO_PER_CENT = 10_000_000_000n; // 1e10
+const PICO_PER_CENT = 10_000_000_000n;
 const DECIMAL = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/;
 
 /** List prices used for session list_cost. Same shape as model-card pricing. */
@@ -24,7 +24,6 @@ export interface ListPricing {
   cache_write_per_mtok?: string;
 }
 
-/** "3.75" USD → 3_750_000 micro-USD. Throws on a malformed price. */
 export function parseUsdPrice(value: string): bigint {
   const m = DECIMAL.exec(value);
   if (!m) {
@@ -42,7 +41,6 @@ export interface TokenUsage {
   cache_creation_input_tokens?: number;
 }
 
-/** Exact list cost of one model request, in picodollars. */
 export function requestListCostPico(usage: TokenUsage, pricing: ListPricing): bigint {
   const input = parseUsdPrice(pricing.input_per_mtok);
   const output = parseUsdPrice(pricing.output_per_mtok);
@@ -55,7 +53,6 @@ export function requestListCostPico(usage: TokenUsage, pricing: ListPricing): bi
     + n(usage.cache_creation_input_tokens) * cacheWrite;
 }
 
-/** Runtime-history `usage.list_cost` for an exact consumed cost (snake_case wire). */
 export function runtimeListCost(pico: bigint): { amount_minor: string; currency: "USD" } {
   return { amount_minor: picoToCentsString(pico), currency: "USD" };
 }
@@ -72,16 +69,36 @@ export function centsToPico(cents: string): bigint {
 export interface BudgetAmount { amount: string; currency: string }
 
 /**
- * Session-scoped egress meter + budget gate. Parent and subagents of one
- * session share ONE instance. Null when inactive.
+ * Dependency-inverted persist/load for the domain property `list_cost_pico`.
+ * CF and Node implement this; they never invent a second field name.
+ */
+export interface ListCostPicoStore {
+  /** Persisted `list_cost_pico`, or null when never written. */
+  load(): string | null;
+  /** Persist `list_cost_pico` (picodollars as an integer string). */
+  save(list_cost_pico: string): void;
+}
+
+/** In-memory store for tests / ephemeral runs. */
+export function memoryListCostPicoStore(initial: string | null = null): ListCostPicoStore {
+  let value = initial;
+  return {
+    load: () => value,
+    save: (list_cost_pico) => {
+      value = list_cost_pico;
+    },
+  };
+}
+
+/**
+ * Session-scoped egress meter + budget gate. Parent and subagents share ONE
+ * instance. Null when inactive. `list_cost_pico` is the only counter name.
  */
 export interface SessionBudgetGate {
   maxListCost: BudgetAmount;
   pricing: ListPricing;
-  /** Exact consumed list cost (picodollars), maintained only at egress. */
-  consumedPico: bigint;
-  /** Persist hook after each recorded egress. */
-  onEgress?: (consumedPico: bigint) => void;
+  /** Exact consumed list cost in picodollars (integer string). */
+  list_cost_pico: string;
   /** Set when egress refused a model call at the cap. */
   reached: boolean;
 }
@@ -89,28 +106,31 @@ export interface SessionBudgetGate {
 export function createSessionBudgetGate(
   budget: BudgetAmount | null | undefined,
   pricing: ListPricing | null | undefined,
-  seed: { consumedPico?: string | bigint | null; onEgress?: (consumedPico: bigint) => void } = {},
+  store: ListCostPicoStore,
 ): SessionBudgetGate | null {
   if (!budget || !pricing) return null;
   if (budget.currency !== "USD" || !/^(0|[1-9]\d*)$/.test(budget.amount)) return null;
-  const raw = seed.consumedPico;
-  const consumedPico = typeof raw === "bigint"
-    ? raw
-    : typeof raw === "string" && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
-  return {
+  const loaded = store.load();
+  const list_cost_pico = typeof loaded === "string" && /^\d+$/.test(loaded) ? loaded : "0";
+  const gate: SessionBudgetGate = {
     maxListCost: { ...budget },
     pricing,
-    consumedPico,
-    ...(seed.onEgress && { onEgress: seed.onEgress }),
+    list_cost_pico,
     reached: false,
   };
+  GATE_STORES.set(gate, store);
+  return gate;
 }
 
-/** Pre-request check at egress: true once consumed >= cap.
- * The request that crosses the cap finishes; the NEXT one stops. */
+const GATE_STORES = new WeakMap<SessionBudgetGate, ListCostPicoStore>();
+
+function storeOf(gate: SessionBudgetGate): ListCostPicoStore | undefined {
+  return GATE_STORES.get(gate);
+}
+
 export function gateExhausted(gate: SessionBudgetGate | null | undefined): boolean {
   if (!gate) return false;
-  return gate.consumedPico >= centsToPico(gate.maxListCost.amount);
+  return BigInt(gate.list_cost_pico) >= centsToPico(gate.maxListCost.amount);
 }
 
 /** @deprecated Prefer gateExhausted; kept for the deprecated default-loop. */
@@ -121,17 +141,17 @@ export function budgetExhausted(
   return gateExhausted(gate);
 }
 
-/** Record one completed model request at egress. */
+/** Record one completed model request at egress; persist via the store port. */
 export function recordModelEgress(
   gate: SessionBudgetGate | null | undefined,
   usage: TokenUsage,
 ): void {
   if (!gate) return;
-  gate.consumedPico += requestListCostPico(usage, gate.pricing);
-  gate.onEgress?.(gate.consumedPico);
+  const next = BigInt(gate.list_cost_pico) + requestListCostPico(usage, gate.pricing);
+  gate.list_cost_pico = next.toString();
+  storeOf(gate)?.save(gate.list_cost_pico);
 }
 
-/** Thrown when a non-streaming egress call is refused at the cap. */
 export class SessionBudgetReachedError extends Error {
   constructor() {
     super("session budget reached");
@@ -139,7 +159,6 @@ export class SessionBudgetReachedError extends Error {
   }
 }
 
-/** Unstamped stop sequence: thread_idle → usage → status_idle. Caller stamps. */
 export interface BudgetReachedFrame {
   type: string;
   [key: string]: unknown;

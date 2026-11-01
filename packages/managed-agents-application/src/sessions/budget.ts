@@ -24,7 +24,7 @@ const PICO_PER_CENT = 10_000_000_000n;
 /** Exact consumed list cost in picodollars from the session's latest usage
  * snapshot (falls back to the rounded cents when no exact value exists). */
 export function consumedListCostPico(session: Session): bigint {
-  const exact = session.usage?.listCostPico;
+  const exact = session.usage?.list_cost_pico;
   if (typeof exact === "string" && /^\d+$/.test(exact)) return BigInt(exact);
   const amount = session.usage?.listCost?.amountMinor;
   return amount !== undefined && /^\d+$/.test(amount) ? BigInt(amount) * PICO_PER_CENT : 0n;

@@ -24,7 +24,7 @@ const base = {
 const session = (cap: string | null, pico: string) => ({
   ...base,
   budget: cap === null ? null : { amountMinor: cap, currency: "USD" },
-  usage: { listCost: { amountMinor: "330", currency: "USD" }, listCostPico: pico },
+  usage: { listCost: { amountMinor: "330", currency: "USD" }, list_cost_pico: pico },
 }) as any;
 
 function harness(storedSession: any, latestStop: string) {

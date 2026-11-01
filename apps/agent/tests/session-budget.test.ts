@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelPricing } from "@open-managed-agents/api-types";
 import {
   gateExhausted,
+  memoryListCostPicoStore,
   meterPiRuntime,
   recordModelEgress,
   budgetReachedEvents,
@@ -37,34 +38,32 @@ describe("session list-cost budget", () => {
   });
 
   it("is inactive unless BOTH budget and pricing are configured", () => {
-    expect(createSessionBudgetGate(null, pricing)).toBeNull();
-    expect(createSessionBudgetGate({ amount: "100", currency: "USD" }, null)).toBeNull();
+    const store = memoryListCostPicoStore();
+    expect(createSessionBudgetGate(null, pricing, store)).toBeNull();
+    expect(createSessionBudgetGate({ amount: "100", currency: "USD" }, null, store)).toBeNull();
     expect(gateExhausted(null)).toBe(false);
   });
 
   it("gates at egress before the next request once consumed >= cap", () => {
-    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing)!;
+    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, memoryListCostPicoStore())!;
     recordModelEgress(gate, { input_tokens: 500_000 }); // $1.50
     expect(gateExhausted(gate)).toBe(false);
     recordModelEgress(gate, { input_tokens: 600_000 }); // crossing request completes: $3.30
-    expect(picoToCentsString(gate.consumedPico)).toBe("330");
+    expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("330");
     expect(gateExhausted(gate)).toBe(true);
   });
 
-  it("seeds from the persisted egress counter and persists each egress", () => {
-    const persisted: bigint[] = [];
-    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, {
-      consumedPico: (250n * 10_000_000_000n).toString(),
-      onEgress: (pico) => persisted.push(pico),
-    })!;
+  it("seeds from the store port and persists each egress as list_cost_pico", () => {
+    const store = memoryListCostPicoStore((250n * 10_000_000_000n).toString());
+    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, store)!;
     recordModelEgress(gate, { input_tokens: 200_000 }); // +$0.60
-    expect(picoToCentsString(gate.consumedPico)).toBe("310");
-    expect(persisted).toEqual([gate.consumedPico]);
+    expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("310");
+    expect(store.load()).toBe(gate.list_cost_pico);
     expect(gateExhausted(gate)).toBe(true);
   });
 
   it("meters every request through one shared egress (parent + subagent)", async () => {
-    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing)!;
+    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, memoryListCostPicoStore())!;
     const usage = { input: 600_000, output: 0, cacheRead: 0, cacheWrite: 0 }; // $1.80
     const fakeModels = {
       completeSimple: async () => ({ usage }),
@@ -78,7 +77,7 @@ describe("session list-cost budget", () => {
     await parent.models.completeSimple();
     await child.models.streamSimple(null, null, {}).result();
     await Promise.resolve();
-    expect(picoToCentsString(gate.consumedPico)).toBe("360");
+    expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("360");
     // At the cap: streams are issued pre-aborted, completes refuse.
     expect(parent.models.streamSimple(null, null, {}).aborted).toBe(true);
     await expect(child.models.completeSimple()).rejects.toThrow("session budget reached");

@@ -409,7 +409,7 @@ describe("SessionEventsApplicationService", () => {
       ...activeSession,
       status: "idle" as const,
       budget: { amountMinor: "100", currency: "USD" as const },
-      usage: { listCost: { amountMinor: "150", currency: "USD" as const }, listCostPico: "1500000000000" },
+      usage: { listCost: { amountMinor: "150", currency: "USD" as const }, list_cost_pico: "1500000000000" },
     };
     const service = new SessionEventsApplicationService({
       workspaceId: "workspace_01",

@@ -58,9 +58,10 @@ export interface SessionUsage {
   cacheReadInputTokens?: number;
   inputTokens?: number;
   listCost?: MonetaryAmount | null;
-  /** Internal: exact consumed list cost in picodollars (1e-12 USD) as an
-   * integer string. Never rendered on the wire; used for budget checks. */
-  listCostPico?: string | null;
+  /** Domain property: exact consumed list cost in picodollars (1e-12 USD)
+   * as an integer string. Never on the public wire; persisted via
+   * ListCostPicoStore. ONE name — adapters must not invent camelCase aliases. */
+  list_cost_pico?: string | null;
   outputTokens?: number;
   serverToolUse?: {
     webFetchRequests?: number;
