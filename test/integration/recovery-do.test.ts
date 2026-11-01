@@ -2,6 +2,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 import { CfDoStreamRepo, ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
 import { SqliteHistory } from "../../apps/agent/src/runtime/history";
@@ -32,8 +33,8 @@ function post(path: string, body: unknown) {
   return api(path, { method: "POST", headers: H, body: JSON.stringify(body) });
 }
 
-async function newSession(): Promise<string> {
-  const a = await post("/v1/oma/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", _oma: { harness: "noop" } });
+async function newSession(harness: string = "noop"): Promise<string> {
+  const a = await post("/v1/oma/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", _oma: { harness } });
   const agent = await a.json();
   const e = await post("/v1/oma/environments", { name: "rec-env", config: { type: "cloud" } });
   const environment = await e.json();
@@ -166,6 +167,9 @@ async function ensureExecutionTableForTest() {
 
 describe("SessionDO recovery — DO-level", () => {
   beforeAll(async () => {
+    // The alarm-hygiene tests below start real turns, so the session's
+    // model card must resolve exactly as an operator would create it.
+    await ensureModelCards(["claude-sonnet-4-6"]);
     await ensureTurnIdColumnsForTest();
     await ensureExecutionTableForTest();
   });
@@ -865,6 +869,121 @@ describe("SessionDO recovery — DO-level", () => {
     const data = JSON.parse(matching[0].data as string);
     expect(data.is_error).toBe(true);
     expect(String(data.content)).toMatch(/interrupted/i);
+  });
+
+  it("keeps a durable keep-alive alarm armed while a turn is running", async () => {
+    // Regression for the live 2026 incident: the outbox path never wrote
+    // sessions.turn_id and only a fire-and-forget setAlarm guarded the
+    // turn. An isolate reset right after the first model request dropped
+    // both, so a fresh instance had no alarm to run _finalizeStaleTurns.
+    // The turn now arms a durable alarm BEFORE the model request, while
+    // the harness is still inside run().
+    const sessionId = await newSession("alarm-hold-harness");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const deadline = Date.now() + 8_000;
+    let running = 0;
+    while (Date.now() < deadline) {
+      running = await runInDurableObject(stub, (instance) => {
+        const sql = (instance as { ctx: { storage: { sql: SqlStorage } } })
+          .ctx.storage.sql;
+        const row = sql
+          .exec(`SELECT COUNT(*) AS n FROM events WHERE type='session.status_running'`)
+          .toArray()[0] as { n?: number } | undefined;
+        return row?.n ?? 0;
+      }).catch(() => 0);
+      if (running > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(running, "turn should reach status_running").toBeGreaterThan(0);
+
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm, "durable alarm must be armed while the turn runs").not.toBeNull();
+    const deltaMs = (alarm as number) - Date.now();
+    expect(deltaMs).toBeGreaterThan(0);
+    expect(deltaMs).toBeLessThanOrEqual(60_000);
+  });
+
+  it("fresh-instance alarm finalizes a turn left running by an isolate reset", async () => {
+    // Start a real turn (armed alarm + D1 running marker), then simulate
+    // the isolate being replaced while harness.run() is still in flight:
+    // the in-memory active/drain sets are gone and the turn predates the
+    // new instance. The surviving alarm must run _finalizeStaleTurns,
+    // flip D1 to idle, and abort the unpaired non-parked tool_use.
+    const sessionId = await newSession("alarm-hold-harness");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const deadline = Date.now() + 8_000;
+    let row: { status?: string; turn_id?: string | null } | null = null;
+    while (Date.now() < deadline) {
+      row = await env.AUTH_DB
+        .prepare(`SELECT status, turn_id FROM sessions WHERE id=?`)
+        .bind(sessionId)
+        .first();
+      if (row?.status === "running" && row.turn_id) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(row?.status, "turn should mark D1 running").toBe("running");
+    expect(row?.turn_id, "turn should have a durable turn marker").toBeTruthy();
+
+    const armed = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(armed, "the surviving alarm is what must wake the new instance").not.toBeNull();
+
+    await runInDurableObject(stub, async (instance, state) => {
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      // A model call emitted this just before the reset and never paired it.
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_midturn_reset",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      const anyInstance = instance as {
+        _activeTurnIds: Set<string>;
+        _executionActiveLanes: Set<string>;
+        _draining: Set<string>;
+        _instanceStartedAt: number;
+        _coldStartFlushDone: boolean;
+      };
+      // Fresh isolate: no in-memory knowledge of the dead turn, and the
+      // instance started after the turn did.
+      anyInstance._activeTurnIds.clear();
+      anyInstance._executionActiveLanes.clear();
+      anyInstance._draining.clear();
+      anyInstance._instanceStartedAt = Date.now() + 1;
+      anyInstance._coldStartFlushDone = true;
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    const idle = data.find((e) => e.type === "session.status_idle");
+    expect(idle, "alarm should append a terminal idle").toBeDefined();
+
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_midturn_reset",
+    );
+    expect(aborted, "unpaired tool_use should get exactly one aborted result").toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+    expect(String(aborted[0].data.content)).toMatch(/interrupted/i);
   });
 
   it("isolate reset mid-turn: cold-start alarm ends a recent running turn with settled outbox", async () => {

@@ -365,6 +365,21 @@ const KEEP_ALIVE_INTERVAL_MS = 30_000;
 const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
 
+/**
+ * Low-noise structured lifecycle log: exactly one `console.log` JSON line per
+ * transition (`sdo.<event>`). Keep payloads flat and small so `wrangler tail`
+ * and log-search stay cheap; never call this from a tight loop or on every
+ * heartbeat tick (the `alarm.fired` line already marks each wake).
+ */
+function sdoLog(event: string, fields: Record<string, unknown> = {}): void {
+  try {
+    console.log(JSON.stringify({ msg: `sdo.${event}`, ...fields }));
+  } catch {
+    // Never let a logging failure break a turn.
+    console.log(`{"msg":"sdo.${event}"}`);
+  }
+}
+
 /** Next cron fire strictly after `nowMs`. `getNextDate` can return the current
  * tick on a boundary; a due row makes `_scheduleNextAlarm` re-arm at now+1ms
  * and the handler can invoke the callback again immediately. */
@@ -419,6 +434,14 @@ export class SessionDO extends DurableObject<Env> {
    * dead incarnation is correctly identified as orphan.
    */
   private _activeTurnIds = new Set<string>();
+
+  /**
+   * Per-step model request start timestamps, keyed by the
+   * `span.model_request_start` event id. Diagnostics only: the matching
+   * `span.model_request_end` logs the elapsed duration. Bounded so a lost
+   * end event (isolate reset) cannot grow the map without limit.
+   */
+  private readonly _modelRequestStartedAt = new Map<string, number>();
 
   /**
    * Wall-clock ms at which THIS DO instance (isolate) was constructed.
@@ -805,6 +828,11 @@ export class SessionDO extends DurableObject<Env> {
 
   private ensureSchema() {
     if (this.initialized) return;
+    sdoLog("isolate.cold_start", {
+      session_id: this._state?.session_id,
+      tenant_id: this._state?.tenant_id,
+      first_init: true,
+    });
     // Schema lives in the cf-do adapter so OMA's SessionDO doesn't have
     // to know SQLite syntax. Adapter is idempotent — CREATE TABLE IF NOT
     // EXISTS — so calling on every fetch hot path is fine. The first call
@@ -837,6 +865,10 @@ export class SessionDO extends DurableObject<Env> {
       const threads = this.queue.threadsWithQueueInputs();
       if (threads.length > 0) {
         console.log(`[ensureSchema] cold-start drain for threads: ${threads.join(",")}`);
+        sdoLog("recover.cold_start_drain", {
+          session_id: this._state?.session_id,
+          threads,
+        });
         for (const t of threads) {
           void this.drainEventQueue(t);
         }
@@ -861,19 +893,128 @@ export class SessionDO extends DurableObject<Env> {
     try {
       if (!this._state) return;
       // Self-host fallback without a tenant D1 has no sessions.turn_id
-      // authority; the local active-turn set is the only signal there.
-      if (!(this.env as { MAIN_DB?: D1Database }).MAIN_DB) return;
-      const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-      if (!orphans.some((o) => !this._activeTurnIds.has(o.turn_id))) return;
+      // authority. The local event log still tells us a prior incarnation
+      // died mid-turn, so fall through to the event-log check instead of
+      // returning early.
+      let orphaned = false;
+      if ((this.env as { MAIN_DB?: D1Database }).MAIN_DB) {
+        const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
+        orphaned = orphans.some((o) => !this._activeTurnIds.has(o.turn_id));
+      }
+      // Legacy/markerless rows: the outbox path used to start a turn
+      // without writing sessions.turn_id, so listOrphanTurns can be empty
+      // while the event log is still stuck on status_running. Arm a wake
+      // for that shape too; _finalizeStaleTurns has a matching fallback.
+      if (!orphaned) {
+        const latest = this._latestSessionStatusEvent();
+        orphaned = latest?.type === "session.status_running";
+      }
+      if (!orphaned) return;
       const target = Date.now() + 1_000;
       const existing = await this.ctx.storage.getAlarm();
       if (existing === null || existing > target) {
         await this.ctx.storage.setAlarm(target);
+        sdoLog("alarm.armed", {
+          session_id: this.state.session_id,
+          reason: "cold_start_stale_turn",
+          next_ms: target,
+          next_at: new Date(target).toISOString(),
+        });
       }
     } catch (err) {
       // Schema/state not ready yet, D1 transient, or alarm unavailable.
       // The alarm() and fetch() finalize paths still cover recovery.
       console.warn(`[ensureSchema] cold-start stale-turn arm failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Durably arm the keep-alive alarm for an in-flight turn.
+   *
+   * MUST be awaited before the turn reaches the model request. The old
+   * fire-and-forget `void storage.setAlarm(...)` in hintTurnInFlight could
+   * be dropped when an isolate reset immediately after the turn started;
+   * the D1 row then survived with no alarm to finalize it.
+   */
+  private async _armTurnKeepAlive(reason = "turn_keep_alive"): Promise<void> {
+    const nextMs = Date.now() + KEEP_ALIVE_INTERVAL_MS;
+    try {
+      // Never push an earlier durable wake (cold-start stale check,
+      // schedule) further out. Keeping the earlier alarm is safe: it will
+      // re-arm the heartbeat when it fires.
+      const existing = await this.ctx.storage.getAlarm();
+      if (existing !== null && existing <= nextMs) return;
+      await this.ctx.storage.setAlarm(nextMs);
+      sdoLog("alarm.armed", {
+        session_id: this._state?.session_id,
+        reason,
+        next_ms: nextMs,
+        next_at: new Date(nextMs).toISOString(),
+      });
+    } catch (err) {
+      // Storage failure must not abort the turn. The D1 marker still lets
+      // the next fetch/alarm recover it.
+      console.warn(`[session-do] keep-alive alarm arm failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * One structured line per model request span. `start` records the wall
+   * clock keyed by the span id; `end`/`abort` pair it and report duration.
+   * Called from broadcastEvent (every harness path funnels through it).
+   */
+  private _logModelRequestSpan(event: SessionEvent): void {
+    const e = event as unknown as Record<string, unknown>;
+    if (e.type === "span.model_request_start") {
+      const eventId = typeof e.id === "string" ? e.id : undefined;
+      if (!eventId) return;
+      // Bound: a start whose end was lost with an isolate reset must not
+      // grow this map forever in a long-lived DO.
+      if (this._modelRequestStartedAt.size >= 512) {
+        const oldest = this._modelRequestStartedAt.keys().next().value;
+        if (typeof oldest === "string") this._modelRequestStartedAt.delete(oldest);
+      }
+      this._modelRequestStartedAt.set(eventId, Date.now());
+      sdoLog("model_request.start", {
+        session_id: this._state?.session_id,
+        event_id: eventId,
+        model: typeof e.model === "string" ? e.model : undefined,
+      });
+      return;
+    }
+    if (e.type !== "span.model_request_end") return;
+    const startId = typeof e.model_request_start_id === "string"
+      ? e.model_request_start_id
+      : undefined;
+    const startedAt = startId === undefined ? undefined : this._modelRequestStartedAt.get(startId);
+    if (startId !== undefined) this._modelRequestStartedAt.delete(startId);
+    const finishReason = typeof e.finish_reason === "string" ? e.finish_reason : undefined;
+    const isAbort = finishReason === "aborted";
+    sdoLog(isAbort ? "model_request.abort" : "model_request.end", {
+      session_id: this._state?.session_id,
+      event_id: startId,
+      model: typeof e.model === "string" ? e.model : undefined,
+      duration_ms: startedAt === undefined ? undefined : Date.now() - startedAt,
+      finish_reason: finishReason,
+      is_error: e.is_error === true,
+    });
+  }
+
+  /** Latest session-level lifecycle status row, if any. Used to detect a
+   *  markerless dangling turn (legacy outbox path wrote status events but
+   *  never sessions.turn_id). */
+  private _latestSessionStatusEvent(): { type: string; ts: number } | null {
+    try {
+      const row = this.ctx.storage.sql.exec<{ type: string; ts: number }>(
+        `SELECT type, ts FROM events
+          WHERE type IN ('session.status_running','session.status_idle',
+                         'session.status_rescheduled','session.status_terminated')
+          ORDER BY seq DESC LIMIT 1`,
+      ).toArray()[0];
+      return row ? { type: row.type, ts: row.ts } : null;
+    } catch {
+      // events table not created yet (very early cold start).
+      return null;
     }
   }
 
@@ -1467,7 +1608,16 @@ export class SessionDO extends DurableObject<Env> {
     const e = event as SessionEvent & { id?: string };
     if (!e.id) e.id = `sevt_${generateEventId()}`;
     if (this.localEventExists(e.id)) return false;
-    return this.queue.enqueueQueueInput(event);
+    const enqueued = this.queue.enqueueQueueInput(event);
+    if (enqueued) {
+      sdoLog("queue.enqueue", {
+        session_id: this._state?.session_id,
+        thread_id: (event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary",
+        event_id: e.id,
+        event_type: event.type,
+      });
+    }
+    return enqueued;
   }
 
   private executionInputFromWire(event: SessionEvent): unknown {
@@ -1563,6 +1713,12 @@ export class SessionDO extends DurableObject<Env> {
       this._stampEventForPending(event);
     }
     this.queue.enqueueQueueInput(event);
+    sdoLog("queue.enqueue", {
+      session_id: this._state?.session_id,
+      thread_id: (event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary",
+      event_id: (event as { id?: string }).id ?? eventId,
+      event_type: event.type,
+    });
     return this.queueRowForEvent(eventId);
   }
 
@@ -1584,6 +1740,13 @@ export class SessionDO extends DurableObject<Env> {
     this.queue.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
     // Canonical D1 stamp (null → processed_at) before live re-emit.
     this.markAcceptedEventsProcessed([row.event_id], stamp);
+    sdoLog("queue.stamp", {
+      session_id: this._state?.session_id,
+      thread_id: row.session_thread_id,
+      event_id: row.event_id,
+      seq: row.seq,
+      processed_at: stamp,
+    });
     this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
@@ -1678,9 +1841,7 @@ export class SessionDO extends DurableObject<Env> {
       // Keep-alive is a host concern, not a lease authority.  The durable
       // execution row remains valid if this alarm is dropped; a replacement
       // DO can reclaim it after expiry.
-      void this.ctx.storage
-        .setAlarm(Date.now() + KEEP_ALIVE_INTERVAL_MS)
-        .catch(() => {});
+      await this._armTurnKeepAlive();
       try {
       while (true) {
         this.broadcastedMessageIds.clear();
@@ -1691,6 +1852,56 @@ export class SessionDO extends DurableObject<Env> {
           this._executionFences.set(threadId, fence);
           const executionHistory = this.guardHistoryForExecution(history, fence);
           let holdQueuedOnLane = false;
+          let turnFailed = false;
+          const executionEventIds = execution.events
+            .map((e) => (e as { id?: string }).id)
+            .filter((id): id is string => typeof id === "string");
+          sdoLog("queue.drain", {
+            session_id: this.state.session_id,
+            thread_id: threadId,
+            source: "outbox",
+            execution_id: execution.id,
+            event_ids: executionEventIds,
+          });
+          sdoLog("queue.claim", {
+            session_id: this.state.session_id,
+            thread_id: threadId,
+            execution_id: execution.id,
+            event_ids: executionEventIds,
+          });
+          // The outbox path used to call processUserMessage directly, so it
+          // never ran runAgentTurn's beginTurn/hintTurnInFlight pair. That
+          // left no durable `sessions.turn_id` marker and relied solely on
+          // the one-shot alarm above. If that alarm was lost with the
+          // isolate, a cold alarm found no orphan row, finalized nothing,
+          // and _scheduleNextAlarm deleted it — exactly the stuck
+          // status_running session from the 5d95d88 incident.
+          //
+          // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
+          // harness can issue its model request. D1 is the authority the
+          // cold-start finalizer reads; the alarm is what wakes it.
+          const turnId = `turn_${nanoid()}`;
+          let turnMarked = false;
+          try {
+            await this.runtimeAdapter.beginTurn(this.state.session_id, turnId);
+            turnMarked = true;
+            this._activeTurnIds.add(turnId);
+          } catch (err) {
+            // Don't fail the execution just because the lifecycle mirror
+            // couldn't be written. The event-log dangling-turn fallback in
+            // _finalizeStaleTurns still ends it after a reset.
+            console.warn(`[drain] beginTurn failed for ${turnId}:`, err);
+          }
+          sdoLog("turn.begin", {
+            session_id: this.state.session_id,
+            thread_id: threadId,
+            turn_id: turnId,
+            execution_id: execution.id,
+            d1_marked: turnMarked,
+          });
+          // Await the durable write. A fire-and-forget setAlarm can be lost
+          // if the isolate resets right after the turn starts.
+          await this._armTurnKeepAlive("turn_start");
           // Lane is running a new execution (held rows already absorbed on
           // claim): drop the exhausted mark unless a pre-exhausted queued
           // input still awaits fallback admission.
@@ -1754,6 +1965,9 @@ export class SessionDO extends DurableObject<Env> {
             // harness side effects and execution settlement.
             await this._managedProjectionChain;
             return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
+          } catch (err) {
+            turnFailed = true;
+            throw err;
           } finally {
             const currentFence = this._executionFences.get(threadId);
             if (
@@ -1762,6 +1976,35 @@ export class SessionDO extends DurableObject<Env> {
             ) {
               this._executionFences.delete(threadId);
             }
+            // Mirror runAgentTurn's finally: clear the D1 marker before the
+            // host settles the execution so a successful turn never looks
+            // like a cold-start orphan. Filter by turnId inside endTurn, so
+            // a finalizer that already ended this turn makes this a no-op.
+            let endTurnOk = true;
+            if (turnMarked) {
+              try {
+                await this.runtimeAdapter.endTurn(this.state.session_id, turnId, "idle");
+              } catch (err) {
+                endTurnOk = false;
+                console.warn(`[drain] endTurn failed for ${turnId}:`, err);
+              }
+              this._activeTurnIds.delete(turnId);
+            }
+            sdoLog("turn.end", {
+              session_id: this.state.session_id,
+              thread_id: threadId,
+              turn_id: turnId,
+              execution_id: execution.id,
+              reason: signal.aborted
+                ? "aborted"
+                : turnFailed
+                  ? "error"
+                  : holdQueuedOnLane
+                    ? "held"
+                    : "completed",
+              d1_marked: turnMarked,
+              end_turn_ok: endTurnOk,
+            });
           }
         }, { continuationsOnly: awaitingClient });
         if (result.type === "empty") {
@@ -1811,9 +2054,30 @@ export class SessionDO extends DurableObject<Env> {
       // Stamp processed_at = now on the SAME row. AMA spec: processed_at is
       // the wall-clock ingestion time (when the agent picks the event up),
       // not when the turn finishes.
+      sdoLog("queue.drain", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        source: "local_queue",
+        event_id: row.event_id,
+      });
+      sdoLog("queue.claim", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        source: "local_queue",
+        event_id: row.event_id,
+      });
       const event = this.promoteQueueRow(row);
 
       const turnName = `turn:${row.seq}`;
+      sdoLog("turn.begin", {
+        session_id: this.state.session_id,
+        thread_id: threadId,
+        turn_id: turnName,
+        source: "local_queue",
+        event_id: row.event_id,
+        event_type: event.type,
+      });
+      let localTurnReason = "completed";
       try {
         // Run the turn through the unified runtime: adapter.beginTurn /
         // endTurn write the marker on `sessions.turn_id`, hintTurnInFlight
@@ -1868,6 +2132,7 @@ export class SessionDO extends DurableObject<Env> {
         // since the user didn't trigger them.
         const isUserInterrupt =
           err instanceof TurnAborted && err.cause.kind === "user_aborted";
+        localTurnReason = isUserInterrupt ? "user_aborted" : "error";
         if (!isUserInterrupt) {
           const errorMsg = this.describeError(err);
           const errorEvent: SessionEvent = { type: "session.error", error: errorMsg };
@@ -1897,6 +2162,14 @@ export class SessionDO extends DurableObject<Env> {
         // the client decides. (The continue simply re-checks the queue.)
         if (isUserInterrupt) continue;
         break;
+      } finally {
+        sdoLog("turn.end", {
+          session_id: this.state.session_id,
+          thread_id: threadId,
+          turn_id: turnName,
+          source: "local_queue",
+          reason: localTurnReason,
+        });
       }
       // Row is promoted in place (processed_at set). Loop back for the next
       // queued input on this thread.
@@ -1985,10 +2258,11 @@ export class SessionDO extends DurableObject<Env> {
       // legacy sandbox getter (this.getOrCreateSandbox()) stays as-is
       // for the harness path which constructs its own ctx.
       onTurnInFlight: (_sessionId, turnId) => {
-        // Fire-and-forget setAlarm. CF's alarm queue de-dupes, so back-
-        // to-back calls are fine. The alarm() handler re-arms while a
-        // turn is still in flight.
-        void this.ctx.storage.setAlarm(Date.now() + KEEP_ALIVE_INTERVAL_MS);
+        // The adapter hook is sync/fire-and-forget by contract. Callers
+        // that can await (the outbox drain) also call _armTurnKeepAlive()
+        // directly before the model request; this keeps the legacy
+        // runAgentTurn path covered too.
+        void this._armTurnKeepAlive();
         // Register this turn id so _checkOrphanTurns + deriveStatus
         // see it. Lost on eviction → cold-start sees empty set → real
         // orphans (D1 row from a dead incarnation) get recovered on
@@ -4240,6 +4514,7 @@ export class SessionDO extends DurableObject<Env> {
     ) {
       return;
     }
+    this._logModelRequestSpan(event);
     const data = JSON.stringify(event);
     // Per-socket spec-vs-extension routing. Sockets that opted into chunks
     // (tagged "chunks" in the /ws handler) receive everything; others
@@ -5944,6 +6219,12 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
+      // Durable keep-alive BEFORE the first model request. The outbox drain
+      // arms this too, but the legacy local-queue path only has the
+      // fire-and-forget hint callback; awaiting here guarantees the alarm
+      // exists when harness.run() starts regardless of which path got here.
+      await this._armTurnKeepAlive("model_request");
+
       // Broadcast running status
       const runningEvent: SessionEvent = { type: "session.status_running" };
       history.append(runningEvent);
@@ -6979,19 +7260,51 @@ export class SessionDO extends DurableObject<Env> {
     // awake while one of its lanes is actively running; `_activeTurnIds`
     // remains only for the legacy self-host fallback.  The durable D1 row
     // still fences a replacement host if this alarm is lost.
+    //
+    // The event-log check closes the third gap that caused the 5d95d88
+    // incident: the old outbox path emitted session.status_running without
+    // ever writing sessions.turn_id, so both _activeTurnIds and
+    // _hasInflightTurn were false on the next alarm pass and this method
+    // took the deleteAlarm() branch — permanently disarming the only wakeup
+    // that could run _finalizeStaleTurns. A dangling status_running must
+    // always keep a heartbeat until the finalizer emits a terminal status.
+    const latestStatus = this._latestSessionStatusEvent();
     const wantsHeartbeat =
       this._executionActiveLanes.size > 0 ||
       this._activeTurnIds.size > 0 ||
+      // Drain entry guard: true from the synchronous start of a lane until
+      // its finally, covering the window before beginTurn lands the D1 row
+      // / status_running event. Keeps deleteAlarm() from clearing a
+      // just-armed keep-alive during turn startup.
+      this._draining.size > 0 ||
+      latestStatus?.type === "session.status_running" ||
       await this._hasInflightTurn();
     const heartbeatMs = wantsHeartbeat ? Date.now() + KEEP_ALIVE_INTERVAL_MS : null;
     let mergedNextMs: number | null = nextMs;
+    let reason = nextMs === null ? "none" : "schedule";
     if (heartbeatMs !== null) {
       mergedNextMs = mergedNextMs === null ? heartbeatMs : Math.min(mergedNextMs, heartbeatMs);
+      reason = nextMs === null ? "heartbeat" : "schedule+heartbeat";
     }
     if (mergedNextMs !== null) {
       await this.ctx.storage.setAlarm(mergedNextMs);
+      // A pure heartbeat rearm fires every KEEP_ALIVE_INTERVAL_MS; the
+      // `alarm.fired` line already marks that tick, so only log schedule
+      // (data-driven) re-arms here to keep the log low-noise.
+      if (reason !== "heartbeat") {
+        sdoLog("alarm.armed", {
+          session_id: this._state?.session_id,
+          reason,
+          next_ms: mergedNextMs,
+          next_at: new Date(mergedNextMs).toISOString(),
+        });
+      }
     } else {
       await this.ctx.storage.deleteAlarm();
+      sdoLog("alarm.cleared", {
+        session_id: this._state?.session_id,
+        reason: "no_schedule_or_turn",
+      });
     }
   }
 
@@ -7023,6 +7336,11 @@ export class SessionDO extends DurableObject<Env> {
       .map((row) => row.lane_id)
       .filter((lane): lane is string => typeof lane === "string" && lane.length > 0);
     if (lanes.length === 0) return;
+    sdoLog("recover.execution_queue", {
+      session_id: sessionId,
+      lanes: lanes.length,
+      lane_ids: lanes,
+    });
     await Promise.all(lanes.map((lane) => this.drainEventQueue(lane)));
   }
 
@@ -7046,6 +7364,11 @@ export class SessionDO extends DurableObject<Env> {
       }>(`SELECT id, callback, payload, type, cron, intervalSeconds, running, execution_started_at FROM cf_agents_schedules WHERE time <= ?`, nowSec)
       .toArray();
 
+    sdoLog("alarm.fired", {
+      session_id: this._state?.session_id,
+      fired_at_ms: nowSec * 1000,
+      due_schedules: due.length,
+    });
     for (const row of due) {
       // Skip interval rows whose previous execution is still running unless
       // it's been hung past the timeout (then forcibly reset).
@@ -7349,6 +7672,14 @@ export class SessionDO extends DurableObject<Env> {
     //    iff the row actually flipped.
     const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
     let ended = 0;
+    if (orphans.length > 0 || usedIds.size > 0) {
+      sdoLog("finalize.scan", {
+        session_id: this.state.session_id,
+        orphan_turns: orphans.length,
+        unpaired_tool_uses: usedIds.size,
+        pending_tool_calls: this.state.pending_tool_calls?.length ?? 0,
+      });
+    }
     // Race window: cold-start flush is fire-and-forget from fetch();
     // the same fetch() may concurrently route a POST /event into
     // drainEventQueue → adapter.beginTurn (writes D1 row) →
@@ -7369,19 +7700,48 @@ export class SessionDO extends DurableObject<Env> {
     const now = Date.now();
     let heldForFreshGrace = 0;
     for (const o of orphans) {
-      if (this._activeTurnIds.has(o.turn_id)) continue;
+      if (this._activeTurnIds.has(o.turn_id)) {
+        sdoLog("finalize.candidate", {
+          session_id: this.state.session_id,
+          turn_id: o.turn_id,
+          decision: "skip",
+          reason: "active_turn",
+        });
+        continue;
+      }
       const startedThisIncarnation = o.turn_started_at >= this._instanceStartedAt;
       if (startedThisIncarnation && now - o.turn_started_at < FRESH_TURN_GRACE_MS) {
         heldForFreshGrace++;
+        sdoLog("finalize.candidate", {
+          session_id: this.state.session_id,
+          turn_id: o.turn_id,
+          decision: "skip",
+          reason: "fresh_grace",
+          age_ms: now - o.turn_started_at,
+        });
         continue;
       }
       try {
         await this.runtimeAdapter.endTurn(this.state.session_id, o.turn_id, "idle");
       } catch (err) {
         console.warn(`[finalize-stale] endTurn failed for ${o.turn_id}:`, err);
+        sdoLog("finalize.candidate", {
+          session_id: this.state.session_id,
+          turn_id: o.turn_id,
+          decision: "skip",
+          reason: "end_turn_failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
         continue; // skip event emission — row is still in old state
       }
       ended++;
+      sdoLog("finalize.candidate", {
+        session_id: this.state.session_id,
+        turn_id: o.turn_id,
+        decision: "end",
+        reason: "orphan_turn",
+        age_ms: now - o.turn_started_at,
+      });
       const reschedEvent = {
         type: "session.status_rescheduled",
         reason: "DO eviction or restart — stream lost; re-send to continue.",
@@ -7405,8 +7765,91 @@ export class SessionDO extends DurableObject<Env> {
         }
       } catch { /* storage alarm unavailable — alarm() path will rearm */ }
     }
-    if (flushed > 0 || ended > 0) {
-      console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended} stale turns`);
+
+    // 3. Markerless dangling-turn fallback. The pre-fix outbox path emitted
+    //    session.status_running without writing sessions.turn_id, so a
+    //    cold alarm saw listOrphanTurns() === [] and ended nothing. The
+    //    event log is the only remaining evidence for those sessions (the
+    //    exact live incident: status_running + span.model_request_start,
+    //    all outbox rows completed). Close that shape too so a cold alarm
+    //    flips the status back to idle.
+    //
+    //    Guarded by "no live work in this incarnation" plus a 5s age and
+    //    an instance-start check: a turn that is merely starting in the
+    //    current isolate must never be mistaken for this isolate's
+    //    predecessor. D1-marked turns were already handled above.
+    let markerlessEnded = 0;
+    if (
+      // Only when no D1-marked turn was seen at all: a markerless row is
+      // one the old outbox path never stamped. If a D1 orphan existed but
+      // endTurn transiently failed, leave it to the next alarm instead of
+      // emitting a terminal idle for a row that still says running.
+      orphans.length === 0 &&
+      this._activeTurnIds.size === 0 &&
+      this._executionActiveLanes.size === 0 &&
+      this._draining.size === 0
+    ) {
+      const latest = this._latestSessionStatusEvent();
+      const startedAtMs = latest === null ? 0 : latest.ts * 1000;
+      if (
+        latest?.type === "session.status_running" &&
+        startedAtMs < this._instanceStartedAt &&
+        now - startedAtMs >= 5_000
+      ) {
+        // Best-effort row cleanup for the markerless shape. Scoped to
+        // turn_id IS NULL so it can never clobber a fresh beginTurn.
+        let rowChanged = false;
+        try {
+          const update = await this.runtimeAdapter.sql
+            .prepare(
+              `UPDATE sessions
+                  SET status='idle', turn_id=NULL, turn_started_at=NULL, updated_at=?
+                WHERE id=? AND status='running' AND turn_id IS NULL`,
+            )
+            .bind(now, this.state.session_id)
+            .run();
+          rowChanged = (update.meta?.changes ?? 0) > 0;
+        } catch (err) {
+          console.warn(`[finalize-stale] markerless row cleanup failed:`, err);
+        }
+        if (!rowChanged) {
+          // Nothing to end (a concurrent beginTurn won the race, or the
+          // row was already settled). Do not emit a terminal idle for a
+          // turn that is still live.
+          sdoLog("finalize.candidate", {
+            session_id: this.state.session_id,
+            decision: "skip",
+            reason: "markerless_row_not_running",
+            status_ts: startedAtMs,
+          });
+        } else {
+          const reschedEvent = {
+            type: "session.status_rescheduled",
+            reason: "DO eviction or restart — stream lost; re-send to continue.",
+          } as unknown as SessionEvent;
+          const idleEvent = { type: "session.status_idle", stop_reason: { type: "end_turn" } } as unknown as SessionEvent;
+          try { await this.runtimeAdapter.eventLog.append(reschedEvent); } catch {}
+          try { this.broadcastEvent(reschedEvent); } catch {}
+          try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
+          try { this.broadcastEvent(idleEvent); } catch {}
+          markerlessEnded = 1;
+          sdoLog("finalize.candidate", {
+            session_id: this.state.session_id,
+            decision: "end",
+            reason: "markerless_dangling_turn",
+            status_ts: startedAtMs,
+          });
+        }
+      }
+    }
+    if (flushed > 0 || ended > 0 || markerlessEnded > 0) {
+      console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended + markerlessEnded} stale turns`);
+      sdoLog("finalize.done", {
+        session_id: this.state.session_id,
+        flushed_tool_uses: flushed,
+        ended_turns: ended + markerlessEnded,
+        markerless_turns: markerlessEnded,
+      });
     }
 
     // After flipping any stale rows to idle, kick the queue. Without this

@@ -51,6 +51,15 @@ export function registerTestHarnesses(): void {
       ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "delayed response" }] });
     },
   }));
+  // Long enough for a DO test to observe the live turn (status_running +
+  // durable alarm) and then simulate an isolate reset while it is still
+  // in flight. Keep this short enough that the test doesn't wait on it.
+  registerHarness("alarm-hold-harness", () => ({
+    async run(ctx) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "alarm hold released" }] });
+    },
+  }));
   registerHarness("partial-crash", () => ({
     async run(ctx) {
       ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "before crash" }] });
