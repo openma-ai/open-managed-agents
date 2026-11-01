@@ -595,6 +595,79 @@ describe("SqlSessionExecutionCoordinator", () => {
     });
   });
 
+  it("owner dies mid-turn: sweep requeues the expired lease and a replacement claims it", async () => {
+    await coordinator.admit({
+      ...admitted("recoverable", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const store = coordinator as unknown as {
+      sweepExpired(now: number): Promise<void>;
+    };
+    await store.sweepExpired(Date.parse(at(5)));
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "recoverable",
+    })).resolves.toMatchObject({
+      state: "queued",
+      attemptCount: 1,
+      maxAttempts: 3,
+      failure: "requeued after owner lease expired",
+      attempt: null,
+    });
+
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toMatchObject({
+      type: "claimed",
+      fence: { ownerId: "replacement", generation: 2 },
+      execution: { id: "recoverable", attemptCount: 2 },
+    });
+  });
+
+  it("owner dies mid-turn: sweep finalizes an exhausted expired lease", async () => {
+    await coordinator.admit({
+      ...admitted("exhausted", "session_a", at(1)),
+      policy: { maxAttempts: 1, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const store = coordinator as unknown as {
+      sweepExpired(now: number): Promise<void>;
+    };
+    await store.sweepExpired(Date.parse(at(5)));
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "exhausted",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution attempt limit exhausted",
+      settledAt: at(5),
+    });
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toEqual({ type: "empty" });
+  });
+
   it("never claims or renews work beyond its absolute deadline", async () => {
     await coordinator.admit({
       ...admitted("expired_before_claim", "session_a", at(1)),

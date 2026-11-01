@@ -10,6 +10,13 @@ import type {
   SettleSessionExecutionResult,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
+  decideClaim,
+  decideExpiredExecution,
+  decideLeaseRenewal,
+  type CoordinationAction,
+  type ExecutionLeaseRecord,
+} from "@open-managed-agents/session-runtime-contract/coordination";
+import {
   annotateDbBoundary,
   CasConflict,
   isCasConflict,
@@ -356,6 +363,37 @@ function toExecution(row: ExecutionRow): SessionExecution {
   };
 }
 
+function toLeaseRecord(row: ExecutionRow): ExecutionLeaseRecord {
+  return {
+    executionId: row.id,
+    laneId: row.lane_id,
+    state: row.state,
+    attemptCount: safeInteger(row.attempt_count, "execution attempt count"),
+    maxAttempts: safeInteger(row.max_attempts, "execution max attempts"),
+    leaseExpiresAtMs: row.lease_expires_at_ms === null
+      ? null
+      : safeInteger(row.lease_expires_at_ms, "lease expiry"),
+    deadlineAtMs: safeInteger(row.deadline_at_ms, "execution deadline"),
+    ownerId: row.owner_id,
+    heldAfterExhausted: row.held_after_exhausted_ms !== null,
+  };
+}
+
+function toLeaseRecordFromExecution(execution: SessionExecution): ExecutionLeaseRecord {
+  return {
+    executionId: execution.id,
+    laneId: execution.laneId,
+    state: execution.state,
+    attemptCount: execution.attemptCount,
+    maxAttempts: execution.maxAttempts,
+    leaseExpiresAtMs:
+      execution.attempt === null ? null : Date.parse(execution.attempt.leaseExpiresAt),
+    deadlineAtMs: Date.parse(execution.deadlineAt),
+    ownerId: execution.attempt?.ownerId ?? null,
+    heldAfterExhausted: execution.heldAfterExhaustedAt !== null,
+  };
+}
+
 function toFence(row: ExecutionRow): SessionExecutionFence {
   const execution = toExecution(row);
   if (execution.attempt === null) {
@@ -388,6 +426,16 @@ export interface SqlSessionExecutionStoreOptions {
    */
   sweepIntervalMs?: number;
   onError?(error: unknown, op: string): void;
+}
+
+export interface SweepExpiredOptions {
+  /**
+   * Do not requeue this owner's expired lease. A live worker must never
+   * reclaim its own in-flight attempt; only a different owner may take over.
+   */
+  excludeOwnerId?: string;
+  /** Observe each policy decision (CF logs one line per transition). */
+  onDecision?(action: CoordinationAction): void;
 }
 
 export class SqlSessionExecutionStore
@@ -488,13 +536,17 @@ export class SqlSessionExecutionStore
   private async claimOnce(input: ClaimSessionExecution): Promise<ClaimSessionExecutionResult> {
     validateTtl(input.leaseTtlMs);
     const claimedAt = timestamp(input.claimedAt, "claim");
-    await this.sweepExpired(claimedAt);
+    await this.sweepExpired(claimedAt, { excludeOwnerId: input.ownerId });
     // Exhausted hold: fold held queued rows into the next unheld admission on
     // the same lane so they never run alone and advance in enqueue order.
     await this.absorbHeldIntoUnheldAdmissions(input, claimedAt);
     const serial = this.options.serializeSessionClaims === true;
     const candidate = await this.selectCandidate(input, claimedAt, serial);
     if (candidate === null) return { type: "empty" };
+    // Shared policy is the final gate: a candidate that is still leased,
+    // held, over-budget, or past its deadline is never claimable even if a
+    // future SQL predicate regresses.
+    if (!decideClaim(candidate.lease, claimedAt).claim) return { type: "empty" };
     annotateDbBoundary({ sessionId: candidate.session_id });
     const claimed = serial
       ? await this.claimSerial(input, claimedAt, candidate)
@@ -669,10 +721,15 @@ export class SqlSessionExecutionStore
     session_id: string;
     id: string;
     revision: number | string;
+    lease: ExecutionLeaseRecord;
   } | null> {
     const continuations = input.continuationsOnly === true;
-    return this.sql.prepare(`
-      SELECT candidate.workspace_id, candidate.session_id, candidate.id, candidate.revision
+    const row = await this.sql.prepare(`
+      SELECT candidate.workspace_id, candidate.session_id, candidate.lane_id,
+             candidate.id, candidate.revision, candidate.state,
+             candidate.attempt_count, candidate.max_attempts,
+             candidate.deadline_at_ms, candidate.lease_expires_at_ms,
+             candidate.owner_id, candidate.held_after_exhausted_ms
         FROM managed_session_executions AS candidate
        WHERE (? IS NULL OR candidate.workspace_id = ?)
          AND (? IS NULL OR candidate.session_id = ?)
@@ -712,9 +769,37 @@ export class SqlSessionExecutionStore
     ).first<{
       workspace_id: string;
       session_id: string;
+      lane_id: string;
       id: string;
       revision: number | string;
+      state: SessionExecution["state"];
+      attempt_count: number | string;
+      max_attempts: number | string;
+      deadline_at_ms: number | string;
+      lease_expires_at_ms: number | string | null;
+      owner_id: string | null;
+      held_after_exhausted_ms: number | string | null;
     }>();
+    if (row === null) return null;
+    return {
+      workspace_id: row.workspace_id,
+      session_id: row.session_id,
+      id: row.id,
+      revision: row.revision,
+      lease: {
+        executionId: row.id,
+        laneId: row.lane_id,
+        state: row.state,
+        attemptCount: safeInteger(row.attempt_count, "execution attempt count"),
+        maxAttempts: safeInteger(row.max_attempts, "execution max attempts"),
+        leaseExpiresAtMs: row.lease_expires_at_ms === null
+          ? null
+          : safeInteger(row.lease_expires_at_ms, "lease expiry"),
+        deadlineAtMs: safeInteger(row.deadline_at_ms, "execution deadline"),
+        ownerId: row.owner_id,
+        heldAfterExhausted: row.held_after_exhausted_ms !== null,
+      },
+    };
   }
 
   /**
@@ -856,20 +941,31 @@ export class SqlSessionExecutionStore
     }, async () => {
       validateTtl(input.leaseTtlMs);
       const renewedAt = timestamp(input.renewedAt, "renewal");
-      await this.sweepExpired(renewedAt);
+      // Never sweep the caller's own lease out from under an in-flight
+      // renewal; a live owner may only extend, and the policy rejects an
+      // already-expired lease below.
+      await this.sweepExpired(renewedAt, { excludeOwnerId: input.fence.ownerId });
+      const current = await this.find({
+        workspaceId: input.fence.workspaceId,
+        executionId: input.fence.executionId,
+      });
+      if (current === null) return { type: "lost" as const };
+      const renewal = decideLeaseRenewal(
+        toLeaseRecordFromExecution(current),
+        renewedAt,
+        { leaseTtlMs: input.leaseTtlMs },
+      );
+      if (renewal === null) return { type: "lost" as const };
       const row = await this.sql.prepare(`
         UPDATE managed_session_executions
-           SET lease_expires_at_ms = CASE
-                 WHEN ? < deadline_at_ms THEN ? ELSE deadline_at_ms END,
-               revision = revision + 1
+           SET lease_expires_at_ms = ?, revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND session_id = ?
            AND state = 'running' AND attempt_id = ? AND owner_id = ?
            AND generation = ? AND lease_expires_at_ms > ?
            AND deadline_at_ms > ?
         RETURNING ${columns()}
       `).bind(
-        renewedAt + input.leaseTtlMs,
-        renewedAt + input.leaseTtlMs,
+        renewal.leaseExpiresAtMs,
         input.fence.workspaceId,
         input.fence.executionId,
         input.fence.sessionId,
@@ -1224,7 +1320,30 @@ export class SqlSessionExecutionStore
   }
 
 
-  private async sweepExpired(now: number): Promise<void> {
+  /** Durable work the lease policy can see: queued and running executions. */
+  async listActive(input: {
+    workspaceId: string;
+    sessionId: string;
+  }): Promise<SessionExecution[]> {
+    const rows = await this.sql.prepare(`
+      SELECT ${columns()}
+        FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ?
+         AND state IN ('queued', 'running')
+       ORDER BY admitted_at_ms ASC, id ASC
+    `).bind(input.workspaceId, input.sessionId).all<ExecutionRow>();
+    return (rows.results ?? []).map(toExecution);
+  }
+
+  /**
+   * Apply the shared lease policy to every expired/deadline-missed execution.
+   * Public so the CF alarm can use the exact same sweep as Node's claim/renew
+   * paths instead of reimplementing expiry rules in the DO adapter.
+   */
+  async sweepExpired(
+    now: number,
+    options: SweepExpiredOptions = {},
+  ): Promise<void> {
     const interval = this.options.sweepIntervalMs ?? 0;
     if (interval > 0 && now < this.#nextSweepAt) return;
     if (interval > 0) {
@@ -1232,18 +1351,40 @@ export class SqlSessionExecutionStore
     }
     try {
       await withDbBoundary({ op: "session_execution.sweep_expired" }, async () => {
-        await this.terminalizeMatching(
-          now,
-          "execution deadline exceeded",
-          "state IN ('queued', 'running') AND deadline_at_ms <= ?",
-          [now],
-        );
-        await this.terminalizeMatching(
-          now,
-          "execution attempt limit exhausted",
-          "state = 'running' AND lease_expires_at_ms <= ? AND attempt_count >= max_attempts",
-          [now],
-        );
+        for (let batch = 0; batch < 20; batch++) {
+          const selected = await this.sql.prepare(`
+            SELECT ${columns()}
+              FROM managed_session_executions
+             WHERE state IN ('queued', 'running')
+               AND (deadline_at_ms <= ?
+                 OR (state = 'running'
+                   AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)))
+             ORDER BY admitted_at_ms ASC, id ASC
+             LIMIT 100
+          `).bind(now, now).all<ExecutionRow>();
+          const rows = selected.results ?? [];
+          if (rows.length === 0) return;
+          let changed = 0;
+          for (const row of rows) {
+            const decision = decideExpiredExecution(toLeaseRecord(row), now);
+            if (decision === null) continue;
+            if (
+              decision.type === "requeue" &&
+              options.excludeOwnerId !== undefined &&
+              row.owner_id === options.excludeOwnerId
+            ) {
+              // A live owner must not lose its in-flight attempt to its own
+              // sweep; only another owner may reclaim an expired lease.
+              continue;
+            }
+            if (await this.applySweepDecision(row, decision, now)) {
+              changed++;
+              options.onDecision?.(decision);
+            }
+          }
+          if (rows.length < 100) return;
+          if (changed === 0) return;
+        }
       });
     } catch (error) {
       if (this.options.onError === undefined) throw error;
@@ -1251,43 +1392,50 @@ export class SqlSessionExecutionStore
     }
   }
 
-  private async terminalizeMatching(
+  private async applySweepDecision(
+    row: ExecutionRow,
+    decision: CoordinationAction,
     now: number,
-    failure: string,
-    where: string,
-    binds: unknown[],
-  ): Promise<void> {
-    for (let batch = 0; batch < 20; batch++) {
-      const selected = await this.sql.prepare(`
-        SELECT workspace_id, id, revision
-          FROM managed_session_executions
-         WHERE ${where}
-         LIMIT 100
-      `).bind(...binds).all<{
-        workspace_id: string;
-        id: string;
-        revision: number | string;
-      }>();
-      const rows = selected.results ?? [];
-      if (rows.length === 0) return;
-      for (const row of rows) {
-        await this.sql.prepare(`
-          UPDATE managed_session_executions
-             SET state = 'failed', settled_at_ms = ?, failure = ?,
-                 revision = revision + 1
-           WHERE workspace_id = ? AND id = ? AND revision = ?
-             AND ${where}
-        `).bind(
-          now,
-          failure,
-          row.workspace_id,
-          row.id,
-          safeInteger(row.revision, "execution revision"),
-          ...binds,
-        ).run();
-      }
-      if (rows.length < 100) return;
+  ): Promise<boolean> {
+    const revision = safeInteger(row.revision, "execution revision");
+    if (decision.type === "requeue") {
+      const result = await this.sql.prepare(`
+        UPDATE managed_session_executions
+           SET state = 'queued', attempt_id = NULL, owner_id = NULL,
+               claimed_at_ms = NULL, lease_expires_at_ms = NULL,
+               settled_at_ms = NULL,
+               failure = 'requeued after owner lease expired',
+               revision = revision + 1
+         WHERE workspace_id = ? AND id = ? AND revision = ?
+           AND state = 'running'
+           AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)
+           AND attempt_count < max_attempts
+      `).bind(row.workspace_id, row.id, revision, now).run();
+      return result.meta.changes === 1;
     }
+    if (decision.type === "finalize-interrupted") {
+      const deadline = decision.reason === "deadline_exceeded";
+      const result = await this.sql.prepare(`
+        UPDATE managed_session_executions
+           SET state = 'failed', settled_at_ms = ?, failure = ?,
+               revision = revision + 1
+         WHERE workspace_id = ? AND id = ? AND revision = ?
+           AND ${deadline
+             ? "state IN ('queued', 'running') AND deadline_at_ms <= ?"
+             : "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?) AND attempt_count >= max_attempts"}
+      `).bind(
+        now,
+        deadline
+          ? "execution deadline exceeded"
+          : "execution attempt limit exhausted",
+        row.workspace_id,
+        row.id,
+        revision,
+        now,
+      ).run();
+      return result.meta.changes === 1;
+    }
+    return false;
   }
 }
 
