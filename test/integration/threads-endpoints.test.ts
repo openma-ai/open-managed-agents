@@ -547,10 +547,9 @@ describe("threads HTTP endpoints", () => {
       expect([200, 202]).toContain(r.status);
     }
 
-    // All 5 should be observable either in the canonical events log
-    // (already promoted) or in pending_events (still queued). The
-    // insert-then-delete promotion path can briefly show the same id in
-    // both tables, so assert by distinct user-visible message text.
+    // All 5 should be observable in the single events table, either
+    // promoted (processed_at set) or still queued (processed_at NULL).
+    // Assert by distinct user-visible message text, order-agnostic.
     const rows = await runInDurableObject(stub, async (_inst, state) => {
       const out: Array<{ source: string; seq: number; type: string; data: string }> = [];
       for (const row of state.storage.sql.exec(
@@ -561,18 +560,6 @@ describe("threads HTTP endpoints", () => {
         out.push({
           source: "events",
           seq: row.seq as number,
-          type: row.type as string,
-          data: row.data as string,
-        });
-      }
-      for (const row of state.storage.sql.exec(
-        `SELECT pending_seq, type, data FROM pending_events
-           WHERE type = 'user.message' AND session_thread_id = 'sthr_primary'
-           ORDER BY pending_seq`,
-      )) {
-        out.push({
-          source: "pending_events",
-          seq: row.pending_seq as number,
           type: row.type as string,
           data: row.data as string,
         });
@@ -795,12 +782,15 @@ describe("threads HTTP endpoints", () => {
       );
       for (const tid of ["sthr_primary", "sthr_subA", "sthr_subC"]) {
         sql.exec(
-          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
-           VALUES (?, ?, 'user.message', ?, ?)`,
+          `INSERT INTO events (enqueued_at, session_thread_id, type, data, processed_at)
+           VALUES (?, ?, 'user.message', ?, NULL)`,
           Date.now(),
           tid,
-          `ev_${tid}`,
-          JSON.stringify({ type: "user.message", content: [{ type: "text", text: `pending on ${tid}` }] }),
+          JSON.stringify({
+            type: "user.message",
+            id: `ev_${tid}`,
+            content: [{ type: "text", text: `pending on ${tid}` }],
+          }),
         );
       }
 
@@ -858,20 +848,18 @@ describe("threads HTTP endpoints", () => {
       // 5 pending on primary + 3 pending on subA = 8 rows, 2 threads.
       for (let i = 0; i < 5; i++) {
         sql.exec(
-          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
-           VALUES (?, 'sthr_primary', 'user.message', ?, ?)`,
+          `INSERT INTO events (enqueued_at, session_thread_id, type, data, processed_at)
+           VALUES (?, 'sthr_primary', 'user.message', ?, NULL)`,
           Date.now(),
-          `p${i}`,
-          JSON.stringify({ type: "user.message", content: [{ type: "text", text: `p${i}` }] }),
+          JSON.stringify({ type: "user.message", id: `p${i}`, content: [{ type: "text", text: `p${i}` }] }),
         );
       }
       for (let i = 0; i < 3; i++) {
         sql.exec(
-          `INSERT INTO pending_events (enqueued_at, session_thread_id, type, event_id, data)
-           VALUES (?, 'sthr_subA', 'user.message', ?, ?)`,
+          `INSERT INTO events (enqueued_at, session_thread_id, type, data, processed_at)
+           VALUES (?, 'sthr_subA', 'user.message', ?, NULL)`,
           Date.now(),
-          `a${i}`,
-          JSON.stringify({ type: "user.message", content: [{ type: "text", text: `a${i}` }] }),
+          JSON.stringify({ type: "user.message", id: `a${i}`, content: [{ type: "text", text: `a${i}` }] }),
         );
       }
       const calls: string[] = [];

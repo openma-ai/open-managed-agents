@@ -96,11 +96,13 @@ the early preview D1/SQLite table additively before creating the lane index, so
 an operator can deploy the code before running the migration without losing
 existing rows.
 
-The old DO-local `pending_events`/`turn_id` path is retained only for sessions
-without a central execution binding (legacy self-host fixtures and an
-explicit migration window). A migrated deployment never admits new work
-through that path. Once the migration soak is complete, the compatibility
-branch can be removed without changing the Managed Agents API.
+The old DO-local queue path (formerly the `pending_events` table, now
+null-`processed_at` rows in `events`) is retained only for sessions without a
+central execution binding (legacy self-host fixtures and an explicit migration
+window). A migrated deployment never admits new work through that path.
+`ensureSchema` copies any legacy `pending_events` rows into `events` and drops
+the old table. Once the migration soak is complete, the compatibility branch
+can be removed without changing the Managed Agents API.
 
 ## Provider boundaries
 

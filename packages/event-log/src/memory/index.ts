@@ -3,11 +3,11 @@
 // SQLite adapter in tests because there's no SQL round-trip; same shape
 // so consumer code is identical.
 
+import { generateEventId } from "@open-managed-agents/shared";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type {
   EventLogRepo,
-  PendingQueueRepo,
-  PendingRow,
+  QueueInputRow,
   StreamRepo,
   StreamRow,
 } from "../ports";
@@ -19,7 +19,14 @@ interface MemRow {
   processed_at: number | null;
   cancelled_at: number | null;
   session_thread_id: string;
+  enqueued_at: number | null;
 }
+
+const QUEUE_TYPES = new Set([
+  "user.message",
+  "user.tool_confirmation",
+  "user.custom_tool_result",
+]);
 
 export class InMemoryEventLog implements EventLogRepo {
   // Exposed as readonly to tests + the in-memory thread storage path; do
@@ -30,17 +37,9 @@ export class InMemoryEventLog implements EventLogRepo {
   constructor(private stamp: (e: SessionEvent) => void) {}
 
   /**
-   * Append a SessionEvent to the in-memory log. Mirrors the cf-do
-   * adapter: this is a primitive "write a row" operation. Queue-input
-   * events (user.message / user.tool_confirmation /
-   * user.custom_tool_result) are NOT auto-routed to a queue here —
-   * sub-agent and test code that uses InMemoryHistory needs the user
-   * message to be visible immediately to `getEvents()`/`getMessages()`,
-   * since sub-agents run synchronously without a drain step.
-   *
-   * SessionDO routes its primary-thread queue-input events through
-   * `InMemoryPendingQueue.enqueue` (or `CfDoPendingQueue.enqueue`)
-   * separately. The two paths are now independent.
+   * Append a normal event: the act of appending IS the processing, so the
+   * row is immediately part of history. Queue-input events go through
+   * `enqueueQueueInput` (processed_at stays null until `stampProcessed`).
    */
   append(event: SessionEvent): void {
     this.stamp(event);
@@ -54,15 +53,19 @@ export class InMemoryEventLog implements EventLogRepo {
       processed_at: Date.now(),
       cancelled_at: null,
       session_thread_id: threadId,
+      enqueued_at: null,
     });
   }
 
   getEvents(afterSeq?: number): SessionEvent[] {
+    // Raw rows in seq order, including still-queued inputs (marked
+    // `_queued` so the LLM projection can skip them).
     const filtered =
       afterSeq !== undefined ? this._rows.filter((e) => e.seq > afterSeq) : this._rows;
     return filtered.map((r) => {
       const ev = JSON.parse(r.data) as SessionEvent & Record<string, unknown>;
       if (r.processed_at !== null) ev.processed_at_ms = r.processed_at;
+      else ev._queued = true;
       if (r.cancelled_at !== null) ev.cancelled_at_ms = r.cancelled_at;
       ev.session_thread_id = r.session_thread_id;
       return ev as SessionEvent;
@@ -71,7 +74,8 @@ export class InMemoryEventLog implements EventLogRepo {
 
   getLastEventSeq(type: string): number {
     for (let i = this._rows.length - 1; i >= 0; i--) {
-      if (this._rows[i].type === type) return this._rows[i].seq;
+      const row = this._rows[i];
+      if (row.type === type && row.processed_at !== null) return row.seq;
     }
     return -1;
   }
@@ -82,101 +86,137 @@ export class InMemoryEventLog implements EventLogRepo {
   ): { seq: number; data: string } | null {
     const set = new Set(types);
     for (const e of this._rows) {
-      if (e.seq > afterSeq && set.has(e.type)) {
+      if (e.seq > afterSeq && e.processed_at !== null && set.has(e.type)) {
         return { seq: e.seq, data: e.data };
       }
     }
     return null;
   }
-}
 
-/**
- * In-memory pending queue, parallel to (not embedded in) InMemoryEventLog.
- * Mirrors CfDoPendingQueue's contract.
- *
- * Self-contained: holds its own rows array + counter. The queue is
- * structurally separate from the canonical event log — same as the
- * dual-table SQL design — so accidental crosswiring is impossible.
- */
-export class InMemoryPendingQueue implements PendingQueueRepo {
-  private rows: Array<{
-    pending_seq: number;
-    enqueued_at: number;
-    session_thread_id: string;
-    type: string;
-    event_id: string;
-    data: string;
-    cancelled_at: number | null;
-  }> = [];
-  private nextPendingSeq = 1;
-
-  enqueue(event: SessionEvent): void {
+  enqueueQueueInput(event: SessionEvent, enqueuedAtMs?: number): boolean {
+    const e = event as SessionEvent & { id?: string };
+    if (!e.id) e.id = generateEventId();
+    if (this._rows.some((row) => eventIdOf(row.data) === e.id)) return false;
     const threadId =
       (event as unknown as { session_thread_id?: string }).session_thread_id ??
       "sthr_primary";
-    const eventId = (event as unknown as { id?: string }).id ?? "";
-    this.rows.push({
-      pending_seq: this.nextPendingSeq++,
-      enqueued_at: Date.now(),
-      session_thread_id: threadId,
+    this._rows.push({
+      seq: this.nextSeq++,
       type: event.type,
-      event_id: eventId,
       data: JSON.stringify(event),
+      processed_at: null,
       cancelled_at: null,
+      session_thread_id: threadId,
+      enqueued_at: enqueuedAtMs ?? Date.now(),
     });
+    return true;
   }
 
-  peek(threadId: string): PendingRow | null {
-    const r = this.rows.find(
-      (r) => r.session_thread_id === threadId && r.cancelled_at == null,
-    );
-    return r ? { ...r } : null;
+  peekQueueInput(threadId: string): QueueInputRow | null {
+    const row = this._rows
+      .filter(
+        (r) =>
+          r.session_thread_id === threadId &&
+          r.processed_at === null &&
+          r.cancelled_at === null &&
+          QUEUE_TYPES.has(r.type),
+      )
+      .sort((a, b) => a.seq - b.seq)[0];
+    return row ? toQueueInputRow(row) : null;
   }
 
-  delete(pendingSeq: number): void {
-    const idx = this.rows.findIndex((r) => r.pending_seq === pendingSeq);
-    if (idx >= 0) this.rows.splice(idx, 1);
+  stampProcessed(seqOrId: number | string, processedAtMs: number): void {
+    const row = typeof seqOrId === "number"
+      ? this._rows.find((r) => r.seq === seqOrId)
+      : this._rows.find((r) => eventIdOf(r.data) === seqOrId);
+    if (!row || row.processed_at !== null) return;
+    row.processed_at = processedAtMs;
+    const data = JSON.parse(row.data) as SessionEvent & { processed_at?: string };
+    data.processed_at = new Date(processedAtMs).toISOString();
+    row.data = JSON.stringify(data);
   }
 
-  cancelAllForThread(threadId: string, cancelledAtMs: number): PendingRow[] {
-    const out: PendingRow[] = [];
-    for (const r of this.rows) {
-      if (r.session_thread_id === threadId && r.cancelled_at == null) {
-        r.cancelled_at = cancelledAtMs;
-        out.push({ ...r });
+  cancelQueueForThread(
+    threadId: string,
+    cancelledAtMs: number,
+  ): QueueInputRow[] {
+    const out: QueueInputRow[] = [];
+    for (const row of this._rows) {
+      if (
+        row.session_thread_id === threadId &&
+        row.processed_at === null &&
+        row.cancelled_at === null &&
+        QUEUE_TYPES.has(row.type)
+      ) {
+        row.cancelled_at = cancelledAtMs;
+        out.push(toQueueInputRow(row));
       }
     }
     return out;
   }
 
-  cancelByEventId(eventId: string, cancelledAtMs: number): PendingRow | null {
-    const r = this.rows.find((r) => r.event_id === eventId && r.cancelled_at == null);
-    if (!r) return null;
-    r.cancelled_at = cancelledAtMs;
-    return { ...r };
+  cancelQueueByEventId(
+    eventId: string,
+    cancelledAtMs: number,
+  ): QueueInputRow | null {
+    const row = this._rows.find(
+      (r) =>
+        eventIdOf(r.data) === eventId &&
+        r.processed_at === null &&
+        r.cancelled_at === null &&
+        QUEUE_TYPES.has(r.type),
+    );
+    if (!row) return null;
+    row.cancelled_at = cancelledAtMs;
+    return toQueueInputRow(row);
   }
 
-  list(threadId: string, includeCancelled = false): PendingRow[] {
-    return this.rows
+  listQueue(threadId: string, includeCancelled = false): QueueInputRow[] {
+    return this._rows
       .filter(
         (r) =>
           r.session_thread_id === threadId &&
-          (includeCancelled || r.cancelled_at == null),
+          r.processed_at === null &&
+          QUEUE_TYPES.has(r.type) &&
+          (includeCancelled || r.cancelled_at === null),
       )
-      .map((r) => ({ ...r }));
+      .map((r) => toQueueInputRow(r));
   }
 
-  countActive(): number {
-    return this.rows.filter((r) => r.cancelled_at == null).length;
-  }
-
-  threadsWithPending(): string[] {
+  threadsWithQueueInputs(): string[] {
     const set = new Set<string>();
-    for (const r of this.rows) {
-      if (r.cancelled_at == null) set.add(r.session_thread_id);
+    for (const row of this._rows) {
+      if (
+        row.processed_at === null &&
+        row.cancelled_at === null &&
+        QUEUE_TYPES.has(row.type)
+      ) {
+        set.add(row.session_thread_id);
+      }
     }
     return [...set];
   }
+}
+
+function eventIdOf(data: string): string | null {
+  try {
+    const id = (JSON.parse(data) as { id?: unknown }).id;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+function toQueueInputRow(row: MemRow): QueueInputRow {
+  return {
+    seq: row.seq,
+    enqueued_at: row.enqueued_at ?? (row.processed_at ?? Date.now()),
+    session_thread_id: row.session_thread_id,
+    type: row.type,
+    event_id: eventIdOf(row.data) ?? "",
+    data: row.data,
+    cancelled_at: row.cancelled_at,
+  };
 }
 
 export class InMemoryStreamRepo implements StreamRepo {

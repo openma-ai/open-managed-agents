@@ -22,28 +22,113 @@
 
 import type { SessionEvent } from "@open-managed-agents/shared";
 
+/** The three turn-input event types that can sit in the single-table queue. */
+export type QueueInputType =
+  | "user.message"
+  | "user.tool_confirmation"
+  | "user.custom_tool_result";
+
+/**
+ * One queued turn-input row, projected from the canonical `events` table
+ * where `processed_at IS NULL AND cancelled_at IS NULL`.
+ *
+ * There is no separate queue table and no separate queue id: `seq` is the
+ * row's events.seq (internal FIFO order until ingest). It becomes the
+ * canonical wire `seq` only once `stampProcessed` sets `processed_at`.
+ *
+ *   event_id:     parsed(data).id. Clients correlate queue lifecycle
+ *                 broadcasts with the eventual canonical event by this id;
+ *                 promotion never invents a second id.
+ *   enqueued_at:  wall-clock ms when the input hit the log. Drives the
+ *                 execution-outbox hold-after-exhausted check.
+ *   cancelled_at: set by user.interrupt or an explicit cancel; cancelled
+ *                 rows never promote.
+ */
+export interface QueueInputRow {
+  seq: number;
+  enqueued_at: number;
+  session_thread_id: string;
+  type: string;
+  event_id: string;
+  data: string;
+  cancelled_at: number | null;
+}
+
 export interface EventLogRepo {
-  /** Append a SessionEvent to the canonical events log. Implementation
-   *  MUST stamp seq + processed_at. The adapter doesn't decide where
-   *  rows go — queue routing for user.message / user.tool_confirmation /
-   *  user.custom_tool_result is the caller's responsibility (see
-   *  PendingQueueRepo). Calling `append` for a queue-input event from
-   *  an arbitrary code path puts that event directly in the events log
-   *  with the next AUTOINCREMENT seq, bypassing the queue — only the
-   *  drain path should do this (after `peek`, before `delete`). */
+  /**
+   * Append a normal SessionEvent to the canonical events log. The
+   * implementation stamps seq + processed_at (the act of appending IS the
+   * processing for agent/system/span events).
+   *
+   * Queue-input events (user.message / user.tool_confirmation /
+   * user.custom_tool_result) should be inserted through
+   * `enqueueQueueInput` instead: that path writes `processed_at = NULL`
+   * and leaves the JSON payload unstamped until `stampProcessed` promotes
+   * the same row/id at drain time. Calling `append` for a queue-input
+   * event bypasses the queue and records it as already ingested, so only
+   * the drain/projection path should do that.
+   */
   append(event: SessionEvent): void;
 
-  /** All events strictly after `afterSeq` in seq order. Omit for full log. */
+  /** All rows strictly after `afterSeq` in seq order, including queued
+   *  inputs (processed_at NULL). Queued rows carry an internal `_queued`
+   *  marker; the history projection (eventsToMessages) must skip them, but
+   *  list/replay surfaces can show the same event id with a null wire seq
+   *  until `stampProcessed` promotes the row. */
   getEvents(afterSeq?: number): SessionEvent[];
 
-  /** Highest seq for an event of this type. Returns -1 when none. */
+  /** Highest seq for a processed event of this type. Returns -1 when none. */
   getLastEventSeq(type: string): number;
 
-  /** First event of one of these types after `afterSeq`. null when none. */
+  /** First processed event of one of these types after `afterSeq`. null when
+   *  none. */
   getFirstEventAfter(
     afterSeq: number,
     types: string[],
   ): { seq: number; data: string } | null;
+
+  // ── Single-table queue (events rows with processed_at IS NULL) ─────────
+  //
+  // Replaces the former PendingQueueRepo. A queued input is an events row
+  // that has an id + seq but is not part of history yet. Promotion stamps
+  // `processed_at` on the SAME row and id — no delete/re-insert, no new id.
+
+  /** Insert a queue-input event with `processed_at = NULL`. Idempotent by
+   *  event id (any existing events row with the same id wins). Returns
+   *  true when a new row was inserted. */
+  enqueueQueueInput(event: SessionEvent, enqueuedAtMs?: number): boolean;
+
+  /** Next active (non-cancelled, null-processed) queue-input row for a
+   *  thread in internal seq order, or null when the thread has nothing
+   *  queued. Does not mutate. */
+  peekQueueInput(threadId: string): QueueInputRow | null;
+
+  /** Promote a queued row: set the processed_at column AND the JSON
+   *  `processed_at` on the same row. Accepts the internal `seq` (preferred)
+   *  or the canonical event id. No-op when the row is already processed. */
+  stampProcessed(seqOrId: number | string, processedAtMs: number): void;
+
+  /** Cancel every active queue-input row on a thread (user.interrupt).
+   *  Returns the rows that changed so the caller can broadcast lifecycle
+   *  frames. Cancelled rows stay in the log for audit but never promote. */
+  cancelQueueForThread(
+    threadId: string,
+    cancelledAtMs: number,
+  ): QueueInputRow[];
+
+  /** Cancel one active queue-input row by event id. Returns the row, or
+   *  null when it was already promoted/cancelled/absent. */
+  cancelQueueByEventId(
+    eventId: string,
+    cancelledAtMs: number,
+  ): QueueInputRow | null;
+
+  /** List queue-input rows for a thread (active by default). */
+  listQueue(threadId: string, includeCancelled?: boolean): QueueInputRow[];
+
+  /** Distinct thread ids with at least one active queue-input row. Used on
+   *  cold start / recoverEventQueue to re-fire drain per affected thread. */
+  threadsWithQueueInputs(): string[];
 }
 
 /** One row of the streams table — represents one in-flight or recently-
@@ -83,56 +168,4 @@ export interface StreamRepo {
    *  with 'streaming' on cold start to find streams the previous runtime
    *  was in the middle of when it died. */
   listByStatus(status: StreamRow["status"]): Promise<StreamRow[]>;
-}
-
-/**
- * One row of the AMA-spec pending queue. Carries everything the
- * promotion broadcast needs to correlate the pending bubble (rendered
- * client-side from `system.user_message_pending`) with the event-log
- * row that lands at drain time.
- *
- *   pending_seq:        FIFO order within the queue. NOT the seq of the
- *                       eventual events-table row (that's assigned at
- *                       INSERT-into-events time, hence the rename).
- *   event_id:           === parsed(data).id. Client matches by this on
- *                       both pending broadcasts and event-log rows.
- *   cancelled_at:       set by user.interrupt; cancelled rows never
- *                       promote.
- */
-export interface PendingRow {
-  pending_seq: number;
-  enqueued_at: number;
-  session_thread_id: string;
-  type: string;
-  event_id: string;
-  data: string;
-  cancelled_at: number | null;
-}
-
-export interface PendingQueueRepo {
-  /** Append a queue-input SessionEvent (user.message /
-   *  user.tool_confirmation / user.custom_tool_result) to the pending
-   *  queue. SessionDO POST `/event` calls this; the row stays here
-   *  until `drainEventQueue` peeks, the caller appends to the events
-   *  log, then calls `delete(pending_seq)`. */
-  enqueue(event: SessionEvent): void;
-  /** Read the next active (non-cancelled) row for a thread WITHOUT
-   *  deleting it. Caller must INSERT the matching event into the
-   *  events log first, then call `delete(pending_seq)` — this
-   *  insert-then-delete order is the crash-safety guarantee. */
-  peek(threadId: string): PendingRow | null;
-  /** Delete a pending row by pending_seq. Idempotent. */
-  delete(pendingSeq: number): void;
-  /** Cancel every active row for a thread. Returns the cancelled rows
-   *  so the caller can broadcast per-row notifications. */
-  cancelAllForThread(threadId: string, cancelledAtMs: number): PendingRow[];
-  /** Cancel one active row by event id. Returns the row, or null when it
-   *  was already drained/cancelled (the caller then reports 409). */
-  cancelByEventId(eventId: string, cancelledAtMs: number): PendingRow | null;
-  /** List rows for a thread (active by default). */
-  list(threadId: string, includeCancelled?: boolean): PendingRow[];
-  /** Cross-thread count of active rows. */
-  countActive(): number;
-  /** Distinct thread ids with at least one active row. */
-  threadsWithPending(): string[];
 }

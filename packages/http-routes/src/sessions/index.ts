@@ -924,27 +924,14 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     }
   });
 
-  // ── Pending events (AMA) ──────────────────────────────────────────────
-  // GET /v1/sessions/:id/pending — list user.* events enqueued but not
-  // yet drained by the harness. Forwards opaque query string (?session_
-  // thread_id, ?include_cancelled) to the SessionRouter.
-  app.get("/:id/pending", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const router = resolveRouter(deps.router, c);
-    const tenantId = c.var.tenant_id;
-    const sessionId = c.req.param("id");
-    const sess = await services.sessions.get({ tenantId, sessionId });
-    if (!sess) return c.json({ error: "Session not found" }, 404);
-    const url = new URL(c.req.url);
-    const result = await router.getPending(sessionId, { rawSearch: url.search });
-    return new Response(result.body, {
-      status: result.status,
-      headers: { "content-type": "application/json" },
-    });
-  });
-
+  // ── Queued inputs (AMA) ───────────────────────────────────────────────
+  // GET /v1/sessions/:id/pending is intentionally removed: queued turn
+  // inputs are events rows with `processed_at` null and are listed through
+  // GET /v1/sessions/:id/events (wire seq null until promoted in place).
+  //
   // DELETE /v1/sessions/:id/pending/:event_id — OMA extension: remove one
-  // queued user.* event before it runs (Backchat queue "remove").
+  // queued user.* event before it runs (Backchat queue "remove"). Kept as
+  // a one-release cancel shim; it marks the null-processed row cancelled.
   app.delete("/:id/pending/:event_id", async (c) => {
     const services = resolveServices(deps.services, c);
     const router = resolveRouter(deps.router, c);

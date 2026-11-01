@@ -264,7 +264,7 @@ export class CfSessionRouter implements SessionRouter {
         });
         all.push(...page.data);
         if (!page.has_more || page.data.length === 0) break;
-        afterSeq = page.data[page.data.length - 1].seq;
+        afterSeq = page.data[page.data.length - 1].seq ?? afterSeq;
       }
       return all;
     };
@@ -310,22 +310,6 @@ export class CfSessionRouter implements SessionRouter {
     const res = await binding.fetch(
       `https://sandbox/sessions/${sessionId}/threads/${threadId}/archive`,
       { method: "POST" },
-    );
-    return { status: res.status, body: await res.text() };
-  }
-
-  async getPending(
-    sessionId: string,
-    opts?: { rawSearch?: string },
-  ): Promise<{ status: number; body: string }> {
-    const binding = await this.bindingForSession(sessionId);
-    if (!binding) {
-      return { status: 503, body: JSON.stringify({ error: "binding unavailable" }) };
-    }
-    const search = opts?.rawSearch ?? "";
-    const res = await binding.fetch(
-      `https://sandbox/sessions/${sessionId}/pending${search}`,
-      { method: "GET" },
     );
     return { status: res.status, body: await res.text() };
   }

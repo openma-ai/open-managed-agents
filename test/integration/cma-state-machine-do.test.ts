@@ -181,13 +181,13 @@ describe("CF POST /events: [user.interrupt, user.message] during requires_action
 });
 
 describe("CF SessionDO exhausted hold survives DO eviction", () => {
-  it("pre-exhausted local pending row is admitted held after state reload, not run alone", async () => {
+  it("pre-exhausted queued input row is admitted held after state reload, not run alone", async () => {
     const sessionId = await createSession("crash-sh");
     const lane = "sthr_primary";
     const evId = `sevt_pre_${crypto.randomUUID()}`;
     await runInDurableObject(stubOf(sessionId), async (instance) => {
       const room = instance as any;
-      room.enqueuePendingIfNew({ type: "user.message", id: evId, content: [{ type: "text", text: "pre" }] });
+      room.enqueueQueueInputIfNew({ type: "user.message", id: evId, content: [{ type: "text", text: "pre" }] });
       room.setExhaustedAt(lane, Date.now() + 1);
     });
     await runInDurableObject(stubOf(sessionId), async (instance, state) => {
@@ -197,7 +197,7 @@ describe("CF SessionDO exhausted hold survives DO eviction", () => {
       room._loadStateFromSql();
       expect(room.state.exhausted_at_by_lane?.[lane]).toBeTypeOf("number");
       const store = await room.getExecutionStore();
-      expect(await room.admitPendingFallback(store, lane)).toBe(false);
+      expect(await room.admitQueueFallback(store, lane)).toBe(false);
       const row = await store.find({ workspaceId: room.state.tenant_id, executionId: evId });
       expect(row?.state).toBe("queued");
       expect(row?.heldAfterExhaustedAt).toBeTruthy();

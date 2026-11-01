@@ -564,21 +564,6 @@ export class NodeSessionRouter implements SessionRouter {
     return { status: 200, body: JSON.stringify({ id: threadId, archived: true }) };
   }
 
-  async getPending(
-    sessionId: string,
-    _opts?: { rawSearch?: string },
-  ): Promise<{ status: number; body: string }> {
-    // Node SqlEventLog doesn't yet have the dual-table queue surface
-    // (CF SessionDO holds pending in its DO sqlite). For now return an
-    // empty page so SDK callers don't 500 — pending events still drive
-    // the harness via in-process registry, just no read API for them.
-    void sessionId;
-    return {
-      status: 200,
-      body: JSON.stringify({ data: [], has_more: false }),
-    };
-  }
-
   async cancelPending(
     sessionId: string,
     eventId: string,

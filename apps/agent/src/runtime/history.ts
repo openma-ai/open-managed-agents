@@ -430,6 +430,12 @@ function buildMessages(
     if ((event as unknown as { cancelled_at_ms?: number }).cancelled_at_ms != null) {
       continue;
     }
+    // Queued turn inputs live in the same events table with processed_at
+    // NULL (single-table queue). They are listed/replayed for the outbox,
+    // but are not part of the model context until drain promotes them.
+    if ((event as unknown as { _queued?: boolean })._queued === true) {
+      continue;
+    }
     switch (event.type) {
       case "user.message": {
         flushAssistant();
@@ -543,6 +549,12 @@ async function buildMessagesAsync(
   for (let i = fromIdx; i < toIdx; i++) {
     const event = events[i];
     if ((event as unknown as { cancelled_at_ms?: number }).cancelled_at_ms != null) {
+      continue;
+    }
+    // Queued turn inputs live in the same events table with processed_at
+    // NULL (single-table queue). They are listed/replayed for the outbox,
+    // but are not part of the model context until drain promotes them.
+    if ((event as unknown as { _queued?: boolean })._queued === true) {
       continue;
     }
     switch (event.type) {

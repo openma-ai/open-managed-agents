@@ -31,13 +31,11 @@ import {
 import {
   CfDoStreamRepo,
   CfDoEventLog,
-  CfDoPendingQueue,
   ensureSchema as ensureEventLogSchema,
 } from "@open-managed-agents/event-log/cf-do";
 import type {
   EventLogRepo,
-  PendingQueueRepo,
-  PendingRow,
+  QueueInputRow,
   StreamRepo,
 } from "@open-managed-agents/event-log";
 import { recoverInterruptedState as runRecovery } from "./recovery";
@@ -279,7 +277,7 @@ interface SessionState {
   /** Lane → ms of the last retries_exhausted settle. Persisted (DO state)
    *  so the local-pending fallback still holds pre-exhausted inputs after a
    *  DO eviction. Cleared once the lane runs a new execution and no
-   *  pre-exhausted local pending row remains. */
+   *  pre-exhausted queued input row remains. */
   exhausted_at_by_lane?: Record<string, number>;
   outcome: ActiveOutcome | null;
   outcome_iteration: number;
@@ -551,8 +549,9 @@ export class SessionDO extends DurableObject<Env> {
           };
           this.ensureSchema();
           this._stampEventForPending(event);
-          this.pending!.enqueue(event);
-          this._broadcastPendingFrame(event, "sthr_primary");
+          if (this.enqueueQueueInputIfNew(event)) {
+            this._broadcastPendingFrame(event, "sthr_primary");
+          }
           try {
             await this.schedule(5, "recoverEventQueue" as keyof this);
           } catch {}
@@ -752,31 +751,37 @@ export class SessionDO extends DurableObject<Env> {
    *  deltas don't pollute history (the eventual `agent.message` is the
    *  source of truth). Lazy-initialized in ensureSchema(). */
   private streams: StreamRepo | null = null;
-  /** AMA-spec pending queue. Holds user.message / user.tool_confirmation /
-   *  user.custom_tool_result events between events.send() and drain
-   *  picking them up. Lazy-initialized in ensureSchema(). */
-  private pending: PendingQueueRepo | null = null;
+  /** Single-table queue repo: turn-input events live in `events` with
+   *  processed_at NULL until drain stamps the same row/id. Lazy-initialized
+   *  in ensureSchema(). */
+  private queue: EventLogRepo | null = null;
 
   private ensureSchema() {
     if (this.initialized) return;
     // Schema lives in the cf-do adapter so OMA's SessionDO doesn't have
     // to know SQLite syntax. Adapter is idempotent — CREATE TABLE IF NOT
-    // EXISTS — so calling on every fetch hot path is fine.
+    // EXISTS — so calling on every fetch hot path is fine. The first call
+    // also copies any legacy pending_events rows into `events` and drops
+    // the old table.
     ensureEventLogSchema(this.ctx.storage.sql);
     this.streams = new CfDoStreamRepo(this.ctx.storage.sql);
-    this.pending = new CfDoPendingQueue(this.ctx.storage.sql);
+    this.queue = new CfDoEventLog(this.ctx.storage.sql, (e) => {
+      const ev = e as SessionEvent & { id?: string; processed_at?: string };
+      if (!ev.id) ev.id = `sevt_${generateEventId()}`;
+      if (!ev.processed_at) ev.processed_at = this.processedClock.nowIso();
+    });
     this.initialized = true;
     // Recovery scan: any in-flight state from before this cold start is
     // stale by definition (the runtime that owned it is gone). Reconcile
     // both kinds of orphans now so the events log is consistent before
     // drainEventQueue runs and the harness rebuilds messages.
     void this.recoverInterruptedState();
-    // Pending-queue cold start: any thread that had queued events when
-    // the previous incarnation died still has them in pending_events.
-    // Re-fire drainEventQueue per affected thread so they don't sit
-    // forever waiting for a fresh user.message to retrigger drain.
+    // Queue cold start: any thread with null-processed turn inputs when
+    // the previous incarnation died still has them in `events`. Re-fire
+    // drainEventQueue per affected thread so they don't sit forever
+    // waiting for a fresh user.message to retrigger drain.
     try {
-      const threads = this.pending!.threadsWithPending();
+      const threads = this.queue!.threadsWithQueueInputs();
       if (threads.length > 0) {
         console.log(`[ensureSchema] cold-start drain for threads: ${threads.join(",")}`);
         for (const t of threads) {
@@ -784,7 +789,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
     } catch (err) {
-      console.warn(`[ensureSchema] threadsWithPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`[ensureSchema] threadsWithQueueInputs failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -985,20 +990,16 @@ export class SessionDO extends DurableObject<Env> {
    * 5 seconds after an event is received. If the primary waitUntil
    * path already drained the queue, this is a no-op.
    *
-   * Drains every thread that has pending events. Cheap — the partial
-   * pending-index makes "list distinct thread_ids with pending rows"
-   * an O(log n) scan, and per-thread mutex (_draining set) means a
+   * Drains every thread that has queued inputs. Cheap — the partial
+   * processed_at-NULL index makes "list distinct thread_ids with queued
+   * rows" an O(log n) scan, and per-thread mutex (_draining set) means a
    * thread that's already draining returns immediately.
    */
   async recoverEventQueue(): Promise<void> {
     this.ensureSchema();
-    // Canonical source of pending state: the pending_events table.
-    // Pre-3a3e7ec sessions may have stuck `processed_at IS NULL` rows
-    // in `events` from before the dual-table refactor; those are NOT
-    // re-run by drain (the legacy queue semantics moved to
-    // pending_events). Sessions active at deploy time lose their
-    // in-flight queue state — acceptable for the small window.
-    const threads = this.pending!.threadsWithPending();
+    // Single-table queue: active queued inputs are events rows with
+    // processed_at IS NULL. Cancelled rows are excluded.
+    const threads = this.queue!.threadsWithQueueInputs();
     if (threads.length === 0) {
       // Nothing pending anywhere. Do not invoke drainEventQueue just to
       // discover an empty queue: the central execution path arms a lease
@@ -1326,22 +1327,26 @@ export class SessionDO extends DurableObject<Env> {
     return undefined;
   }
 
-  /** Local pending rows are a UI projection. Make delivery retries idempotent
-   * by keying them on the canonical managed event id. */
-  private pendingRowForEvent(eventId: string): PendingRow | null {
+  /** Queue rows are `events` rows with processed_at IS NULL. Delivery
+   * retries are idempotent by the canonical managed event id. */
+  private queueRowForEvent(eventId: string): QueueInputRow | null {
     if (!eventId) return null;
     for (const row of this.ctx.storage.sql.exec(
-      `SELECT pending_seq, enqueued_at, session_thread_id, type, event_id, data, cancelled_at
-         FROM pending_events WHERE event_id = ? AND cancelled_at IS NULL
-         ORDER BY pending_seq ASC LIMIT 1`,
+      `SELECT seq, ts, enqueued_at, session_thread_id, type, data, cancelled_at,
+              json_extract(data, '$.id') AS event_id
+         FROM events
+        WHERE json_extract(data, '$.id') = ?
+          AND processed_at IS NULL AND cancelled_at IS NULL
+        ORDER BY seq ASC LIMIT 1`,
       eventId,
     )) {
       return {
-        pending_seq: row.pending_seq as number,
-        enqueued_at: row.enqueued_at as number,
+        seq: row.seq as number,
+        enqueued_at: (row.enqueued_at as number | null) ??
+          ((row.ts as number | null) ?? 0) * 1000,
         session_thread_id: row.session_thread_id as string,
         type: row.type as string,
-        event_id: row.event_id as string,
+        event_id: (row.event_id as string | null) ?? "",
         data: row.data as string,
         cancelled_at: (row.cancelled_at as number | null) ?? null,
       };
@@ -1361,11 +1366,13 @@ export class SessionDO extends DurableObject<Env> {
     return false;
   }
 
-  private enqueuePendingIfNew(event: SessionEvent): boolean {
-    const eventId = (event as unknown as { id?: string }).id ?? "";
-    if (this.localEventExists(eventId)) return false;
-    this.pending!.enqueue(event);
-    return true;
+  /** Insert a turn input into the single-table queue (events row,
+   *  processed_at NULL). Returns false when the id is already present. */
+  private enqueueQueueInputIfNew(event: SessionEvent): boolean {
+    const e = event as SessionEvent & { id?: string };
+    if (!e.id) e.id = `sevt_${generateEventId()}`;
+    if (this.localEventExists(e.id)) return false;
+    return this.queue!.enqueueQueueInput(event);
   }
 
   private executionInputFromWire(event: SessionEvent): unknown {
@@ -1388,20 +1395,21 @@ export class SessionDO extends DurableObject<Env> {
     this.setState({ ...this.state, exhausted_at_by_lane: next });
   }
 
-  private async admitPendingFallback(
+  private async admitQueueFallback(
     store: SqlSessionExecutionStore,
     threadId: string,
   ): Promise<boolean> {
     const exhaustedAt = this.state.exhausted_at_by_lane?.[threadId];
-    // Walk the lane's local pending rows oldest-first; rows already admitted
+    // Walk the lane's queued inputs oldest-first; rows already admitted
     // (e.g. held after retries_exhausted) are skipped so a newer input can
     // still be admitted behind them.
-    for (const row of this.pending!.list(threadId)) {
+    for (const row of this.queue!.listQueue(threadId)) {
       let event: SessionEvent;
       try {
         event = JSON.parse(row.data) as SessionEvent;
       } catch {
-        this.pending!.delete(row.pending_seq);
+        // Corrupt queue row: cancel it so it never blocks the lane.
+        this.queue!.cancelQueueByEventId(row.event_id, Date.now());
         continue;
       }
       const id = (event as unknown as { id?: string }).id ?? row.event_id;
@@ -1438,18 +1446,20 @@ export class SessionDO extends DurableObject<Env> {
     return false;
   }
 
-  private ensureLocalPending(event: SessionEvent): PendingRow | null {
+  private ensureLocalQueueInput(event: SessionEvent): QueueInputRow | null {
     if (
       event.type !== "user.message" &&
       event.type !== "user.tool_confirmation" &&
       event.type !== "user.custom_tool_result"
     ) return null;
     const eventId = (event as unknown as { id?: string }).id ?? "";
-    if (this.localEventExists(eventId)) return null;
-    const existing = this.pendingRowForEvent(eventId);
+    // A queue row already exists (normal POST /event path): promote that
+    // same row. If only a processed event exists, it is already history.
+    const existing = this.queueRowForEvent(eventId);
     if (existing !== null) return existing;
+    if (this.localEventExists(eventId)) return null;
     // custom_tool_result is processed on receipt (official CMA): keep/set
-    // processed_at. message / tool_confirmation stay null until drain.
+    // its JSON stamp. message / tool_confirmation stay null until drain.
     if (event.type === "user.custom_tool_result") {
       const e = event as SessionEvent & { id?: string; processed_at?: string };
       if (!e.id) e.id = `sevt_${generateEventId()}`;
@@ -1457,14 +1467,14 @@ export class SessionDO extends DurableObject<Env> {
     } else {
       this._stampEventForPending(event);
     }
-    this.pending!.enqueue(event);
-    return this.pendingRowForEvent(eventId);
+    this.queue!.enqueueQueueInput(event);
+    return this.queueRowForEvent(eventId);
   }
 
-  private promotePendingRow(
-    row: PendingRow,
-    history: HistoryStore,
-  ): void {
+  /** Promote a queued input in place: stamp processed_at on the SAME row
+   *  and id (never insert a second event id), then emit the canonical
+   *  event + promotion frame so live clients can drop the outbox bubble. */
+  private promoteQueueRow(row: QueueInputRow): SessionEvent {
     const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
     const event = JSON.parse(row.data) as SessionEvent & { processed_at?: string };
@@ -1474,26 +1484,21 @@ export class SessionDO extends DurableObject<Env> {
       event.type === "user.custom_tool_result" && typeof event.processed_at === "string"
         ? event.processed_at
         : nowIso;
+    const stampMs = Date.parse(stamp);
     event.processed_at = stamp;
-    let promoted = false;
-    for (const existing of this.ctx.storage.sql.exec(
-      `SELECT 1 AS present FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1`,
-      row.event_id,
-    )) {
-      promoted = existing.present === 1;
-    }
-    if (!promoted) history.append(event);
-    this.pending!.delete(row.pending_seq);
+    this.queue!.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
     // Canonical D1 stamp (null → processed_at) before live re-emit.
     this.markAcceptedEventsProcessed([row.event_id], stamp);
     this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
       event_id: row.event_id,
-      pending_seq: row.pending_seq,
-      processed_at: nowIso,
+      pending_seq: row.seq,
+      seq: row.seq,
+      processed_at: stamp,
       session_thread_id: row.session_thread_id,
     } as SystemUserMessagePromotedEvent);
+    return event;
   }
 
   /**
@@ -1506,10 +1511,10 @@ export class SessionDO extends DurableObject<Env> {
    * Rows another host already claimed are left alone.
    * See docs/implementation/cma-steer-coherent-turn.md.
    */
-  private async takeSteeringInputs(threadId: string, history: HistoryStore): Promise<SessionEvent[]> {
+  private async takeSteeringInputs(threadId: string): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
     const out: SessionEvent[] = [];
-    for (const row of this.pending!.list(threadId)) {
+    for (const row of this.queue!.listQueue(threadId)) {
       // CMA: every mid-turn user.message steers into the current turn at the
       // next LLM/tool-call boundary (coherent turn / after-call absorb).
       // Ordinary mid-run accept is the only path — no explicit Steer API.
@@ -1532,8 +1537,7 @@ export class SessionDO extends DurableObject<Env> {
         session_thread_id: row.session_thread_id,
         steered_at: Date.now(),
       } as unknown as SessionEvent);
-      this.promotePendingRow(row, history);
-      const event = JSON.parse(row.data) as SessionEvent;
+      const event = this.promoteQueueRow(row);
       out.push(event);
     }
     return out;
@@ -1557,61 +1561,9 @@ export class SessionDO extends DurableObject<Env> {
     // the interrupt could fence the input).
     const executionStore = await this.getExecutionStore();
 
-    // Legacy backfill (one-shot per drain): pre-3a3e7ec sessions had
-    // user.* rows sitting in `events` with processed_at IS NULL. The
-    // refactor stops producing those. New code will never enqueue
-    // through `events`, so this query returns zero rows in steady state.
-    // We promote any stragglers in-place (UPDATE processed_at +
-    // re-stamp data.processed_at + broadcast _promoted) so the events
-    // log isn't visually wrong. The harness DOES NOT auto-run them —
-    // accepting that any session active at deploy boundary loses its
-    // in-flight queue state. Cheap (indexed; zero rows in steady state).
-    // TODO(dual-table-followup): remove this block after a soak window
-    // confirms no production session has had this trigger.
-    if (executionStore === null) {
-      const cursor = this.ctx.storage.sql.exec(
-        `SELECT seq, data FROM events
-           WHERE session_thread_id = ?
-             AND processed_at IS NULL AND cancelled_at IS NULL
-             AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result')
-           ORDER BY seq ASC`,
-        threadId,
-      );
-      const legacyRows: Array<{ seq: number; data: string }> = [];
-      for (const row of cursor) {
-        legacyRows.push({ seq: row.seq as number, data: row.data as string });
-      }
-      for (const lr of legacyRows) {
-        const nowMs = this.processedClock.nowMs();
-        const nowIso = new Date(nowMs).toISOString();
-        let event: SessionEvent;
-        try {
-          event = JSON.parse(lr.data) as SessionEvent;
-        } catch {
-          continue;
-        }
-        event.processed_at = nowIso;
-        this.ctx.storage.sql.exec(
-          `UPDATE events SET processed_at = ?, data = ? WHERE seq = ?`,
-          nowMs, JSON.stringify(event), lr.seq,
-        );
-        const eventId = (event as { id?: string }).id;
-        this.broadcastEvent({
-          type: "system.user_message_promoted",
-          event_id: eventId ?? "",
-          // pending_seq absent — these never lived in pending_events.
-          seq: lr.seq,
-          processed_at: nowIso,
-          session_thread_id: threadId,
-        } as SystemUserMessagePromotedEvent);
-      }
-    }
-
-    // New path: execution admission is the tenant-D1 outbox. The old local
-    // pending loop below remains a bounded migration fallback for sessions
-    // created before the outbox migration (and for self-host fixtures that
-    // intentionally do not bind MAIN_DB). It is never used by a migrated
-    // Cloudflare deployment.
+    // Admission is the tenant-D1 outbox. The local events queue below is
+    // the fallback for sessions/hosts that intentionally do not bind MAIN_DB;
+    // managed Cloudflare deployments take the outbox path.
     if (executionStore !== null) {
       const host = new SessionExecutionHost({
         store: executionStore,
@@ -1645,11 +1597,11 @@ export class SessionDO extends DurableObject<Env> {
           const executionHistory = this.guardHistoryForExecution(history, fence);
           let holdQueuedOnLane = false;
           // Lane is running a new execution (held rows already absorbed on
-          // claim): drop the exhausted mark unless a pre-exhausted local
-          // pending row still awaits fallback admission.
+          // claim): drop the exhausted mark unless a pre-exhausted queued
+          // input still awaits fallback admission.
           {
             const at = this.state.exhausted_at_by_lane?.[threadId];
-            if (at !== undefined && !this.pending!.list(threadId).some((r) =>
+            if (at !== undefined && !this.queue!.listQueue(threadId).some((r) =>
               r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
               this.setExhaustedAt(threadId, undefined);
             }
@@ -1671,8 +1623,8 @@ export class SessionDO extends DurableObject<Env> {
               // runtime uses the legacy wire shape, so this is the one
               // explicit protocol projection at the host boundary.
               const event = encodeRuntimeSessionEvent(rawEvent as never) as SessionEvent;
-              const localPending = this.ensureLocalPending(event);
-              if (localPending !== null) this.promotePendingRow(localPending, executionHistory);
+              const localQueued = this.ensureLocalQueueInput(event);
+              if (localQueued !== null) this.promoteQueueRow(localQueued);
               if (event.type === "user.message") {
                 const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
                 if (turn?.holdQueuedOnLane) {
@@ -1718,11 +1670,11 @@ export class SessionDO extends DurableObject<Env> {
           }
         }, { continuationsOnly: awaitingClient });
         if (result.type === "empty") {
-          // Direct DO callers and pre-outbox deliveries may have a local
-          // pending row but no D1 admission yet. Admit it once as a
+          // Direct DO callers and pre-outbox deliveries may have a queued
+          // input row but no D1 admission yet. Admit it once as a
           // reconciliation step; normal main-worker traffic already has the
           // atomic D1 outbox row and takes the claim path directly.
-          if (await this.admitPendingFallback(executionStore, threadId)) continue;
+          if (await this.admitQueueFallback(executionStore, threadId)) continue;
           break;
         }
         if (result.type === "completed") continue;
@@ -1751,86 +1703,22 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     while (true) {
-      // Peek the next active row from `pending_events` (no DELETE).
-      // Crash-safety: we INSERT into events first, then DELETE here.
-      // If the DO dies between INSERT and DELETE, the next drain will
-      // peek the same row — the dedup check below detects it via
-      // event_id and skips the re-INSERT, just deleting the stale row.
-      const row = this.pending!.peek(threadId);
+      // Peek the next active queued input (events row, processed_at NULL).
+      // Promotion stamps the same row/id in place — no re-insert, no
+      // second event id, no delete-then-append window.
+      const row = this.queue!.peekQueueInput(threadId);
       if (!row) break;
 
       // Fresh per-turn dedup window for agent.message broadcasts. See
       // broadcastedMessageIds field doc for the recovery-replay context.
       this.broadcastedMessageIds.clear();
 
-      // Parse the queued event and stamp processed_at = now (ISO).
-      // AMA spec: processed_at = "wall-clock ingestion time, when the
-      // agent picks the event up — not when the turn finishes". The
-      // INSERT below carries this value verbatim into the events row.
-      const nowMs = this.processedClock.nowMs();
-      const nowIso = new Date(nowMs).toISOString();
-      const event = JSON.parse(row.data) as SessionEvent;
-      event.processed_at = nowIso;
-      const eventId = (event as { id?: string }).id;
+      // Stamp processed_at = now on the SAME row. AMA spec: processed_at is
+      // the wall-clock ingestion time (when the agent picks the event up),
+      // not when the turn finishes.
+      const event = this.promoteQueueRow(row);
 
-      // Dedup-by-event-id: if a previous drain crashed between INSERT
-      // and DELETE, the event is already in `events` for this id.
-      // Skip the re-INSERT but still delete the stale pending row so
-      // the loop progresses and the harness doesn't re-run a turn that
-      // already happened. Cheap — events.id has an expression index
-      // (idx_events_event_id) so the lookup is O(log n).
-      let alreadyPromoted = false;
-      let promotedSeq: number | null = null;
-      if (eventId) {
-        for (const r of this.ctx.storage.sql.exec(
-          `SELECT seq FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1`,
-          eventId,
-        )) {
-          alreadyPromoted = true;
-          promotedSeq = r.seq as number;
-        }
-      }
-
-      if (!alreadyPromoted) {
-        // INSERT into events: history.append uses the cf-do adapter
-        // which writes (type, data, processed_at, session_thread_id)
-        // and returns the AUTOINCREMENT seq via the RETURNING clause
-        // when reachable; here we re-read MAX(seq) for the broadcast.
-        history.append(event);
-        for (const r of this.ctx.storage.sql.exec(
-          `SELECT seq FROM events WHERE json_extract(data, '$.id') = ? ORDER BY seq DESC LIMIT 1`,
-          eventId ?? "",
-        )) {
-          promotedSeq = r.seq as number;
-        }
-      }
-
-      // Now safe to delete from pending_events. Idempotent: a DO restart
-      // before this DELETE leaves the dedup path above to handle the
-      // duplicate-promote case on the next drain.
-      this.pending!.delete(row.pending_seq);
-
-      // Broadcast the canonical user.* event (now with processed_at
-      // filled) so live consumers that key on user.message see the
-      // promoted copy with the right wall-clock. Mirror what the
-      // pre-refactor broadcastEvent path did at append time.
-      if (typeof eventId === "string" && eventId.length > 0) {
-        this.markAcceptedEventsProcessed([eventId], nowIso);
-      }
-      this.broadcastEvent(event);
-      // Promotion notification — lets new clients drop the outbox bubble
-      // and render the new events-log row. Includes the assigned seq so
-      // the client can correlate without polling.
-      this.broadcastEvent({
-        type: "system.user_message_promoted",
-        event_id: eventId ?? "",
-        pending_seq: row.pending_seq,
-        seq: promotedSeq ?? undefined,
-        processed_at: nowIso,
-        session_thread_id: row.session_thread_id,
-      } as SystemUserMessagePromotedEvent);
-
-      const turnName = `turn:${promotedSeq ?? row.pending_seq}`;
+      const turnName = `turn:${row.seq}`;
       try {
         // Run the turn through the unified runtime: adapter.beginTurn /
         // endTurn write the marker on `sessions.turn_id`, hintTurnInFlight
@@ -1906,17 +1794,17 @@ export class SessionDO extends DurableObject<Env> {
         ) {
           this.terminate("billing");
         }
-        // The promoted events row already exists (we INSERTed it before
-        // running the turn), and pending_events is already cleared.
-        // Status auto-derives from sessions.turn_id once the
-        // RuntimeAdapter.endTurn callback fires.
-        // A user interrupt only ends the active turn; queued messages keep
-        // draining. Any other failure stops the drain so the client decides.
+        // The promoted row is the same events row with processed_at now
+        // set (no separate queue row to delete). Status auto-derives from
+        // sessions.turn_id once the RuntimeAdapter.endTurn callback fires.
+        // A user interrupt ends the active turn and has already cancelled
+        // this thread's queued inputs. Any other failure stops the drain so
+        // the client decides. (The continue simply re-checks the queue.)
         if (isUserInterrupt) continue;
         break;
       }
-      // Promoted row is in events with processed_at set; pending row is
-      // deleted. Loop back for the next pending event on this thread.
+      // Row is promoted in place (processed_at set). Loop back for the next
+      // queued input on this thread.
     }
     } finally {
       this._draining.delete(threadId);
@@ -2365,11 +2253,10 @@ export class SessionDO extends DurableObject<Env> {
             );
           }
         }
-        // Stamp id + processed_at = null on the canonical event before
-        // enqueue. The pending row carries the same JSON; drain will
-        // overwrite processed_at to the wall-clock when promoting.
+        // Stamp id and leave processed_at absent before enqueue. The queue
+        // row IS this event; drain stamps the same row/id when promoting.
         this._stampEventForPending(um);
-        const enqueued = this.enqueuePendingIfNew(um);
+        const enqueued = this.enqueueQueueInputIfNew(um);
         // Broadcast the AMA-spec "pending" notification so live
         // consumers can render the outbox bubble immediately. Carries
         // pending_seq so the matching `system.user_message_promoted`
@@ -2403,9 +2290,9 @@ export class SessionDO extends DurableObject<Env> {
         //   1. Abort the in-flight turn for the target thread (only that
         //      thread — siblings keep running). If no session_thread_id
         //      is set, defaults to primary.
-        //   2. Keep queued user.* events: they drain after the interrupted
-        //      turn ends (matches Backchat's SessionManager.cancel). Only
-        //      explicit DELETE /pending/:event_id cancels a queued row.
+        //   2. Flush queued user.* inputs (AMA: "queued inputs are
+        //      flushed"): they are marked cancelled_at and never promote.
+        //      DELETE /pending/:event_id can also cancel one specific row.
         //   3. Append the user.interrupt event itself + idle marker.
         const targetThread =
           (body as unknown as { session_thread_id?: string })
@@ -2474,30 +2361,21 @@ export class SessionDO extends DurableObject<Env> {
         const cancelTs = Date.now();
         // user.interrupt is separate from steer (cma-steer-coherent-turn.md):
         // interrupt → idle; a following user.message starts the NEXT turn.
-        // Queued user.* rows SURVIVE interrupt (Backchat): drain after idle
-        // picks them up as that next turn (stamp/re-emit). Callers that want
-        // to drop a queued message use DELETE /v1/sessions/:id/pending/:event_id,
-        // which emits system.user_message_cancelled for that row.
-        // Legacy back-compat: pre-3a3e7ec sessions may still have user.*
-        // rows sitting in `events` with processed_at IS NULL. The legacy
-        // partial pending-index on `events` would otherwise pick them up
-        // on the next drain. Mark them cancelled so they never run.
-        this.ctx.storage.sql.exec(
-          `UPDATE events SET cancelled_at = ?
-             WHERE session_thread_id = ?
-               AND processed_at IS NULL AND cancelled_at IS NULL
-               AND (type = 'user.message' OR type = 'user.tool_confirmation' OR type = 'user.custom_tool_result')`,
-          cancelTs, targetThread,
-        );
-        // Workerd's SqlStorage cursor does not expose rowsWritten reliably
-        // (unlike the old cf-agents shim).  Read SQLite's changes() value so
-        // a legacy queue flush also drives the interrupt idle decision and
-        // remains correct on every runtime.
-        const legacyCancelledCount = Number(
-          this.ctx.storage.sql.exec("SELECT changes() AS affected_rows").one()
-            .affected_rows ?? 0,
-        );
-        const cancelledCount = legacyCancelledCount;
+        // AMA "queued inputs are flushed": cancel every active queued input
+        // on this thread by stamping cancelled_at on the SAME events rows
+        // (processed_at stays NULL, so they never promote). Cancelling one
+        // specific row is also available through DELETE /pending/:event_id.
+        const cancelledRows = this.queue!.cancelQueueForThread(targetThread, cancelTs);
+        const cancelledCount = cancelledRows.length;
+        for (const row of cancelledRows) {
+          this.broadcastEventIgnoringExecutionFence({
+            type: "system.user_message_cancelled",
+            pending_seq: row.seq,
+            event_id: row.event_id,
+            session_thread_id: row.session_thread_id,
+            cancelled_at: cancelTs,
+          } as SystemUserMessageCancelledEvent);
+        }
         const settledRequests: string[] = [];
         if (!hadActiveTurn && (this.state.pending_tool_calls?.length ?? 0) > 0) {
           const pendingIds = new Set(this.state.pending_tool_calls.map((pending) => pending.toolCallId));
@@ -2630,7 +2508,7 @@ export class SessionDO extends DurableObject<Env> {
           return this.acceptNoEffectAnswer(tc, history);
         }
         this._stampEventForPending(tc);
-        const enqueued = this.enqueuePendingIfNew(tc);
+        const enqueued = this.enqueueQueueInputIfNew(tc);
         if (enqueued) this._broadcastPendingFrame(tc, tcThread);
         if (enqueued) {
           try {
@@ -2661,7 +2539,7 @@ export class SessionDO extends DurableObject<Env> {
         if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
         stamped.processed_at = this.processedClock.nowIso();
         this.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
-        const enqueued = this.enqueuePendingIfNew(customResult);
+        const enqueued = this.enqueueQueueInputIfNew(customResult);
         if (enqueued) this._broadcastPendingFrame(customResult, ctrThread);
         if (enqueued) {
           try {
@@ -2867,15 +2745,15 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
 
-      // Pending queue replay — emit a system.user_message_pending frame
-      // for every active row across every thread, so a fresh client sees
-      // the outbox state without an extra GET /pending. `system.*` is an
-      // OMA extension type, so this is gated by the chunks opt-in. Old
-      // SDK consumers (no opt-in) can fetch /pending directly.
+      // Queued-input replay — emit a system.user_message_pending frame for
+      // every active queue row across every thread (same event id the list
+      // API returns), so a fresh client sees the outbox without an extra
+      // GET /pending (that endpoint is gone). `system.*` is an OMA
+      // extension type, so this is gated by the chunks opt-in.
       if (includeChunks) {
         try {
-          for (const threadId of this.pending!.threadsWithPending()) {
-            for (const row of this.pending!.list(threadId)) {
+          for (const threadId of this.queue!.threadsWithQueueInputs()) {
+            for (const row of this.queue!.listQueue(threadId)) {
               let parsed: SessionEvent;
               try {
                 parsed = JSON.parse(row.data) as SessionEvent;
@@ -2885,7 +2763,7 @@ export class SessionDO extends DurableObject<Env> {
               const pendingFrame: SystemUserMessagePendingEvent = {
                 type: "system.user_message_pending",
                 event_id: row.event_id,
-                pending_seq: row.pending_seq,
+                pending_seq: row.seq,
                 enqueued_at: row.enqueued_at,
                 session_thread_id: row.session_thread_id,
                 event: parsed,
@@ -2921,17 +2799,14 @@ export class SessionDO extends DurableObject<Env> {
       });
     }
 
-    // GET /pending — AMA-spec pending queue surface. Lists user.* events
-    // that have been enqueued but not yet drained.
+    // DELETE /pending/:event_id — queue cancel shim (AMA/OMA extension).
     //
-    // Query params:
-    //   ?session_thread_id=…    → filter to one thread (default sthr_primary)
-    //   ?include_cancelled=true → include rows flushed by user.interrupt
-    //
-    // Response shape:
-    //   { data: [ { pending_seq, enqueued_at, type, event_id,
-    //               session_thread_id, cancelled_at, data } ] }
-    // Ordered by pending_seq ASC. Cancelled rows omitted by default.
+    // GET /pending is gone: queued inputs are ordinary events rows with
+    // processed_at NULL and are listed through GET /events (wire seq null
+    // until promoted). The DELETE path is kept for one release so older
+    // Console/SDK clients can still remove a queued input by event id; it
+    // cancels the same null-processed row (cancelled_at) rather than
+    // deleting it, preserving the audit trail. GET has no equivalent here.
     if (request.method === "DELETE" && url.pathname.startsWith("/pending/")) {
       const eventId = decodeURIComponent(url.pathname.slice("/pending/".length));
       const cancelledAt = Date.now();
@@ -2967,7 +2842,9 @@ export class SessionDO extends DurableObject<Env> {
           };
         }
       }
-      const localRow = durableCancelled ? this.pending!.cancelByEventId(eventId, cancelledAt) : null;
+      const localRow = durableCancelled
+        ? this.queue!.cancelQueueByEventId(eventId, cancelledAt)
+        : null;
       if (store === null && localRow === null) {
         durableCancelled = false;
         notQueued = { reason: "not_found" };
@@ -2980,44 +2857,24 @@ export class SessionDO extends DurableObject<Env> {
           ...(notQueued?.processedAt ? { processed_at: notQueued.processedAt } : {}),
         }), { status: 409, headers: { "content-type": "application/json" } });
       }
-      const row = localRow ?? { pending_seq: 0, event_id: eventId, session_thread_id: "sthr_primary" };
+      const row = localRow ?? {
+        seq: 0,
+        event_id: eventId,
+        session_thread_id: "sthr_primary",
+        enqueued_at: cancelledAt,
+        type: "",
+        data: "",
+        cancelled_at: cancelledAt,
+      };
       this.broadcastEvent({
         type: "system.user_message_cancelled",
-        pending_seq: row.pending_seq,
+        pending_seq: row.seq,
         event_id: row.event_id,
         session_thread_id: row.session_thread_id,
         cancelled_at: cancelledAt,
       } as SystemUserMessageCancelledEvent);
       return new Response(JSON.stringify({ cancelled: true, id: row.event_id, cancelled_at: cancelledAtIso }),
         { status: 200, headers: { "content-type": "application/json" } });
-    }
-    if (request.method === "GET" && url.pathname === "/pending") {
-      const threadId =
-        url.searchParams.get("session_thread_id") ?? "sthr_primary";
-      const includeCancelled =
-        url.searchParams.get("include_cancelled") === "true";
-      const rows = this.pending!.list(threadId, includeCancelled);
-      const data = rows.map((r) => {
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(r.data);
-        } catch (err) {
-          parsed = {
-            _parse_error: err instanceof Error ? err.message : String(err),
-            _raw_preview: r.data.slice(0, 200),
-          };
-        }
-        return {
-          pending_seq: r.pending_seq,
-          enqueued_at: r.enqueued_at,
-          session_thread_id: r.session_thread_id,
-          type: r.type,
-          event_id: r.event_id,
-          cancelled_at: r.cancelled_at,
-          data: parsed,
-        };
-      });
-      return Response.json({ data });
     }
 
     // GET /events — paginated event list
@@ -3031,8 +2888,11 @@ export class SessionDO extends DurableObject<Env> {
       const afterSeqParam = url.searchParams.get("after_seq");
       const afterSeq = afterSeqParam ? parseInt(afterSeqParam, 10) : 0;
 
-      // Fetch limit + 1 to determine has_more
-      const query = `SELECT seq, type, data, ts FROM events WHERE seq > ? ORDER BY seq ${order} LIMIT ?`;
+      // Fetch limit + 1 to determine has_more. Null-processed rows are
+      // queued turn inputs: include them in the list (the frontend outbox
+      // reads this list), but expose seq: null until promotion stamps the
+      // same row/id — canonical seq only exists once processed_at is set.
+      const query = `SELECT seq, type, data, ts, processed_at, cancelled_at FROM events WHERE seq > ? ORDER BY seq ${order} LIMIT ?`;
       // Retry the SQL exec on transient "Durable Object storage operation
       // exceeded timeout" errors only — these surface during write-contention
       // storms (e.g. 49+ concurrent model_request_start events), and a
@@ -3076,8 +2936,17 @@ export class SessionDO extends DurableObject<Env> {
           const msg = err instanceof Error ? err.message : String(err);
           data = { _parse_error: msg, _raw_preview: String(row.data ?? "").slice(0, 200) };
         }
+        const queued = row.processed_at === null || row.processed_at === undefined;
+        if (data !== null && typeof data === "object") {
+          const record = data as Record<string, unknown>;
+          if (!queued) record.processed_at_ms = row.processed_at;
+          if (row.cancelled_at !== null && row.cancelled_at !== undefined) {
+            record.cancelled_at_ms = row.cancelled_at;
+          }
+        }
         return {
-          seq: row.seq,
+          // Queued input: internal seq exists but is not canonical yet.
+          seq: queued ? null : row.seq,
           type: row.type,
           data,
           ts: row.ts,
@@ -3318,11 +3187,14 @@ export class SessionDO extends DurableObject<Env> {
       const data = [] as Array<Record<string, unknown>>;
       for (const row of cursor) {
         const ev = JSON.parse(row.data as string);
-        if (row.processed_at != null) ev.processed_at_ms = row.processed_at;
+        const queued = row.processed_at == null;
+        if (!queued) ev.processed_at_ms = row.processed_at;
         if (row.cancelled_at != null) ev.cancelled_at_ms = row.cancelled_at;
         if (row.session_thread_id != null) ev.session_thread_id = row.session_thread_id;
         data.push({
-          seq: row.seq,
+          // Same contract as GET /events: queued inputs are listed with a
+          // null canonical seq until promoted in place.
+          seq: queued ? null : row.seq,
           type: row.type,
           ts: row.ts,
           data: ev,
@@ -4329,19 +4201,6 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Stamp `id` and clear `processed_at` on a pending-bound event before
-   * enqueue. The event will sit in `pending_events.data` verbatim until
-   * `drainEventQueue` peeks it; drain then sets `processed_at` to the
-   * wall-clock and INSERTs into `events` with the next AUTOINCREMENT seq.
-   *
-   * AMA-spec semantics: `processed_at` MUST be null on the wire while
-   * the event is queued ("null if not yet processed by the agent").
-   * The stamp helper in event-log/cf-do skips stamping processed_at for
-   * the three queue-input types, so the value stays absent until drain
-   * stamps it explicitly.
-   */
-
-  /**
    * Stamp queued accepted inputs in the canonical D1 log once this DO
    * starts processing them, then re-broadcast the same ids with
    * `processed_at` set (Claude Managed Agents semantics).
@@ -4377,9 +4236,10 @@ export class SessionDO extends DurableObject<Env> {
     if (!e.id) {
       e.id = `sevt_${generateEventId()}`;
     }
-    // Queued inputs (message / tool_confirmation / interrupt): processed_at
-    // stays null until drain. Do not use this helper for custom_tool_result /
-    // tool_result — those are stamped on receipt (official CMA).
+    // Queued inputs (message / tool_confirmation): processed_at stays
+    // absent until drain stamps the same events row. Do not use this helper
+    // for custom_tool_result / tool_result — those are stamped on receipt
+    // (official CMA).
     delete e.processed_at;
   }
 
@@ -4387,23 +4247,18 @@ export class SessionDO extends DurableObject<Env> {
    * Broadcast `system.user_message_pending` over WS so live consumers
    * can render the outbox bubble immediately. Carries the canonical
    * event payload (so older clients that key on `user.message` still
-   * see the content) AND `pending_seq` (so the matching `_promoted`
-   * frame at drain time can correlate the bubble with the events-log
-   * row that lands at INSERT).
+   * see the content) AND the row's internal seq as `pending_seq` (the
+   * matching `_promoted` frame uses the same number + event id; the wire
+   * `seq` stays null until processed_at is stamped).
    */
   private _broadcastPendingFrame(event: SessionEvent, threadId: string): void {
-    // Look up the just-enqueued row's pending_seq so the client has a
-    // stable correlation key. The peek returns the lowest-seq pending
-    // row for the thread; since we just enqueued and the per-thread
-    // mutex (_draining) hasn't yet picked it up, this row IS the one
-    // we just wrote (FIFO within a thread).
-    const row = this.pending!.peek(threadId);
-    const pendingSeq = row?.pending_seq ?? 0;
     const eventId = (event as unknown as { id?: string }).id ?? "";
+    // The just-enqueued row: same events row that promotion will stamp.
+    const row = this.queueRowForEvent(eventId);
     this.broadcastEvent({
       type: "system.user_message_pending",
       event_id: eventId,
-      pending_seq: pendingSeq,
+      pending_seq: row?.seq ?? 0,
       enqueued_at: row?.enqueued_at ?? Date.now(),
       session_thread_id: threadId,
       event,
@@ -5092,12 +4947,13 @@ export class SessionDO extends DurableObject<Env> {
               text: `<task_notification>\nBackground task ${task_id} exceeded the 30-minute lifetime cap and was killed${killNote}.\nRan for: ${ageMin} min\nOutput file (partial): ${output_file}\n\n${output.slice(0, 3000)}\n</task_notification>`,
             }],
           };
-          // Route through pending queue so drain promotes it the same way
+          // Route through the single-table queue so drain promotes it the same way
           // a real user.message does — ensures the harness actually runs
           // a turn for the notification.
           this._stampEventForPending(notifEvent);
-          this.pending!.enqueue(notifEvent);
-          this._broadcastPendingFrame(notifEvent, "sthr_primary");
+          if (this.enqueueQueueInputIfNew(notifEvent)) {
+            this._broadcastPendingFrame(notifEvent, "sthr_primary");
+          }
           this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
           await this.drainEventQueue();
           continue;
@@ -5133,12 +4989,13 @@ export class SessionDO extends DurableObject<Env> {
             text: `<task_notification>\nBackground task ${task_id} completed.\nOutput file: ${output_file}\n\n${output.slice(0, 3000)}\n</task_notification>`,
           }],
         };
-        // Route through pending queue so drain promotes it the same way
+        // Route through the single-table queue so drain promotes it the same way
         // a real user.message does — ensures the harness actually runs
         // a turn for the notification.
         this._stampEventForPending(notifEvent);
-        this.pending!.enqueue(notifEvent);
-        this._broadcastPendingFrame(notifEvent, "sthr_primary");
+        if (this.enqueueQueueInputIfNew(notifEvent)) {
+          this._broadcastPendingFrame(notifEvent, "sthr_primary");
+        }
 
         // Remove completed task
         this.ctx.storage.sql.exec(`DELETE FROM background_tasks WHERE task_id = ?`, task_id);
@@ -5932,7 +5789,7 @@ export class SessionDO extends DurableObject<Env> {
         history,
         sandbox,
         ...(agentAdvertisesSteering(agent)
-          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId, history) }
+          ? { takeSteeringInputs: () => this.takeSteeringInputs(turnThreadId) }
           : {}),
         broadcast: (event) => {
           history.append(event);
@@ -7405,7 +7262,7 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     // After flipping any stale rows to idle, kick the queue. Without this
-    // pending_events that arrived while the previous incarnation was
+    // queued inputs that arrived while the previous incarnation was
     // wedged sit dormant: drainEventQueue only fires on new external
     // /event POSTs, alarms only keep-alive while status='running', and
     // _finalizeStaleTurns just updates the row — nobody triggers a drain.
@@ -7413,10 +7270,10 @@ export class SessionDO extends DurableObject<Env> {
     // again to nudge the dispatcher.
     //
     // Bounded: recoverEventQueue is the same call wired to the 5s
-    // schedule hook (line 1763) — it threadsWithPending() first and exits
+    // schedule hook — it threadsWithQueueInputs() first and exits
     // immediately when nothing's queued. Safe to call even when we ended
     // zero stale turns (cold-start of a healthy session is a no-op).
-    if (this.pending) {
+    if (this.queue) {
       try {
         await this.recoverEventQueue();
       } catch (err) {

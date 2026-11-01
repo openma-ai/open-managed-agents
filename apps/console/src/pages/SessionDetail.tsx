@@ -834,10 +834,12 @@ export function SessionDetail() {
     });
   };
   /**
-   * Compare-and-cancel via DELETE pending. Body is OmaQueueCancelResponse
-   * (openma-common): `{ cancelled: true, id }` vs
-   * `{ cancelled: false, reason, id, processed_at? }`. Stream still emits
-   * turn.cancelled on success as backup for other observers.
+   * Compare-and-cancel via the DELETE pending cancel shim. Queued state
+   * itself comes from the events list/stream: the same user.message id with
+   * `processed_at` null (wire seq null) until the server promotes it in
+   * place. Body is OmaQueueCancelResponse (openma-common):
+   * `{ cancelled: true, id }` vs `{ cancelled: false, reason, id,
+   * processed_at? }`. Stream still emits turn.cancelled on success as backup.
    */
   const cancelQueued = async (
     messageId: string,
