@@ -706,6 +706,16 @@ export class SessionDO extends DurableObject<Env> {
   private sandboxRuntime: SessionSandboxRuntime | null = null;
   /** Strictly increasing processed_at stamps (list order = (processed_at, id)). */
   private readonly processedClock = createMonotonicClock();
+
+  /** History stamped with this DO's monotonic clock (avoids same-ms idle/tool_result reorder). */
+  private openHistory(): SqliteHistory {
+    return new SqliteHistory(
+      this.ctx.storage.sql,
+      this.env.FILES_BUCKET ?? null,
+      `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`,
+      this.processedClock,
+    );
+  }
   /** Per-warmup random tag mirrored to /tmp/.oma-warm in the container.
    *  Lets the wrapSandboxWithLazyWarmup proxy detect a recycled container
    *  (CF Sandbox can die independently of SessionDO via OOM, sleepAfter,
@@ -856,11 +866,7 @@ export class SessionDO extends DurableObject<Env> {
           // dedup hits the broadcastedMessageIds set, but the persist
           // path is what matters most (Console replay, LLM context).
           const history = this.guardHistoryForExecution(
-            new SqliteHistory(
-              this.ctx.storage.sql,
-              this.env.FILES_BUCKET ?? null,
-              `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`,
-            ),
+            this.openHistory(),
             executionFence,
           );
           history.append(partialEvent);
@@ -955,7 +961,7 @@ export class SessionDO extends DurableObject<Env> {
    *  This wrapper just glues it to DO storage + WS broadcast. */
   private async recoverInterruptedState(): Promise<void> {
     if (!this.streams) return;
-    const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+    const history = this.openHistory();
     try {
       const { warnings } = await runRecovery(this.streams, history);
       for (const w of warnings) {
@@ -1170,11 +1176,7 @@ export class SessionDO extends DurableObject<Env> {
     // is invoked AFTER _checkRunFibers DELETEs the orphan, so deriveStatus
     // automatically reads "idle" here. No manual state mutation needed.
 
-    const history = new SqliteHistory(
-      this.ctx.storage.sql,
-      this.env.FILES_BUCKET ?? null,
-      `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`,
-    );
+    const history = this.openHistory();
 
     const decision = await recoverAgentTurn(
       this.turnRuntimeAdapter(),
@@ -1546,7 +1548,7 @@ export class SessionDO extends DurableObject<Env> {
     this._draining.add(threadId);
 
     try {
-    const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+    const history = this.openHistory();
 
     // New path: execution admission is the tenant-D1 outbox. Resolve this
     // before touching the legacy DO-local events queue: a central execution
@@ -2306,7 +2308,7 @@ export class SessionDO extends DurableObject<Env> {
           );
         }
       }
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
 
       // Auto-mount referenced files into the sandbox FS so agent's bash/read
       // tools see them at /mnt/session/uploads/{file_id}, while the model
@@ -2776,7 +2778,7 @@ export class SessionDO extends DurableObject<Env> {
         | { kind: "tool_use"; id: string; name?: string; tool_kind?: "builtin" | "mcp" | "custom" };
       const body = (await request.json().catch(() => ({}))) as { seed?: Seed[] };
       const seeds = body.seed ?? [];
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
       for (const s of seeds) {
         if (s.kind === "stream") {
           await this.streams.start(s.message_id, Date.now());
@@ -2847,11 +2849,7 @@ export class SessionDO extends DurableObject<Env> {
       // this is the spec-default ("only events after open"). When set,
       // filter by seq > lastEventId for clean SSE resume semantics.
       if (wantsReplay) {
-        const history = new SqliteHistory(
-          this.ctx.storage.sql,
-          this.env.FILES_BUCKET ?? null,
-          `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`,
-        );
+        const history = this.openHistory();
         // Use the repo-level afterSeq filter — the SQL layer drops rows
         // server-side, which is the only place that can see `seq` (the
         // returned SessionEvent objects are bare wire payloads with no
@@ -3342,7 +3340,7 @@ export class SessionDO extends DurableObject<Env> {
     // `outcome.evaluation_end`, `span.outcome_evaluation_end`) so sessions
     // written before this change still surface their verdicts.
     if (request.method === "GET" && url.pathname === "/full-status") {
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
 
       const stateEvaluations = this.state.outcome_evaluations ?? [];
       let outcomeEvaluations: PersistedOutcomeEvaluation[] = stateEvaluations;
@@ -4503,7 +4501,7 @@ export class SessionDO extends DurableObject<Env> {
       return;
     }
     try {
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
       history.append(event);
     } catch (err) {
       console.warn(`[persistAndBroadcastEvent] history.append failed: ${(err as Error).message}`);
@@ -5035,11 +5033,11 @@ export class SessionDO extends DurableObject<Env> {
     try {
       const sched = await this.schedule(3, "pollBackgroundTasks");
       // Emit debug event so we can verify schedule was set
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
       history.append({ type: "span.background_task_scheduled", task_id: taskId, schedule_id: sched?.id } as any);
       this.broadcastEvent({ type: "span.background_task_scheduled", task_id: taskId, schedule_id: sched?.id } as any);
     } catch (err) {
-      const history = new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`);
+      const history = this.openHistory();
       history.append({ type: "session.error", error: `watchBackgroundTask schedule failed: ${err}` });
       this.broadcastEvent({ type: "session.error", error: `watchBackgroundTask schedule failed: ${err}` });
     }
@@ -5233,7 +5231,7 @@ export class SessionDO extends DurableObject<Env> {
     this.broadcastEvent(threadCreatedEvent);
 
     // Create sub-agent's isolated history
-    const subHistory = new InMemoryHistory();
+    const subHistory = new InMemoryHistory(this.processedClock);
     const userMsg: UserMessageEvent = {
       type: "user.message",
       content: [{ type: "text", text: message }],
@@ -5485,7 +5483,7 @@ export class SessionDO extends DurableObject<Env> {
     const agent = await this.getThreadAgentConfig(turnThreadId);
     if (!agent) {
       const history = this.guardHistoryForExecution(
-        new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`),
+        this.openHistory(),
         activeFence,
       );
       const errorEvent: SessionEvent = { type: "session.error", error: "Agent not found" };
@@ -5496,7 +5494,7 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     const history = this.guardHistoryForExecution(
-      new SqliteHistory(this.ctx.storage.sql, this.env.FILES_BUCKET ?? null, `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`),
+      this.openHistory(),
       activeFence,
     );
 
@@ -6512,11 +6510,7 @@ export class SessionDO extends DurableObject<Env> {
       type: "session.status_terminated",
       reason,
     };
-    const history = new SqliteHistory(
-      this.ctx.storage.sql,
-      this.env.FILES_BUCKET ?? null,
-      `t/${this.state.tenant_id ?? "default"}/sessions/${this.state.session_id ?? "unknown"}`,
-    );
+    const history = this.openHistory();
     history.append(event);
     this.broadcastEvent(event);
 

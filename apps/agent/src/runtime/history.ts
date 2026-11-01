@@ -930,28 +930,33 @@ function serializeSummaryAsText(summary: ContentBlock[]): string {
  * other events (agent output, tool output, system, lifecycle) the act of
  * appending IS the processing, so we stamp at append time.
  */
-function stampEvent(event: SessionEvent): SessionEvent {
+/** Optional clock for append-time processed_at (SessionDO passes its monotonic clock). */
+export type HistoryStampClock = { nowIso(): string };
+
+function stampWith(
+  event: SessionEvent,
+  clock: HistoryStampClock | undefined,
+  pendingUntilDrain: boolean,
+): SessionEvent {
   if (!event.id) {
     event.id = generateEventId();
   }
-  const isPendingUntilDrain =
-    event.type === "user.message" ||
-    event.type === "user.tool_confirmation" ||
-    event.type === "user.custom_tool_result";
-  if (!event.processed_at && !isPendingUntilDrain) {
-    event.processed_at = new Date().toISOString();
+  if (!event.processed_at && !pendingUntilDrain) {
+    event.processed_at = clock ? clock.nowIso() : new Date().toISOString();
   }
   return event;
 }
 
-function stampEventImmediate(event: SessionEvent): SessionEvent {
-  if (!event.id) {
-    event.id = generateEventId();
-  }
-  if (!event.processed_at) {
-    event.processed_at = new Date().toISOString();
-  }
-  return event;
+function stampEvent(event: SessionEvent, clock?: HistoryStampClock): SessionEvent {
+  const isPendingUntilDrain =
+    event.type === "user.message" ||
+    event.type === "user.tool_confirmation" ||
+    event.type === "user.custom_tool_result";
+  return stampWith(event, clock, isPendingUntilDrain);
+}
+
+function stampEventImmediate(event: SessionEvent, clock?: HistoryStampClock): SessionEvent {
+  return stampWith(event, clock, false);
 }
 
 /**
@@ -970,8 +975,14 @@ function stampEventImmediate(event: SessionEvent): SessionEvent {
 export class SqliteHistory implements HistoryStore {
   private repo: CfDoEventLog;
 
-  constructor(sql: SqlStorage, r2: R2Bucket | null = null, r2KeyPrefix: string = "") {
-    this.repo = new CfDoEventLog(sql, stampEvent, r2, r2KeyPrefix);
+  constructor(
+    sql: SqlStorage,
+    r2: R2Bucket | null = null,
+    r2KeyPrefix: string = "",
+    /** Prefer SessionDO.processedClock so (processed_at, id) list order matches append order. */
+    clock?: HistoryStampClock,
+  ) {
+    this.repo = new CfDoEventLog(sql, (e) => stampEvent(e, clock), r2, r2KeyPrefix);
     // Idempotent — first construction in a DO bootstraps the schema; later
     // ones see CREATE TABLE IF NOT EXISTS as a no-op.
     ensureCfDoSchema(sql);
@@ -1001,7 +1012,11 @@ export class SqliteHistory implements HistoryStore {
  * of the sub-agent run and is discarded afterwards.
  */
 export class InMemoryHistory implements HistoryStore {
-  private repo = new InMemoryEventLog(stampEventImmediate);
+  private repo: InMemoryEventLog;
+
+  constructor(clock?: HistoryStampClock) {
+    this.repo = new InMemoryEventLog((e) => stampEventImmediate(e, clock));
+  }
 
   append(event: SessionEvent): void {
     this.repo.append(event);
