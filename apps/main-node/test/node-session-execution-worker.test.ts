@@ -20,6 +20,7 @@ import {
   type NodeSessionExecutionRuntime,
   type RunNodeSessionExecution,
 } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker";
+import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 
 const session: Session = {
   id: "session_01",
@@ -178,6 +179,70 @@ describe("NodeSessionExecutionWorker", () => {
     release?.();
     await executor.waitForIdle();
     expect(runs.map((run) => run.executionId)).toEqual(["event_01"]);
+  });
+
+
+  it("exhausted hold: mid-run rows stay queued, are not claimed alone, then absorb with the next admission", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input) => {
+      runs.push(structuredClone(input));
+      if (input.executionId === "event_01") {
+        await running;
+        throw new SessionRetriesExhaustedError("retries exhausted");
+      }
+    };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_01"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await executor.sessionEventsAccepted(accepted("event_held_a"));
+    await executor.sessionEventsAccepted(accepted("event_held_b"));
+    release?.();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_held_a" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: expect.any(String) });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_held_b" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: expect.any(String) });
+    // Poll alone must not claim held rows.
+    await executor.poll();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01"]);
+    // Next admission unlocks held rows into one turn in enqueue order.
+    await executor.sessionEventsAccepted(accepted("event_next"));
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01", "event_next"]);
+    const nextRun = runs.find((run) => run.executionId === "event_next");
+    expect(nextRun?.events.map((event) => event.id)).toEqual([
+      "event_held_a", "event_held_b", "event_next",
+    ]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_held_a" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
+  });
+
+  it("retrying / ordinary failure does not hold mid-run rows", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input) => {
+      runs.push(structuredClone(input));
+      if (input.executionId === "event_01") {
+        await running;
+        throw new Error("transient boom");
+      }
+    };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_01"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await executor.sessionEventsAccepted(accepted("event_mid"));
+    // Still queued (unheld) while the first turn is mid-failure.
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_mid" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: null });
+    release?.();
+    await executor.waitForIdle();
+    // Drain-after-idle claims the unheld mid-run row (not held).
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01", "event_mid"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_mid" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
   });
 
   it("falls back to drain-after-idle when the harness does not advertise steering", async () => {

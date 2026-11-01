@@ -283,6 +283,7 @@ function sentEventBase(event: SentSessionEvent): object {
   return {
     id: event.id,
     ...(event.processedAt !== undefined && { processed_at: event.processedAt }),
+    ...(event.heldAfterExhausted === true && { held_after_exhausted: true }),
   };
 }
 

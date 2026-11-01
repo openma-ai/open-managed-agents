@@ -93,6 +93,14 @@ only on `SessionExecutionStorePort` (ADR 0006):
 - Drain-after-idle remains only when the harness never polls
   `takeSteeringInputs` (no steering advertised): the queued execution runs
   next after settle.
+- **Exhausted hold (shared store):** `settle({ holdQueuedOnLane: true })`
+  marks remaining `queued` rows on the lane (`heldAfterExhaustedAt`). Claim
+  skips held rows (they never auto-run alone). When a later unheld admission
+  exists, claim absorbs held events into that admission in enqueue order and
+  completes the held rows. `cancelQueued` rejects held rows
+  (`held_after_exhausted`). Events.list surfaces `held_after_exhausted: true`
+  on still-null `processed_at` documents (patched at hold). Same store path
+  for CF `SessionExecutionHost` / SessionDO.
 
 ## Wrong read (superseded)
 
@@ -120,3 +128,23 @@ capability gap, not the CMA contract.
   kept in [`steered-gui.md`](./steered-gui.md).
 - ~~Server delete-flush on exhausted~~ — **cancelled / must not ship**.
   #399 ships client reconcile helper under retain + next-round advance.
+
+
+## Exhausted hold (store)
+
+On `retries_exhausted`, the execution host / Node worker settles with
+`holdQueuedOnLane: true`. SQL `SessionExecutionStorePort` sets
+`held_after_exhausted_ms` on remaining `queued` rows for that lane and
+patches event documents with `heldAfterExhausted` (wire:
+`held_after_exhausted`) so `events.list` shows the hold without a separate
+pending endpoint.
+
+- Claim never selects held rows alone.
+- When any unheld queued admission exists on the lane, claim absorbs held
+  events into that admission (enqueue order), completes the held rows, and
+  clears the hold marker on documents.
+- `cancelQueued` rejects held rows (`held_after_exhausted`); user cannot
+  withdraw them.
+- Retrying / ordinary failure does **not** set the hold (unchanged).
+- CF SessionDO returns `{ holdQueuedOnLane: true }` from `processUserMessage`
+  into the shared `SessionExecutionHost` settle path (same port semantics).

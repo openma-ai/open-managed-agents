@@ -111,6 +111,7 @@ export const sessionEventSendBodySchema: z.ZodType<SessionEventSendBody> = z
 const sentEventBase = {
   id: z.string().min(1),
   processed_at: z.string().nullable().optional(),
+  held_after_exhausted: z.boolean().optional(),
 };
 
 export const sentEventSchema: z.ZodType<SentWireEvent> = z.discriminatedUnion("type", [

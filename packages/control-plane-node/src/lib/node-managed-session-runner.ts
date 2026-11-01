@@ -8,6 +8,7 @@ import {
   type SandboxLiveness,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
+import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   HarnessContext,
   HarnessInterface,
@@ -860,7 +861,9 @@ export class DefaultNodeManagedSessionRunner
           retryStatus: "exhausted",
         },
       });
-      throw error;
+      throw new SessionRetriesExhaustedError(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       let finalizationError: Error | undefined;
       const subagents = this.subagentExecutions.get(input);

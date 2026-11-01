@@ -5,6 +5,7 @@ import type {
   SessionExecutionStorePort,
   SettleSessionExecutionResult,
 } from "@open-managed-agents/session-runtime-contract/coordination";
+import { errorHoldsQueuedOnLane } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   ExecutionLeaseController,
   type ExecutionLeaseTimers,
@@ -37,11 +38,13 @@ export type SessionExecutionHostResult =
   | { type: "cancelled"; execution: SessionExecution }
   | { type: "lost"; execution: SessionExecution; fence: SessionExecutionFence };
 
+export type SessionExecutionRunResult = void | { holdQueuedOnLane?: boolean };
+
 export type SessionExecutionRun = (
   execution: SessionExecution,
   fence: SessionExecutionFence,
   signal: AbortSignal,
-) => Promise<void>;
+) => Promise<SessionExecutionRunResult>;
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -131,10 +134,13 @@ export class SessionExecutionHost {
     const heartbeat = lease.start();
     try {
       let error: Error | null = null;
+      let holdQueuedOnLane = false;
       try {
-        await run(claimed.execution, claimed.fence, lease.signal);
+        const runResult = await run(claimed.execution, claimed.fence, lease.signal);
+        holdQueuedOnLane = runResult?.holdQueuedOnLane === true;
       } catch (caught) {
         error = asError(caught);
+        holdQueuedOnLane = errorHoldsQueuedOnLane(caught);
       }
       if (!lease.lost) {
         // A final renewal closes the interval→settle race. A run that ends
@@ -151,6 +157,7 @@ export class SessionExecutionHost {
         settledAt: this.dependencies.clock.now().toISOString(),
         outcome,
         ...(error !== null && { failure: error.message }),
+        ...(holdQueuedOnLane && { holdQueuedOnLane: true }),
       });
       if (settled.type === "lost") {
         return { type: "lost", execution: claimed.execution, fence: claimed.fence };

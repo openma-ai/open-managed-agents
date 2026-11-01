@@ -32,6 +32,9 @@ export interface SessionExecution {
   settledAt: string | null;
   failure: string | null;
   revision: number;
+  /** Set while queued after retries_exhausted: not claimable alone; rides
+   *  with the next admission on this lane (absorb at claim/admit). */
+  heldAfterExhaustedAt: string | null;
 }
 
 /**
@@ -119,6 +122,9 @@ export interface SessionExecutionStorePort {
     settledAt: string;
     outcome: "completed" | "failed" | "cancelled";
     failure?: string;
+    /** retries_exhausted: mark remaining queued rows on this lane held so
+     *  they are not claimed alone; they advance with the next admission. */
+    holdQueuedOnLane?: boolean;
   }): Promise<SettleSessionExecutionResult>;
   requestInterrupt(input: {
     workspaceId: string;
@@ -142,7 +148,7 @@ export interface SessionExecutionStorePort {
     | { type: "cancelled"; execution: SessionExecution }
     | {
         type: "not_queued";
-        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found" | "held_after_exhausted";
         execution?: SessionExecution;
       }
   >;
@@ -296,4 +302,33 @@ export async function takeQueuedSteeringInputs(
     out.push(...execution.events);
   }
   return out;
+}
+
+/** Thrown / returned when a turn ends in retries_exhausted so the execution
+ *  host can settle with holdQueuedOnLane (owner lock: retain mid-run inputs,
+ *  do not auto-run them alone). */
+export class SessionRetriesExhaustedError extends Error {
+  readonly holdQueuedOnLane = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionRetriesExhaustedError";
+  }
+}
+
+export function errorHoldsQueuedOnLane(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    (error as { holdQueuedOnLane?: unknown }).holdQueuedOnLane === true;
+}
+
+/** Annotate unprocessed events whose execution is held after exhausted so
+ *  events.list can surface the hold (no separate pending endpoint). */
+export function annotateHeldAfterExhaustedEvents<T extends { id: string; processedAt?: string | null }>(
+  events: readonly T[],
+  heldEventIds: ReadonlySet<string>,
+): Array<T & { heldAfterExhausted?: boolean }> {
+  return events.map((event) =>
+    event.processedAt == null && heldEventIds.has(event.id)
+      ? { ...event, heldAfterExhausted: true }
+      : event,
+  );
 }

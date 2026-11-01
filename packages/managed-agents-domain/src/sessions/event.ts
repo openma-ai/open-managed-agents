@@ -97,6 +97,9 @@ export type SendableSessionEvent =
 interface SentEventBase {
   id: string;
   processedAt?: string | null;
+  /** Exhausted hold: unprocessed mid-run input retained; not withdrawable;
+   *  advances with the next round of events. */
+  heldAfterExhausted?: boolean;
 }
 
 export type SentSessionEvent =

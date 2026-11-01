@@ -47,6 +47,7 @@ function executionRow(overrides: Record<string, unknown> = {}) {
     lease_expires_at_ms: null,
     interrupt_requested_at_ms: null,
     settled_at_ms: null,
+    held_after_exhausted_ms: null,
     failure: null,
     revision: "1",
     ...overrides,
@@ -747,14 +748,65 @@ describe("SqlSessionExecutionCoordinator", () => {
       .resolves.toMatchObject({ state: "running" });
   });
 
-  it("exhausted retains: a failed running turn leaves unconsumed mid-run inputs queued (no delete)", async () => {
+  it("exhausted hold: mid-run rows are retained, not claimable alone, and not withdrawable", async () => {
     await coordinator.admit(admitted("turn_x", "session_x", at(1)));
     const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
     if (claimed.type !== "claimed") throw new Error("expected claim");
     await coordinator.admit(admitted("mid_x", "session_x", at(3)));
-    await coordinator.settle({ fence: claimed.fence, settledAt: at(4), outcome: "failed", failure: "retries_exhausted" });
+    await coordinator.admit(admitted("mid_y", "session_x", at(4)));
+    await coordinator.settle({
+      fence: claimed.fence, settledAt: at(5), outcome: "failed",
+      failure: "retries_exhausted", holdQueuedOnLane: true,
+    });
     await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_x" }))
-      .resolves.toMatchObject({ state: "queued", settledAt: null });
+      .resolves.toMatchObject({ state: "queued", settledAt: null, heldAfterExhaustedAt: at(5) });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_y" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: at(5) });
+    // Not claimable alone.
+    await expect(coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(6), leaseTtlMs: 30_000 }))
+      .resolves.toMatchObject({ type: "empty" });
+    // User cannot withdraw.
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_x", executionId: "mid_x", cancelledAt: at(7),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "held_after_exhausted" });
+  });
+
+  it("exhausted hold: next admitted event absorbs held rows into one turn in enqueue order", async () => {
+    await coordinator.admit(admitted("turn_x", "session_x", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_x", "session_x", at(3), "held-1"));
+    await coordinator.admit(admitted("mid_y", "session_x", at(4), "held-2"));
+    await coordinator.settle({
+      fence: claimed.fence, settledAt: at(5), outcome: "failed",
+      failure: "retries_exhausted", holdQueuedOnLane: true,
+    });
+    await coordinator.admit(admitted("next_z", "session_x", at(6), "fresh"));
+    const next = await coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(7), leaseTtlMs: 30_000 });
+    expect(next).toMatchObject({ type: "claimed", execution: { id: "next_z" } });
+    if (next.type !== "claimed") throw new Error("expected claim");
+    expect(next.execution.events.map((e) => e.id)).toEqual(["mid_x", "mid_y", "next_z"]);
+    expect(next.execution.events.map((e) =>
+      e.type === "user.message" ? e.content[0] && "text" in e.content[0] ? e.content[0].text : "" : "",
+    )).toEqual(["held-1", "held-2", "fresh"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_x" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_y" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
+  });
+
+  it("retrying settle without holdQueuedOnLane leaves mid-run rows claimable (unchanged)", async () => {
+    await coordinator.admit(admitted("turn_r", "session_r2", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_r", "session_r2", at(3)));
+    // Ordinary failed settle (e.g. still retrying path that settled the attempt)
+    // without the exhausted hold flag does not mark hold.
+    await coordinator.settle({ fence: claimed.fence, settledAt: at(4), outcome: "failed", failure: "transient" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_r" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: null });
+    await expect(coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(5), leaseTtlMs: 30_000 }))
+      .resolves.toMatchObject({ type: "claimed", execution: { id: "mid_r" } });
   });
 
   it("edit race: concurrent claim and cancel have exactly one winner", async () => {

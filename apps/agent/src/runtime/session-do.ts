@@ -1577,6 +1577,7 @@ export class SessionDO extends DurableObject<Env> {
         const result = await host.runOne(async (execution, fence, signal) => {
           this._executionFences.set(threadId, fence);
           const executionHistory = this.guardHistoryForExecution(history, fence);
+          let holdQueuedOnLane = false;
           try {
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
@@ -1587,7 +1588,8 @@ export class SessionDO extends DurableObject<Env> {
               const localPending = this.ensureLocalPending(event);
               if (localPending !== null) this.promotePendingRow(localPending, executionHistory);
               if (event.type === "user.message") {
-                await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
+                const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
+                if (turn?.holdQueuedOnLane) holdQueuedOnLane = true;
               } else if (event.type === "user.tool_confirmation") {
                 await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
               } else if (event.type === "user.custom_tool_result") {
@@ -1615,6 +1617,7 @@ export class SessionDO extends DurableObject<Env> {
             // be rejected as stale.  This is the commit barrier between the
             // harness side effects and execution settlement.
             await this._managedProjectionChain;
+            return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
           } finally {
             const currentFence = this._executionFences.get(threadId);
             if (
@@ -2791,7 +2794,7 @@ export class SessionDO extends DurableObject<Env> {
       // On success we also broadcast system.user_message_cancelled so stream
       // observers stay in sync with the HTTP outcome.
       const store = await this.getExecutionStore();
-      type NotQueuedReason = "already_processing" | "already_cancelled" | "already_completed" | "not_found";
+      type NotQueuedReason = "already_processing" | "already_cancelled" | "already_completed" | "held_after_exhausted" | "not_found";
       let notQueued: { reason: NotQueuedReason; processedAt?: string } | null = null;
       let durableCancelled = store === null;
       if (store !== null) {
@@ -5189,7 +5192,7 @@ export class SessionDO extends DurableObject<Env> {
     skipAppend: boolean = false,
     parentSignal?: AbortSignal,
     executionFence?: SessionExecutionFence,
-  ): Promise<void> {
+  ): Promise<{ holdQueuedOnLane?: boolean } | void> {
     // Resolved up front so closures built below (delegateToAgent in
     // env / runtime blocks) can capture it. Defaults to primary —
     // POST /event handler reads the same field for thread-scoped
@@ -5201,6 +5204,7 @@ export class SessionDO extends DurableObject<Env> {
     const agentId = this.state.agent_id;
     if (!agentId) return;
     const activeFence = executionFence ?? this._executionFences.get(turnThreadId);
+    let holdQueuedOnLane = false;
 
     const agent = await this.getThreadAgentConfig(turnThreadId);
     if (!agent) {
@@ -5998,6 +6002,12 @@ export class SessionDO extends DurableObject<Env> {
         };
         history.append(rescheduledEvent);
         this.broadcastEvent(rescheduledEvent, activeFence);
+        // Retain mid-run queued inputs; do not let drain claim them alone.
+        holdQueuedOnLane = true;
+        completedIdleEvent = {
+          type: "session.status_idle",
+          stop_reason: { type: "end_turn" },
+        };
       }
 
       const errorEvent: SessionEvent = {
@@ -6066,6 +6076,7 @@ export class SessionDO extends DurableObject<Env> {
       // period. Explicit /destroy snapshots eagerly via
       // sandbox.snapshotWorkspaceNow(). Per-turn backup is intentionally off.
     }
+    return holdQueuedOnLane ? { holdQueuedOnLane: true } : undefined;
   }
 
   /**

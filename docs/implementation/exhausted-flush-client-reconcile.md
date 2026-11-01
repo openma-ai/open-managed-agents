@@ -72,7 +72,8 @@ do:
 2. For each local pending id:
    - **Present with null/absent `processed_at`** → **expected retain**;
      keep locally (`retainedIds`). Will advance with the next round;
-     not withdrawable by the user after exhausted.
+     not withdrawable by the user after exhausted. Optional wire
+     `held_after_exhausted: true` confirms server hold (no withdraw).
    - **Present with stamped `processed_at`** → ingested; drop from pending
      (`processedIds`).
    - **Absent from list** → unexpected under no-delete; report as

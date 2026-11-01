@@ -115,6 +115,11 @@ export async function createNodeRuntime(
       attach: (sid, writer) => hub.attach(sid, writer),
     },
     sessionRegistry: {
+      // Dead wiring: nothing in http-routes (or elsewhere) calls
+      // sessionRegistry.enqueueUserMessage. Live legacy /v1/oma traffic goes
+      // through NodeSessionRouter.appendEvent (queue + takeSteeringInputs);
+      // managed sessions go through SessionEventsApplication → execution
+      // worker. Left as a no-queue fallback only if a forgotten caller exists.
       enqueueUserMessage: (sid, tenantId, agentId, ev) => {
         void sessionRegistry
           .getOrCreate(sid, tenantId)

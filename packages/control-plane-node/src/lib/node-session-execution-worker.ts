@@ -8,6 +8,7 @@ import type {
   SessionExecutionFence,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
+  errorHoldsQueuedOnLane,
   sessionExecutionEventBatches,
   sessionExecutionEvents,
   takeQueuedSteeringInputs,
@@ -349,6 +350,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     );
     let outcome: "completed" | "failed" | "cancelled" = "completed";
     let failure: string | undefined;
+    let holdQueuedOnLane = false;
     try {
       const context = await this.dependencies.context.find({
         workspaceId: active.execution.workspaceId,
@@ -382,6 +384,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
     } catch (error) {
       outcome = active.cancelled ? "cancelled" : "failed";
       failure = errorMessage(error);
+      holdQueuedOnLane = errorHoldsQueuedOnLane(error);
     } finally {
       await interruptFiber(heartbeat);
     }
@@ -392,6 +395,7 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         settledAt: this.dependencies.clock.now().toISOString(),
         outcome,
         ...(failure !== undefined && { failure }),
+        ...(outcome === "failed" && holdQueuedOnLane ? { holdQueuedOnLane: true } : {}),
       });
       if (settled.type === "lost") {
         active.leaseLost = true;

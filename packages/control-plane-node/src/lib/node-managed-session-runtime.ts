@@ -13,6 +13,7 @@ import type {
   SessionEventDispatchPort,
 } from "@open-managed-agents/session-runtime-contract/dispatch";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
+import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   SessionLifecycleCommandPort,
   StartSessionExecution,
@@ -393,7 +394,9 @@ export class DefaultNodeManagedSessionRuntimeDriver
           }
           if (attempt >= Math.max(1, retry.attempts) || isNonRetryableStartError(error)) {
             await this.projectStartFailure(input, error, "exhausted");
-            throw error;
+            throw new SessionRetriesExhaustedError(
+              error instanceof Error ? error.message : String(error),
+            );
           }
           await this.projectStartFailure(input, error, "retrying");
           announcedRetry = true;
