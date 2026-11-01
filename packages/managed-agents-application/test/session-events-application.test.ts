@@ -403,13 +403,21 @@ describe("SessionEventsApplicationService", () => {
         processedAt: "2026-08-26T04:00:02.000Z",
       } as SessionEventView,
     ]);
+    // Pause stays only while the session still has a budget at/under the
+    // consumed cost (budget: null lifts the pause — official one-way remove).
+    const budgeted = {
+      ...activeSession,
+      status: "idle" as const,
+      budget: { amountMinor: "100", currency: "USD" as const },
+      usage: { listCost: { amountMinor: "150", currency: "USD" as const }, listCostPico: "1500000000000" },
+    };
     const service = new SessionEventsApplicationService({
       workspaceId: "workspace_01",
       store,
-      sessions: { find: async () => structuredClone(activeSession) },
+      sessions: { find: async () => structuredClone(budgeted) },
       execution: {
         find: async () => ({
-          session: structuredClone(activeSession),
+          session: structuredClone(budgeted),
           environment: structuredClone(executionEnvironment),
           revision: 1,
         }),
