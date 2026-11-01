@@ -920,23 +920,6 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     });
   });
 
-  // POST /v1/sessions/:id/pending/:event_id/steer — OMA extension: promote
-  // one queued user.message into the running turn early (Backchat chrome).
-  // Ordinary mid-run accept is already CMA steer into the current turn when
-  // the agent advertises steering (cma-steer-coherent-turn.md).
-  app.post("/:id/pending/:event_id/steer", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const router = resolveRouter(deps.router, c);
-    const sessionId = c.req.param("id");
-    const sess = await services.sessions.get({ tenantId: c.var.tenant_id, sessionId });
-    if (!sess) return c.json({ error: "Session not found" }, 404);
-    const result = await router.steerPending(sessionId, c.req.param("event_id"));
-    return new Response(result.body, {
-      status: result.status,
-      headers: { "content-type": "application/json" },
-    });
-  });
-
   // ── LLM call body fetch ───────────────────────────────────────────────
   // GET /v1/sessions/:id/llm-calls/:event_id — read the persisted full
   // LLM request/response body for one span.model_request_end event.

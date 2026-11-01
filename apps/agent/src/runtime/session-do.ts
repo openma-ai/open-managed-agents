@@ -1440,20 +1440,15 @@ export class SessionDO extends DurableObject<Env> {
    * Rows another host already claimed are left alone.
    * See docs/implementation/cma-steer-coherent-turn.md.
    */
-  /** Explicit Backchat/API steer requests (subset); ordinary mid-run accept
-   *  is also steer when this poll runs — see takeSteeringInputs. */
-  private readonly _steerRequested = new Set<string>();
-
   private async takeSteeringInputs(threadId: string, history: HistoryStore): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
     const out: SessionEvent[] = [];
     for (const row of this.pending!.list(threadId)) {
       // CMA: every mid-turn user.message steers into the current turn at the
-      // next LLM boundary (coherent turn). Explicit /pending/.../steer still
-      // pre-marks ids; we clear that set as we absorb. Do not leave ordinary
-      // mid-sends for "next agent turn" drain.
+      // next LLM/tool-call boundary (coherent turn / after-call absorb).
+      // Ordinary mid-run accept is the only path — no explicit Steer API.
+      // Do not leave ordinary mid-sends for after-turn / next-agent-turn drain.
       if (row.type !== "user.message") continue;
-      this._steerRequested.delete(row.event_id);
       if (store !== null) {
         const result = await store.steerQueued({
           workspaceId: this.state.tenant_id!,
@@ -2785,21 +2780,6 @@ export class SessionDO extends DurableObject<Env> {
     //   { data: [ { pending_seq, enqueued_at, type, event_id,
     //               session_thread_id, cancelled_at, data } ] }
     // Ordered by pending_seq ASC. Cancelled rows omitted by default.
-    if (request.method === "POST" && url.pathname.startsWith("/pending/") && url.pathname.endsWith("/steer")) {
-      const eventId = decodeURIComponent(url.pathname.slice("/pending/".length, -"/steer".length));
-      const row = this.pending!.list("sthr_primary").find((r) => r.event_id === eventId)
-        ?? this.pending!.threadsWithPending().flatMap((t) => this.pending!.list(t)).find((r) => r.event_id === eventId);
-      const conflict = (message: string, reason?: string) => new Response(
-        JSON.stringify({ type: "error", error: { type: "invalid_request_error", message }, ...(reason ? { reason } : {}) }),
-        { status: 409, headers: { "content-type": "application/json" } },
-      );
-      if (!row) return conflict("Queued message already started or was removed", "already_processed");
-      const agent = await this.getThreadAgentConfig(row.session_thread_id);
-      if (!agentAdvertisesSteering(agent)) return conflict("This agent does not support steering; mid-send stays mid-state until drain-after-idle");
-      this._steerRequested.add(eventId);
-      return new Response(JSON.stringify({ event_id: eventId, steer: "requested" }),
-        { status: 202, headers: { "content-type": "application/json" } });
-    }
     if (request.method === "DELETE" && url.pathname.startsWith("/pending/")) {
       const eventId = decodeURIComponent(url.pathname.slice("/pending/".length));
       const cancelledAt = Date.now();
@@ -2823,7 +2803,6 @@ export class SessionDO extends DurableObject<Env> {
         });
         if (result.type === "cancelled") {
           durableCancelled = true;
-          this._steerRequested.delete(eventId);
         } else {
           durableCancelled = false;
           notQueued = {
@@ -7138,8 +7117,8 @@ type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
 
 /** OMA steering advertisement for built-in harnesses, the CF counterpart of
  *  an ACP agent's `_session/steering` capability. When enabled, mid-run
- *  user.message is absorbed via takeSteeringInputs (CMA coherent turn), not
- *  deferred to the next agent-turn drain. */
+ *  user.message is absorbed via takeSteeringInputs at the next LLM/tool-call
+ *  boundary (CMA coherent turn / after-call), not deferred to after-turn drain. */
 export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   return agent?.metadata?.["oma.session.steering"] === "enabled";
 }

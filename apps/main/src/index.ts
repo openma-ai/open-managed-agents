@@ -709,20 +709,20 @@ const tenantsRoutes = new Hono<{
 });
 
 /**
- * OMA queue extension for Managed sessions: remove or steer one queued
- * user.message. The SessionDO (execution host keyed by workspace+session)
- * owns the queue; it updates the D1 execution outbox and broadcasts the
- * `system.user_message_cancelled` / `system.user_message_steered` frames that
- * openma-common decodes into OpenMA queue-lifecycle events.
+ * OMA queue extension for Managed sessions: remove one queued user.message
+ * before it is absorbed. Mid-run accept already steers into the current turn
+ * at the next LLM/tool-call boundary (no explicit /pending/.../steer).
+ * The SessionDO owns the queue; it updates the D1 execution outbox and
+ * broadcasts `system.user_message_cancelled` (and steered frames from
+ * takeSteeringInputs) that openma-common decodes into OpenMA queue-lifecycle
+ * events.
  */
 const managedSessionQueueRoutes = new Hono<{
   Bindings: Env;
   Variables: { tenant_id: string; tenantDb: D1Database };
 }>();
-async function forwardManagedQueueAction(
+async function forwardManagedQueueCancel(
   c: Context<{ Bindings: Env; Variables: { tenant_id: string; tenantDb: D1Database } }>,
-  method: "DELETE" | "POST",
-  suffix: string,
 ): Promise<Response> {
   const sessionId = c.req.param("sessionId") ?? "";
   const eventId = c.req.param("eventId") ?? "";
@@ -733,8 +733,8 @@ async function forwardManagedQueueAction(
     .first();
   if (!row) return c.json({ error: "Session not found" }, 404);
   const res = await new CfManagedRuntimeFetcher(c.env).fetch(
-    `https://managed-runtime/sessions/${encodeURIComponent(sessionId)}/pending/${encodeURIComponent(eventId)}${suffix}`,
-    { method, headers: { "x-oma-workspace-id": workspaceId } },
+    `https://managed-runtime/sessions/${encodeURIComponent(sessionId)}/pending/${encodeURIComponent(eventId)}`,
+    { method: "DELETE", headers: { "x-oma-workspace-id": workspaceId } },
   );
   return new Response(await res.text(), {
     status: res.status,
@@ -742,9 +742,7 @@ async function forwardManagedQueueAction(
   });
 }
 managedSessionQueueRoutes.delete("/:sessionId/pending/:eventId", (c) =>
-  forwardManagedQueueAction(c, "DELETE", ""));
-managedSessionQueueRoutes.post("/:sessionId/pending/:eventId/steer", (c) =>
-  forwardManagedQueueAction(c, "POST", "/steer"));
+  forwardManagedQueueCancel(c));
 
 const legacySessionsRoutes = new Hono<{
   Bindings: Env;

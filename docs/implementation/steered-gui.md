@@ -19,9 +19,10 @@ When the session is **running** and one or more accepted mid-turn
    queue dock + ordinary user bubbles after stamp / `turn.steered`.
 2. **Event display order is unchanged** — do not reshuffle the timeline;
    steered rows stay in causal / `seq` order inside the active turn.
-3. The **business-semantic queue** (edit / remove / reorder / explicit
-   Steer) stays **client-side**. The server unstamped list is admission
-   mid-state only, not the product queue.
+3. The **business-semantic queue** (edit / remove / reorder) stays
+   **client-side**. There is **no** explicit Steer promote control;
+   mid-run accept already steers after-call. The server unstamped list is
+   admission mid-state only, not the product queue.
 4. Retry / exhausted semantics stay as locked in the coherent-turn doc:
    `retrying` / `status_rescheduled` → hold, no flush/delete, no new turn;
    `retries_exhausted` → **retain** unstamped inputs (no delete), do not
@@ -33,9 +34,9 @@ When the session is **running** and one or more accepted mid-turn
 ### Console (`apps/console`)
 
 - Optimistic outbox + `QueueDock` (`@openma/common/chat-ui`) above the
-  composer: edit / remove / **Steer** (`POST .../pending/:id/steer`) when
-  `oma.session.steering=enabled` and status is `running`
-  (`SessionDetail.tsx` queue dock + `steerQueued`).
+  composer: edit / remove only. Console does **not** wire
+  `queueCallbacks.steer` (explicit Steer / `POST .../pending/:id/steer`
+  extension removed; mid-run accept is the sole steer path).
 - Queue detection is OpenMA-facing (`turn.queued` / `delivery: "queued"`),
   not raw CMA `processed_at` (`session-event-queue.ts`).
 - Transcript: queued rows get muted “Queued…” treatment; once consumed,
@@ -44,9 +45,10 @@ When the session is **running** and one or more accepted mid-turn
 
 ### Backchat
 
-- `ComposerProgress` + queued prompt rows with Steer / edit / remove /
-  reorder (`src/renderer/src/components/chat/ComposerProgress.tsx`).
-  Steer is rendered only when the host supplies `queueCallbacks.steer`.
+- `ComposerProgress` + queued prompt rows with edit / remove / reorder
+  (`src/renderer/src/components/chat/ComposerProgress.tsx`). Optional
+  Steer chrome in openma-common remains host-gated (`queueCallbacks.steer`);
+  OMA Console does not supply it. Prefer ordinary mid-run accept.
 - Host ACP / OpenMA paths already distinguish steering vs follow-up at
   the protocol layer; the shared progress chrome does **not** yet show a
   post-steer “in this turn” badge separate from the FIFO queue list.
@@ -55,7 +57,7 @@ When the session is **running** and one or more accepted mid-turn
 
 | Piece | Exists | Missing for steered GUI |
 |---|---|---|
-| `QueueDock` (`chat-ui/queue-dock`) | FIFO queued prompts; optional Steer = “Send now”; blocked-on-tool header | No “already steered / awaiting next LLM boundary” section |
+| `QueueDock` (`chat-ui/queue-dock`) | FIFO queued prompts; optional Steer prop unused by Console; blocked-on-tool header | No “already steered / awaiting next LLM boundary” section |
 | `projectCanonicalChat` (`session-events/managed`) | On `turn.steered` while busy, folds the user text into the **active** turn as `{ kind: "message", steered: true }` and drops it from `queued` | Consumers do not style `steered: true` specially |
 | `turn.steered` / `delivery` | Wire + projection | No chat-ui primitive for “steered strip” / history badge |
 | ComposerProgress | Lives in Backchat, not yet shared as the single Console+Backchat component | Steered parity with Codex TUI still TBD |
@@ -141,10 +143,10 @@ shapes: **Codex three-band dock**, **DeepSeek `SteeringMessageNode`**,
 
 1. **While running + unstamped mid-turn inputs:** keep them in
    `QueueDock` / ComposerProgress (existing). Optional copy hint:
-   “Joins this turn at the next model step” when the agent advertises
-   steering (CMA coherent-turn lock), vs “Runs after this turn” when it
-   does not.
-2. **On steer / stamp / `turn.steered`:** remove from dock; append (or
+   “Joins this turn after the next model/tool step” when the agent
+   advertises steering (CMA after-call lock), vs “Runs after this turn”
+   when it does not. No explicit Steer button.
+2. **On absorb / stamp / `turn.steered`:** remove from dock; append (or
    highlight) inside the **active turn** with a light steered treatment
    (`steered: true` already projected) — e.g. muted caption “Steered into
    this turn” or DeepSeek-style dedicated node. **Do not reorder**.

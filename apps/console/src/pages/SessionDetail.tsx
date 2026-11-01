@@ -123,9 +123,7 @@ export function SessionDetail() {
    *  the queue dock (Backchat) rather than in the transcript. */
   const [localPendingQueued, setLocalPendingQueued] = useState(false);
   /** Queue rows with a local action awaiting the server's lifecycle event. */
-  const [queueBusy, setQueueBusy] = useState<Map<string, "removing" | "steering" | "editing">>(new Map());
-  /** Agent advertises OpenMA steering (metadata "oma.session.steering"). */
-  const [agentSteering, setAgentSteering] = useState(false);
+  const [queueBusy, setQueueBusy] = useState<Map<string, "removing" | "editing">>(new Map());
   /** Edit lost the race (server already started the item): the edited text
    *  goes back to the composer so it can be sent as a new message. */
   const [composerRestore, setComposerRestore] = useState<{ text: string; nonce: number } | null>(null);
@@ -516,16 +514,6 @@ export function SessionDetail() {
     const lookup: Promise<boolean> = managedApi.sessions.retrieve(id)
       .then((s) => {
         setAgentId(s.agent?.id || "");
-        const snapshotMeta = (s.agent as { metadata?: Record<string, string> } | undefined)?.metadata;
-        if (snapshotMeta) {
-          setAgentSteering(snapshotMeta["oma.session.steering"] === "enabled");
-        } else if (s.agent?.id) {
-          managedApi.agents.retrieve(s.agent.id)
-            .then((agent) => setAgentSteering(
-              (agent.metadata as Record<string, string> | undefined)?.["oma.session.steering"] === "enabled",
-            ))
-            .catch(() => setAgentSteering(false));
-        }
         setStatus(s.status);
         setSessionMeta({
           title: s.title ?? null,
@@ -828,7 +816,7 @@ export function SessionDetail() {
     setInterrupting(false);
   };
 
-  const markQueueBusy = (messageId: string, state: "removing" | "steering" | "editing" | null) => {
+  const markQueueBusy = (messageId: string, state: "removing" | "editing" | null) => {
     setQueueBusy((prev) => {
       const next = new Map(prev);
       if (state) next.set(messageId, state);
@@ -874,19 +862,6 @@ export function SessionDetail() {
     } catch {
       markQueueBusy(messageId, null);
       return { cancelled: false, reason: "failed", id: messageId };
-    }
-  };
-  const steerQueued = async (messageId: string) => {
-    if (!id) return;
-    markQueueBusy(messageId, "steering");
-    try {
-      const res = await apiRaw(
-        `/v1/oma/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(messageId)}/steer`,
-        { method: "POST" },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch {
-      markQueueBusy(messageId, null);
     }
   };
   /** Save an edit: compare-and-cancel the queued row, then re-enqueue the
@@ -1244,8 +1219,8 @@ export function SessionDetail() {
           afterTurns={transientActivity}
           composer={<>
           {/* Shared Backchat queue UI. Console has no reorder API, so no
-              reorder callback → no drag handle / arrows. Steer is the OpenMA
-              extension and only offered while running on steering agents. */}
+              reorder callback → no drag handle / arrows. Mid-run accept is
+              already CMA steer (no explicit Steer button). */}
           <QueueDock
             blocked={needsAction
               ? {
@@ -1258,7 +1233,6 @@ export function SessionDetail() {
             callbacks={{
               update: updateQueued,
               remove: async (messageId) => { await cancelQueued(messageId); },
-              ...(agentSteering && status === "running" ? { steer: steerQueued } : {}),
             }}
             prompts={queueDockItems}
           />

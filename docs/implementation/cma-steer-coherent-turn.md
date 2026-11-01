@@ -14,10 +14,13 @@ wrong for CMA-aligned sessions.
 
 1. **One mid-run semantics:** a `user.message` accepted while the agent
    turn is running **steers into the current turn**. It is consumed at the
-   next model / LLM step boundary; `processed_at` stays null until that
+   next model / LLM / tool-call boundary (**after-call**, not after the
+   whole agent turn settles); `processed_at` stays null until that
    consume, then is stamped. Skills *Steering Patterns* / *Message
    queuing*: multiple mid-turn sends may form one **coherent turn**.
-   This is **not** “wait for the next agent turn outbox.”
+   This is **not** “wait for the next agent turn outbox” and **not** an
+   explicit `POST .../pending/:id/steer` second path (that OMA extension
+   is removed).
 2. **Queue is only mid-state.** The server unstamped list
    (`processed_at` null until consumed) is admission / mid-state, not the
    product GUI queue. Business-semantic queue chrome (Backchat / Console
@@ -51,22 +54,24 @@ wrong for CMA-aligned sessions.
 
 | Phase | Unstamped mid-turn `user.message` |
 |---|---|
-| Running (ordinary) | Hold as mid-state; **steer** into current turn at next LLM boundary; stamp on consume |
+| Running (ordinary) | Hold as mid-state; **steer** into current turn at next LLM/tool-call boundary (after-call); stamp on consume |
 | `retrying` / `status_rescheduled` | Hold; **no** flush; **no** new turn from these rows; after resume, ingest together into the continuing turn |
 | Idle after interrupt | Following message = **new** turn (interrupt path) |
 | Idle `retries_exhausted` | **Retain** unconsumed mid-turn inputs (no delete); do not auto-start them as the next turn alone; they **advance with the next round of events**; user cannot withdraw; client may reconcile |
 
-Explicit `POST .../pending/:event_id/steer` remains an OMA/Backchat
-control for clients that promote early; for agents that advertise
-steering, **ordinary** mid-run accept already means steer (absorb every
-queued `user.message` on the lane at the next `takeSteeringInputs`
-poll), not “only when the user presses Steer.”
+**No explicit Steer extension.** There is no `POST .../pending/:event_id/steer`
+and no Console/Backchat “Steer” promote control. For agents that advertise
+steering, **ordinary** mid-run accept **is** steer: absorb every queued
+`user.message` on the lane at the next `takeSteeringInputs` poll (after-call
+LLM/tool boundary), not after the whole turn settles, and not “only when the
+user presses Steer.”
 
 ## Wrong read (superseded)
 
 Earlier OMA wording that treated mid-run sends as “queued for the next
-agent turn / next drain after idle” for CMA-aligned sessions is
-**superseded**. Drain-after-idle remains the fallback when an agent does
+agent turn / next drain after idle / after-turn settle” for CMA-aligned
+sessions is **superseded**. Absorb is **after-call** (next LLM/tool-call
+boundary). Drain-after-idle remains the fallback when an agent does
 **not** advertise steering (`takeSteeringInputs` unwired); that is a
 capability gap, not the CMA contract.
 

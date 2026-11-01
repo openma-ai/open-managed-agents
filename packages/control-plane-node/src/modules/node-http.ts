@@ -411,7 +411,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       store: sessionOutputs,
     },
   }));
-  // Console cancel/steer (same paths as CF managedSessionQueueRoutes).
+  // Console cancel queued (same path as CF managedSessionQueueRoutes).
   // Managed sessions: shared SQL execution outbox + realtime lifecycle frames.
   // Legacy harness sessions fall through to buildSessionRoutes → NodeSessionRouter.
   const managedQueueStore = managedSessionExecutionCoordinator
@@ -466,49 +466,6 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       },
     });
     return c.json({ cancelled: true, id: eventId, cancelled_at: cancelledAt }, 200);
-  });
-  v1.post("/oma/sessions/:sessionId/pending/:eventId/steer", async (c) => {
-    const sessionId = c.req.param("sessionId");
-    const eventId = c.req.param("eventId");
-    const workspaceId = c.var.tenant_id;
-    const managed = await sql
-      .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
-      .bind(workspaceId, sessionId)
-      .first();
-    if (!managed) {
-      const result = await sessionRouter.steerPending(sessionId, eventId);
-      return new Response(result.body, {
-        status: result.status,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    const found = await managedQueueStore.find({ workspaceId, executionId: eventId });
-    if (found === null || found.state !== "queued") {
-      return c.json({
-        cancelled: false,
-        reason: found?.state === "running" ? "already_processing" : "not_found",
-        id: eventId,
-      }, 409);
-    }
-    await managedQueueStore.steerQueued({
-      workspaceId,
-      sessionId,
-      executionId: eventId,
-      steeredAt: new Date().toISOString(),
-    });
-    managedSessionRealtime?.publish({
-      workspaceId,
-      sessionId,
-      frame: {
-        event: {
-          type: "system.user_message_steered",
-          event_id: eventId,
-          session_thread_id: found.laneId ?? "sthr_primary",
-          steered_at: Date.now(),
-        } as never,
-      },
-    });
-    return c.json({ event_id: eventId, steer: "requested" }, 202);
   });
 
   v1.route("/oma/sessions", buildSessionRoutes({

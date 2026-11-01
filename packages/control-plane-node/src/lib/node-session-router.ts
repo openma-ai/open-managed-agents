@@ -42,8 +42,10 @@ interface NodeSessionRouterDeps {
 }
 
 export class NodeSessionRouter implements SessionRouter {
-  /** Event ids to steer into the running turn (ordinary mid-run accept +
-   *  explicit Backchat/API steer). See cma-steer-coherent-turn.md. */
+  /** Event ids admitted mid-run for coherent-turn absorb at the next
+   *  LLM/tool-call boundary (takeSteeredEventIds). Ordinary mid-run accept
+   *  is the only steer path — no explicit /pending/.../steer API.
+   *  See cma-steer-coherent-turn.md. */
   private readonly steerRequested = new Map<string, Set<string>>();
   /** In-memory outbox for the legacy harness path. Managed sessions use the
    *  shared SQL execution store (worker); we must not admit harness turns into
@@ -128,8 +130,8 @@ export class NodeSessionRouter implements SessionRouter {
           : `sevt_node_${Date.now()}`;
         if (entry.machine.hasInflightTurn() || this.draining.has(sessionId)) {
           // Mid-state only (processed_at null until consume). CMA coherent
-          // turn: mark for steer into the running turn when the harness
-          // polls takeSteeredEventIds — not "wait for next agent turn."
+          // turn: mark for after-call absorb when the harness polls
+          // takeSteeredEventIds — not after-turn / next-agent-turn drain.
           // Full Node managed LLM-boundary inject remains a follow-up
           // (docs/implementation/cma-steer-coherent-turn.md).
           this.pendingOf(sessionId).push({
@@ -639,88 +641,7 @@ export class NodeSessionRouter implements SessionRouter {
     };
   }
 
-  async steerPending(
-    sessionId: string,
-    eventId: string,
-  ): Promise<{ status: number; body: string }> {
-    // Legacy in-memory outbox: mark steer + drop so it never runs alone.
-    const q = this.pendingBySession.get(sessionId);
-    if (q) {
-      const idx = q.findIndex((item) => item.id === eventId);
-      if (idx >= 0) {
-        const [item] = q.splice(idx, 1);
-        let set = this.steerRequested.get(sessionId);
-        if (!set) {
-          set = new Set();
-          this.steerRequested.set(sessionId, set);
-        }
-        set.add(eventId);
-        this.deps.hub.publish(sessionId, {
-          type: "system.user_message_steered",
-          event_id: eventId,
-          session_thread_id: "sthr_primary",
-          steered_at: Date.now(),
-        } as unknown as SessionEvent);
-        // Re-publish content so a harness that polls takeSteeredEventIds can
-        // absorb text; full Pi absorb on Node harness is still thin.
-        void item;
-        return {
-          status: 202,
-          body: JSON.stringify({ event_id: eventId, steer: "requested" }),
-        };
-      }
-    }
-    const row = await this.deps.sql
-      .prepare(`SELECT tenant_id FROM sessions WHERE id = ?`)
-      .bind(sessionId)
-      .first<{ tenant_id: string }>();
-    const workspaceId = row?.tenant_id
-      ?? (await this.deps.sql
-        .prepare(`SELECT workspace_id FROM managed_sessions WHERE id = ? LIMIT 1`)
-        .bind(sessionId)
-        .first<{ workspace_id: string }>())?.workspace_id;
-    if (!workspaceId) {
-      return { status: 404, body: JSON.stringify({ error: "Session not found" }) };
-    }
-    const found = await this.executionStore().find({
-      workspaceId,
-      executionId: eventId,
-    });
-    if (found === null || found.state !== "queued") {
-      return {
-        status: 409,
-        body: JSON.stringify({
-          cancelled: false,
-          reason: found?.state === "running" ? "already_processing" : "not_found",
-          id: eventId,
-        }),
-      };
-    }
-    let set = this.steerRequested.get(sessionId);
-    if (!set) {
-      set = new Set();
-      this.steerRequested.set(sessionId, set);
-    }
-    set.add(eventId);
-    this.deps.hub.publish(sessionId, {
-      type: "system.user_message_steered",
-      event_id: eventId,
-      session_thread_id: found.laneId ?? "sthr_primary",
-      steered_at: Date.now(),
-    } as unknown as SessionEvent);
-    await this.executionStore().steerQueued({
-      workspaceId,
-      sessionId,
-      executionId: eventId,
-      steeredAt: new Date().toISOString(),
-    });
-    return {
-      status: 202,
-      body: JSON.stringify({ event_id: eventId, steer: "requested" }),
-    };
-  }
-
-  /** Drain ids marked for coherent-turn steer (harness may poll). */
+  /** Drain ids marked mid-run for after-call absorb (harness may poll). */
   takeSteeredEventIds(sessionId: string): string[] {
     const set = this.steerRequested.get(sessionId);
     if (!set || set.size === 0) return [];

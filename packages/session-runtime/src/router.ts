@@ -222,15 +222,6 @@ export interface SessionRouter {
     eventId: string,
   ): Promise<{ status: number; body: string }>;
 
-  /** POST /v1/sessions/:id/pending/:event_id/steer — ask the running turn
-   *  to absorb this queued user.message at its next step boundary. 202 when
-   *  accepted, 409 when the item is no longer queued or the agent does not
-   *  advertise steering (the item then simply stays queued). */
-  steerPending(
-    sessionId: string,
-    eventId: string,
-  ): Promise<{ status: number; body: string }>;
-
   // ── LLM call body ─────────────────────────────────────────────────────
   /** GET /v1/sessions/:id/llm-calls/:event_id — fetch the persisted full
    *  LLM request/response body for a single span.model_request_end event.
