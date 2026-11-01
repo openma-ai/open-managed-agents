@@ -126,6 +126,32 @@ describe("CF SessionDO CMA retry / exhausted wire", () => {
   });
 });
 
+describe("CF POST /events: [user.interrupt, user.message] during requires_action", () => {
+  // managed-agents-events.md: "Against an already-idle session an interrupt is
+  // normally a no-op"; while requires_action "only settle events are accepted -
+  // a user.message there is a 400". The batch is rejected whole: nothing lands.
+  it("rejects the whole batch and appends nothing", async () => {
+    const sessionId = await createSession("crash-sh");
+    await runInDurableObject(stubOf(sessionId), async (instance, state) => {
+      const room = instance as any;
+      room.setState({ ...room.state, pending_tool_calls: [{ toolCallId: "ctu_b", toolName: "run_tests", args: {} }] });
+      const history = new SqliteHistory(state.storage.sql, null);
+      history.append({ type: "agent.custom_tool_use", id: "ctu_b", name: "run_tests", input: {} } as never);
+      history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["ctu_b"] } } as never);
+    });
+    const before = (await domEvents(sessionId)).length;
+    const res = await post(`/v1/oma/sessions/${sessionId}/events`, { events: [
+      { type: "user.interrupt" },
+      { type: "user.message", content: [{ type: "text", text: "next" }] },
+    ] });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { type: "invalid_request_error" } });
+    const after = await domEvents(sessionId);
+    expect(after.length).toBe(before);
+    expect(after.some((e) => e.type === "user.interrupt")).toBe(false);
+  });
+});
+
 describe("CF SessionDO exhausted hold survives DO eviction", () => {
   it("pre-exhausted local pending row is admitted held after state reload, not run alone", async () => {
     const sessionId = await createSession("crash-sh");

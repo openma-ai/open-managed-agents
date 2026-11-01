@@ -905,8 +905,10 @@ export function planRequiresActionQueue(
       : e.type === "user.tool_confirmation" && e.toolUseId ? [e.toolUseId] : [];
   }));
   const remaining = before.filter((id) => !answered.has(id));
-  const interrupting = batch.some((event) => event.type === "user.interrupt");
-  if (remaining.length > 0 && !interrupting) {
+  // Official CMA: an interrupt against an already-idle session is normally a
+  // no-op, so it does not clear requires_action for a user.message in the
+  // same batch; the whole batch is a 400 (all-or-nothing).
+  if (remaining.length > 0) {
     const reject = rejectMessageForRequiresActionBatch(prior, batch as PlanWireEvent[]);
     if (reject !== null) {
       return {

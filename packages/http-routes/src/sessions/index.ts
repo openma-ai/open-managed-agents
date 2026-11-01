@@ -38,6 +38,7 @@ import {
 } from "@open-managed-agents/sessions-store";
 import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionRouter, SessionInitParams } from "@open-managed-agents/session-runtime";
+import { settleOnlyBatchRejection, wireEventsFromPage } from "@open-managed-agents/session-runtime/settle-batch";
 import type { RouteServicesArg } from "../types";
 import { resolveServices } from "../types";
 import { createSseStream } from "./sse-stream";
@@ -701,6 +702,23 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     // Official CMA settle-only window is enforced by SessionDO / Node managed
     // accept (requires_action / budget_reached → 400 for user.message, t307u).
     // Propagate router 400s below.
+    // Events are appended one by one below, so a mixed batch (e.g.
+    // [user.interrupt, user.message] during requires_action) must be gated as
+    // a whole first: otherwise the interrupt lands and only the message 400s.
+    if (
+      body.events.length > 1 &&
+      body.events.some((ev) => ev.type === "user.message") &&
+      body.events.some((ev) => ev.type !== "user.message")
+    ) {
+      const recent = await router.getEvents(id, { order: "desc", limit: 200 });
+      const reject = settleOnlyBatchRejection(
+        wireEventsFromPage([...recent.data].reverse()),
+        body.events as unknown as Array<{ type?: string }>,
+      );
+      if (reject !== null) {
+        return c.json({ type: "error", error: { type: "invalid_request_error", message: reject } }, 400);
+      }
+    }
 
     for (const ev of body.events) {
       let outgoing: SessionEvent = ev;

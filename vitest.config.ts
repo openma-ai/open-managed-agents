@@ -344,6 +344,7 @@ export default defineConfig({
       { find: "@open-managed-agents/markdown/adapters/node", replacement: "./packages/markdown/src/adapters/node.ts" },
       { find: "@open-managed-agents/markdown/adapters/cf-workers-ai", replacement: "./packages/markdown/src/adapters/cf-workers-ai.ts" },
       { find: "@open-managed-agents/markdown", replacement: "./packages/markdown/src/index.ts" },
+      { find: "@open-managed-agents/session-runtime/settle-batch", replacement: "./packages/session-runtime/src/settle-batch.ts" },
       { find: "@open-managed-agents/session-runtime/recovery", replacement: "./packages/session-runtime/src/recovery.ts" },
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },

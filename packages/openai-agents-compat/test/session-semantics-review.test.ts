@@ -101,11 +101,13 @@ describe("Session semantic review regressions", () => {
     expect(f.facts.filter(event => event.type.startsWith("user."))).toHaveLength(0);
   });
 
-  it("preserves an authorized cancel then message batch in one native acceptance", async () => {
+  it("rejects a cancel then message batch whole while an action is pending (official CMA settle-only)", async () => {
+    // managed-agents-events.md: an interrupt against an already-idle session
+    // is normally a no-op, and during requires_action a user.message is a 400.
     const f = fixture(); await f.pendingResult();
-    await f.client.beta.agents.sessions.events.create("session", { events: [{ type: "agent.session.input.cancel" }, { type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "next" }] }] }] });
-    expect(f.dispatched).toHaveLength(1);
-    expect(f.dispatched[0].events.map((event: any) => event.type)).toEqual(["user.interrupt", "user.message"]);
+    await expect(f.client.beta.agents.sessions.events.create("session", { events: [{ type: "agent.session.input.cancel" }, { type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "next" }] }] }] })).rejects.toMatchObject({ status: 400 });
+    expect(f.dispatched).toHaveLength(0);
+    expect(f.facts.filter(event => event.type.startsWith("user."))).toHaveLength(0);
   });
 
   it("accepts at most one concurrent result for the same pending call with distinct request keys", async () => {
