@@ -77,6 +77,12 @@ describe("Sessions application module", () => {
           sessionStarted: async (input) => { started.push(input); },
           sessionStopped: async () => {},
         }),
+        // sessionsModule requires sessionEvents for optional budget resume wiring.
+        providePort(managedAgentsPortTokens.sessionEvents, {
+          sendSessionEvents: async () => ({ type: "not_found" as const }),
+          listSessionEvents: async () => ({ type: "not_found" as const }),
+          streamSessionEvents: async () => ({ type: "not_found" as const }),
+        }),
         sessionsModule(),
       ],
     });

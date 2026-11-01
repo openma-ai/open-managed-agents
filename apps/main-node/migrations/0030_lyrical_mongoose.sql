@@ -1,0 +1,1 @@
+ALTER TABLE "managed_session_executions" ADD COLUMN "held_after_exhausted_ms" bigint;

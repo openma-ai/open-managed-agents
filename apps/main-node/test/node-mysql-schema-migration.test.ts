@@ -12,7 +12,7 @@ import type {
 
 const previousSnapshot = "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4";
 const invitationsSnapshot = "725618e8-372f-4f13-98a7-44a94146b663";
-const currentSnapshot = "8f90aaab-6f92-4233-95a2-0cdab2dfa28c";
+const currentSnapshot = "173fcc90-140f-4d11-92d5-9c8d917213e9";
 const migrations = resolve(import.meta.dirname, "../migrations-sqlite");
 
 describe("main-node MySQL snapshot migrations", () => {

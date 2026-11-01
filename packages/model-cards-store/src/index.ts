@@ -19,4 +19,4 @@ export * from "./resolve-credentials";
 export { ModelCardService } from "./service";
 export type { ModelCardServiceDeps } from "./service";
 
-export { createCfModelCardService, createSqliteModelCardService, SqlModelCardRepo } from "./adapters";
+export { createCfModelCardService, createSqliteModelCardService, SqlModelCardRepo, ensureModelCardsPricingColumn } from "./adapters";

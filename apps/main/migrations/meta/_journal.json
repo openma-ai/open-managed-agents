@@ -183,6 +183,13 @@
       "when": 1793515675672,
       "tag": "0025_model_card_pricing",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1793521171327,
+      "tag": "0026_closed_tempest",
+      "breakpoints": true
     }
   ]
 }
