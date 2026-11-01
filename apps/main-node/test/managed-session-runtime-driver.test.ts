@@ -1021,10 +1021,16 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       expect(h.accepted).toEqual([["r1"], ["r2"]]);
     });
 
-    it("interrupt while parked is accepted as a settle event", async () => {
+    it("interrupt while parked is accepted as a settle no-op (pending stays)", async () => {
+      // Official CMA: already-idle interrupt is a no-op; still 202/accepted,
+      // but the session remains on requires_action with outstanding ids.
       const h = harness(parked());
       await h.send({ id: "x1", type: "user.interrupt" });
       expect(h.accepted).toEqual([["x1"]]);
+      expect(h.history.filter((e: any) => e.type === "agent.tool_result")).toEqual([]);
+      expect(h.history.at(-1)).toMatchObject({ type: "user.interrupt", id: "x1" });
+      const lastIdle = [...h.history].reverse().find((e: any) => e.type === "session.status_idle");
+      expect(lastIdle).toMatchObject({ stopReason: { type: "requires_action", eventIds: ["c1", "c2"] } });
     });
 
     it("a message to an unparked session runs normally", async () => {

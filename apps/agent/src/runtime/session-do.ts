@@ -2387,6 +2387,36 @@ export class SessionDO extends DurableObject<Env> {
             .session_thread_id ?? "sthr_primary";
         const ctrl = this._threadAbortControllers.get(targetThread);
         const hadActiveTurn = !!ctrl;
+        // Official CMA: "Against an already-idle session an interrupt is
+        // normally a no-op." That includes idle requires_action: accept the
+        // interrupt, leave event_ids / pending_tool_calls / stop_reason
+        // untouched, and do not call interruptPending or emit a fresh idle.
+        // (Self-hosted failed-claim re-queue is the documented exception and
+        // is not this path.)
+        {
+          let idleStop: string | undefined;
+          let lastStatus: string | undefined;
+          for (const e of history.getEvents()) {
+            if (((e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary") !== targetThread) continue;
+            if (e.type === "session.status_running" || e.type === "session.status_idle") {
+              lastStatus = e.type;
+              idleStop = e.type === "session.status_idle"
+                ? ((e as { stop_reason?: { type?: string } }).stop_reason?.type ?? "")
+                : undefined;
+            }
+          }
+          if (!hadActiveTurn && lastStatus === "session.status_idle") {
+            const interrupt = body as UserInterruptEvent & { id?: string; processed_at?: string };
+            const interruptAt = this.processedClock.nowIso();
+            if (!interrupt.id) interrupt.id = `sevt_${generateEventId()}`;
+            interrupt.processed_at = interruptAt;
+            this.markAcceptedEventsProcessed([interrupt.id], interruptAt);
+            history.append(interrupt);
+            this.broadcastEventIgnoringExecutionFence(interrupt);
+            void idleStop; // retained for readability / future budget carve-outs
+            return new Response(null, { status: 202 });
+          }
+        }
         // The execution store is the durable interrupt authority. The local
         // AbortController is only a latency optimization for this DO
         // incarnation; a replacement host observes the same request through
@@ -2525,9 +2555,8 @@ export class SessionDO extends DurableObject<Env> {
         }
         const lastIsRunning = lastStatusType === "session.status_running";
         // Official CMA: interrupt against an already-idle session is normally
-        // a no-op. Do not emit a fresh idle end_turn that would overwrite
-        // retries_exhausted (or other non-end_turn idle stop reasons).
-        // requires_action settle still emits via closedCount/settledRequests.
+        // a no-op (handled above). This emitIdle path is for an active or
+        // still-running turn only.
         const emitIdle =
           closedCount > 0 ||
           settledRequests.length > 0 ||

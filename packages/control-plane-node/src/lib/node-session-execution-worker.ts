@@ -189,9 +189,10 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       }
     }
 
-    // An interrupt with no turn running here (session parked in
-    // requires_action, #398) still has to reach the runner: it closes the
-    // pending calls and ends the turn (CMA). Admit it as its own execution.
+    // An interrupt with no turn running here (session parked idle, including
+    // requires_action) still reaches the runner so the interrupt is observed;
+    // the runner treats it as a no-op and leaves outstanding event_ids alone
+    // (official CMA: interrupt against already-idle is normally a no-op).
     const idleInterrupts = interruptEvents.filter((interrupt) => {
       const laneId = interrupt.sessionThreadId ?? "sthr_primary";
       return ![...this.#active.values()].some((active) =>

@@ -22,3 +22,14 @@ describe("Node settle-only gate: interrupt + message batch", () => {
     expect(plan.reject).toBeUndefined();
   });
 });
+
+import { interruptRequiresActionClosure } from "../../../apps/agent/src/runtime/history.js";
+
+describe("Node/CF shared: interruptRequiresActionClosure", () => {
+  it("does not clear requires_action (official CMA idle no-op)", () => {
+    expect(interruptRequiresActionClosure([
+      { type: "agent.custom_tool_use", id: "c1", name: "x", input: {} },
+      { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1"] } },
+    ] as never)).toEqual([]);
+  });
+});

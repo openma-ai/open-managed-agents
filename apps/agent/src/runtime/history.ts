@@ -90,36 +90,22 @@ export const INTERRUPTED_TOOL_RESULT_TEXT = "Tool execution was interrupted befo
  * thread is not parked (a running turn closes itself; idle is a no-op).
  * Synchronous calls only: anything that already returned is untouched.
  */
-export function interruptRequiresActionClosure(events: SessionEvent[], threadId = "sthr_primary"): SessionEvent[] {
-  const thread = (e: SessionEvent) => (e as { session_thread_id?: string }).session_thread_id ?? "sthr_primary";
-  const mine = events.filter((e) => thread(e) === threadId);
-  const lastStatus = [...mine].reverse().find((e) => typeof e.type === "string" && e.type.startsWith("session.status_"));
-  if (lastStatus?.type !== "session.status_idle"
-    || (lastStatus as { stop_reason?: { type?: string } }).stop_reason?.type !== "requires_action") return [];
-  const answered = new Set<string>();
-  for (const e of mine) {
-    if (e.type === "agent.tool_result" || e.type === "agent.mcp_tool_result") {
-      const id = (e as { tool_use_id?: string; mcp_tool_use_id?: string }).tool_use_id
-        ?? (e as { mcp_tool_use_id?: string }).mcp_tool_use_id;
-      if (id) answered.add(id);
-    }
-  }
-  const extra = threadId !== "sthr_primary" ? { session_thread_id: threadId } : {};
-  const out: SessionEvent[] = [];
-  for (const e of mine) {
-    if (e.type !== "agent.tool_use" && e.type !== "agent.custom_tool_use" && e.type !== "agent.mcp_tool_use") continue;
-    const id = (e as { id?: string }).id;
-    if (!id || answered.has(id)) continue;
-    out.push({
-      type: e.type === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
-      ...(e.type === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
-      content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
-      is_error: true,
-      ...extra,
-    } as unknown as SessionEvent);
-  }
-  out.push({ type: "session.status_idle", stop_reason: { type: "end_turn" }, ...extra } as SessionEvent);
-  return out;
+/**
+ * Official CMA (managed-agents-events.md § Interrupt): "Against an
+ * already-idle session an interrupt is normally a no-op." While idle with
+ * stop_reason requires_action that means: accept the interrupt (202), leave
+ * outstanding event_ids / pendingConfirmations / stop_reason alone, and do
+ * not emit synthetic tool_results or a fresh idle end_turn. The only
+ * documented exception is a self-hosted worker that failed its claimed work
+ * item (re-queue); that path is not this helper.
+ *
+ * Shared CF SessionDO / Node runner core — returns no frames.
+ */
+export function interruptRequiresActionClosure(
+  _events: SessionEvent[],
+  _threadId = "sthr_primary",
+): SessionEvent[] {
+  return [];
 }
 
 export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {

@@ -478,8 +478,9 @@ export class DefaultNodeManagedSessionRunner
       const active = this.abortControllers.get(input);
       active?.abort();
       if (active === undefined) {
-        // Parked in requires_action: close the pending calls and end the
-        // turn without sampling (shared core with CF SessionDO).
+        // Official CMA: interrupt against an already-idle session is a no-op
+        // (including idle requires_action). interruptRequiresActionClosure
+        // returns no frames; pending event_ids stay outstanding.
         const wire = input.historyEvents.map((event) => encodeRuntimeHistoryEvent(event) as SessionEvent);
         for (const frame of interruptRequiresActionClosure(wire)) {
           await input.output({

@@ -82,6 +82,34 @@ describe("CF SessionDO CMA retry / exhausted wire", () => {
     expect(midRows.every((e) => !e.processed_at)).toBe(true);
   });
 
+  it("interrupt against idle requires_action is a no-op: pending stays, stop_reason stays", async () => {
+    // Official CMA: "Against an already-idle session an interrupt is normally
+    // a no-op." Accept 202, leave event_ids / pending_tool_calls alone.
+    const sessionId = `cma_int_ra_${crypto.randomUUID()}`;
+    await runInDurableObject(stubOf(sessionId), async (instance, state) => {
+      const room = instance as any;
+      room._ensureCfAgentsSchema(); room.ensureSchema(); room._coldStartFlushDone = true;
+      room.setState({ ...room.state, session_id: sessionId, tenant_id: "workspace", agent_id: "a",
+        pending_tool_calls: [{ toolCallId: "ctu_ra", toolName: "run_tests", args: {} }] });
+      room._ensurePrimaryThread();
+      const history = new SqliteHistory(state.storage.sql, null);
+      history.append({ type: "user.message", content: [{ type: "text", text: "go" }], processed_at: new Date().toISOString() } as never);
+      history.append({ type: "agent.custom_tool_use", id: "ctu_ra", name: "run_tests", input: {} } as never);
+      history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["ctu_ra"] } } as never);
+      const beforeLen = (history.getEvents() as any[]).length;
+      const res = await room.fetch(new Request("http://internal/event", { method: "POST", body: JSON.stringify({ type: "user.interrupt" }) }));
+      expect(res.status).toBe(202);
+      const after = history.getEvents() as any[];
+      expect(after.filter((e) => e.type === "user.interrupt")).toHaveLength(1);
+      expect(after.filter((e) => e.type === "agent.tool_result")).toHaveLength(0);
+      const statuses = after.filter((e) => e.type.startsWith("session.status_"));
+      expect(statuses.at(-1)).toMatchObject({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["ctu_ra"] } });
+      expect(after.filter((e) => e.type === "session.status_idle")).toHaveLength(1);
+      expect(room.state.pending_tool_calls).toEqual([{ toolCallId: "ctu_ra", toolName: "run_tests", args: {} }]);
+      expect(after.length).toBe(beforeLen + 1);
+    });
+  });
+
   it("interrupt against an idle retries_exhausted session is a no-op", async () => {
     const sessionId = `cma_int_idle_${crypto.randomUUID()}`;
     await runInDurableObject(stubOf(sessionId), async (instance, state) => {

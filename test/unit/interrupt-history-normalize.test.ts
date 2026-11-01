@@ -32,22 +32,19 @@ describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
 
 import { interruptRequiresActionClosure, INTERRUPTED_TOOL_RESULT_TEXT } from "../../apps/agent/src/runtime/history";
 describe("interruptRequiresActionClosure (shared CF/Node core)", () => {
-  it("closes pending calls and ends the turn without sampling when parked", () => {
+  // Official CMA: interrupt against already-idle (including requires_action)
+  // is a no-op — do not invent tool_results or overwrite stop_reason.
+  it("is a no-op while parked on requires_action", () => {
     const ev: any[] = [
       { type: "user.message", id: "m", content: [] },
       { type: "session.status_running" },
       { type: "agent.custom_tool_use", id: "c1", name: "x", input: {} },
-      { type: "agent.tool_use", id: "t0", name: "bash", input: {} },
-      { type: "agent.tool_result", tool_use_id: "t0", content: [] },
       { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1"] } },
     ];
-    expect(interruptRequiresActionClosure(ev as never)).toEqual([
-      { type: "agent.tool_result", tool_use_id: "c1", is_error: true, content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }] },
-      { type: "session.status_idle", stop_reason: { type: "end_turn" } },
-    ]);
+    expect(interruptRequiresActionClosure(ev as never)).toEqual([]);
     expect(INTERRUPTED_TOOL_RESULT_TEXT).toBe("Tool execution was interrupted before completion. Please retry.");
   });
-  it("is a no-op when not parked", () => {
+  it("is a no-op when idle end_turn", () => {
     expect(interruptRequiresActionClosure([{ type: "session.status_idle", stop_reason: { type: "end_turn" } }] as never)).toEqual([]);
   });
 });
