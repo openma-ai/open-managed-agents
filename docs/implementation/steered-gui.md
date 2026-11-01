@@ -1,9 +1,12 @@
 # Mid-turn steered state — GUI design note
 
-Status: **design note** for Console / Backchat / `@openma/common` chat-ui
-(2026-10-31, America/Detroit). Supplements
+Status: **cancelled** for Console / Backchat / `@openma/common` chat-ui
+(2026-11-01, America/Detroit). Owner dropped the special steered status
+UI (`pending_steer` dock bands, “Steered into this turn” caption,
+`data-steered` styling). Supplements
 [`cma-steer-coherent-turn.md`](./cma-steer-coherent-turn.md) and Console
-PR #399 / issue #398. **Not** a full UI implementation in this PR.
+PR #399 / issue #398. **CMA steer server semantics stay locked**; this
+note remains a survey only — do **not** ship the special chrome.
 
 ## Product rule (locked)
 
@@ -12,11 +15,10 @@ When the session is **running** and one or more accepted mid-turn
 (`processed_at` stamped / OpenMA `delivery: "processed"` +
 `turn.steered` / `system.user_message_steered`):
 
-1. The **client** shows a **special mid-turn steered UI** (distinct from
-   idle queue chrome and from ordinary idle→new-turn user bubbles).
-2. **Event display order is unchanged** — do not reshuffle the timeline
-   for chrome; steered rows stay in causal / `seq` order inside the
-   active turn.
+1. **No special mid-turn steered chrome** (owner cancel). Ordinary
+   queue dock + ordinary user bubbles after stamp / `turn.steered`.
+2. **Event display order is unchanged** — do not reshuffle the timeline;
+   steered rows stay in causal / `seq` order inside the active turn.
 3. The **business-semantic queue** (edit / remove / reorder / explicit
    Steer) stays **client-side**. The server unstamped list is admission
    mid-state only, not the product queue.
@@ -153,11 +155,13 @@ shapes: **Codex three-band dock**, **DeepSeek `SteeringMessageNode`**,
    + user text message mapping (abacusai pattern) without requiring raw
    `processed_at` in the GUI layer.
 
-## Out of scope for PR #399
+## Cancelled (do not implement)
 
-- Full QueueDock / ComposerProgress steered sections.
-- Styling `steered: true` in Console `CanonicalSessionTurn`.
-- Publishing a new `@openma/common` release solely for this chrome.
+Owner: drop the steered special GUI state. Do **not** add:
 
-Ship this note + coherent-turn / exhausted-flush locks; implement UI in
-a follow-up once shared chat-ui owns the presentation.
+- `QueueDock` `pending_steer` / `follow_up` section bands
+- History caption “Steered into this turn” / `data-steered` styling
+- Console composer copy that says “joining this turn”
+
+Keep CMA steer server semantics + this survey for reference. Shared
+`QueueDock` without steered bands remains fine.

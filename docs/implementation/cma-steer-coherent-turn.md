@@ -33,13 +33,11 @@ wrong for CMA-aligned sessions.
    `stop_reason: retries_exhausted`, drop unconsumed mid-turn inputs
    (scheduler flush = delete). Client may re-send. See
    `exhausted-flush-client-reconcile.md`.
-6. **Client UX:** “running + steered” is a temporary reconcile view from
-   `processed_at` (and optional `system.user_message_steered`); event
-   display order is otherwise unchanged. Design survey + recommended
-   chrome: [`steered-gui.md`](./steered-gui.md) (Codex TUI bands,
-   Backchat/QueueDock gaps, third-party AG-UI / DeepSeek / pi notes).
-   openma-common projects `steered: true` but shared chat-ui chrome for
-   it is still TBD.
+6. **Client UX:** “running + steered” reconcile stays from `processed_at`
+   (and optional `system.user_message_steered`); event display order is
+   otherwise unchanged. **No special steered status chrome** (owner
+   cancel) — see [`steered-gui.md`](./steered-gui.md). Ordinary queue
+   dock + ordinary user bubbles after stamp.
 7. **OpenAI Agents path:** mid-turn → steer; idle → new turn. Do not
    invent a CMA-style durable pending inbox for OpenAI Agents.
 
@@ -81,8 +79,8 @@ capability gap, not the CMA contract.
   harness LLM boundary (today CF `takeSteeringInputs` + advertised
   steering is the primary coherent-turn path; Node still leans on
   execution-outbox drain-after-settle for some hosts).
-- openma-common / Console / Backchat steered display parity — see
-  [`steered-gui.md`](./steered-gui.md) (follow Codex TUI dock bands +
-  DeepSeek `SteeringMessageNode`; do not invent Claude Console chrome).
+- ~~openma-common / Console / Backchat steered display parity~~ —
+  **cancelled** (no `pending_steer` bands / steered caption). Survey
+  kept in [`steered-gui.md`](./steered-gui.md).
 - Server delete-flush implementation on exhausted where hosts still only
   document it (#399 ships client reconcile helper).
