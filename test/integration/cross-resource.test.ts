@@ -25,7 +25,8 @@ function put(path: string, body: any) {
   return api(path, { method: "PUT", headers: H, body: JSON.stringify(body) });
 }
 function del(path: string) {
-  return api(path, { method: "DELETE", headers: H }
+  return api(path, { method: "DELETE", headers: H });
+}
 
 async function seedCustomToolUse(sessionId: string, toolUseId: string, name = "custom_tool") {
   const stub = env.SESSION_DO!.get(env.SESSION_DO!.idFromName(sessionId));

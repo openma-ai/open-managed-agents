@@ -24,13 +24,15 @@ describe("user.interrupt while requires_action (custom tool)", () => {
       history.append({ type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["ctu_1"] } } as never);
 
       const post = (body: unknown) => room.fetch(new Request("http://internal/event", { method: "POST", body: JSON.stringify(body) }));
-      const before = (history.getEvents() as any[]).length;
+      const before = history.getEvents() as any[];
       expect((await post({ type: "user.interrupt" })).status).toBe(202);
       const afterInterrupt = history.getEvents() as any[];
-      // No synthetic tool_result / end_turn — idle requires_action interrupt is a no-op.
+      // Wire no-op: accept + echo user.interrupt on the stream, but do not
+      // invent tool_result / end_turn or overwrite requires_action.
       expect(afterInterrupt.filter((e) => e.type === "agent.tool_result")).toEqual([]);
-      expect(afterInterrupt).toHaveLength(before);
-      expect(afterInterrupt.at(-1)).toMatchObject({
+      expect(afterInterrupt).toHaveLength(before.length + 1);
+      expect(afterInterrupt.at(-1)).toMatchObject({ type: "user.interrupt" });
+      expect(afterInterrupt.filter((e) => e.type === "session.status_idle").at(-1)).toMatchObject({
         type: "session.status_idle",
         stop_reason: { type: "requires_action", event_ids: ["ctu_1"] },
       });

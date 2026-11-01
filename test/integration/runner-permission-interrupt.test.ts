@@ -64,7 +64,9 @@ describe("interrupting a runner while its proxy is waiting for permission", () =
           "primary-request",
           "sibling-request",
         ]);
-        expect((history.getEvents() as any[]).length).toBe(beforeLen);
+        // Wire no-op still echoes user.interrupt; does not close tools.
+        expect((history.getEvents() as any[]).length).toBe(beforeLen + 1);
+        expect((history.getEvents() as any[]).at(-1)).toMatchObject({ type: "user.interrupt" });
         expect(history.getEvents().filter((event: any) => event.type === "agent.tool_result")).toEqual([]);
         // complete fixture retained for parametrize stability; no runner cancel either way.
         void complete;
