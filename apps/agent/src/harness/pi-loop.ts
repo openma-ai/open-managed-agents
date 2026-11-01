@@ -1,4 +1,4 @@
-import { budgetExhausted } from "./budget";
+import { gateExhausted, meterPiRuntime } from "./budget";
 import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import {
   type Api,
@@ -84,8 +84,10 @@ export class PiHarness implements HarnessInterface {
       throw new ModelError("Pi harness requires a tenant-scoped Pi model runtime");
     }
 
-    // Pre-request budget gate: at the cap, make no model call at all.
-    if (budgetExhausted(ctx.budget, ctx.runtime.budgetEvents?.() ?? ctx.runtime.history.getEvents())) {
+    // Model egress: every request (loop + compaction) goes through the
+    // session meter, which gates at the cap and records list cost.
+    ctx.pi = meterPiRuntime(ctx.pi, ctx.budget);
+    if (gateExhausted(ctx.budget)) {
       ctx.budget!.reached = true;
       return;
     }
@@ -152,18 +154,9 @@ export class PiHarness implements HarnessInterface {
       },
       sessionId: ctx.session_id,
       streamFn: (model, context, options) => {
-        // Every follow-up request inside the Pi loop (after tool results)
-        // passes the same pre-request gate. At the cap the request is
-        // issued with an already-aborted signal so no tokens are spent.
-        if (budgetExhausted(ctx.budget, ctx.runtime.budgetEvents?.() ?? ctx.runtime.history.getEvents())) {
-          ctx.budget!.reached = true;
-          agent.abort();
-          return ctx.pi!.models.streamSimple(
-            model,
-            context,
-            { ...withPiRuntimeRequestOptions(ctx.pi!, options, context), signal: AbortSignal.abort() },
-          );
-        }
+        // The metered egress refuses follow-ups at the cap (aborted signal,
+        // no tokens); stop the agent loop as well.
+        if (gateExhausted(ctx.budget)) agent.abort();
         return ctx.pi!.models.streamSimple(
           model,
           context,

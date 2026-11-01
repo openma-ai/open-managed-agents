@@ -1,7 +1,4 @@
-import {
-  SessionListCostLedger,
-  type SessionBudgetGate,
-} from "@open-managed-agents/agent/harness/budget";
+import type { SessionBudgetGate } from "@open-managed-agents/agent/harness/budget";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";
@@ -39,7 +36,7 @@ export interface ManagedNodeSubagentState {
 }
 
 export interface ManagedNodeSubagentControl {
-  /** Bind the parent's session budget gate so child turns share the cap. */
+  /** Bind the parent's session egress meter so child usage snapshots report the shared total. */
   setBudgetGate?(gate: SessionBudgetGate | null): void;
   create(input: ManagedNodeCreateSubagent): Promise<ManagedNodeSubagentState>;
   send(input: { threadId: string; message: string }): Promise<ManagedNodeSubagentState>;
@@ -80,8 +77,6 @@ interface SubagentsInput {
   abortSignal: AbortSignal;
   executionFence?: SessionExecutionFence;
   historyEvents: SessionEventView[];
-  /** Shared with the parent harness so subagent model usage counts toward list_cost. */
-  listCostLedger?: SessionListCostLedger;
   threads: ManagedNodeSubagentThreads;
   policy: ManagedNodeSubagentPolicy;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
@@ -304,7 +299,6 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
         controller.signal.throwIfAborted();
         const sandbox = withSandboxExecutionGuard(this.input.sandbox, { signal: controller.signal });
         const runtime = new ManagedNodeHarnessRuntime({ initialEvents: [], events: childHistory(child.events),
-          ...(this.input.listCostLedger !== undefined && { listCostLedger: this.input.listCostLedger }),
           sandbox, abortSignal: controller.signal, clock: this.input.clock, ids: this.input.ids,
           output: (raw) => {
             const frame = raw as Record<string, unknown>;

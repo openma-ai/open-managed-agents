@@ -61,7 +61,6 @@ import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-runtime-sql/context";
 import {
   budgetReachedEvents,
-  consumedListCostPico,
   createSessionBudgetGate,
   runtimeListCost,
   type SessionBudgetGate,
@@ -269,6 +268,9 @@ interface SessionState {
       cache_read_input_tokens: number;
     }
   >;
+  /** Session egress meter total (picodollars, integer string). Written only
+   *  at model egress while a session budget is active; seeds the next gate. */
+  list_cost_pico?: string;
   vault_ids: string[];
   pending_tool_calls: PendingToolCall[];
   /** Lane → ms of the last retries_exhausted settle. Persisted (DO state)
@@ -4530,7 +4532,11 @@ export class SessionDO extends DurableObject<Env> {
    * session has `budget.max_list_cost` AND the model card has pricing;
    * otherwise null (no enforcement, no error).
    */
+  /** The current execution's egress meter; subagent contexts share it. */
+  private activeBudgetGate: SessionBudgetGate | null = null;
+
   private async resolveBudgetGate(handle: string): Promise<SessionBudgetGate | null> {
+    this.activeBudgetGate = null;
     if (!this.env.MAIN_DB || !this.state.tenant_id || !this.state.session_id) return null;
     try {
       const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
@@ -4543,7 +4549,14 @@ export class SessionDO extends DurableObject<Env> {
       const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
       const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
       const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
-      return createSessionBudgetGate({ amount: budget.amountMinor, currency: budget.currency }, pricing);
+      // One gate per session execution, shared with subagent harnesses: it is
+      // the model-egress meter. Seeded from the persisted egress counter.
+      const gate = createSessionBudgetGate({ amount: budget.amountMinor, currency: budget.currency }, pricing, {
+        consumedPico: this.state.list_cost_pico ?? null,
+        onEgress: (pico) => this.setState({ ...this.state, list_cost_pico: pico.toString() }),
+      });
+      this.activeBudgetGate = gate;
+      return gate;
     } catch (err) {
       logWarn(
         { op: "session_do.budget_gate", session_id: this.state.session_id, err },
@@ -4568,8 +4581,8 @@ export class SessionDO extends DurableObject<Env> {
       ...(totals.cache_creation_input_tokens > 0 && {
         cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
       }),
-      list_cost: runtimeListCost(consumedListCostPico(events, gate.pricing)),
-      list_cost_pico: consumedListCostPico(events, gate.pricing).toString(),
+      list_cost: runtimeListCost(gate.consumedPico),
+      list_cost_pico: gate.consumedPico.toString(),
     };
   }
 
@@ -5286,6 +5299,8 @@ export class SessionDO extends DurableObject<Env> {
       tools: subTools,
       model: subModel,
       pi: subPiRuntime,
+      // Same session egress meter as the parent turn.
+      budget: this.activeBudgetGate,
       systemPrompt: composeSystemPrompt(subAgent.system || "", subSkillReminders),
       platformReminders: subSkillReminders,
       // Sub-agent inherits the parent's tenant — same daemon, same per-tenant

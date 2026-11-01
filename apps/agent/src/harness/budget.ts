@@ -2,9 +2,14 @@
 //
 // The budget is ACTIVE only when the session has a `max_list_cost` AND the
 // session's model card has `pricing`. Either one missing = no enforcement, no
-// error. The consumed cost is derived from history (every
-// `span.model_request_end.model_usage` × the card's list prices), so CF and
-// Node compute it identically and nothing extra is persisted.
+// error.
+//
+// Bookkeeping lives at MODEL EGRESS: the gate is a session-scoped meter that
+// every real model request (parent and subagent threads, loop and compaction)
+// passes through via `meterPiRuntime`. It refuses requests at the cap and
+// adds each completed request's list cost. The running total is seeded from
+// the session's persisted counter (`usage.listCostPico`), never rebuilt from
+// thread history.
 //
 // Exact amounts use picodollars (1e-12 USD) as BigInt: price strings are
 // parsed to micro-USD per million tokens, so tokens × price is exact.
@@ -68,33 +73,137 @@ export function centsToPico(cents: string): bigint {
 export interface BudgetAmount { amount: string; currency: string }
 
 /**
- * The per-execution budget gate handed to a harness. Null when inactive
- * (no budget, or no pricing on the model card).
+ * Session-scoped egress meter + budget gate handed to every harness of the
+ * session (parent and subagents share ONE instance). Null when inactive (no
+ * budget, or no pricing on the model card).
  */
 export interface SessionBudgetGate {
   maxListCost: BudgetAmount;
   pricing: ModelPricing;
-  /** Set by the harness when it skipped a model call at the cap. */
+  /** Exact consumed list cost (picodollars), maintained only at egress. */
+  consumedPico: bigint;
+  /** Persist hook, called after each recorded egress with the new total. */
+  onEgress?: (consumedPico: bigint) => void;
+  /** Set when egress refused a model call at the cap. */
   reached: boolean;
 }
 
 export function createSessionBudgetGate(
   budget: BudgetAmount | null | undefined,
   pricing: ModelPricing | null | undefined,
+  seed: { consumedPico?: string | bigint | null; onEgress?: (consumedPico: bigint) => void } = {},
 ): SessionBudgetGate | null {
   if (!budget || !pricing) return null;
   if (budget.currency !== "USD" || !/^(0|[1-9]\d*)$/.test(budget.amount)) return null;
-  return { maxListCost: { ...budget }, pricing, reached: false };
+  const raw = seed.consumedPico;
+  const consumedPico = typeof raw === "bigint"
+    ? raw
+    : typeof raw === "string" && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
+  return {
+    maxListCost: { ...budget },
+    pricing,
+    consumedPico,
+    ...(seed.onEgress && { onEgress: seed.onEgress }),
+    reached: false,
+  };
 }
 
-/** Pre-request check: true when the consumed list cost has reached the cap.
+/** Pre-request check at egress: true once consumed list cost reached the cap.
  * The request that crosses the cap is allowed to finish; the NEXT one stops. */
+export function gateExhausted(gate: SessionBudgetGate | null | undefined): boolean {
+  if (!gate) return false;
+  return gate.consumedPico >= centsToPico(gate.maxListCost.amount);
+}
+
+/** @deprecated default-loop only; same egress meter, no history. */
 export function budgetExhausted(
   gate: SessionBudgetGate | null | undefined,
-  events: readonly SessionEvent[],
+  _events?: readonly SessionEvent[],
 ): boolean {
-  if (!gate) return false;
-  return consumedListCostPico(events, gate.pricing) >= centsToPico(gate.maxListCost.amount);
+  return gateExhausted(gate);
+}
+
+/** Record one completed model request at egress. */
+export function recordModelEgress(gate: SessionBudgetGate | null | undefined, usage: TokenUsage): void {
+  if (!gate) return;
+  gate.consumedPico += requestListCostPico(usage, gate.pricing);
+  gate.onEgress?.(gate.consumedPico);
+}
+
+/** Thrown by a metered non-streaming call refused at the cap. */
+export class SessionBudgetReachedError extends Error {
+  constructor() {
+    super("session budget reached");
+    this.name = "SessionBudgetReachedError";
+  }
+}
+
+interface PiUsageLike { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
+interface PiResultLike { usage?: PiUsageLike }
+
+function piUsage(message: PiResultLike | undefined): TokenUsage | null {
+  const u = message?.usage;
+  if (!u) return null;
+  return {
+    input_tokens: u.input,
+    output_tokens: u.output,
+    cache_read_input_tokens: u.cacheRead,
+    cache_creation_input_tokens: u.cacheWrite,
+  };
+}
+
+const METERED = new WeakMap<object, { gate: SessionBudgetGate; models: object }>();
+const STREAMING = new Set(["stream", "streamSimple"]);
+const COMPLETING = new Set(["complete", "completeSimple"]);
+
+/**
+ * Model egress: wrap a Pi runtime's `models` so EVERY request is gated and
+ * metered against the session gate. Streams refused at the cap are issued
+ * with an already-aborted signal (no tokens spent); non-streaming calls
+ * throw `SessionBudgetReachedError`. Idempotent per (models, gate).
+ */
+export function meterPiRuntime<T extends { models: object }>(pi: T, gate: SessionBudgetGate | null | undefined): T {
+  if (!gate) return pi;
+  const cached = METERED.get(pi.models);
+  if (cached?.gate === gate) return { ...pi, models: cached.models };
+  const target = pi.models;
+  const models = new Proxy(target, {
+    get(obj, prop, receiver) {
+      const value: unknown = Reflect.get(obj, prop, receiver);
+      if (typeof prop !== "string" || typeof value !== "function") return value;
+      const fn = value as (...args: unknown[]) => unknown;
+      if (STREAMING.has(prop)) {
+        return (...args: unknown[]) => {
+          if (gateExhausted(gate)) {
+            gate.reached = true;
+            const options = (args[2] ?? {}) as Record<string, unknown>;
+            args[2] = { ...options, signal: AbortSignal.abort() };
+          }
+          const stream = fn.apply(obj, args) as { result?: () => Promise<PiResultLike> };
+          void stream.result?.().then((message) => {
+            const usage = piUsage(message);
+            if (usage) recordModelEgress(gate, usage);
+          }, () => undefined);
+          return stream;
+        };
+      }
+      if (COMPLETING.has(prop)) {
+        return async (...args: unknown[]) => {
+          if (gateExhausted(gate)) {
+            gate.reached = true;
+            throw new SessionBudgetReachedError();
+          }
+          const message = await (fn.apply(obj, args) as Promise<PiResultLike>);
+          const usage = piUsage(message);
+          if (usage) recordModelEgress(gate, usage);
+          return message;
+        };
+      }
+      return fn.bind(obj);
+    },
+  });
+  METERED.set(target, { gate, models });
+  return { ...pi, models };
 }
 
 /** The official stop sequence when a session reaches its budget:
@@ -125,28 +234,3 @@ export function budgetReachedEvents(input: {
 }
 
 
-/** Mutable session-wide list of `span.model_request_end` frames for budget.
- * Node keeps harness history primary-thread-only (so the parent model does not
- * see subagent turns as context) but seeds and observes this ledger from every
- * thread so `list_cost` matches Cloudflare's full-session SqliteHistory. */
-export class SessionListCostLedger {
-  private readonly ends: SessionEvent[] = [];
-
-  seed(events: readonly SessionEvent[]): void {
-    for (const event of events) this.observe(event);
-  }
-
-  observe(event: SessionEvent): void {
-    if (event.type !== "span.model_request_end") return;
-    if (!(event as { model_usage?: TokenUsage }).model_usage) return;
-    this.ends.push(event);
-  }
-
-  events(): readonly SessionEvent[] {
-    return this.ends;
-  }
-
-  consumedPico(pricing: ModelPricing): bigint {
-    return consumedListCostPico(this.ends, pricing);
-  }
-}

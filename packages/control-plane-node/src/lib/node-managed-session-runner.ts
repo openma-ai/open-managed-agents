@@ -38,7 +38,6 @@ import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-a
 import type { SessionEvent } from "@open-managed-agents/shared";
 import {
   createSessionBudgetGate,
-  SessionListCostLedger,
   type SessionBudgetGate,
 } from "@open-managed-agents/agent/harness/budget";
 import type { ModelPricing } from "@open-managed-agents/api-types";
@@ -612,17 +611,9 @@ export class DefaultNodeManagedSessionRunner
       : withSandboxExecutionGuard(recovery.sandbox, {
           signal: abortController.signal,
         });
-    // Harness conversation history stays primary-thread-only (subagent turns
-    // are not parent context). List-cost / budget uses a shared ledger seeded
-    // from every thread so Node matches CF's full-session SqliteHistory.
-    const listCostLedger = new SessionListCostLedger();
-    for (const event of input.historyEvents) {
-      listCostLedger.observe(encodeRuntimeHistoryEvent(event) as SessionEvent);
-    }
     const runtime = new ManagedNodeHarnessRuntime({
       initialEvents: input.initialEvents,
       events: input.historyEvents.filter((event) => managedEventThread(event) === "sthr_primary"),
-      listCostLedger,
       sandbox,
       abortSignal: abortController.signal,
       output: input.output,
@@ -702,7 +693,6 @@ export class DefaultNodeManagedSessionRunner
           abortSignal: abortController.signal,
           executionFence: input.executionFence,
           historyEvents: input.historyEvents,
-          listCostLedger,
           threads: this.dependencies.subagentThreads,
           policy,
           resolveSession: this.dependencies.resolveSubagentSession === undefined ? undefined :
@@ -717,8 +707,8 @@ export class DefaultNodeManagedSessionRunner
                 ...childContext, acceptedEvents: [], sandbox: childSandbox,
                 runtime: childRuntime, model, tools: childTools,
               });
-              // Same session budget as the parent: child model calls observe the
-              // shared listCostLedger and stop at the same max_list_cost.
+              // One session egress meter: child model calls are gated and
+              // recorded by the same gate instance as the parent's.
               harnessContext.budget = budgetGate;
               childRuntime.setBudgetGate(budgetGate);
               await this.dependencies.buildHarness().run(harnessContext);
@@ -772,6 +762,14 @@ export class DefaultNodeManagedSessionRunner
               ? null
               : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
             pricing,
+            {
+              // Persisted egress counter (session.usage.listCostPico).
+              consumedPico: input.session.usage?.listCostPico ?? null,
+              // Persist each egress: the usage snapshot carries the new total.
+              onEgress: () => {
+                runtime.broadcastProducedEvent({ type: "session.usage", usage: runtime.usageSnapshot() });
+              },
+            },
           );
         }
         budgetGate = harnessContext.budget ?? null;
