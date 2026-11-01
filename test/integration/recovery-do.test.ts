@@ -1078,6 +1078,269 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────
+  // Shared lease policy — CF adapter tests
+  // ─────────────────────────────────────────────────────────────────
+
+  it("enqueue arms the durable alarm before the synchronous drain can be lost", async () => {
+    const sessionId = await newSessionDirect("enqueue_arm");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { ensureSchema(): void }).ensureSchema();
+      // Let the cold-start lease/schedule pass settle before we install the
+      // row this test is about.
+      await new Promise((r) => setTimeout(r, 100));
+      await state.storage.deleteAlarm();
+      (instance as {
+        enqueueQueueInputIfNew(event: unknown): boolean;
+      }).enqueueQueueInputIfNew({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "arm the alarm" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    let alarm: number | null = null;
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      alarm = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.getAlarm(),
+      );
+      if (alarm !== null) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(alarm, "enqueue must arm a durable alarm").not.toBeNull();
+    expect((alarm as number) - Date.now()).toBeLessThanOrEqual(5_000);
+
+    const queued = await runInDurableObject(stub, (instance) => {
+      const sql = (instance as { ctx: { storage: { sql: SqlStorage } } })
+        .ctx.storage.sql;
+      return sql
+        .exec(
+          `SELECT processed_at FROM events WHERE json_extract(data,'$.id') = ?`,
+          eventId,
+        )
+        .toArray()[0] as { processed_at: number | null } | undefined;
+    });
+    expect(queued, "the event must be an unprocessed queue row").toBeDefined();
+    expect(queued?.processed_at ?? null).toBeNull();
+  });
+
+  it("alarm is not deleted while an unprocessed queue row exists", async () => {
+    const sessionId = await newSessionDirect("queue_keeps_alarm");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    const setAlarmInside: number[] = [];
+    let deleteCallsInside = 0;
+    let spyArmed = false;
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { ensureSchema(): void }).ensureSchema();
+      await new Promise((r) => setTimeout(r, 100));
+      // Leave the row queued: the alarm policy must still keep the wake armed.
+      (instance as { drainEventQueue(threadId: string): Promise<void> })
+        .drainEventQueue = async () => {};
+      (instance as { queue: { enqueueQueueInput(event: unknown): boolean } })
+        .queue.enqueueQueueInput({
+          id: eventId,
+          type: "user.message",
+          content: [{ type: "text", text: "still queued" }],
+          session_thread_id: "sthr_primary",
+        });
+      await state.storage.deleteAlarm();
+      await state.storage.setAlarm(Date.now() - 1_000);
+
+      const ctx = (instance as unknown as { ctx: { storage: {
+        setAlarm: (t: number) => Promise<void>;
+        deleteAlarm: () => Promise<void>;
+      } } }).ctx;
+      const origSet = ctx.storage.setAlarm.bind(ctx.storage);
+      const origDel = ctx.storage.deleteAlarm.bind(ctx.storage);
+      spyArmed = true;
+      ctx.storage.setAlarm = async (t: number) => {
+        if (spyArmed) setAlarmInside.push(t);
+        return origSet(t);
+      };
+      ctx.storage.deleteAlarm = async () => {
+        if (spyArmed) deleteCallsInside++;
+        return origDel();
+      };
+    });
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 50));
+    spyArmed = false;
+
+    expect(setAlarmInside.length, "queued work must re-arm").toBeGreaterThan(0);
+    expect(deleteCallsInside, "queued work must never delete the alarm").toBe(0);
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm).not.toBeNull();
+  });
+
+  it("isolate reset mid-turn: expired lease is swept as interrupted and session goes idle", async () => {
+    const sessionId = `lease_finalize_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_dead_lease", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "in flight when the isolate died" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 1, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_dead_lease",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure, settled_at_ms FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string; settled_at_ms: number }>();
+    expect(execution?.state).toBe("failed");
+    expect(execution?.failure).toBe("execution attempt limit exhausted");
+    expect(execution?.settled_at_ms).toBeGreaterThan(now);
+
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    expect(data.find((e) => e.type === "session.status_idle")).toBeDefined();
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_dead_lease",
+    );
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+  });
+
+  it("isolate reset mid-turn: expired lease with budget left is requeued and keeps the alarm", async () => {
+    const sessionId = `lease_requeue_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_dead_lease", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "retry me" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 2, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      // Do not actually run the reclaimed turn in this test; we only assert
+      // the sweep decision and that queued work keeps the alarm armed.
+      (instance as { drainEventQueue(threadId: string): Promise<void> })
+        .drainEventQueue = async () => {};
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, attempt_count, owner_id, lease_expires_at_ms, failure
+         FROM managed_session_executions WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{
+      state: string;
+      attempt_count: number;
+      owner_id: string | null;
+      lease_expires_at_ms: number | null;
+      failure: string;
+    }>();
+    expect(execution?.state).toBe("queued");
+    expect(execution?.attempt_count).toBe(1);
+    expect(execution?.owner_id).toBeNull();
+    expect(execution?.lease_expires_at_ms).toBeNull();
+    expect(execution?.failure).toBe("requeued after owner lease expired");
+
+    // The stale turn was finalized, but the queued execution keeps a wake.
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm, "requeued work must keep the alarm armed").not.toBeNull();
+  });
+
+  // ─────────────────────────────────────────────────────────────────
   // Alarm heartbeat-merge regression guards
   //
   // _scheduleNextAlarm() runs at the end of alarm() and was historically
