@@ -1185,6 +1185,125 @@ describe("SessionDO recovery — DO-level", () => {
     expect(alarm).not.toBeNull();
   });
 
+  it("a drain that makes no progress backs off instead of re-arming every second", async () => {
+    const sessionId = await newSessionDirect("queue_no_progress");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, _state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // The row looks drainable to the policy, but the drain cannot make
+      // progress (no claim/turn): this is the null-processed/migrated-row
+      // shape that used to re-arm every ~1s forever.
+      instance.drainEventQueue = async () => {};
+      instance._queueDrainFailures = 0;
+      instance._queueDrainRetryAtMs = null;
+      instance.queue.enqueueQueueInput({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "not drainable yet" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    const delays: number[] = [];
+    const attempts: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await runInDurableObject(stub, async (_instance, state) => {
+        await state.storage.setAlarm(Date.now() - 1_000);
+      });
+      await runDurableObjectAlarm(stub);
+      const snapshot = await runInDurableObject(stub, async (instance, state) => ({
+        alarm: await state.storage.getAlarm(),
+        now: Date.now(),
+        failures: instance._queueDrainFailures as number,
+      }));
+      expect(snapshot.alarm, "queued work must keep the alarm armed").not.toBeNull();
+      delays.push((snapshot.alarm as number) - snapshot.now);
+      attempts.push(snapshot.failures);
+    }
+
+    expect(attempts).toEqual([1, 2, 3, 4]);
+    expect(delays[0]).toBeGreaterThan(500);
+    expect(delays[1]).toBeGreaterThan(delays[0] * 1.5);
+    expect(delays[2]).toBeGreaterThan(delays[1] * 1.5);
+    expect(delays[3]).toBeGreaterThan(delays[2] * 1.5);
+    expect(delays[3]).toBeLessThanOrEqual(9_000);
+
+    // New work resets the horizon to near-zero (it may just have unblocked
+    // the held/undrainable row).
+    const reset = await runInDurableObject(stub, async (instance, state) => {
+      instance.enqueueQueueInputIfNew({
+        id: `sevt_${crypto.randomUUID()}`,
+        type: "user.message",
+        content: [{ type: "text", text: "fresh work" }],
+        session_thread_id: "sthr_primary",
+      });
+      await instance._multiplexAlarm({ reason: "test_enqueue", atMs: Date.now() + 1 });
+      return {
+        alarm: await state.storage.getAlarm(),
+        now: Date.now(),
+        failures: instance._queueDrainFailures as number,
+        retryAt: instance._queueDrainRetryAtMs as number | null,
+      };
+    });
+    expect(reset.failures).toBe(0);
+    expect(reset.retryAt).toBeNull();
+    expect(reset.alarm, "enqueue must arm the alarm").not.toBeNull();
+    expect((reset.alarm as number) - reset.now).toBeLessThanOrEqual(5_000);
+  });
+
+  it("held/blocked queue rows use a long safety net, never a sub-second loop", async () => {
+    const sessionId = await newSessionDirect("blocked_safety_net");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, _state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance.drainEventQueue = async () => {};
+      // A row admitted while the lane was exhausted is held; it can only
+      // move when a newer admission arrives, not on a 1s timer.
+      instance.setState({
+        ...instance.state,
+        exhausted_at_by_lane: { sthr_primary: Date.now() + 60_000 },
+      });
+      instance.queue.enqueueQueueInput({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "held after exhausted" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    const delays: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      await runInDurableObject(stub, async (_instance, state) => {
+        await state.storage.setAlarm(Date.now() - 1_000);
+      });
+      await runDurableObjectAlarm(stub);
+      const snapshot = await runInDurableObject(stub, async (instance, state) => ({
+        alarm: await state.storage.getAlarm(),
+        now: Date.now(),
+        failures: instance._queueDrainFailures as number,
+      }));
+      expect(snapshot.failures, "held rows are not a failed drain").toBe(0);
+      expect(snapshot.alarm, "held rows still keep the slot armed").not.toBeNull();
+      delays.push((snapshot.alarm as number) - snapshot.now);
+    }
+
+    // ~5 min safety net, never the old ~1s re-arm.
+    for (const delay of delays) {
+      expect(delay).toBeGreaterThan(4 * 60_000);
+      expect(delay).toBeLessThanOrEqual(6 * 60_000);
+    }
+  });
+
   it("isolate reset mid-turn: expired lease is swept as interrupted and session goes idle", async () => {
     const sessionId = `lease_finalize_${Math.random().toString(36).slice(2, 10)}`;
     const now = Date.now();

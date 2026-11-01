@@ -176,6 +176,106 @@ describe("shared coordination lease policy", () => {
     expect(result.quiescent).toBe(true);
   });
 
+  it("blocked/held inbound rows never contribute a drain wake", () => {
+    const result = evaluateCoordinationPolicy({
+      nowMs: NOW,
+      queuedInputs: [
+        {
+          id: "held_1",
+          laneId: "sthr_primary",
+          heldAfterExhausted: true,
+        },
+        {
+          id: "parked_1",
+          laneId: "sthr_primary",
+          blocked: true,
+          blockedReason: "requires_action",
+        },
+      ],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.nextWakeAtMs).toBeNull();
+    expect(result.nextDrainableWakeAtMs).toBeNull();
+    expect(result.blockedQueuedRows).toBe(2);
+    expect(result.quiescent).toBe(true);
+  });
+
+  it("does not claim queued rows blocked behind an earlier active lane row", () => {
+    const result = evaluateCoordinationPolicy({
+      nowMs: NOW,
+      executions: [
+        execution({
+          executionId: "running_1",
+          admittedAtMs: NOW - 1_000,
+          leaseExpiresAtMs: NOW + 90_000,
+        }),
+        execution({
+          executionId: "queued_2",
+          state: "queued",
+          attemptCount: 0,
+          admittedAtMs: NOW,
+          leaseExpiresAtMs: null,
+        }),
+      ],
+      heartbeatIntervalMs: 30_000,
+    });
+    expect(result.actions).toEqual([]);
+    // Only the running lease wakes; the queued row is not claimable yet.
+    expect(result.nextWakeAtMs).toBe(NOW + 30_000);
+    expect(result.nextDrainableWakeAtMs).toBeNull();
+    expect(result.blockedQueuedRows).toBe(1);
+  });
+
+  it("claims only the earliest unheld queued row on a lane", () => {
+    const result = evaluateCoordinationPolicy({
+      nowMs: NOW,
+      executions: [
+        execution({
+          executionId: "queued_1",
+          state: "queued",
+          attemptCount: 0,
+          admittedAtMs: NOW - 1,
+          leaseExpiresAtMs: null,
+        }),
+        execution({
+          executionId: "queued_2",
+          state: "queued",
+          attemptCount: 0,
+          admittedAtMs: NOW,
+          leaseExpiresAtMs: null,
+        }),
+      ],
+    });
+    expect(result.actions).toEqual([
+      {
+        type: "claim",
+        executionId: "queued_1",
+        laneId: "sthr_primary",
+        reason: "queued_execution",
+      },
+    ]);
+    expect(result.nextDrainableWakeAtMs).toBe(NOW + 1);
+    expect(result.blockedQueuedRows).toBe(1);
+  });
+
+  it("holds the drain wake at the caller's no-progress backoff horizon", () => {
+    const result = evaluateCoordinationPolicy({
+      nowMs: NOW,
+      queuedInputs: [{ id: "queued_evt", laneId: "sthr_primary" }],
+      queuedWakeDelayMs: 1,
+      queuedWakeNotBeforeMs: NOW + 8_000,
+    });
+    expect(result.actions).toEqual([
+      {
+        type: "drain",
+        laneId: "sthr_primary",
+        reason: "queued_input",
+      },
+    ]);
+    expect(result.nextDrainableWakeAtMs).toBe(NOW + 8_000);
+    expect(result.nextWakeAtMs).toBe(NOW + 8_000);
+  });
+
   it("keeps active in-memory turns and schedules as wake inputs", () => {
     expect(evaluateCoordinationPolicy({
       nowMs: NOW,

@@ -13,8 +13,13 @@
  *   - an expired lease is requeued while attempt budget remains, otherwise
  *     finalized as interrupted;
  *   - an absolute deadline always wins and finalizes the execution;
- *   - queued work (durable executions or unprocessed inbound rows) wakes the
- *     caller immediately so it can be drained/claimed;
+ *   - drainable queued work (the one claimable execution per lane, or an
+ *     unblocked inbound row) wakes the caller immediately so it can be
+ *     drained/claimed;
+ *   - blocked/held queue rows (held after retries_exhausted, parked in
+ *     requires_action, or waiting behind an earlier active lane row) never
+ *     contribute an aggressive wake — they are reported for diagnostics and
+ *     the caller may arm a slow safety net;
  *   - `nextWakeAtMs === null` means nothing at all is pending (quiescent).
  */
 
@@ -47,6 +52,14 @@ export interface ExecutionLeaseRecord {
 export interface QueuedInputRecord {
   id?: string;
   laneId: string;
+  /** Held after retries_exhausted: rides the next unheld admission, so it
+   *  must not wake the alarm on its own. */
+  heldAfterExhausted?: boolean;
+  /** Not drainable until an external wake (e.g. parked in requires_action /
+   *  budget_reached). The hold's own event will enqueue and reset the wake. */
+  blocked?: boolean;
+  /** Why the row is blocked; diagnostics only. */
+  blockedReason?: "requires_action" | "budget_reached";
 }
 
 /** A turn that is live in this incarnation but may not have a durable row yet. */
@@ -74,6 +87,9 @@ export interface CoordinationPolicyOptions {
   renewLeadMs?: number;
   /** Wake delay for newly claimable/drainable work. Default 1ms. */
   queuedWakeDelayMs?: number;
+  /** Absolute epoch ms before which drain/claim work must not wake (used by
+   *  the caller's no-progress backoff). Does not delay lease or schedule wakes. */
+  queuedWakeNotBeforeMs?: number;
 }
 
 export type LeaseSweepReason =
@@ -128,8 +144,14 @@ export type CoordinationAction =
 
 export interface CoordinationPolicyResult {
   actions: CoordinationAction[];
-  /** Min of lease renewals/expiry, queued work, and schedules. Null = nothing. */
+  /** Min of lease renewals/expiry, drainable work, and schedules. Null = nothing. */
   nextWakeAtMs: number | null;
+  /** Earliest wake contributed only by drain/claim work (requeue/claim/drain).
+   *  Null when every queued row is blocked/held or there is no queued work. */
+  nextDrainableWakeAtMs: number | null;
+  /** Queue rows that exist but cannot be acted on until a later external
+   *  signal or a currently-running lane row settles. Diagnostics + safety net. */
+  blockedQueuedRows: number;
   quiescent: boolean;
 }
 
@@ -401,6 +423,8 @@ export function evaluateCoordinationPolicy(
   const renewals: CoordinationAction[] = [];
 
   let nextWakeAtMs: number | null = null;
+  let nextDrainableWakeAtMs: number | null = null;
+  let blockedQueuedRows = 0;
   const wakeAt = (candidate: number): void => {
     if (!Number.isFinite(candidate)) return;
     const normalized = Math.max(candidate, nowMs);
@@ -408,36 +432,65 @@ export function evaluateCoordinationPolicy(
       ? normalized
       : Math.min(nextWakeAtMs, normalized);
   };
-  const wakeForQueuedWork = (): void => wakeAt(nowMs + queuedWakeDelayMs);
+  const drainableWakeAtMs = (): number => {
+    const requested = nowMs + queuedWakeDelayMs;
+    const notBefore = options.queuedWakeNotBeforeMs;
+    return Number.isFinite(notBefore)
+      ? Math.max(requested, notBefore as number)
+      : requested;
+  };
+  const wakeForQueuedWork = (): void => {
+    const candidate = drainableWakeAtMs();
+    wakeAt(candidate);
+    nextDrainableWakeAtMs = nextDrainableWakeAtMs === null
+      ? Math.max(candidate, nowMs)
+      : Math.min(nextDrainableWakeAtMs, Math.max(candidate, nowMs));
+  };
+
+  // A lane has at most one claimable execution: the earliest unheld active
+  // row. Anything queued behind it must wait for that row to settle/sweep.
+  type LaneState = {
+    /** An earlier unheld row (running or requeued) already owns the lane. */
+    blocked: boolean;
+    queued: ExecutionLeaseRecord[];
+  };
+  const lanes = new Map<string, LaneState>();
+  const laneFor = (laneId: string | undefined): LaneState => {
+    const key = laneId ?? "";
+    let lane = lanes.get(key);
+    if (lane === undefined) {
+      lane = { blocked: false, queued: [] };
+      lanes.set(key, lane);
+    }
+    return lane;
+  };
 
   for (const execution of options.executions ?? []) {
     if (execution.state !== "queued" && execution.state !== "running") continue;
     const laneId = laneOf(execution);
+    const lane = laneFor(laneId);
 
     const expired = decideExpiredExecution(execution, nowMs);
     if (expired !== null) {
       sweeps.push(expired);
-      // A requeue creates claimable work; a finalize needs no extra wake.
-      if (expired.type === "requeue") wakeForQueuedWork();
+      if (expired.type === "requeue") {
+        // The requeued row becomes the earliest pending row on this lane; it
+        // is claimable on the next pass, but later rows are still behind it.
+        lane.blocked = true;
+        wakeForQueuedWork();
+      }
       continue;
     }
 
     if (execution.state === "queued") {
-      // Held rows ride the next unheld admission; they are not claimable
-      // alone and must not keep the alarm spinning.
-      if (execution.heldAfterExhausted === true) continue;
-      claims.push({
-        type: "claim",
-        executionId: execution.executionId,
-        ...(laneId === undefined ? {} : { laneId }),
-        reason: "queued_execution",
-      });
-      wakeForQueuedWork();
+      lane.queued.push(execution);
       continue;
     }
 
     // Running with a valid lease: wake before the lease lapses and emit a
-    // renewal once we are inside the renewal horizon.
+    // renewal once we are inside the renewal horizon. Queued rows behind it
+    // are not claimable yet.
+    lane.blocked = true;
     const leaseExpiresAtMs = execution.leaseExpiresAtMs!;
     wakeAt(Math.min(leaseExpiresAtMs, nowMs + heartbeatIntervalMs));
     if (nowMs >= leaseExpiresAtMs - renewLeadMs) {
@@ -452,7 +505,52 @@ export function evaluateCoordinationPolicy(
     }
   }
 
+  for (const lane of lanes.values()) {
+    lane.queued.sort((left, right) => {
+      const admittedLeft = left.admittedAtMs ?? Number.MAX_SAFE_INTEGER;
+      const admittedRight = right.admittedAtMs ?? Number.MAX_SAFE_INTEGER;
+      return admittedLeft === admittedRight
+        ? left.executionId.localeCompare(right.executionId)
+        : admittedLeft - admittedRight;
+    });
+    const claimable = lane.blocked
+      ? undefined
+      : lane.queued.find((execution) => execution.heldAfterExhausted !== true);
+    for (const execution of lane.queued) {
+      if (execution.heldAfterExhausted === true) {
+        // Held after retries_exhausted: rides the next unheld admission on
+        // this lane and must never keep the alarm spinning alone.
+        blockedQueuedRows += 1;
+        continue;
+      }
+      if (execution !== claimable) {
+        blockedQueuedRows += 1;
+        continue;
+      }
+      const decision = decideClaim(execution, nowMs);
+      if (!decision.claim) {
+        // Attempt budget/deadline/lease gate: nothing to do until it changes.
+        blockedQueuedRows += 1;
+        continue;
+      }
+      const laneId = laneOf(execution);
+      claims.push({
+        type: "claim",
+        executionId: execution.executionId,
+        ...(laneId === undefined ? {} : { laneId }),
+        reason: "queued_execution",
+      });
+      wakeForQueuedWork();
+    }
+  }
+
   for (const input of options.queuedInputs ?? []) {
+    if (input.heldAfterExhausted === true || input.blocked === true) {
+      // Known holds have their own external wake (a new admission/answer) and
+      // must not re-arm the alarm on a short timer.
+      blockedQueuedRows += 1;
+      continue;
+    }
     drains.push({
       type: "drain",
       laneId: input.laneId,
@@ -480,6 +578,8 @@ export function evaluateCoordinationPolicy(
   return {
     actions,
     nextWakeAtMs,
+    nextDrainableWakeAtMs,
+    blockedQueuedRows,
     quiescent: actions.length === 0 && nextWakeAtMs === null,
   };
 }

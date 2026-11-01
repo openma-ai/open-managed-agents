@@ -57,6 +57,7 @@ import {
   type CanonicalTurnEvidence,
   type CoordinationAction,
   type ExecutionLeaseRecord,
+  type QueuedInputRecord,
   type ScheduleWakeRecord,
   type SessionExecution,
   type SessionExecutionFence,
@@ -387,6 +388,11 @@ const ENQUEUE_WAKE_DELAY_MS = 1;
 /** Recovery failures are retained and retried with capped exponential backoff. */
 const RECOVERY_BACKOFF_BASE_MS = 1_000;
 const RECOVERY_BACKOFF_MAX_MS = 60_000;
+/** A drain/claim that makes no progress backs off 1s, 2s, … capped at 5 min. */
+const QUEUE_DRAIN_BACKOFF_BASE_MS = 1_000;
+const QUEUE_DRAIN_BACKOFF_MAX_MS = 5 * 60_000;
+/** Blocked/held queue rows get a slow safety net instead of a hot wake. */
+const BLOCKED_QUEUE_SAFETY_WAKE_MS = 5 * 60_000;
 /** Bounded wait for an aborted turn to unwind tools before the interrupt is stamped. */
 const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
@@ -847,6 +853,10 @@ export class SessionDO extends DurableObject<Env> {
   private _recoveryFailures = 0;
   /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
   private _recoveryRetryAtMs: number | null = null;
+  /** Consecutive drain/claim passes that made no queue progress. */
+  private _queueDrainFailures = 0;
+  /** Earliest epoch ms the next drain/claim pass may run (backoff horizon). */
+  private _queueDrainRetryAtMs: number | null = null;
 
   /**
    * Lazy queue accessor. `queue` used to be dereferenced as `this.queue`
@@ -1012,9 +1022,10 @@ export class SessionDO extends DurableObject<Env> {
   /**
    * The ONE alarm-slot multiplexer. Every setAlarm/deleteAlarm in this class
    * funnels through it. It folds the next schedule, lease renewal/expiry,
-   * queued work, in-memory running turns, and the recovery backoff horizon
-   * into a single earliest wake (Cloudflare Agents SDK durable-fiber shape),
-   * and never deletes the slot while queue/running work is non-empty.
+   * drainable work, blocked/held rows, in-memory running turns, and the
+   * recovery/queue backoff horizons into a single earliest wake (Cloudflare
+   * Agents SDK durable-fiber shape), and never deletes the slot while
+   * running work or any queue row is still present.
    */
   private async _multiplexAlarm(
     hint: { reason?: string; atMs?: number } = {},
@@ -1033,6 +1044,10 @@ export class SessionDO extends DurableObject<Env> {
       const schedules: ScheduleWakeRecord[] = scheduleNextMs === null
         ? []
         : [{ id: "cf_agents_schedules", dueAtMs: scheduleNextMs }];
+      const queueBackoffAtMs =
+        this._queueDrainRetryAtMs !== null && this._queueDrainRetryAtMs > nowMs
+          ? this._queueDrainRetryAtMs
+          : undefined;
       const policy = evaluateCoordinationPolicy({
         nowMs,
         executions,
@@ -1041,26 +1056,40 @@ export class SessionDO extends DurableObject<Env> {
         schedules,
         heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
         queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
+        ...(queueBackoffAtMs === undefined
+          ? {}
+          : { queuedWakeNotBeforeMs: queueBackoffAtMs }),
       });
 
+      const queuedExecutions = executions.filter((e) => e.state === "queued");
       const hasQueued =
         queuedInputs.length > 0 ||
-        executions.some((e) => e.state === "queued" && e.heldAfterExhausted !== true) ||
+        queuedExecutions.length > 0 ||
         policy.actions.some((action) => action.type === "requeue");
+      const hasBlocked = policy.blockedQueuedRows > 0;
       const hasRunning =
         executions.some((e) => e.state === "running") || activeTurns.length > 0;
       const hasSchedule = scheduleNextMs !== null;
       // Hard invariant: queued or running work always keeps a wake armed.
-      const mustStayArmed = hasQueued || hasRunning;
+      // Blocked/held rows still keep the slot, but only at a slow safety net.
+      const mustStayArmed = hasQueued || hasRunning || hasBlocked;
 
       let nextMs = policy.nextWakeAtMs;
+      if (hasBlocked) {
+        const safetyAtMs = nowMs + BLOCKED_QUEUE_SAFETY_WAKE_MS;
+        nextMs = nextMs === null ? safetyAtMs : Math.min(nextMs, safetyAtMs);
+      }
       if (hint.atMs !== undefined) {
         const requested = Math.max(hint.atMs, nowMs);
         nextMs = nextMs === null ? requested : Math.min(nextMs, requested);
       }
       if (nextMs === null && mustStayArmed) {
-        // Policy invariant guard: never disarm while any work exists.
-        nextMs = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : ENQUEUE_WAKE_DELAY_MS);
+        // Policy invariant guard: never disarm while any work exists. Queue
+        // rows with no drainable action must not fall back to a near-zero
+        // re-arm (that is the alarm hot loop this guard used to create).
+        nextMs = nowMs + (hasRunning
+          ? KEEP_ALIVE_INTERVAL_MS
+          : BLOCKED_QUEUE_SAFETY_WAKE_MS);
       }
       if (this._recoveryRetryAtMs !== null && this._recoveryRetryAtMs > nowMs) {
         // Recovery is backing off. Hold recoverable queue/lease wakes until
@@ -1072,7 +1101,9 @@ export class SessionDO extends DurableObject<Env> {
       const reason = hint.reason ?? ([
         hasQueued ? "queued_work" : null,
         hasRunning ? "lease" : null,
+        hasBlocked ? "blocked_rows" : null,
         hasSchedule ? "schedule" : null,
+        queueBackoffAtMs !== undefined ? "queue_backoff" : null,
         this._recoveryRetryAtMs !== null ? "recovery_backoff" : null,
       ].filter((part): part is string => part !== null).join("+") || "policy");
 
@@ -1083,14 +1114,18 @@ export class SessionDO extends DurableObject<Env> {
           reason,
           next_ms: nextMs,
           next_at: new Date(nextMs).toISOString(),
-          queued: queuedInputs.length,
+          queued: queuedInputs.length + queuedExecutions.length,
+          blocked: policy.blockedQueuedRows,
           running_executions: executions.filter((e) => e.state === "running").length,
           schedule: hasSchedule,
+          drainable_at_ms: policy.nextDrainableWakeAtMs,
         });
       } else if (mustStayArmed) {
         // Defensive duplicate of the invariant above; a future policy
         // regression must never strand queued/running work.
-        const guardedAt = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : ENQUEUE_WAKE_DELAY_MS);
+        const guardedAt = nowMs + (hasRunning
+          ? KEEP_ALIVE_INTERVAL_MS
+          : BLOCKED_QUEUE_SAFETY_WAKE_MS);
         await this.ctx.storage.setAlarm(guardedAt);
         sdoLog("alarm.armed", {
           session_id: this._state?.session_id,
@@ -1775,6 +1810,9 @@ export class SessionDO extends DurableObject<Env> {
     if (this.localEventExists(e.id)) return false;
     const enqueued = this.queue.enqueueQueueInput(event);
     if (enqueued) {
+      // New work always resets the no-progress horizon: a held/blocked lane
+      // may just have become drainable.
+      this._resetQueueDrainBackoff();
       sdoLog("queue.enqueue", {
         session_id: this._state?.session_id,
         thread_id: (event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary",
@@ -1886,6 +1924,8 @@ export class SessionDO extends DurableObject<Env> {
       this._stampEventForPending(event);
     }
     this.queue.enqueueQueueInput(event);
+    // New admission resets the no-progress horizon (see enqueueQueueInputIfNew).
+    this._resetQueueDrainBackoff();
     sdoLog("queue.enqueue", {
       session_id: this._state?.session_id,
       thread_id: (event as { session_thread_id?: string }).session_thread_id ?? "sthr_primary",
@@ -7446,12 +7486,37 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /** Unprocessed inbound rows (events.processed_at IS NULL), one per lane. */
-  private _localQueuedInputs(): Array<{ id: string; laneId: string }> {
-    const out: Array<{ id: string; laneId: string }> = [];
+  private _localQueuedInputs(): QueuedInputRecord[] {
+    const out: QueuedInputRecord[] = [];
     try {
       for (const laneId of this.queue.threadsWithQueueInputs()) {
+        const exhaustedAt = this.state.exhausted_at_by_lane?.[laneId];
+        let settleOnly: SettleOnlyReason | null | undefined;
         for (const row of this.queue.listQueue(laneId)) {
-          out.push({ id: row.event_id, laneId });
+          const heldAfterExhausted =
+            exhaustedAt !== undefined && row.enqueued_at <= exhaustedAt;
+          const isContinuation =
+            row.type === "user.tool_confirmation" ||
+            row.type === "user.custom_tool_result";
+          let blocked = false;
+          let blockedReason: "requires_action" | "budget_reached" | undefined;
+          if (!heldAfterExhausted && !isContinuation) {
+            if (settleOnly === undefined) {
+              settleOnly = this._laneSettleOnlyReasonSafe(laneId);
+            }
+            if (settleOnly !== null) {
+              blocked = true;
+              blockedReason = settleOnly;
+            }
+          }
+          out.push({
+            id: row.event_id,
+            laneId,
+            ...(heldAfterExhausted ? { heldAfterExhausted: true } : {}),
+            ...(blocked && blockedReason !== undefined
+              ? { blocked: true, blockedReason }
+              : {}),
+          });
         }
       }
     } catch {
@@ -7459,6 +7524,74 @@ export class SessionDO extends DurableObject<Env> {
       // local work this pass.
     }
     return out;
+  }
+
+  /** Never let queue classification break the alarm; a failed read is just
+   *  "not parked" and the no-progress backoff still protects the loop. */
+  private _laneSettleOnlyReasonSafe(threadId: string): SettleOnlyReason | null {
+    try {
+      return this.laneSettleOnlyReason(this.openHistory(), threadId);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Identity of the drainable queue state. A drain/claim is progress when
+   *  this changes (row processed, execution claimed/settled, turn started). */
+  private _queueProgressToken(
+    executions: readonly ExecutionLeaseRecord[],
+    inputs: readonly QueuedInputRecord[],
+  ): string {
+    const executionToken = executions
+      .map((execution) => [
+        execution.executionId,
+        execution.laneId ?? "",
+        execution.state,
+        execution.attemptCount,
+        execution.ownerId ?? "",
+        execution.leaseExpiresAtMs ?? "",
+      ].join(":"))
+      .sort()
+      .join("|");
+    const inputToken = inputs
+      .map((input) => input.id ?? "")
+      .sort()
+      .join("|");
+    const activeToken = [
+      ...[...this._activeTurnIds].sort().map((id) => `turn:${id}`),
+      ...[...this._executionActiveLanes].sort().map((lane) => `lane:${lane}`),
+      ...[...this._draining].sort().map((lane) => `drain:${lane}`),
+    ].join("|");
+    return `${executionToken}#${inputToken}#${activeToken}`;
+  }
+
+  private _resetQueueDrainBackoff(): void {
+    this._queueDrainFailures = 0;
+    this._queueDrainRetryAtMs = null;
+  }
+
+  /** One line per no-progress drain pass; the multiplexer then holds the
+   *  single alarm slot at the backoff horizon instead of re-arming ~1s later. */
+  private _recordQueueDrainNoProgress(
+    context: { queued: number; blocked: number; running: number },
+  ): void {
+    const nowMs = this.processedClock.nowMs();
+    this._queueDrainFailures += 1;
+    const backoffMs = Math.min(
+      QUEUE_DRAIN_BACKOFF_BASE_MS * 2 ** (this._queueDrainFailures - 1),
+      QUEUE_DRAIN_BACKOFF_MAX_MS,
+    );
+    this._queueDrainRetryAtMs = nowMs + backoffMs;
+    sdoLog("alarm.backoff", {
+      session_id: this._state?.session_id,
+      reason: "queue_no_progress",
+      attempt: this._queueDrainFailures,
+      backoff_ms: backoffMs,
+      retry_at_ms: this._queueDrainRetryAtMs,
+      queued: context.queued,
+      blocked: context.blocked,
+      running_executions: context.running,
+    });
   }
 
   /**
@@ -7783,7 +7916,10 @@ export class SessionDO extends DurableObject<Env> {
       return;
     }
     const queuedInputs = this._localQueuedInputs();
-    if (executions.length === 0 && queuedInputs.length === 0) return;
+    if (executions.length === 0 && queuedInputs.length === 0) {
+      this._resetQueueDrainBackoff();
+      return;
+    }
     const policy = evaluateCoordinationPolicy({
       nowMs,
       executions,
@@ -7798,14 +7934,43 @@ export class SessionDO extends DurableObject<Env> {
         lanes.add(action.laneId ?? "sthr_primary");
       }
     }
-    if (lanes.size === 0) return;
+    if (lanes.size === 0) {
+      // Only blocked/held rows remain. They must not keep the aggressive
+      // wake; the multiplexer arms a 5-minute safety net.
+      this._resetQueueDrainBackoff();
+      return;
+    }
     const laneIds = [...lanes];
+    const before = this._queueProgressToken(executions, queuedInputs);
     sdoLog("recover.execution_queue", {
       session_id: this.state.session_id,
       lanes: laneIds.length,
       lane_ids: laneIds,
+      blocked: policy.blockedQueuedRows,
     });
     await Promise.all(laneIds.map((lane) => this.drainEventQueue(lane)));
+
+    let afterExecutions: ExecutionLeaseRecord[];
+    try {
+      afterExecutions = await this._executionLeaseRecords();
+    } catch {
+      // Unknown post-drain state: do not manufacture a backoff from a read
+      // failure. The next alarm/recovery read will decide.
+      this._resetQueueDrainBackoff();
+      return;
+    }
+    const afterInputs = this._localQueuedInputs();
+    const after = this._queueProgressToken(afterExecutions, afterInputs);
+    if (after !== before) {
+      // A row drained, an execution was claimed/settled, or a turn started.
+      this._resetQueueDrainBackoff();
+      return;
+    }
+    this._recordQueueDrainNoProgress({
+      queued: queuedInputs.length + executions.filter((e) => e.state === "queued").length,
+      blocked: policy.blockedQueuedRows,
+      running: executions.filter((e) => e.state === "running").length,
+    });
   }
 
   /**
