@@ -9,6 +9,7 @@
     "./harness/default-loop": "./src/harness/default-loop.ts",
     "./harness/builtins": "./src/harness/builtins.ts",
     "./harness/interface": "./src/harness/interface.ts",
+    "./harness/budget": "./src/harness/budget.ts",
     "./harness/tools": "./src/harness/tools.ts",
     "./harness/registry": "./src/harness/registry.ts",
     "./harness/provider": "./src/harness/provider.ts",

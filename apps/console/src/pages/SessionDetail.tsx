@@ -65,6 +65,7 @@ import { settleOnlySendFailureNotice } from "../lib/send-rejection";
 import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
 import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
 import { useI18n } from "../i18n";
+import { SessionBudget } from "./session-detail/SessionBudget";
 
 type View = "chat" | "timeline";
 
@@ -139,6 +140,8 @@ export function SessionDetail() {
   const [notFound, setNotFound] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<{
     title?: string | null;
+    budget?: unknown;
+    usage?: unknown;
     environmentId?: string;
     vaultIds?: string[];
     vaults?: Array<{ id: string; name?: string }>;
@@ -518,6 +521,8 @@ export function SessionDetail() {
         setStatus(s.status);
         setSessionMeta({
           title: s.title ?? null,
+          budget: (s as { budget?: unknown }).budget ?? null,
+          usage: (s as { usage?: unknown }).usage ?? null,
           environmentId: s.environment_id,
           vaultIds: s.vault_ids,
           createdAt: s.created_at,
@@ -934,6 +939,16 @@ export function SessionDetail() {
     }
   };
 
+  const saveBudget = async (body: { budget: unknown }) => {
+    if (!id) return;
+    const updated = await managedApi.sessions.update(id, body as never);
+    setSessionMeta((prev) => ({
+      ...prev,
+      budget: (updated as { budget?: unknown }).budget ?? null,
+      usage: (updated as { usage?: unknown }).usage ?? prev.usage,
+    }));
+  };
+
   const hasTransientActivity = (
     (localPending !== null && !localPendingQueued && activeThreadId === "sthr_primary")
     || thinkingStreams.size > 0
@@ -1021,6 +1036,7 @@ export function SessionDetail() {
             </>
           )}
         </div>
+        <SessionBudget budget={sessionMeta.budget} usage={sessionMeta.usage} onSave={saveBudget} />
         <div className="flex items-center gap-2 flex-wrap">
           <StatusPill
             label={needsAction ? "Needs action" : undefined}

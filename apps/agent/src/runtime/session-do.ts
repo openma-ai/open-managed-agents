@@ -58,6 +58,14 @@ import {
 } from "@open-managed-agents/session-runtime-contract/settle-events";
 import { encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
+import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-runtime-sql/context";
+import {
+  budgetReachedEvents,
+  consumedListCostPico,
+  createSessionBudgetGate,
+  runtimeListCost,
+  type SessionBudgetGate,
+} from "../harness/budget";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
 import { isSpecEvent } from "@open-managed-agents/api-types";
 import type {
@@ -1642,6 +1650,16 @@ export class SessionDO extends DurableObject<Env> {
           try {
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
+              if (rawEvent.type === "session.updated") {
+                // Budget resume: continue from history, no new user input.
+                if (rawEvent.resume === true) {
+                  await this.processUserMessage({
+                    type: "user.message",
+                    content: [{ type: "text", text: "" }],
+                  }, 0, true, signal, fence);
+                }
+                continue;
+              }
               // Execution rows use the Managed Agents domain shape. The DO
               // runtime uses the legacy wire shape, so this is the one
               // explicit protocol projection at the host boundary.
@@ -2582,6 +2600,16 @@ export class SessionDO extends DurableObject<Env> {
           // drop this as stale and never project to D1 (GET /events reads D1).
           // Force-publish lifecycle idle without a fence.
           this.broadcastEventIgnoringExecutionFence(idleEvent);
+        }
+        return new Response(null, { status: 202 });
+      }
+
+      if (body.type === ("session.updated" as SessionEvent["type"])) {
+        // Budget update that lifted a budget_reached pause. The canonical
+        // event and its continuation execution are already in D1 (store
+        // append + outbox); just wake the primary lane to claim it.
+        if ((body as unknown as { resume?: boolean }).resume === true) {
+          this.drainEventQueue("sthr_primary");
         }
         return new Response(null, { status: 202 });
       }
@@ -4497,6 +4525,54 @@ export class SessionDO extends DurableObject<Env> {
     return bindStoredModelCardCredentials(card);
   }
 
+  /**
+   * Session budget gate for this turn. Active only when the canonical
+   * session has `budget.max_list_cost` AND the model card has pricing;
+   * otherwise null (no enforcement, no error).
+   */
+  private async resolveBudgetGate(handle: string): Promise<SessionBudgetGate | null> {
+    if (!this.env.MAIN_DB || !this.state.tenant_id || !this.state.session_id) return null;
+    try {
+      const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
+      const context = await new SqlSessionExecutionContextSource(new CfD1SqlClient(db)).find({
+        workspaceId: this.state.tenant_id,
+        sessionId: this.state.session_id,
+      });
+      const budget = context?.session.budget ?? null;
+      if (budget === null) return null;
+      const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
+      const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
+      const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
+      return createSessionBudgetGate({ amount: budget.amountMinor, currency: budget.currency }, pricing);
+    } catch (err) {
+      logWarn(
+        { op: "session_do.budget_gate", session_id: this.state.session_id, err },
+        "budget gate unavailable; turn runs without budget enforcement",
+      );
+      return null;
+    }
+  }
+
+  /** Session-wide usage snapshot for the budget_reached `session.usage`. */
+  private budgetUsageSnapshot(gate: SessionBudgetGate, events: readonly SessionEvent[]): Record<string, unknown> {
+    const totals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    for (const event of events) {
+      if (event.type !== "span.model_request_end") continue;
+      const usage = (event as { model_usage?: Partial<typeof totals> }).model_usage ?? {};
+      for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += usage[key] ?? 0;
+    }
+    return {
+      input_tokens: totals.input_tokens,
+      output_tokens: totals.output_tokens,
+      ...(totals.cache_read_input_tokens > 0 && { cache_read_input_tokens: totals.cache_read_input_tokens }),
+      ...(totals.cache_creation_input_tokens > 0 && {
+        cache_creation: { ephemeral_five_minute_input_tokens: totals.cache_creation_input_tokens },
+      }),
+      list_cost: runtimeListCost(consumedListCostPico(events, gate.pricing)),
+      list_cost_pico: consumedListCostPico(events, gate.pricing).toString(),
+    };
+  }
+
   /** The main model handle for `agent`, matching every turn path. */
   private agentModelHandle(agent: AgentConfig): string {
     const handle = typeof agent.model === "string" ? agent.model : agent.model?.id;
@@ -5739,6 +5815,7 @@ export class SessionDO extends DurableObject<Env> {
     // --- Harness receives a fully-prepared context ---
     const ctx: HarnessContext = {
       agent,
+      budget: await this.resolveBudgetGate(effectiveHandle),
       userMessage,
       session_id: this.state.session_id,
       tenant_id: this.state.tenant_id,
@@ -6048,6 +6125,22 @@ export class SessionDO extends DurableObject<Env> {
           action_type: "tool_confirmation" as const,
           event_ids: pendingConfirmations,
         };
+      } else if (ctx.budget?.reached) {
+        // Official budget stop (requires_action outranks it, above):
+        // thread idle → usage snapshot → session idle (emitted below).
+        const [threadIdle, usageEvent] = budgetReachedEvents({
+          sessionThreadId: turnThreadId,
+          usage: this.budgetUsageSnapshot(ctx.budget, history.getEvents()),
+          budget: ctx.budget.maxListCost,
+        });
+        for (const event of [
+          { ...threadIdle, agent_name: agent.name } as unknown as SessionEvent,
+          usageEvent!,
+        ]) {
+          history.append(event);
+          this.broadcastEvent(event, activeFence);
+        }
+        stopReason = { type: "budget_reached" } as unknown as typeof stopReason;
       } else {
         stopReason = { type: "end_turn" as const };
       }

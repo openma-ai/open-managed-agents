@@ -144,6 +144,17 @@ export type SentSessionEvent =
   | (SentEventBase & {
       type: "system.message";
       content: TextContentBlock[];
+    })
+  /** Control-plane `session.updated` for a budget change. `resume` marks the
+   * update that lifted a budget_reached pause: it admits a continuation
+   * execution (no user input) on the primary thread. */
+  | (SentEventBase & {
+      type: "session.updated";
+      budget: SpendLimit | null;
+      resume?: boolean;
+      agent?: undefined;
+      metadata?: undefined;
+      title?: undefined;
     });
 
 export interface SessionUsageEventView {

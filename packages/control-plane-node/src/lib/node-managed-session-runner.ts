@@ -36,6 +36,11 @@ import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionEvent } from "@open-managed-agents/shared";
+import {
+  createSessionBudgetGate,
+  type SessionBudgetGate,
+} from "@open-managed-agents/agent/harness/budget";
+import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
@@ -192,6 +197,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     executionFence: SessionExecutionFence;
   }): Promise<void>;
   buildModel(input: ManagedRunnerContext): Promise<HarnessContext["model"]>;
+  /** List prices of the session's model card; null = unpriced. Session
+   * budgets are enforced only when this AND `session.budget` are set. */
+  resolveModelPricing?(input: ManagedRunnerContext): Promise<ModelPricing | null>;
   buildTools(
     input: ManagedRunnerContext & ManagedRunnerSubagentContext & { sandbox: SandboxExecutor },
   ): Promise<HarnessContext["tools"]>;
@@ -506,7 +514,10 @@ export class DefaultNodeManagedSessionRunner
       event.type !== "user.custom_tool_result" &&
       event.type !== "user.tool_result" &&
       event.type !== "user.tool_confirmation" &&
-      event.type !== "user.define_outcome"
+      event.type !== "user.define_outcome" &&
+      // A budget update that lifted a budget_reached pause: continue the
+      // harness from history with no new user input.
+      !(event.type === "session.updated" && event.resume === true)
     ) {
       throw new Error(
         `Managed Node runner does not yet support ${event.type}`,
@@ -614,6 +625,7 @@ export class DefaultNodeManagedSessionRunner
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
+    let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
     try {
@@ -736,6 +748,20 @@ export class DefaultNodeManagedSessionRunner
           model,
           tools,
         });
+        if (harnessContext.budget === undefined) {
+          const sessionBudget = input.session.budget ?? null;
+          const pricing = sessionBudget === null
+            ? null
+            : await this.dependencies.resolveModelPricing?.(context) ?? null;
+          harnessContext.budget = createSessionBudgetGate(
+            sessionBudget === null
+              ? null
+              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
+            pricing,
+          );
+        }
+        budgetGate = harnessContext.budget ?? null;
+        runtime.setBudgetGate(budgetGate);
         const retry = this.dependencies.harnessRetry ??
           { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
         for (let attempt = 1; ; attempt += 1) {
@@ -948,7 +974,27 @@ export class DefaultNodeManagedSessionRunner
           },
         });
       }
-      if (!leaseLost) {
+      if (
+        !leaseLost && !runFailed && finalizationError === undefined
+        && budgetGate?.reached === true
+      ) {
+        // Official budget stop: thread idle → usage → session idle (budget_reached).
+        // requires_action parking is skipped: budget_reached outranks end_turn but
+        // requires_action already short-circuits earlier when tools are pending.
+        const stopReason = { type: "budget_reached" as const };
+        runtime.broadcastProducedEvent({
+          type: "session.thread_status_idle",
+          agentName: input.session.agent.name,
+          sessionThreadId: "sthr_primary",
+          stopReason,
+        });
+        runtime.broadcastProducedEvent({
+          type: "session.usage",
+          usage: runtime.usageSnapshot(),
+          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
+        });
+        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+      } else if (!leaseLost) {
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
           runtime.pendingConfirmations,

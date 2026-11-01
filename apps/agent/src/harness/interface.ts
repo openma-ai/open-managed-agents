@@ -1,3 +1,4 @@
+import type { SessionBudgetGate } from "./budget";
 import type { ModelMessage, LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
@@ -209,6 +210,13 @@ export interface HarnessRuntime {
 
 export interface HarnessContext {
   agent: AgentConfig;
+  /**
+   * Session list-cost budget gate. Present only when the session has
+   * `budget.max_list_cost` AND its model card has pricing. The harness checks
+   * it before every model request; at the cap it makes no request and sets
+   * `budget.reached`, and the host emits the budget_reached idle sequence.
+   */
+  budget?: SessionBudgetGate | null;
   userMessage: UserMessageEvent;
   /** Host-scoped canonical history for ACP recovery, excluding this execution's
    * accepted inputs and future queued inputs. Undefined retains legacy hosts. */

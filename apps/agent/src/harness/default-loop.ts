@@ -1,3 +1,4 @@
+import { budgetExhausted } from "./budget";
 import { streamText, stepCountIs, wrapLanguageModel } from "ai";
 import type { ContentPart, ModelMessage, LanguageModel, SystemModelMessage } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -298,6 +299,12 @@ export class DefaultHarness implements HarnessInterface {
   async run(ctx: HarnessContext): Promise<void> {
     const { agent, userMessage, runtime, tools, model, systemPrompt } = ctx;
     warnAiSdkHarnessDeprecatedOnce(ctx.session_id ?? "unknown", (event) => { runtime.broadcast(event); });
+    // Pre-request budget gate (turn entry only; the deprecated AI SDK loop
+    // runs its multi-step tool loop inside one streamText call).
+    if (budgetExhausted(ctx.budget, runtime.history.getEvents())) {
+      ctx.budget!.reached = true;
+      return;
+    }
     const providerOptions =
       typeof agent.model === "object"
         ? agent.model.provider_options as SharedV3ProviderOptions | undefined

@@ -25,7 +25,7 @@ import type {
   ModelCardUpdateFields,
   NewModelCardInput,
 } from "../ports";
-import type { ModelCardRow } from "../types";
+import type { ModelCardRow, ModelPricing } from "../types";
 
 
 /**
@@ -59,6 +59,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
       custom_headers:
         input.customHeaders !== null ? JSON.stringify(input.customHeaders) : null,
       pi_config: input.piConfig !== null ? JSON.stringify(input.piConfig) : null,
+      pricing: input.pricing ? JSON.stringify(input.pricing) : null,
       api_key_cipher: input.apiKeyCipher,
       api_key_preview: input.apiKeyPreview,
       is_default: input.isDefault ? 1 : 0,
@@ -217,6 +218,9 @@ export class SqlModelCardRepo implements ModelCardRepo {
     if (update.piConfig !== undefined) {
       set.pi_config = update.piConfig !== null ? JSON.stringify(update.piConfig) : null;
     }
+    if (update.pricing !== undefined) {
+      set.pricing = update.pricing !== null ? JSON.stringify(update.pricing) : null;
+    }
     if (update.apiKeyCipher !== undefined) set.api_key_cipher = update.apiKeyCipher;
     if (update.apiKeyPreview !== undefined) set.api_key_preview = update.apiKeyPreview;
     if (update.isDefault !== undefined) set.is_default = update.isDefault ? 1 : 0;
@@ -344,6 +348,10 @@ function toRow(r: typeof model_cards.$inferSelect): ModelCardRow {
     pi_config:
       r.pi_config !== null
         ? (JSON.parse(r.pi_config) as Record<string, unknown>)
+        : null,
+    pricing:
+      r.pricing !== null && r.pricing !== undefined
+        ? (JSON.parse(r.pricing) as ModelPricing)
         : null,
     api_key_preview: r.api_key_preview,
     // postgres.js returns BIGINT columns as strings by default, even though
