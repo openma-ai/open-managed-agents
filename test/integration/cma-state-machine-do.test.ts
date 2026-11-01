@@ -3,7 +3,7 @@
 // Sources: anthropics/skills managed-agents-core/events; SDK events.d.ts
 // (retry_status retrying/exhausted/terminal, stop_reason retries_exhausted).
 import { env, exports } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -177,6 +177,76 @@ describe("CF POST /events: [user.interrupt, user.message] during requires_action
     const after = await domEvents(sessionId);
     expect(after.length).toBe(before);
     expect(after.some((e) => e.type === "user.interrupt")).toBe(false);
+  });
+});
+
+describe("CF SessionDO alarm cold-start queue recovery (#399)", () => {
+  it("alarm on a DO whose schema was not yet initialised re-drives a queued central execution", async () => {
+    // Regression: alarm() → recoverExecutionQueue() ran before ensureSchema()
+    // on a cold DO, so drainEventQueue dereferenced a null in-memory queue
+    // repo (`Cannot read properties of null (reading 'listQueue')`) and the
+    // D1 lane stayed queued/running forever.
+    const sessionId = await createSession("echo-user-input");
+    const stub = stubOf(sessionId);
+    const eventId = `sevt_cold_${crypto.randomUUID()}`;
+    const text = "cold-start recovery";
+    const now = Date.now();
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text }],
+      processedAt: new Date(now).toISOString(),
+    }]);
+
+    // Simulate an isolate reload: every in-memory repo/flag is gone, while
+    // the durable D1 outbox still has the queued lane.
+    const tenantId = await runInDurableObject(stub, async (instance) => {
+      const room = instance as any;
+      room.initialized = false;
+      room._queue = null;
+      // Pre-fix field name. Keeps this test reproducing the original cold
+      // shape (and is a no-op TypeError, swallowed here, after the getter fix).
+      try { room.queue = null; } catch { /* queue is a getter-only accessor */ }
+      room.streams = null;
+      room._coldStartFlushDone = true;
+
+      await env.MAIN_DB.prepare(
+        `INSERT INTO managed_session_executions
+           (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+            events_fingerprint, state, generation, attempt_count, max_attempts,
+            deadline_at_ms, revision)
+         VALUES (?, ?, 'sthr_primary', ?, ?, ?, ?, 'queued', 0, 0, 10, ?, 1)`,
+      ).bind(
+        room.state.tenant_id,
+        sessionId,
+        eventId,
+        now,
+        eventsJson,
+        eventsJson,
+        now + 60_000,
+      ).run();
+      return room.state.tenant_id as string;
+    });
+
+    // Fire the alarm exactly like the runtime does after a lost wakeup.
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+    // Throws on a regression; a resolved value just means the alarm was run.
+    await runDurableObjectAlarm(stub);
+
+    const events = await waitFor(
+      sessionId,
+      (all) => all.some((e) => e.type === "agent.message" && e.content?.[0]?.text === `echo: ${text}`),
+    );
+    expect(events.some((e) => e.type === "agent.message" && e.content?.[0]?.text === `echo: ${text}`)).toBe(true);
+
+    // The outbox row settled instead of being retried forever.
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state FROM managed_session_executions
+        WHERE workspace_id = ? AND id = ?`,
+    ).bind(tenantId, eventId).first<{ state: string }>();
+    expect(execution?.state).toBe("completed");
   });
 });
 

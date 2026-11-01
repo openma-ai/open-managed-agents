@@ -753,8 +753,25 @@ export class SessionDO extends DurableObject<Env> {
   private streams: StreamRepo | null = null;
   /** Single-table queue repo: turn-input events live in `events` with
    *  processed_at NULL until drain stamps the same row/id. Lazy-initialized
-   *  in ensureSchema(). */
-  private queue: EventLogRepo | null = null;
+   *  in ensureSchema(). Always access it through the `queue` getter below —
+   *  alarm() can run before any fetch() has warmed the schema. */
+  private _queue: EventLogRepo | null = null;
+
+  /**
+   * Lazy queue accessor. `queue` used to be dereferenced as `this.queue`
+   * from alarm()/recovery paths that can run on a cold DO before
+   * ensureSchema() (e.g. alarm → recoverExecutionQueue → drainEventQueue).
+   * That produced `TypeError: Cannot read properties of null (reading
+   * 'listQueue')` and left the session status_running forever. Going
+   * through this getter guarantees the schema (and thus the repo) exists.
+   */
+  private get queue(): EventLogRepo {
+    if (!this.initialized || this._queue === null) this.ensureSchema();
+    if (this._queue === null) {
+      throw new Error("event-log queue unavailable: ensureSchema() did not initialize it");
+    }
+    return this._queue;
+  }
 
   private ensureSchema() {
     if (this.initialized) return;
@@ -765,7 +782,7 @@ export class SessionDO extends DurableObject<Env> {
     // the old table.
     ensureEventLogSchema(this.ctx.storage.sql);
     this.streams = new CfDoStreamRepo(this.ctx.storage.sql);
-    this.queue = new CfDoEventLog(this.ctx.storage.sql, (e) => {
+    this._queue = new CfDoEventLog(this.ctx.storage.sql, (e) => {
       const ev = e as SessionEvent & { id?: string; processed_at?: string };
       if (!ev.id) ev.id = `sevt_${generateEventId()}`;
       if (!ev.processed_at) ev.processed_at = this.processedClock.nowIso();
@@ -781,7 +798,7 @@ export class SessionDO extends DurableObject<Env> {
     // drainEventQueue per affected thread so they don't sit forever
     // waiting for a fresh user.message to retrigger drain.
     try {
-      const threads = this.queue!.threadsWithQueueInputs();
+      const threads = this.queue.threadsWithQueueInputs();
       if (threads.length > 0) {
         console.log(`[ensureSchema] cold-start drain for threads: ${threads.join(",")}`);
         for (const t of threads) {
@@ -999,7 +1016,7 @@ export class SessionDO extends DurableObject<Env> {
     this.ensureSchema();
     // Single-table queue: active queued inputs are events rows with
     // processed_at IS NULL. Cancelled rows are excluded.
-    const threads = this.queue!.threadsWithQueueInputs();
+    const threads = this.queue.threadsWithQueueInputs();
     if (threads.length === 0) {
       // Nothing pending anywhere. Do not invoke drainEventQueue just to
       // discover an empty queue: the central execution path arms a lease
@@ -1372,7 +1389,7 @@ export class SessionDO extends DurableObject<Env> {
     const e = event as SessionEvent & { id?: string };
     if (!e.id) e.id = `sevt_${generateEventId()}`;
     if (this.localEventExists(e.id)) return false;
-    return this.queue!.enqueueQueueInput(event);
+    return this.queue.enqueueQueueInput(event);
   }
 
   private executionInputFromWire(event: SessionEvent): unknown {
@@ -1403,13 +1420,13 @@ export class SessionDO extends DurableObject<Env> {
     // Walk the lane's queued inputs oldest-first; rows already admitted
     // (e.g. held after retries_exhausted) are skipped so a newer input can
     // still be admitted behind them.
-    for (const row of this.queue!.listQueue(threadId)) {
+    for (const row of this.queue.listQueue(threadId)) {
       let event: SessionEvent;
       try {
         event = JSON.parse(row.data) as SessionEvent;
       } catch {
         // Corrupt queue row: cancel it so it never blocks the lane.
-        this.queue!.cancelQueueByEventId(row.event_id, Date.now());
+        this.queue.cancelQueueByEventId(row.event_id, Date.now());
         continue;
       }
       const id = (event as unknown as { id?: string }).id ?? row.event_id;
@@ -1467,7 +1484,7 @@ export class SessionDO extends DurableObject<Env> {
     } else {
       this._stampEventForPending(event);
     }
-    this.queue!.enqueueQueueInput(event);
+    this.queue.enqueueQueueInput(event);
     return this.queueRowForEvent(eventId);
   }
 
@@ -1486,7 +1503,7 @@ export class SessionDO extends DurableObject<Env> {
         : nowIso;
     const stampMs = Date.parse(stamp);
     event.processed_at = stamp;
-    this.queue!.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
+    this.queue.stampProcessed(row.seq, Number.isFinite(stampMs) ? stampMs : nowMs);
     // Canonical D1 stamp (null → processed_at) before live re-emit.
     this.markAcceptedEventsProcessed([row.event_id], stamp);
     this.broadcastEvent(event);
@@ -1514,7 +1531,7 @@ export class SessionDO extends DurableObject<Env> {
   private async takeSteeringInputs(threadId: string): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
     const out: SessionEvent[] = [];
-    for (const row of this.queue!.listQueue(threadId)) {
+    for (const row of this.queue.listQueue(threadId)) {
       // CMA: every mid-turn user.message steers into the current turn at the
       // next LLM/tool-call boundary (coherent turn / after-call absorb).
       // Ordinary mid-run accept is the only path — no explicit Steer API.
@@ -1601,7 +1618,7 @@ export class SessionDO extends DurableObject<Env> {
           // input still awaits fallback admission.
           {
             const at = this.state.exhausted_at_by_lane?.[threadId];
-            if (at !== undefined && !this.queue!.listQueue(threadId).some((r) =>
+            if (at !== undefined && !this.queue.listQueue(threadId).some((r) =>
               r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
               this.setExhaustedAt(threadId, undefined);
             }
@@ -1706,7 +1723,7 @@ export class SessionDO extends DurableObject<Env> {
       // Peek the next active queued input (events row, processed_at NULL).
       // Promotion stamps the same row/id in place — no re-insert, no
       // second event id, no delete-then-append window.
-      const row = this.queue!.peekQueueInput(threadId);
+      const row = this.queue.peekQueueInput(threadId);
       if (!row) break;
 
       // Fresh per-turn dedup window for agent.message broadcasts. See
@@ -2365,7 +2382,7 @@ export class SessionDO extends DurableObject<Env> {
         // on this thread by stamping cancelled_at on the SAME events rows
         // (processed_at stays NULL, so they never promote). Cancelling one
         // specific row is also available through DELETE /pending/:event_id.
-        const cancelledRows = this.queue!.cancelQueueForThread(targetThread, cancelTs);
+        const cancelledRows = this.queue.cancelQueueForThread(targetThread, cancelTs);
         const cancelledCount = cancelledRows.length;
         for (const row of cancelledRows) {
           this.broadcastEventIgnoringExecutionFence({
@@ -2752,8 +2769,8 @@ export class SessionDO extends DurableObject<Env> {
       // extension type, so this is gated by the chunks opt-in.
       if (includeChunks) {
         try {
-          for (const threadId of this.queue!.threadsWithQueueInputs()) {
-            for (const row of this.queue!.listQueue(threadId)) {
+          for (const threadId of this.queue.threadsWithQueueInputs()) {
+            for (const row of this.queue.listQueue(threadId)) {
               let parsed: SessionEvent;
               try {
                 parsed = JSON.parse(row.data) as SessionEvent;
@@ -2843,7 +2860,7 @@ export class SessionDO extends DurableObject<Env> {
         }
       }
       const localRow = durableCancelled
-        ? this.queue!.cancelQueueByEventId(eventId, cancelledAt)
+        ? this.queue.cancelQueueByEventId(eventId, cancelledAt)
         : null;
       if (store === null && localRow === null) {
         durableCancelled = false;
@@ -6905,6 +6922,10 @@ export class SessionDO extends DurableObject<Env> {
    * remain inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
+    // alarm() can reach this before any fetch()/init has warmed the in-memory
+    // schema. Without this, drainEventQueue later dereferences a null queue
+    // repo and the cold-started lane is never re-driven.
+    this.ensureSchema();
     const workspaceId = this.state.tenant_id;
     const sessionId = this.state.session_id;
     if (!this.env.MAIN_DB || !workspaceId || !sessionId) return;
@@ -7273,7 +7294,7 @@ export class SessionDO extends DurableObject<Env> {
     // schedule hook — it threadsWithQueueInputs() first and exits
     // immediately when nothing's queued. Safe to call even when we ended
     // zero stale turns (cold-start of a healthy session is a no-op).
-    if (this.queue) {
+    if (this._queue) {
       try {
         await this.recoverEventQueue();
       } catch (err) {
