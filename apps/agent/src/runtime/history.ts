@@ -108,14 +108,20 @@ export function interruptRequiresActionClosure(
   return [];
 }
 
-// No-op idle interrupt (official CMA: "Against an already-idle session an
-// interrupt is normally a no-op"): a user.interrupt logged while parked in
-// idle requires_action also passes through here, but cannot corrupt the parked
-// turn. `answered` is collected from the WHOLE log first, and the DO resumes
-// the parked turn (resumeWhenToolBatchSettled) only once every pending id has
-// its agent.tool_result, so each parked id is already answered by the time a
-// sample is built and is never closed with a synthetic result.
-// See test/unit/interrupt-history-normalize.test.ts.
+// Model-history repair (not the wire path). Official CMA: interrupt against
+// an already-idle session is a wire no-op (`interruptRequiresActionClosure`
+// returns []). But DeepSeek Anthropic-compat 400s on any unpaired tool_use
+// in the sample ("tool_use ids were found without tool_result blocks
+// immediately after"), so when *building model history* we still synthesize
+// interrupted tool_result for every unanswered id:
+//   1) before user.interrupt / user.message (turn boundary), and
+//   2) trailing at end-of-log (retries_exhausted / aborted turn / any path
+//      that would otherwise sample over open always_ask/custom calls).
+// `answered` is collected from the WHOLE log first so a parked requires_action
+// turn that later settles with real agent.tool_result is not double-closed;
+// the DO only resumes (resumeWhenToolBatchSettled) once every pending id has
+// its real result, so a normal post-settle sample never hits the trailing
+// close. See test/unit/interrupt-history-normalize.test.ts.
 export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEvent[] {
   const answered = new Set<string>();
   for (const e of events) {
@@ -128,22 +134,28 @@ export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEv
   let open: SessionEvent[] = [];
   let changed = false;
   const out: SessionEvent[] = [];
+
+  const closeOpen = () => {
+    if (open.length === 0) return;
+    for (const use of open) {
+      const id = (use as { id?: string }).id as string;
+      const thread = (use as { session_thread_id?: string }).session_thread_id;
+      out.push({
+        type: use.type === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
+        ...(use.type === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
+        content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
+        is_error: true,
+        ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
+      } as unknown as SessionEvent);
+      answered.add(id);
+    }
+    open = [];
+    changed = true;
+  };
+
   for (const e of events) {
     if ((e.type === "user.interrupt" || e.type === "user.message") && open.length > 0) {
-      for (const use of open) {
-        const id = (use as { id?: string }).id as string;
-        const thread = (use as { session_thread_id?: string }).session_thread_id;
-        out.push({
-          type: use.type === "agent.mcp_tool_use" ? "agent.mcp_tool_result" : "agent.tool_result",
-          ...(use.type === "agent.mcp_tool_use" ? { mcp_tool_use_id: id } : { tool_use_id: id }),
-          content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT_TEXT }],
-          is_error: true,
-          ...(thread && thread !== "sthr_primary" ? { session_thread_id: thread } : {}),
-        } as unknown as SessionEvent);
-        answered.add(id);
-      }
-      open = [];
-      changed = true;
+      closeOpen();
     }
     out.push(e);
     if (e.type === "agent.tool_use" || e.type === "agent.custom_tool_use" || e.type === "agent.mcp_tool_use") {
@@ -151,6 +163,8 @@ export function normalizeInterruptedToolCalls(events: SessionEvent[]): SessionEv
       if (id && !answered.has(id)) open.push(e);
     }
   }
+  // Never leave unpaired tool_use in the projection the model will see.
+  closeOpen();
   return changed ? out : events;
 }
 
@@ -340,7 +354,7 @@ function buildMessages(
   toolNameById: Map<string, string>,
 ): ModelMessage[] {
   const messages: ModelMessage[] = [];
-  let pendingAssistantContent: AssistantModelMessage["content"] = [];
+  let pendingAssistantContent: Exclude<AssistantModelMessage["content"], string> = [];
   let pendingToolContent: ToolModelMessage["content"] = [];
 
   const flushAssistant = () => {
@@ -463,7 +477,7 @@ async function buildMessagesAsync(
   resolver: FileResolver,
 ): Promise<ModelMessage[]> {
   const messages: ModelMessage[] = [];
-  let pendingAssistantContent: AssistantModelMessage["content"] = [];
+  let pendingAssistantContent: Exclude<AssistantModelMessage["content"], string> = [];
   let pendingToolContent: ToolModelMessage["content"] = [];
 
   const flushAssistant = () => {

@@ -19,14 +19,28 @@ describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
     const results = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-result").map((p: any) => p.toolCallId);
     expect(results.sort()).toEqual(calls.sort());
   });
-  it("leaves a trailing genuinely-pending tool_use and answered calls alone", () => {
+  it("closes trailing unanswered tool_use so model history never has unpaired ids", () => {
+    // Wire idle requires_action interrupt stays a no-op, but sample building
+    // must still pair every tool_use (DeepSeek 400 otherwise).
     const events: any[] = [
       { type: "user.message", id: "m1", content: [] },
       { type: "agent.tool_use", id: "t1", name: "bash", input: {} },
       { type: "agent.tool_result", tool_use_id: "t1", content: [] },
       { type: "agent.custom_tool_use", id: "c1", name: "x", input: {} },
     ];
-    expect(normalizeInterruptedToolCalls(events as never)).toBe(events);
+    const out = normalizeInterruptedToolCalls(events as never) as any[];
+    expect(out.map((e) => e.type)).toEqual([
+      "user.message", "agent.tool_use", "agent.tool_result",
+      "agent.custom_tool_use", "agent.tool_result",
+    ]);
+    const syn = out[out.length - 1];
+    expect(syn.tool_use_id).toBe("c1");
+    expect(syn.is_error).toBe(true);
+    expect(JSON.stringify(syn.content)).toContain("interrupted before completion");
+    const msgs = eventsToMessages(events as never);
+    const calls = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-call").map((p: any) => p.toolCallId);
+    const results = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-result").map((p: any) => p.toolCallId);
+    expect(results.sort()).toEqual(calls.sort());
   });
 });
 
