@@ -370,6 +370,7 @@ function toLeaseRecord(row: ExecutionRow): ExecutionLeaseRecord {
     state: row.state,
     attemptCount: safeInteger(row.attempt_count, "execution attempt count"),
     maxAttempts: safeInteger(row.max_attempts, "execution max attempts"),
+    admittedAtMs: safeInteger(row.admitted_at_ms, "execution admitted at"),
     leaseExpiresAtMs: row.lease_expires_at_ms === null
       ? null
       : safeInteger(row.lease_expires_at_ms, "lease expiry"),
@@ -386,6 +387,7 @@ function toLeaseRecordFromExecution(execution: SessionExecution): ExecutionLease
     state: execution.state,
     attemptCount: execution.attemptCount,
     maxAttempts: execution.maxAttempts,
+    admittedAtMs: Date.parse(execution.admittedAt),
     leaseExpiresAtMs:
       execution.attempt === null ? null : Date.parse(execution.attempt.leaseExpiresAt),
     deadlineAtMs: Date.parse(execution.deadlineAt),
@@ -434,6 +436,13 @@ export interface SweepExpiredOptions {
    * reclaim its own in-flight attempt; only a different owner may take over.
    */
   excludeOwnerId?: string;
+  /**
+   * Override the default lease-only decision for one row. The CF adapter
+   * supplies canonical-stream evidence here so an applied-but-unfinished
+   * turn is finalized as interrupted instead of re-dispatched. Return null
+   * to leave the row alone.
+   */
+  decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
   /** Observe each policy decision (CF logs one line per transition). */
   onDecision?(action: CoordinationAction): void;
 }
@@ -1366,7 +1375,10 @@ export class SqlSessionExecutionStore
           if (rows.length === 0) return;
           let changed = 0;
           for (const row of rows) {
-            const decision = decideExpiredExecution(toLeaseRecord(row), now);
+            const lease = toLeaseRecord(row);
+            const decision = options.decideForRecord
+              ? options.decideForRecord(lease)
+              : decideExpiredExecution(lease, now);
             if (decision === null) continue;
             if (
               decision.type === "requeue" &&
@@ -1415,19 +1427,34 @@ export class SqlSessionExecutionStore
     }
     if (decision.type === "finalize-interrupted") {
       const deadline = decision.reason === "deadline_exceeded";
+      const exhausted = decision.reason === "lease_expired_attempts_exhausted";
+      // Stream-decided interrupts (`input_applied` / `unpaired_tool_call` /
+      // `redispatch_exhausted`) finalize a still-running, expired owner even
+      // when attempt budget remains: rerunning applied work would duplicate
+      // provider output or an unpaired tool call.
+      const condition = deadline
+        ? "state IN ('queued', 'running') AND deadline_at_ms <= ?"
+        : exhausted
+          ? "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?) AND attempt_count >= max_attempts"
+          : "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)";
+      const failure = deadline
+        ? "execution deadline exceeded"
+        : exhausted
+          ? "execution attempt limit exhausted"
+          : decision.reason === "unpaired_tool_call"
+            ? "execution interrupted on unpaired tool call"
+            : decision.reason === "redispatch_exhausted"
+              ? "execution redispatch limit exhausted"
+              : "execution interrupted after applied input";
       const result = await this.sql.prepare(`
         UPDATE managed_session_executions
            SET state = 'failed', settled_at_ms = ?, failure = ?,
                revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND revision = ?
-           AND ${deadline
-             ? "state IN ('queued', 'running') AND deadline_at_ms <= ?"
-             : "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?) AND attempt_count >= max_attempts"}
+           AND ${condition}
       `).bind(
         now,
-        deadline
-          ? "execution deadline exceeded"
-          : "execution attempt limit exhausted",
+        failure,
         row.workspace_id,
         row.id,
         revision,

@@ -17,9 +17,13 @@ import {
   SqlSessionExecutionCoordinator,
 } from "../src/coordination";
 import {
+  decideExpiredExecution,
+  decideRecoveryFromCanonicalStream,
   sessionExecutionEventBatches,
   sessionExecutionId,
   takeQueuedSteeringInputs,
+  type CoordinationAction,
+  type ExecutionLeaseRecord,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionStoreConformance } from
   "../../session-runtime-contract/test/execution-store-conformance";
@@ -666,6 +670,144 @@ describe("SqlSessionExecutionCoordinator", () => {
       claimedAt: at(6),
       leaseTtlMs: 30_000,
     })).resolves.toEqual({ type: "empty" });
+  });
+
+  it("owner dies mid-turn: canonical-stream evidence finalizes applied work instead of rerunning it", async () => {
+    await coordinator.admit({
+      ...admitted("applied_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    // Mirrors the CF isolate-reset sweep: the row's lease says "retry", the
+    // canonical stream says "this turn already produced a tool result".
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [
+            { type: "agent.tool_use" },
+            { type: "agent.tool_result" },
+          ],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 1,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, now);
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "applied_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution interrupted after applied input",
+      settledAt: at(5),
+    });
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toEqual({ type: "empty" });
+  });
+
+  it("owner dies mid-turn: an unapplied input is requeued by the same stream policy", async () => {
+    await coordinator.admit({
+      ...admitted("unapplied_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        return decision.type === "requeue"
+          ? decideExpiredExecution(record, now)
+          : null;
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unapplied_stream",
+    })).resolves.toMatchObject({
+      state: "queued",
+      attemptCount: 1,
+      failure: "requeued after owner lease expired",
+      attempt: null,
+    });
+    // The allowance is one re-dispatch: a second unapplied expiry interrupts.
+    await coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 1_000,
+    });
+    await store.sweepExpired(Date.parse(at(9)), {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, Date.parse(at(9)));
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unapplied_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution redispatch limit exhausted",
+    });
   });
 
   it("never claims or renews work beyond its absolute deadline", async () => {
