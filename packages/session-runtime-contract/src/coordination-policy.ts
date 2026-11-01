@@ -32,6 +32,8 @@ export interface ExecutionLeaseRecord {
   state: CoordinationExecutionState;
   attemptCount: number;
   maxAttempts: number;
+  /** Epoch ms at which the input was admitted (canonical-stream stamp). */
+  admittedAtMs?: number | null;
   /** Epoch ms. `null` for a running row that never got a usable lease. */
   leaseExpiresAtMs: number | null;
   /** Epoch ms absolute execution deadline, when the store has one. */
@@ -77,7 +79,14 @@ export interface CoordinationPolicyOptions {
 export type LeaseSweepReason =
   | "lease_expired"
   | "lease_expired_attempts_exhausted"
-  | "deadline_exceeded";
+  | "deadline_exceeded"
+  /** The canonical stream shows the input was applied but the turn never
+   *  finished: interrupt and keep the persisted outputs/tool results. */
+  | "input_applied"
+  /** An unpaired tool call survived the dead owner: interrupt, never rerun. */
+  | "unpaired_tool_call"
+  /** Nothing was persisted and the single re-dispatch allowance is spent. */
+  | "redispatch_exhausted";
 
 export type CoordinationAction =
   | {
@@ -265,6 +274,98 @@ export function decideLeaseRenewal(
     record.deadlineAtMs ?? Number.MAX_SAFE_INTEGER,
   );
   return { type: "renew", leaseExpiresAtMs };
+}
+
+/**
+ * Canonical-stream evidence for one interrupted turn.
+ *
+ * The event stream — not the owner's in-memory status — is the only
+ * authority for recovery. Lifecycle rows (`session.status_*`) and spans
+ * prove the turn *started*, not that it produced durable work, so callers
+ * must only put real turn output in `eventsAfterInput` (agent messages,
+ * tool uses/results, custom/MCP calls, errors).
+ */
+export interface CanonicalTurnEvidence {
+  /** Epoch ms of the accepted input that started the turn. */
+  inputAtMs: number;
+  /** Persisted turn-output events strictly after the input stamp. */
+  eventsAfterInput: readonly { type: string }[];
+  /** Built-in/MCP tool uses that never got a durable result. */
+  unpairedToolUseCount: number;
+  /** Durable outputs/tool results already persisted and safe to reuse. */
+  completedOutputCount: number;
+  /** Times the provider was dispatched for this input (claim attempts). */
+  providerDispatches: number;
+}
+
+export type RecoveryStreamDecision =
+  /** Persisted output is complete enough to keep; never rerun it. */
+  | { type: "reuse"; reason: "completed_output"; reuseCompletedOutputs: true }
+  /** Applied but unfinished, or an unpaired tool call: abort, don't rerun. */
+  | {
+      type: "interrupt";
+      reason: "unpaired_tool_call" | "input_applied" | "redispatch_exhausted";
+      reuseCompletedOutputs: boolean;
+    }
+  /** Input provably never applied: safe to re-dispatch once. */
+  | { type: "requeue"; reason: "input_unapplied" };
+
+/**
+ * Flue-style recovery classification from the canonical event stream.
+ *
+ *   - a tool call without a durable result is interrupted (an aborted
+ *     `agent.tool_result` is appended; the tool is never rerun);
+ *   - persisted turn output means the input was applied: reuse it and
+ *     interrupt instead of re-dispatching the provider;
+ *   - only an input with *no* persisted work is requeued, and only while
+ *     the single provider re-dispatch allowance remains.
+ */
+export function decideRecoveryFromCanonicalStream(
+  evidence: CanonicalTurnEvidence,
+  options: { maxProviderRedispatches?: number } = {},
+): RecoveryStreamDecision {
+  if (!Number.isSafeInteger(evidence.inputAtMs) || evidence.inputAtMs < 0) {
+    throw new Error("inputAtMs must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(evidence.providerDispatches) || evidence.providerDispatches < 0) {
+    throw new Error("providerDispatches must be a non-negative safe integer");
+  }
+  const maxRedispatches = nonNegativeInteger(
+    options.maxProviderRedispatches,
+    1,
+    "maxProviderRedispatches",
+  );
+  const reuseCompletedOutputs = evidence.completedOutputCount > 0;
+
+  if (evidence.unpairedToolUseCount > 0) {
+    return {
+      type: "interrupt",
+      reason: "unpaired_tool_call",
+      reuseCompletedOutputs,
+    };
+  }
+  if (evidence.eventsAfterInput.length === 0) {
+    if (evidence.providerDispatches <= maxRedispatches) {
+      return { type: "requeue", reason: "input_unapplied" };
+    }
+    return {
+      type: "interrupt",
+      reason: "redispatch_exhausted",
+      reuseCompletedOutputs: false,
+    };
+  }
+  if (reuseCompletedOutputs) {
+    return {
+      type: "reuse",
+      reason: "completed_output",
+      reuseCompletedOutputs: true,
+    };
+  }
+  return {
+    type: "interrupt",
+    reason: "input_applied",
+    reuseCompletedOutputs: false,
+  };
 }
 
 /**

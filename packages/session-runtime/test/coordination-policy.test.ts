@@ -3,7 +3,9 @@ import {
   decideClaim,
   decideExpiredExecution,
   decideLeaseRenewal,
+  decideRecoveryFromCanonicalStream,
   evaluateCoordinationPolicy,
+  type CanonicalTurnEvidence,
   type ExecutionLeaseRecord,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 
@@ -210,5 +212,63 @@ describe("shared coordination lease policy", () => {
       .toEqual({ claim: true, reason: "expired_lease_takeover" });
     expect(decideClaim(execution({ attemptCount: 3, maxAttempts: 3 }), NOW))
       .toEqual({ claim: false, reason: "attempts_exhausted" });
+  });
+});
+
+describe("canonical-stream recovery policy", () => {
+  function evidence(
+    overrides: Partial<CanonicalTurnEvidence> = {},
+  ): CanonicalTurnEvidence {
+    return {
+      inputAtMs: NOW,
+      eventsAfterInput: [],
+      unpairedToolUseCount: 0,
+      completedOutputCount: 0,
+      providerDispatches: 1,
+      ...overrides,
+    };
+  }
+
+  it("requeues only when nothing was persisted, and only once", () => {
+    expect(decideRecoveryFromCanonicalStream(evidence()))
+      .toEqual({ type: "requeue", reason: "input_unapplied" });
+    // Second unapplied expiry is the single re-dispatch allowance spent.
+    expect(decideRecoveryFromCanonicalStream(evidence({ providerDispatches: 2 })))
+      .toEqual({
+        type: "interrupt",
+        reason: "redispatch_exhausted",
+        reuseCompletedOutputs: false,
+      });
+    expect(decideRecoveryFromCanonicalStream(
+      evidence({ providerDispatches: 2 }),
+      { maxProviderRedispatches: 2 },
+    )).toEqual({ type: "requeue", reason: "input_unapplied" });
+  });
+
+  it("interrupts an unpaired tool call instead of rerunning it", () => {
+    expect(decideRecoveryFromCanonicalStream(evidence({
+      eventsAfterInput: [{ type: "agent.tool_use" }],
+      unpairedToolUseCount: 1,
+    }))).toEqual({
+      type: "interrupt",
+      reason: "unpaired_tool_call",
+      reuseCompletedOutputs: false,
+    });
+  });
+
+  it("reuses persisted output after an applied-but-unfinished input", () => {
+    expect(decideRecoveryFromCanonicalStream(evidence({
+      eventsAfterInput: [{ type: "agent.message" }, { type: "agent.tool_result" }],
+      completedOutputCount: 2,
+    }))).toEqual({
+      type: "reuse",
+      reason: "completed_output",
+      reuseCompletedOutputs: true,
+    });
+    // Applied, but only non-output work was persisted: interrupt, don't rerun.
+    expect(decideRecoveryFromCanonicalStream(evidence({
+      eventsAfterInput: [{ type: "agent.tool_use" }],
+      unpairedToolUseCount: 0,
+    }))).toMatchObject({ type: "interrupt", reason: "input_applied" });
   });
 });
