@@ -90,7 +90,7 @@ export class SkillsApplicationService implements SkillsApplicationPort {
     const skill: Skill = {
       id: skillId,
       createdAt: timestamp,
-      displayTitle: command.displayTitle ?? null,
+      displayTitle: command.displayTitle?.trim() ? command.displayTitle : compiled.package.name,
       latestVersion: versionValue,
       source: "custom",
       updatedAt: timestamp,
