@@ -732,6 +732,55 @@ describe("SqlSessionExecutionCoordinator", () => {
     })).resolves.toEqual({ type: "empty" });
   });
 
+  it("owner dies mid-turn: an unpaired tool call is finalized as interrupted", async () => {
+    await coordinator.admit({
+      ...admitted("unpaired_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [{ type: "agent.tool_use" }],
+          unpairedToolUseCount: 1,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, now);
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unpaired_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution interrupted on unpaired tool call",
+      settledAt: at(5),
+    });
+  });
+
   it("owner dies mid-turn: an unapplied input is requeued by the same stream policy", async () => {
     await coordinator.admit({
       ...admitted("unapplied_stream", "session_a", at(1)),
