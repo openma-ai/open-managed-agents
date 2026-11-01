@@ -20,6 +20,12 @@ export function readBudgetCap(budget: unknown): WireAmount | null {
   return b?.max_list_cost?.amount ? b.max_list_cost : null;
 }
 
+/** Recorded spend (egress list_cost) in cents, or null when unpriced. */
+export function readListCostCents(usage: unknown): string | null {
+  const cost = (usage as { list_cost?: WireAmount | null } | null | undefined)?.list_cost;
+  return cost?.amount ? cost.amount : null;
+}
+
 /** Accumulated cost label; "unpriced" when the runtime reported no list_cost
  * (the model card has no pricing, so the budget is inactive). */
 export function costLabel(usage: unknown, unpriced: string): string {

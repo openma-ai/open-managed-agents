@@ -40,6 +40,7 @@ export const zhCN: Messages = {
   },
 
   nav: {
+    budget: "预算",
     overview: "概览",
     managedAgents: "托管智能体",
     dashboard: "仪表盘",
@@ -59,6 +60,15 @@ export const zhCN: Messages = {
     integrations: "Matter",
     loops: "Loops",
     bonds: "Bonds",
+  },
+
+  budget: {
+    title: "预算",
+    subtitle: "在模型出口记录的花费（按标价），以及每个会话的花费上限。",
+    byModel: "按模型统计花费",
+    bySession: "会话",
+    noSpend: "暂无已定价的花费。",
+    loadMore: "加载更多",
   },
 
   login: {
@@ -169,6 +179,10 @@ export const zhCN: Messages = {
     noMatchingSessions: "没有匹配的会话",
     noSessionsYet: "还没有会话",
     editTitle: "编辑标题",
+    tokensInput: "输入 tokens",
+    tokensOutput: "输出 tokens",
+    tokensCacheRead: "缓存读取",
+    tokensCacheWrite: "缓存写入",
     budgetCost: "费用",
     budgetCap: "预算",
     budgetUnpriced: "未定价",

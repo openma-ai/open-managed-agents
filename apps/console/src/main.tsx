@@ -38,6 +38,7 @@ import { SkillsList } from "./pages/SkillsList";
 import { MemoryStoresList } from "./pages/MemoryStoresList";
 import { MemoryStoreDetail } from "./pages/MemoryStoreDetail";
 import { ModelCardsList } from "./pages/ModelCardsList";
+import { Budget } from "./pages/Budget";
 import { WorkspaceMembers, JoinWorkspace } from "./pages/WorkspaceMembers";
 import { ApiKeysList } from "./pages/ApiKeysList";
 import { CliLogin } from "./pages/CliLogin";
@@ -171,6 +172,7 @@ const protectedRoutes: RouteObject[] = [
     ],
   },
   { path: "model-cards", element: <ModelCardsList />, handle: { crumb: "Model Cards" } },
+  { path: "budget", element: <Budget />, handle: { crumb: "Budget" } },
   { path: "members", element: <WorkspaceMembers />, handle: { crumb: "Members" } },
   { path: "api-keys", element: <ApiKeysList />, handle: { crumb: "API Keys" } },
   { path: "runtimes", element: <RuntimesList />, handle: { crumb: "Local Runtimes" } },
