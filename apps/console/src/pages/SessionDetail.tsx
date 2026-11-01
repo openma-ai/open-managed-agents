@@ -507,8 +507,13 @@ export function SessionDetail() {
     setActiveThreadId("sthr_primary");
     setLocalPending(null);
 
-    // Load session info
-    managedApi.sessions.retrieve(id)
+    // Load session info. Everything else (history, live stream, threads)
+    // waits for this lookup: a 404 means the id does not exist, so firing
+    // them would only add 404 toasts on top of the not-found view. Any
+    // other failure (network / 5xx / 403) keeps the previous behavior and
+    // still loads them. `lookup` resolves true unless the session is a 404.
+    const abort = new AbortController();
+    const lookup: Promise<boolean> = managedApi.sessions.retrieve(id)
       .then((s) => {
         setAgentId(s.agent?.id || "");
         const snapshotMeta = (s.agent as { metadata?: Record<string, string> } | undefined)?.metadata;
@@ -568,8 +573,12 @@ export function SessionDetail() {
           ).then((vaults) => setSessionMeta((prev) => ({ ...prev, vaults })));
         }
       })
-      .catch((error) => {
-        if (isSessionNotFoundError(error)) setNotFound(true);
+      .then(() => true, (error) => {
+        if (isSessionNotFoundError(error)) {
+          setNotFound(true);
+          return false;
+        }
+        return true;
       });
 
     // Load canonical Managed Agents history. `next_page` is an opaque cursor;
@@ -602,13 +611,7 @@ export function SessionDetail() {
         }
       }
     };
-    void loadHistory();
-
-    // Connect the official Managed Agents async event stream. Reconnect only
-    // transport/5xx failures; 4xx responses are terminal until navigation or
-    // auth state changes, so retrying them would only hammer the API.
-    const abort = new AbortController();
-    void (async () => {
+    const connectStream = async () => {
       const backoffMs = [1_000, 2_000, 4_000, 8_000];
       let failures = 0;
       let connected = false;
@@ -645,13 +648,13 @@ export function SessionDetail() {
         failures += 1;
         await waitForStreamRetry(delay, abort.signal);
       }
-    })();
+    };
 
     // Threads list (primary + sub-agent). Primary is always present
     // (seeded by SessionDO on /init). Filter to non-primary so the
     // selector only renders when there's something to switch between
     // — single-thread sessions get zero UI clutter.
-    managedApi.sessions.threads.list(id, { limit: 100 })
+    const loadThreads = () => managedApi.sessions.threads.list(id, { limit: 100 })
       .then((res) => {
         const subThreads = (res.data ?? [])
           .filter((t) => t.id !== "sthr_primary")
@@ -663,6 +666,16 @@ export function SessionDetail() {
         setThreads(subThreads);
       })
       .catch(() => setThreads([]));
+
+    // Start history, the live stream (official Managed Agents async stream;
+    // reconnect only transport/5xx, 4xx is terminal) and threads together as
+    // soon as the session lookup resolves.
+    void lookup.then((exists) => {
+      if (!exists || abort.signal.aborted) return;
+      void loadHistory();
+      void connectStream();
+      void loadThreads();
+    });
 
     return () => { abort.abort(); };
   }, [id]);
