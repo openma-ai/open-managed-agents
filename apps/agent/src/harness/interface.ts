@@ -115,6 +115,12 @@ export interface HarnessInterface {
 export interface HarnessRuntime {
   history: HistoryStore;
   /**
+   * Events used for session `list_cost` / the pre-request budget gate.
+   * Defaults to `history` (primary-thread). Node overrides this so subagent
+   * `span.model_request_end` frames on other threads count toward the cap.
+   */
+  budgetEvents?(): SessionEvent[];
+  /**
    * Steering (optional). Called by the loop at each model-step boundary.
    * Returns queued user.message events the platform just absorbed into this
    * turn (already appended to history, stamped and re-emitted) — CMA

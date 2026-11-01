@@ -123,3 +123,30 @@ export function budgetReachedEvents(input: {
     { type: "session.status_idle", stop_reason: stop },
   ] as unknown as SessionEvent[];
 }
+
+
+/** Mutable session-wide list of `span.model_request_end` frames for budget.
+ * Node keeps harness history primary-thread-only (so the parent model does not
+ * see subagent turns as context) but seeds and observes this ledger from every
+ * thread so `list_cost` matches Cloudflare's full-session SqliteHistory. */
+export class SessionListCostLedger {
+  private readonly ends: SessionEvent[] = [];
+
+  seed(events: readonly SessionEvent[]): void {
+    for (const event of events) this.observe(event);
+  }
+
+  observe(event: SessionEvent): void {
+    if (event.type !== "span.model_request_end") return;
+    if (!(event as { model_usage?: TokenUsage }).model_usage) return;
+    this.ends.push(event);
+  }
+
+  events(): readonly SessionEvent[] {
+    return this.ends;
+  }
+
+  consumedPico(pricing: ModelPricing): bigint {
+    return consumedListCostPico(this.ends, pricing);
+  }
+}

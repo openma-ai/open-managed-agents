@@ -1,6 +1,6 @@
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import {
-  consumedListCostPico,
+  SessionListCostLedger,
   picoToCentsString,
   type SessionBudgetGate,
 } from "@open-managed-agents/agent/harness/budget";
@@ -243,6 +243,12 @@ function toHarnessToolResultContent(
 export interface ManagedNodeHarnessRuntimeInput {
   initialEvents: SessionBootstrapEvent[];
   events: SessionEventView[];
+  /**
+   * Session-wide list-cost ledger shared with subagent child runtimes.
+   * When set, `usageSnapshot` / the budget gate use every thread's
+   * `span.model_request_end`, not just this runtime's primary-thread history.
+   */
+  listCostLedger?: SessionListCostLedger;
   sandbox: SandboxExecutor;
   abortSignal?: AbortSignal;
   output(frame: unknown): Promise<void>;
@@ -318,9 +324,17 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
         .stampIso(input.clock.now().getTime())
       : createStrictlyIncreasingEventStamp(input.clock);
     this.usageLedger = createNodeHarnessUsageLedger();
+    this.listCostLedger = input.listCostLedger ?? new SessionListCostLedger();
+    // Seed only when we own the ledger: a shared parent ledger is pre-seeded
+    // with all-thread history; child runtimes must not re-seed from their
+    // thread-local events (parent already observed those via output).
+    if (input.listCostLedger === undefined) {
+      this.listCostLedger.seed(input.events.map(toHarnessHistoryEvent));
+    }
   }
 
   private budgetGate: SessionBudgetGate | null = null;
+  private readonly listCostLedger: SessionListCostLedger;
 
   /** Bind the execution's budget gate so usage snapshots carry list_cost. */
   setBudgetGate(gate: SessionBudgetGate | null): void {
@@ -329,10 +343,14 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
 
   /** Session usage snapshot; `listCost` (whole cents) is present only when
    * the model card is priced and the session has a budget. */
+  budgetEvents(): SessionEvent[] {
+    return [...this.listCostLedger.events()];
+  }
+
   usageSnapshot() {
     const usage = ledgerToManagedSessionUsage(this.usageLedger);
     if (this.budgetGate === null) return usage;
-    const pico = consumedListCostPico(this.history.getEvents(), this.budgetGate.pricing);
+    const pico = this.listCostLedger.consumedPico(this.budgetGate.pricing);
     return {
       ...usage,
       listCost: { amountMinor: picoToCentsString(pico), currency: "USD" as const },
@@ -390,6 +408,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
 
   private publishSessionUsageIfCacheChanged(event: SessionEvent): void {
     if (event.type !== "span.model_request_end") return;
+    this.listCostLedger.observe(event);
     const usage = (event as { model_usage?: Record<string, number | undefined> })
       .model_usage;
     if (!usage) return;

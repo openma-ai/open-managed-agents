@@ -1,3 +1,7 @@
+import {
+  SessionListCostLedger,
+  type SessionBudgetGate,
+} from "@open-managed-agents/agent/harness/budget";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";
@@ -35,6 +39,8 @@ export interface ManagedNodeSubagentState {
 }
 
 export interface ManagedNodeSubagentControl {
+  /** Bind the parent's session budget gate so child turns share the cap. */
+  setBudgetGate?(gate: SessionBudgetGate | null): void;
   create(input: ManagedNodeCreateSubagent): Promise<ManagedNodeSubagentState>;
   send(input: { threadId: string; message: string }): Promise<ManagedNodeSubagentState>;
   wait(input: { threadIds: string[]; timeoutMs?: number }): Promise<{ subagents: ManagedNodeSubagentState[]; timedOut: boolean }>;
@@ -74,6 +80,8 @@ interface SubagentsInput {
   abortSignal: AbortSignal;
   executionFence?: SessionExecutionFence;
   historyEvents: SessionEventView[];
+  /** Shared with the parent harness so subagent model usage counts toward list_cost. */
+  listCostLedger?: SessionListCostLedger;
   threads: ManagedNodeSubagentThreads;
   policy: ManagedNodeSubagentPolicy;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
@@ -110,9 +118,14 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
   private mutations: Promise<void> = Promise.resolve();
   private readonly loads = new Map<string, Promise<Child>>();
   private readonly facts: SessionEventView[];
+  private budgetGate: SessionBudgetGate | null = null;
 
   constructor(private readonly input: SubagentsInput) {
     this.facts = [...input.historyEvents];
+  }
+
+  setBudgetGate(gate: SessionBudgetGate | null): void {
+    this.budgetGate = gate;
   }
 
   private mutate<T>(operation: () => Promise<T>): Promise<T> {
@@ -291,6 +304,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
         controller.signal.throwIfAborted();
         const sandbox = withSandboxExecutionGuard(this.input.sandbox, { signal: controller.signal });
         const runtime = new ManagedNodeHarnessRuntime({ initialEvents: [], events: childHistory(child.events),
+          ...(this.input.listCostLedger !== undefined && { listCostLedger: this.input.listCostLedger }),
           sandbox, abortSignal: controller.signal, clock: this.input.clock, ids: this.input.ids,
           output: (raw) => {
             const frame = raw as Record<string, unknown>;
@@ -300,6 +314,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
               ...(typeof type === "string" && type.startsWith("session.thread_status_") && { agent_name: child.session.agent.name }) });
           },
         });
+        if (this.budgetGate !== null) runtime.setBudgetGate(this.budgetGate);
         try { await this.input.run({ session: child.session, runtime, sandbox }); }
         finally { await runtime.drain(); }
         child.state = { threadId: child.thread.id, status: controller.signal.aborted ? "interrupted" : "completed", output: lastOutput(child.events) };

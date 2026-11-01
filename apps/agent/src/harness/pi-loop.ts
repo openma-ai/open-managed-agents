@@ -85,7 +85,7 @@ export class PiHarness implements HarnessInterface {
     }
 
     // Pre-request budget gate: at the cap, make no model call at all.
-    if (budgetExhausted(ctx.budget, ctx.runtime.history.getEvents())) {
+    if (budgetExhausted(ctx.budget, ctx.runtime.budgetEvents?.() ?? ctx.runtime.history.getEvents())) {
       ctx.budget!.reached = true;
       return;
     }
@@ -155,7 +155,7 @@ export class PiHarness implements HarnessInterface {
         // Every follow-up request inside the Pi loop (after tool results)
         // passes the same pre-request gate. At the cap the request is
         // issued with an already-aborted signal so no tokens are spent.
-        if (budgetExhausted(ctx.budget, ctx.runtime.history.getEvents())) {
+        if (budgetExhausted(ctx.budget, ctx.runtime.budgetEvents?.() ?? ctx.runtime.history.getEvents())) {
           ctx.budget!.reached = true;
           agent.abort();
           return ctx.pi!.models.streamSimple(
