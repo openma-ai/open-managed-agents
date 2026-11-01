@@ -61,6 +61,10 @@ export type AcceptNodeManagedSessionEvents = AcceptedSessionEvents;
 export interface ExecuteNodeManagedSessionEvents
   extends AcceptNodeManagedSessionEvents {
   executionFence?: SessionExecutionFence;
+  /** CMA coherent-turn steering source (after-call). The driver wraps it so
+   *  absorbed inputs are stamped (processed_at, seq) at consume before the
+   *  harness sees them. See docs/implementation/cma-steer-coherent-turn.md. */
+  takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
 }
 
 export type ArchiveNodeManagedSessionThread = ArchivedSessionThread;
@@ -93,7 +97,7 @@ export interface NodeManagedSessionRuntimeEngine {
     output: (frame: unknown) => Promise<void>,
   ): Promise<void>;
   stop(input: StopNodeManagedSessionRuntime): Promise<void>;
-  accept(input: AcceptNodeManagedSessionEvents & {
+  accept(input: ExecuteNodeManagedSessionEvents & {
     executionFence?: SessionExecutionFence;
   }): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
@@ -141,6 +145,9 @@ export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
 export interface NodeManagedSessionRunnerAcceptInput
   extends AcceptNodeManagedSessionEvents {
   executionFence?: SessionExecutionFence;
+  /** Already-stamped mid-run inputs to steer into the running turn at the
+   *  next LLM/tool-call boundary (after-call). */
+  takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
   output(frame: unknown): Promise<void>;
@@ -405,10 +412,29 @@ export class DefaultNodeManagedSessionRuntimeDriver
         await this.finishCancelledStart(input, signal, announcedRetry);
         throw abortedError(signal);
       }
-      const { executionFence: _executionFence, ...accepted } = run;
+      const {
+        executionFence: _executionFence,
+        takeSteeringInputs: rawTakeSteering,
+        ...accepted
+      } = run;
+      // After-call steer: mid-run inputs are taken only once the harness is
+      // running (never during start retry: retrying/rescheduled holds them
+      // unstamped) and are stamped at consume, so processed_at + seq land
+      // inside the continuing turn.
+      const takeSteeringInputs = rawTakeSteering === undefined
+        ? undefined
+        : async () => {
+            if (signal.aborted) return [];
+            const steered = await rawTakeSteering();
+            if (steered.length === 0) return steered;
+            const stamp = { ...accepted, events: steered };
+            await this.markQueuedInputsProcessed(stamp);
+            return steered;
+          };
       await this.dependencies.engine.accept({
         ...accepted,
         ...(fence !== undefined && { executionFence: fence }),
+        ...(takeSteeringInputs !== undefined && { takeSteeringInputs }),
       });
       await this.outputChains.get(input);
       if (interrupting && plan.release.length > 0 && !signal.aborted) {

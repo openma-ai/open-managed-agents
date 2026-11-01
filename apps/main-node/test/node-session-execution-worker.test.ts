@@ -152,6 +152,51 @@ describe("NodeSessionExecutionWorker", () => {
     })).resolves.toMatchObject({ state: "completed" });
   });
 
+  it("steers a mid-run user.message into the running execution (after-call), never as its own after-turn run", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    const steered: string[][] = [];
+    let takeSteering: (() => Promise<Array<{ id: string }>>) | undefined;
+    runtime.run = async (input, hooks) => {
+      runs.push(structuredClone(input));
+      takeSteering = hooks?.takeSteeringInputs;
+      await running;
+    };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_01"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await executor.sessionEventsAccepted(accepted("event_mid"));
+    // Unconsumed until the harness reaches its next LLM/tool-call boundary.
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_mid" }))
+      .resolves.toMatchObject({ state: "queued" });
+    // The harness polls at the boundary, inside the same running turn.
+    steered.push((await takeSteering!()).map((event) => event.id));
+    steered.push((await takeSteering!()).map((event) => event.id));
+    expect(steered).toEqual([["event_mid"], []]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "event_mid" }))
+      .resolves.toMatchObject({ state: "completed" });
+    release?.();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01"]);
+  });
+
+  it("falls back to drain-after-idle when the harness does not advertise steering", async () => {
+    let release: (() => void) | undefined;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    runtime.run = async (input) => {
+      runs.push(structuredClone(input));
+      if (input.executionId === "event_01") await running; // never polls
+    };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_01"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await executor.sessionEventsAccepted(accepted("event_mid"));
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01"]);
+    release?.();
+    await executor.waitForIdle();
+    expect(runs.map((run) => run.executionId)).toEqual(["event_01", "event_mid"]);
+  });
+
   it("admits a threaded event into its own execution lane", async () => {
     const executor = worker();
     await executor.sessionEventsAccepted({

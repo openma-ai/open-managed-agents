@@ -906,6 +906,53 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       .toEqual([expect.objectContaining({ id: "sevt_late_confirm", processedAt: "2026-08-26T05:00:00.000Z" })]);
   });
 
+  it("holds mid-run inputs during startup retrying and stamps them only at the after-call consume boundary", async () => {
+    const marked: string[][] = [];
+    let starts = 0;
+    let rawTakes = 0;
+    let takesBeforeAccept = -1;
+    let engineTake: (() => Promise<unknown[]>) | undefined;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async () => { if (++starts === 1) throw new Error("transient start failure"); },
+        stop: async () => {},
+        accept: async (input: { takeSteeringInputs?: () => Promise<unknown[]> }) => {
+          takesBeforeAccept = rawTakes;
+          engineTake = input.takeSteeringInputs;
+          // Harness reaches its next LLM/tool-call boundary inside this turn.
+          await engineTake?.();
+        },
+        archiveThread: async () => {},
+      },
+      realtime: new MemorySessionRealtimeHub(),
+      projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      startRetry: { attempts: 3, delayMs: () => 0 },
+      sessionClocks: createSessionClockRegistry(),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (command: { eventIds: string[] }) => {
+            marked.push([...command.eventIds]);
+            return [];
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+    await driver.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [{ id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: null } as never],
+      takeSteeringInputs: async () => {
+        rawTakes += 1;
+        return [{ id: "u_mid", type: "user.message", content: [{ type: "text", text: "also" }], processedAt: null } as never];
+      },
+    });
+    expect(starts).toBe(2);
+    // Nothing was taken (or stamped) while retrying/rescheduled.
+    expect(takesBeforeAccept).toBe(0);
+    expect(rawTakes).toBe(1);
+    expect(marked).toEqual([["u1"], ["u_mid"]]);
+  });
+
   describe("user.message while parked in requires_action stays queued (CMA, #398)", () => {
     const parked = () => [
       { id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: "2026-08-26T04:00:00.000Z" },

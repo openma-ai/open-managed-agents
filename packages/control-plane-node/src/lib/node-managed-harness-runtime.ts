@@ -246,6 +246,11 @@ export interface ManagedNodeHarnessRuntimeInput {
   /** When set, stamps come from the shared per-session clock (#398). */
   sessionScope?: { workspaceId: string; sessionId: string };
   sessionClocks?: SessionClockRegistry;
+  /** CMA coherent-turn steering source: mid-run inputs absorbed at the next
+   *  LLM/tool-call boundary (after-call), already stamped at consume. When
+   *  absent the harness does not advertise steering and mid-run inputs fall
+   *  back to drain-after-idle (their queued execution runs next). */
+  takeSteeringInputs?: () => Promise<SessionEventView[]>;
 }
 
 /** History is read back `ORDER BY processed_at` (millisecond precision) and
@@ -275,8 +280,26 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   /** Tool calls the harness left for the client (custom tools / `ask`
    * permission): the turn parks in requires_action on them. */
   pendingConfirmations: string[] = [];
+  /** Advertised only when a steering source is wired (see input). */
+  readonly takeSteeringInputs?: () => Promise<SessionEvent[]>;
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
+    const take = input.takeSteeringInputs;
+    if (take !== undefined) {
+      this.takeSteeringInputs = async () => {
+        const steered = await take();
+        const out: SessionEvent[] = [];
+        for (const event of steered) {
+          const harnessEvent = toHarnessHistoryEvent(event);
+          // Joins this turn's context (and any re-run after a retry) in
+          // consume order; the harness also gets it for agent.steer.
+          this.history.append(harnessEvent);
+          this.applicationHistoryEvents.push(structuredClone(event));
+          out.push(harnessEvent);
+        }
+        return out;
+      };
+    }
     this.history = new ManagedNodeHistoryStore(
       input.initialEvents,
       input.events,

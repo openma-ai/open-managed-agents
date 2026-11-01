@@ -806,8 +806,12 @@ export async function createManagedNodeRuntime(
     coordinator: managedSessionExecutionCoordinator,
     context: managedRuntimeReaders.executionContext,
     runtime: {
-      run: async ({ executionId: _executionId, fence, ...input }) => {
-        await managedRuntimeDriver.accept({ ...input, executionFence: fence });
+      run: async ({ executionId: _executionId, fence, ...input }, hooks) => {
+        await managedRuntimeDriver.accept({
+          ...input,
+          executionFence: fence,
+          ...(hooks !== undefined && { takeSteeringInputs: () => hooks.takeSteeringInputs() }),
+        });
       },
       cancel: async (input) => {
         managedRuntimeDriver.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });

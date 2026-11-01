@@ -814,6 +814,20 @@ export class SqlSessionExecutionStore
     return row === null ? { type: "not_queued" } : { type: "steered", execution: toExecution(row) };
   }
 
+  async listQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+  }): Promise<SessionExecution[]> {
+    const rows = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND lane_id = ? AND state = 'queued'
+       ORDER BY admitted_at_ms ASC, id ASC
+    `).bind(input.workspaceId, input.sessionId, input.laneId)
+      .all<ExecutionRow>();
+    return (rows.results ?? []).map(toExecution);
+  }
+
   async requestInterrupt(input: {
     workspaceId: string;
     sessionId: string;

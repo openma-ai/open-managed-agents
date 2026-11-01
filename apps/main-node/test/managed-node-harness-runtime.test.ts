@@ -284,4 +284,24 @@ describe("ManagedNodeHarnessRuntime", () => {
       }],
     }]);
   });
+
+  it("advertises steering only when wired and appends steered inputs to this turn's history", async () => {
+    const { ManagedNodeHarnessRuntime } = await import("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime");
+    const base = {
+      initialEvents: [], events: [], sandbox: {} as SandboxExecutor,
+      output: async () => {}, clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+      ids: { nextEventId: () => "event_x" },
+    };
+    expect(new ManagedNodeHarnessRuntime(base).takeSteeringInputs).toBeUndefined();
+    const steering = new ManagedNodeHarnessRuntime({
+      ...base,
+      takeSteeringInputs: async () => [{
+        id: "u_mid", type: "user.message", content: [{ type: "text", text: "also" }], processedAt: null,
+      } as unknown as SessionEventView],
+    });
+    const taken = await steering.takeSteeringInputs!();
+    expect(taken).toEqual([expect.objectContaining({ id: "u_mid", type: "user.message" })]);
+    expect(steering.history.getEvents().map((e) => (e as { id?: string }).id)).toContain("u_mid");
+    expect(steering.getApplicationHistoryEvents().map((e) => e.id)).toContain("u_mid");
+  });
 });

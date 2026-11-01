@@ -10,6 +10,7 @@ import type {
 import {
   sessionExecutionEventBatches,
   sessionExecutionEvents,
+  takeQueuedSteeringInputs,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   SessionExecutionContext,
@@ -38,8 +39,18 @@ export interface CancelNodeSessionExecution {
   reason: "interrupt_requested" | "lease_lost" | "session_stopped";
 }
 
+/** Live per-run hooks kept out of the (cloneable) run input. */
+export interface NodeSessionExecutionRunHooks {
+  /** CMA coherent-turn steering (after-call): absorbs mid-run queued
+   *  `user.message` executions on this lane into the running turn. The
+   *  harness polls this at LLM/tool-call boundaries; returned events are not
+   *  yet stamped (the caller stamps processed_at at consume). Harnesses that
+   *  never poll leave the rows queued: drain-after-idle fallback. */
+  takeSteeringInputs(): Promise<AcceptedSessionEvents["events"]>;
+}
+
 export interface NodeSessionExecutionRuntime {
-  run(input: RunNodeSessionExecution): Promise<void>;
+  run(input: RunNodeSessionExecution, hooks?: NodeSessionExecutionRunHooks): Promise<void>;
   cancel(input: CancelNodeSessionExecution): Promise<void>;
 }
 
@@ -355,6 +366,17 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
         environment: context.environment,
         events: active.execution.events,
         fence: active.fence,
+      }, {
+        takeSteeringInputs: async () => {
+          if (active.cancelled || active.leaseLost) return [];
+          return takeQueuedSteeringInputs(this.dependencies.coordinator, {
+            workspaceId: active.execution.workspaceId,
+            sessionId: active.execution.sessionId,
+            laneId: active.execution.laneId,
+            steeredAt: this.dependencies.clock.now().toISOString(),
+            excludeExecutionId: active.execution.id,
+          });
+        },
       });
       if (active.cancelled) outcome = "cancelled";
     } catch (error) {

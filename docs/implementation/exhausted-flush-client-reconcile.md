@@ -96,8 +96,6 @@ otherwise unchanged.
   automation stays as today.
 - Redesigning Console SessionDetail / outbox UI; this PR keeps the pure
   lib + tests so wiring can stay minimal.
-- Full Node managed mid-run → steer injection (see coherent-turn doc
-  follow-ups).
 
 ## Related
 

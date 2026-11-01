@@ -154,6 +154,14 @@ export interface SessionExecutionStorePort {
     executionId: string;
     steeredAt: string;
   }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }>;
+  /** Queued (unclaimed) executions on one lane, admission order. Used by the
+   *  running turn to find mid-run inputs to steer at the next after-call
+   *  boundary (see takeQueuedSteeringInputs). */
+  listQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+  }): Promise<SessionExecution[]>;
   cancelSession(input: {
     workspaceId: string;
     sessionId: string;
@@ -238,4 +246,54 @@ export function sessionExecutionEventBatches(
     }
   }
   return [...lanes.values()];
+}
+
+/** Event types that may be absorbed into a running turn by steering. */
+function steerableEvent(event: SentSessionEvent): boolean {
+  return event.type === "user.message" || event.type === "system.message";
+}
+
+/**
+ * CMA coherent-turn steering over the shared execution store (ADR 0006: only
+ * SessionExecutionStorePort). Every queued execution on the running lane whose
+ * events are plain mid-run `user.message`s (plus carried system messages) is
+ * compare-and-set from `queued` to `completed` via `steerQueued`, so it never
+ * runs as its own next turn, and its events are returned for the caller to
+ * stamp (`processed_at` + seq at consume) and hand to the harness at the next
+ * LLM/tool-call boundary (after-call). Executions another host already claimed
+ * or that carry non-steerable events (tool confirmations, interrupts) are left
+ * queued. Mirrors CF SessionDO.takeSteeringInputs.
+ * See docs/implementation/cma-steer-coherent-turn.md.
+ */
+export async function takeQueuedSteeringInputs(
+  store: Pick<SessionExecutionStorePort, "listQueued" | "steerQueued">,
+  input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+    steeredAt: string;
+    /** The running execution itself (never steered into itself). */
+    excludeExecutionId?: string;
+  },
+): Promise<SentSessionEvent[]> {
+  const queued = await store.listQueued({
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+    laneId: input.laneId,
+  });
+  const out: SentSessionEvent[] = [];
+  for (const execution of queued) {
+    if (execution.id === input.excludeExecutionId) continue;
+    if (!execution.events.some((event) => event.type === "user.message")) continue;
+    if (!execution.events.every(steerableEvent)) continue;
+    const result = await store.steerQueued({
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      executionId: execution.id,
+      steeredAt: input.steeredAt,
+    });
+    if (result.type !== "steered") continue;
+    out.push(...execution.events);
+  }
+  return out;
 }

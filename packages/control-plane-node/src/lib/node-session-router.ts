@@ -42,11 +42,6 @@ interface NodeSessionRouterDeps {
 }
 
 export class NodeSessionRouter implements SessionRouter {
-  /** Event ids admitted mid-run for coherent-turn absorb at the next
-   *  LLM/tool-call boundary (takeSteeredEventIds). Ordinary mid-run accept
-   *  is the only steer path — no explicit /pending/.../steer API.
-   *  See cma-steer-coherent-turn.md. */
-  private readonly steerRequested = new Map<string, Set<string>>();
   /** In-memory outbox for the legacy harness path. Managed sessions use the
    *  shared SQL execution store (worker); we must not admit harness turns into
    *  that table or the worker steals mid-turn claims. */
@@ -130,21 +125,14 @@ export class NodeSessionRouter implements SessionRouter {
           : `sevt_node_${Date.now()}`;
         if (entry.machine.hasInflightTurn() || this.draining.has(sessionId)) {
           // Mid-state only (processed_at null until consume). CMA coherent
-          // turn: mark for after-call absorb when the harness polls
-          // takeSteeredEventIds — not after-turn / next-agent-turn drain.
-          // Full Node managed LLM-boundary inject remains a follow-up
-          // (docs/implementation/cma-steer-coherent-turn.md).
+          // turn: the running harness absorbs it at its next LLM/tool-call
+          // boundary via takeSteeringInputs (after-call), stamped at consume.
+          // Only a harness that never polls leaves it for drain-after-idle.
           this.pendingOf(sessionId).push({
             id: eventId,
             event: last,
             enqueuedAt: Date.now(),
           });
-          let steerSet = this.steerRequested.get(sessionId);
-          if (!steerSet) {
-            steerSet = new Set();
-            this.steerRequested.set(sessionId, steerSet);
-          }
-          steerSet.add(eventId);
           this.deps.hub.publish(sessionId, {
             type: "system.user_message_pending",
             event_id: eventId,
@@ -215,6 +203,7 @@ export class NodeSessionRouter implements SessionRouter {
           await entry.machine.runHarnessTurn(
             agentId,
             userEvent as unknown as import("@open-managed-agents/shared").UserMessageEvent,
+            { takeSteeringInputs: async () => this.takeSteeringInputs(sessionId) },
           );
         } catch (err) {
           await this.appendSessionError(log, sessionId, "harness_turn_failed", err);
@@ -580,7 +569,6 @@ export class NodeSessionRouter implements SessionRouter {
       const idx = q.findIndex((item) => item.id === eventId);
       if (idx >= 0) {
         q.splice(idx, 1);
-        this.steerRequested.get(sessionId)?.delete(eventId);
         this.deps.hub.publish(sessionId, {
           type: "system.user_message_cancelled",
           event_id: eventId,
@@ -641,13 +629,35 @@ export class NodeSessionRouter implements SessionRouter {
     };
   }
 
-  /** Drain ids marked mid-run for after-call absorb (harness may poll). */
-  takeSteeredEventIds(sessionId: string): string[] {
-    const set = this.steerRequested.get(sessionId);
-    if (!set || set.size === 0) return [];
-    const ids = [...set];
-    set.clear();
-    return ids;
+  /**
+   * CMA coherent-turn steering for the legacy harness path (mirrors CF
+   * SessionDO.takeSteeringInputs): absorb every queued mid-run user.message
+   * into the running turn at the harness's next LLM/tool-call boundary.
+   * Stamps processed_at at consume (re-emit) so clients place it inside the
+   * running turn; nothing is left to run as its own after-turn drain.
+   */
+  async takeSteeringInputs(sessionId: string): Promise<SessionEvent[]> {
+    const q = this.pendingBySession.get(sessionId);
+    if (!q || q.length === 0) return [];
+    const out: SessionEvent[] = [];
+    for (let i = 0; i < q.length; ) {
+      const item = q[i]!;
+      if (item.event.type !== "user.message") { i++; continue; }
+      q.splice(i, 1);
+      const steeredAt = Date.now();
+      this.deps.hub.publish(sessionId, {
+        type: "system.user_message_steered",
+        event_id: item.id,
+        session_thread_id: "sthr_primary",
+        steered_at: steeredAt,
+      } as unknown as SessionEvent);
+      this.deps.hub.publish(sessionId, {
+        ...item.event,
+        processed_at: new Date(steeredAt).toISOString(),
+      } as unknown as SessionEvent);
+      out.push(item.event);
+    }
+    return out;
   }
 
   async getLlmCallBody(

@@ -69,6 +69,7 @@ function store(overrides: Partial<SessionExecutionStorePort> = {}) {
     requestInterrupt: vi.fn(),
     cancelQueued: vi.fn(),
     steerQueued: vi.fn(),
+    listQueued: vi.fn(async () => []),
     cancelSession: vi.fn(),
     find: vi.fn(),
     ...overrides,

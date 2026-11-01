@@ -66,6 +66,34 @@ steering, **ordinary** mid-run accept **is** steer: absorb every queued
 LLM/tool boundary), not after the whole turn settles, and not “only when the
 user presses Steer.”
 
+## Node parity (same single semantics as CF)
+
+Node mirrors CF `SessionDO.takeSteeringInputs` via shared code that depends
+only on `SessionExecutionStorePort` (ADR 0006):
+
+- `takeQueuedSteeringInputs(store, { workspaceId, sessionId, laneId, … })`
+  (`packages/session-runtime-contract/src/coordination.ts`) lists the lane's
+  queued executions (`listQueued`) and CAS-steers each plain mid-run
+  `user.message` batch (`steerQueued` → `completed`, so it never runs as its
+  own next turn). Tool confirmations / interrupts are never steered.
+- `NodeSessionExecutionWorker` hands that as a per-run hook
+  (`takeSteeringInputs`); `DefaultNodeManagedSessionRuntimeDriver` wraps it
+  to stamp `processed_at` (+ seq / re-emit) at consume, and only once the
+  harness is running — never during startup `retrying` / `status_rescheduled`
+  (hold). The runner wires it onto `ManagedNodeHarnessRuntime`, which appends
+  the steered events to the turn's history; the pi loop (shared with CF)
+  `agent.steer(...)`s them at the next LLM/tool-call boundary. Harness
+  retries (`retrying` + `status_rescheduled`) also take nothing during
+  backoff; the resumed attempt ingests together.
+- Legacy `/v1/oma` harness path (`NodeSessionRouter`) passes
+  `takeSteeringInputs` into `SessionStateMachine.runHarnessTurn`; the old
+  `steerRequested` / `takeSteeredEventIds` marker is gone.
+- `retries_exhausted`: unconsumed queued rows are **not** deleted (failed
+  settle leaves them `queued`).
+- Drain-after-idle remains only when the harness never polls
+  `takeSteeringInputs` (no steering advertised): the queued execution runs
+  next after settle.
+
 ## Wrong read (superseded)
 
 Earlier OMA wording that treated mid-run sends as “queued for the next
@@ -86,10 +114,7 @@ capability gap, not the CMA contract.
 
 ## Follow-ups (not this PR)
 
-- Full Node managed-path wiring so mid-run admit injects into the running
-  harness LLM boundary (today CF `takeSteeringInputs` + advertised
-  steering is the primary coherent-turn path; Node still leans on
-  execution-outbox drain-after-settle for some hosts).
+- ~~Full Node managed-path wiring~~ — **done** (see *Node parity* above).
 - ~~openma-common / Console / Backchat steered display parity~~ —
   **cancelled** (no `pending_steer` bands / steered caption). Survey
   kept in [`steered-gui.md`](./steered-gui.md).

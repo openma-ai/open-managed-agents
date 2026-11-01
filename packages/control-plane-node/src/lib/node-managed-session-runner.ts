@@ -608,6 +608,7 @@ export class DefaultNodeManagedSessionRunner
       ids: this.dependencies.ids,
       sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
       sessionClocks: this.dependencies.sessionClocks,
+      ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
     });
     const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
     if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });

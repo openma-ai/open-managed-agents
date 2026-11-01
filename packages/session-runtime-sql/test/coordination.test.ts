@@ -19,6 +19,7 @@ import {
 import {
   sessionExecutionEventBatches,
   sessionExecutionId,
+  takeQueuedSteeringInputs,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionStoreConformance } from
   "../../session-runtime-contract/test/execution-store-conformance";
@@ -724,6 +725,36 @@ describe("SqlSessionExecutionCoordinator", () => {
     await expect(coordinator.cancelQueued({
       workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", cancelledAt: at(3),
     })).resolves.toMatchObject({ type: "not_queued", reason: "already_completed" });
+  });
+
+  it("after-call steer: mid-run queued user.message is absorbed into the running turn, not run after it", async () => {
+    await coordinator.admit(admitted("turn_1", "session_s", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    expect(claimed).toMatchObject({ type: "claimed", execution: { id: "turn_1" } });
+    await coordinator.admit(admitted("mid_1", "session_s", at(3)));
+    await coordinator.admit(admitted("mid_2", "session_s", at(4)));
+    const steered = await takeQueuedSteeringInputs(coordinator, {
+      workspaceId: "workspace_01", sessionId: "session_s", laneId: "sthr_primary",
+      steeredAt: at(5), excludeExecutionId: "turn_1",
+    });
+    expect(steered.map((event) => event.id)).toEqual(["mid_1", "mid_2"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_1" }))
+      .resolves.toMatchObject({ state: "completed" });
+    // Nothing is left to start a separate after-turn execution.
+    await expect(coordinator.listQueued({ workspaceId: "workspace_01", sessionId: "session_s", laneId: "sthr_primary" }))
+      .resolves.toEqual([]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "turn_1" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
+  it("exhausted retains: a failed running turn leaves unconsumed mid-run inputs queued (no delete)", async () => {
+    await coordinator.admit(admitted("turn_x", "session_x", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_x", "session_x", at(3)));
+    await coordinator.settle({ fence: claimed.fence, settledAt: at(4), outcome: "failed", failure: "retries_exhausted" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_x" }))
+      .resolves.toMatchObject({ state: "queued", settledAt: null });
   });
 
   it("edit race: concurrent claim and cancel have exactly one winner", async () => {
