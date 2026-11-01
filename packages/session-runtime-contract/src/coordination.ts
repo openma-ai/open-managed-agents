@@ -338,3 +338,7 @@ export function annotateHeldAfterExhaustedEvents<T extends { id: string; process
       : event,
   );
 }
+
+// Shared lease/sweep policy lives beside the execution coordinator contract so
+// every adapter (Node SQL store, CF SessionDO) applies identical decisions.
+export * from "./coordination-policy";
