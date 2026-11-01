@@ -125,3 +125,30 @@ describe("CF SessionDO CMA retry / exhausted wire", () => {
     });
   });
 });
+
+describe("CF SessionDO exhausted hold survives DO eviction", () => {
+  it("pre-exhausted local pending row is admitted held after state reload, not run alone", async () => {
+    const sessionId = await createSession("crash-sh");
+    const lane = "sthr_primary";
+    const evId = `sevt_pre_${crypto.randomUUID()}`;
+    await runInDurableObject(stubOf(sessionId), async (instance) => {
+      const room = instance as any;
+      room.enqueuePendingIfNew({ type: "user.message", id: evId, content: [{ type: "text", text: "pre" }] });
+      room.setExhaustedAt(lane, Date.now() + 1);
+    });
+    await runInDurableObject(stubOf(sessionId), async (instance, state) => {
+      const room = instance as any;
+      // Simulate eviction: drop in-memory state and reload from DO SQLite.
+      room._state = undefined;
+      room._loadStateFromSql();
+      expect(room.state.exhausted_at_by_lane?.[lane]).toBeTypeOf("number");
+      const store = await room.getExecutionStore();
+      expect(await room.admitPendingFallback(store, lane)).toBe(false);
+      const row = await store.find({ workspaceId: room.state.tenant_id, executionId: evId });
+      expect(row?.state).toBe("queued");
+      expect(row?.heldAfterExhaustedAt).toBeTruthy();
+      const history = new SqliteHistory(state.storage.sql, null);
+      expect((history.getEvents() as any[]).some((e) => e.type === "session.status_running")).toBe(false);
+    });
+  });
+});

@@ -263,6 +263,11 @@ interface SessionState {
   >;
   vault_ids: string[];
   pending_tool_calls: PendingToolCall[];
+  /** Lane → ms of the last retries_exhausted settle. Persisted (DO state)
+   *  so the local-pending fallback still holds pre-exhausted inputs after a
+   *  DO eviction. Cleared once the lane runs a new execution and no
+   *  pre-exhausted local pending row remains. */
+  exhausted_at_by_lane?: Record<string, number>;
   outcome: ActiveOutcome | null;
   outcome_iteration: number;
   /**
@@ -468,7 +473,7 @@ export class SessionDO extends DurableObject<Env> {
   private _executionFences = new Map<string, SessionExecutionFence>();
   /** Lane → ms of the last retries_exhausted settle (in-memory; hold for
    *  local-pending inputs admitted after that settle). */
-  private _exhaustedAtByLane = new Map<string, number>();
+
   private _executionParentLane = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -1362,11 +1367,17 @@ export class SessionDO extends DurableObject<Env> {
     return camelize(event);
   }
 
+  private setExhaustedAt(threadId: string, at: number | undefined): void {
+    const next = { ...(this.state.exhausted_at_by_lane ?? {}) };
+    if (at === undefined) delete next[threadId]; else next[threadId] = at;
+    this.setState({ ...this.state, exhausted_at_by_lane: next });
+  }
+
   private async admitPendingFallback(
     store: SqlSessionExecutionStore,
     threadId: string,
   ): Promise<boolean> {
-    const exhaustedAt = this._exhaustedAtByLane.get(threadId);
+    const exhaustedAt = this.state.exhausted_at_by_lane?.[threadId];
     // Walk the lane's local pending rows oldest-first; rows already admitted
     // (e.g. held after retries_exhausted) are skipped so a newer input can
     // still be admitted behind them.
@@ -1618,6 +1629,16 @@ export class SessionDO extends DurableObject<Env> {
           this._executionFences.set(threadId, fence);
           const executionHistory = this.guardHistoryForExecution(history, fence);
           let holdQueuedOnLane = false;
+          // Lane is running a new execution (held rows already absorbed on
+          // claim): drop the exhausted mark unless a pre-exhausted local
+          // pending row still awaits fallback admission.
+          {
+            const at = this.state.exhausted_at_by_lane?.[threadId];
+            if (at !== undefined && !this.pending!.list(threadId).some((r) =>
+              r.enqueued_at <= at && !execution.events.some((e) => (e as { id?: string }).id === r.event_id))) {
+              this.setExhaustedAt(threadId, undefined);
+            }
+          }
           try {
             for (const rawEvent of execution.events) {
               if (rawEvent.type === "system.message") continue;
@@ -1631,7 +1652,7 @@ export class SessionDO extends DurableObject<Env> {
                 const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
                 if (turn?.holdQueuedOnLane) {
                   holdQueuedOnLane = true;
-                  this._exhaustedAtByLane.set(threadId, Date.now());
+                  this.setExhaustedAt(threadId, Date.now());
                 }
               } else if (event.type === "user.tool_confirmation") {
                 await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
