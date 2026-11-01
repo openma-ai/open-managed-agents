@@ -35,8 +35,11 @@ wrong for CMA-aligned sessions.
    `exhausted-flush-client-reconcile.md`.
 6. **Client UX:** “running + steered” is a temporary reconcile view from
    `processed_at` (and optional `system.user_message_steered`); event
-   display order is otherwise unchanged. Codex TUI has steered display;
-   openma-common does not yet.
+   display order is otherwise unchanged. Design survey + recommended
+   chrome: [`steered-gui.md`](./steered-gui.md) (Codex TUI bands,
+   Backchat/QueueDock gaps, third-party AG-UI / DeepSeek / pi notes).
+   openma-common projects `steered: true` but shared chat-ui chrome for
+   it is still TBD.
 7. **OpenAI Agents path:** mid-turn → steer; idle → new turn. Do not
    invent a CMA-style durable pending inbox for OpenAI Agents.
 
@@ -78,6 +81,8 @@ capability gap, not the CMA contract.
   harness LLM boundary (today CF `takeSteeringInputs` + advertised
   steering is the primary coherent-turn path; Node still leans on
   execution-outbox drain-after-settle for some hosts).
-- openma-common steered display parity with Codex TUI.
+- openma-common / Console / Backchat steered display parity — see
+  [`steered-gui.md`](./steered-gui.md) (follow Codex TUI dock bands +
+  DeepSeek `SteeringMessageNode`; do not invent Claude Console chrome).
 - Server delete-flush implementation on exhausted where hosts still only
   document it (#399 ships client reconcile helper).
