@@ -45,8 +45,6 @@ async function seedCustomToolUse(sessionId: string, toolUseId: string, name = "c
     } as never);
   });
 }
-);
-}
 
 function getDoStatus(sessionId: string) {
   const doId = env.SESSION_DO!.idFromName(sessionId);
