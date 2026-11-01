@@ -1,11 +1,9 @@
 # Mid-turn steered state — GUI design note
 
-Status: **implemented** in `@openma/common` chat-ui + Console wiring
+Status: **design note** for Console / Backchat / `@openma/common` chat-ui
 (2026-10-31, America/Detroit). Supplements
 [`cma-steer-coherent-turn.md`](./cma-steer-coherent-turn.md) and Console
-PR #399 / issue #398. Shared chrome ships via QueueDock bands +
-`steered: true` history caption; Backchat ComposerProgress can adopt the
-same QueueDock bands when it migrates onto shared chat-ui.
+PR #399 / issue #398. **Not** a full UI implementation in this PR.
 
 ## Product rule (locked)
 
@@ -54,13 +52,15 @@ When the session is **running** and one or more accepted mid-turn
 
 | Piece | Exists | Missing for steered GUI |
 |---|---|---|
-| `QueueDock` (`chat-ui/queue-dock`) | FIFO queued prompts; optional Steer; blocked header; **`band: pending_steer | follow_up` sections** | — |
-| `projectCanonicalChat` (`session-events/managed`) | On `turn.steered` while busy, folds into active turn as `{ steered: true }` and drops from `queued`; timeline `user_input` keeps `steered: true` | — |
-| `turn.steered` / `delivery` | Wire + projection + default history caption | — |
-| ComposerProgress | Still Backchat-local; QueueDock is the shared queue surface | Adopt QueueDock bands when migrating |
+| `QueueDock` (`chat-ui/queue-dock`) | FIFO queued prompts; optional Steer = “Send now”; blocked-on-tool header | No “already steered / awaiting next LLM boundary” section |
+| `projectCanonicalChat` (`session-events/managed`) | On `turn.steered` while busy, folds the user text into the **active** turn as `{ kind: "message", steered: true }` and drops it from `queued` | Consumers do not style `steered: true` specially |
+| `turn.steered` / `delivery` | Wire + projection | No chat-ui primitive for “steered strip” / history badge |
+| ComposerProgress | Lives in Backchat, not yet shared as the single Console+Backchat component | Steered parity with Codex TUI still TBD |
 
-**Conclusion:** shared chat-ui now *presents* pending-steer vs follow-up
-dock bands and a light steered history caption; Console wires both.
+**Conclusion:** openma-common can *project* steered mid-turn messages;
+neither QueueDock nor Console/Backchat chrome yet *presents* them as a
+first-class mid-turn state. Prefer extending shared chat-ui over
+forking Console-only widgets.
 
 ## Codex TUI patterns (cite, don’t invent)
 
@@ -153,15 +153,11 @@ shapes: **Codex three-band dock**, **DeepSeek `SteeringMessageNode`**,
    + user text message mapping (abacusai pattern) without requiring raw
    `processed_at` in the GUI layer.
 
-## Shipped on PR #399 (openma-common + Console)
+## Out of scope for PR #399
 
-- `QueueDock` Codex-like bands: `pending_steer` vs `follow_up` section
-  headers (optional per-row `band`; flat list when omitted).
-- Projection keeps `steered: true` on `user_input` timeline / AgentUI
-  items; default chat-ui caption **"Steered into this turn"**.
-- Console marks mid-run queue rows `pending_steer` when the agent
-  advertises steering; history uses the shared steered caption.
-- Backchat: use the same `band` + default caption once ComposerProgress
-  queue rows call shared `QueueDock` (no ComposerProgress fork here).
-- Package gate: Console depends on local `openma-common-0.13.1-dev.2.tgz`
-  until `@openma/common` ≥ 0.13.1 publishes.
+- Full QueueDock / ComposerProgress steered sections.
+- Styling `steered: true` in Console `CanonicalSessionTurn`.
+- Publishing a new `@openma/common` release solely for this chrome.
+
+Ship this note + coherent-turn / exhausted-flush locks; implement UI in
+a follow-up once shared chat-ui owns the presentation.

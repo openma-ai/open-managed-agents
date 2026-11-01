@@ -89,7 +89,6 @@ const MANAGED_TURN_LABELS: AgentUITurnLabels = {
   toolRunSummary: (tools) => tools.length === 1
     ? tools[0]?.title || tools[0]?.name || "Used a tool"
     : `Used ${tools.length} tools`,
-  steeredIntoTurn: "Steered into this turn",
 };
 
 function managedTurnSlots(source: CanonicalChatTurn): AgentUITurnSlots {
