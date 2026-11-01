@@ -123,11 +123,13 @@ export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
    * execution lease is held: `session.error` with retry_status `retrying`
    * plus `session.status_rescheduled`, then `exhausted` and an idle session
    * with `retries_exhausted`. During retrying/rescheduled: do not flush
-   * unstamped mid-turn inputs and do not start a new agent turn from them;
-   * hold until the next consume boundary after resume (coherent turn).
-   * Flush unconsumed mid-turn inputs only on retries_exhausted (client may
-   * re-send). Startup has produced no agent side effects. `cancel` aborts
-   * the backoff and the in-flight attempt.
+   * or delete unstamped mid-turn inputs and do not start a new agent turn
+   * from them; hold until the next consume boundary after resume
+   * (coherent turn). On retries_exhausted: do **not** delete those rows
+   * and do **not** auto-run them as the next turn alone — they remain and
+   * advance into context with the next round of events; user cannot
+   * withdraw; client may reconcile. Startup has produced no agent side
+   * effects. `cancel` aborts the backoff and the in-flight attempt.
    * See docs/implementation/cma-steer-coherent-turn.md. */
   startRetry?: { attempts: number; delayMs(attempt: number): number };
   /** Stamps queued accepted inputs when this host starts processing them. */

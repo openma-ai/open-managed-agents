@@ -4,7 +4,8 @@ Status: **locked decision** for OMA alignment with Claude Managed Agents
 mid-turn input semantics (2026-10-31, America/Detroit). Supplements
 Console PR #399 / issue #398. Cross-links
 [`exhausted-flush-client-reconcile.md`](./exhausted-flush-client-reconcile.md)
-(flush = delete only on exhausted; client reconcile).
+(on exhausted: retain rows, do not delete; advance with next round;
+client may reconcile; user cannot withdraw).
 
 Does **not** reopen prior “next-agent-turn outbox” OMA reads. Those were
 wrong for CMA-aligned sessions.
@@ -29,15 +30,20 @@ wrong for CMA-aligned sessions.
    inputs, and do **not** start a new agent turn from them. Leave them
    unstamped until the next consume boundary after resume, then ingest
    together (steer into the continuing turn).
-5. **Flush only on exhausted:** on `retry_status: exhausted` / idle
-   `stop_reason: retries_exhausted`, drop unconsumed mid-turn inputs
-   (scheduler flush = delete). Client may re-send. See
-   `exhausted-flush-client-reconcile.md`.
-6. **Client UX:** “running + steered” reconcile stays from `processed_at`
-   (and optional `system.user_message_steered`); event display order is
-   otherwise unchanged. **No special steered status chrome** (owner
-   cancel) — see [`steered-gui.md`](./steered-gui.md). Ordinary queue
-   dock + ordinary user bubbles after stamp.
+5. **Exhausted retain + next-round advance (no delete):** on
+   `retry_status: exhausted` / idle `stop_reason: retries_exhausted`, do
+   **not** delete unprocessed mid-turn history/queue rows, and do **not**
+   auto-run those unstamped inputs as the next turn alone. They **remain**
+   and **advance into context with the next round of events**. The user
+   **cannot withdraw** them. Client may reconcile. See
+   `exhausted-flush-client-reconcile.md`. Prior flush=delete is revoked.
+6. **Client UX (owner t276u):** after mid-run steer, the client is left
+   with only a temporary **running + steered** reconcile state — meaning
+   the latest accepted events were already consumed, judged from
+   `processed_at` (and optional `system.user_message_steered`). **Event
+   display order does not change.** **No special steered status chrome**
+   (owner cancel) — see [`steered-gui.md`](./steered-gui.md). Ordinary
+   queue dock + ordinary user bubbles after stamp.
 7. **OpenAI Agents path:** mid-turn → steer; idle → new turn. Do not
    invent a CMA-style durable pending inbox for OpenAI Agents.
 
@@ -48,7 +54,7 @@ wrong for CMA-aligned sessions.
 | Running (ordinary) | Hold as mid-state; **steer** into current turn at next LLM boundary; stamp on consume |
 | `retrying` / `status_rescheduled` | Hold; **no** flush; **no** new turn from these rows; after resume, ingest together into the continuing turn |
 | Idle after interrupt | Following message = **new** turn (interrupt path) |
-| Idle `retries_exhausted` | **Flush = delete** unconsumed mid-turn inputs; client may re-send |
+| Idle `retries_exhausted` | **Retain** unconsumed mid-turn inputs (no delete); do not auto-start them as the next turn alone; they **advance with the next round of events**; user cannot withdraw; client may reconcile |
 
 Explicit `POST .../pending/:event_id/steer` remains an OMA/Backchat
 control for clients that promote early; for agents that advertise
@@ -82,5 +88,5 @@ capability gap, not the CMA contract.
 - ~~openma-common / Console / Backchat steered display parity~~ —
   **cancelled** (no `pending_steer` bands / steered caption). Survey
   kept in [`steered-gui.md`](./steered-gui.md).
-- Server delete-flush implementation on exhausted where hosts still only
-  document it (#399 ships client reconcile helper).
+- ~~Server delete-flush on exhausted~~ — **cancelled / must not ship**.
+  #399 ships client reconcile helper under retain + next-round advance.

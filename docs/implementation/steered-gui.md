@@ -23,9 +23,10 @@ When the session is **running** and one or more accepted mid-turn
    Steer) stays **client-side**. The server unstamped list is admission
    mid-state only, not the product queue.
 4. Retry / exhausted semantics stay as locked in the coherent-turn doc:
-   `retrying` / `status_rescheduled` → hold, no flush, no new turn;
-   **only** `retries_exhausted` flushes (delete); unstamped inputs wait
-   for the next consume boundary.
+   `retrying` / `status_rescheduled` → hold, no flush/delete, no new turn;
+   `retries_exhausted` → **retain** unstamped inputs (no delete), do not
+   auto-run as next turn alone; they advance into context with the next
+   round of events; user cannot withdraw; client may reconcile.
 
 ## What first-party clients have today
 

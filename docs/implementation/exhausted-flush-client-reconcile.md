@@ -1,8 +1,10 @@
-# Exhausted flush = delete; client reconcile (owner decision)
+# Exhausted: retain rows; advance with next round (owner decision)
 
 Status: **locked decision** for OMA alignment with CMA exhausted semantics
-(2026-10-31, America/Detroit). Supplements Console PR #399 / issue #398.
+(2026-11-01, America/Detroit; owner correction supersedes flush=delete).
+Supplements Console PR #399 / issue #398.
 Does **not** implement server-side delete flush or CMA workflow runs (#400).
+There must be **no** delete-flush code path for exhausted.
 
 Companion: [`cma-steer-coherent-turn.md`](./cma-steer-coherent-turn.md)
 (mid-run `user.message` = steer into current turn; queue is mid-state only;
@@ -10,45 +12,39 @@ retry hold; interrupt is separate).
 
 ## Decision (do not reopen)
 
-1. **Server / CMA alignment:** on `retry_status: exhausted` / idle
-   `stop_reason: retries_exhausted`, **flush = delete** unprocessed queued
-   inputs (rows still `processed_at=null` that were never ingested). Do
-   **not** retain a server-side hold queue after exhausted.
-2. **Recoverable UX is client-only:** Console (and peers) keep local pending
-   ids/text; after exhausted, reconcile against `events.list` (or an
-   equivalent post-exhausted history snapshot). Ids that vanished were
-   flushed; the client may re-`send` to recover. The server does **not**
-   keep `processed_at=null` hold markers for this case.
-3. **Evidence bar:** official docs never proved delete vs stamp. This is an
-   **owner assumption aligned with the CMA type comment** on
-   `BetaManagedAgentsRetryStatusExhausted` ("queued inputs are flushed"),
-   not a live-probed hosted fact.
+1. **On `retry_status: exhausted` / idle `stop_reason: retries_exhausted`:**
+   do **not** delete unprocessed mid-turn history / queue rows
+   (`processed_at` still null). Do **not** auto-run those unstamped
+   mid-turn inputs as the next agent turn by themselves.
+2. **Advance with the next round:** unstamped mid-turn inputs **remain**
+   and **advance into context with the next round of events** (they ride
+   along when the next turn / next admitted events are consumed). After
+   exhausted settle, the user **cannot withdraw** them.
+3. **Client may reconcile:** Console (and peers) keep local pending
+   ids/text and may reconcile against `events.list` (or an equivalent
+   post-exhausted history snapshot). Under this lock, still-present null
+   `processed_at` rows are **expected**, not a flush/delete anomaly.
+4. **Revoked:** prior “flush = delete unconsumed mid-turn inputs on
+   exhausted” and any WIP delete-flush implementation. Also supersedes a
+   pure “hold forever / never advance” reading for the exhausted case.
 
 ## Retry vs exhausted (do not conflate)
 
 | Lifecycle | Unstamped mid-turn inputs |
 |---|---|
-| `retrying` / `session.status_rescheduled` | **Hold.** Do not flush. Do not start a new agent turn from them. After resume, ingest together (steer into the continuing turn). |
-| `retries_exhausted` / idle `retries_exhausted` | **Flush = delete.** Client may re-send. |
+| `retrying` / `session.status_rescheduled` | **Hold.** Do not flush/delete. Do not start a new agent turn from them. After resume, ingest together (steer into the continuing turn). |
+| `retries_exhausted` / idle `retries_exhausted` | **Retain rows** (no delete). Do **not** auto-start a new turn from them alone. They **advance into context with the next round of events**. User cannot withdraw. Client may reconcile. |
 
 Mid-run accept while the turn is healthy is **steer into the current turn**,
 not “queue for the next agent turn.” See `cma-steer-coherent-turn.md`.
 
-## Supersedes server-hold memo
+## Supersedes
 
-Earlier research memo `pending-seq-hold-design.md` (Codex-like **retain +
-hold** after exhausted, with an explicit hold/block marker) is
-**superseded for the exhausted case**. OMA does not ship a server-side
-hold queue for `retries_exhausted`. Other memo sections (admission vs
-ingest, seq-at-ingest, workflow runs = #400) may still inform later work;
-do not cite that memo as authority for exhausted retention.
-
-Contrast:
-
-| Path | After exhausted |
+| Prior reading | Status |
 |---|---|
-| **Superseded (hold)** | Keep admitted rows; mark held; no auto-claim until resume |
-| **Locked (this doc)** | Delete never-ingested queued inputs; client reconciles + may re-send |
+| **flush = delete** on exhausted (earlier #399 lock / this doc’s first revision) | **Revoked.** Do not delete history/queue rows. |
+| **Pure hold** after exhausted (retain + never advance until an explicit resume of the same turn) | **Superseded for exhausted.** Rows remain, but they advance with the **next round of events**, not as a silent solo next turn. |
+| Research memo `pending-seq-hold-design.md` (Codex-like retain + hold after exhausted) | Still not authority for OMA exhausted policy; use this doc. |
 
 pi/Codex retain-in-process queues after failure remain a separate harness
 comparison (`queued-after-failure-pi-codex.md`); they are not the OMA
@@ -57,7 +53,9 @@ server outbox policy for CMA-aligned sessions.
 ## Client reconcile algorithm
 
 Pure helper: `reconcilePendingAfterExhaustedFlush` in
-`apps/console/src/lib/session-exhausted-reconcile.ts`.
+`apps/console/src/lib/session-exhausted-reconcile.ts`
+(name kept for call-site stability; behavior matches **retain + reconcile**,
+not delete-flush).
 
 Given:
 
@@ -72,32 +70,31 @@ do:
    (`session.error` with `retry_status.type === "exhausted"` and/or
    `session.status_idle` with `stop_reason.type === "retries_exhausted"`).
 2. For each local pending id:
-   - **Absent from list** → treat as flushed/deleted; drop from local
-     pending; surface in `flushedIds` (client may re-send that text).
-   - **Present with null/absent `processed_at`** → **anomaly** under the
-     delete-flush assumption; **keep** locally (`anomalyRetainedIds`) and
-     do not pretend the server held it on purpose.
+   - **Present with null/absent `processed_at`** → **expected retain**;
+     keep locally (`retainedIds`). Will advance with the next round;
+     not withdrawable by the user after exhausted.
    - **Present with stamped `processed_at`** → ingested; drop from pending
-     (`processedIds`); not a flush.
-3. Optimistic composer text is cleared only when the caller associates it
-   with flushed (or fully reconciled) sends; the helper reports id fate
-   and does not invent server hold state.
+     (`processedIds`).
+   - **Absent from list** → unexpected under no-delete; report as
+     `vanishedIds` for client recovery UX (do **not** treat absence as
+     intentional server delete-flush).
+3. Optimistic composer text stays associated with retained ids until the
+   next round consumes them or the caller clears intentionally.
 
 GUI queue chrome continues to use OpenMA `delivery` / `turn.queued`
 (`session-event-queue.ts`). That chrome is **client-side** product UX; the
 server unstamped list is mid-state only, not the product queue. This
-reconcile path is the intentional exception that inspects CMA wire
-`processed_at` on a raw `events.list` snapshot after exhausted.
-“Running + steered” temporary UX also comes from `processed_at` (and
-optional steered frames); event display order is otherwise unchanged.
+reconcile path may inspect CMA wire `processed_at` on a raw `events.list`
+snapshot after exhausted. “Running + steered” temporary UX also comes from
+`processed_at` (and optional steered frames); event display order is
+otherwise unchanged.
 
 ## Out of scope here
 
-- Full CF/Node server delete-flush implementation (follow-up when hosts
-  align; fix lying comments only if trivial).
+- Any CF/Node **delete-flush** implementation — **cancelled / must not ship**.
 - CMA **workflow runs** — tracked as issue **#400**; schedule/wakeup
   automation stays as today.
-- Redesigning Console SessionDetail / outbox UI; this PR adds the pure
+- Redesigning Console SessionDetail / outbox UI; this PR keeps the pure
   lib + tests so wiring can stay minimal.
 - Full Node managed mid-run → steer injection (see coherent-turn doc
   follow-ups).
@@ -108,4 +105,5 @@ optional steered frames); event display order is otherwise unchanged.
   steer / coherent turn / retry hold / interrupt separation.
 - Issue #398 / PR #399 — Console send-response outbox merge.
 - Issue #400 — workflow runs (separate).
-- CMA SDK comment on `BetaManagedAgentsRetryStatusExhausted`.
+- Owner correction (2026-11-01): exhausted must **not** delete; advance
+  with next round; user cannot withdraw.

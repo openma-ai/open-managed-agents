@@ -1,13 +1,13 @@
 /**
- * Client-only reconcile after CMA-aligned exhausted flush.
+ * Client-only reconcile after CMA-aligned exhausted settle.
  *
  * Owner decision (see docs/implementation/exhausted-flush-client-reconcile.md):
  * on retry_status exhausted / idle stop_reason retries_exhausted, the server
- * flushes = deletes never-ingested queued inputs. The Console keeps local
- * pending ids/text and reconciles against events.list; vanished ids were
- * flushed and may be re-sent. Official docs never proved delete vs stamp —
- * this matches the CMA type comment ("queued inputs are flushed"), not a
- * live-probed fact. No server-side hold queue.
+ * does **not** delete never-ingested queued inputs and does **not** auto-run
+ * them as the next turn alone. Rows remain and advance into context with the
+ * next round of events; the user cannot withdraw them. The Console keeps
+ * local pending ids/text and may reconcile against events.list. Prior
+ * flush=delete is revoked — there must be no delete-flush code path.
  */
 
 export type ListedSessionEvent = {
@@ -26,19 +26,25 @@ export type ExhaustedReconcileInput = {
    * Prefer CMA wire shape with `processed_at`; bridged GUI events without
    * that field are treated as "present, processing unknown" only when they
    * still carry an id — callers should pass the list snapshot, not the
-   * delivery-stripped GUI log, for the anomaly path.
+   * delivery-stripped GUI log, for the retain path.
    */
   listedEvents: readonly ListedSessionEvent[];
 };
 
 export type ExhaustedReconcileResult = {
-  /** Local pending ids absent from the list → flushed/deleted. */
+  /**
+   * Local pending ids absent from the list. Unexpected under no-delete;
+   * report for recovery UX — do **not** treat as intentional server flush.
+   * Alias kept as `flushedIds` for call-site stability.
+   */
   flushedIds: string[];
-  /** Still listed with null/absent processed_at → anomaly; keep locally. */
+  /** @deprecated Use retainedIds; same values under retain policy. */
   anomalyRetainedIds: string[];
+  /** Still listed with null/absent processed_at → expected retain. */
+  retainedIds: string[];
   /** Still listed with stamped processed_at → ingested; drop from pending. */
   processedIds: string[];
-  /** Pending ids to keep after reconcile (anomaly retains only). */
+  /** Pending ids to keep after reconcile (retained / unstamped). */
   remainingPendingIds: string[];
 };
 
@@ -68,8 +74,8 @@ export function isExhaustedSettleEvent(event: unknown): boolean {
 
 /**
  * Reconcile local accepted-but-unprocessed ids against a post-exhausted
- * events.list snapshot. Missing ids → clear (flushed). Still-present null
- * processed_at → keep (anomaly). Stamped → clear as processed.
+ * events.list snapshot. Still-present null processed_at → retain (expected).
+ * Stamped → clear as processed. Missing → unexpected vanished (not delete-flush).
  */
 export function reconcilePendingAfterExhaustedFlush(
   input: ExhaustedReconcileInput,
@@ -81,7 +87,7 @@ export function reconcilePendingAfterExhaustedFlush(
   }
 
   const flushedIds: string[] = [];
-  const anomalyRetainedIds: string[] = [];
+  const retainedIds: string[] = [];
   const processedIds: string[] = [];
 
   for (const id of input.localPendingIds) {
@@ -91,7 +97,7 @@ export function reconcilePendingAfterExhaustedFlush(
       continue;
     }
     if (isUnprocessedListed(listed)) {
-      anomalyRetainedIds.push(id);
+      retainedIds.push(id);
       continue;
     }
     processedIds.push(id);
@@ -99,8 +105,9 @@ export function reconcilePendingAfterExhaustedFlush(
 
   return {
     flushedIds,
-    anomalyRetainedIds,
+    anomalyRetainedIds: [...retainedIds],
+    retainedIds,
     processedIds,
-    remainingPendingIds: [...anomalyRetainedIds],
+    remainingPendingIds: [...retainedIds],
   };
 }

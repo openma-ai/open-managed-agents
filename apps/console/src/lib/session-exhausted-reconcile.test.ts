@@ -41,35 +41,46 @@ describe("isExhaustedSettleEvent", () => {
 });
 
 describe("reconcilePendingAfterExhaustedFlush", () => {
-  it("clears local pending when list ids vanished after exhausted (flush=delete)", () => {
+  it("retains still-present null processed_at after exhausted (no delete)", () => {
     const result = reconcilePendingAfterExhaustedFlush({
       localPendingIds: ["sevt_a", "sevt_b"],
       listedEvents: [
+        {
+          id: "sevt_a",
+          type: "user.message",
+          processed_at: null,
+          content: [{ type: "text", text: "advances with next round" }],
+        },
+        {
+          id: "sevt_b",
+          type: "user.message",
+          processed_at: null,
+        },
         {
           id: "sevt_idle",
           type: "session.status_idle",
           processed_at: "2026-10-31T22:00:00.000Z",
           stop_reason: { type: "retries_exhausted" },
         },
-        // sevt_a / sevt_b absent → flushed
       ],
     });
 
-    expect(result.flushedIds).toEqual(["sevt_a", "sevt_b"]);
-    expect(result.anomalyRetainedIds).toEqual([]);
+    expect(result.retainedIds).toEqual(["sevt_a", "sevt_b"]);
+    expect(result.anomalyRetainedIds).toEqual(["sevt_a", "sevt_b"]);
+    expect(result.remainingPendingIds).toEqual(["sevt_a", "sevt_b"]);
+    expect(result.flushedIds).toEqual([]);
     expect(result.processedIds).toEqual([]);
-    expect(result.remainingPendingIds).toEqual([]);
   });
 
-  it("keeps still-present null processed_at as anomaly (not a hold queue)", () => {
+  it("reports absent ids as vanished (unexpected under no-delete), retains present null", () => {
     const result = reconcilePendingAfterExhaustedFlush({
-      localPendingIds: ["sevt_held_looking", "sevt_gone"],
+      localPendingIds: ["sevt_held", "sevt_gone"],
       listedEvents: [
         {
-          id: "sevt_held_looking",
+          id: "sevt_held",
           type: "user.message",
           processed_at: null,
-          content: [{ type: "text", text: "should not remain under delete-flush" }],
+          content: [{ type: "text", text: "expected retain after exhausted" }],
         },
         {
           id: "sevt_idle",
@@ -81,14 +92,14 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     });
 
     expect(result.flushedIds).toEqual(["sevt_gone"]);
-    expect(result.anomalyRetainedIds).toEqual(["sevt_held_looking"]);
-    expect(result.remainingPendingIds).toEqual(["sevt_held_looking"]);
+    expect(result.retainedIds).toEqual(["sevt_held"]);
+    expect(result.remainingPendingIds).toEqual(["sevt_held"]);
     expect(result.processedIds).toEqual([]);
   });
 
   it("drops local pending when the same id is now stamped processed", () => {
     const result = reconcilePendingAfterExhaustedFlush({
-      localPendingIds: ["sevt_ingested", "sevt_flushed"],
+      localPendingIds: ["sevt_ingested", "sevt_missing"],
       listedEvents: [
         {
           id: "sevt_ingested",
@@ -99,18 +110,18 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     });
 
     expect(result.processedIds).toEqual(["sevt_ingested"]);
-    expect(result.flushedIds).toEqual(["sevt_flushed"]);
-    expect(result.anomalyRetainedIds).toEqual([]);
+    expect(result.flushedIds).toEqual(["sevt_missing"]);
+    expect(result.retainedIds).toEqual([]);
     expect(result.remainingPendingIds).toEqual([]);
   });
 
-  it("treats absent processed_at the same as null for the anomaly path", () => {
+  it("treats absent processed_at the same as null for the retain path", () => {
     const result = reconcilePendingAfterExhaustedFlush({
       localPendingIds: ["sevt_nullish"],
       listedEvents: [{ id: "sevt_nullish", type: "user.message" }],
     });
 
-    expect(result.anomalyRetainedIds).toEqual(["sevt_nullish"]);
+    expect(result.retainedIds).toEqual(["sevt_nullish"]);
     expect(result.remainingPendingIds).toEqual(["sevt_nullish"]);
   });
 
@@ -123,6 +134,7 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     expect(result).toEqual({
       flushedIds: [],
       anomalyRetainedIds: [],
+      retainedIds: [],
       processedIds: [],
       remainingPendingIds: [],
     });
