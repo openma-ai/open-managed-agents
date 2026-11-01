@@ -43,6 +43,15 @@ identity refinement. Six coordination item types are derived from real tool
 calls. A completed child turn keeps the subagent available; closing and reopening
 change its lifecycle without inventing a new turn when no input was sent.
 
+While the projected session is `requires_action`, `agent.session.input.message`
+is accepted (HTTP 202, matching live `api.openai.com` agents=v1) and staged in
+this adapter as a same-turn deferred steer. It is not forwarded as a CMA
+`user.message` through the settle-only gate (which would 400). Staging is
+compat-local until a settle (`tool_result`) clears the pending actions; the
+steer is then committed into the same unfinished Turn. `input.cancel` still
+maps to `user.interrupt`. This is OpenAI Agents session semantics only — not a
+CMA durable mid-run pending inbox.
+
 `sessions.ts` rebuilds views from native history on every read. Event occurrence
 order comes from committed `{revision,index}` positions; timestamp / ID sorting
 is used only where the external pagination contract requires it. Legacy history
