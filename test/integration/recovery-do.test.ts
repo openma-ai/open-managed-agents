@@ -129,8 +129,46 @@ async function ensureTurnIdColumnsForTest() {
   }
 }
 
+/**
+ * The recovery tests only need D1's `sessions` row, but the mid-turn
+ * isolate-reset regression also needs the execution outbox shape: the
+ * dead turn's outbox row has already settled to `completed`, so no lane
+ * is reclaimable and only stale-turn finalization can end the session.
+ * Some test fixtures skip migration 0020, so create the minimum table.
+ */
+async function ensureExecutionTableForTest() {
+  await env.MAIN_DB.prepare(
+    `CREATE TABLE IF NOT EXISTS managed_session_executions (
+       workspace_id text NOT NULL,
+       session_id text NOT NULL,
+       lane_id text NOT NULL,
+       id text NOT NULL,
+       admitted_at_ms integer NOT NULL,
+       events_json text NOT NULL,
+       events_fingerprint text NOT NULL,
+       state text NOT NULL,
+       attempt_id text,
+       owner_id text,
+       generation integer DEFAULT 0 NOT NULL,
+       attempt_count integer DEFAULT 0 NOT NULL,
+       max_attempts integer DEFAULT 10 NOT NULL,
+       deadline_at_ms integer NOT NULL,
+       claimed_at_ms integer,
+       lease_expires_at_ms integer,
+       interrupt_requested_at_ms integer,
+       settled_at_ms integer,
+       failure text,
+       revision integer DEFAULT 1 NOT NULL,
+       PRIMARY KEY(workspace_id, id)
+     )`,
+  ).run();
+}
+
 describe("SessionDO recovery — DO-level", () => {
-  beforeAll(ensureTurnIdColumnsForTest);
+  beforeAll(async () => {
+    await ensureTurnIdColumnsForTest();
+    await ensureExecutionTableForTest();
+  });
   it("finalizes streaming row + appends agent.message on next boot", async () => {
     const sessionId = await newSession();
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
@@ -812,7 +850,7 @@ describe("SessionDO recovery — DO-level", () => {
         `SELECT type, data FROM events WHERE type='agent.tool_result' OR type='agent.mcp_tool_result'`,
       ).toArray();
     });
-    const aborted = events.find((e) => {
+    const matching = events.filter((e) => {
       try {
         const d = JSON.parse(e.data as string);
         return d.tool_use_id === "tu_orphan_x";
@@ -820,10 +858,104 @@ describe("SessionDO recovery — DO-level", () => {
         return false;
       }
     });
-    expect(aborted).toBeDefined();
-    const data = JSON.parse(aborted!.data as string);
+    // Exactly one aborted result: the cold-start recovery scan and the
+    // stale-turn finalizer both handle unpaired uses, and a duplicate
+    // makes the provider 400 ("each tool_use must have a single result").
+    expect(matching).toHaveLength(1);
+    const data = JSON.parse(matching[0].data as string);
     expect(data.is_error).toBe(true);
     expect(String(data.content)).toMatch(/interrupted/i);
+  });
+
+  it("isolate reset mid-turn: cold-start alarm ends a recent running turn with settled outbox", async () => {
+    // Pressure-harness regression: a DO isolate reset while its turn was
+    // streaming. The sessions row still says status='running' with a
+    // turn_started_at only a few seconds old, and the D1 execution
+    // outbox already settled to state='completed' (delivery happened),
+    // so no lane is reclaimable. Before the fix the age-only 30s grace
+    // period skipped this turn on the first cold-start pass; when that
+    // pass came from fetch() and the keep-alive alarm was lost with the
+    // isolate, nothing re-ran and the session stayed running forever.
+    const sessionId = `midturn_reset_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    // Insert the dead incarnation's row BEFORE the DO is first touched,
+    // so turn_started_at predates this instance exactly like a real reset.
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_died_midstream", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "in flight when the isolate died" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, generation, attempt_count, max_attempts,
+          deadline_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'completed', 1, 1, 10, ?, 1)`,
+    ).bind(sessionId, eventId, now - 5_000, eventsJson, eventsJson, now + 60_000).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    // First access is the cold incarnation. Seed the last live events
+    // (status_running + a custom_tool_use emitted right before death)
+    // and arm a due alarm in the same RPC.
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.custom_tool_use",
+        id: "ctu_dead_midstream",
+        name: "run_tests",
+        input: {},
+      });
+      await state.storage.setAlarm(Date.now() - 1000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const after = await env.AUTH_DB.prepare(
+      `SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`,
+    ).bind(sessionId).first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    // The custom_tool_use emitted right before death is finalized with
+    // exactly one aborted result, and the log gets a terminal idle so
+    // status leaves `running` consistently.
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data: events } = await ev.json();
+    const idle = events.find((e: { type: string }) => e.type === "session.status_idle");
+    expect(idle).toBeDefined();
+    expect(idle.data.stop_reason?.type).toBe("end_turn");
+    const aborted = events.filter((e: { type: string; data: { tool_use_id?: string } }) => {
+      if (e.type !== "agent.tool_result") return false;
+      return e.data.tool_use_id === "ctu_dead_midstream";
+    });
+    expect(aborted).toHaveLength(1);
+    expect((aborted[0].data as { is_error?: boolean }).is_error).toBe(true);
+
+    // The outbox row stays settled — finalization, not a reclaim, is
+    // what ended the turn.
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state FROM managed_session_executions WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string }>();
+    expect(execution?.state).toBe("completed");
   });
 
   // ─────────────────────────────────────────────────────────────────

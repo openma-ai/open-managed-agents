@@ -421,6 +421,24 @@ export class SessionDO extends DurableObject<Env> {
   private _activeTurnIds = new Set<string>();
 
   /**
+   * Wall-clock ms at which THIS DO instance (isolate) was constructed.
+   * `_finalizeStaleTurns` uses it to distinguish a turn started by a
+   * previous incarnation (turn_started_at < this) from a turn that just
+   * called beginTurn in this incarnation but hasn't reached the
+   * `_activeTurnIds.add` yet (the D1-write / in-memory-set race the old
+   * 30s wall-clock grace period was working around).
+   *
+   * Why this matters: after an isolate reset mid-turn, `turn_started_at`
+   * can be only a few seconds old. The old age-only grace period made
+   * the first cold-start pass skip it; if that pass came from fetch()
+   * (fire-and-forget) and the keep-alive alarm was lost with the
+   * isolate, nothing ever ran a second pass and the session stayed
+   * status_running forever. A turn that started before this instance
+   * existed cannot be ours, regardless of its age.
+   */
+  private readonly _instanceStartedAt = Date.now();
+
+  /**
    * Cold-start flush guard. The first fetch() after DO activation
    * triggers _finalizeStaleTurns() once; subsequent fetch()es skip it
    * (alarm() takes over for ongoing detection). false → not yet done.
@@ -757,6 +775,18 @@ export class SessionDO extends DurableObject<Env> {
    *  alarm() can run before any fetch() has warmed the schema. */
   private _queue: EventLogRepo | null = null;
 
+  /** The one-shot cold-start recovery scan started by ensureSchema().
+   *  `_finalizeStaleTurns` awaits it before pairing tool_use/tool_result
+   *  so the two recovery paths cannot race into a duplicate aborted
+   *  result (provider 400: "each tool_use must have a single result"). */
+  private _recoveryPromise: Promise<void> | null = null;
+
+  /** Single-flight guard for `_finalizeStaleTurns`. fetch() starts a
+   *  fire-and-forget cold-start pass while alarm() may run the same
+   *  pass concurrently; without this both can read the same unpaired
+   *  set and append two aborted results. */
+  private _finalizePromise: Promise<void> | null = null;
+
   /**
    * Lazy queue accessor. `queue` used to be dereferenced as `this.queue`
    * from alarm()/recovery paths that can run on a cold DO before
@@ -792,7 +822,13 @@ export class SessionDO extends DurableObject<Env> {
     // stale by definition (the runtime that owned it is gone). Reconcile
     // both kinds of orphans now so the events log is consistent before
     // drainEventQueue runs and the harness rebuilds messages.
-    void this.recoverInterruptedState();
+    //
+    // Keep the promise so _finalizeStaleTurns can await this scan before
+    // it computes the unpaired tool_use set. Otherwise the two recovery
+    // paths race: the scan injects a placeholder for the same tool_use
+    // the finalizer is about to abort (or vice versa), producing either
+    // a non-is_error result or two results.
+    this._recoveryPromise = this.recoverInterruptedState();
     // Queue cold start: any thread with null-processed turn inputs when
     // the previous incarnation died still has them in `events`. Re-fire
     // drainEventQueue per affected thread so they don't sit forever
@@ -807,6 +843,37 @@ export class SessionDO extends DurableObject<Env> {
       }
     } catch (err) {
       console.warn(`[ensureSchema] threadsWithQueueInputs failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // Cold-start stale-turn wake: if D1 still carries a running session
+    // row from a previous incarnation, guarantee a follow-up alarm even
+    // when the dead incarnation's keep-alive alarm was lost with the
+    // isolate. Previously the only cold-start trigger was fetch()'s
+    // fire-and-forget finalizer (plus whatever alarm happened to survive);
+    // a lost alarm meant the row could stay status_running forever.
+    void this._armColdStartStaleTurnCheck();
+  }
+
+  /** Best-effort cold-start alarm arm for a running D1 session row.
+   *  Runs one D1 read per cold boot; no-op for the common idle case.
+   *  `_finalizeStaleTurns` decides actual staleness using the
+   *  instance-start heuristic, so arming is safe even mid-turn. */
+  private async _armColdStartStaleTurnCheck(): Promise<void> {
+    try {
+      if (!this._state) return;
+      // Self-host fallback without a tenant D1 has no sessions.turn_id
+      // authority; the local active-turn set is the only signal there.
+      if (!(this.env as { MAIN_DB?: D1Database }).MAIN_DB) return;
+      const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
+      if (!orphans.some((o) => !this._activeTurnIds.has(o.turn_id))) return;
+      const target = Date.now() + 1_000;
+      const existing = await this.ctx.storage.getAlarm();
+      if (existing === null || existing > target) {
+        await this.ctx.storage.setAlarm(target);
+      }
+    } catch (err) {
+      // Schema/state not ready yet, D1 transient, or alarm unavailable.
+      // The alarm() and fetch() finalize paths still cover recovery.
+      console.warn(`[ensureSchema] cold-start stale-turn arm failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -985,7 +1052,18 @@ export class SessionDO extends DurableObject<Env> {
     if (!this.streams) return;
     const history = this.openHistory();
     try {
-      const { warnings } = await runRecovery(this.streams, history);
+      // Parked calls (custom_tool_use awaiting user.custom_tool_result,
+      // always_ask awaiting user.tool_confirmation) are unpaired BY
+      // DESIGN and survive restarts. Recovery must not fabricate a
+      // placeholder next to the real answer the client will post later.
+      const parkedToolUseIds = new Set(
+        (this._state?.pending_tool_calls ?? []).map((pending) => pending.toolCallId),
+      );
+      const { warnings } = await runRecovery(
+        this.streams,
+        history,
+        { skipToolUseIds: parkedToolUseIds },
+      );
       for (const w of warnings) {
         this.broadcastEvent({
           type: "session.warning",
@@ -6902,7 +6980,9 @@ export class SessionDO extends DurableObject<Env> {
     // remains only for the legacy self-host fallback.  The durable D1 row
     // still fences a replacement host if this alarm is lost.
     const wantsHeartbeat =
-      this._executionActiveLanes.size > 0 || await this._hasInflightTurn();
+      this._executionActiveLanes.size > 0 ||
+      this._activeTurnIds.size > 0 ||
+      await this._hasInflightTurn();
     const heartbeatMs = wantsHeartbeat ? Date.now() + KEEP_ALIVE_INTERVAL_MS : null;
     let mergedNextMs: number | null = nextMs;
     if (heartbeatMs !== null) {
@@ -7146,11 +7226,38 @@ export class SessionDO extends DurableObject<Env> {
    * call from alarm() AND first-fetch.
    */
   private async _finalizeStaleTurns(): Promise<void> {
+    // Single-flight: fetch() starts the cold-start pass without awaiting
+    // while alarm() can run the same pass concurrently. Both would read
+    // the same unpaired set and append two aborted results for one
+    // tool_use (provider 400: "each tool_use must have a single result").
+    if (this._finalizePromise) return this._finalizePromise;
+    const pass = this._finalizeStaleTurnsInner().finally(() => {
+      if (this._finalizePromise === pass) this._finalizePromise = null;
+    });
+    this._finalizePromise = pass;
+    return pass;
+  }
+
+  private async _finalizeStaleTurnsInner(): Promise<void> {
     if (!this._state) return;
     // Ensure events table exists (alarm() runs without going through
     // fetchInner's ensureSchema). Cheap idempotent CREATE IF NOT EXISTS.
     try { this.ensureSchema(); } catch { /* schema already up-to-date */ }
     const sql = this.ctx.storage.sql;
+
+    // Let the cold-start recovery scan (started by ensureSchema) finish
+    // before pairing. Otherwise it races this finalizer: it can inject a
+    // non-is_error placeholder for the same tool_use we are about to
+    // abort, or append a second result after our scan saw it unpaired.
+    // Awaiting the shared promise makes the pairing decision see a
+    // stable event log and yields exactly one aborted result.
+    if (this._recoveryPromise) {
+      try {
+        await this._recoveryPromise;
+      } catch (err) {
+        console.warn(`[finalize-stale] cold-start recovery failed:`, err);
+      }
+    }
 
     // 1. Unpaired tool_use detection. Three flavors per the wire spec
     //    in default-loop.ts:emitToolCallEvent:
@@ -7249,17 +7356,25 @@ export class SessionDO extends DurableObject<Env> {
     // listOrphanTurns BETWEEN the D1 write landing and the in-memory
     // set add, the brand-new turn looks like an orphan and we'd
     // incorrectly emit rescheduled+idle for it (caught 2026-05-11
-    // bench scenario 08, sess-hn5kmowudx42awm0). Filter by
-    // turn_started_at age — anything that started < 30s ago is
-    // necessarily either still in-flight or just-completed; not an
-    // orphan worth reaping. Real orphans (DO eviction) have
-    // turn_started_at from a previous incarnation, which is by
-    // definition older than the current process's lifetime.
+    // bench scenario 08, sess-hn5kmowudx42awm0).
+    //
+    // The grace period only applies to turns that began in THIS
+    // incarnation (`turn_started_at >= _instanceStartedAt`). A turn
+    // whose marker predates this instance is from a dead incarnation by
+    // definition, even when its timestamp is only a few seconds old —
+    // exactly the mid-turn isolate-reset case. Pre-fix, the age-only
+    // check skipped such a turn; a fire-and-forget fetch() pass then
+    // never ran again and the session stayed status_running forever.
     const FRESH_TURN_GRACE_MS = 30_000;
     const now = Date.now();
+    let heldForFreshGrace = 0;
     for (const o of orphans) {
       if (this._activeTurnIds.has(o.turn_id)) continue;
-      if (now - o.turn_started_at < FRESH_TURN_GRACE_MS) continue;
+      const startedThisIncarnation = o.turn_started_at >= this._instanceStartedAt;
+      if (startedThisIncarnation && now - o.turn_started_at < FRESH_TURN_GRACE_MS) {
+        heldForFreshGrace++;
+        continue;
+      }
       try {
         await this.runtimeAdapter.endTurn(this.state.session_id, o.turn_id, "idle");
       } catch (err) {
@@ -7277,6 +7392,18 @@ export class SessionDO extends DurableObject<Env> {
       try { this.broadcastEvent(reschedEvent); } catch {}
       try { await this.runtimeAdapter.eventLog.append(idleEvent); } catch {}
       try { this.broadcastEvent(idleEvent); } catch {}
+    }
+    if (heldForFreshGrace > 0) {
+      // A fetch()-driven cold-start pass is fire-and-forget; unlike the
+      // alarm path it does not re-arm via _scheduleNextAlarm. Make sure
+      // a later pass exists to re-check the in-incarnation grace window.
+      try {
+        const retryAt = now + FRESH_TURN_GRACE_MS;
+        const existing = await this.ctx.storage.getAlarm();
+        if (existing === null || existing > retryAt) {
+          await this.ctx.storage.setAlarm(retryAt);
+        }
+      } catch { /* storage alarm unavailable — alarm() path will rearm */ }
     }
     if (flushed > 0 || ended > 0) {
       console.log(`[finalize-stale] flushed ${flushed} tool_uses, ended ${ended} stale turns`);
