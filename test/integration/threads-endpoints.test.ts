@@ -920,4 +920,85 @@ describe("threads HTTP endpoints", () => {
     expect(result.adds).not.toContain("sthr_primary");
   });
 
+  it("GET /events lists queued inputs with null seq until promoted; GET /pending is gone", async () => {
+    const stub = freshDoStub("events_queue_seq");
+    await seedSchemaAndState(stub);
+    const eventId = "sevt_queued_list";
+
+    // Keep everything in one DO instance: a fresh incarnation's cold-start
+    // drain would promote the queued row before we could inspect the list.
+    const result = await runInDurableObject(stub, async (instance, state) => {
+      const room = instance as any;
+      room.ensureSchema();
+      state.storage.sql.exec(
+        `INSERT INTO events (enqueued_at, session_thread_id, type, data, processed_at)
+         VALUES (?, 'sthr_primary', 'user.message', ?, NULL)`,
+        Date.now(),
+        JSON.stringify({
+          type: "user.message",
+          id: eventId,
+          content: [{ type: "text", text: "still queued" }],
+        }),
+      );
+      let seq = 0;
+      for (const row of state.storage.sql.exec(
+        `SELECT seq FROM events WHERE json_extract(data, '$.id') = ?`,
+        eventId,
+      )) seq = row.seq as number;
+      if (!seq) throw new Error("seeded event seq missing");
+
+      const list = await room.fetch(new Request("http://internal/events"));
+      const listBody = (await list.json()) as { data: any[] };
+      const queued = listBody.data.find((row) => row.data?.id === eventId);
+      // Queued: visible in the list with the same event id, but no canonical
+      // seq yet (the internal seq exists only for ordering).
+      if (!queued) throw new Error("queued event missing from list");
+      const queuedSeq = queued.seq;
+      const queuedProcessedAt = queued.data.processed_at;
+
+      // Thread-scoped list uses the same contract.
+      const threadList = await room.fetch(
+        new Request("http://internal/threads/sthr_primary/events"),
+      );
+      const threadBody = (await threadList.json()) as { data: any[] };
+      const threadQueued = threadBody.data.find((row) => row.data?.id === eventId);
+
+      // GET /pending no longer exists (404); DELETE cancel shim remains.
+      const pending = await room.fetch(new Request("http://internal/pending"));
+      const pendingStatus = pending.status;
+
+      // Promote in place (same row/id): the list now exposes the canonical seq.
+      const processedAt = Date.now();
+      state.storage.sql.exec(
+        `UPDATE events SET processed_at = ?,
+                data = json_set(data, '$.processed_at', ?)
+          WHERE seq = ?`,
+        processedAt,
+        new Date(processedAt).toISOString(),
+        seq,
+      );
+      const promoted = await room.fetch(new Request("http://internal/events"));
+      const promotedBody = (await promoted.json()) as { data: any[] };
+      const row = promotedBody.data.find((r) => r.data?.id === eventId);
+
+      return {
+        seq,
+        queuedSeq,
+        queuedProcessedAt,
+        threadQueuedSeq: threadQueued ? threadQueued.seq : "missing",
+        pendingStatus,
+        promotedSeq: row?.seq ?? null,
+        promotedProcessedAt: row?.data?.processed_at ?? null,
+        promotedProcessedAtMs: row?.data?.processed_at_ms ?? null,
+      };
+    });
+
+    expect(result.queuedSeq).toBeNull();
+    expect(result.queuedProcessedAt).toBeUndefined();
+    expect(result.threadQueuedSeq).toBeNull();
+    expect(result.pendingStatus).toBe(404);
+    expect(result.promotedSeq).toBe(result.seq);
+    expect(result.promotedProcessedAt).toBe(new Date(result.promotedProcessedAtMs as number).toISOString());
+    expect(result.promotedProcessedAtMs).toBeTypeOf("number");
+  });
 });
