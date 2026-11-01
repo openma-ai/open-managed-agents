@@ -484,7 +484,7 @@ export interface SessionTerminatedEvent extends EventBase {
 export interface SessionStatusEvent extends EventBase {
   type: "session.status_idle";
   stop_reason?: {
-    type: "end_turn" | "requires_action";
+    type: "end_turn" | "requires_action" | "retries_exhausted" | "budget_reached";
     event_ids?: string[];
     // requires_action sub-type for SDK routing
     action_type?: "tool_confirmation" | "custom_tool_result";
@@ -573,7 +573,8 @@ export interface SessionErrorEvent extends EventBase {
   error: string | {
     type: string;
     message: string;
-    retry_status?: "retryable" | "non_retryable";
+    /** Official CMA: retrying | exhausted | terminal (legacy retryable/non_retryable kept). */
+    retry_status?: "retrying" | "exhausted" | "terminal" | "retryable" | "non_retryable";
   };
 }
 

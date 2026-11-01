@@ -150,10 +150,12 @@ export function encodeRuntimeHistoryEvent(event: SessionEventView): object {
 
 function normalizeRuntimeError(value: unknown): object {
   if (typeof value === "string") {
+    // Unstructured string errors are treated as a dead-but-recoverable turn
+    // (exhausted), not terminal. Official terminal requires session → terminated.
     return {
       type: "unknown_error",
       message: value,
-      retryStatus: "terminal",
+      retryStatus: "exhausted",
     };
   }
   const error = camelCaseRuntimeValue(value) as Record<string, unknown>;
@@ -168,7 +170,7 @@ function normalizeRuntimeError(value: unknown): object {
         : retry !== null && typeof retry === "object" &&
             typeof (retry as { type?: unknown }).type === "string"
           ? (retry as { type: string }).type
-          : "terminal",
+          : "exhausted",
   };
 }
 

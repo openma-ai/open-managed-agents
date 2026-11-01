@@ -16,7 +16,6 @@ import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-
 import {
   parseSandboxImageCatalog,
   resolveSandboxImage,
-  SandboxImageUnavailableError,
 } from "@open-managed-agents/sandbox";
 import * as runtimeModule from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 
@@ -159,7 +158,14 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       resolveSandboxImage(parseSandboxImageCatalog("{}"), "retired", "env_01");
     });
     const message = 'Sandbox image "retired" selected by environment env_01 is not in this deployment\'s SANDBOX_IMAGES catalog. Ask the operator to restore it, or update the environment to another image or the default image.';
-    await expect(accept()).rejects.toBeInstanceOf(SandboxImageUnavailableError);
+    // Non-retryable catalog miss still projects exhausted + retries_exhausted
+    // (session stays usable); accept rejects with SessionRetriesExhaustedError
+    // so the host can holdQueuedOnLane (owner lock).
+    await expect(accept()).rejects.toMatchObject({
+      name: "SessionRetriesExhaustedError",
+      holdQueuedOnLane: true,
+      message,
+    });
     expect(starts).toBe(1);
     expect(events()).toEqual([
       { type: "session.error", error: { type: "unknown_error", message, retryStatus: "exhausted" } },
@@ -953,7 +959,7 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     expect(marked).toEqual([["u1"], ["u_mid"]]);
   });
 
-  describe("user.message while parked in requires_action stays queued (CMA, #398)", () => {
+  describe("user.message while parked in requires_action is rejected (CMA settle-only, #399)", () => {
     const parked = () => [
       { id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: "2026-08-26T04:00:00.000Z" },
       { id: "c1", type: "agent.custom_tool_use", name: "t", input: {}, processedAt: "2026-08-26T04:00:01.000Z" },
@@ -996,30 +1002,29 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     const message = { id: "u2", type: "user.message", content: [{ type: "text", text: "also" }] };
     const answer = (id: string, call: string) => ({ id, type: "user.custom_tool_result", customToolUseId: call, content: [{ type: "text", text: "42" }] });
 
-    it("message stays queued (processed_at null, no run) until every pending call is answered, then resumes with it", async () => {
+    it("rejects user.message with RequiresActionSettleOnlyError (400) while parked", async () => {
       const h = harness(parked());
-      await h.send(message);
+      await expect(h.send(message)).rejects.toMatchObject({
+        name: "RequiresActionSettleOnlyError",
+        status: 400,
+      });
       expect(h.accepted).toEqual([]);
       expect(h.marked).toEqual([]);
-      expect(h.history.find((e) => e.id === "u2")?.processedAt).toBeNull();
-      await h.send(answer("r1", "c1"));
-      // partial answer: re-announce only; the message is still queued
-      expect(h.accepted).toEqual([["r1"]]);
-      h.history.push({ id: "i2", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c2"] }, processedAt: "2026-08-26T05:00:00.500Z" });
-      expect(h.history.find((e) => e.id === "u2")?.processedAt).toBeNull();
-      await h.send(answer("r2", "c2"));
-      expect(h.accepted).toEqual([["r1"], ["r2", "u2"]]);
-      // answers are stamped on receipt; only the released message is stamped now
-      expect(h.marked).toEqual([["u2"]]);
-      expect(h.history.find((e) => e.id === "u2")?.processedAt).not.toBeNull();
     });
 
-    it("interrupt while parked ends the turn first, then the queued message drains as its own run (CF parity)", async () => {
+    it("accepts settle answers while parked and resumes after the last outstanding id", async () => {
       const h = harness(parked());
-      await h.send(message);
+      await h.send(answer("r1", "c1"));
+      expect(h.accepted).toEqual([["r1"]]);
+      h.history.push({ id: "i2", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c2"] }, processedAt: "2026-08-26T05:00:00.500Z" });
+      await h.send(answer("r2", "c2"));
+      expect(h.accepted).toEqual([["r1"], ["r2"]]);
+    });
+
+    it("interrupt while parked is accepted as a settle event", async () => {
+      const h = harness(parked());
       await h.send({ id: "x1", type: "user.interrupt" });
-      expect(h.accepted).toEqual([["x1"], ["u2"]]);
-      expect(h.marked.at(-1)).toEqual(["u2"]);
+      expect(h.accepted).toEqual([["x1"]]);
     });
 
     it("a message to an unparked session runs normally", async () => {

@@ -670,7 +670,23 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     const sess = await services.sessions.get({ tenantId: t, sessionId: id });
     if (!sess) return c.json({ error: "Session not found" }, 404);
     if ((sess as unknown as { archived_at?: string | null }).archived_at) {
-      return c.json({ error: "Session is archived and cannot receive new events" }, 409);
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Session is archived and cannot receive new events",
+        },
+      }, 409);
+    }
+    if ((sess as unknown as { terminated_at?: string | null }).terminated_at
+      || (sess as unknown as { status?: string }).status === "terminated") {
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Session is terminated and cannot receive new events",
+        },
+      }, 409);
     }
     const body = await c.req.json<{ events: SessionEvent[] }>();
     if (!Array.isArray(body.events) || body.events.length === 0) {
@@ -681,6 +697,10 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
         return c.json({ error: `Unsupported event type: ${ev.type}` }, 400);
       }
     }
+
+    // Official CMA settle-only window is enforced by SessionDO / Node managed
+    // accept (requires_action / budget_reached → 400 for user.message, t307u).
+    // Propagate router 400s below.
 
     for (const ev of body.events) {
       let outgoing: SessionEvent = ev;

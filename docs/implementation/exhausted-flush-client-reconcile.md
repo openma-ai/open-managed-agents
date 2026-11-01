@@ -28,6 +28,22 @@ retry hold; interrupt is separate).
    exhausted” and any WIP delete-flush implementation. Also supersedes a
    pure “hold forever / never advance” reading for the exhausted case.
 
+## Wire shape (CF + Node; do not emit the wrong exhausted path)
+
+Official CMA: `session.error` with `retry_status: exhausted`, then
+`session.status_idle` with `stop_reason: retries_exhausted`. No
+`session.status_rescheduled` on the final failure. Retrying emits
+`session.error{retrying}` before `status_rescheduled`.
+
+**Deliberate divergence (owner lock, stays):** official SDK exhausted one-liner
+says queued inputs are flushed; OMA **retains** them, marks
+`held_after_exhausted`, and advances with the next round. See decision above.
+
+`retry_status: terminal` must match session status: emit terminal only when
+the session actually **terminates**. Recoverable turn-dead failures use
+`exhausted` + `retries_exhausted` (session stays idle/usable). Unstructured
+string `session.error` payloads normalize to `exhausted`, not `terminal`.
+
 ## Retry vs exhausted (do not conflate)
 
 | Lifecycle | Unstamped mid-turn inputs |

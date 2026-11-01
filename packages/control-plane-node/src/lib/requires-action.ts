@@ -8,7 +8,15 @@
  *   stop_reason requires_action; the outstanding calls are its event_ids minus
  *   those already answered/closed.
  * - Partial answers re-announce the remaining ids; all answered -> resume.
+ * - Settle-only 400 for user.message uses shared settleOnlyReason (t307u),
+ *   including budget_reached when that idle stop exists.
  */
+import {
+  settleOnlyReason,
+  settleOnlyRejectMessage,
+  SETTLE_SESSION_EVENT_TYPES,
+} from "@open-managed-agents/session-runtime-contract";
+
 type WireEvent = { type?: string; [key: string]: unknown };
 
 const thread = (e: WireEvent) => (e.session_thread_id as string | undefined) ?? "sthr_primary";
@@ -21,6 +29,7 @@ export function answeredToolCallIds(events: readonly WireEvent[]): Set<string> {
       : e.type === "agent.mcp_tool_result" ? e.mcp_tool_use_id
       : e.type === "user.custom_tool_result" ? e.custom_tool_use_id
       : e.type === "user.tool_confirmation" ? e.tool_use_id
+      : e.type === "user.tool_result" ? e.tool_use_id
       : undefined;
     if (typeof id === "string") answered.add(id);
   }
@@ -57,4 +66,33 @@ export function knownToolCallIds(events: readonly WireEvent[]): Set<string> {
       && typeof e.id === "string") ids.add(e.id);
   }
   return ids;
+}
+
+/** Official CMA settle-only window event types (shared contract). */
+export const REQUIRES_ACTION_SETTLE_EVENT_TYPES = new Set<string>(SETTLE_SESSION_EVENT_TYPES);
+
+export const REQUIRES_ACTION_USER_MESSAGE_REJECT =
+  settleOnlyRejectMessage("requires_action", ["user.message"]);
+
+/** True when `type` is a settle event for a requires_action / budget_reached window. */
+export function isRequiresActionSettleEventType(type: string | undefined): boolean {
+  return typeof type === "string" && REQUIRES_ACTION_SETTLE_EVENT_TYPES.has(type);
+}
+
+/**
+ * Official CMA / t307u: while parked in requires_action or budget_reached,
+ * a `user.message` is a 400. Returns a reject message, or null when the batch
+ * is allowed (no park, or only settle events / interrupt).
+ */
+export function rejectMessageForRequiresActionBatch(
+  events: readonly WireEvent[],
+  batch: readonly WireEvent[],
+  threadId = "sthr_primary",
+): string | null {
+  const reason = settleOnlyReason(events, threadId);
+  if (reason === null) return null;
+  if (batch.some((event) => event.type === "user.message")) {
+    return settleOnlyRejectMessage(reason, ["user.message"]);
+  }
+  return null;
 }

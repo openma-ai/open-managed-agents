@@ -51,6 +51,11 @@ import {
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
+import {
+  settleOnlyReason,
+  settleOnlyRejectMessage,
+  type SettleOnlyReason,
+} from "@open-managed-agents/session-runtime-contract/settle-events";
 import { encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
@@ -1396,7 +1401,15 @@ export class SessionDO extends DurableObject<Env> {
     if (this.localEventExists(eventId)) return null;
     const existing = this.pendingRowForEvent(eventId);
     if (existing !== null) return existing;
-    this._stampEventForPending(event);
+    // custom_tool_result is processed on receipt (official CMA): keep/set
+    // processed_at. message / tool_confirmation stay null until drain.
+    if (event.type === "user.custom_tool_result") {
+      const e = event as SessionEvent & { id?: string; processed_at?: string };
+      if (!e.id) e.id = `sevt_${generateEventId()}`;
+      if (!e.processed_at) e.processed_at = this.processedClock.nowIso();
+    } else {
+      this._stampEventForPending(event);
+    }
     this.pending!.enqueue(event);
     return this.pendingRowForEvent(eventId);
   }
@@ -1407,8 +1420,14 @@ export class SessionDO extends DurableObject<Env> {
   ): void {
     const nowMs = this.processedClock.nowMs();
     const nowIso = new Date(nowMs).toISOString();
-    const event = JSON.parse(row.data) as SessionEvent;
-    event.processed_at = nowIso;
+    const event = JSON.parse(row.data) as SessionEvent & { processed_at?: string };
+    // Official CMA: custom_tool_result is stamped on receipt — do not replace
+    // that stamp at drain. message / tool_confirmation stay null until here.
+    const stamp =
+      event.type === "user.custom_tool_result" && typeof event.processed_at === "string"
+        ? event.processed_at
+        : nowIso;
+    event.processed_at = stamp;
     let promoted = false;
     for (const existing of this.ctx.storage.sql.exec(
       `SELECT 1 AS present FROM events WHERE json_extract(data, '$.id') = ? LIMIT 1`,
@@ -1419,7 +1438,7 @@ export class SessionDO extends DurableObject<Env> {
     if (!promoted) history.append(event);
     this.pending!.delete(row.pending_seq);
     // Canonical D1 stamp (null → processed_at) before live re-emit.
-    this.markAcceptedEventsProcessed([row.event_id], nowIso);
+    this.markAcceptedEventsProcessed([row.event_id], stamp);
     this.broadcastEvent(event);
     this.broadcastEvent({
       type: "system.user_message_promoted",
@@ -2259,6 +2278,23 @@ export class SessionDO extends DurableObject<Env> {
         const umThread =
           (um as unknown as { session_thread_id?: string })
             .session_thread_id ?? "sthr_primary";
+        // Official CMA / t307u: while idle requires_action or budget_reached,
+        // user.message is a 400 — only settle events are accepted.
+        {
+          const settleReason = this.laneSettleOnlyReason(history, umThread);
+          if (settleReason !== null) {
+            return new Response(
+              JSON.stringify({
+                type: "error",
+                error: {
+                  type: "invalid_request_error",
+                  message: settleOnlyRejectMessage(settleReason, ["user.message"]),
+                },
+              }),
+              { status: 400, headers: { "content-type": "application/json" } },
+            );
+          }
+        }
         // Stamp id + processed_at = null on the canonical event before
         // enqueue. The pending row carries the same JSON; drain will
         // overwrite processed_at to the wall-clock when promoting.
@@ -2443,13 +2479,16 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
         const lastIsRunning = lastStatusType === "session.status_running";
+        // Official CMA: interrupt against an already-idle session is normally
+        // a no-op. Do not emit a fresh idle end_turn that would overwrite
+        // retries_exhausted (or other non-end_turn idle stop reasons).
+        // requires_action settle still emits via closedCount/settledRequests.
         const emitIdle =
           closedCount > 0 ||
           settledRequests.length > 0 ||
           cancelledCount > 0 ||
           hadActiveTurn ||
-          lastIsRunning ||
-          (lastStatusType === "session.status_idle" && lastStop !== "end_turn");
+          lastIsRunning;
         if (emitIdle) {
           // If a zombie turn's finally still runs, suppress its catch-all idle.
           if (lastIsRunning || hadActiveTurn) this._interruptIdleOwned.add(targetThread);
@@ -2507,7 +2546,12 @@ export class SessionDO extends DurableObject<Env> {
             message: `custom_tool_use_id ${customResult.custom_tool_use_id} does not match any tool use in this session` } }),
             { status: 400, headers: { "content-type": "application/json" } });
         }
-        this._stampEventForPending(customResult);
+        // Official CMA: custom_tool_result (like tool_result) is processed on
+        // receipt — stamp processed_at before enqueue/echo, do not clear it.
+        const stamped = customResult as UserCustomToolResultEvent & { id?: string; processed_at?: string };
+        if (!stamped.id) stamped.id = `sevt_${generateEventId()}`;
+        stamped.processed_at = this.processedClock.nowIso();
+        this.markAcceptedEventsProcessed([stamped.id], stamped.processed_at);
         const enqueued = this.enqueuePendingIfNew(customResult);
         if (enqueued) this._broadcastPendingFrame(customResult, ctrThread);
         if (enqueued) {
@@ -4190,8 +4234,9 @@ export class SessionDO extends DurableObject<Env> {
     if (!e.id) {
       e.id = `sevt_${generateEventId()}`;
     }
-    // Defensive: clear any pre-set processed_at on inbound user.* events
-    // (clients should never set it, but if they do, drain owns the stamp).
+    // Queued inputs (message / tool_confirmation / interrupt): processed_at
+    // stays null until drain. Do not use this helper for custom_tool_result /
+    // tool_result — those are stamped on receipt (official CMA).
     delete e.processed_at;
   }
 
@@ -4631,6 +4676,25 @@ export class SessionDO extends DurableObject<Env> {
    * duplicate POST) is stored with processed_at stamped and echoed, but is
    * NOT enqueued: no model-history append, no loop wake, no status change.
    */
+  /**
+   * Official CMA settle-only window: latest status on the lane is idle with
+   * stop_reason requires_action and at least one outstanding event_id (or
+   * DO state still lists pending_tool_calls). budget_reached is not enforced
+   * here yet (emitter/gate gap — see cma-steer-coherent-turn.md).
+   */
+  private laneSettleOnlyReason(history: HistoryStore, threadId: string): SettleOnlyReason | null {
+    const pending = this.state.pending_tool_calls ?? [];
+    if (pending.length > 0) return "requires_action";
+    try {
+      return settleOnlyReason(
+        history.getEvents() as Array<{ type?: string; [key: string]: unknown }>,
+        threadId,
+      );
+    } catch {
+      return null;
+    }
+  }
+
   private acceptNoEffectAnswer(event: SessionEvent, history: HistoryStore): Response {
     const e = event as SessionEvent & { id?: string; processed_at?: string };
     if (!e.id) e.id = `sevt_${generateEventId()}`;
@@ -5956,18 +6020,29 @@ export class SessionDO extends DurableObject<Env> {
       // For errors that escaped the boundaries (D1, KV, future SDKs),
       // run classifyExternalError once more inline as belt-and-braces.
       const classified = classifyExternalError(err);
-      const isFatal =
+      // Session-terminal classes: retry_status terminal + terminate().
+      // ModelError is turn-dead only (exhausted + retries_exhausted): same
+      // prompt fails again, but the session stays usable for a new prompt.
+      // Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: retries burned tokens.
+      const isSessionTerminal =
         classified instanceof BillingError ||
         classified instanceof ConfigError ||
-        classified instanceof AuthError ||
-        // ModelError = deterministic LLM-side condition (silent_stop,
-        // refused, malformed). Same prompt → same fail. Retrying just
-        // burns tokens. Caught 2026-05-11 sess-y2bfxm1de4e1zqxm: 4
-        // failed messages × 3 retries = 12 wasted LLM calls.
-        classified instanceof ModelError;
-      const isTransient = !isFatal;
+        classified instanceof AuthError;
+      const isModelTurnDead = classified instanceof ModelError;
+      const isTransient = !isSessionTerminal && !isModelTurnDead;
 
       if (isTransient && retryCount < 2) {
+        // Official CMA ordering: session.error{retrying} then status_rescheduled.
+        const retryingError: SessionEvent = {
+          type: "session.error",
+          error: {
+            type: "unknown_error",
+            message: errorMessage,
+            retry_status: "retrying",
+          },
+        } as SessionEvent;
+        history.append(retryingError);
+        this.broadcastEvent(retryingError, activeFence);
         const rescheduledEvent: SessionEvent = {
           type: "session.status_rescheduled",
           reason: errorMessage,
@@ -5995,32 +6070,47 @@ export class SessionDO extends DurableObject<Env> {
         );
       }
 
-      if (isTransient) {
-        const rescheduledEvent: SessionEvent = {
-          type: "session.status_rescheduled",
-          reason: `${errorMessage} (exhausted ${retryCount} retries)`,
-        };
-        history.append(rescheduledEvent);
-        this.broadcastEvent(rescheduledEvent, activeFence);
-        // Retain mid-run queued inputs; do not let drain claim them alone.
+      if (isTransient || isModelTurnDead) {
+        // Official CMA exhausted: session.error{exhausted} then idle
+        // retries_exhausted. No status_rescheduled on the final failure.
+        // Owner lock: retain mid-run queued inputs (holdQueuedOnLane), do not
+        // flush/delete (deliberate divergence from SDK "flushed").
+        const exhaustedError: SessionEvent = {
+          type: "session.error",
+          error: {
+            type: "unknown_error",
+            message: errorMessage,
+            retry_status: "exhausted",
+          },
+        } as SessionEvent;
+        history.append(exhaustedError);
+        this.broadcastEvent(exhaustedError, activeFence);
         holdQueuedOnLane = true;
         completedIdleEvent = {
           type: "session.status_idle",
-          stop_reason: { type: "end_turn" },
+          stop_reason: { type: "retries_exhausted" },
         };
+      } else {
+        // Official CMA: retry_status terminal → session transitions to terminated.
+        const terminalError: SessionEvent = {
+          type: "session.error",
+          error: {
+            type: "unknown_error",
+            message: errorMessage,
+            retry_status: "terminal",
+          },
+        } as SessionEvent;
+        history.append(terminalError);
+        this.broadcastEvent(terminalError, activeFence);
+        this.terminate(
+          classified instanceof BillingError ? "billing"
+            : classified instanceof AuthError ? "auth"
+              : classified instanceof ConfigError ? "config"
+                : "fatal_error",
+        );
+        // terminate() emits status_terminated; suppress catch-all idle.
+        idleEmitted = true;
       }
-
-      const errorEvent: SessionEvent = {
-        type: "session.error",
-        error: errorMessage,
-      };
-      history.append(errorEvent);
-      this.broadcastEvent(errorEvent, activeFence);
-
-      // Harness crashed — but session is recoverable.
-      // The event log has everything up to the crash point.
-      // The sandbox is still alive (container persists independently).
-      // Client can send a new user.message to retry.
     } finally {
       await disposeTools(allTools);
       if (!managedMemorySynchronized) {

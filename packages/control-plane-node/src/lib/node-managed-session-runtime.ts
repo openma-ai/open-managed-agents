@@ -14,6 +14,9 @@ import type {
 } from "@open-managed-agents/session-runtime-contract/dispatch";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import {
+  settleOnlyReason,
+} from "@open-managed-agents/session-runtime-contract";
 import type {
   SessionLifecycleCommandPort,
   StartSessionExecution,
@@ -44,7 +47,9 @@ import { randomUUID } from "node:crypto";
 import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
-import { outstandingRequiresAction } from "./requires-action.js";
+import { outstandingRequiresAction,
+  rejectMessageForRequiresActionBatch,
+} from "./requires-action.js";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
@@ -102,15 +107,16 @@ export interface NodeManagedSessionRuntimeEngine {
     executionFence?: SessionExecutionFence;
   }): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
-  /** requires_action queueing (CMA, #398): which batch user.message ids must
-   * stay queued (processed_at null) because the thread remains parked, and
-   * which earlier still-queued messages this batch releases. */
+  /** requires_action settle window (CMA): reject user.message while parked;
+   * settle answers may release earlier queued messages once the park clears. */
   planQueuedInputs?(input: AcceptNodeManagedSessionEvents): Promise<QueuedInputPlan>;
 }
 
 export interface QueuedInputPlan {
   defer: string[];
   release: AcceptNodeManagedSessionEvents["events"];
+  /** Official CMA: user.message while requires_action is a 400. */
+  reject?: string;
 }
 
 export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
@@ -353,6 +359,12 @@ export class DefaultNodeManagedSessionRuntimeDriver
     try {
       const plan = await this.dependencies.engine.planQueuedInputs?.(input) ??
         { defer: [], release: [] };
+      if (plan.reject) {
+        throw Object.assign(new Error(plan.reject), {
+          name: "RequiresActionSettleOnlyError",
+          status: 400,
+        });
+      }
       const deferred = new Set(plan.defer);
       const interrupting = input.events.some((event) => event.type === "user.interrupt");
       // Answers that unpark the thread carry queued messages into the
@@ -866,7 +878,8 @@ function isNonRetryableStartError(error: unknown): boolean {
 
 type PlanWireEvent = { type?: string; id?: string; [key: string]: unknown };
 
-/** Pure planner for requires_action queueing over the primary thread. */
+/** Pure planner for requires_action settle window over the primary thread.
+ * Official CMA: while parked, user.message is rejected (400) — not deferred. */
 export function planRequiresActionQueue(
   history: readonly unknown[],
   batch: AcceptNodeManagedSessionEvents["events"],
@@ -877,6 +890,13 @@ export function planRequiresActionQueue(
   const prior = primary
     .filter((event) => !batchIds.has(event.id))
     .map((event) => encodeRuntimeHistoryEvent(event as never) as unknown as PlanWireEvent);
+  // t307u settle-only: budget_reached or requires_action with outstanding ids.
+  const settleReason = settleOnlyReason(prior);
+  if (settleReason === "budget_reached") {
+    const reject = rejectMessageForRequiresActionBatch(prior, batch as PlanWireEvent[]);
+    if (reject !== null) return { defer: [], release: [], reject };
+    return { defer: [], release: [] };
+  }
   const before = outstandingRequiresAction(prior);
   if (before === null) return { defer: [], release: [] };
   const answered = new Set(batch.flatMap((event) => {
@@ -887,10 +907,17 @@ export function planRequiresActionQueue(
   const remaining = before.filter((id) => !answered.has(id));
   const interrupting = batch.some((event) => event.type === "user.interrupt");
   if (remaining.length > 0 && !interrupting) {
-    return {
-      defer: batch.filter((event) => event.type === "user.message").map((event) => event.id),
-      release: [],
-    };
+    const reject = rejectMessageForRequiresActionBatch(prior, batch as PlanWireEvent[]);
+    if (reject !== null) {
+      return {
+        defer: [],
+        release: [],
+        reject,
+      };
+    }
+    // Settle-only answers: do not release earlier queued messages (none should
+    // exist under the 400 gate). Keep release empty until the park clears.
+    return { defer: [], release: [] };
   }
   const release = primary.filter((event) =>
     event.type === "user.message" && !batchIds.has(event.id) &&

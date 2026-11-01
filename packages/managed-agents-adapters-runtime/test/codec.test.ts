@@ -77,6 +77,36 @@ describe("Managed session runtime codec", () => {
     });
   });
 
+
+  it("string session.error defaults retryStatus to exhausted (not terminal)", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_01",
+        type: "session.error",
+        error: "boom",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      type: "session.error",
+      error: { type: "unknown_error", message: "boom", retryStatus: "exhausted" },
+    });
+  });
+
+  it("preserves structured retry_status exhausted/retrying/terminal", () => {
+    for (const retry of ["retrying", "exhausted", "terminal"] as const) {
+      expect(
+        decodeRuntimeProducedSessionEvent({
+          id: `event_err_${retry}`,
+          type: "session.error",
+          error: { type: "unknown_error", message: "x", retry_status: retry },
+          processed_at: "2026-08-26T00:00:01.000Z",
+        }),
+      ).toMatchObject({
+        error: { retryStatus: retry },
+      });
+    }
+  });
+
   it.each(["agent.tool_result", "agent.mcp_tool_result"] as const)(
     "normalizes legacy string content on %s into official content blocks",
     (type) => {
@@ -412,6 +442,44 @@ describe("Managed session runtime codec", () => {
             harness: "custom", aux_model: { id: "aux-child", provider_options: { keep_key: true } }, appendable_prompts: ["child instructions"] },
         ] } },
       },
+    });
+  });
+});
+
+
+describe("normalizeRuntimeError via decodeRuntimeProducedSessionEvent", () => {
+  it("string session.error normalizes to exhausted (not terminal)", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_01",
+        type: "session.error",
+        error: "boom",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      type: "session.error",
+      error: {
+        type: "unknown_error",
+        message: "boom",
+        retryStatus: "exhausted",
+      },
+    });
+  });
+
+  it("preserves explicit terminal retry_status", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_02",
+        type: "session.error",
+        error: {
+          type: "unknown_error",
+          message: "fatal",
+          retry_status: { type: "terminal" },
+        },
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      error: { retryStatus: "terminal" },
     });
   });
 });

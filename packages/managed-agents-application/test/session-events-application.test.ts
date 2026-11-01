@@ -4,13 +4,18 @@ import type {
   SentSessionEvent,
   StreamSessionEvent,
 } from "../src/ports/session-events";
+import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type { Session } from "../src/domain/session";
 import type { Environment } from "../src/domain/environment";
 import { SessionEventsApplicationService } from "../src/index";
 
 class MemorySessionEventStore implements SessionEventLogStore {
-  private readonly events: SentSessionEvent[] = [];
+  private readonly events: Array<SentSessionEvent | SessionEventView> = [];
   readonly appendCalls: object[] = [];
+
+  seed(events: SessionEventView[]): void {
+    this.events.push(...structuredClone(events));
+  }
 
   async append(input: {
     workspaceId: string;
@@ -57,7 +62,7 @@ class MemorySessionEventStore implements SessionEventLogStore {
             left.id.localeCompare(right.id)),
       )
       .slice(0, input.limit)
-      .map((event) => structuredClone(event));
+      .map((event) => structuredClone(event) as SentSessionEvent);
   }
 }
 
@@ -340,4 +345,134 @@ describe("SessionEventsApplicationService", () => {
     ]);
     expect(received).toEqual(streamed);
   });
+
+  it("rejects user.message with 400 while idle requires_action (CMA settle-only)", async () => {
+    const store = new MemorySessionEventStore();
+    store.seed([
+      {
+        id: "c1",
+        type: "agent.custom_tool_use",
+        name: "tool",
+        input: {},
+        processedAt: "2026-08-26T04:00:01.000Z",
+      } as SessionEventView,
+      {
+        id: "idle1",
+        type: "session.status_idle",
+        stopReason: { type: "requires_action", eventIds: ["c1"] },
+        processedAt: "2026-08-26T04:00:02.000Z",
+      } as SessionEventView,
+    ]);
+    const service = new SessionEventsApplicationService({
+      workspaceId: "workspace_01",
+      store,
+      sessions: { find: async () => structuredClone(activeSession) },
+      execution: {
+        find: async () => ({
+          session: structuredClone(activeSession),
+          environment: structuredClone(executionEnvironment),
+          revision: 1,
+        }),
+      },
+      stream: emptySessionEventStream,
+      dispatch: silentEventDispatch,
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      ids: {
+        nextEventId: () => "event_msg",
+        nextOutcomeId: () => "outcome_unused",
+      },
+    });
+    const result = await service.sendSessionEvents({
+      sessionId: "session_01",
+      events: [{ type: "user.message", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(result).toMatchObject({
+      type: "invalid_request",
+      message: expect.stringContaining("requires_action"),
+    });
+    expect(store.appendCalls).toEqual([]);
+  });
+
+  it("rejects user.message while idle budget_reached (CMA settle-only)", async () => {
+    const store = new MemorySessionEventStore();
+    store.seed([
+      {
+        id: "idle_budget",
+        type: "session.status_idle",
+        stopReason: { type: "budget_reached" },
+        processedAt: "2026-08-26T04:00:02.000Z",
+      } as SessionEventView,
+    ]);
+    const service = new SessionEventsApplicationService({
+      workspaceId: "workspace_01",
+      store,
+      sessions: { find: async () => structuredClone(activeSession) },
+      execution: {
+        find: async () => ({
+          session: structuredClone(activeSession),
+          environment: structuredClone(executionEnvironment),
+          revision: 1,
+        }),
+      },
+      stream: emptySessionEventStream,
+      dispatch: silentEventDispatch,
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      ids: {
+        nextEventId: () => "event_msg",
+        nextOutcomeId: () => "outcome_unused",
+      },
+    });
+    const result = await service.sendSessionEvents({
+      sessionId: "session_01",
+      events: [{ type: "user.message", content: [{ type: "text", text: "hi" }] }],
+    });
+    expect(result).toMatchObject({
+      type: "invalid_request",
+      message: expect.stringContaining("budget_reached"),
+    });
+  });
+
+  it("allows settle events while idle requires_action", async () => {
+    const store = new MemorySessionEventStore();
+    store.seed([
+      {
+        id: "c1",
+        type: "agent.custom_tool_use",
+        name: "tool",
+        input: {},
+        processedAt: "2026-08-26T04:00:01.000Z",
+      } as SessionEventView,
+      {
+        id: "idle1",
+        type: "session.status_idle",
+        stopReason: { type: "requires_action", eventIds: ["c1"] },
+        processedAt: "2026-08-26T04:00:02.000Z",
+      } as SessionEventView,
+    ]);
+    const service = new SessionEventsApplicationService({
+      workspaceId: "workspace_01",
+      store,
+      sessions: { find: async () => structuredClone(activeSession) },
+      execution: {
+        find: async () => ({
+          session: structuredClone(activeSession),
+          environment: structuredClone(executionEnvironment),
+          revision: 1,
+        }),
+      },
+      stream: emptySessionEventStream,
+      dispatch: silentEventDispatch,
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      ids: {
+        nextEventId: () => "event_ctr",
+        nextOutcomeId: () => "outcome_unused",
+      },
+    });
+    const result = await service.sendSessionEvents({
+      sessionId: "session_01",
+      events: [{ type: "user.custom_tool_result", customToolUseId: "c1", content: [{ type: "text", text: "ok" }] }],
+    });
+    expect(result.type).toBe("accepted");
+  });
+
 });

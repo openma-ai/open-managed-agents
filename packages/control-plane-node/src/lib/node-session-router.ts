@@ -33,6 +33,7 @@ import type {
 import type { SessionRegistry } from "../registry.js";
 import type { EventStreamHub } from "./event-stream-hub.js";
 import { aggregateSpanModelUsageFromEvents, ledgerToApiTokenUsage } from "./node-harness-usage.js";
+import { rejectMessageForRequiresActionBatch } from "./requires-action.js";
 
 interface NodeSessionRouterDeps {
   sql: SqlClient;
@@ -90,6 +91,27 @@ export class NodeSessionRouter implements SessionRouter {
     event: SessionEvent,
   ): Promise<SessionAppendResult> {
     const log = this.deps.newEventLog(sessionId);
+    // Official CMA / t307u: while idle requires_action or budget_reached,
+    // user.message is 400 — settle events only.
+    if (event.type === "user.message") {
+      const existing = await log.getEventsAsync();
+      const reject = rejectMessageForRequiresActionBatch(
+        existing as Array<{ type?: string; [key: string]: unknown }>,
+        [event as { type?: string }],
+      );
+      if (reject !== null) {
+        return {
+          status: 400,
+          body: JSON.stringify({
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              message: reject,
+            },
+          }),
+        };
+      }
+    }
     if (event.type === "user.interrupt") {
       this.deps.registry.interrupt(sessionId);
       // Queue survives interrupt (Backchat policy). Retry drain until the

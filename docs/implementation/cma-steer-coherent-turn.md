@@ -28,6 +28,13 @@ wrong for CMA-aligned sessions.
 3. **`user.interrupt` is separate.** Interrupt jumps the queue → session
    goes idle → a following `user.message` starts the **next** turn. Do
    not conflate interrupt with steer.
+3b. **`requires_action` / `budget_reached` settle-only (owner t307u):** while
+   idle with `stop_reason: requires_action` (outstanding `event_ids`) or
+   `budget_reached`, only settle events are accepted
+   (`user.tool_confirmation`, `user.tool_result`, `user.custom_tool_result`,
+   `user.interrupt`). A `user.message` is **400** `invalid_request_error`
+   (official CMA). Not deferred/queued. `budget_reached` is typed; gate
+   applies whenever that idle stop exists (emitter may still be incomplete).
 4. **Retry hold (not flush):** while `retry_status: retrying` /
    `session.status_rescheduled`, do **not** flush unstamped mid-turn
    inputs, and do **not** start a new agent turn from them. Leave them
@@ -40,6 +47,12 @@ wrong for CMA-aligned sessions.
    and **advance into context with the next round of events**. The user
    **cannot withdraw** them. Client may reconcile. See
    `exhausted-flush-client-reconcile.md`. Prior flush=delete is revoked.
+   **Wire (CF + Node):** emit `session.error{retry_status:exhausted}` then
+   `session.status_idle{stop_reason:retries_exhausted}` — never a trailing
+   `status_rescheduled` + `end_turn` + string error on the exhausted path.
+   Retrying path emits `session.error{retrying}` before `status_rescheduled`.
+   **Deliberate divergence stays:** official SDK says queued inputs are
+   flushed; OMA retain/hold/`held_after_exhausted` (owner lock).
 6. **Client UX (owner t276u):** after mid-run steer, the client is left
    with only a temporary **running + steered** reconcile state — meaning
    the latest accepted events were already consumed, judged from
@@ -58,6 +71,7 @@ wrong for CMA-aligned sessions.
 | `retrying` / `status_rescheduled` | Hold; **no** flush; **no** new turn from these rows; after resume, ingest together into the continuing turn |
 | Idle after interrupt | Following message = **new** turn (interrupt path) |
 | Idle `retries_exhausted` | **Retain** unconsumed mid-turn inputs (no delete); do not auto-start them as the next turn alone; they **advance with the next round of events**; user cannot withdraw; client may reconcile |
+| Idle `requires_action` / `budget_reached` | **Settle-only (t307u):** `user.message` → **400**; only tool_confirmation / tool_result / custom_tool_result / interrupt |
 
 **No explicit Steer extension.** There is no `POST .../pending/:event_id/steer`
 and no Console/Backchat “Steer” promote control. For agents that advertise
@@ -101,6 +115,45 @@ only on `SessionExecutionStorePort` (ADR 0006):
   (`held_after_exhausted`). Events.list surfaces `held_after_exhausted: true`
   on still-null `processed_at` documents (patched at hold). Same store path
   for CF `SessionExecutionHost` / SessionDO.
+
+
+## Settle-only window (official CMA — owner lock 2026-11-01)
+
+While the session is **idle** with `stop_reason: requires_action` (and
+`budget_reached` when/if enforced), **only settle events** are accepted:
+
+- `user.tool_confirmation`
+- `user.tool_result`
+- `user.custom_tool_result`
+- `user.interrupt`
+
+A `user.message` in that window is **HTTP 400** `invalid_request_error`
+(not 202-queued / deferred). Enforced in:
+
+- CF `SessionDO` `POST /event`
+- Node `planRequiresActionQueue` / managed accept (rejects, no defer)
+- Managed `SessionEventsApplicationService.sendSessionEvents`
+- Legacy Node `SessionRouter.appendEvent` (propagated by HTTP `POST /events`)
+
+**`budget_reached`:** typed in the domain stop_reason union; **no emitter and
+no gate yet** — document as a remaining gap until budgets are advertised on
+the wire.
+
+## CF exhausted / terminal wire (aligned 2026-11-01)
+
+- Retry: emit `session.error{retry_status:retrying}` **then**
+  `session.status_rescheduled` (hold mid-run inputs).
+- Exhausted: emit `session.error{retry_status:exhausted}` then idle
+  `stop_reason:retries_exhausted`. **No** `status_rescheduled` on the final
+  failure. Keep owner-locked `holdQueuedOnLane` retain + next-round advance
+  (deliberate divergence from SDK "queued inputs are flushed").
+- Fatal / non-retryable: emit `session.error{retry_status:terminal}` and
+  transition the session to **`terminated`** (official meaning of terminal).
+- `custom_tool_result`: stamp `processed_at` **on receipt** (same as official
+  `tool_result`), not null-then-stamp-at-drain.
+- Interrupt on an already-idle session is a **no-op** (does not overwrite
+  `retries_exhausted` with a fresh idle `end_turn`). Interrupt remains a
+  settle event under `requires_action`.
 
 ## Wrong read (superseded)
 

@@ -18,6 +18,11 @@ import type { SessionEventDispatchPort } from "../session-execution/events";
 import type {
   SessionExecutionContextSourcePort,
 } from "@open-managed-agents/session-runtime-contract/context";
+import {
+  settleOnlyReason,
+  settleOnlyRejectMessage,
+  nonSettleEventTypes,
+} from "@open-managed-agents/session-runtime-contract";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -235,6 +240,29 @@ export class SessionEventsApplicationService
       // accepting it and failing the turn later in the runtime.
       if (execution.session.archivedAt != null) {
         return { type: "invalid_request", message: `Session ${command.sessionId} is archived and cannot receive new events` };
+      }
+      // Official CMA settle-only window (t307u): requires_action / budget_reached
+      // accept only settle events; user.message → 400.
+      {
+        const recent = await this.dependencies.store.list({
+          workspaceId: this.dependencies.workspaceId,
+          sessionId: command.sessionId,
+          limit: 100,
+          order: "desc",
+        });
+        const chronological = [...recent].reverse();
+        const reason = settleOnlyReason(
+          chronological as Array<{ type?: string; [key: string]: unknown }>,
+        );
+        if (reason !== null) {
+          const bad = nonSettleEventTypes(command.events);
+          if (bad.length > 0) {
+            return {
+              type: "invalid_request",
+              message: settleOnlyRejectMessage(reason, bad),
+            };
+          }
+        }
       }
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
         return { type: "version_conflict", message: "Session changed after input validation; retrieve the session before retrying" };
