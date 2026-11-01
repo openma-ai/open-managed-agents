@@ -1,37 +1,34 @@
-/** Token usage shapes used by session list_cost metering at hosted inference egress. */
-export interface InferenceTokenUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-}
+/**
+ * HTTP transport over the domain model-egress meter.
+ * Allow/record always go through SessionBudgetGate via ModelEgress
+ * (beginModelEgress / completeModelEgress). This file only parses provider
+ * response bodies into TokenUsage.
+ */
+import type { ModelEgress, TokenUsage } from "@open-managed-agents/domain/sessions";
 
 function finite(n: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : undefined;
 }
 
-/** Map OpenAI / Anthropic / Gemini JSON usage objects into TokenUsage. */
-export function inferenceUsageFromJson(body: unknown): InferenceTokenUsage | null {
+/** Map OpenAI / Anthropic / Gemini JSON usage objects into domain TokenUsage. */
+export function inferenceUsageFromJson(body: unknown): TokenUsage | null {
   if (!body || typeof body !== "object") return null;
   const root = body as Record<string, unknown>;
   const usage = (root.usage && typeof root.usage === "object"
     ? root.usage
     : root) as Record<string, unknown>;
 
-  // OpenAI chat/completions + responses
   const openaiIn = finite(usage.prompt_tokens) ?? finite(usage.input_tokens);
   const openaiOut = finite(usage.completion_tokens) ?? finite(usage.output_tokens);
   const openaiCache = finite(
     (usage.prompt_tokens_details as { cached_tokens?: unknown } | undefined)?.cached_tokens,
   );
 
-  // Anthropic messages
   const antIn = finite(usage.input_tokens);
   const antOut = finite(usage.output_tokens);
   const antCacheRead = finite(usage.cache_read_input_tokens);
   const antCacheWrite = finite(usage.cache_creation_input_tokens);
 
-  // Gemini generateContent
   const meta = root.usageMetadata as Record<string, unknown> | undefined;
   const gemIn = finite(meta?.promptTokenCount);
   const gemOut = finite(meta?.candidatesTokenCount);
@@ -53,8 +50,8 @@ export function inferenceUsageFromJson(body: unknown): InferenceTokenUsage | nul
 }
 
 /** Pull the last JSON object that looks like usage from an SSE body. */
-export function inferenceUsageFromSse(text: string): InferenceTokenUsage | null {
-  let found: InferenceTokenUsage | null = null;
+export function inferenceUsageFromSse(text: string): TokenUsage | null {
+  let found: TokenUsage | null = null;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
@@ -64,7 +61,6 @@ export function inferenceUsageFromSse(text: string): InferenceTokenUsage | null 
       const parsed = JSON.parse(payload) as unknown;
       const usage = inferenceUsageFromJson(parsed);
       if (usage) found = usage;
-      // Anthropic streaming: message_start / message_delta carry usage
       if (parsed && typeof parsed === "object") {
         const ev = parsed as { type?: string; message?: { usage?: unknown }; usage?: unknown };
         if (ev.message?.usage) {
@@ -85,11 +81,11 @@ export function inferenceUsageFromSse(text: string): InferenceTokenUsage | null 
 
 /**
  * Tee an upstream inference Response so the caller still gets the body while
- * we asynchronously extract TokenUsage for list_cost metering.
+ * we extract TokenUsage for the domain meter.
  */
 export function observeInferenceResponseUsage(
   response: Response,
-  onUsage: (usage: InferenceTokenUsage) => void | Promise<void>,
+  onUsage: (usage: TokenUsage) => void | Promise<void>,
 ): Response {
   if (!response.body) {
     void response
@@ -131,25 +127,28 @@ export function observeInferenceResponseUsage(
   return new Response(forClient, response);
 }
 
-/** Hooks the hosted inference gateway uses to talk to SessionBudgetGate. */
-export interface HostedInferenceBudgetHooks {
-  /** false → refuse the upstream call (budget exhausted). */
-  allowRequest(): boolean | Promise<boolean>;
-  recordUsage(usage: InferenceTokenUsage): void | Promise<void>;
-}
+/**
+ * Async-capable handle matching domain ModelEgress. CF uses HTTP; Node uses
+ * the in-process `modelEgress(gate)`.
+ */
+export type HostedInferenceEgress = {
+  begin(): boolean | Promise<boolean>;
+  complete(usage: TokenUsage): void | Promise<void>;
+};
 
 /**
- * Run a hosted inference send under session list_cost budget hooks.
- * Inactive budget → hooks null → passthrough.
+ * Sandbox inference-proxy egress: same domain meter as Pi (`ModelEgress`).
+ * Pass `modelEgress(gate)` or a CF HTTP adapter that calls Session DO
+ * begin/complete. Inactive → null → passthrough.
  */
 export async function withHostedInferenceBudget(
-  hooks: HostedInferenceBudgetHooks | null | undefined,
+  egress: HostedInferenceEgress | ModelEgress | null | undefined,
   send: () => Promise<Response>,
   exhaustedResponse: () => Response = () =>
     Response.json({ error: "budget_reached" }, { status: 402 }),
 ): Promise<Response> {
-  if (!hooks) return send();
-  if (!(await hooks.allowRequest())) return exhaustedResponse();
+  if (!egress) return send();
+  if (!(await egress.begin())) return exhaustedResponse();
   const response = await send();
-  return observeInferenceResponseUsage(response, (usage) => hooks.recordUsage(usage));
+  return observeInferenceResponseUsage(response, (usage) => egress.complete(usage));
 }

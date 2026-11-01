@@ -60,10 +60,10 @@ import { encodeRuntimeSessionEvent } from "@open-managed-agents/managed-agents-a
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { SqlSessionExecutionContextSource } from "@open-managed-agents/session-runtime-sql/context";
 import {
+  beginModelEgress,
   budgetReachedEvents,
+  completeModelEgress,
   createSessionBudgetGate,
-  gateExhausted,
-  recordModelEgress,
   runtimeListCost,
   type SessionBudgetGate,
   type TokenUsage,
@@ -3384,17 +3384,16 @@ export class SessionDO extends DurableObject<Env> {
       });
     }
 
-    // POST /model-egress — harness-in-sandbox inference gateway metering.
-    // Main's /v1/oma/inference-proxy calls this so OpenSandbox model egress
-    // shares the same SessionBudgetGate + list_cost_pico store as Pi.
+    // POST /model-egress — HTTP adapter for domain begin/completeModelEgress.
+    // Main's inference-proxy hits this so OpenSandbox shares the ONE meter.
     if (request.method === "POST" && url.pathname === "/model-egress") {
       const body = (await request.json().catch(() => null)) as {
-        action?: "check" | "record";
+        action?: "begin" | "complete";
         usage?: TokenUsage;
       } | null;
       const action = body?.action;
-      if (action !== "check" && action !== "record") {
-        return Response.json({ error: "action required (check|record)" }, { status: 400 });
+      if (action !== "begin" && action !== "complete") {
+        return Response.json({ error: "action required (begin|complete)" }, { status: 400 });
       }
       let gate = this.activeBudgetGate;
       if (!gate) {
@@ -3404,24 +3403,20 @@ export class SessionDO extends DurableObject<Env> {
         gate = await this.resolveBudgetGate(handle);
       }
       if (!gate) {
-        return Response.json({ active: false, exhausted: false, list_cost_pico: null });
+        return Response.json({ active: false, allowed: true, list_cost_pico: null });
       }
-      if (action === "check") {
-        const exhausted = gateExhausted(gate);
-        if (exhausted) gate.reached = true;
+      if (action === "begin") {
+        const allowed = beginModelEgress(gate);
         return Response.json({
           active: true,
-          exhausted,
+          allowed,
           reached: gate.reached,
           list_cost_pico: gate.list_cost_pico,
         });
       }
-      const usage = body?.usage ?? {};
-      recordModelEgress(gate, usage);
-      if (gateExhausted(gate)) gate.reached = true;
+      completeModelEgress(gate, body?.usage ?? {});
       return Response.json({
         active: true,
-        exhausted: gateExhausted(gate),
         reached: gate.reached,
         list_cost_pico: gate.list_cost_pico,
       });

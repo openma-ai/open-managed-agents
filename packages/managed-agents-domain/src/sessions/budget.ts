@@ -1,12 +1,12 @@
 // Session list-cost budget (official `budget.max_list_cost`).
 //
 // Layers:
-//   domain  — SessionBudgetGate, property `list_cost_pico`, pricing math,
-//             budget_reached frames, ListCostPicoStore port
-//   adapter — CF / Node implement ListCostPicoStore only (load/save the
-//             same `list_cost_pico` string; no second names, no gate logic)
-//   egress  — Pi `meterPiRuntime` AND harness-in-sandbox inference-proxy
-//             (`withHostedInferenceBudget` → gateExhausted / recordModelEgress)
+//   domain  — SessionBudgetGate, `list_cost_pico`, ListCostPicoStore,
+//             and the ONE model-egress meter (beginModelEgress /
+//             completeModelEgress → recordModelEgress)
+//   adapter — CF / Node: ListCostPicoStore + HTTP transport only
+//   surface — Pi models proxy and sandbox inference-proxy both call the
+//             same domain meter; no parallel budget helpers
 //
 // ACTIVE only when max_list_cost AND model-card pricing both exist.
 
@@ -150,6 +150,45 @@ export function recordModelEgress(
   const next = BigInt(gate.list_cost_pico) + requestListCostPico(usage, gate.pricing);
   gate.list_cost_pico = next.toString();
   storeOf(gate)?.save(gate.list_cost_pico);
+}
+
+/**
+ * ONE model-egress meter for every surface (Pi runtime, sandbox inference-
+ * proxy, tests). Adapters may wrap this synchronously or over HTTP; they
+ * must not invent a second allow/record path.
+ */
+export interface ModelEgress {
+  /** false = refuse the call (also sets `gate.reached`). Inactive gate → true. */
+  begin(): boolean;
+  /** Persist usage via recordModelEgress; sets `reached` when now at/over cap. */
+  complete(usage: TokenUsage): void;
+}
+
+/** Refuse at the cap before a model call. true = may proceed. */
+export function beginModelEgress(gate: SessionBudgetGate | null | undefined): boolean {
+  if (!gate) return true;
+  if (!gateExhausted(gate)) return true;
+  gate.reached = true;
+  return false;
+}
+
+/** After a completed model call: record usage and mark `reached` if at cap. */
+export function completeModelEgress(
+  gate: SessionBudgetGate | null | undefined,
+  usage: TokenUsage,
+): void {
+  if (!gate) return;
+  recordModelEgress(gate, usage);
+  if (gateExhausted(gate)) gate.reached = true;
+}
+
+/** In-process meter over a SessionBudgetGate. null when budget inactive. */
+export function modelEgress(gate: SessionBudgetGate | null | undefined): ModelEgress | null {
+  if (!gate) return null;
+  return {
+    begin: () => beginModelEgress(gate),
+    complete: (usage) => completeModelEgress(gate, usage),
+  };
 }
 
 export class SessionBudgetReachedError extends Error {

@@ -1,9 +1,8 @@
-// Pi egress adapter over the domain session budget gate.
+// Pi surface over the ONE domain model-egress meter.
 // Domain owns SessionBudgetGate, `list_cost_pico`, ListCostPicoStore, and
-// budget_reached. This module re-exports that API and wraps Pi `models` so
-// every real request hits gateExhausted / recordModelEgress.
-// Harness-in-sandbox OpenSandbox egress is metered the same way at the
-// host inference-proxy (withHostedInferenceBudget → Session DO / Node gate).
+// beginModelEgress / completeModelEgress. This module re-exports that API and
+// wraps Pi `models` so every request hits the same meter as the sandbox
+// inference-proxy (withHostedInferenceBudget).
 import type { ModelPricing, SessionEvent } from "@open-managed-agents/api-types";
 import {
   type BudgetAmount,
@@ -12,12 +11,15 @@ import {
   type SessionBudgetGate,
   type TokenUsage,
   SessionBudgetReachedError,
+  beginModelEgress,
   budgetExhausted,
   budgetReachedEvents as domainBudgetReachedEvents,
   centsToPico,
+  completeModelEgress,
   createSessionBudgetGate as domainCreateSessionBudgetGate,
   gateExhausted,
   memoryListCostPicoStore,
+  modelEgress,
   parseUsdPrice,
   picoToCentsString,
   recordModelEgress,
@@ -27,10 +29,13 @@ import {
 
 export {
   SessionBudgetReachedError,
+  beginModelEgress,
   budgetExhausted,
   centsToPico,
+  completeModelEgress,
   gateExhausted,
   memoryListCostPicoStore,
+  modelEgress,
   parseUsdPrice,
   picoToCentsString,
   recordModelEgress,
@@ -73,7 +78,7 @@ const METERED = new WeakMap<object, { gate: SessionBudgetGate; models: object }>
 const STREAMING = new Set(["stream", "streamSimple"]);
 const COMPLETING = new Set(["complete", "completeSimple"]);
 
-/** Pi model egress: every request is gated/metered against the domain gate. */
+/** Pi model egress: every request goes through domain begin/completeModelEgress. */
 export function meterPiRuntime<T extends { models: object }>(
   pi: T,
   gate: SessionBudgetGate | null | undefined,
@@ -89,28 +94,26 @@ export function meterPiRuntime<T extends { models: object }>(
       const fn = value as (...args: unknown[]) => unknown;
       if (STREAMING.has(prop)) {
         return (...args: unknown[]) => {
-          if (gateExhausted(gate)) {
-            gate.reached = true;
+          if (!beginModelEgress(gate)) {
             const options = (args[2] ?? {}) as Record<string, unknown>;
             args[2] = { ...options, signal: AbortSignal.abort() };
           }
           const stream = fn.apply(obj, args) as { result?: () => Promise<PiResultLike> };
           void stream.result?.().then((message) => {
             const usage = piUsage(message);
-            if (usage) recordModelEgress(gate, usage);
+            if (usage) completeModelEgress(gate, usage);
           }, () => undefined);
           return stream;
         };
       }
       if (COMPLETING.has(prop)) {
         return async (...args: unknown[]) => {
-          if (gateExhausted(gate)) {
-            gate.reached = true;
+          if (!beginModelEgress(gate)) {
             throw new SessionBudgetReachedError();
           }
           const message = await (fn.apply(obj, args) as Promise<PiResultLike>);
           const usage = piUsage(message);
-          if (usage) recordModelEgress(gate, usage);
+          if (usage) completeModelEgress(gate, usage);
           return message;
         };
       }

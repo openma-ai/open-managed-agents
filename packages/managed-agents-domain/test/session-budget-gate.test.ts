@@ -3,6 +3,7 @@ import {
   createSessionBudgetGate,
   gateExhausted,
   memoryListCostPicoStore,
+  modelEgress,
   picoToCentsString,
   recordModelEgress,
   requestListCostPico,
@@ -31,5 +32,20 @@ describe("domain SessionBudgetGate", () => {
     expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("330");
     expect(store.load()).toBe(gate.list_cost_pico);
     expect(gateExhausted(gate)).toBe(true);
+  });
+});
+
+describe("modelEgress (one path)", () => {
+  it("begin refuses at cap and complete records via the store", () => {
+    const store = memoryListCostPicoStore();
+    const gate = createSessionBudgetGate({ amount: "300", currency: "USD" }, pricing, store)!;
+    const egress = modelEgress(gate)!;
+    expect(egress.begin()).toBe(true);
+    egress.complete({ input_tokens: 500_000 }); // $1.50
+    egress.complete({ input_tokens: 600_000 }); // $3.30
+    expect(gateExhausted(gate)).toBe(true);
+    expect(egress.begin()).toBe(false);
+    expect(gate.reached).toBe(true);
+    expect(store.load()).toBe(gate.list_cost_pico);
   });
 });

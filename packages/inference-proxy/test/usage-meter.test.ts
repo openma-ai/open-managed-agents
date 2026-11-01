@@ -1,9 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createSessionBudgetGate,
+  memoryListCostPicoStore,
+  modelEgress,
+  picoToCentsString,
+  type ListPricing,
+} from "@open-managed-agents/domain/sessions";
+import {
   inferenceUsageFromJson,
   inferenceUsageFromSse,
   withHostedInferenceBudget,
 } from "../src/usage";
+
+const pricing: ListPricing = {
+  version: 1,
+  currency: "USD",
+  input_per_mtok: "3",
+  output_per_mtok: "15",
+};
 
 describe("inferenceUsageFromJson", () => {
   it("maps OpenAI chat usage", () => {
@@ -51,37 +65,39 @@ describe("inferenceUsageFromSse", () => {
   });
 });
 
-describe("withHostedInferenceBudget", () => {
-  it("passthrough when hooks are null", async () => {
+describe("withHostedInferenceBudget + domain modelEgress", () => {
+  it("passthrough when egress is null", async () => {
     const send = vi.fn(async () => Response.json({ ok: true }));
     const res = await withHostedInferenceBudget(null, send);
     expect(send).toHaveBeenCalledOnce();
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it("refuses when allowRequest is false", async () => {
+  it("refuses via domain beginModelEgress when at cap", async () => {
+    const gate = createSessionBudgetGate(
+      { amount: "1", currency: "USD" },
+      pricing,
+      memoryListCostPicoStore((10n * 10_000_000_000n).toString()),
+    )!;
     const send = vi.fn(async () => Response.json({ ok: true }));
-    const res = await withHostedInferenceBudget(
-      { allowRequest: () => false, recordUsage: () => undefined },
-      send,
-    );
+    const res = await withHostedInferenceBudget(modelEgress(gate), send);
     expect(send).not.toHaveBeenCalled();
     expect(res.status).toBe(402);
-    expect(await res.json()).toEqual({ error: "budget_reached" });
+    expect(gate.reached).toBe(true);
   });
 
-  it("records usage from a JSON response", async () => {
-    const recordUsage = vi.fn();
+  it("records usage through domain completeModelEgress", async () => {
+    const gate = createSessionBudgetGate(
+      { amount: "300", currency: "USD" },
+      pricing,
+      memoryListCostPicoStore(),
+    )!;
     const send = vi.fn(async () =>
-      Response.json({ usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+      Response.json({ usage: { prompt_tokens: 500_000, completion_tokens: 0 } }),
     );
-    const res = await withHostedInferenceBudget(
-      { allowRequest: () => true, recordUsage },
-      send,
-    );
+    const res = await withHostedInferenceBudget(modelEgress(gate), send);
     await res.text();
-    // tee is async — give the meter a tick
     await new Promise((r) => setTimeout(r, 0));
-    expect(recordUsage).toHaveBeenCalledWith({ input_tokens: 3, output_tokens: 1 });
+    expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("150");
   });
 });

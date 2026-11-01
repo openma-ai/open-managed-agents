@@ -377,7 +377,6 @@ export {
   inferenceUsageFromSse,
   observeInferenceResponseUsage,
   withHostedInferenceBudget,
-  type InferenceTokenUsage,
-  type HostedInferenceBudgetHooks,
+  type HostedInferenceEgress,
 } from "./usage.js";
 

@@ -102,14 +102,14 @@ export async function resolveSessionModelUpstream(
   }
 }
 
-/** Session DO model-egress hooks: same SessionBudgetGate / list_cost_pico as Pi. */
-async function cfSessionBudgetHooks(
+/** Session DO HTTP adapter → domain ModelEgress (begin/complete). */
+async function cfSessionModelEgress(
   env: Env,
   sessionId: string,
-): Promise<import("@open-managed-agents/inference-proxy").HostedInferenceBudgetHooks | null> {
+): Promise<import("@open-managed-agents/inference-proxy").HostedInferenceEgress | null> {
   const binding = resolveSessionSandboxFetcher(env);
   if (!binding) return null;
-  const call = async (action: "check" | "record", usage?: Record<string, number>) => {
+  const call = async (action: "begin" | "complete", usage?: Record<string, number>) => {
     const res = await binding.fetch(`https://sandbox/sessions/${sessionId}/model-egress`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -118,18 +118,18 @@ async function cfSessionBudgetHooks(
     if (!res.ok) return null;
     return (await res.json()) as {
       active?: boolean;
-      exhausted?: boolean;
+      allowed?: boolean;
     };
   };
   return {
-    allowRequest: async () => {
-      const result = await call("check");
-      // Binding/DO unavailable → do not invent a second counter; allow the call.
+    begin: async () => {
+      const result = await call("begin");
+      // Binding/DO unavailable or inactive budget → allow (no second counter).
       if (!result || result.active === false) return true;
-      return result.exhausted !== true;
+      return result.allowed !== false;
     },
-    recordUsage: async (usage) => {
-      await call("record", usage as Record<string, number>);
+    complete: async (usage) => {
+      await call("complete", usage as Record<string, number>);
     },
   };
 }
@@ -156,7 +156,7 @@ export async function forwardHttpInferenceProxyRequest(input: {
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.arrayBuffer();
-  const budget = await cfSessionBudgetHooks(input.env, input.sessionId);
+  const budget = await cfSessionModelEgress(input.env, input.sessionId);
   return withHostedInferenceBudget(budget, () =>
     sendHostedInference({
       upstream,

@@ -2243,6 +2243,10 @@ importers:
         version: 5.1.9
 
   packages/inference-proxy:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
     devDependencies:
       vitest:
         specifier: ^4.1.3
