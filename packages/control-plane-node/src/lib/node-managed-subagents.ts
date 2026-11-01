@@ -1,4 +1,4 @@
-import type { SessionBudgetGate } from "@open-managed-agents/agent/harness/budget";
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";

@@ -2,7 +2,7 @@ import { processSessionClocks, type SessionClockRegistry } from "@open-managed-a
 import {
   picoToCentsString,
   type SessionBudgetGate,
-} from "@open-managed-agents/agent/harness/budget";
+} from "@open-managed-agents/domain/sessions";
 import type { ModelMessage } from "ai";
 import type {
   HarnessRuntime,

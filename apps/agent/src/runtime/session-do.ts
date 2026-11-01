@@ -64,7 +64,7 @@ import {
   createSessionBudgetGate,
   runtimeListCost,
   type SessionBudgetGate,
-} from "../harness/budget";
+} from "@open-managed-agents/domain/sessions";
 import { cfWorkersAiToMarkdown } from "@open-managed-agents/markdown";
 import { isSpecEvent } from "@open-managed-agents/api-types";
 import type {
@@ -4549,11 +4549,10 @@ export class SessionDO extends DurableObject<Env> {
       const services = await getCfServicesForTenant(this.env, this.state.tenant_id);
       const card = await services.modelCards.findByModelId({ tenantId: this.state.tenant_id, modelId: handle });
       const pricing = card && card.archived_at === null ? card.pricing ?? null : null;
-      // One gate per session execution, shared with subagent harnesses: it is
-      // the model-egress meter. Seeded from the persisted egress counter.
+      // Domain gate; CF only loads/saves the pico counter (DO state).
       const gate = createSessionBudgetGate({ amount: budget.amountMinor, currency: budget.currency }, pricing, {
         consumedPico: this.state.list_cost_pico ?? null,
-        onEgress: (pico) => this.setState({ ...this.state, list_cost_pico: pico.toString() }),
+        onEgress: (pico: bigint) => this.setState({ ...this.state, list_cost_pico: pico.toString() }),
       });
       this.activeBudgetGate = gate;
       return gate;
@@ -6147,7 +6146,7 @@ export class SessionDO extends DurableObject<Env> {
           sessionThreadId: turnThreadId,
           usage: this.budgetUsageSnapshot(ctx.budget, history.getEvents()),
           budget: ctx.budget.maxListCost,
-        });
+        }) as unknown as SessionEvent[];
         for (const event of [
           { ...threadIdle, agent_name: agent.name } as unknown as SessionEvent,
           usageEvent!,

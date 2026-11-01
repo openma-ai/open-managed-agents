@@ -39,7 +39,7 @@ import type { SessionEvent } from "@open-managed-agents/shared";
 import {
   createSessionBudgetGate,
   type SessionBudgetGate,
-} from "@open-managed-agents/agent/harness/budget";
+} from "@open-managed-agents/domain/sessions";
 import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
@@ -757,15 +757,14 @@ export class DefaultNodeManagedSessionRunner
           const pricing = sessionBudget === null
             ? null
             : await this.dependencies.resolveModelPricing?.(context) ?? null;
+          // Domain gate; Node only loads/saves the pico counter (session.usage.listCostPico).
           harnessContext.budget = createSessionBudgetGate(
             sessionBudget === null
               ? null
               : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
             pricing,
             {
-              // Persisted egress counter (session.usage.listCostPico).
               consumedPico: input.session.usage?.listCostPico ?? null,
-              // Persist each egress: the usage snapshot carries the new total.
               onEgress: () => {
                 runtime.broadcastProducedEvent({ type: "session.usage", usage: runtime.usageSnapshot() });
               },
