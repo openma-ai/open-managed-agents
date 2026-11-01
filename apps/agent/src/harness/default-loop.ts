@@ -485,10 +485,11 @@ export class DefaultHarness implements HarnessInterface {
       providerOptions,
       stopWhen: stepCountIs(100),
       abortSignal: runtime.abortSignal,
-      // Steering: at each step boundary absorb queued user messages into
-      // this turn. AI SDK rebuilds step input from the initial messages
-      // plus response messages, so remember where each steer landed and
-      // splice it back in on every later step.
+      // CMA coherent-turn steering: at each step boundary absorb mid-turn
+      // queued user.message into this turn (not next-turn outbox). AI SDK
+      // rebuilds step input from the initial messages plus response
+      // messages, so remember where each steer landed and splice it back
+      // in on every later step.
       ...(runtime.takeSteeringInputs
         ? {
             prepareStep: async ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {

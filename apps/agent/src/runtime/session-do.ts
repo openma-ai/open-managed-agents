@@ -1431,22 +1431,28 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Steering: absorb every queued user.message on this lane into the running
-   * turn. The execution outbox row settles as completed (so it never runs as
-   * its own turn), the local row is promoted with the official CMA stamp and
-   * re-emit, and `system.user_message_steered` tells clients it joined the
-   * current turn. Rows another host already claimed are left alone.
+   * CMA coherent-turn steering: absorb every queued user.message on this lane
+   * into the running turn at the next model boundary. Queue is mid-state only
+   * (`processed_at` null until here). The execution outbox row settles as
+   * completed (so it never runs as its own next turn), the local row is
+   * promoted with the official CMA stamp and re-emit, and
+   * `system.user_message_steered` tells clients it joined the current turn.
+   * Rows another host already claimed are left alone.
+   * See docs/implementation/cma-steer-coherent-turn.md.
    */
-  /** Queued event ids the user asked to steer into the running turn. */
+  /** Explicit Backchat/API steer requests (subset); ordinary mid-run accept
+   *  is also steer when this poll runs — see takeSteeringInputs. */
   private readonly _steerRequested = new Set<string>();
 
   private async takeSteeringInputs(threadId: string, history: HistoryStore): Promise<SessionEvent[]> {
     const store = await this.getExecutionStore();
     const out: SessionEvent[] = [];
     for (const row of this.pending!.list(threadId)) {
-      // Only rows the user explicitly promoted (Backchat "Steer"); the rest
-      // keep their place in the queue.
-      if (row.type !== "user.message" || !this._steerRequested.has(row.event_id)) continue;
+      // CMA: every mid-turn user.message steers into the current turn at the
+      // next LLM boundary (coherent turn). Explicit /pending/.../steer still
+      // pre-marks ids; we clear that set as we absorb. Do not leave ordinary
+      // mid-sends for "next agent turn" drain.
+      if (row.type !== "user.message") continue;
       this._steerRequested.delete(row.event_id);
       if (store !== null) {
         const result = await store.steerQueued({
@@ -2332,10 +2338,10 @@ export class SessionDO extends DurableObject<Env> {
           }
         }
         const cancelTs = Date.now();
-        // Queued user.* events SURVIVE an interrupt (Backchat policy): the
-        // interrupt aborts only the active turn, then the drain loop picks
-        // the next queued row and the official CMA stamp/re-emit applies.
-        // Nothing is left with processed_at null forever. Callers that want
+        // user.interrupt is separate from steer (cma-steer-coherent-turn.md):
+        // interrupt → idle; a following user.message starts the NEXT turn.
+        // Queued user.* rows SURVIVE interrupt (Backchat): drain after idle
+        // picks them up as that next turn (stamp/re-emit). Callers that want
         // to drop a queued message use DELETE /v1/sessions/:id/pending/:event_id,
         // which emits system.user_message_cancelled for that row.
         // Legacy back-compat: pre-3a3e7ec sessions may still have user.*
@@ -2789,7 +2795,7 @@ export class SessionDO extends DurableObject<Env> {
       );
       if (!row) return conflict("Queued message already started or was removed", "already_processed");
       const agent = await this.getThreadAgentConfig(row.session_thread_id);
-      if (!agentAdvertisesSteering(agent)) return conflict("This agent does not support steering; the message stays queued");
+      if (!agentAdvertisesSteering(agent)) return conflict("This agent does not support steering; mid-send stays mid-state until drain-after-idle");
       this._steerRequested.add(eventId);
       return new Response(JSON.stringify({ event_id: eventId, steer: "requested" }),
         { status: 202, headers: { "content-type": "application/json" } });
@@ -5985,6 +5991,10 @@ export class SessionDO extends DurableObject<Env> {
         };
         history.append(rescheduledEvent);
         this.broadcastEvent(rescheduledEvent, activeFence);
+        // Retry hold (cma-steer-coherent-turn.md): do not flush unstamped
+        // mid-turn inputs and do not start a new agent turn from them.
+        // Leave them until the next consume boundary after this resume;
+        // takeSteeringInputs then ingests them into the continuing turn.
 
         // Exponential backoff: 1s, 2s
         const delay = 1000 * Math.pow(2, retryCount);
@@ -7127,7 +7137,9 @@ export class SessionDO extends DurableObject<Env> {
 type SessionScheduleType = "scheduled" | "delayed" | "cron" | "interval";
 
 /** OMA steering advertisement for built-in harnesses, the CF counterpart of
- *  an ACP agent's `_session/steering` capability. */
+ *  an ACP agent's `_session/steering` capability. When enabled, mid-run
+ *  user.message is absorbed via takeSteeringInputs (CMA coherent turn), not
+ *  deferred to the next agent-turn drain. */
 export function agentAdvertisesSteering(agent: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   return agent?.metadata?.["oma.session.steering"] === "enabled";
 }

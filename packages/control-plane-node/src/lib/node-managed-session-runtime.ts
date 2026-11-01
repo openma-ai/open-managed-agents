@@ -122,8 +122,13 @@ export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
    * workspace restore, input staging) are retried by the server while the
    * execution lease is held: `session.error` with retry_status `retrying`
    * plus `session.status_rescheduled`, then `exhausted` and an idle session
-   * with `retries_exhausted`. Startup has produced no agent side effects.
-   * `cancel` aborts the backoff and the in-flight attempt. */
+   * with `retries_exhausted`. During retrying/rescheduled: do not flush
+   * unstamped mid-turn inputs and do not start a new agent turn from them;
+   * hold until the next consume boundary after resume (coherent turn).
+   * Flush unconsumed mid-turn inputs only on retries_exhausted (client may
+   * re-send). Startup has produced no agent side effects. `cancel` aborts
+   * the backoff and the in-flight attempt.
+   * See docs/implementation/cma-steer-coherent-turn.md. */
   startRetry?: { attempts: number; delayMs(attempt: number): number };
   /** Stamps queued accepted inputs when this host starts processing them. */
   eventProcessing?: {
@@ -340,9 +345,10 @@ export class DefaultNodeManagedSessionRuntimeDriver
         { defer: [], release: [] };
       const deferred = new Set(plan.defer);
       const interrupting = input.events.some((event) => event.type === "user.interrupt");
-      // Answers that unpark the thread carry the queued messages into the
-      // resumed run (consumed at its next LLM call). An interrupt ends the
-      // turn first; the queued messages then drain as their own run (CF).
+      // Answers that unpark the thread carry queued messages into the
+      // resumed run (steer / consume at its next LLM call — coherent turn).
+      // user.interrupt is separate: it ends the turn first; following
+      // messages then drain as the next turn (not mid-turn steer).
       const runEvents = [
         ...input.events.filter((event) => !deferred.has(event.id)),
         ...(interrupting ? [] : plan.release),

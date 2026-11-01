@@ -116,9 +116,11 @@ export interface HarnessRuntime {
   /**
    * Steering (optional). Called by the loop at each model-step boundary.
    * Returns queued user.message events the platform just absorbed into this
-   * turn (already appended to history, stamped and re-emitted). Undefined
-   * when the agent does not advertise steering: mid-turn messages then stay
-   * queued and run as the next turn.
+   * turn (already appended to history, stamped and re-emitted) — CMA
+   * coherent-turn semantics. Undefined when the agent does not advertise
+   * steering: mid-turn messages stay as mid-state (`processed_at` null) and
+   * the host falls back to drain-after-idle (capability gap, not the CMA
+   * contract). See docs/implementation/cma-steer-coherent-turn.md.
    */
   takeSteeringInputs?: () => Promise<SessionEvent[]>;
   sandbox: SandboxPort;

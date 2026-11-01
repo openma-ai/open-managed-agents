@@ -162,10 +162,11 @@ export class PiHarness implements HarnessInterface {
     const abort = () => agent.abort();
     ctx.runtime.abortSignal?.addEventListener("abort", abort, { once: true });
 
-    // Steering (OMA "Steer" on a queued message): hand explicitly requested
-    // queued user messages to Pi's native steering queue. Pi drains it after
-    // the current assistant turn and before stopping, so a steered message
-    // always joins this run instead of starting a new one.
+    // CMA coherent-turn steering: takeSteeringInputs returns mid-turn
+    // user.message rows absorbed into this run (ordinary mid-send + any
+    // explicit /pending/.../steer). Hand them to Pi's native steering
+    // queue; Pi drains after the current assistant step so they join this
+    // turn instead of starting a new agent turn.
     let steerTimer: ReturnType<typeof setInterval> | undefined;
     let steerPolling: Promise<void> | null = null;
     const pollSteering = () => {

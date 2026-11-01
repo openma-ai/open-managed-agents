@@ -4,12 +4,16 @@ Status: **locked decision** for OMA alignment with CMA exhausted semantics
 (2026-10-31, America/Detroit). Supplements Console PR #399 / issue #398.
 Does **not** implement server-side delete flush or CMA workflow runs (#400).
 
+Companion: [`cma-steer-coherent-turn.md`](./cma-steer-coherent-turn.md)
+(mid-run `user.message` = steer into current turn; queue is mid-state only;
+retry hold; interrupt is separate).
+
 ## Decision (do not reopen)
 
 1. **Server / CMA alignment:** on `retry_status: exhausted` / idle
    `stop_reason: retries_exhausted`, **flush = delete** unprocessed queued
    inputs (rows still `processed_at=null` that were never ingested). Do
-   **not** retain a server-side hold queue.
+   **not** retain a server-side hold queue after exhausted.
 2. **Recoverable UX is client-only:** Console (and peers) keep local pending
    ids/text; after exhausted, reconcile against `events.list` (or an
    equivalent post-exhausted history snapshot). Ids that vanished were
@@ -19,6 +23,16 @@ Does **not** implement server-side delete flush or CMA workflow runs (#400).
    **owner assumption aligned with the CMA type comment** on
    `BetaManagedAgentsRetryStatusExhausted` ("queued inputs are flushed"),
    not a live-probed hosted fact.
+
+## Retry vs exhausted (do not conflate)
+
+| Lifecycle | Unstamped mid-turn inputs |
+|---|---|
+| `retrying` / `session.status_rescheduled` | **Hold.** Do not flush. Do not start a new agent turn from them. After resume, ingest together (steer into the continuing turn). |
+| `retries_exhausted` / idle `retries_exhausted` | **Flush = delete.** Client may re-send. |
+
+Mid-run accept while the turn is healthy is **steer into the current turn**,
+not “queue for the next agent turn.” See `cma-steer-coherent-turn.md`.
 
 ## Supersedes server-hold memo
 
@@ -70,9 +84,12 @@ do:
    and does not invent server hold state.
 
 GUI queue chrome continues to use OpenMA `delivery` / `turn.queued`
-(`session-event-queue.ts`). This reconcile path is the intentional
-exception that inspects CMA wire `processed_at` on a raw `events.list`
-snapshot after exhausted.
+(`session-event-queue.ts`). That chrome is **client-side** product UX; the
+server unstamped list is mid-state only, not the product queue. This
+reconcile path is the intentional exception that inspects CMA wire
+`processed_at` on a raw `events.list` snapshot after exhausted.
+“Running + steered” temporary UX also comes from `processed_at` (and
+optional steered frames); event display order is otherwise unchanged.
 
 ## Out of scope here
 
@@ -82,9 +99,13 @@ snapshot after exhausted.
   automation stays as today.
 - Redesigning Console SessionDetail / outbox UI; this PR adds the pure
   lib + tests so wiring can stay minimal.
+- Full Node managed mid-run → steer injection (see coherent-turn doc
+  follow-ups).
 
 ## Related
 
+- [`cma-steer-coherent-turn.md`](./cma-steer-coherent-turn.md) — mid-run
+  steer / coherent turn / retry hold / interrupt separation.
 - Issue #398 / PR #399 — Console send-response outbox merge.
 - Issue #400 — workflow runs (separate).
 - CMA SDK comment on `BetaManagedAgentsRetryStatusExhausted`.

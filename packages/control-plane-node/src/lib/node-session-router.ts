@@ -42,7 +42,8 @@ interface NodeSessionRouterDeps {
 }
 
 export class NodeSessionRouter implements SessionRouter {
-  /** Event ids the Console asked to steer into the running turn (Backchat). */
+  /** Event ids to steer into the running turn (ordinary mid-run accept +
+   *  explicit Backchat/API steer). See cma-steer-coherent-turn.md. */
   private readonly steerRequested = new Map<string, Set<string>>();
   /** In-memory outbox for the legacy harness path. Managed sessions use the
    *  shared SQL execution store (worker); we must not admit harness turns into
@@ -126,11 +127,22 @@ export class NodeSessionRouter implements SessionRouter {
           ? (last as { id: string }).id
           : `sevt_node_${Date.now()}`;
         if (entry.machine.hasInflightTurn() || this.draining.has(sessionId)) {
+          // Mid-state only (processed_at null until consume). CMA coherent
+          // turn: mark for steer into the running turn when the harness
+          // polls takeSteeredEventIds — not "wait for next agent turn."
+          // Full Node managed LLM-boundary inject remains a follow-up
+          // (docs/implementation/cma-steer-coherent-turn.md).
           this.pendingOf(sessionId).push({
             id: eventId,
             event: last,
             enqueuedAt: Date.now(),
           });
+          let steerSet = this.steerRequested.get(sessionId);
+          if (!steerSet) {
+            steerSet = new Set();
+            this.steerRequested.set(sessionId, steerSet);
+          }
+          steerSet.add(eventId);
           this.deps.hub.publish(sessionId, {
             type: "system.user_message_pending",
             event_id: eventId,
@@ -708,7 +720,7 @@ export class NodeSessionRouter implements SessionRouter {
     };
   }
 
-  /** Queued ids explicitly steered for this session (harness may poll). */
+  /** Drain ids marked for coherent-turn steer (harness may poll). */
   takeSteeredEventIds(sessionId: string): string[] {
     const set = this.steerRequested.get(sessionId);
     if (!set || set.size === 0) return [];
