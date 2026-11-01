@@ -48,7 +48,16 @@ import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
-import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
+import {
+  decideLeaseRenewal,
+  evaluateCoordinationPolicy,
+  type ActiveTurnRecord,
+  type CoordinationAction,
+  type ExecutionLeaseRecord,
+  type ScheduleWakeRecord,
+  type SessionExecution,
+  type SessionExecutionFence,
+} from "@open-managed-agents/session-runtime-contract/coordination";
 import {
   settleOnlyReason,
   settleOnlyRejectMessage,
@@ -360,7 +369,16 @@ const INITIAL_SESSION_STATE: SessionState = {
 // cf_agents_runs table was dropped in Phase 4; orphan markers now live on
 // `sessions.turn_id`. See _ensureCfAgentsSchema() below.
 const STATE_ROW_ID = "cf_state_row_id";
+/**
+ * Durable execution lease cadence. A running turn owns a lease for 90s and
+ * renews it every 30s through the shared renew path (SessionExecutionHost
+ * heartbeat + the alarm's policy renewal). The alarm is not itself the lease
+ * authority: if it is lost, a replacement DO reclaims after expiry.
+ */
 const KEEP_ALIVE_INTERVAL_MS = 30_000;
+const EXECUTION_LEASE_TTL_MS = KEEP_ALIVE_INTERVAL_MS * 3;
+/** Wake promptly when a queue row / claimable execution exists. */
+const QUEUE_WAKE_DELAY_MS = 1_000;
 /** Bounded wait for an aborted turn to unwind tools before the interrupt is stamped. */
 const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
@@ -882,66 +900,32 @@ export class SessionDO extends DurableObject<Env> {
     // isolate. Previously the only cold-start trigger was fetch()'s
     // fire-and-forget finalizer (plus whatever alarm happened to survive);
     // a lost alarm meant the row could stay status_running forever.
-    void this._armColdStartStaleTurnCheck();
+    void this._armColdStartLeaseCheck();
   }
 
-  /** Best-effort cold-start alarm arm for a running D1 session row.
-   *  Runs one D1 read per cold boot; no-op for the common idle case.
-   *  `_finalizeStaleTurns` decides actual staleness using the
-   *  instance-start heuristic, so arming is safe even mid-turn. */
-  private async _armColdStartStaleTurnCheck(): Promise<void> {
+  /**
+   * Cold-start alarm arm. The shared policy is the authority: it sees any
+   * queued/running execution left by a dead incarnation (lease expiry wake)
+   * plus a dangling `session.status_running` event-log turn, and arms the
+   * earliest wake. No ad-hoc stale-turn heuristic lives here anymore.
+   */
+  private async _armColdStartLeaseCheck(): Promise<void> {
+    if (!this._state) return;
     try {
-      if (!this._state) return;
-      // Self-host fallback without a tenant D1 has no sessions.turn_id
-      // authority. The local event log still tells us a prior incarnation
-      // died mid-turn, so fall through to the event-log check instead of
-      // returning early.
-      let orphaned = false;
-      if ((this.env as { MAIN_DB?: D1Database }).MAIN_DB) {
-        const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-        orphaned = orphans.some((o) => !this._activeTurnIds.has(o.turn_id));
-      }
-      // Legacy/markerless rows: the outbox path used to start a turn
-      // without writing sessions.turn_id, so listOrphanTurns can be empty
-      // while the event log is still stuck on status_running. Arm a wake
-      // for that shape too; _finalizeStaleTurns has a matching fallback.
-      if (!orphaned) {
-        const latest = this._latestSessionStatusEvent();
-        orphaned = latest?.type === "session.status_running";
-      }
-      if (!orphaned) return;
-      const target = Date.now() + 1_000;
-      const existing = await this.ctx.storage.getAlarm();
-      if (existing === null || existing > target) {
-        await this.ctx.storage.setAlarm(target);
-        sdoLog("alarm.armed", {
-          session_id: this.state.session_id,
-          reason: "cold_start_stale_turn",
-          next_ms: target,
-          next_at: new Date(target).toISOString(),
-        });
-      }
+      await this._scheduleNextAlarm();
     } catch (err) {
-      // Schema/state not ready yet, D1 transient, or alarm unavailable.
-      // The alarm() and fetch() finalize paths still cover recovery.
-      console.warn(`[ensureSchema] cold-start stale-turn arm failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Schema/state not ready yet or D1 transient. fetch()'s finalize pass
+      // and the surviving alarm still cover recovery.
+      console.warn(`[ensureSchema] cold-start lease arm failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   /**
-   * Durably arm the keep-alive alarm for an in-flight turn.
-   *
-   * MUST be awaited before the turn reaches the model request. The old
-   * fire-and-forget `void storage.setAlarm(...)` in hintTurnInFlight could
-   * be dropped when an isolate reset immediately after the turn started;
-   * the D1 row then survived with no alarm to finalize it.
+   * Move the durable alarm no later than `nextMs`. Never pushes an earlier
+   * wake further out, so enqueue/turn/renewal arms compose with schedules.
    */
-  private async _armTurnKeepAlive(reason = "turn_keep_alive"): Promise<void> {
-    const nextMs = Date.now() + KEEP_ALIVE_INTERVAL_MS;
+  private async _armAlarmAt(nextMs: number, reason: string): Promise<void> {
     try {
-      // Never push an earlier durable wake (cold-start stale check,
-      // schedule) further out. Keeping the earlier alarm is safe: it will
-      // re-arm the heartbeat when it fires.
       const existing = await this.ctx.storage.getAlarm();
       if (existing !== null && existing <= nextMs) return;
       await this.ctx.storage.setAlarm(nextMs);
@@ -952,10 +936,22 @@ export class SessionDO extends DurableObject<Env> {
         next_at: new Date(nextMs).toISOString(),
       });
     } catch (err) {
-      // Storage failure must not abort the turn. The D1 marker still lets
-      // the next fetch/alarm recover it.
-      console.warn(`[session-do] keep-alive alarm arm failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Storage failure must not abort the turn. The durable execution lease
+      // is still the authority and a later fetch/alarm recovers it.
+      console.warn(`[session-do] alarm arm failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * Durably arm the lease-renewal wake for an in-flight turn.
+   *
+   * MUST be awaited before the turn reaches the model request. The old
+   * fire-and-forget `void storage.setAlarm(...)` in hintTurnInFlight could
+   * be dropped when an isolate reset immediately after the turn started;
+   * the D1 lease then survived with no alarm to sweep it.
+   */
+  private async _armLeaseWake(reason = "turn_lease"): Promise<void> {
+    await this._armAlarmAt(Date.now() + KEEP_ALIVE_INTERVAL_MS, reason);
   }
 
   /**
@@ -1616,6 +1612,11 @@ export class SessionDO extends DurableObject<Env> {
         event_id: e.id,
         event_type: event.type,
       });
+      // Arm before the synchronous drain can be lost with this isolate.
+      void this._armAlarmAt(
+        this.processedClock.nowMs() + QUEUE_WAKE_DELAY_MS,
+        "queue_enqueued",
+      );
     }
     return enqueued;
   }
@@ -1719,6 +1720,10 @@ export class SessionDO extends DurableObject<Env> {
       event_id: (event as { id?: string }).id ?? eventId,
       event_type: event.type,
     });
+    void this._armAlarmAt(
+      this.processedClock.nowMs() + QUEUE_WAKE_DELAY_MS,
+      "queue_enqueued",
+    );
     return this.queueRowForEvent(eventId);
   }
 
@@ -1833,15 +1838,32 @@ export class SessionDO extends DurableObject<Env> {
         ownerId: this._executionOwnerId,
         clock: { now: () => new Date() },
         ids: { nextAttemptId: () => `attempt_${nanoid()}` },
-        leaseTtlMs: KEEP_ALIVE_INTERVAL_MS * 3,
+        leaseTtlMs: EXECUTION_LEASE_TTL_MS,
         heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
-        onFenceChanged: (fence) => this._executionFences.set(threadId, fence),
+        onFenceChanged: (fence) => {
+          const previous = this._executionFences.get(threadId);
+          this._executionFences.set(threadId, fence);
+          if (previous?.attemptId !== fence.attemptId) {
+            sdoLog("lease.claim", {
+              session_id: this.state.session_id,
+              lane_id: threadId,
+              execution_id: fence.executionId,
+              attempt_id: fence.attemptId,
+              generation: fence.generation,
+              lease_expires_at: fence.expiresAt,
+            });
+          }
+          // The host heartbeat is the renewal; keep the DO wake aligned so a
+          // dead incarnation's lease is still swept at expiry if the alarm
+          // outlives it.
+          void this._armAlarmAt(Date.now() + KEEP_ALIVE_INTERVAL_MS, "lease_fence");
+        },
       });
       this._executionActiveLanes.add(threadId);
-      // Keep-alive is a host concern, not a lease authority.  The durable
-      // execution row remains valid if this alarm is dropped; a replacement
-      // DO can reclaim it after expiry.
-      await this._armTurnKeepAlive();
+      // The 30s keep-alive is now a lease renewal, not a liveness hint. The
+      // durable execution row remains valid if this alarm is dropped; a
+      // replacement DO sweeps it after expiry via the shared policy.
+      await this._armLeaseWake();
       try {
       while (true) {
         this.broadcastedMessageIds.clear();
@@ -1901,7 +1923,7 @@ export class SessionDO extends DurableObject<Env> {
           });
           // Await the durable write. A fire-and-forget setAlarm can be lost
           // if the isolate resets right after the turn starts.
-          await this._armTurnKeepAlive("turn_start");
+          await this._armLeaseWake("turn_start");
           // Lane is running a new execution (held rows already absorbed on
           // claim): drop the exhausted mark unless a pre-exhausted queued
           // input still awaits fallback admission.
@@ -2259,10 +2281,10 @@ export class SessionDO extends DurableObject<Env> {
       // for the harness path which constructs its own ctx.
       onTurnInFlight: (_sessionId, turnId) => {
         // The adapter hook is sync/fire-and-forget by contract. Callers
-        // that can await (the outbox drain) also call _armTurnKeepAlive()
+        // that can await (the outbox drain) also call _armLeaseWake()
         // directly before the model request; this keeps the legacy
         // runAgentTurn path covered too.
-        void this._armTurnKeepAlive();
+        void this._armLeaseWake();
         // Register this turn id so _checkOrphanTurns + deriveStatus
         // see it. Lost on eviction → cold-start sees empty set → real
         // orphans (D1 row from a dead incarnation) get recovered on
@@ -6223,7 +6245,7 @@ export class SessionDO extends DurableObject<Env> {
       // arms this too, but the legacy local-queue path only has the
       // fire-and-forget hint callback; awaiting here guarantees the alarm
       // exists when harness.run() starts regardless of which path got here.
-      await this._armTurnKeepAlive("model_request");
+      await this._armLeaseWake("model_request");
 
       // Broadcast running status
       const runningEvent: SessionEvent = { type: "session.status_running" };
@@ -7214,134 +7236,315 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Pick the soonest alarm time across (a) ready due schedules, (b) hung
-   * interval reset. Phase 3 dropped the keepAlive refcount branch — keep-
-   * alive now flows through hintTurnInFlight (sets a 30s alarm at
-   * beginTurn) plus the alarm() handler's rearm-while-inflight check.
-   * Schedule logic itself is verbatim from cf-agents v0.11.2.
+   * Soonest ready schedule (or hung interval recovery) in epoch ms, or null.
+   * Pure cf-agents scheduler bookkeeping; merged into the shared policy's
+   * nextWakeAt below.
+   */
+  private _nextScheduleWakeMs(nowMs: number): number | null {
+    try {
+      const hungCutoffSec = Math.floor(nowMs / 1000) - HUNG_SCHEDULE_TIMEOUT_SECONDS;
+      const readyRows = this.ctx.storage.sql
+        .exec<{ time: number }>(
+          `SELECT time FROM cf_agents_schedules WHERE type != 'interval' OR running = 0 OR coalesce(execution_started_at, 0) <= ? ORDER BY time ASC LIMIT 1`,
+          hungCutoffSec,
+        )
+        .toArray();
+      const recoveringRows = this.ctx.storage.sql
+        .exec<{ execution_started_at: number | null }>(
+          `SELECT execution_started_at FROM cf_agents_schedules WHERE type = 'interval' AND running = 1 AND coalesce(execution_started_at, 0) > ? ORDER BY execution_started_at ASC LIMIT 1`,
+          hungCutoffSec,
+        )
+        .toArray();
+      let nextMs: number | null = null;
+      if (readyRows.length > 0) nextMs = Math.max(readyRows[0].time * 1000, nowMs + 1);
+      if (recoveringRows.length > 0 && recoveringRows[0].execution_started_at !== null) {
+        const recoveryMs = (recoveringRows[0].execution_started_at + HUNG_SCHEDULE_TIMEOUT_SECONDS) * 1000;
+        nextMs = nextMs === null ? recoveryMs : Math.min(nextMs, recoveryMs);
+      }
+      return nextMs;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Unprocessed inbound rows (events.processed_at IS NULL), one per lane. */
+  private _localQueuedInputs(): Array<{ id: string; laneId: string }> {
+    const out: Array<{ id: string; laneId: string }> = [];
+    try {
+      for (const laneId of this.queue.threadsWithQueueInputs()) {
+        for (const row of this.queue.listQueue(laneId)) {
+          out.push({ id: row.event_id, laneId });
+        }
+      }
+    } catch {
+      // Schema cold start / queue unavailable — the policy simply sees no
+      // local work this pass.
+    }
+    return out;
+  }
+
+  /**
+   * In-memory turns that are live in THIS incarnation but may not have a
+   * durable execution row yet (claim/beginTurn race), plus a dangling
+   * event-log `status_running` left by a dead incarnation. The policy keeps
+   * the alarm armed for these until the finalizer emits a terminal status.
+   */
+  private _activeTurnRecords(): ActiveTurnRecord[] {
+    const turns: ActiveTurnRecord[] = [];
+    for (const id of this._activeTurnIds) turns.push({ id });
+    for (const lane of this._executionActiveLanes) turns.push({ id: `lane:${lane}` });
+    for (const lane of this._draining) turns.push({ id: `drain:${lane}` });
+    if (this._latestSessionStatusEvent()?.type === "session.status_running") {
+      turns.push({ id: "event_log_turn" });
+    }
+    return turns;
+  }
+
+  private _leaseRecordFor(execution: SessionExecution): ExecutionLeaseRecord {
+    return {
+      executionId: execution.id,
+      laneId: execution.laneId,
+      state: execution.state,
+      attemptCount: execution.attemptCount,
+      maxAttempts: execution.maxAttempts,
+      leaseExpiresAtMs: execution.attempt === null
+        ? null
+        : Date.parse(execution.attempt.leaseExpiresAt),
+      deadlineAtMs: Date.parse(execution.deadlineAt),
+      ownerId: execution.attempt?.ownerId ?? null,
+      heldAfterExhausted: execution.heldAfterExhaustedAt !== null,
+    };
+  }
+
+  private async _executionLeaseRecords(): Promise<ExecutionLeaseRecord[]> {
+    const store = await this.getExecutionStore();
+    if (store === null) return [];
+    const active = await store.listActive({
+      workspaceId: this.state.tenant_id,
+      sessionId: this.state.session_id,
+    });
+    return active.map((execution) => this._leaseRecordFor(execution));
+  }
+
+  /**
+   * Alarm arbitration is entirely policy-driven. `cf_agents_schedules` is an
+   * additional wake input, never a reason to delete a lease/queue wake.
+   *
+   * The deleteAlarm branch is reachable only when the policy says quiescent
+   * AND no schedule exists. A defensive guard repeats that invariant so a
+   * future policy regression cannot silently strand queued/running work.
    */
   private async _scheduleNextAlarm(): Promise<void> {
     const nowMs = this.processedClock.nowMs();
-    const hungCutoffSec = Math.floor(nowMs / 1000) - HUNG_SCHEDULE_TIMEOUT_SECONDS;
-    const readyRows = this.ctx.storage.sql
-      .exec<{ time: number }>(
-        `SELECT time FROM cf_agents_schedules WHERE type != 'interval' OR running = 0 OR coalesce(execution_started_at, 0) <= ? ORDER BY time ASC LIMIT 1`,
-        hungCutoffSec,
-      )
-      .toArray();
-    const recoveringRows = this.ctx.storage.sql
-      .exec<{ execution_started_at: number | null }>(
-        `SELECT execution_started_at FROM cf_agents_schedules WHERE type = 'interval' AND running = 1 AND coalesce(execution_started_at, 0) > ? ORDER BY execution_started_at ASC LIMIT 1`,
-        hungCutoffSec,
-      )
-      .toArray();
-    let nextMs: number | null = null;
-    if (readyRows.length > 0) nextMs = Math.max(readyRows[0].time * 1000, nowMs + 1);
-    if (recoveringRows.length > 0 && recoveringRows[0].execution_started_at !== null) {
-      const recoveryMs = (recoveringRows[0].execution_started_at + HUNG_SCHEDULE_TIMEOUT_SECONDS) * 1000;
-      nextMs = nextMs === null ? recoveryMs : Math.min(nextMs, recoveryMs);
+    const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
+    const queuedInputs = this._localQueuedInputs();
+    let executions: ExecutionLeaseRecord[] = [];
+    try {
+      executions = await this._executionLeaseRecords();
+    } catch (err) {
+      console.warn(`[session-do] alarm policy read failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    // Heartbeat-merge: when a turn is in flight (sessions.status =
-    // 'running' — covers supervisor + the entire nested sub-agent
-    // call tree since beginTurn wraps the whole harness.run chain),
-    // we want a heartbeat alarm KEEP_ALIVE_INTERVAL_MS out. Merge it
-    // with any data-driven wakeup so a single setAlarm fires for the
-    // earlier of the two — never two writes, never a stale deleteAlarm
-    // clobbering the heartbeat.
-    //
-    // Pre-merge bug (caught by code review 2026-05-10): the heartbeat
-    // setAlarm and the data-driven setAlarm/deleteAlarm were two
-    // separate calls in sequence. When `cf_agents_schedules` was empty
-    // (the common case for a session not running cron / interval
-    // tasks) the second branch hit deleteAlarm() and silently undid
-    // the heartbeat — DO would not get a wakeup and CF would evict
-    // before the next external request arrived.
-    // Central execution leases are the primary v1 authority.  Keep the DO
-    // awake while one of its lanes is actively running; `_activeTurnIds`
-    // remains only for the legacy self-host fallback.  The durable D1 row
-    // still fences a replacement host if this alarm is lost.
-    //
-    // The event-log check closes the third gap that caused the 5d95d88
-    // incident: the old outbox path emitted session.status_running without
-    // ever writing sessions.turn_id, so both _activeTurnIds and
-    // _hasInflightTurn were false on the next alarm pass and this method
-    // took the deleteAlarm() branch — permanently disarming the only wakeup
-    // that could run _finalizeStaleTurns. A dangling status_running must
-    // always keep a heartbeat until the finalizer emits a terminal status.
-    const latestStatus = this._latestSessionStatusEvent();
-    const wantsHeartbeat =
-      this._executionActiveLanes.size > 0 ||
-      this._activeTurnIds.size > 0 ||
-      // Drain entry guard: true from the synchronous start of a lane until
-      // its finally, covering the window before beginTurn lands the D1 row
-      // / status_running event. Keeps deleteAlarm() from clearing a
-      // just-armed keep-alive during turn startup.
-      this._draining.size > 0 ||
-      latestStatus?.type === "session.status_running" ||
-      await this._hasInflightTurn();
-    const heartbeatMs = wantsHeartbeat ? Date.now() + KEEP_ALIVE_INTERVAL_MS : null;
-    let mergedNextMs: number | null = nextMs;
-    let reason = nextMs === null ? "none" : "schedule";
-    if (heartbeatMs !== null) {
-      mergedNextMs = mergedNextMs === null ? heartbeatMs : Math.min(mergedNextMs, heartbeatMs);
-      reason = nextMs === null ? "heartbeat" : "schedule+heartbeat";
+    const activeTurns = this._activeTurnRecords();
+    const schedules: ScheduleWakeRecord[] = scheduleNextMs === null
+      ? []
+      : [{ id: "cf_agents_schedules", dueAtMs: scheduleNextMs }];
+    const policy = evaluateCoordinationPolicy({
+      nowMs,
+      executions,
+      queuedInputs,
+      activeTurns,
+      schedules,
+      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
+    });
+
+    const hasQueued =
+      queuedInputs.length > 0 ||
+      executions.some((e) => e.state === "queued" && e.heldAfterExhausted !== true) ||
+      policy.actions.some((action) => action.type === "requeue");
+    const hasRunning =
+      executions.some((e) => e.state === "running") || activeTurns.length > 0;
+    const hasSchedule = scheduleNextMs !== null;
+    const mustStayArmed = hasQueued || hasRunning;
+    const reason = [
+      hasQueued ? "queued_work" : null,
+      hasRunning ? "lease" : null,
+      hasSchedule ? "schedule" : null,
+    ].filter((part): part is string => part !== null).join("+") || "policy";
+
+    let nextMs = policy.nextWakeAtMs;
+    if (nextMs === null && mustStayArmed) {
+      // Policy invariant guard: never disarm while any work exists.
+      nextMs = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : QUEUE_WAKE_DELAY_MS);
     }
-    if (mergedNextMs !== null) {
-      await this.ctx.storage.setAlarm(mergedNextMs);
-      // A pure heartbeat rearm fires every KEEP_ALIVE_INTERVAL_MS; the
-      // `alarm.fired` line already marks that tick, so only log schedule
-      // (data-driven) re-arms here to keep the log low-noise.
-      if (reason !== "heartbeat") {
-        sdoLog("alarm.armed", {
-          session_id: this._state?.session_id,
-          reason,
-          next_ms: mergedNextMs,
-          next_at: new Date(mergedNextMs).toISOString(),
-        });
-      }
+    if (nextMs !== null) {
+      await this.ctx.storage.setAlarm(nextMs);
+      sdoLog("alarm.armed", {
+        session_id: this._state?.session_id,
+        reason,
+        next_ms: nextMs,
+        next_at: new Date(nextMs).toISOString(),
+        queued: queuedInputs.length,
+        running_executions: executions.filter((e) => e.state === "running").length,
+      });
     } else {
       await this.ctx.storage.deleteAlarm();
       sdoLog("alarm.cleared", {
         session_id: this._state?.session_id,
-        reason: "no_schedule_or_turn",
+        reason: "quiescent",
       });
     }
   }
 
   /**
+   * Shared-policy sweep for this session. Node applies the same decisions in
+   * claim/renew; CF applies them from the alarm wake.
+   */
+  private async _sweepExpiredLeases(nowMs: number): Promise<void> {
+    const store = await this.getExecutionStore();
+    if (store === null) return;
+    await store.sweepExpired(nowMs, {
+      onDecision: (action: CoordinationAction) => {
+        if (action.type === "requeue") {
+          sdoLog("lease.expire", {
+            session_id: this.state.session_id,
+            lane_id: action.laneId ?? "sthr_primary",
+            execution_id: action.executionId,
+            decision: "requeue",
+            attempt_count: action.attemptCount,
+            max_attempts: action.maxAttempts,
+          });
+        } else if (action.type === "finalize-interrupted") {
+          sdoLog("lease.sweep", {
+            session_id: this.state.session_id,
+            lane_id: action.laneId ?? "sthr_primary",
+            execution_id: action.executionId,
+            decision: "finalize_interrupted",
+            reason: action.reason,
+            attempt_count: action.attemptCount,
+            max_attempts: action.maxAttempts,
+          });
+        }
+      },
+    });
+  }
+
+  /**
+   * Renew leases that are inside the policy renewal horizon. Only a fence
+   * owned by this incarnation is renewed; a dead owner's lease is left for
+   * the sweep to requeue/finalize.
+   */
+  private async _applyPolicyLeaseRenewals(nowMs: number): Promise<void> {
+    const store = await this.getExecutionStore();
+    if (store === null) return;
+    const active = await store.listActive({
+      workspaceId: this.state.tenant_id,
+      sessionId: this.state.session_id,
+    });
+    if (active.length === 0) return;
+    const policy = evaluateCoordinationPolicy({
+      nowMs,
+      executions: active.map((execution) => this._leaseRecordFor(execution)),
+      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
+    });
+    for (const action of policy.actions) {
+      if (action.type !== "renew") continue;
+      const laneId = action.laneId ?? "sthr_primary";
+      const fence = this._executionFences.get(laneId);
+      if (fence === undefined || fence.executionId !== action.executionId) {
+        sdoLog("lease.renew_skipped", {
+          session_id: this.state.session_id,
+          lane_id: laneId,
+          execution_id: action.executionId,
+          reason: "no_local_fence",
+        });
+        continue;
+      }
+      const execution = active.find((candidate) => candidate.id === action.executionId);
+      if (execution === undefined) continue;
+      const renewal = decideLeaseRenewal(
+        this._leaseRecordFor(execution),
+        nowMs,
+        { leaseTtlMs: EXECUTION_LEASE_TTL_MS },
+      );
+      if (renewal === null) continue;
+      try {
+        const renewed = await store.renew({
+          fence,
+          renewedAt: new Date(nowMs).toISOString(),
+          leaseTtlMs: EXECUTION_LEASE_TTL_MS,
+        });
+        if (renewed.type === "renewed") {
+          this._executionFences.set(laneId, renewed.fence);
+          sdoLog("lease.renew", {
+            session_id: this.state.session_id,
+            lane_id: laneId,
+            execution_id: action.executionId,
+            generation: renewed.fence.generation,
+            lease_expires_at: renewed.fence.expiresAt,
+          });
+        } else {
+          sdoLog("lease.renew_lost", {
+            session_id: this.state.session_id,
+            lane_id: laneId,
+            execution_id: action.executionId,
+          });
+        }
+      } catch (err) {
+        sdoLog("lease.renew_failed", {
+          session_id: this.state.session_id,
+          lane_id: laneId,
+          execution_id: action.executionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /**
    * Re-drive durable execution work after a dropped service-binding wakeup or
-   * a DO restart.  The query is intentionally scoped to this session and
-   * returns lanes rather than event payloads; claim/lease/fence decisions
-   * remain inside SessionExecutionStorePort.
+   * a DO restart. Lanes come from the shared policy (drain/claim/requeue
+   * actions), not an ad-hoc SQL scan; claim/lease/fence decisions remain
+   * inside SessionExecutionStorePort.
    */
   private async recoverExecutionQueue(): Promise<void> {
     // alarm() can reach this before any fetch()/init has warmed the in-memory
     // schema. Without this, drainEventQueue later dereferences a null queue
     // repo and the cold-started lane is never re-driven.
     this.ensureSchema();
-    const workspaceId = this.state.tenant_id;
-    const sessionId = this.state.session_id;
-    if (!this.env.MAIN_DB || !workspaceId || !sessionId) return;
-    const db = await buildCfTenantDbProvider(this.env).resolve(workspaceId);
-    const rows = await db
-      .prepare(
-        `SELECT DISTINCT lane_id
-           FROM managed_session_executions
-          WHERE workspace_id = ? AND session_id = ?
-            AND state IN ('queued', 'running')`,
-      )
-      .bind(workspaceId, sessionId)
-      .all<{ lane_id?: string }>();
-    const lanes = (rows.results ?? [])
-      .map((row) => row.lane_id)
-      .filter((lane): lane is string => typeof lane === "string" && lane.length > 0);
-    if (lanes.length === 0) return;
-    sdoLog("recover.execution_queue", {
-      session_id: sessionId,
-      lanes: lanes.length,
-      lane_ids: lanes,
+    const nowMs = this.processedClock.nowMs();
+    let executions: ExecutionLeaseRecord[] = [];
+    try {
+      executions = await this._executionLeaseRecords();
+    } catch (err) {
+      console.warn(`[alarm] execution lease read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const queuedInputs = this._localQueuedInputs();
+    if (executions.length === 0 && queuedInputs.length === 0) return;
+    const policy = evaluateCoordinationPolicy({
+      nowMs,
+      executions,
+      queuedInputs,
+      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+      queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
     });
-    await Promise.all(lanes.map((lane) => this.drainEventQueue(lane)));
+    const lanes = new Set<string>();
+    for (const action of policy.actions) {
+      if (action.type === "drain") lanes.add(action.laneId);
+      else if (action.type === "claim" || action.type === "requeue") {
+        lanes.add(action.laneId ?? "sthr_primary");
+      }
+    }
+    if (lanes.size === 0) return;
+    const laneIds = [...lanes];
+    sdoLog("recover.execution_queue", {
+      session_id: this.state.session_id,
+      lanes: laneIds.length,
+      lane_ids: laneIds,
+    });
+    await Promise.all(laneIds.map((lane) => this.drainEventQueue(lane)));
   }
 
   /**
@@ -7368,6 +7571,7 @@ export class SessionDO extends DurableObject<Env> {
       session_id: this._state?.session_id,
       fired_at_ms: nowSec * 1000,
       due_schedules: due.length,
+      reason: due.length > 0 ? "schedule" : "lease_or_queue",
     });
     for (const row of due) {
       // Skip interval rows whose previous execution is still running unless
@@ -7429,15 +7633,20 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    // A service-binding wakeup is intentionally best-effort: the accepted
-    // event and execution outbox row are already durable in D1.  On the next
-    // DO alarm, sweep every lane that still has queued/expired-running work
-    // and let the same lease host reclaim it.  This closes the wakeup-loss
-    // window without introducing a queue or a second source of truth.
+    const alarmNowMs = Date.now();
+    // The alarm is the CF wake-up for the shared policy: sweep expired
+    // leases first (requeue or finalize-interrupted), then renew leases that
+    // are still owned by a live incarnation, then emit the stale-turn
+    // finalization events, then drain/claim whatever is queued.
     try {
-      await this.recoverExecutionQueue();
+      await this._sweepExpiredLeases(alarmNowMs);
     } catch (err) {
-      console.warn(`[alarm] central execution recovery failed:`, err);
+      console.warn(`[alarm] lease sweep failed:`, err);
+    }
+    try {
+      await this._applyPolicyLeaseRenewals(alarmNowMs);
+    } catch (err) {
+      console.warn(`[alarm] lease renewal failed:`, err);
     }
 
     // Stale-turn cleanup. Replaces the old _checkOrphanTurns →
@@ -7449,6 +7658,16 @@ export class SessionDO extends DurableObject<Env> {
     // and the user can re-send to continue. (cloudflare/agents SDK's
     // documented stance: "LLM calls are NOT replayed.")
     await this._finalizeStaleTurns();
+
+    // A service-binding wakeup is intentionally best-effort: the accepted
+    // event and execution outbox row are already durable in D1. Drain after
+    // finalization so a requeued execution never replays over an unpaired
+    // tool_use from the dead incarnation.
+    try {
+      await this.recoverExecutionQueue();
+    } catch (err) {
+      console.warn(`[alarm] central execution recovery failed:`, err);
+    }
 
     // (Keep-alive rearm — sub-agent + supervisor heartbeat — folded
     // into _scheduleNextAlarm below so it can MERGE with data-driven
@@ -7477,52 +7696,12 @@ export class SessionDO extends DurableObject<Env> {
     await this._scheduleNextAlarm();
   }
 
-  // ── Orphan-turn detection (replaces cf_agents_runs / runFiber API) ────
-
-  /**
-   * Scan the unified `sessions` table for rows marked status='running'
-   * with a turn_id we don't recognise as our own active turn. For each,
-   * call onFiberRecovered (which routes to recoverAgentTurn) so the
-   * partial state gets reconciled and the next user.message starts
-   * from clean events.
-   *
-   * Replaces the old _checkRunFibers (cf_agents_runs scan). The unified
-   * adapter writes turn_id on beginTurn() and clears it on endTurn();
-   * leftover rows after a process death are exactly the orphan set.
-   */
-  private async _checkOrphanTurns(): Promise<void> {
-    if (!this._state) return;
-    const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-    // ports.ts contract: caller MUST filter out its own active turn ids
-    // before treating each row as an orphan. We track these in
-    // _activeTurnIds (populated from RuntimeAdapter's hintTurnInFlight
-    // callback the moment beginTurn lands the D1 write). Mirrors Node
-    // SessionStateMachine.onWake's `if (o.turn_id === this.activeTurnId)
-    // continue` (machine.ts:183), just generalized to a Set because
-    // sub-agents can have concurrent turns.
-    //
-    // Pre-fix this loop iterated all rows blindly and the keep-alive
-    // alarm regularly woke up mid-stream to "recover" our own active
-    // turn — observed on staging sess-slqg7xf4kvm6s2j4 (2026-05-10
-    // 07:01:43Z): emitted session.status_rescheduled + spawned a
-    // parallel streamText racing the original. Then we patched it with
-    // a 90s grace period; the proper fix is the explicit set check.
-    for (const o of orphans) {
-      if (this._activeTurnIds.has(o.turn_id)) continue;
-      try {
-        await this.onFiberRecovered({
-          id: o.turn_id,
-          name: `turn:${o.turn_id}`,
-          snapshot: null,
-        });
-      } catch (err) {
-        console.error(`[orphan-recovery] failed for turn ${o.turn_id}:`, err);
-      }
-      // Mark the orphan turn idle. recoverAgentTurn doesn't do this
-      // (it ran before the unified table existed).
-      await this.runtimeAdapter.endTurn(this.state.session_id, o.turn_id, "idle");
-    }
-  }
+  // ── Stale-turn finalization ──────────────────────────────────────────
+  // Orphan detection now comes from the shared lease policy (expired
+  // execution -> finalize-interrupted) plus the event-log fallback inside
+  // _finalizeStaleTurns. The old onFiberRecovered replay path was removed
+  // because replaying an LLM stream from inside alarm() burned the wall-time
+  // budget and raced the original turn.
 
   /**
    * Lightweight stale-turn cleanup — replacement for the old
@@ -7871,16 +8050,6 @@ export class SessionDO extends DurableObject<Env> {
         console.warn(`[finalize-stale] post-recovery drain failed:`, err);
       }
     }
-  }
-
-  /**
-   * Has this DO got a turn currently in flight? Used by alarm() to
-   * decide whether to rearm itself for keep-alive.
-   */
-  private async _hasInflightTurn(): Promise<boolean> {
-    if (!this._state) return false;
-    const orphans = await this.runtimeAdapter.listOrphanTurns(this.state.session_id);
-    return orphans.length > 0;
   }
 }
 
