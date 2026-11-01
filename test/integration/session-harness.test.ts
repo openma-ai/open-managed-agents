@@ -184,7 +184,7 @@ describe("Harness execution flow", () => {
     const events = await collectReplayedEvents(sessionId);
     const errorEvent = events.find((e) => e.type === "session.error");
     expect(errorEvent).toBeTruthy();
-    expect(errorEvent.error).toContain("sh crash");
+    expect(errorEvent.error.message).toContain("sh crash");
   });
 
   it("partial crash harness emits message AND error event both in replay", async () => {
@@ -197,7 +197,7 @@ describe("Harness execution flow", () => {
     expect(agentMsg.content[0].text).toBe("before crash");
     const errorEvent = events.find((e) => e.type === "session.error");
     expect(errorEvent).toBeTruthy();
-    expect(errorEvent.error).toContain("partial crash");
+    expect(errorEvent.error.message).toContain("partial crash");
   });
 
   it("session recovers after error and new message works", async () => {

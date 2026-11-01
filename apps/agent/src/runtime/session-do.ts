@@ -466,6 +466,9 @@ export class SessionDO extends DurableObject<Env> {
    */
   private _executionActiveLanes = new Set<string>();
   private _executionFences = new Map<string, SessionExecutionFence>();
+  /** Lane → ms of the last retries_exhausted settle (in-memory; hold for
+   *  local-pending inputs admitted after that settle). */
+  private _exhaustedAtByLane = new Map<string, number>();
   private _executionParentLane = new Map<string, string>();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -1363,32 +1366,50 @@ export class SessionDO extends DurableObject<Env> {
     store: SqlSessionExecutionStore,
     threadId: string,
   ): Promise<boolean> {
-    const row = this.pending!.peek(threadId);
-    if (row === null) return false;
-    let event: SessionEvent;
-    try {
-      event = JSON.parse(row.data) as SessionEvent;
-    } catch {
-      this.pending!.delete(row.pending_seq);
-      return false;
+    const exhaustedAt = this._exhaustedAtByLane.get(threadId);
+    // Walk the lane's local pending rows oldest-first; rows already admitted
+    // (e.g. held after retries_exhausted) are skipped so a newer input can
+    // still be admitted behind them.
+    for (const row of this.pending!.list(threadId)) {
+      let event: SessionEvent;
+      try {
+        event = JSON.parse(row.data) as SessionEvent;
+      } catch {
+        this.pending!.delete(row.pending_seq);
+        continue;
+      }
+      const id = (event as unknown as { id?: string }).id ?? row.event_id;
+      if (await store.find({ workspaceId: this.state.tenant_id!, executionId: id }) !== null) continue;
+      const admitted = await store.admit({
+        execution: {
+          id,
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          laneId: threadId,
+          admittedAt:
+            (event as unknown as { processed_at?: string }).processed_at ??
+            new Date().toISOString(),
+          events: [this.executionInputFromWire(event) as never],
+        },
+      });
+      if (admitted.type === "conflict") {
+        throw new Error(`Session Execution ${id} conflicts with an existing admission`);
+      }
+      // Owner lock (exhausted retain): an input that arrived during the
+      // turn that ended retries_exhausted is held, not run alone. It rides
+      // the next admission (absorbHeldIntoUnheldAdmissions on claim).
+      if (exhaustedAt !== undefined && row.enqueued_at <= exhaustedAt) {
+        await store.markHeldAfterExhausted({
+          workspaceId: this.state.tenant_id!,
+          sessionId: this.state.session_id!,
+          executionId: id,
+          heldAt: new Date(exhaustedAt),
+        });
+        continue;
+      }
+      return true;
     }
-    const id = (event as unknown as { id?: string }).id ?? row.event_id;
-    const admitted = await store.admit({
-      execution: {
-        id,
-        workspaceId: this.state.tenant_id!,
-        sessionId: this.state.session_id!,
-        laneId: threadId,
-        admittedAt:
-          (event as unknown as { processed_at?: string }).processed_at ??
-          new Date().toISOString(),
-        events: [this.executionInputFromWire(event) as never],
-      },
-    });
-    if (admitted.type === "conflict") {
-      throw new Error(`Session Execution ${id} conflicts with an existing admission`);
-    }
-    return true;
+    return false;
   }
 
   private ensureLocalPending(event: SessionEvent): PendingRow | null {
@@ -1608,7 +1629,10 @@ export class SessionDO extends DurableObject<Env> {
               if (localPending !== null) this.promotePendingRow(localPending, executionHistory);
               if (event.type === "user.message") {
                 const turn = await this.processUserMessage(event as UserMessageEvent, 0, false, signal, fence);
-                if (turn?.holdQueuedOnLane) holdQueuedOnLane = true;
+                if (turn?.holdQueuedOnLane) {
+                  holdQueuedOnLane = true;
+                  this._exhaustedAtByLane.set(threadId, Date.now());
+                }
               } else if (event.type === "user.tool_confirmation") {
                 await this.handleToolConfirmation(event as UserToolConfirmationEvent, executionHistory, signal, fence);
               } else if (event.type === "user.custom_tool_result") {

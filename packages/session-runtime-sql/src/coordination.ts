@@ -1057,6 +1057,31 @@ export class SqlSessionExecutionStore
     return (rows.results ?? []).map(toExecution);
   }
 
+  /** Owner lock (exhausted retain): mark one queued row held after
+   *  retries_exhausted. Used by hosts that admit a mid-run input only after
+   *  the exhausted settle (CF SessionDO local-pending fallback). */
+  async markHeldAfterExhausted(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    heldAt: Date;
+  }): Promise<void> {
+    const res = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET held_after_exhausted_ms = ?, revision = revision + 1
+       WHERE workspace_id = ? AND id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL
+    `).bind(input.heldAt.getTime(), input.workspaceId, input.executionId).run();
+    if (res.meta.changes === 1) {
+      const row = await this.find({ workspaceId: input.workspaceId, executionId: input.executionId });
+      if (row !== null) {
+        await this.markHeldAfterExhaustedOnEvents(
+          input.workspaceId, input.sessionId, row.events.map((ev) => ev.id),
+        );
+      }
+    }
+  }
+
   async requestInterrupt(input: {
     workspaceId: string;
     sessionId: string;
