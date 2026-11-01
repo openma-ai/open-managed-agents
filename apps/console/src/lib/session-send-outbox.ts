@@ -34,6 +34,11 @@ export interface SendOutboxHandoffResult {
  * `system.user_message_pending` stream frames to repopulate the outbox.
  * A refresh or retry is the recovery path.
  *
+ * After idle `retries_exhausted`, never-ingested queued ids are assumed
+ * flushed (deleted) server-side — see `session-exhausted-reconcile.ts`
+ * and `docs/implementation/exhausted-flush-client-reconcile.md`. Do not
+ * treat leftover null `processed_at` rows as a hold queue.
+ *
  * `addEvent` is the component's canonical event sink: when the stream later
  * redelivers the same event id it either replaces the stored copy in place
  * (queued -> processed transition) or is dropped as an identical duplicate,
