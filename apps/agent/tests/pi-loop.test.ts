@@ -470,6 +470,41 @@ describe("PiHarness", () => {
     expect(streamCalls.toolStarts).toEqual(streamCalls.toolEnds);
   });
 
+  it("steers a mid-run user.message into the current turn at the next tool/LLM-call boundary (after-call)", async () => {
+    const first = fauxAssistantMessage(
+      [fauxToolCall("echo", { value: "hello" }, { id: "tool-echo" })],
+      { stopReason: "toolUse", responseId: "response-1" },
+    );
+    const seenSecond: string[] = [];
+    const second = ((context: { messages: Array<{ role: string; content: unknown }> }) => {
+      seenSecond.push(JSON.stringify(context.messages));
+      return fauxAssistantMessage("done with both", { responseId: "response-2" });
+    }) as unknown as ReturnType<typeof fauxAssistantMessage>;
+    const { ctx, events, echo } = makeContext([first, second]);
+    // Accepted while the turn is running (during the tool call); the runtime
+    // hands it out exactly once on the next takeSteeringInputs poll.
+    const mid: SessionEvent[] = [];
+    echo.mockImplementation(async ({ value }: { value: string }) => {
+      mid.push({ type: "user.message", content: [{ type: "text", text: "also say bye" }] } as SessionEvent);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return { echoed: value };
+    });
+    const takes: number[] = [];
+    (ctx.runtime as { takeSteeringInputs?: () => Promise<SessionEvent[]> }).takeSteeringInputs = async () => {
+      takes.push(Date.now());
+      return mid.splice(0);
+    };
+
+    await new PiHarness().run(ctx);
+
+    // Same turn: the very next model call (after the tool call) already sees
+    // the steered message; no extra after-turn request was needed.
+    expect(seenSecond).toHaveLength(1);
+    expect(seenSecond[0]).toContain("also say bye");
+    expect(events.filter((event) => event.type === "span.model_request_start")).toHaveLength(2);
+    expect(takes.length).toBeGreaterThan(0);
+  });
+
   it("projects canonical history back into Pi on the next turn", async () => {
     const { ctx, events, faux } = makeContext([
       fauxAssistantMessage("first answer"),

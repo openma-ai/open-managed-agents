@@ -22,6 +22,18 @@
 //     a new wrangler secret — see INTEGRATION_GUIDE.md "Open questions" for
 //     the production rotation plan.
 
+/** List prices in USD per million tokens (decimal strings). Mirrors
+ * `@open-managed-agents/api-types` ModelPricing. */
+export interface ModelPricing {
+  version: 1;
+  currency: "USD";
+  effective_at?: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cache_read_per_mtok?: string;
+  cache_write_per_mtok?: string;
+}
+
 export interface ModelCardRow {
   id: string;
   tenant_id: string;
@@ -42,6 +54,8 @@ export interface ModelCardRow {
   custom_headers: Record<string, string> | null;
   /** Pi-native serializable model configuration. NULL uses catalog defaults. */
   pi_config: Record<string, unknown> | null;
+  /** List prices; null = unpriced (session budgets inactive). */
+  pricing?: ModelPricing | null;
   /** Last-4 of the api key, safe to surface in API responses. */
   api_key_preview: string;
   is_default: boolean;

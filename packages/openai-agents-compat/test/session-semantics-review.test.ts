@@ -101,11 +101,59 @@ describe("Session semantic review regressions", () => {
     expect(f.facts.filter(event => event.type.startsWith("user."))).toHaveLength(0);
   });
 
-  it("preserves an authorized cancel then message batch in one native acceptance", async () => {
+  it("accepts cancel while requires_action (maps to interrupt); same-batch message is dropped", async () => {
+    // Live OpenAI Agents: input.cancel while pending → 202, turn cancelled.
+    // Compat maps cancel → user.interrupt. A message paired in the same batch
+    // is not forwarded (native settle-only would 400; turn is ending anyway).
     const f = fixture(); await f.pendingResult();
     await f.client.beta.agents.sessions.events.create("session", { events: [{ type: "agent.session.input.cancel" }, { type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "next" }] }] }] });
-    expect(f.dispatched).toHaveLength(1);
-    expect(f.dispatched[0].events.map((event: any) => event.type)).toEqual(["user.interrupt", "user.message"]);
+    expect(f.facts.filter(event => event.type === "user.interrupt")).toHaveLength(1);
+    expect(f.facts.filter(event => event.type === "user.message")).toHaveLength(0);
+  });
+
+  it("accepts message while requires_action as deferred steer; actions unchanged until settle", async () => {
+    // Live probe 2026-11-01 (api.openai.com, OpenAI-Beta: agents=v1):
+    // POST agent.session.input.message during requires_action → HTTP 202,
+    // required_actions unchanged; after tool_result the steer appears on the
+    // same turn_id (function_call → function_call_output → user → assistant).
+    const f = fixture();
+    const result = await f.pendingResult();
+    const before = await f.client.beta.agents.sessions.retrieve("session");
+    expect(before.status).toBe("requires_action");
+    expect(before.required_actions).toHaveLength(1);
+    await f.client.beta.agents.sessions.events.create("session", {
+      events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "PROBE_STEER_ONLY" }] }] }],
+      "Idempotency-Key": "steer-while-ra",
+    });
+    const mid = await f.client.beta.agents.sessions.retrieve("session");
+    expect(mid.status).toBe("requires_action");
+    expect(mid.required_actions).toEqual(before.required_actions);
+    expect(f.facts.filter(event => event.type === "user.message")).toHaveLength(0);
+    await f.client.beta.agents.sessions.events.create("session", { events: [result], "Idempotency-Key": "settle-after-steer" });
+    expect(f.facts.filter(event => event.type === "user.custom_tool_result")).toHaveLength(1);
+    const steers = f.facts.filter(event => event.type === "user.message");
+    expect(steers).toHaveLength(1);
+    expect(JSON.stringify(steers[0].content)).toContain("PROBE_STEER_ONLY");
+    const after = await f.client.beta.agents.sessions.retrieve("session");
+    expect(after.required_actions).toEqual([]);
+    const action = before.required_actions[0]!;
+    if (action.type !== "function_call") throw new Error("expected function_call");
+    const turnId = action.turn_id;
+    const items = await f.client.beta.agents.sessions.items.list("session");
+    const forTurn = items.data.filter((item: any) => item.turn_id === turnId);
+    const types = forTurn.map((item: any) => item.type === "message" ? `${item.type}:${item.role}` : item.type);
+    expect(types).toContain("function_call");
+    expect(types).toContain("function_call_output");
+    expect(types).toContain("message:user");
+    const userItem = forTurn.find((item: any) => item.type === "message" && item.role === "user" && JSON.stringify(item.content).includes("PROBE_STEER_ONLY"));
+    expect(userItem?.turn_id).toBe(turnId);
+  });
+
+  it("after cancel while requires_action, a later tool_result is a conflict", async () => {
+    const f = fixture();
+    const result = await f.pendingResult();
+    await f.client.beta.agents.sessions.events.create("session", { events: [{ type: "agent.session.input.cancel" }] });
+    await expect(f.client.beta.agents.sessions.events.create("session", { events: [result] })).rejects.toMatchObject({ status: 409, code: "conflict_error" });
   });
 
   it("accepts at most one concurrent result for the same pending call with distinct request keys", async () => {

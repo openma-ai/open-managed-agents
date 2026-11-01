@@ -40,6 +40,7 @@ export const zhCN: Messages = {
   },
 
   nav: {
+    budget: "预算",
     overview: "概览",
     managedAgents: "托管智能体",
     dashboard: "仪表盘",
@@ -59,6 +60,15 @@ export const zhCN: Messages = {
     integrations: "Matter",
     loops: "Loops",
     bonds: "Bonds",
+  },
+
+  budget: {
+    title: "预算",
+    subtitle: "在模型出口记录的花费（按标价），以及每个会话的花费上限。",
+    byModel: "按模型统计花费",
+    bySession: "会话",
+    noSpend: "暂无已定价的花费。",
+    loadMore: "加载更多",
   },
 
   login: {
@@ -169,6 +179,17 @@ export const zhCN: Messages = {
     noMatchingSessions: "没有匹配的会话",
     noSessionsYet: "还没有会话",
     editTitle: "编辑标题",
+    tokensInput: "输入 tokens",
+    tokensOutput: "输出 tokens",
+    tokensCacheRead: "缓存读取",
+    tokensCacheWrite: "缓存写入",
+    budgetCost: "费用",
+    budgetCap: "预算",
+    budgetUnpriced: "未定价",
+    budgetNone: "无预算",
+    budgetEdit: "编辑预算",
+    budgetRemove: "移除预算",
+    budgetInvalid: "请输入大于 $0 的金额",
     untitledSession: "未命名会话",
     sessionTitle: "会话标题",
   },
@@ -209,6 +230,14 @@ export const zhCN: Messages = {
   },
 
   modelCards: {
+    pricing: "标价",
+    pricingHint: "（每百万 token 美元；留空为未定价，预算不生效）",
+    priceInput: "输入",
+    priceOutput: "输出",
+    priceCacheRead: "缓存读取",
+    priceCacheWrite: "缓存写入",
+    pricingRequired: "设置定价时必须填写输入和输出价格。",
+    pricingInvalid: "价格必须是最多 6 位小数的美元金额。",
     newModelCard: "+ 新建模型卡",
     searchModelCards: "搜索模型卡…",
     noMatchingModelCards: "没有匹配的模型卡",

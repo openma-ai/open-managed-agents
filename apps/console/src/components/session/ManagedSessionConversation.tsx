@@ -13,6 +13,8 @@ export interface ManagedSessionConversationProps {
   empty?: ReactNode;
   sessionId?: string;
   turns: readonly CanonicalChatTurn[];
+  /** The projection's single running/awaiting turn; only it may animate. */
+  activeTurnId?: string;
 }
 
 /**
@@ -26,10 +28,11 @@ export function ManagedSessionConversation({
   empty,
   sessionId,
   turns,
+  activeTurnId,
 }: ManagedSessionConversationProps) {
   const projectedTurns = useMemo(
-    () => turns.map(projectCanonicalSessionTurn),
-    [turns],
+    () => turns.map((turn) => projectCanonicalSessionTurn(turn, { activeTurnId })),
+    [turns, activeTurnId],
   );
   const sourceTurns = useMemo(
     () => new Map(turns.map((turn) => [turn.id, turn])),

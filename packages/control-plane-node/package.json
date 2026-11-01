@@ -68,6 +68,7 @@
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
     "@open-managed-agents/scheduler": "workspace:*",
+    "@open-managed-agents/session-event-store": "workspace:*",
     "@open-managed-agents/session-realtime": "workspace:*",
     "@open-managed-agents/session-realtime-memory": "workspace:*",
     "@open-managed-agents/session-resource-store": "workspace:*",
@@ -93,6 +94,7 @@
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
     "tar": "7.5.22",
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@open-managed-agents/domain": "workspace:*"
   }
 }

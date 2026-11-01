@@ -1,0 +1,1 @@
+ALTER TABLE `managed_session_executions` ADD `held_after_exhausted_ms` integer;

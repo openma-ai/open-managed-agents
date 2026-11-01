@@ -17,8 +17,13 @@ import {
   SqlSessionExecutionCoordinator,
 } from "../src/coordination";
 import {
+  decideExpiredExecution,
+  decideRecoveryFromCanonicalStream,
   sessionExecutionEventBatches,
   sessionExecutionId,
+  takeQueuedSteeringInputs,
+  type CoordinationAction,
+  type ExecutionLeaseRecord,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import { sessionExecutionStoreConformance } from
   "../../session-runtime-contract/test/execution-store-conformance";
@@ -46,6 +51,7 @@ function executionRow(overrides: Record<string, unknown> = {}) {
     lease_expires_at_ms: null,
     interrupt_requested_at_ms: null,
     settled_at_ms: null,
+    held_after_exhausted_ms: null,
     failure: null,
     revision: "1",
     ...overrides,
@@ -110,6 +116,23 @@ describe("SqlSessionExecutionCoordinator", () => {
     sql = await createBetterSqlite3SqlClient(":memory:");
     await ensureSessionExecutionCoordinatorSchema(sql);
     coordinator = new SqlSessionExecutionCoordinator(sql);
+  });
+
+  it("continuationsOnly lets a tool answer pass a queued user.message and never claims the message", async () => {
+    await coordinator.admit(admitted("queued_msg", "session_01", at(1)));
+    await coordinator.admit({ execution: {
+      id: "tool_answer", workspaceId: "workspace_01", sessionId: "session_01", admittedAt: at(2),
+      events: [{ id: "tool_answer", type: "user.custom_tool_result", customToolUseId: "call_1",
+        content: [{ type: "text", text: "ok" }], processedAt: at(2) } as never],
+    } });
+    const parked = { ownerId: "do", claimedAt: at(3), leaseTtlMs: 10_000, continuationsOnly: true };
+    const first = await coordinator.claim({ ...parked, attemptId: "a1" });
+    expect(first.type === "claimed" && first.execution.id).toBe("tool_answer");
+    if (first.type !== "claimed") throw new Error("expected claim");
+    await coordinator.settle({ fence: first.fence, settledAt: at(4), outcome: "completed" });
+    expect((await coordinator.claim({ ...parked, attemptId: "a2", claimedAt: at(5) })).type).toBe("empty");
+    const normal = await coordinator.claim({ ownerId: "do", attemptId: "a3", claimedAt: at(6), leaseTtlMs: 10_000 });
+    expect(normal.type === "claimed" && normal.execution.id).toBe("queued_msg");
   });
 
   it("claims a default-mode Session without preparing the optional checkpoint-only lock table", async () => {
@@ -329,6 +352,69 @@ describe("SqlSessionExecutionCoordinator", () => {
     })).rejects.toThrow("Claimed Session Execution has no attempt");
   });
 
+  it("emits MySQL-safe index DDL and probes columns through information_schema", async () => {
+    const executed: string[] = [];
+    const prepared: Array<{ sql: string; params: unknown[] }> = [];
+    const executionColumns = [
+      "workspace_id", "session_id", "lane_id", "id", "admitted_at_ms",
+      "events_json", "events_fingerprint", "state", "attempt_id", "owner_id",
+      "generation", "attempt_count", "max_attempts", "deadline_at_ms",
+      "claimed_at_ms", "lease_expires_at_ms", "interrupt_requested_at_ms",
+      "settled_at_ms", "failure", "revision",
+    ];
+    const statement = (query: string) => {
+      let params: unknown[] = [];
+      const bound = {
+        bind: (...values: unknown[]) => {
+          params = values;
+          return bound;
+        },
+        run: async () => ({ meta: { changes: 0 } }),
+        first: async () => {
+          prepared.push({ sql: query, params: [...params] });
+          return params[1] === "managed_session_executions_claim_idx"
+            ? { present: 1 }
+            : null;
+        },
+        all: async () => {
+          prepared.push({ sql: query, params: [...params] });
+          const names = query.includes("information_schema.COLUMNS")
+            ? query.includes("managed_session_executions")
+              ? executionColumns
+              : ["workspace_id", "session_id", "claim_token", "version", "holder_execution_id"]
+            : [];
+          return { results: names.map((name) => ({ name })) };
+        },
+      };
+      return bound;
+    };
+    const mysqlSql = {
+      prepare: statement,
+      batch: async () => [],
+      exec: async (query: string) => {
+        executed.push(query);
+      },
+    } as unknown as SqlClient;
+
+    await ensureSessionExecutionCoordinatorSchema(mysqlSql, "mysql");
+
+    expect(executed.some((ddl) => /CREATE INDEX IF NOT EXISTS/i.test(ddl))).toBe(false);
+    // The existing claim index is skipped instead of recreated.
+    expect(executed.some((ddl) => ddl.includes("managed_session_executions_claim_idx"))).toBe(false);
+    expect(executed).toEqual(expect.arrayContaining([
+      expect.stringContaining("CREATE INDEX managed_session_executions_session_idx"),
+      expect.stringContaining(
+        "ALTER TABLE managed_session_executions ADD COLUMN held_after_exhausted_ms BIGINT",
+      ),
+    ]));
+    expect(prepared).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sql: expect.stringContaining("information_schema.statistics"),
+        params: ["managed_session_executions", "managed_session_executions_claim_idx"],
+      }),
+    ]));
+  });
+
   it("fails admission if the inserted execution cannot be read back", async () => {
     const store = new SqlSessionExecutionCoordinator(fakeSql());
     store.find = async () => null;
@@ -513,6 +599,266 @@ describe("SqlSessionExecutionCoordinator", () => {
     });
   });
 
+  it("owner dies mid-turn: sweep requeues the expired lease and a replacement claims it", async () => {
+    await coordinator.admit({
+      ...admitted("recoverable", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const store = coordinator as unknown as {
+      sweepExpired(now: number): Promise<void>;
+    };
+    await store.sweepExpired(Date.parse(at(5)));
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "recoverable",
+    })).resolves.toMatchObject({
+      state: "queued",
+      attemptCount: 1,
+      maxAttempts: 3,
+      failure: "requeued after owner lease expired",
+      attempt: null,
+    });
+
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toMatchObject({
+      type: "claimed",
+      fence: { ownerId: "replacement", generation: 2 },
+      execution: { id: "recoverable", attemptCount: 2 },
+    });
+  });
+
+  it("owner dies mid-turn: sweep finalizes an exhausted expired lease", async () => {
+    await coordinator.admit({
+      ...admitted("exhausted", "session_a", at(1)),
+      policy: { maxAttempts: 1, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const store = coordinator as unknown as {
+      sweepExpired(now: number): Promise<void>;
+    };
+    await store.sweepExpired(Date.parse(at(5)));
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "exhausted",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution attempt limit exhausted",
+      settledAt: at(5),
+    });
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toEqual({ type: "empty" });
+  });
+
+  it("owner dies mid-turn: canonical-stream evidence finalizes applied work instead of rerunning it", async () => {
+    await coordinator.admit({
+      ...admitted("applied_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    // Mirrors the CF isolate-reset sweep: the row's lease says "retry", the
+    // canonical stream says "this turn already produced a tool result".
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [
+            { type: "agent.tool_use" },
+            { type: "agent.tool_result" },
+          ],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 1,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, now);
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "applied_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution interrupted after applied input",
+      settledAt: at(5),
+    });
+    await expect(coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 30_000,
+    })).resolves.toEqual({ type: "empty" });
+  });
+
+  it("owner dies mid-turn: an unpaired tool call is finalized as interrupted", async () => {
+    await coordinator.admit({
+      ...admitted("unpaired_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [{ type: "agent.tool_use" }],
+          unpairedToolUseCount: 1,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, now);
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unpaired_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution interrupted on unpaired tool call",
+      settledAt: at(5),
+    });
+  });
+
+  it("owner dies mid-turn: an unapplied input is requeued by the same stream policy", async () => {
+    await coordinator.admit({
+      ...admitted("unapplied_stream", "session_a", at(1)),
+      policy: { maxAttempts: 3, timeoutMs: 60_000 },
+    });
+    await coordinator.claim({
+      ownerId: "dead_node",
+      attemptId: "attempt_dead",
+      claimedAt: at(2),
+      leaseTtlMs: 1_000,
+    });
+
+    const now = Date.parse(at(5));
+    const store = coordinator as unknown as {
+      sweepExpired(now: number, options?: {
+        decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+      }): Promise<void>;
+    };
+    await store.sweepExpired(now, {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        return decision.type === "requeue"
+          ? decideExpiredExecution(record, now)
+          : null;
+      },
+    });
+
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unapplied_stream",
+    })).resolves.toMatchObject({
+      state: "queued",
+      attemptCount: 1,
+      failure: "requeued after owner lease expired",
+      attempt: null,
+    });
+    // The allowance is one re-dispatch: a second unapplied expiry interrupts.
+    await coordinator.claim({
+      ownerId: "replacement",
+      attemptId: "attempt_replacement",
+      claimedAt: at(6),
+      leaseTtlMs: 1_000,
+    });
+    await store.sweepExpired(Date.parse(at(9)), {
+      decideForRecord(record) {
+        const decision = decideRecoveryFromCanonicalStream({
+          inputAtMs: record.admittedAtMs ?? 0,
+          eventsAfterInput: [],
+          unpairedToolUseCount: 0,
+          completedOutputCount: 0,
+          providerDispatches: record.attemptCount,
+        });
+        if (decision.type === "requeue") return decideExpiredExecution(record, Date.parse(at(9)));
+        return {
+          type: "finalize-interrupted",
+          executionId: record.executionId,
+          laneId: record.laneId,
+          reason: decision.type === "reuse" ? "input_applied" : decision.reason,
+          attemptCount: record.attemptCount,
+          maxAttempts: record.maxAttempts,
+        };
+      },
+    });
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "unapplied_stream",
+    })).resolves.toMatchObject({
+      state: "failed",
+      failure: "execution redispatch limit exhausted",
+    });
+  });
+
   it("never claims or renews work beyond its absolute deadline", async () => {
     await coordinator.admit({
       ...admitted("expired_before_claim", "session_a", at(1)),
@@ -600,7 +946,7 @@ describe("SqlSessionExecutionCoordinator", () => {
     });
   });
 
-  it("flushes queued work, keeps the first interrupt intent, and terminalizes an expired owner", async () => {
+  it("keeps queued work, keeps the first interrupt intent, and terminalizes an expired owner", async () => {
     await coordinator.admit(admitted("active", "session_a", at(1)));
     await coordinator.admit(admitted("queued", "session_a", at(2)));
     await coordinator.claim({
@@ -632,13 +978,177 @@ describe("SqlSessionExecutionCoordinator", () => {
     await expect(coordinator.find({
       workspaceId: "workspace_01",
       executionId: "queued",
-    })).resolves.toMatchObject({ state: "cancelled", settledAt: at(5) });
+    })).resolves.toMatchObject({ state: "queued", settledAt: null });
+    // The queued item survives the interrupt and drains next.
     await expect(coordinator.claim({
       ownerId: "replacement",
       attemptId: "replacement_attempt",
       claimedAt: at(7),
       leaseTtlMs: 30_000,
-    })).resolves.toEqual({ type: "empty" });
+    })).resolves.toMatchObject({ type: "claimed", execution: { id: "queued" } });
+  });
+
+  it("removes one queued execution and refuses to cancel started work", async () => {
+    await coordinator.admit(admitted("running", "session_q", at(1)));
+    await coordinator.admit(admitted("queued_a", "session_q", at(2)));
+    await coordinator.admit(admitted("queued_b", "session_q", at(3)));
+    await coordinator.claim({ ownerId: "node", attemptId: "a1", claimedAt: at(4), leaseTtlMs: 30_000 });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "running", cancelledAt: at(5),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_processing" });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "queued_a", cancelledAt: at(5),
+    })).resolves.toMatchObject({ type: "cancelled", execution: { id: "queued_a", state: "cancelled" } });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_q", executionId: "queued_a", cancelledAt: at(6),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_cancelled" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "queued_b" }))
+      .resolves.toMatchObject({ state: "queued" });
+  });
+
+  it("cancelQueued response discriminates cancelled vs already_processing for the edit race", async () => {
+    await coordinator.admit(admitted("q_late", "session_c", at(1)));
+    await coordinator.admit(admitted("q_ok", "session_c", at(2)));
+    // Claim drains FIFO: q_late becomes running; q_ok stays queued.
+    await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(3), leaseTtlMs: 30_000 });
+    const ok = await coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_c", executionId: "q_ok", cancelledAt: at(4),
+    });
+    expect(ok).toMatchObject({ type: "cancelled", execution: { id: "q_ok", state: "cancelled" } });
+    // HTTP shape the Console branches on: cancelled true vs false + reason.
+    expect({ cancelled: true as const, id: "q_ok", cancelled_at: at(4) }.cancelled).toBe(true);
+    const late = await coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_c", executionId: "q_late", cancelledAt: at(5),
+    });
+    expect(late).toMatchObject({ type: "not_queued", reason: "already_processing", execution: { id: "q_late", state: "running" } });
+    const httpLate = {
+      cancelled: false as const,
+      reason: late.type === "not_queued" ? late.reason : "not_found",
+      id: "q_late",
+      processed_at: late.type === "not_queued"
+        ? (late.execution?.attempt?.claimedAt ?? late.execution?.settledAt ?? undefined)
+        : undefined,
+    };
+    expect(httpLate).toMatchObject({ cancelled: false, reason: "already_processing", id: "q_late" });
+    expect(httpLate.processed_at).toBeTruthy();
+  });
+
+  it("edit race: cancel after the item was promoted is rejected and the original runs unchanged", async () => {
+    await coordinator.admit(admitted("queued_edit", "session_r", at(1)));
+    // The host dequeues the item while the user is still editing it.
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    expect(claimed).toMatchObject({ type: "claimed", execution: { id: "queued_edit" } });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_edit", cancelledAt: at(3),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_processing" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "queued_edit" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
+  it("edit race: cancel after steer is rejected", async () => {
+    await coordinator.admit(admitted("queued_steer", "session_r", at(1)));
+    await expect(coordinator.steerQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", steeredAt: at(2),
+    })).resolves.toMatchObject({ type: "steered" });
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_steer", cancelledAt: at(3),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "already_completed" });
+  });
+
+  it("after-call steer: mid-run queued user.message is absorbed into the running turn, not run after it", async () => {
+    await coordinator.admit(admitted("turn_1", "session_s", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    expect(claimed).toMatchObject({ type: "claimed", execution: { id: "turn_1" } });
+    await coordinator.admit(admitted("mid_1", "session_s", at(3)));
+    await coordinator.admit(admitted("mid_2", "session_s", at(4)));
+    const steered = await takeQueuedSteeringInputs(coordinator, {
+      workspaceId: "workspace_01", sessionId: "session_s", laneId: "sthr_primary",
+      steeredAt: at(5), excludeExecutionId: "turn_1",
+    });
+    expect(steered.map((event) => event.id)).toEqual(["mid_1", "mid_2"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_1" }))
+      .resolves.toMatchObject({ state: "completed" });
+    // Nothing is left to start a separate after-turn execution.
+    await expect(coordinator.listQueued({ workspaceId: "workspace_01", sessionId: "session_s", laneId: "sthr_primary" }))
+      .resolves.toEqual([]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "turn_1" }))
+      .resolves.toMatchObject({ state: "running" });
+  });
+
+  it("exhausted hold: mid-run rows are retained, not claimable alone, and not withdrawable", async () => {
+    await coordinator.admit(admitted("turn_x", "session_x", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_x", "session_x", at(3)));
+    await coordinator.admit(admitted("mid_y", "session_x", at(4)));
+    await coordinator.settle({
+      fence: claimed.fence, settledAt: at(5), outcome: "failed",
+      failure: "retries_exhausted", holdQueuedOnLane: true,
+    });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_x" }))
+      .resolves.toMatchObject({ state: "queued", settledAt: null, heldAfterExhaustedAt: at(5) });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_y" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: at(5) });
+    // Not claimable alone.
+    await expect(coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(6), leaseTtlMs: 30_000 }))
+      .resolves.toMatchObject({ type: "empty" });
+    // User cannot withdraw.
+    await expect(coordinator.cancelQueued({
+      workspaceId: "workspace_01", sessionId: "session_x", executionId: "mid_x", cancelledAt: at(7),
+    })).resolves.toMatchObject({ type: "not_queued", reason: "held_after_exhausted" });
+  });
+
+  it("exhausted hold: next admitted event absorbs held rows into one turn in enqueue order", async () => {
+    await coordinator.admit(admitted("turn_x", "session_x", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_x", "session_x", at(3), "held-1"));
+    await coordinator.admit(admitted("mid_y", "session_x", at(4), "held-2"));
+    await coordinator.settle({
+      fence: claimed.fence, settledAt: at(5), outcome: "failed",
+      failure: "retries_exhausted", holdQueuedOnLane: true,
+    });
+    await coordinator.admit(admitted("next_z", "session_x", at(6), "fresh"));
+    const next = await coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(7), leaseTtlMs: 30_000 });
+    expect(next).toMatchObject({ type: "claimed", execution: { id: "next_z" } });
+    if (next.type !== "claimed") throw new Error("expected claim");
+    expect(next.execution.events.map((e) => e.id)).toEqual(["mid_x", "mid_y", "next_z"]);
+    expect(next.execution.events.map((e) =>
+      e.type === "user.message" ? e.content[0] && "text" in e.content[0] ? e.content[0].text : "" : "",
+    )).toEqual(["held-1", "held-2", "fresh"]);
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_x" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_y" }))
+      .resolves.toMatchObject({ state: "completed", heldAfterExhaustedAt: null });
+  });
+
+  it("retrying settle without holdQueuedOnLane leaves mid-run rows claimable (unchanged)", async () => {
+    await coordinator.admit(admitted("turn_r", "session_r2", at(1)));
+    const claimed = await coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 });
+    if (claimed.type !== "claimed") throw new Error("expected claim");
+    await coordinator.admit(admitted("mid_r", "session_r2", at(3)));
+    // Ordinary failed settle (e.g. still retrying path that settled the attempt)
+    // without the exhausted hold flag does not mark hold.
+    await coordinator.settle({ fence: claimed.fence, settledAt: at(4), outcome: "failed", failure: "transient" });
+    await expect(coordinator.find({ workspaceId: "workspace_01", executionId: "mid_r" }))
+      .resolves.toMatchObject({ state: "queued", heldAfterExhaustedAt: null });
+    await expect(coordinator.claim({ ownerId: "host", attemptId: "a2", claimedAt: at(5), leaseTtlMs: 30_000 }))
+      .resolves.toMatchObject({ type: "claimed", execution: { id: "mid_r" } });
+  });
+
+  it("edit race: concurrent claim and cancel have exactly one winner", async () => {
+    await coordinator.admit(admitted("queued_both", "session_r", at(1)));
+    const [claim, cancel] = await Promise.all([
+      coordinator.claim({ ownerId: "host", attemptId: "a1", claimedAt: at(2), leaseTtlMs: 30_000 }),
+      coordinator.cancelQueued({
+        workspaceId: "workspace_01", sessionId: "session_r", executionId: "queued_both", cancelledAt: at(2),
+      }),
+    ]);
+    const claimWon = claim.type === "claimed";
+    const cancelWon = cancel.type === "cancelled";
+    expect(claimWon !== cancelWon).toBe(true);
+    const row = await coordinator.find({ workspaceId: "workspace_01", executionId: "queued_both" });
+    expect(row?.state).toBe(claimWon ? "running" : "cancelled");
   });
 
   it("has a single atomic winner when replicas race for one execution", async () => {

@@ -13,6 +13,10 @@ import type {
   SessionEventDispatchPort,
 } from "@open-managed-agents/session-runtime-contract/dispatch";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
+import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
+import {
+  settleOnlyReason,
+} from "@open-managed-agents/session-runtime-contract";
 import type {
   SessionLifecycleCommandPort,
   StartSessionExecution,
@@ -30,13 +34,23 @@ import {
 import type {
   SessionRuntimeProjectionApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
+import {
+  isQueuedSessionEventType,
+  markSessionEventsProcessed,
+} from "@open-managed-agents/managed-agents-application";
+import type { SessionEventProcessingStore } from "@open-managed-agents/session-event-store";
 import type {
   SessionRealtimeHub,
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
 import { randomUUID } from "node:crypto";
-import { createStrictlyIncreasingEventStamp } from "./node-managed-harness-runtime.js";
+import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
+import { managedEventThread } from "./node-managed-subagents.js";
+import { outstandingRequiresAction,
+  rejectMessageForRequiresActionBatch,
+} from "./requires-action.js";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 
 export type StartNodeManagedSessionRuntime = StartSessionExecution & {
   executionFence?: SessionExecutionFence;
@@ -53,6 +67,10 @@ export type AcceptNodeManagedSessionEvents = AcceptedSessionEvents;
 export interface ExecuteNodeManagedSessionEvents
   extends AcceptNodeManagedSessionEvents {
   executionFence?: SessionExecutionFence;
+  /** CMA coherent-turn steering source (after-call). The driver wraps it so
+   *  absorbed inputs are stamped (processed_at, seq) at consume before the
+   *  harness sees them. See docs/implementation/cma-steer-coherent-turn.md. */
+  takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
 }
 
 export type ArchiveNodeManagedSessionThread = ArchivedSessionThread;
@@ -85,13 +103,25 @@ export interface NodeManagedSessionRuntimeEngine {
     output: (frame: unknown) => Promise<void>,
   ): Promise<void>;
   stop(input: StopNodeManagedSessionRuntime): Promise<void>;
-  accept(input: AcceptNodeManagedSessionEvents & {
+  accept(input: ExecuteNodeManagedSessionEvents & {
     executionFence?: SessionExecutionFence;
   }): Promise<void>;
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void>;
+  /** requires_action settle window (CMA): reject user.message while parked;
+   * settle answers may release earlier queued messages once the park clears. */
+  planQueuedInputs?(input: AcceptNodeManagedSessionEvents): Promise<QueuedInputPlan>;
+}
+
+export interface QueuedInputPlan {
+  defer: string[];
+  release: AcceptNodeManagedSessionEvents["events"];
+  /** Official CMA: user.message while requires_action is a 400. */
+  reject?: string;
 }
 
 export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   engine: NodeManagedSessionRuntimeEngine;
   realtime: SessionRealtimeHub;
   projectionFor(
@@ -103,14 +133,28 @@ export interface DefaultNodeManagedSessionRuntimeDriverDependencies {
    * workspace restore, input staging) are retried by the server while the
    * execution lease is held: `session.error` with retry_status `retrying`
    * plus `session.status_rescheduled`, then `exhausted` and an idle session
-   * with `retries_exhausted`. Startup has produced no agent side effects.
-   * `cancel` aborts the backoff and the in-flight attempt. */
+   * with `retries_exhausted`. During retrying/rescheduled: do not flush
+   * or delete unstamped mid-turn inputs and do not start a new agent turn
+   * from them; hold until the next consume boundary after resume
+   * (coherent turn). On retries_exhausted: do **not** delete those rows
+   * and do **not** auto-run them as the next turn alone — they remain and
+   * advance into context with the next round of events; user cannot
+   * withdraw; client may reconcile. Startup has produced no agent side
+   * effects. `cancel` aborts the backoff and the in-flight attempt.
+   * See docs/implementation/cma-steer-coherent-turn.md. */
   startRetry?: { attempts: number; delayMs(attempt: number): number };
+  /** Stamps queued accepted inputs when this host starts processing them. */
+  eventProcessing?: {
+    storeFor(workspaceId: string): SessionEventProcessingStore;
+  };
 }
 
 export interface NodeManagedSessionRunnerAcceptInput
   extends AcceptNodeManagedSessionEvents {
   executionFence?: SessionExecutionFence;
+  /** Already-stamped mid-run inputs to steer into the running turn at the
+   *  next LLM/tool-call boundary (after-call). */
+  takeSteeringInputs?: () => Promise<AcceptNodeManagedSessionEvents["events"]>;
   initialEvents: SessionBootstrapEvent[];
   historyEvents: SessionEventView[];
   output(frame: unknown): Promise<void>;
@@ -153,6 +197,14 @@ export class ApplicationBackedNodeManagedSessionRuntimeEngine
     } finally {
       this.outputs.delete(input);
     }
+  }
+
+  async planQueuedInputs(input: AcceptNodeManagedSessionEvents): Promise<QueuedInputPlan> {
+    const history = await this.dependencies
+      .historyFor(input.workspaceId)
+      .loadSessionRuntimeHistory({ sessionId: input.sessionId });
+    if (history.type === "not_found") return { defer: [], release: [] };
+    return planRequiresActionQueue(history.events, input.events);
   }
 
   async accept(input: AcceptNodeManagedSessionEvents): Promise<void> {
@@ -239,7 +291,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
   private readonly starts = new ScopedSessionMap<Promise<void>>();
   private readonly executionFences = new ScopedSessionMap<SessionExecutionFence>();
   private readonly startAborts = new ScopedSessionMap<AbortController>();
-  private readonly eventStamps = new ScopedSessionMap<() => string>();
   private readonly realtime: SessionRealtimeHub;
 
   constructor(
@@ -288,7 +339,6 @@ export class DefaultNodeManagedSessionRuntimeDriver
       await this.outputChains.get(input);
     } finally {
       this.starts.delete(input);
-      this.eventStamps.delete(input);
       this.closeSession(input);
     }
   }
@@ -307,6 +357,27 @@ export class DefaultNodeManagedSessionRuntimeDriver
     this.startAborts.set(input, abortController);
     const signal = abortController.signal;
     try {
+      const plan = await this.dependencies.engine.planQueuedInputs?.(input) ??
+        { defer: [], release: [] };
+      if (plan.reject) {
+        throw Object.assign(new Error(plan.reject), {
+          name: "RequiresActionSettleOnlyError",
+          status: 400,
+        });
+      }
+      const deferred = new Set(plan.defer);
+      const interrupting = input.events.some((event) => event.type === "user.interrupt");
+      // Answers that unpark the thread carry queued messages into the
+      // resumed run (steer / consume at its next LLM call — coherent turn).
+      // user.interrupt is separate: it ends the turn first; following
+      // messages then drain as the next turn (not mid-turn steer).
+      const runEvents = [
+        ...input.events.filter((event) => !deferred.has(event.id)),
+        ...(interrupting ? [] : plan.release),
+      ];
+      const run = { ...input, events: runEvents };
+      await this.markQueuedInputsProcessed(run);
+      if (!runEvents.some((event) => event.type !== "system.message")) return;
       const retry = this.dependencies.startRetry ?? {
         attempts: 3,
         delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
@@ -335,7 +406,9 @@ export class DefaultNodeManagedSessionRuntimeDriver
           }
           if (attempt >= Math.max(1, retry.attempts) || isNonRetryableStartError(error)) {
             await this.projectStartFailure(input, error, "exhausted");
-            throw error;
+            throw new SessionRetriesExhaustedError(
+              error instanceof Error ? error.message : String(error),
+            );
           }
           await this.projectStartFailure(input, error, "retrying");
           announcedRetry = true;
@@ -354,12 +427,40 @@ export class DefaultNodeManagedSessionRuntimeDriver
         await this.finishCancelledStart(input, signal, announcedRetry);
         throw abortedError(signal);
       }
-      const { executionFence: _executionFence, ...accepted } = input;
+      const {
+        executionFence: _executionFence,
+        takeSteeringInputs: rawTakeSteering,
+        ...accepted
+      } = run;
+      // After-call steer: mid-run inputs are taken only once the harness is
+      // running (never during start retry: retrying/rescheduled holds them
+      // unstamped) and are stamped at consume, so processed_at + seq land
+      // inside the continuing turn.
+      const takeSteeringInputs = rawTakeSteering === undefined
+        ? undefined
+        : async () => {
+            if (signal.aborted) return [];
+            const steered = await rawTakeSteering();
+            if (steered.length === 0) return steered;
+            const stamp = { ...accepted, events: steered };
+            await this.markQueuedInputsProcessed(stamp);
+            return steered;
+          };
       await this.dependencies.engine.accept({
         ...accepted,
         ...(fence !== undefined && { executionFence: fence }),
+        ...(takeSteeringInputs !== undefined && { takeSteeringInputs }),
       });
       await this.outputChains.get(input);
+      if (interrupting && plan.release.length > 0 && !signal.aborted) {
+        const drain = { ...accepted, events: plan.release };
+        await this.markQueuedInputsProcessed(drain);
+        await this.dependencies.engine.accept({
+          ...drain,
+          ...(fence !== undefined && { executionFence: fence }),
+        });
+        await this.outputChains.get(input);
+      }
     } finally {
       if (this.startAborts.get(input) === abortController) {
         this.startAborts.delete(input);
@@ -436,17 +537,44 @@ export class DefaultNodeManagedSessionRuntimeDriver
     );
   }
 
-  private nextEventStamp(scope: { workspaceId: string; sessionId: string }): string {
-    let stamp = this.eventStamps.get(scope);
-    if (stamp === undefined) {
-      stamp = createStrictlyIncreasingEventStamp(
-        this.dependencies.clock ?? { now: () => new Date() },
-      );
-      this.eventStamps.set(scope, stamp);
-    }
-    return stamp();
+  /** Stamp the queued inputs this accept delivers (official MA: queued
+   * `processed_at: null` -> stamped when the runtime starts processing them),
+   * then re-emit them with the same id on the live stream. */
+  private async markQueuedInputsProcessed(
+    input: ExecuteNodeManagedSessionEvents,
+  ): Promise<void> {
+    const processing = this.dependencies.eventProcessing;
+    if (processing === undefined) return;
+    const eventIds = input.events
+      .filter((event) => isQueuedSessionEventType(event.type))
+      .map((event) => event.id);
+    if (eventIds.length === 0) return;
+    await markSessionEventsProcessed(
+      processing.storeFor(input.workspaceId),
+      {
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        eventIds,
+        processedAt: this.nextEventStamp(input),
+      },
+      {
+        emit: (events) => {
+          for (const event of events) {
+            this.realtime.publish({
+              workspaceId: input.workspaceId,
+              sessionId: input.sessionId,
+              frame: { event: event as unknown as StreamSessionEvent },
+            });
+          }
+        },
+      },
+    );
   }
 
+  private nextEventStamp(scope: { workspaceId: string; sessionId: string }): string {
+    const reading = (this.dependencies.clock ?? { now: () => new Date() }).now().getTime();
+    return (this.dependencies.sessionClocks ?? processSessionClocks).forSession(scope.workspaceId, scope.sessionId).stampIso(reading);
+  }
 
   archiveThread(input: ArchiveNodeManagedSessionThread): Promise<void> {
     return this.dependencies.engine.archiveThread(input);
@@ -746,4 +874,55 @@ export function untilAborted<T>(
  * operator removed from SANDBOX_IMAGES stays broken until it is edited. */
 function isNonRetryableStartError(error: unknown): boolean {
   return error instanceof Error && error.name === "SandboxImageUnavailableError";
+}
+
+type PlanWireEvent = { type?: string; id?: string; [key: string]: unknown };
+
+/** Pure planner for requires_action settle window over the primary thread.
+ * Official CMA: while parked, user.message is rejected (400) — not deferred. */
+export function planRequiresActionQueue(
+  history: readonly unknown[],
+  batch: AcceptNodeManagedSessionEvents["events"],
+): QueuedInputPlan {
+  const batchIds = new Set(batch.map((event) => event.id));
+  const primary = (history as Array<{ id: string; type: string; processedAt?: string | null }>)
+    .filter((event) => managedEventThread(event as never) === "sthr_primary");
+  const prior = primary
+    .filter((event) => !batchIds.has(event.id))
+    .map((event) => encodeRuntimeHistoryEvent(event as never) as unknown as PlanWireEvent);
+  // t307u settle-only: budget_reached or requires_action with outstanding ids.
+  const settleReason = settleOnlyReason(prior);
+  if (settleReason === "budget_reached") {
+    const reject = rejectMessageForRequiresActionBatch(prior, batch as PlanWireEvent[]);
+    if (reject !== null) return { defer: [], release: [], reject };
+    return { defer: [], release: [] };
+  }
+  const before = outstandingRequiresAction(prior);
+  if (before === null) return { defer: [], release: [] };
+  const answered = new Set(batch.flatMap((event) => {
+    const e = event as { type: string; customToolUseId?: string; toolUseId?: string };
+    return e.type === "user.custom_tool_result" && e.customToolUseId ? [e.customToolUseId]
+      : e.type === "user.tool_confirmation" && e.toolUseId ? [e.toolUseId] : [];
+  }));
+  const remaining = before.filter((id) => !answered.has(id));
+  // Official CMA: an interrupt against an already-idle session is normally a
+  // no-op, so it does not clear requires_action for a user.message in the
+  // same batch; the whole batch is a 400 (all-or-nothing).
+  if (remaining.length > 0) {
+    const reject = rejectMessageForRequiresActionBatch(prior, batch as PlanWireEvent[]);
+    if (reject !== null) {
+      return {
+        defer: [],
+        release: [],
+        reject,
+      };
+    }
+    // Settle-only answers: do not release earlier queued messages (none should
+    // exist under the 400 gate). Keep release empty until the park clears.
+    return { defer: [], release: [] };
+  }
+  const release = primary.filter((event) =>
+    event.type === "user.message" && !batchIds.has(event.id) &&
+    (event.processedAt === null || event.processedAt === undefined));
+  return { defer: [], release: release as unknown as AcceptNodeManagedSessionEvents["events"] };
 }

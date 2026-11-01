@@ -88,6 +88,10 @@ import routerSchema from "../apps/main/migrations-router/0001_consolidated.sql?r
 
 // @ts-expect-error vitest resolves SQL via ?raw
 import tenantInvitationsSchema from "../apps/main/migrations/0023_tenant_invitations.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import modelCardPricingSchema from "../apps/main/migrations/0025_model_card_pricing.sql?raw";
+// @ts-expect-error vitest resolves SQL via ?raw
+import heldAfterExhaustedSchema from "../apps/main/migrations/0026_closed_tempest.sql?raw";
 
 const MIGRATIONS_RAW: string[] = [
   authSchema as string,
@@ -117,6 +121,10 @@ const MIGRATIONS_RAW: string[] = [
   environmentServiceKeysSchema as string,
   environmentWorkGenerationSchema as string,
   tenantInvitationsSchema as string,
+  // pricing is optional/nullable — NULL = unpriced. Applied here so local D1
+  // vitest DBs match production migrations without requiring a full re-seed.
+  modelCardPricingSchema as string,
+  heldAfterExhaustedSchema as string,
 ];
 
 const INTEGRATIONS_MIGRATIONS_RAW: string[] = [integrationsSchema as string];

@@ -3,15 +3,16 @@ import type { Event } from "../../lib/events";
 /**
  * Resolve an event's wall-clock time in milliseconds.
  *
- * Prefer `processed_at` (ISO, set by SessionDO). Fall back to `ts`, which
- * may be an ISO string (console Event type) or legacy unix seconds (number).
+ * Prefer client/server `ts` (ISO or legacy unix seconds). OpenMA
+ * `occurred_at` is also accepted. CMA `processed_at` is intentionally
+ * ignored — GUI timing must not depend on Managed queue fields.
  */
 export function eventTsMs(e: Event): number {
-  const pa =
-    (e as { processed_at?: unknown }).processed_at ??
-    (e.data as { processed_at?: unknown } | undefined)?.processed_at;
-  if (typeof pa === "string") {
-    const t = Date.parse(pa);
+  const occurred =
+    (e as { occurred_at?: unknown }).occurred_at ??
+    (e.data as { occurred_at?: unknown } | undefined)?.occurred_at;
+  if (typeof occurred === "string") {
+    const t = Date.parse(occurred);
     if (Number.isFinite(t)) return t;
   }
   if (typeof e.ts === "number") {

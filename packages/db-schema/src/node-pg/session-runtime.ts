@@ -23,6 +23,7 @@ export const managed_session_executions = pgTable(
     interrupt_requested_at_ms: bigint("interrupt_requested_at_ms", { mode: "number" }),
     settled_at_ms: bigint("settled_at_ms", { mode: "number" }),
     failure: text("failure"),
+    held_after_exhausted_ms: bigint("held_after_exhausted_ms", { mode: "number" }),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
   },
   (table) => [
