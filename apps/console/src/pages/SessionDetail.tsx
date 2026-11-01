@@ -908,14 +908,21 @@ export function SessionDetail() {
         : "Couldn't edit the queued message. Your text is in the composer.",
     );
   };
+  // Mid-run unstamped inputs on a steering agent are Codex "pending steers"
+  // (join this turn); otherwise the dock is ordinary next-turn follow-ups.
+  const queueBand: QueuedPrompt["band"] =
+    agentSteering && (status === "running" || needsAction)
+      ? "pending_steer"
+      : "follow_up";
   const queueDockItems: QueuedPrompt[] = [
     ...canonicalQueued.map((item) => ({
       id: item.id,
       text: item.text,
       busy: queueBusy.has(item.id),
+      band: queueBand,
     })),
     ...(localPending !== null && localPendingQueued && activeThreadId === "sthr_primary"
-      ? [{ id: "optimistic", text: localPending, busy: true }]
+      ? [{ id: "optimistic", text: localPending, busy: true, band: queueBand }]
       : []),
   ];
   // A row that left the queue (started, steered, cancelled) drops its busy flag.
@@ -928,7 +935,13 @@ export function SessionDetail() {
     });
   }, [canonicalQueued]);
   const composerPlaceholder = status === "running"
-    ? queueDockItems.length > 0 ? `${queueDockItems.length} queued…` : "Add to queue…"
+    ? queueDockItems.length > 0
+      ? queueBand === "pending_steer"
+        ? `${queueDockItems.length} joining this turn…`
+        : `${queueDockItems.length} queued…`
+      : agentSteering
+        ? "Send to join this turn…"
+        : "Add to queue…"
     : "Send a message…";
 
   const saveTitle = async () => {
