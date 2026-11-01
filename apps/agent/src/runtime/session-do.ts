@@ -49,9 +49,12 @@ import {
   SqlSessionExecutionStore,
 } from "@open-managed-agents/session-runtime-sql/coordination";
 import {
+  decideExpiredExecution,
   decideLeaseRenewal,
+  decideRecoveryFromCanonicalStream,
   evaluateCoordinationPolicy,
   type ActiveTurnRecord,
+  type CanonicalTurnEvidence,
   type CoordinationAction,
   type ExecutionLeaseRecord,
   type ScheduleWakeRecord,
@@ -379,6 +382,11 @@ const KEEP_ALIVE_INTERVAL_MS = 30_000;
 const EXECUTION_LEASE_TTL_MS = KEEP_ALIVE_INTERVAL_MS * 3;
 /** Wake promptly when a queue row / claimable execution exists. */
 const QUEUE_WAKE_DELAY_MS = 1_000;
+/** Admission must arm the alarm before the synchronous drain can be lost. */
+const ENQUEUE_WAKE_DELAY_MS = 1;
+/** Recovery failures are retained and retried with capped exponential backoff. */
+const RECOVERY_BACKOFF_BASE_MS = 1_000;
+const RECOVERY_BACKOFF_MAX_MS = 60_000;
 /** Bounded wait for an aborted turn to unwind tools before the interrupt is stamped. */
 const INTERRUPT_GRACE_MS = 2_000;
 const HUNG_SCHEDULE_TIMEOUT_SECONDS = 30;
@@ -399,7 +407,7 @@ function sdoLog(event: string, fields: Record<string, unknown> = {}): void {
 }
 
 /** Next cron fire strictly after `nowMs`. `getNextDate` can return the current
- * tick on a boundary; a due row makes `_scheduleNextAlarm` re-arm at now+1ms
+ * tick on a boundary; a due row makes `_multiplexAlarm` re-arm at now+1ms
  * and the handler can invoke the callback again immediately. */
 function nextCronFireSeconds(cron: string, nowMs = Date.now()): number {
   const expr = parseCronExpression(cron);
@@ -829,6 +837,18 @@ export class SessionDO extends DurableObject<Env> {
   private _finalizePromise: Promise<void> | null = null;
 
   /**
+   * Single-flight guard for the shared recovery hook. Cold start (first
+   * request / ensureSchema) is the primary path; the persisted alarm is the
+   * fallback. Both funnel through `_runRecovery`, so they can never sweep
+   * the same execution twice.
+   */
+  private _recoveryRun: Promise<void> | null = null;
+  /** Consecutive failed recovery passes. */
+  private _recoveryFailures = 0;
+  /** Earliest epoch ms the next recovery retry may run (backoff horizon). */
+  private _recoveryRetryAtMs: number | null = null;
+
+  /**
    * Lazy queue accessor. `queue` used to be dereferenced as `this.queue`
    * from alarm()/recovery paths that can run on a cold DO before
    * ensureSchema() (e.g. alarm → recoverExecutionQueue → drainEventQueue).
@@ -875,83 +895,232 @@ export class SessionDO extends DurableObject<Env> {
     // the finalizer is about to abort (or vice versa), producing either
     // a non-is_error result or two results.
     this._recoveryPromise = this.recoverInterruptedState();
-    // Queue cold start: any thread with null-processed turn inputs when
-    // the previous incarnation died still has them in `events`. Re-fire
-    // drainEventQueue per affected thread so they don't sit forever
-    // waiting for a fresh user.message to retrigger drain.
-    try {
-      const threads = this.queue.threadsWithQueueInputs();
-      if (threads.length > 0) {
-        console.log(`[ensureSchema] cold-start drain for threads: ${threads.join(",")}`);
-        sdoLog("recover.cold_start_drain", {
+    // Cold start is the PRIMARY recovery path (Cloudflare Agents SDK:
+    // first request / onStart). It runs the exact same shared lease/sweep
+    // hook as the persisted alarm fallback, so a dead incarnation's
+    // queued/running executions are reclaimed (or finalized) before the
+    // first drain, and the multiplexer is left armed for the next wake.
+    // Fire-and-forget: recovery must not block request routing, and the
+    // hook single-flights against the alarm path.
+    void this._runRecovery("cold_start");
+  }
+
+  /**
+   * The one shared recovery hook. Cold start (first request / ensureSchema =
+   * onStart) is the primary path; the persisted alarm is the fallback. Both
+   * call this so the lease sweep, renewal, stale-turn finalization, and queue
+   * re-drive are identical no matter what woke the DO.
+   *
+   * A failed pass is retained, not dropped: the attempt counter grows and the
+   * multiplexer is armed at a capped exponential backoff horizon, so the
+   * persisted alarm retries the same work instead of silently losing it.
+   */
+  private async _runRecovery(reason: "cold_start" | "alarm"): Promise<void> {
+    if (this._recoveryRun !== null) return this._recoveryRun;
+    // Set the single-flight slot BEFORE the body runs: _runRecoveryInner may
+    // cold-start ensureSchema(), which fires `void _runRecovery("cold_start")`
+    // synchronously. Without this gate that nested call would start a second
+    // pass and both would sweep the same execution.
+    let release!: () => void;
+    const start = new Promise<void>((resolve) => { release = resolve; });
+    const run = start
+      .then(() => this._runRecoveryInner(reason))
+      .catch(async (err) => {
+        this._recoveryFailures += 1;
+        const backoffMs = Math.min(
+          RECOVERY_BACKOFF_BASE_MS * 2 ** (this._recoveryFailures - 1),
+          RECOVERY_BACKOFF_MAX_MS,
+        );
+        this._recoveryRetryAtMs = this.processedClock.nowMs() + backoffMs;
+        sdoLog("recovery.failed", {
           session_id: this._state?.session_id,
-          threads,
+          reason,
+          attempt: this._recoveryFailures,
+          backoff_ms: backoffMs,
+          retry_at_ms: this._recoveryRetryAtMs,
+          error: err instanceof Error ? err.message : String(err),
         });
-        for (const t of threads) {
-          void this.drainEventQueue(t);
-        }
-      }
-    } catch (err) {
-      console.warn(`[ensureSchema] threadsWithQueueInputs failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    // Cold-start stale-turn wake: if D1 still carries a running session
-    // row from a previous incarnation, guarantee a follow-up alarm even
-    // when the dead incarnation's keep-alive alarm was lost with the
-    // isolate. Previously the only cold-start trigger was fetch()'s
-    // fire-and-forget finalizer (plus whatever alarm happened to survive);
-    // a lost alarm meant the row could stay status_running forever.
-    void this._armColdStartLeaseCheck();
+        // Retain the wake through the single alarm slot. Never rethrow into
+        // the request/alarm caller: the next wake retries the same hook.
+        try {
+          await this._multiplexAlarm({
+            reason: "recovery_retry",
+            atMs: this._recoveryRetryAtMs,
+          });
+        } catch { /* the persisted schedule/lease wake still covers us */ }
+      })
+      .finally(() => {
+        if (this._recoveryRun === run) this._recoveryRun = null;
+      });
+    this._recoveryRun = run;
+    release();
+    return run;
   }
 
-  /**
-   * Cold-start alarm arm. The shared policy is the authority: it sees any
-   * queued/running execution left by a dead incarnation (lease expiry wake)
-   * plus a dangling `session.status_running` event-log turn, and arms the
-   * earliest wake. No ad-hoc stale-turn heuristic lives here anymore.
-   */
-  private async _armColdStartLeaseCheck(): Promise<void> {
-    if (!this._state) return;
-    try {
-      await this._scheduleNextAlarm();
-    } catch (err) {
-      // Schema/state not ready yet or D1 transient. fetch()'s finalize pass
-      // and the surviving alarm still cover recovery.
-      console.warn(`[ensureSchema] cold-start lease arm failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  /**
-   * Move the durable alarm no later than `nextMs`. Never pushes an earlier
-   * wake further out, so enqueue/turn/renewal arms compose with schedules.
-   */
-  private async _armAlarmAt(nextMs: number, reason: string): Promise<void> {
-    try {
-      const existing = await this.ctx.storage.getAlarm();
-      if (existing !== null && existing <= nextMs) return;
-      await this.ctx.storage.setAlarm(nextMs);
-      sdoLog("alarm.armed", {
+  private async _runRecoveryInner(reason: "cold_start" | "alarm"): Promise<void> {
+    const nowMs = this.processedClock.nowMs();
+    if (this._recoveryRetryAtMs !== null && nowMs < this._recoveryRetryAtMs) {
+      // Backing off: do not re-run (and re-fail) the hook before the horizon.
+      // Keep the slot armed at the retry time so this is not a dropped pass.
+      sdoLog("recovery.held", {
         session_id: this._state?.session_id,
         reason,
-        next_ms: nextMs,
-        next_at: new Date(nextMs).toISOString(),
+        retry_at_ms: this._recoveryRetryAtMs,
       });
+      await this._multiplexAlarm({ reason: "recovery_backoff" });
+      return;
+    }
+    // alarm() can reach here before any fetch() warmed the in-memory schema.
+    this.ensureSchema();
+    // Join a request-level cold-start finalizer that is already in flight.
+    // Without this the fetch()/onStart pass can finish and clear its
+    // single-flight guard before this hook reaches finalization, causing a
+    // second pass over the same orphans.
+    const inFlightFinalize = this._finalizePromise;
+    if (this._recoveryPromise !== null) {
+      try {
+        await this._recoveryPromise;
+      } catch (err) {
+        console.warn(`[recovery] cold-start stream scan failed:`, err);
+      }
+    }
+    sdoLog("recovery.start", {
+      session_id: this._state?.session_id,
+      reason,
+    });
+    // The shared lease/sweep hook: expired owners are requeued (input
+    // provably unapplied) or finalized-interrupted (applied work / unpaired
+    // tool call) from canonical-stream evidence, then live leases renew.
+    await this._sweepExpiredLeases(nowMs);
+    await this._applyPolicyLeaseRenewals(nowMs);
+    // Finalize dangling turns, then drain/claim whatever the policy exposes.
+    if (inFlightFinalize !== null) {
+      await inFlightFinalize;
+    } else {
+      await this._finalizeStaleTurns();
+    }
+    await this.recoverExecutionQueue();
+    this._recoveryFailures = 0;
+    this._recoveryRetryAtMs = null;
+    sdoLog("recovery.done", {
+      session_id: this._state?.session_id,
+      reason,
+    });
+    await this._multiplexAlarm({ reason: `recovery_${reason}` });
+  }
+
+  /**
+   * The ONE alarm-slot multiplexer. Every setAlarm/deleteAlarm in this class
+   * funnels through it. It folds the next schedule, lease renewal/expiry,
+   * queued work, in-memory running turns, and the recovery backoff horizon
+   * into a single earliest wake (Cloudflare Agents SDK durable-fiber shape),
+   * and never deletes the slot while queue/running work is non-empty.
+   */
+  private async _multiplexAlarm(
+    hint: { reason?: string; atMs?: number } = {},
+  ): Promise<void> {
+    try {
+      const nowMs = this.processedClock.nowMs();
+      const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
+      const queuedInputs = this._localQueuedInputs();
+      let executions: ExecutionLeaseRecord[] = [];
+      try {
+        executions = await this._executionLeaseRecords();
+      } catch (err) {
+        console.warn(`[session-do] alarm policy read failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const activeTurns = this._activeTurnRecords();
+      const schedules: ScheduleWakeRecord[] = scheduleNextMs === null
+        ? []
+        : [{ id: "cf_agents_schedules", dueAtMs: scheduleNextMs }];
+      const policy = evaluateCoordinationPolicy({
+        nowMs,
+        executions,
+        queuedInputs,
+        activeTurns,
+        schedules,
+        heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
+        queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
+      });
+
+      const hasQueued =
+        queuedInputs.length > 0 ||
+        executions.some((e) => e.state === "queued" && e.heldAfterExhausted !== true) ||
+        policy.actions.some((action) => action.type === "requeue");
+      const hasRunning =
+        executions.some((e) => e.state === "running") || activeTurns.length > 0;
+      const hasSchedule = scheduleNextMs !== null;
+      // Hard invariant: queued or running work always keeps a wake armed.
+      const mustStayArmed = hasQueued || hasRunning;
+
+      let nextMs = policy.nextWakeAtMs;
+      if (hint.atMs !== undefined) {
+        const requested = Math.max(hint.atMs, nowMs);
+        nextMs = nextMs === null ? requested : Math.min(nextMs, requested);
+      }
+      if (nextMs === null && mustStayArmed) {
+        // Policy invariant guard: never disarm while any work exists.
+        nextMs = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : ENQUEUE_WAKE_DELAY_MS);
+      }
+      if (this._recoveryRetryAtMs !== null && this._recoveryRetryAtMs > nowMs) {
+        // Recovery is backing off. Hold recoverable queue/lease wakes until
+        // the retry horizon (schedules still fire at their own time) so a
+        // failing hook cannot spin the alarm once per second.
+        nextMs = hasSchedule ? nextMs : this._recoveryRetryAtMs;
+      }
+
+      const reason = hint.reason ?? ([
+        hasQueued ? "queued_work" : null,
+        hasRunning ? "lease" : null,
+        hasSchedule ? "schedule" : null,
+        this._recoveryRetryAtMs !== null ? "recovery_backoff" : null,
+      ].filter((part): part is string => part !== null).join("+") || "policy");
+
+      if (nextMs !== null) {
+        await this.ctx.storage.setAlarm(nextMs);
+        sdoLog("alarm.armed", {
+          session_id: this._state?.session_id,
+          reason,
+          next_ms: nextMs,
+          next_at: new Date(nextMs).toISOString(),
+          queued: queuedInputs.length,
+          running_executions: executions.filter((e) => e.state === "running").length,
+          schedule: hasSchedule,
+        });
+      } else if (mustStayArmed) {
+        // Defensive duplicate of the invariant above; a future policy
+        // regression must never strand queued/running work.
+        const guardedAt = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : ENQUEUE_WAKE_DELAY_MS);
+        await this.ctx.storage.setAlarm(guardedAt);
+        sdoLog("alarm.armed", {
+          session_id: this._state?.session_id,
+          reason: `${reason}+guard`,
+          next_ms: guardedAt,
+          next_at: new Date(guardedAt).toISOString(),
+        });
+      } else {
+        await this.ctx.storage.deleteAlarm();
+        sdoLog("alarm.cleared", {
+          session_id: this._state?.session_id,
+          reason: "quiescent",
+        });
+      }
     } catch (err) {
       // Storage failure must not abort the turn. The durable execution lease
       // is still the authority and a later fetch/alarm recovers it.
-      console.warn(`[session-do] alarm arm failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`[session-do] alarm multiplex failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   /**
-   * Durably arm the lease-renewal wake for an in-flight turn.
-   *
-   * MUST be awaited before the turn reaches the model request. The old
-   * fire-and-forget `void storage.setAlarm(...)` in hintTurnInFlight could
-   * be dropped when an isolate reset immediately after the turn started;
-   * the D1 lease then survived with no alarm to sweep it.
+   * Durably arm the lease-renewal wake for an in-flight turn through the
+   * multiplexer. MUST be awaited before the turn reaches the model request.
    */
   private async _armLeaseWake(reason = "turn_lease"): Promise<void> {
-    await this._armAlarmAt(Date.now() + KEEP_ALIVE_INTERVAL_MS, reason);
+    await this._multiplexAlarm({
+      reason,
+      atMs: Date.now() + KEEP_ALIVE_INTERVAL_MS,
+    });
   }
 
   /**
@@ -1612,11 +1781,14 @@ export class SessionDO extends DurableObject<Env> {
         event_id: e.id,
         event_type: event.type,
       });
-      // Arm before the synchronous drain can be lost with this isolate.
-      void this._armAlarmAt(
-        this.processedClock.nowMs() + QUEUE_WAKE_DELAY_MS,
-        "queue_enqueued",
-      );
+      // Admission persisted the queue row above; now schedule the near-zero
+      // wake through the single alarm multiplexer (Flue: enqueue => alarm).
+      // Routing through the multiplexer means the wake merges with the
+      // heartbeat/schedule slot instead of clobbering it.
+      void this._multiplexAlarm({
+        reason: "queue_enqueued",
+        atMs: this.processedClock.nowMs() + ENQUEUE_WAKE_DELAY_MS,
+      });
     }
     return enqueued;
   }
@@ -1720,10 +1892,10 @@ export class SessionDO extends DurableObject<Env> {
       event_id: (event as { id?: string }).id ?? eventId,
       event_type: event.type,
     });
-    void this._armAlarmAt(
-      this.processedClock.nowMs() + QUEUE_WAKE_DELAY_MS,
-      "queue_enqueued",
-    );
+    void this._multiplexAlarm({
+      reason: "queue_enqueued",
+      atMs: this.processedClock.nowMs() + ENQUEUE_WAKE_DELAY_MS,
+    });
     return this.queueRowForEvent(eventId);
   }
 
@@ -1856,7 +2028,10 @@ export class SessionDO extends DurableObject<Env> {
           // The host heartbeat is the renewal; keep the DO wake aligned so a
           // dead incarnation's lease is still swept at expiry if the alarm
           // outlives it.
-          void this._armAlarmAt(Date.now() + KEEP_ALIVE_INTERVAL_MS, "lease_fence");
+          void this._multiplexAlarm({
+            reason: "lease_fence",
+            atMs: Date.now() + KEEP_ALIVE_INTERVAL_MS,
+          });
         },
       });
       this._executionActiveLanes.add(threadId);
@@ -1896,7 +2071,7 @@ export class SessionDO extends DurableObject<Env> {
           // left no durable `sessions.turn_id` marker and relied solely on
           // the one-shot alarm above. If that alarm was lost with the
           // isolate, a cold alarm found no orphan row, finalized nothing,
-          // and _scheduleNextAlarm deleted it — exactly the stuck
+          // and the multiplexer deleted it — exactly the stuck
           // status_running session from the 5d95d88 incident.
           //
           // Mark the turn in D1 and (re)arm the keep-alive BEFORE the
@@ -2442,7 +2617,10 @@ export class SessionDO extends DurableObject<Env> {
       // tenant outbox. Wake the same execution host used by later events;
       // replaying init must never create another input or execution entity.
       if (request.headers.has("x-oma-workspace-id")) {
-        await this.ctx.storage.setAlarm(Date.now() + 1_000);
+        await this._multiplexAlarm({
+          reason: "bootstrap_execution",
+          atMs: Date.now() + ENQUEUE_WAKE_DELAY_MS,
+        });
         void this.recoverExecutionQueue().catch(error => {
           console.error("[session_do] bootstrap execution wakeup failed", error);
         });
@@ -7135,7 +7313,7 @@ export class SessionDO extends DurableObject<Env> {
       throw new Error(`Invalid schedule type: ${JSON.stringify(when)}(${typeof when}) for ${callbackName}`);
     }
 
-    await this._scheduleNextAlarm();
+    await this._multiplexAlarm({ reason: "schedule" });
     return { id, callback: callbackName, type, time: timestamp, payload: payload as T, cron, delayInSeconds };
   }
 
@@ -7168,7 +7346,7 @@ export class SessionDO extends DurableObject<Env> {
       `INSERT OR REPLACE INTO cf_agents_schedules (id, callback, payload, type, intervalSeconds, time, running) VALUES (?, ?, ?, 'interval', ?, ?, 0)`,
       id, callbackName, payloadJson, intervalSeconds, timestamp,
     );
-    await this._scheduleNextAlarm();
+    await this._multiplexAlarm({ reason: "schedule_interval" });
     return { id, callback: callbackName, type: "interval", intervalSeconds, time: timestamp };
   }
 
@@ -7226,7 +7404,7 @@ export class SessionDO extends DurableObject<Env> {
       .toArray();
     if (before.length === 0) return false;
     this.ctx.storage.sql.exec(`DELETE FROM cf_agents_schedules WHERE id = ?`, id);
-    await this._scheduleNextAlarm();
+    await this._multiplexAlarm({ reason: "schedule_cancelled" });
     return true;
   }
 
@@ -7307,6 +7485,7 @@ export class SessionDO extends DurableObject<Env> {
       state: execution.state,
       attemptCount: execution.attemptCount,
       maxAttempts: execution.maxAttempts,
+      admittedAtMs: Date.parse(execution.admittedAt),
       leaseExpiresAtMs: execution.attempt === null
         ? null
         : Date.parse(execution.attempt.leaseExpiresAt),
@@ -7327,83 +7506,165 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Alarm arbitration is entirely policy-driven. `cf_agents_schedules` is an
-   * additional wake input, never a reason to delete a lease/queue wake.
-   *
-   * The deleteAlarm branch is reachable only when the policy says quiescent
-   * AND no schedule exists. A defensive guard repeats that invariant so a
-   * future policy regression cannot silently strand queued/running work.
+   * Persisted turn output after the admitted input. Lifecycle rows
+   * (`session.status_*`) and spans prove the turn started but are not durable
+   * work, so they are deliberately NOT in this set: an owner that died before
+   * persisting anything is safe to re-dispatch once.
    */
-  private async _scheduleNextAlarm(): Promise<void> {
-    const nowMs = this.processedClock.nowMs();
-    const scheduleNextMs = this._nextScheduleWakeMs(nowMs);
-    const queuedInputs = this._localQueuedInputs();
-    let executions: ExecutionLeaseRecord[] = [];
+  private static readonly DURABLE_TURN_OUTPUT_TYPES: ReadonlySet<string> = new Set([
+    "agent.message",
+    "agent.thinking",
+    "agent.tool_use",
+    "agent.tool_result",
+    "agent.custom_tool_use",
+    "agent.mcp_tool_use",
+    "agent.mcp_tool_result",
+    "session.error",
+    "session.outcome_evaluated",
+  ]);
+
+  /**
+   * Read the canonical event stream for an interrupted execution. The stream
+   * is the only recovery authority (Flue): reuse persisted outputs/results,
+   * interrupt an unpaired tool call, and requeue only an input with no
+   * persisted work at all.
+   */
+  private _canonicalTurnEvidence(record: ExecutionLeaseRecord): CanonicalTurnEvidence {
+    const laneId = record.laneId ?? "sthr_primary";
+    const admittedAtMs = Number.isSafeInteger(record.admittedAtMs)
+      ? record.admittedAtMs as number
+      : 0;
+    const base: CanonicalTurnEvidence = {
+      inputAtMs: admittedAtMs,
+      eventsAfterInput: [],
+      unpairedToolUseCount: 0,
+      completedOutputCount: 0,
+      providerDispatches: record.attemptCount,
+    };
     try {
-      executions = await this._executionLeaseRecords();
-    } catch (err) {
-      console.warn(`[session-do] alarm policy read failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    const activeTurns = this._activeTurnRecords();
-    const schedules: ScheduleWakeRecord[] = scheduleNextMs === null
-      ? []
-      : [{ id: "cf_agents_schedules", dueAtMs: scheduleNextMs }];
-    const policy = evaluateCoordinationPolicy({
-      nowMs,
-      executions,
-      queuedInputs,
-      activeTurns,
-      schedules,
-      heartbeatIntervalMs: KEEP_ALIVE_INTERVAL_MS,
-      queuedWakeDelayMs: QUEUE_WAKE_DELAY_MS,
-    });
+      const sql = this.ctx.storage.sql;
+      // Prefer the input row's seq over wall-clock stamps: events are stored
+      // at second resolution, and strict timestamp comparison can miss an
+      // output persisted in the same second as admission.
+      let inputSeq: number | null = null;
+      for (const row of sql.exec(
+        `SELECT seq FROM events
+          WHERE json_extract(data, '$.id') = ?
+          ORDER BY seq ASC LIMIT 1`,
+        record.executionId,
+      )) {
+        inputSeq = row.seq as number;
+      }
+      const rows = inputSeq !== null
+        ? sql.exec(
+          `SELECT type, data FROM events
+            WHERE seq > ?
+              AND coalesce(session_thread_id, 'sthr_primary') = ?
+              AND processed_at IS NOT NULL
+            ORDER BY seq ASC`,
+          inputSeq, laneId,
+        )
+        : sql.exec(
+          `SELECT type, data FROM events
+            WHERE ts * 1000 >= ?
+              AND coalesce(session_thread_id, 'sthr_primary') = ?
+              AND processed_at IS NOT NULL
+            ORDER BY seq ASC`,
+          admittedAtMs, laneId,
+        );
 
-    const hasQueued =
-      queuedInputs.length > 0 ||
-      executions.some((e) => e.state === "queued" && e.heldAfterExhausted !== true) ||
-      policy.actions.some((action) => action.type === "requeue");
-    const hasRunning =
-      executions.some((e) => e.state === "running") || activeTurns.length > 0;
-    const hasSchedule = scheduleNextMs !== null;
-    const mustStayArmed = hasQueued || hasRunning;
-    const reason = [
-      hasQueued ? "queued_work" : null,
-      hasRunning ? "lease" : null,
-      hasSchedule ? "schedule" : null,
-    ].filter((part): part is string => part !== null).join("+") || "policy";
-
-    let nextMs = policy.nextWakeAtMs;
-    if (nextMs === null && mustStayArmed) {
-      // Policy invariant guard: never disarm while any work exists.
-      nextMs = nowMs + (hasRunning ? KEEP_ALIVE_INTERVAL_MS : QUEUE_WAKE_DELAY_MS);
-    }
-    if (nextMs !== null) {
-      await this.ctx.storage.setAlarm(nextMs);
-      sdoLog("alarm.armed", {
-        session_id: this._state?.session_id,
-        reason,
-        next_ms: nextMs,
-        next_at: new Date(nextMs).toISOString(),
-        queued: queuedInputs.length,
-        running_executions: executions.filter((e) => e.state === "running").length,
-      });
-    } else {
-      await this.ctx.storage.deleteAlarm();
-      sdoLog("alarm.cleared", {
-        session_id: this._state?.session_id,
-        reason: "quiescent",
-      });
+      const toolUses = new Map<string, boolean>();
+      const outputs: Array<{ type: string }> = [];
+      let completedOutputCount = 0;
+      for (const row of rows) {
+        const type = row.type as string;
+        let data: Record<string, unknown> = {};
+        try {
+          data = JSON.parse(row.data as string) as Record<string, unknown>;
+        } catch { /* malformed row: ignore for recovery evidence */ }
+        if (type === "agent.tool_use" || type === "agent.mcp_tool_use") {
+          const id = data.id;
+          if (typeof id === "string" && id.length > 0) toolUses.set(id, false);
+        } else if (type === "agent.tool_result") {
+          const id = data.tool_use_id;
+          if (typeof id === "string" && toolUses.has(id)) toolUses.set(id, true);
+        } else if (type === "agent.mcp_tool_result") {
+          const id = data.mcp_tool_use_id;
+          if (typeof id === "string" && toolUses.has(id)) toolUses.set(id, true);
+        }
+        if (!SessionDO.DURABLE_TURN_OUTPUT_TYPES.has(type)) continue;
+        outputs.push({ type });
+        if (
+          type === "agent.message" ||
+          type === "agent.tool_result" ||
+          type === "agent.mcp_tool_result"
+        ) {
+          completedOutputCount += 1;
+        }
+      }
+      return {
+        ...base,
+        eventsAfterInput: outputs,
+        unpairedToolUseCount: [...toolUses.values()].filter((resolved) => !resolved).length,
+        completedOutputCount,
+      };
+    } catch {
+      // Schema cold start / malformed storage: treat as unapplied so the
+      // normal attempt budget still applies rather than dropping the row.
+      return base;
     }
   }
 
   /**
+   * Requeue-vs-interrupt for one expired lease. The lease policy answers
+   * "may this be retried"; the canonical stream answers "should it be".
+   * Applied-but-unfinished work and unpaired tool calls are finalized as
+   * interrupted and never rerun; only a provably unapplied input is requeued,
+   * and only for the single provider re-dispatch allowance.
+   */
+  private _decideSweepForRecord(
+    record: ExecutionLeaseRecord,
+    nowMs: number,
+  ): CoordinationAction | null {
+    const base = decideExpiredExecution(record, nowMs);
+    if (base === null || base.type !== "requeue") return base;
+    const evidence = this._canonicalTurnEvidence(record);
+    const decision = decideRecoveryFromCanonicalStream(evidence, {
+      maxProviderRedispatches: 1,
+    });
+    if (decision.type === "requeue") return base;
+    const reason = decision.type === "reuse" ? "input_applied" : decision.reason;
+    sdoLog("recovery.stream", {
+      session_id: this._state?.session_id,
+      lane_id: record.laneId ?? "sthr_primary",
+      execution_id: record.executionId,
+      decision: decision.type === "reuse" ? "reuse_outputs" : "interrupt",
+      reason,
+      applied_events: evidence.eventsAfterInput.length,
+      completed_outputs: evidence.completedOutputCount,
+      unpaired_tool_uses: evidence.unpairedToolUseCount,
+      provider_dispatches: evidence.providerDispatches,
+    });
+    return {
+      type: "finalize-interrupted",
+      executionId: base.executionId,
+      ...(base.laneId === undefined ? {} : { laneId: base.laneId }),
+      reason,
+      attemptCount: base.attemptCount,
+      maxAttempts: base.maxAttempts,
+    };
+  }
+
+  /**
    * Shared-policy sweep for this session. Node applies the same decisions in
-   * claim/renew; CF applies them from the alarm wake.
+   * claim/renew; CF applies them from the alarm wake. Both feed the same
+   * lease record through the same stream-aware decision.
    */
   private async _sweepExpiredLeases(nowMs: number): Promise<void> {
     const store = await this.getExecutionStore();
     if (store === null) return;
     await store.sweepExpired(nowMs, {
+      decideForRecord: (record) => this._decideSweepForRecord(record, nowMs),
       onDecision: (action: CoordinationAction) => {
         if (action.type === "requeue") {
           sdoLog("lease.expire", {
@@ -7633,47 +7894,11 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
-    const alarmNowMs = Date.now();
-    // The alarm is the CF wake-up for the shared policy: sweep expired
-    // leases first (requeue or finalize-interrupted), then renew leases that
-    // are still owned by a live incarnation, then emit the stale-turn
-    // finalization events, then drain/claim whatever is queued.
-    try {
-      await this._sweepExpiredLeases(alarmNowMs);
-    } catch (err) {
-      console.warn(`[alarm] lease sweep failed:`, err);
-    }
-    try {
-      await this._applyPolicyLeaseRenewals(alarmNowMs);
-    } catch (err) {
-      console.warn(`[alarm] lease renewal failed:`, err);
-    }
-
-    // Stale-turn cleanup. Replaces the old _checkOrphanTurns →
-    // onFiberRecovered → recoverAgentTurn chain that re-ran the LLM
-    // stream from inside alarm() — burned the 180s wall-time budget,
-    // got the alarm canceled, and made the eviction problem worse.
-    // _finalizeStaleTurns is SQL-only; appends aborted tool_results +
-    // status_idle for stuck turns so Console + history are consistent
-    // and the user can re-send to continue. (cloudflare/agents SDK's
-    // documented stance: "LLM calls are NOT replayed.")
-    await this._finalizeStaleTurns();
-
-    // A service-binding wakeup is intentionally best-effort: the accepted
-    // event and execution outbox row are already durable in D1. Drain after
-    // finalization so a requeued execution never replays over an unpaired
-    // tool_use from the dead incarnation.
-    try {
-      await this.recoverExecutionQueue();
-    } catch (err) {
-      console.warn(`[alarm] central execution recovery failed:`, err);
-    }
-
-    // (Keep-alive rearm — sub-agent + supervisor heartbeat — folded
-    // into _scheduleNextAlarm below so it can MERGE with data-driven
-    // wakeups and not get clobbered by the deleteAlarm() branch when
-    // cf_agents_schedules is empty. The merge picks min(heartbeat, next
-    // schedule) so we never sleep past the heartbeat horizon.)
+    // The persisted alarm is the FALLBACK recovery path. Cold start (first
+    // request / ensureSchema) calls this exact same hook, so the lease sweep,
+    // renewal, stale-turn finalization, and queue re-drive are identical no
+    // matter what woke the DO.
+    await this._runRecovery("alarm");
 
     // Container keepalive: while there's at least one background_tasks row,
     // ping the sandbox container to reset its sleepAfter timer. Means
@@ -7693,7 +7918,7 @@ export class SessionDO extends DurableObject<Env> {
       // background_tasks table missing or container down — alarm continues
     }
 
-    await this._scheduleNextAlarm();
+    await this._multiplexAlarm({ reason: "alarm" });
   }
 
   // ── Stale-turn finalization ──────────────────────────────────────────
@@ -7933,15 +8158,15 @@ export class SessionDO extends DurableObject<Env> {
       try { this.broadcastEvent(idleEvent); } catch {}
     }
     if (heldForFreshGrace > 0) {
-      // A fetch()-driven cold-start pass is fire-and-forget; unlike the
-      // alarm path it does not re-arm via _scheduleNextAlarm. Make sure
-      // a later pass exists to re-check the in-incarnation grace window.
+      // A fetch()-driven cold-start pass is fire-and-forget; make sure a
+      // later pass exists to re-check the in-incarnation grace window. The
+      // multiplexer merges this with any heartbeat/schedule wake instead of
+      // clobbering it.
       try {
-        const retryAt = now + FRESH_TURN_GRACE_MS;
-        const existing = await this.ctx.storage.getAlarm();
-        if (existing === null || existing > retryAt) {
-          await this.ctx.storage.setAlarm(retryAt);
-        }
+        await this._multiplexAlarm({
+          reason: "turn_grace_retry",
+          atMs: now + FRESH_TURN_GRACE_MS,
+        });
       } catch { /* storage alarm unavailable — alarm() path will rearm */ }
     }
 

@@ -1090,7 +1090,12 @@ describe("SessionDO recovery — DO-level", () => {
       (instance as { ensureSchema(): void }).ensureSchema();
       // Let the cold-start lease/schedule pass settle before we install the
       // row this test is about.
-      await new Promise((r) => setTimeout(r, 100));
+      for (let i = 0; i < 50 && (instance as { _recoveryRun: unknown })._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // This test asserts the durable arm, not the drain: keep the queue row
+      // unprocessed so the assertion below is about the alarm write.
+      (instance as { drainEventQueue(t: string): Promise<void> }).drainEventQueue = async () => {};
       await state.storage.deleteAlarm();
       (instance as {
         enqueueQueueInputIfNew(event: unknown): boolean;
@@ -1341,6 +1346,372 @@ describe("SessionDO recovery — DO-level", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────
+  // One alarm-slot multiplexer + one shared recovery hook
+  // ─────────────────────────────────────────────────────────────────
+
+  it("alarm multiplexer keeps the earliest of schedule vs heartbeat and never deletes while work exists", async () => {
+    const sessionId = await newSessionDirect("mux_earliest");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const heartbeat = await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance._activeTurnIds.add("turn_mux_live");
+      await state.storage.deleteAlarm();
+      let deleted = 0;
+      const storage = instance.ctx.storage;
+      const origDelete = storage.deleteAlarm.bind(storage);
+      storage.deleteAlarm = async () => { deleted++; return origDelete(); };
+      try {
+        await instance._multiplexAlarm({ reason: "mux_heartbeat" });
+      } finally {
+        storage.deleteAlarm = origDelete;
+      }
+      return { alarm: await state.storage.getAlarm(), now: Date.now(), deleted };
+    });
+    expect(heartbeat.deleted, "a running turn must never delete the alarm").toBe(0);
+    expect(heartbeat.alarm).not.toBeNull();
+    const heartbeatDelay = heartbeat.alarm - heartbeat.now;
+    expect(heartbeatDelay).toBeGreaterThan(25_000);
+    expect(heartbeatDelay).toBeLessThanOrEqual(35_000);
+
+    // A far schedule must not push the heartbeat out.
+    const far = await runInDurableObject(stub, async (instance, state) => {
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO cf_agents_schedules (id, callback, payload, type, time, running)
+         VALUES ('sched_far', 'recoverEventQueue', '{}', 'scheduled', ?, 0)`,
+        Math.floor((now + 120_000) / 1000),
+      );
+      await instance._multiplexAlarm({ reason: "mux_far_schedule" });
+      return { alarm: await state.storage.getAlarm(), now: Date.now() };
+    });
+    expect(far.alarm - far.now).toBeLessThanOrEqual(35_000);
+
+    // A near schedule becomes the earliest wake.
+    const near = await runInDurableObject(stub, async (instance, state) => {
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO cf_agents_schedules (id, callback, payload, type, time, running)
+         VALUES ('sched_near', 'recoverEventQueue', '{}', 'scheduled', ?, 0)`,
+        Math.floor((now + 5_000) / 1000),
+      );
+      await instance._multiplexAlarm({ reason: "mux_near_schedule" });
+      return { alarm: await state.storage.getAlarm(), now: Date.now() };
+    });
+    expect(near.alarm - near.now).toBeGreaterThan(0);
+    expect(near.alarm - near.now).toBeLessThanOrEqual(6_000);
+
+    // Queued work alone also keeps the slot armed (never delete).
+    const queued = await runInDurableObject(stub, async (instance, state) => {
+      instance._activeTurnIds.clear();
+      state.storage.sql.exec(`DELETE FROM cf_agents_schedules`);
+      const eventId = `sevt_${crypto.randomUUID()}`;
+      state.storage.sql.exec(
+        `INSERT INTO events (type, data, processed_at, session_thread_id, enqueued_at)
+         VALUES ('user.message', ?, NULL, 'sthr_primary', ?)`,
+        JSON.stringify({
+          id: eventId,
+          type: "user.message",
+          content: [{ type: "text", text: "multiplexer queue" }],
+        }),
+        Date.now(),
+      );
+      let deleted = 0;
+      let sets = 0;
+      const storage = instance.ctx.storage;
+      const origDelete = storage.deleteAlarm.bind(storage);
+      const origSet = storage.setAlarm.bind(storage);
+      storage.deleteAlarm = async () => { deleted++; return origDelete(); };
+      storage.setAlarm = async (t: number) => { sets++; return origSet(t); };
+      try {
+        await instance._multiplexAlarm({ reason: "mux_queue" });
+      } finally {
+        storage.deleteAlarm = origDelete;
+        storage.setAlarm = origSet;
+      }
+      return { alarm: await state.storage.getAlarm(), deleted, sets };
+    });
+    expect(queued.deleted, "queued work must never delete the alarm").toBe(0);
+    expect(queued.sets).toBeGreaterThan(0);
+    expect(queued.alarm).not.toBeNull();
+  });
+
+  it("first request after cold start runs the same recovery hook as the alarm", async () => {
+    const outcomes: Array<{ state: string | null; failure: string | null }> = [];
+    for (const trigger of ["cold", "alarm"] as const) {
+      const sessionId = await newSessionDirect(`shared_recovery_${trigger}`);
+      const now = Date.now();
+      const eventId = `sevt_${crypto.randomUUID()}`;
+      const eventsJson = JSON.stringify([{
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "dead owner" }],
+        processedAt: new Date(now - 5_000).toISOString(),
+      }]);
+      await env.MAIN_DB.prepare(
+        `INSERT INTO managed_session_executions
+           (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+            events_fingerprint, state, attempt_id, owner_id, generation,
+            attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+            lease_expires_at_ms, revision)
+         VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+                 'attempt_dead', 'dead_incarnation', 1, 1, 2, ?, ?, ?, 1)`,
+      ).bind(
+        sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+        now + 60_000, now - 5_000, now - 1_000,
+      ).run();
+
+      const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+      const reasons: string[] = [];
+      await runInDurableObject(stub, async (instance, state) => {
+        // The reclaimed turn must not actually run in this test.
+        instance.drainEventQueue = async () => {};
+        const original = instance._runRecovery.bind(instance);
+        instance._runRecovery = (reason: string) => {
+          reasons.push(reason);
+          return original(reason);
+        };
+        if (trigger === "alarm") await state.storage.setAlarm(Date.now() - 1_000);
+      });
+
+      if (trigger === "cold") {
+        // First request after activation: ensureSchema = onStart.
+        await stub.fetch(new Request("http://internal/events"));
+      } else {
+        await runDurableObjectAlarm(stub);
+      }
+
+      let row: { state: string; failure: string | null } | null = null;
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        row = await env.MAIN_DB.prepare(
+          `SELECT state, failure FROM managed_session_executions
+            WHERE workspace_id='default' AND id=?`,
+        ).bind(eventId).first();
+        if (row && row.state !== "running") break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(row).not.toBeNull();
+      expect(reasons, `${trigger} path must call the shared recovery hook`)
+        .toContain(trigger === "cold" ? "cold_start" : "alarm");
+      outcomes.push({ state: row?.state ?? null, failure: row?.failure ?? null });
+    }
+    expect(outcomes[0]).toEqual({
+      state: "queued",
+      failure: "requeued after owner lease expired",
+    });
+    expect(outcomes[1]).toEqual(outcomes[0]);
+  });
+
+  it("applied-but-unfinished turn is interrupted from the canonical stream, not requeued", async () => {
+    const sessionId = await newSessionDirect("stream_applied");
+    const now = Date.now();
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "applied work" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 3, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      instance.drainEventQueue = async () => {};
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_applied_done",
+        name: "bash",
+        input: { command: "true" },
+      });
+      history.append({
+        type: "agent.tool_result",
+        tool_use_id: "tu_applied_done",
+        content: "ok",
+      });
+      history.append({
+        type: "agent.message",
+        message_id: "msg_applied_partial",
+        content: [{ type: "text", text: "partial output reused" }],
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string }>();
+    expect(execution?.state).toBe("failed");
+    expect(execution?.failure).toBe("execution interrupted after applied input");
+
+    // Completed output is reused, never duplicated or re-dispatched.
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    expect(data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_applied_done",
+    )).toHaveLength(1);
+    expect(data.filter(
+      (e) => e.type === "agent.message" && e.data.message_id === "msg_applied_partial",
+    )).toHaveLength(1);
+  });
+
+  it("unpaired tool call from a dead owner is interrupted, never rerun", async () => {
+    const sessionId = await newSessionDirect("stream_unpaired");
+    const now = Date.now();
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "tool in flight" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 3, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      instance.drainEventQueue = async () => {};
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_unpaired_lost",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string }>();
+    expect(execution?.state).toBe("failed");
+    // The cold-start stream scan pairs the tool_use with a synthetic aborted
+    // result before the sweep decides, so the stream says "applied work was
+    // persisted" — either way it is interrupted, never re-dispatched.
+    expect(execution?.failure).toMatch(/^execution interrupted /);
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_unpaired_lost",
+    );
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+  });
+
+  it("failed recovery is retained and retried with capped exponential backoff", async () => {
+    const sessionId = await newSessionDirect("recovery_backoff");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance._sweepExpiredLeases = async () => {
+        throw new Error("sweep boom");
+      };
+      instance._recoveryFailures = 0;
+      instance._recoveryRetryAtMs = null;
+      await state.storage.deleteAlarm();
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    const first = await runInDurableObject(stub, async (instance, state) => ({
+      failures: instance._recoveryFailures as number,
+      retryAt: instance._recoveryRetryAtMs as number | null,
+      alarm: await state.storage.getAlarm(),
+    }));
+    expect(first.failures).toBe(1);
+    expect(first.retryAt).not.toBeNull();
+    const firstDelay = (first.retryAt as number) - Date.now();
+    expect(firstDelay).toBeGreaterThan(0);
+    expect(firstDelay).toBeLessThanOrEqual(2_000);
+    // The single alarm slot is held at the backoff horizon.
+    expect(first.alarm).toBeGreaterThanOrEqual((first.retryAt as number) - 1_000);
+    expect(first.alarm).toBeLessThanOrEqual((first.retryAt as number) + 1_000);
+
+    // A wake before the horizon must not re-run (and re-fail) the hook.
+    const held = await runInDurableObject(stub, async (instance) => {
+      await instance._runRecovery("alarm");
+      return instance._recoveryFailures as number;
+    });
+    expect(held, "backoff must hold retries before the horizon").toBe(1);
+
+    // After the horizon a second failure doubles the delay.
+    const second = await runInDurableObject(stub, async (instance) => {
+      instance._recoveryRetryAtMs = Date.now() - 1;
+      const startedAt = Date.now();
+      await instance._runRecovery("alarm");
+      return {
+        failures: instance._recoveryFailures as number,
+        retryAt: instance._recoveryRetryAtMs as number | null,
+        startedAt,
+      };
+    });
+    expect(second.failures).toBe(2);
+    const secondDelay = (second.retryAt as number) - second.startedAt;
+    expect(secondDelay).toBeGreaterThan(1_500);
+    expect(secondDelay).toBeLessThanOrEqual(4_000);
+
+    // The backoff is capped, not unbounded.
+    const capped = await runInDurableObject(stub, async (instance) => {
+      instance._recoveryFailures = 20;
+      instance._recoveryRetryAtMs = Date.now() - 1;
+      const startedAt = Date.now();
+      await instance._runRecovery("alarm");
+      return {
+        retryAt: instance._recoveryRetryAtMs as number | null,
+        startedAt,
+      };
+    });
+    const cappedDelay = (capped.retryAt as number) - capped.startedAt;
+    expect(cappedDelay).toBeGreaterThan(0);
+    expect(cappedDelay).toBeLessThanOrEqual(61_000);
+  });
+
+  // ─────────────────────────────────────────────────────────────────
   // Alarm heartbeat-merge regression guards
   //
   // _scheduleNextAlarm() runs at the end of alarm() and was historically
@@ -1522,6 +1893,9 @@ describe("SessionDO recovery — DO-level", () => {
     let calls = 0;
     await runInDurableObject(stub, (instance) => {
       (instance as { _coldStartFlushDone: boolean })._coldStartFlushDone = false;
+      // The shared recovery hook also finalizes; this test isolates the
+      // request-level cold-start flush guard, so keep the hook out of it.
+      (instance as { _runRecovery: () => Promise<void> })._runRecovery = async () => {};
       const orig = (instance as unknown as { _finalizeStaleTurns: () => Promise<void> })._finalizeStaleTurns.bind(instance);
       (instance as unknown as { _finalizeStaleTurns: () => Promise<void> })._finalizeStaleTurns = async () => {
         calls++;
