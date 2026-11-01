@@ -41,7 +41,7 @@ describe("isExhaustedSettleEvent", () => {
 });
 
 describe("reconcilePendingAfterExhaustedFlush", () => {
-  it("retains still-present null processed_at after exhausted (no delete)", () => {
+  it("treats null processed_at after exhausted as expected retain (not anomaly)", () => {
     const result = reconcilePendingAfterExhaustedFlush({
       localPendingIds: ["sevt_a", "sevt_b"],
       listedEvents: [
@@ -66,13 +66,15 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     });
 
     expect(result.retainedIds).toEqual(["sevt_a", "sevt_b"]);
-    expect(result.anomalyRetainedIds).toEqual(["sevt_a", "sevt_b"]);
     expect(result.remainingPendingIds).toEqual(["sevt_a", "sevt_b"]);
-    expect(result.flushedIds).toEqual([]);
+    expect(result.vanishedIds).toEqual([]);
     expect(result.processedIds).toEqual([]);
+    // deprecated aliases stay in sync
+    expect(result.anomalyRetainedIds).toEqual(result.retainedIds);
+    expect(result.flushedIds).toEqual(result.vanishedIds);
   });
 
-  it("reports absent ids as vanished (unexpected under no-delete), retains present null", () => {
+  it("reports absent ids as vanished (unexpected under no-delete), not flush=delete success", () => {
     const result = reconcilePendingAfterExhaustedFlush({
       localPendingIds: ["sevt_held", "sevt_gone"],
       listedEvents: [
@@ -91,6 +93,7 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
       ],
     });
 
+    expect(result.vanishedIds).toEqual(["sevt_gone"]);
     expect(result.flushedIds).toEqual(["sevt_gone"]);
     expect(result.retainedIds).toEqual(["sevt_held"]);
     expect(result.remainingPendingIds).toEqual(["sevt_held"]);
@@ -110,7 +113,7 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     });
 
     expect(result.processedIds).toEqual(["sevt_ingested"]);
-    expect(result.flushedIds).toEqual(["sevt_missing"]);
+    expect(result.vanishedIds).toEqual(["sevt_missing"]);
     expect(result.retainedIds).toEqual([]);
     expect(result.remainingPendingIds).toEqual([]);
   });
@@ -123,6 +126,7 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
 
     expect(result.retainedIds).toEqual(["sevt_nullish"]);
     expect(result.remainingPendingIds).toEqual(["sevt_nullish"]);
+    expect(result.vanishedIds).toEqual([]);
   });
 
   it("is a no-op when there is no local pending", () => {
@@ -132,11 +136,12 @@ describe("reconcilePendingAfterExhaustedFlush", () => {
     });
 
     expect(result).toEqual({
-      flushedIds: [],
-      anomalyRetainedIds: [],
       retainedIds: [],
+      vanishedIds: [],
       processedIds: [],
       remainingPendingIds: [],
+      flushedIds: [],
+      anomalyRetainedIds: [],
     });
   });
 });

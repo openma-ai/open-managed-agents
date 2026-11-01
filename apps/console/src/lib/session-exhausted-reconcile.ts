@@ -4,10 +4,10 @@
  * Owner decision (see docs/implementation/exhausted-flush-client-reconcile.md):
  * on retry_status exhausted / idle stop_reason retries_exhausted, the server
  * does **not** delete never-ingested queued inputs and does **not** auto-run
- * them as the next turn alone. Rows remain and advance into context with the
- * next round of events; the user cannot withdraw them. The Console keeps
- * local pending ids/text and may reconcile against events.list. Prior
- * flush=delete is revoked — there must be no delete-flush code path.
+ * them as the next turn alone. Rows **remain** and **advance into context
+ * with the next round of events**; the user **cannot withdraw** them. The
+ * Console keeps local pending ids/text and may reconcile against events.list.
+ * Prior flush=delete is revoked — there must be no delete-flush code path.
  */
 
 export type ListedSessionEvent = {
@@ -33,19 +33,33 @@ export type ExhaustedReconcileInput = {
 
 export type ExhaustedReconcileResult = {
   /**
+   * Still listed with null/absent `processed_at` → **expected retain**.
+   * Keep locally until the next round consumes them.
+   */
+  retainedIds: string[];
+  /**
    * Local pending ids absent from the list. Unexpected under no-delete;
-   * report for recovery UX — do **not** treat as intentional server flush.
-   * Alias kept as `flushedIds` for call-site stability.
+   * report for recovery UX — do **not** treat as intentional server
+   * flush/delete.
+   */
+  vanishedIds: string[];
+  /** Still listed with stamped `processed_at` → ingested; drop from pending. */
+  processedIds: string[];
+  /**
+   * Pending ids to keep after reconcile (= retainedIds). Hold until the
+   * next round advances them into context.
+   */
+  remainingPendingIds: string[];
+  /**
+   * @deprecated Use `vanishedIds`. Same values; name kept briefly for
+   * call-site stability during the flush→retain rename.
    */
   flushedIds: string[];
-  /** @deprecated Use retainedIds; same values under retain policy. */
+  /**
+   * @deprecated Use `retainedIds`. Same values; prior "anomaly" naming
+   * under flush=delete is revoked.
+   */
   anomalyRetainedIds: string[];
-  /** Still listed with null/absent processed_at → expected retain. */
-  retainedIds: string[];
-  /** Still listed with stamped processed_at → ingested; drop from pending. */
-  processedIds: string[];
-  /** Pending ids to keep after reconcile (retained / unstamped). */
-  remainingPendingIds: string[];
 };
 
 function eventId(event: ListedSessionEvent): string | null {
@@ -74,8 +88,14 @@ export function isExhaustedSettleEvent(event: unknown): boolean {
 
 /**
  * Reconcile local accepted-but-unprocessed ids against a post-exhausted
- * events.list snapshot. Still-present null processed_at → retain (expected).
- * Stamped → clear as processed. Missing → unexpected vanished (not delete-flush).
+ * events.list snapshot under **retain + next-round advance** (not
+ * flush=delete):
+ * - still-present null/absent `processed_at` → `retainedIds` (expected)
+ * - stamped `processed_at` → `processedIds`
+ * - absent from list → `vanishedIds` (unexpected under no-delete)
+ *
+ * Export name `reconcilePendingAfterExhaustedFlush` is kept for call-site
+ * stability; behavior is retain+reconcile, not delete-flush.
  */
 export function reconcilePendingAfterExhaustedFlush(
   input: ExhaustedReconcileInput,
@@ -86,14 +106,14 @@ export function reconcilePendingAfterExhaustedFlush(
     if (id) byId.set(id, event);
   }
 
-  const flushedIds: string[] = [];
+  const vanishedIds: string[] = [];
   const retainedIds: string[] = [];
   const processedIds: string[] = [];
 
   for (const id of input.localPendingIds) {
     const listed = byId.get(id);
     if (!listed) {
-      flushedIds.push(id);
+      vanishedIds.push(id);
       continue;
     }
     if (isUnprocessedListed(listed)) {
@@ -104,10 +124,11 @@ export function reconcilePendingAfterExhaustedFlush(
   }
 
   return {
-    flushedIds,
-    anomalyRetainedIds: [...retainedIds],
     retainedIds,
+    vanishedIds,
     processedIds,
     remainingPendingIds: [...retainedIds],
+    flushedIds: [...vanishedIds],
+    anomalyRetainedIds: [...retainedIds],
   };
 }
