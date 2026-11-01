@@ -19,6 +19,14 @@ import {
 
 type WireEvent = { type?: string; [key: string]: unknown };
 
+/** Narrow history frames for requires_action bookkeeping without forcing
+ *  callers to write `as unknown as` (banned by the runtime-adapter lint). */
+export function asWireEvents(
+  events: ReadonlyArray<{ readonly type?: string }>,
+): WireEvent[] {
+  return events as WireEvent[];
+}
+
 const thread = (e: WireEvent) => (e.session_thread_id as string | undefined) ?? "sthr_primary";
 
 /** Tool-call ids that have an answer or a closing result in `events`. */

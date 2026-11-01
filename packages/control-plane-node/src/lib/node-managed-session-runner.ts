@@ -35,7 +35,7 @@ import type { SessionExecutionFence } from "@open-managed-agents/session-runtime
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
 import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
-import type { SessionEvent } from "@open-managed-agents/shared";
+import type { SessionEvent } from "@open-managed-agents/api-types";
 import {
   createSessionBudgetGate,
   type SessionBudgetGate,
@@ -99,8 +99,9 @@ export type ManagedNodeConfirmableToolUse = Extract<
   { type: "agent.tool_use" | "agent.mcp_tool_use" }
 >;
 
-import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
-import { answeredToolCallIds, outstandingRequiresAction, stillPending } from "./requires-action.js";
+import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
+import { answeredToolCallIds, asWireEvents,
+  outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -536,9 +537,9 @@ export class DefaultNodeManagedSessionRunner
     if (actionable.length > 0 && actionable.every((candidate) =>
       candidate.type === "user.custom_tool_result" || candidate.type === "user.tool_confirmation")) {
       const batchIds = new Set(input.events.map((candidate) => candidate.id));
-      const priorWire = input.historyEvents
+      const priorWire = asWireEvents(input.historyEvents
         .filter((candidate) => !batchIds.has(candidate.id))
-        .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string });
+        .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
       const before = outstandingRequiresAction(priorWire);
       const closedBefore = answeredToolCallIds(priorWire);
       const answeredNow = new Set(actionable.map((candidate) =>
@@ -635,9 +636,9 @@ export class DefaultNodeManagedSessionRunner
     try {
       for (const event of input.events) {
         if (event.type !== "user.tool_confirmation") continue;
-        if (remainingAfterAnswers !== null && answeredToolCallIds(input.historyEvents
+        if (remainingAfterAnswers !== null && answeredToolCallIds(asWireEvents(input.historyEvents
           .filter((candidate) => candidate.id !== event.id)
-          .map((candidate) => encodeRuntimeHistoryEvent(candidate) as unknown as { type?: string }))
+          .map((candidate) => encodeRuntimeHistoryEvent(candidate))))
           .has(event.toolUseId)) continue;
         const toolUse = findLastMatching(
           input.historyEvents,
@@ -1023,7 +1024,7 @@ export class DefaultNodeManagedSessionRunner
         const failed = runFailed || finalizationError !== undefined;
         const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
           runtime.pendingConfirmations,
-          runtime.history.getEvents() as unknown as Array<{ type?: string }>,
+          asWireEvents(runtime.history.getEvents()),
         );
         runtime.broadcastProducedEvent({
           type: "session.status_idle",

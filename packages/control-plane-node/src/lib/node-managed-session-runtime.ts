@@ -44,7 +44,7 @@ import type {
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
 import { randomUUID } from "node:crypto";
-import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
+import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
 import { outstandingRequiresAction,

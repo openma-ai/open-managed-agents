@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
+import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
 
@@ -23,7 +25,26 @@ function put(path: string, body: any) {
   return api(path, { method: "PUT", headers: H, body: JSON.stringify(body) });
 }
 function del(path: string) {
-  return api(path, { method: "DELETE", headers: H });
+  return api(path, { method: "DELETE", headers: H }
+
+async function seedCustomToolUse(sessionId: string, toolUseId: string, name = "custom_tool") {
+  const stub = env.SESSION_DO!.get(env.SESSION_DO!.idFromName(sessionId));
+  await runInDurableObject(stub, async (instance, state) => {
+    const room = instance as any;
+    room._ensureCfAgentsSchema?.();
+    room.ensureSchema?.();
+    room._coldStartFlushDone = true;
+    const history = new SqliteHistory(state.storage.sql, null);
+    history.append({
+      type: "agent.custom_tool_use",
+      id: toolUseId,
+      name,
+      input: {},
+      processed_at: new Date().toISOString(),
+    } as never);
+  });
+}
+);
 }
 
 function getDoStatus(sessionId: string) {
@@ -732,6 +753,7 @@ describe("Event type combinations", () => {
     await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.tool_confirmation", tool_use_id: "tc_combo", result: "allow" }],
     });
+    await seedCustomToolUse(sessionId, "ct_combo");
     await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.custom_tool_result", custom_tool_use_id: "ct_combo", content: [{ type: "text", text: "result" }] }],
     });
@@ -756,6 +778,7 @@ describe("Event type combinations", () => {
     await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.tool_confirmation", tool_use_id: "tc_all", result: "deny", deny_message: "no" }],
     });
+    await seedCustomToolUse(sessionId, "ct_all");
     await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.custom_tool_result", custom_tool_use_id: "ct_all", content: [{ type: "text", text: "r" }] }],
     });

@@ -47,7 +47,11 @@ export class SqlModelCardRepo implements ModelCardRepo {
   private readonly schemaReady: Promise<void>;
   constructor(db: OmaDb, opts?: { ensureSchema?: () => Promise<void> }) {
     this.db = asBuilder(db);
-    this.schemaReady = opts?.ensureSchema?.() ?? Promise.resolve();
+    this.schemaReady = (opts?.ensureSchema?.() ?? Promise.resolve()).catch((err) => {
+      // Construction-time ensure must not become an unhandled rejection in
+      // smoke tests that never await a repo method (services-dispatch).
+      console.warn("[model-cards] ensureSchema failed:", err instanceof Error ? err.message : err);
+    });
   }
 
   private async ready(): Promise<void> {

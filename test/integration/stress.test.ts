@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { registerTestHarnesses } from "../harnesses";
 import { SqliteHistory } from "../../apps/agent/src/runtime/history";
@@ -307,6 +308,32 @@ describe("History - complex conversions", () => {
       title: "History Test",
     });
     for (const event of events) {
+      // Official CMA rejects orphan custom_tool_result — seed the matching
+      // agent.custom_tool_use into history first when the fixture omits it.
+      if (event?.type === "user.custom_tool_result" && event.custom_tool_use_id) {
+        const stub = env.SESSION_DO!.get(env.SESSION_DO!.idFromName(historyId));
+        await runInDurableObject(stub, async (instance, state) => {
+          const room = instance as any;
+          room._ensureCfAgentsSchema?.();
+          room.ensureSchema?.();
+          room._coldStartFlushDone = true;
+          const history = new SqliteHistory(state.storage.sql, null);
+          const exists = history.getEvents().some(
+            (e: any) =>
+              (e.type === "agent.custom_tool_use" || e.type === "agent.tool_use") &&
+              e.id === event.custom_tool_use_id,
+          );
+          if (!exists) {
+            history.append({
+              type: "agent.custom_tool_use",
+              id: event.custom_tool_use_id,
+              name: "custom_tool",
+              input: {},
+              processed_at: new Date().toISOString(),
+            } as never);
+          }
+        });
+      }
       await postDoEvent(historyId, event);
     }
     // Read events back via WS replay

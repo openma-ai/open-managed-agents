@@ -25,7 +25,15 @@ async function previousRelease(): Promise<Database.Database> {
   directories.push(directory);
   await mkdir(join(directory, "meta"));
   const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8"));
-  journal.entries = journal.entries.filter((entry: { tag: string }) => entry.tag !== "0028_drop_legacy_agents");
+  // Drizzle applies by journal *count*, so a "previous release" DB must stop
+  // *before* 0028. Filtering only 0028 while keeping later additive tags
+  // (0029 pricing, 0030 held_after_exhausted_ms, …) records those as applied
+  // and the full migrate then never runs 0028's guard/DROP.
+  const dropIdx = journal.entries.findIndex(
+    (entry: { tag: string }) => entry.tag === "0028_drop_legacy_agents",
+  );
+  if (dropIdx < 0) throw new Error("0028_drop_legacy_agents missing from migrations journal");
+  journal.entries = journal.entries.slice(0, dropIdx);
   await writeFile(join(directory, "meta/_journal.json"), JSON.stringify(journal));
   for (const entry of journal.entries) {
     await cp(join(migrationsFolder, `${entry.tag}.sql`), join(directory, `${entry.tag}.sql`));
