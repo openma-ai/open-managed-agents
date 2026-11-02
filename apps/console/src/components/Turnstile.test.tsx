@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Turnstile } from "./Turnstile";
 
@@ -29,5 +29,35 @@ describe("Turnstile lifecycle", () => {
     expect(firstExpire).not.toHaveBeenCalled();
     unmount();
     expect(remove).toHaveBeenCalledExactlyOnceWith("widget-1");
+  });
+
+  it("resets through the official API without remounting", async () => {
+    const api = { render: vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1"), reset: vi.fn(), remove: vi.fn() };
+    window.turnstile = api;
+    const onToken = vi.fn();
+    const { rerender } = render(<Turnstile siteKey="site-key" onToken={onToken} resetKey={0} />);
+    await waitFor(() => expect(api.render).toHaveBeenCalledOnce());
+    rerender(<Turnstile siteKey="site-key" onToken={onToken} resetKey={1} />);
+    expect(api.reset).toHaveBeenCalledExactlyOnceWith("widget-1");
+    expect(api.render).toHaveBeenCalledOnce();
+    expect(api.remove).not.toHaveBeenCalled();
+  });
+
+  it("clears failure feedback only when the official success callback recovers", async () => {
+    const api = { render: vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1"), reset: vi.fn(), remove: vi.fn() };
+    window.turnstile = api;
+    const onToken = vi.fn(), onError = vi.fn();
+    const { unmount } = render(<Turnstile siteKey="site-key" onToken={onToken} onError={onError} />);
+    await waitFor(() => expect(api.render).toHaveBeenCalledOnce());
+    const options = api.render.mock.calls[0][1];
+    act(() => options["error-callback"]?.("300030"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Security verification failed");
+    expect(onError).toHaveBeenCalledWith("300030");
+    act(() => options.callback("fresh-token"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(onToken).toHaveBeenCalledExactlyOnceWith("fresh-token");
+    unmount();
+    act(() => options.callback("stale-token"));
+    expect(onToken).toHaveBeenCalledTimes(1);
   });
 });

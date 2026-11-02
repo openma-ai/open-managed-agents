@@ -6,8 +6,9 @@ import { I18nProvider } from "../i18n";
 import { Login } from "./Login";
 
 const sendCode = vi.hoisted(() => vi.fn(async () => ({ error: null })));
+const signIn = vi.hoisted(() => vi.fn());
 vi.mock("../lib/auth", () => ({ useAuth: () => ({ isLoading: false, isAuthenticated: false }) }));
-vi.mock("../lib/auth-client", () => ({ authClient: { emailOtp: { sendVerificationOtp: sendCode } } }));
+vi.mock("../lib/auth-client", () => ({ authClient: { emailOtp: { sendVerificationOtp: sendCode }, signIn: { email: signIn } } }));
 vi.mock("../lib/useApiQuery", () => ({ useApiQuery: () => ({
   data: { providers: ["email", "email-otp"], turnstile_site_key: "site-key" },
 }) }));
@@ -29,23 +30,69 @@ it("keeps the visible challenge below submit alive while entering an email and w
   const countBeforeTyping = renderWidget.mock.calls.length;
   const challenge = renderWidget.mock.calls.at(-1)![1];
   await user.type(screen.getByLabelText("Email"), "person@example.com");
+  expect(submit).toBeDisabled();
+  await act(async () => { challenge.callback("verified-token"); });
+  expect(submit).toBeEnabled();
   await user.click(submit);
   expect(renderWidget).toHaveBeenCalledTimes(countBeforeTyping);
-  expect(sendCode).not.toHaveBeenCalled();
-  await act(async () => { challenge.callback("verified-token"); });
   await waitFor(() => expect(sendCode).toHaveBeenCalledWith({
     email: "person@example.com", type: "sign-in",
     fetchOptions: { headers: { "cf-turnstile-token": "verified-token" } },
   }));
   expect(await screen.findByRole("heading", { name: "Enter your code" })).toBeVisible();
   expect(screen.getByRole("region", { name: "Security verification" })).toBeVisible();
-  await waitFor(() => expect(renderWidget).toHaveBeenCalledTimes(countBeforeTyping + 1));
-  const resendChallenge = renderWidget.mock.calls.at(-1)![1];
-  await user.click(screen.getByRole("button", { name: "Resend" }));
-  await act(async () => { resendChallenge.callback("resend-token"); });
+  expect(renderWidget).toHaveBeenCalledTimes(countBeforeTyping);
+  expect(window.turnstile.reset).toHaveBeenCalled();
+  const resend = screen.getByRole("button", { name: "Resend" });
+  expect(resend).toBeDisabled();
+  await act(async () => { challenge.callback("resend-token"); });
+  expect(resend).toBeEnabled();
+  await user.click(resend);
   await waitFor(() => expect(sendCode).toHaveBeenCalledTimes(2));
   expect(sendCode).toHaveBeenLastCalledWith({
     email: "person@example.com", type: "sign-in",
     fetchOptions: { headers: { "cf-turnstile-token": "resend-token" } },
+  });
+});
+
+it.each(["expired-callback", "error-callback", "timeout-callback", "unsupported-callback", "before-interactive-callback"])("disables sending when the official %s invalidates verification", async (event) => {
+  const renderWidget = vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1");
+  window.turnstile = { render: renderWidget, remove: vi.fn(), reset: vi.fn() };
+  const user = userEvent.setup();
+  render(<MemoryRouter><I18nProvider><Login /></I18nProvider></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Continue with email" }));
+  await user.click(screen.getByRole("button", { name: "Sign in with email code" }));
+  await user.type(screen.getByLabelText("Email"), "person@example.com");
+  await waitFor(() => expect(renderWidget).toHaveBeenCalled());
+  const options = renderWidget.mock.calls.at(-1)![1];
+  const submit = screen.getByRole("button", { name: "Send code" });
+  await act(async () => { options.callback("verified-token"); });
+  expect(submit).toBeEnabled();
+  await act(async () => { (options as Record<string, any>)[event]?.("300030"); });
+  expect(submit).toBeDisabled();
+});
+
+it("requires a new token for verification email after sign-in consumes its token", async () => {
+  const renderWidget = vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1");
+  window.turnstile = { render: renderWidget, remove: vi.fn(), reset: vi.fn() };
+  signIn.mockResolvedValueOnce({ error: { code: "EMAIL_NOT_VERIFIED", message: "Email not verified" } });
+  sendCode.mockClear();
+  const user = userEvent.setup();
+  render(<MemoryRouter><I18nProvider><Login /></I18nProvider></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Continue with email" }));
+  await user.type(screen.getByLabelText("Email"), "person@example.com");
+  await user.type(screen.getByLabelText("Password"), "password1234");
+  await waitFor(() => expect(renderWidget).toHaveBeenCalled());
+  const options = renderWidget.mock.calls.at(-1)![1];
+  await act(async () => options.callback("sign-in-token"));
+  await user.click(screen.getByRole("button", { name: "Sign in", exact: true }));
+  expect(await screen.findByRole("heading", { name: "Verify your email" })).toBeVisible();
+  expect(sendCode).not.toHaveBeenCalled();
+  const resend = screen.getByRole("button", { name: "Resend" });
+  expect(resend).toBeDisabled();
+  await act(async () => options.callback("new-email-token"));
+  await user.click(resend);
+  expect(sendCode).toHaveBeenCalledExactlyOnceWith({ email: "person@example.com", type: "email-verification",
+    fetchOptions: { headers: { "cf-turnstile-token": "new-email-token" } },
   });
 });
