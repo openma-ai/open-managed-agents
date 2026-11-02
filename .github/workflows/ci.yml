@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Merge Queue: required check context remains `verify`.
+  merge_group:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -12,12 +14,129 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  pull-requests: read
 
 jobs:
-  verify:
+  # Graded impact surfaces (#417). Decision table lives in
+  # scripts/ci-impact-surfaces.mjs (unit-tested).
+  changes:
     runs-on: ubuntu-24.04
-    # Full repository tests plus browser, storage and MySQL integration now
-    # approach 20 minutes on GitHub runners; allow cleanup to finish.
+    timeout-minutes: 5
+    outputs:
+      docs: ${{ steps.classify.outputs.docs }}
+      web: ${{ steps.classify.outputs.web }}
+      cf: ${{ steps.classify.outputs.cf }}
+      node: ${{ steps.classify.outputs.node }}
+      meta_only: ${{ steps.classify.outputs.meta_only }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Resolve change list
+        id: files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            BASE="origin/${{ github.base_ref }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # Merge Queue temporary ref: classify against the queue base SHA.
+            BASE="${{ github.event.merge_group.base_sha }}"
+            if [[ -z "$BASE" ]]; then
+              echo "merge_group.base_sha missing" >&2
+              exit 1
+            fi
+          else
+            # Push to main: classify against the previous commit on this ref.
+            BASE="${{ github.event.before }}"
+            if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+              BASE="$(git rev-parse HEAD^)"
+            fi
+          fi
+          git diff --name-only --diff-filter=ACMRD "$BASE"...HEAD > /tmp/ci-changed-files.txt
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Changed files vs $BASE:"
+          cat /tmp/ci-changed-files.txt
+          if [[ ! -s /tmp/ci-changed-files.txt ]]; then
+            echo "No changed files; treating as empty (meta-only)."
+          fi
+
+      - name: Classify impact surfaces
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/ci-impact-surfaces.test.mjs
+          node scripts/ci-impact-surfaces.mjs --write-github-output < /tmp/ci-changed-files.txt
+
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Docs typecheck
+        run: pnpm --filter open-managed-agents-docs typecheck
+
+      - name: Docs build
+        run: pnpm build:docs
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Web typecheck
+        run: pnpm --filter @open-managed-agents/web typecheck
+
+      - name: Web test
+        run: pnpm test:web
+
+  cf:
+    needs: changes
+    if: needs.changes.outputs.cf == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -41,11 +160,45 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: CF typecheck
+        run: pnpm typecheck:ci:cf
 
-      - name: Test
-        run: pnpm test
+      - name: CF tests
+        run: pnpm test:ci:cf
+
+  node:
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-24.04
+    # Full Node suite plus browser, storage and MySQL integration; allow cleanup.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Check dependency sources before install
+        run: |
+          node --test scripts/check-dependency-sources.test.mjs
+          node scripts/check-dependency-sources.mjs
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Node typecheck
+        run: pnpm typecheck:ci:node
+
+      - name: Node tests
+        run: pnpm test:ci:node
 
       - name: Install browser for Console E2E
         run: pnpm exec playwright install --with-deps chromium
@@ -91,8 +244,8 @@ jobs:
       - name: PostgreSQL MCP access-loss integration
         run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
 
-  # Separate from verify so it does not wait on the 20+ minute suite and does
-  # not use the Litebox /dev/kvm action. Checkout plus a Node script only.
+  # Separate from graded surfaces so it does not wait on the heavy suites and
+  # does not use the Litebox /dev/kvm action. Checkout plus a Node script only.
   release-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
@@ -119,3 +272,46 @@ jobs:
         env:
           RELEASE_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: node scripts/release-check.mjs
+
+  # Required check name stays `verify` (branch protection). Skipped surfaces
+  # count as success so docs-only / CF-only / Node-only PRs still pass.
+  verify:
+    needs: [changes, docs, web, cf, node, release-check]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Gate required check
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "changes=${{ needs.changes.result }}"
+          echo "docs=${{ needs.docs.result }}"
+          echo "web=${{ needs.web.result }}"
+          echo "cf=${{ needs.cf.result }}"
+          echo "node=${{ needs.node.result }}"
+          echo "release-check=${{ needs.release-check.result }}"
+          echo "meta_only=${{ needs.changes.outputs.meta_only }}"
+
+          fail=0
+          check() {
+            local name="$1"
+            local result="$2"
+            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+              echo "OK $name ($result)"
+              return 0
+            fi
+            echo "FAIL $name ($result)"
+            fail=1
+          }
+
+          check changes "${{ needs.changes.result }}"
+          check docs "${{ needs.docs.result }}"
+          check web "${{ needs.web.result }}"
+          check cf "${{ needs.cf.result }}"
+          check node "${{ needs.node.result }}"
+          check release-check "${{ needs.release-check.result }}"
+
+          if [[ "$fail" -ne 0 ]]; then
+            exit 1
+          fi
