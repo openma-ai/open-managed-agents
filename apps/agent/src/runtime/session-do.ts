@@ -24,6 +24,8 @@ import {
   classifyExternalError,
   AuthError,
   BillingError,
+  admitViaSessionAdmissionHook,
+  SessionAdmissionDeniedError,
   ConfigError,
   ModelError,
   TransientInfraError,
@@ -150,7 +152,6 @@ import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf"
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
-import { sessionThreadStartAdmissionFromEnv } from "./session-thread-start-admission";
 import {
   loadManagedSessionResources,
   mountResources,
@@ -5664,22 +5665,23 @@ export class SessionDO extends DurableObject<Env> {
     if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
     const subAgent = resolvePinnedSubagent(parentConfig, agentId);
 
-    // Thread-start admission port only (admit | deny). Default admit-all when
-    // no USAGE_METER. CF adapter owns meter / freeze / cache; SessionDO maps
-    // deny onto the existing BillingError edge path — no thread row or events.
+    // Optional generic host hook for session-thread starts (unbound → admit).
+    // A denial fails the spawn before any thread row or event is written.
     const subEnvironment = this.state.environment_id
       ? await this.getEnvConfig(this.state.environment_id)
       : null;
-    const threadAdmit = await sessionThreadStartAdmissionFromEnv(this.env).admitThreadStart({
+    const threadAdmit = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
+      kind: "thread_start",
       workspaceId: this.state.tenant_id,
+      sessionId: this.state.session_id,
       agentId: subAgent.id,
       environmentId: this.state.environment_id,
       isLocalRuntime:
         subAgent.runtime_binding != null ||
         subEnvironment?.config?.type === "self_hosted",
     });
-    if (threadAdmit.type !== "admitted") {
-      throw new BillingError(threadAdmit.message);
+    if (threadAdmit.type === "denied") {
+      throw new SessionAdmissionDeniedError(threadAdmit.status, threadAdmit.body);
     }
 
     // Generate a unique thread ID. Prefix `sthr_` matches AMA spec

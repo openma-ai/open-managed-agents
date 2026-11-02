@@ -21,8 +21,8 @@ import {
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
 import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
-import { withHostedInferenceBudget, withHostedInferenceWallet } from "@open-managed-agents/inference-proxy";
-import { cfSessionUsageAdmission } from "../lib/cf-session-create-admission";
+import { withHostedInferenceBudget, withHostedInferenceAdmission } from "@open-managed-agents/inference-proxy";
+import { admitViaSessionAdmissionHook } from "@open-managed-agents/shared";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
@@ -158,18 +158,17 @@ export async function forwardHttpInferenceProxyRequest(input: {
     ? null
     : await input.request.arrayBuffer();
   const budget = await cfSessionModelEgress(input.env, input.sessionId);
-  // Edge wallet hook (tenant balance), checked before the per-session
-  // max_list_cost egress gate. Positive results are KV-cached briefly; a
-  // refusal returns 402 { error: "Insufficient balance", balance_cents }.
-  const wallet = input.env.USAGE_METER
-    ? () => cfSessionUsageAdmission(input.env, input.services.kv).admitSandboxStart({
+  // Optional generic host admission hook, checked before the per-session
+  // max_list_cost egress gate. The hook owns the deny status and body.
+  const admit = input.env.SESSION_ADMISSION
+    ? () => admitViaSessionAdmissionHook(input.env.SESSION_ADMISSION, {
+        kind: "model_request",
         workspaceId: input.tenantId,
-        agentId: "",
-        environmentId: "",
+        sessionId: input.sessionId,
         isLocalRuntime: false,
       })
     : null;
-  return withHostedInferenceWallet(wallet, () => withHostedInferenceBudget(budget, () =>
+  return withHostedInferenceAdmission(admit, () => withHostedInferenceBudget(budget, () =>
     sendHostedInference({
       upstream,
       method,

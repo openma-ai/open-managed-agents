@@ -1,17 +1,11 @@
 /**
- * Session admission.
+ * Session-create admission.
  *
- * Session creation (POST /v1/sessions, Deployment launches) and work on an
- * already-existing Session (new turns, session-thread sub-agents) must be
- * admitted before anything is persisted or any runtime work starts.
- *
- * - `admit` keeps the create policy from #428: rate limit -> daily cap ->
- *   usage gate.
- * - `admitSandboxStart` / `admitThreadStart` are usage-only so turns and
- *   thread starts never burn the create rate limit or daily create quota.
- *
- * Both entry points share the persisted-session policy (self-hosted/local
- * skip, fail-open on meter errors, rejection shapes). Hosts only provide the
+ * Every path that persists a new Session (POST /v1/sessions, Deployment
+ * launches) runs `SessionCreateAdmissionService.admit` BEFORE anything is
+ * persisted or any runtime work is admitted. The policy (order of checks,
+ * self-hosted/local skip, fail-open on meter errors, rejection shapes) lives
+ * here so Cloudflare and Node share one semantics; hosts only provide the
  * storage/binding adapters below.
  */
 
@@ -24,12 +18,7 @@ export type SessionCreateAdmissionDecision =
   | { type: "admitted" }
   | SessionCreateAdmissionRejection;
 
-/** Usage-only admission for work on an existing Session. */
-export type SessionSandboxStartAdmissionDecision =
-  | { type: "admitted" }
-  | { type: "payment_required"; message: string; balanceCents: number };
-
-export interface SessionAdmissionInput {
+export interface SessionCreateAdmissionInput {
   workspaceId: string;
   agentId: string;
   environmentId: string;
@@ -41,25 +30,9 @@ export interface SessionAdmissionInput {
   isLocalRuntime: boolean;
 }
 
-/** Back-compat alias: the input shape is shared by create and turn admission. */
-export type SessionCreateAdmissionInput = SessionAdmissionInput;
-
-/** Inbound port consumed by the Sessions and Session Events application services. */
+/** Inbound port consumed by the Sessions application service. */
 export interface SessionCreateAdmissionPort {
-  /** Create-time admission: rate limit -> daily cap -> usage gate. */
-  admit(input: SessionAdmissionInput): Promise<SessionCreateAdmissionDecision>;
-  /**
-   * Usage-only admission for a new turn on an existing Session. Never
-   * increments the create quota and never applies the create rate limit.
-   */
-  admitSandboxStart(input: SessionAdmissionInput): Promise<SessionSandboxStartAdmissionDecision>;
-  /**
-   * Usage-only admission for a sub-agent / session-thread start. Same policy
-   * as `admitSandboxStart` (local skip, fail-open, payment_required). Kept as
-   * a distinct method so call sites can instrument thread starts without
-   * overloading turn admission naming.
-   */
-  admitThreadStart(input: SessionAdmissionInput): Promise<SessionSandboxStartAdmissionDecision>;
+  admit(input: SessionCreateAdmissionInput): Promise<SessionCreateAdmissionDecision>;
 }
 
 /** Short-window rate limiter adapter (e.g. CF Rate Limiting binding). */
@@ -116,8 +89,8 @@ const consoleLogger: SessionCreateAdmissionLogger = {
 export class SessionCreateAdmissionService implements SessionCreateAdmissionPort {
   constructor(private readonly dependencies: SessionCreateAdmissionServiceDependencies) {}
 
-  async admit(input: SessionAdmissionInput): Promise<SessionCreateAdmissionDecision> {
-    const { rateLimiter, dailyCounter, clock } = this.dependencies;
+  async admit(input: SessionCreateAdmissionInput): Promise<SessionCreateAdmissionDecision> {
+    const { rateLimiter, dailyCounter, usageMeter, clock } = this.dependencies;
     const logger = this.dependencies.logger ?? consoleLogger;
 
     if (rateLimiter && (await rateLimiter.exceeded({ workspaceId: input.workspaceId }))) {
@@ -145,28 +118,6 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
       }
     }
 
-    return this.admitUsage(input, "session.create.usage_gate_failed");
-  }
-
-  async admitSandboxStart(
-    input: SessionAdmissionInput,
-  ): Promise<SessionSandboxStartAdmissionDecision> {
-    return this.admitUsage(input, "session.turn.usage_gate_failed");
-  }
-
-  async admitThreadStart(
-    input: SessionAdmissionInput,
-  ): Promise<SessionSandboxStartAdmissionDecision> {
-    return this.admitUsage(input, "session.thread.usage_gate_failed");
-  }
-
-  private async admitUsage(
-    input: SessionAdmissionInput,
-    op: string,
-  ): Promise<SessionSandboxStartAdmissionDecision> {
-    const { usageMeter } = this.dependencies;
-    const logger = this.dependencies.logger ?? consoleLogger;
-
     if (usageMeter && !input.isLocalRuntime) {
       try {
         const gate = await usageMeter.canStartSandbox({
@@ -182,7 +133,7 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
         }
       } catch (err) {
         logger.error("usage meter canStartSandbox failed; admitting (fail-open)", {
-          op,
+          op: "session.create.usage_gate_failed",
           workspace_id: input.workspaceId,
           agent_id: input.agentId,
           error_name: (err as Error)?.name ?? "unknown",
@@ -198,12 +149,4 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
 /** Admission with no adapters configured (self-hosted Node default). */
 export const admitAllSessionCreates: SessionCreateAdmissionPort = {
   admit: async () => ({ type: "admitted" }),
-  admitSandboxStart: async () => ({ type: "admitted" }),
-  admitThreadStart: async () => ({ type: "admitted" }),
-};
-
-/** Alias: thread-start port defaults to admit-all when no meter is wired. */
-export type SessionThreadStartAdmissionPort = Pick<SessionCreateAdmissionPort, "admitThreadStart">;
-export const admitAllThreadStarts: SessionThreadStartAdmissionPort = {
-  admitThreadStart: async () => ({ type: "admitted" }),
 };

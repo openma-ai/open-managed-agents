@@ -138,15 +138,11 @@ export interface Env {
   // the endpoint returns 503; the OSS billing path is unreachable
   // without an out-of-band billing worker anyway.
   BILLING_INTERNAL_SECRET?: string;
-  /** Billing usage meter RPC (Cloudflare only, hidden in openma-hosted).
-   *  Admission gates fail open when unbound so self-host keeps working. */
-  USAGE_METER?: {
-    canStartSandbox(input: { tenantId: string; agentId?: string }): Promise<{
-      ok: boolean;
-      reason?: string;
-      balance_cents?: number;
-    }>;
-  };
+  // Optional generic admission hook (service binding / WorkerEntrypoint RPC)
+  // consulted before new turns, session-thread starts and hosted model
+  // requests on existing Sessions. Unbound → everything is admitted. The
+  // hook owns the deny status and body. See ./session-admission.ts.
+  SESSION_ADMISSION?: import("./session-admission").SessionAdmissionHook;
   // Service binding to apps/integrations for proxying install initiation
   // calls from the Console (single-origin, no CORS).
   INTEGRATIONS?: Fetcher;

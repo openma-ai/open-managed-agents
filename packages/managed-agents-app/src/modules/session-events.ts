@@ -1,6 +1,7 @@
 import {
   SessionEventsApplicationService,
   type SessionSourcePort,
+  type SessionWorkAdmissionPort,
 } from "@open-managed-agents/managed-agents-application";
 import type { SessionEventLogStore } from "@open-managed-agents/session-event-store";
 import type {
@@ -25,7 +26,10 @@ import {
   type AppModule,
 } from "../index";
 import { managedAgentsPortTokens } from "../managed-agents";
-import { sessionCreateAdmissionPort } from "./sessions";
+
+export const sessionWorkAdmissionPort = createPortToken<SessionWorkAdmissionPort>(
+  "managed-agents.outbound.session-events.work-admission",
+);
 
 export const sessionEventStorePort = createPortToken<SessionEventLogStore>(
   "managed-agents.store.session-events",
@@ -62,7 +66,7 @@ export function sessionEventsModule(): AppModule {
       sessionEventExecutionContextSourcePort,
       sessionEventStreamPort,
       sessionEventDispatchPort,
-      sessionCreateAdmissionPort,
+      sessionWorkAdmissionPort,
     ],
     setup({ port }) {
       const workspace = port(workspaceContextPort);
@@ -78,7 +82,7 @@ export function sessionEventsModule(): AppModule {
             execution: port(sessionEventExecutionContextSourcePort),
             stream: port(sessionEventStreamPort),
             dispatch: port(sessionEventDispatchPort),
-            admission: port(sessionCreateAdmissionPort),
+            workAdmission: port(sessionWorkAdmissionPort),
             clock,
             ids: {
               nextEventId: () => ids.next("session-event"),

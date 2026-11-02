@@ -13,6 +13,8 @@ import {
   type SessionThreadsApplicationPort,
   type SessionEnvironmentSourcePort,
   type SessionCreateAdmissionPort,
+  admitAllSessionWork,
+  type SessionWorkAdmissionPort,
 } from "@open-managed-agents/managed-agents-application";
 import {
   createApp,
@@ -32,6 +34,7 @@ import {
   sessionEventStorePort,
   sessionEventStreamPort,
   sessionEventsModule,
+  sessionWorkAdmissionPort,
 } from "@open-managed-agents/app/modules/session-events";
 import {
   sessionResourceFileSourcePort,
@@ -121,6 +124,11 @@ export interface SqlManagedSessionsCompositionDependencies {
    * `admitAllSessionCreates`). Runs before any Session is persisted.
    */
   admission: SessionCreateAdmissionPort;
+  /**
+   * Generic host hook for work on existing Sessions (new turns). Optional:
+   * defaults to admit-all.
+   */
+  workAdmission?: SessionWorkAdmissionPort;
   runtime: SqlManagedSessionsRuntime;
   /** Optional execution-authority router for accepted input events. */
   eventDispatch?: SessionEventDispatchPort;
@@ -250,6 +258,7 @@ export class SqlManagedSessionsComposition {
       ids,
       lifecycle,
       admission,
+      workAdmission = admitAllSessionWork,
       runtime,
       environments,
       eventDispatch = runtime,
@@ -288,6 +297,7 @@ export class SqlManagedSessionsComposition {
         providePort(sessionResourceResolverPort, resources),
         providePort(sessionLifecyclePort, lifecycle),
         providePort(sessionCreateAdmissionPort, admission),
+        providePort(sessionWorkAdmissionPort, workAdmission),
         providePort(sessionEventStorePort, this.sessionEvents),
         providePort(sessionEventSourcePort, this.sessionSource),
         providePort(sessionEventExecutionContextSourcePort, this.executionContext),

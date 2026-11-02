@@ -4,11 +4,11 @@ import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-a
 import type {
   Environment,
   Session,
-  SessionCreateAdmissionPort,
   SessionEventView,
   SessionThread,
+  SessionWorkAdmissionPort,
 } from "@open-managed-agents/managed-agents-application";
-import { BillingError } from "@open-managed-agents/shared";
+import { SessionAdmissionDeniedError } from "@open-managed-agents/shared";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -88,11 +88,10 @@ interface SubagentsInput {
   threads: ManagedNodeSubagentThreads;
   policy: ManagedNodeSubagentPolicy;
   /**
-   * Optional thread-start admission port. Omitted on self-hosted Node
-   * (admit-all). Hosts that wire a meter pass the shared admission port;
-   * business code only calls admitThreadStart and maps deny → BillingError.
+   * Optional generic host admission hook for session-thread starts.
+   * Omitted → admit-all. A denial fails the spawn with the hook's status/body.
    */
-  threadStartAdmission?: SessionCreateAdmissionPort;
+  threadStartAdmission?: SessionWorkAdmissionPort;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
   run(input: { session: Session; runtime: ManagedNodeHarnessRuntime; sandbox: SandboxExecutor }): Promise<void>;
   output(frame: unknown): Promise<void>;
@@ -154,19 +153,21 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     }
   }
 
-  /** Port-only thread-start gate; default no-op when admission is omitted. */
+  /** Generic thread-start hook; no-op when admission is omitted. */
   private async admitThreadStart(session: Session): Promise<void> {
     if (this.input.threadStartAdmission === undefined) return;
-    const decision = await this.input.threadStartAdmission.admitThreadStart({
+    const decision = await this.input.threadStartAdmission.admit({
+      kind: "thread_start",
       workspaceId: this.input.workspaceId,
+      sessionId: this.input.session.id,
       agentId: session.agent.id,
       environmentId: this.input.environment.id,
       isLocalRuntime:
         this.input.environment.config.type === "self_hosted" ||
         session.agent.openma?.runtimeBinding != null,
     });
-    if (decision.type !== "admitted") {
-      throw new BillingError(decision.message);
+    if (decision.type === "denied") {
+      throw new SessionAdmissionDeniedError(decision.status, decision.body);
     }
   }
 

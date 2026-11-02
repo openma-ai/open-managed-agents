@@ -16,7 +16,7 @@ import { sessionEventSortTime } from "@open-managed-agents/session-event-store";
 import type { SessionSourcePort } from "./session-source";
 import type { SessionEventStreamPort } from "./stream";
 import type { SessionEventDispatchPort } from "../session-execution/events";
-import type { SessionCreateAdmissionPort } from "../sessions/admission";
+import { admitAllSessionWork, type SessionWorkAdmissionPort } from "../sessions/work-admission";
 import type {
   SessionExecutionContextSourcePort,
 } from "@open-managed-agents/session-runtime-contract/context";
@@ -110,21 +110,19 @@ export interface SessionEventsApplicationServiceDependencies {
   stream: SessionEventStreamPort;
   dispatch: SessionEventDispatchPort;
   /**
-   * Usage-only admission for work on an existing Session (new turns, settle
-   * inputs that continue model/sandbox work). Required so a host cannot
-   * silently drop the $0-balance gate; create-time rate limit/daily cap are
-   * deliberately not applied here.
+   * Generic host hook for work on an existing Session (new turns). Optional;
+   * defaults to admit-all. Deny status/body come from the host.
    */
-  admission: SessionCreateAdmissionPort;
+  workAdmission?: SessionWorkAdmissionPort;
   clock: { now(): Date };
   ids: { nextEventId(): string; nextOutcomeId(): string };
 }
 
 /**
- * Inputs that only stop an in-flight turn do not start billable work.
+ * Inputs that only stop an in-flight turn do not start runtime work.
  * Everything else (user.message, system.message, tool confirmations/results,
  * custom tool results, define_outcome) can wake the runtime or continue a
- * model/sandbox turn, so the usage gate applies to it.
+ * model/sandbox turn, so the turn admission hook applies to it.
  */
 function startsRuntimeWork(events: readonly { type: string }[]): boolean {
   return events.some((event) => event.type !== "user.interrupt");
@@ -301,22 +299,28 @@ export class SessionEventsApplicationService
           }
         }
       }
-      // Usage gate for existing-Session work. Runs after the settle-only
-      // window (so an invalid user.message still returns 400) and before any
-      // append, execution dispatch or sandbox start. Usage-only: the
-      // create-time rate limit and daily cap are not touched. Meter errors
-      // fail open inside the shared admission service; local/self-hosted
-      // Sessions skip the meter.
-      if (startsRuntimeWork(acceptedEvents)) {
-        const admission = await this.dependencies.admission.admitSandboxStart({
+      // Host admission hook for existing-Session work. Runs after the
+      // settle-only window (so an invalid user.message still returns 400) and
+      // before any append, execution dispatch or sandbox start.
+      const workAdmission = this.dependencies.workAdmission;
+      if (workAdmission !== undefined && workAdmission !== admitAllSessionWork && startsRuntimeWork(acceptedEvents)) {
+        const admission = await workAdmission.admit({
+          kind: "turn",
           workspaceId: this.dependencies.workspaceId,
-          agentId: execution.session.agent.id,
-          environmentId: execution.environment.id,
+          sessionId: command.sessionId,
+          agentId: execution.session?.agent?.id,
+          environmentId: execution.environment?.id,
           isLocalRuntime:
-            execution.environment.config?.type === "self_hosted" ||
-            execution.session.agent.openma?.runtimeBinding != null,
+            execution.environment?.config?.type === "self_hosted" ||
+            execution.session?.agent?.openma?.runtimeBinding != null,
         });
-        if (admission.type !== "admitted") return admission;
+        if (admission.type === "denied") {
+          return {
+            type: "admission_denied",
+            status: admission.status,
+            body: admission.body !== null && typeof admission.body === "object" ? admission.body : { error: admission.body ?? null },
+          };
+        }
       }
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
         return { type: "version_conflict", message: "Session changed after input validation; retrieve the session before retrying" };

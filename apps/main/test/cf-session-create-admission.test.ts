@@ -1,13 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  cfSessionCreateAdmission,
-  cfSessionUsageAdmission,
-  cfUsageMeter,
-  clearWorkspaceUsageFrozen,
-  USAGE_ADMIT_CACHE_TTL_MS,
-  USAGE_FREEZE_TTL_MS,
-  USAGE_OVERDRAFT_FLOOR_CENTS,
-} from "../src/lib/cf-session-create-admission";
+import { cfSessionCreateAdmission } from "../src/lib/cf-session-create-admission";
 
 const input = {
   workspaceId: "tenant_01",
@@ -22,7 +14,6 @@ function kv() {
     data,
     get: async (key: string) => data.get(key) ?? null,
     put: async (key: string, value: string) => { data.set(key, value); },
-    delete: async (key: string) => { data.delete(key); },
   } as never as { data: Map<string, string> } & Parameters<typeof cfSessionCreateAdmission>[1];
 }
 
@@ -61,154 +52,10 @@ describe("cfSessionCreateAdmission", () => {
     ]);
   });
 
-  it("uses a usage-only gate for existing-session work", async () => {
-    const env = {
-      RL_SESSIONS_TENANT: { limit: async () => ({ success: false }) },
-      SESSION_DAILY_CAP_PER_TENANT: "0",
-      USAGE_METER: {
-        canStartSandbox: vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 })),
-      },
-    };
-    await expect(cfSessionUsageAdmission(env as never).admitSandboxStart(input)).resolves.toEqual({
-      type: "payment_required",
-      message: "Insufficient balance",
-      balanceCents: 0,
-    });
-    expect(env.USAGE_METER.canStartSandbox).toHaveBeenCalledWith({ tenantId: "tenant_01", agentId: "agent_01" });
-  });
-
-  it("gates thread starts through admitThreadStart with the same meter", async () => {
-    const env = {
-      USAGE_METER: {
-        canStartSandbox: vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 })),
-      },
-    };
-    await expect(cfSessionUsageAdmission(env as never).admitThreadStart(input)).resolves.toEqual({
-      type: "payment_required",
-      message: "Insufficient balance",
-      balanceCents: 0,
-    });
-  });
-
   it("fails open when USAGE_METER throws", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const env = { USAGE_METER: { canStartSandbox: async () => { throw new Error("rpc down"); } } };
     await expect(cfSessionCreateAdmission(env as never, kv()).admit(input)).resolves.toEqual({ type: "admitted" });
     error.mockRestore();
-  });
-});
-
-describe("cfUsageMeter KV cache + soft freeze", () => {
-  function memKv() {
-    const data = new Map<string, string>();
-    const puts: Array<{ key: string; expirationTtl?: number }> = [];
-    return {
-      data,
-      puts,
-      get: async (k: string) => data.get(k) ?? null,
-      put: async (k: string, v: string, opts?: { expirationTtl?: number }) => {
-        data.set(k, v);
-        puts.push({ key: k, expirationTtl: opts?.expirationTtl });
-      },
-      delete: async (k: string) => { data.delete(k); },
-      list: async () => ({ keys: [], list_complete: true }),
-    } as never as {
-      data: Map<string, string>;
-      puts: Array<{ key: string; expirationTtl?: number }>;
-    } & import("@open-managed-agents/kv-store").KvStore;
-  }
-
-  it("caches a positive result for 15s per workspace", async () => {
-    let t = 1_000_000;
-    const canStartSandbox = vi.fn(async () => ({ ok: true, balance_cents: 100 }));
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    t += 14_000;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    expect(canStartSandbox).toHaveBeenCalledTimes(1);
-    t += 2_000;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    expect(canStartSandbox).toHaveBeenCalledTimes(2);
-    expect(USAGE_ADMIT_CACHE_TTL_MS).toBe(15_000);
-    expect(USAGE_OVERDRAFT_FLOOR_CENTS).toBe(0);
-  });
-
-  it("never positive-caches a denial; writes frozen with 10m TTL and hard-stops", async () => {
-    let t = 5_000_000;
-    const canStartSandbox = vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 }));
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
-    expect(kvStore.data.has("usage_frozen:ws")).toBe(true);
-    expect(kvStore.data.has("usage_admit:ws")).toBe(false);
-    expect(kvStore.puts.some((p) => p.key === "usage_frozen:ws" && p.expirationTtl === 600)).toBe(true);
-    expect(USAGE_FREEZE_TTL_MS).toBe(600_000);
-    t += 60_000; // still inside 10m soft-freeze window
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
-    expect(canStartSandbox).toHaveBeenCalledTimes(1);
-  });
-
-  it("freezes when balance is at the overdraft floor even if ok is oddly true", async () => {
-    const canStartSandbox = vi.fn(async () => ({ ok: true, balance_cents: 0 }));
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore)!;
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toEqual({
-      ok: false,
-      reason: "Insufficient balance",
-      balanceCents: 0,
-    });
-    expect(kvStore.data.has("usage_frozen:ws")).toBe(true);
-    expect(kvStore.data.has("usage_admit:ws")).toBe(false);
-  });
-
-  it("after 10m fallback TTL, rechecks meter once and rewrites freeze if still empty", async () => {
-    let t = 9_000_000;
-    const canStartSandbox = vi.fn()
-      .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
-      .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
-      .mockResolvedValueOnce({ ok: true, balance_cents: 50 });
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    t += USAGE_FREEZE_TTL_MS;
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
-    expect(canStartSandbox).toHaveBeenCalledTimes(2);
-    expect(kvStore.data.has("usage_frozen:ws")).toBe(true);
-    // Still frozen for the new window — no meter until TTL or clear.
-    t += 1_000;
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
-    expect(canStartSandbox).toHaveBeenCalledTimes(2);
-  });
-
-  it("clears freeze on meter admit after fallback TTL (missed-webhook safety net)", async () => {
-    let t = 9_000_000;
-    const canStartSandbox = vi.fn()
-      .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
-      .mockResolvedValueOnce({ ok: true, balance_cents: 50 });
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    t += USAGE_FREEZE_TTL_MS;
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toEqual({
-      ok: true,
-      balanceCents: 50,
-    });
-    expect(canStartSandbox).toHaveBeenCalledTimes(2);
-    expect(kvStore.data.has("usage_frozen:ws")).toBe(false);
-    expect(kvStore.data.has("usage_admit:ws")).toBe(true);
-  });
-
-  it("clearWorkspaceUsageFrozen lets recharge unblock before fallback TTL", async () => {
-    let t = 2_000_000;
-    const canStartSandbox = vi.fn()
-      .mockResolvedValueOnce({ ok: false, balance_cents: 0 })
-      .mockResolvedValueOnce({ ok: true, balance_cents: 10 });
-    const kvStore = memKv();
-    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
-    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    await clearWorkspaceUsageFrozen(kvStore, "ws");
-    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: true });
-    expect(canStartSandbox).toHaveBeenCalledTimes(2);
   });
 });

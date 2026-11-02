@@ -88,12 +88,13 @@ export interface SessionLifecycleHooks {
     environmentId: string;
     isLocalRuntime: boolean;
   }) => Promise<{ status: number; body: unknown } | null>;
-  /** Pre-turn gate for the legacy /v1/oma events route (USAGE_METER usage
-   *  gate). Returns null to proceed; { status, body } to short-circuit.
-   *  The official /v1/sessions events route uses the shared
-   *  SessionEventsApplicationService gate instead. */
+  /** Optional generic pre-turn admission hook for the legacy /v1/oma events
+   *  route. Returns null to proceed; { status, body } to short-circuit with
+   *  the hook's own response. The official /v1/sessions events route uses
+   *  the SessionEventsApplicationService work-admission port instead. */
   preTurnGate?: (input: {
     tenantId: string;
+    sessionId: string;
     agentId: string;
     environmentId: string;
     isLocalRuntime: boolean;
@@ -717,12 +718,12 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     // Events are appended one by one below, so validate the whole batch first:
     // a mixed batch (e.g. [user.interrupt, user.message]) during
     // requires_action must not persist the interrupt and only then 400 the
-    // message. This also keeps the settle-only 400 ahead of the usage gate.
+    // message. This also keeps the settle-only 400 ahead of the admission hook.
     const needsBatchSettleCheck =
       (body.events.length > 1 &&
         body.events.some((ev) => ev.type === "user.message") &&
         body.events.some((ev) => ev.type !== "user.message")) ||
-      // The usage gate below must not pre-empt the settle-only 400 for a
+      // The admission hook below must not pre-empt the settle-only 400 for a
       // lone user.message on CF (where preTurnGate is wired).
       (deps.lifecycle?.preTurnGate !== undefined &&
         body.events.some((ev) => ev.type === "user.message"));
@@ -737,10 +738,10 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       }
     }
 
-    // Usage gate for existing-session turns on the legacy /v1/oma route.
-    // Anything but a pure interrupt can wake or continue model/sandbox work.
-    // Official /v1/sessions events are gated by the shared SessionEvents
-    // application service with the same payment_required -> 402 body shape.
+    // Optional host admission hook for existing-session turns on the legacy
+    // /v1/oma route. Anything but a pure interrupt can wake or continue
+    // runtime work. Official /v1/sessions events use the SessionEvents
+    // application work-admission port.
     if (deps.lifecycle?.preTurnGate && body.events.some((ev) => ev.type !== "user.interrupt")) {
       const sessionRow = sess as unknown as {
         agent_id?: string;
@@ -752,13 +753,14 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
         : null;
       const gate = await deps.lifecycle.preTurnGate({
         tenantId: t,
+        sessionId: id,
         agentId: sessionRow.agent_id ?? "",
         environmentId: sessionRow.environment_id ?? "",
         isLocalRuntime:
           sessionRow.agent_snapshot?.runtime_binding != null ||
           environment?.config?.type === "self_hosted",
       });
-      if (gate) return c.json(gate.body as object, gate.status as 402);
+      if (gate) return c.json(gate.body as object, gate.status as 400);
     }
 
     for (const ev of body.events) {

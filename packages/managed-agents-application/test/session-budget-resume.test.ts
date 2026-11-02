@@ -3,7 +3,7 @@ import {
   sessionExecutionEventBatches,
   sessionExecutionEvents,
 } from "@open-managed-agents/session-runtime-contract/coordination";
-import { admitAllSessionCreates, SessionEventsApplicationService } from "../src/index";
+import { SessionEventsApplicationService } from "../src/index";
 import { validateBudgetUpdate } from "../src/sessions/budget";
 
 const base = {
@@ -43,7 +43,6 @@ function harness(storedSession: any, latestStop: string) {
     execution: { find: async () => ({ session: storedSession, environment: {} as any, revision: 3 }) } as any,
     stream: { subscribe: () => (async function* () {})() } as any,
     dispatch: { sessionEventsAccepted: async (input: any) => { dispatched.push(input); } },
-    admission: admitAllSessionCreates,
     clock: { now: () => new Date("2026-11-01T01:00:00.000Z") },
     ids: { nextEventId: () => "sevt_upd", nextOutcomeId: () => "o" },
   });

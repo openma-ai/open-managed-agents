@@ -120,12 +120,12 @@ describe("Managed Agents API — POST /v1/sessions/:session_id/events", () => {
   });
 
 
-  it("maps payment_required on an existing session to HTTP 402 with balance_cents", async () => {
+  it("returns an admission hook denial with the hook's status and body", async () => {
     const api = buildSessionEventsTestApi(makeSessionEventsPort({
       sendSessionEvents: async () => ({
-        type: "payment_required",
-        message: "Insufficient balance",
-        balanceCents: 0,
+        type: "admission_denied",
+        status: 429,
+        body: { error: { type: "host_denied", message: "denied by host" } },
       }),
     }));
     const response = await api.fetch(new Request(`http://openma.test/v1/sessions/${sessionWire.id}/events`, {
@@ -133,10 +133,9 @@ describe("Managed Agents API — POST /v1/sessions/:session_id/events", () => {
       headers: { "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" },
       body: JSON.stringify({ events: [{ type: "user.message", content: [{ type: "text", text: "continue" }] }] }),
     }));
-    expect(response.status).toBe(402);
+    expect(response.status).toBe(429);
     await expect(response.json()).resolves.toEqual({
-      error: "Insufficient balance",
-      balance_cents: 0,
+      error: { type: "host_denied", message: "denied by host" },
     });
   });
 

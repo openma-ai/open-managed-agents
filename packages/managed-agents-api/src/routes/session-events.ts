@@ -206,13 +206,9 @@ export function buildSessionEventRoutes(
         404,
       );
     }
-    // Existing-session work admission keeps the legacy /v1/sessions 402 body
-    // shape (`error` string + `balance_cents`) used by the create route.
-    if (result.type === "payment_required") {
-      return c.json(
-        { error: result.message, balance_cents: result.balanceCents },
-        402,
-      );
+    // Host admission hook denial: status and body come from the hook.
+    if (result.type === "admission_denied") {
+      return c.json(result.body, result.status as 400);
     }
 
     let response: object;

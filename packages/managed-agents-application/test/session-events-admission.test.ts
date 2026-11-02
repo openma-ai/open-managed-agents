@@ -3,9 +3,9 @@ import type { SessionEventLogStore } from "@open-managed-agents/session-event-st
 import type { Environment } from "../src/domain/environment";
 import type { Session } from "../src/domain/session";
 import {
-  SessionCreateAdmissionService,
   SessionEventsApplicationService,
-  type SessionUsageMeterPort,
+  type SessionWorkAdmissionDecision,
+  type SessionWorkAdmissionInput,
 } from "../src/index";
 
 const session: Session = {
@@ -56,7 +56,7 @@ const cloudEnvironment: Environment = {
 interface HarnessOptions {
   session?: Session;
   environment?: Environment;
-  usageMeter?: SessionUsageMeterPort;
+  decide?: (input: SessionWorkAdmissionInput) => Promise<SessionWorkAdmissionDecision>;
   recent?: Array<Record<string, unknown>>;
 }
 
@@ -65,15 +65,7 @@ function harness(options: HarnessOptions = {}) {
   const environment = structuredClone(options.environment ?? cloudEnvironment);
   const appendCalls: unknown[] = [];
   const dispatched: unknown[] = [];
-  const canStartSandbox = vi.fn(
-    options.usageMeter?.canStartSandbox
-      ?? (async () => ({ ok: true })),
-  );
-  const admission = new SessionCreateAdmissionService({
-    usageMeter: { canStartSandbox },
-    clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
-    logger: { warn: () => {}, error: () => {} },
-  });
+  const admit = vi.fn(options.decide ?? (async () => ({ type: "allowed" as const })));
   const store: SessionEventLogStore = {
     append: async (input) => {
       appendCalls.push(structuredClone(input));
@@ -98,14 +90,14 @@ function harness(options: HarnessOptions = {}) {
         dispatched.push(input);
       },
     },
-    admission,
+    workAdmission: { admit },
     clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
     ids: {
       nextEventId: () => "event_01",
       nextOutcomeId: () => "outcome_01",
     },
   });
-  return { service, appendCalls, dispatched, canStartSandbox };
+  return { service, appendCalls, dispatched, admit };
 }
 
 const userMessage = {
@@ -114,63 +106,58 @@ const userMessage = {
 };
 
 describe("Session events admission on existing Sessions", () => {
-  it("refuses a new cloud turn at $0 without appending or dispatching", async () => {
+  it("returns the hook denial for a new turn without appending or dispatching", async () => {
     const f = harness({
-      usageMeter: {
-        canStartSandbox: async () => ({
-          ok: false,
-          reason: "Insufficient balance",
-          balanceCents: 0,
-        }),
-      },
+      decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [userMessage],
     })).resolves.toEqual({
-      type: "payment_required",
-      message: "Insufficient balance",
-      balanceCents: 0,
+      type: "admission_denied",
+      status: 429,
+      body: { error: "host_denied" },
     });
-    expect(f.canStartSandbox).toHaveBeenCalledWith({
+    expect(f.admit).toHaveBeenCalledWith({
+      kind: "turn",
       workspaceId: "workspace_01",
+      sessionId: "session_01",
       agentId: "agent_01",
+      environmentId: "env_cloud",
+      isLocalRuntime: false,
     });
     expect(f.appendCalls).toEqual([]);
     expect(f.dispatched).toEqual([]);
   });
 
-  it("refuses settle inputs that continue model work at $0", async () => {
+  it("gates settle inputs that continue runtime work", async () => {
     const f = harness({
-      usageMeter: {
-        canStartSandbox: async () => ({ ok: false, balanceCents: 0 }),
-      },
+      decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [{ type: "user.tool_confirmation", toolUseId: "tool_01", result: "allow" }],
-    })).resolves.toMatchObject({ type: "payment_required" });
+    })).resolves.toMatchObject({ type: "admission_denied" });
     expect(f.appendCalls).toEqual([]);
     expect(f.dispatched).toEqual([]);
   });
 
-  it("admits self-hosted Sessions without touching the meter", async () => {
+  it("passes isLocalRuntime for self-hosted Sessions so the hook can decide", async () => {
     const f = harness({
       environment: { ...cloudEnvironment, config: { type: "self_hosted" } },
-      usageMeter: {
-        canStartSandbox: async () => ({ ok: false, balanceCents: 0 }),
-      },
+      decide: async (input) => input.isLocalRuntime
+        ? { type: "allowed" }
+        : { type: "denied", status: 429, body: {} },
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [userMessage],
     })).resolves.toMatchObject({ type: "accepted" });
-    expect(f.canStartSandbox).not.toHaveBeenCalled();
     expect(f.appendCalls).toHaveLength(1);
     expect(f.dispatched).toHaveLength(1);
   });
 
-  it("admits local-runtime-bound agents without touching the meter", async () => {
+  it("passes isLocalRuntime for local-runtime-bound agents", async () => {
     const localSession = structuredClone(session);
     localSession.agent = {
       ...localSession.agent,
@@ -178,49 +165,30 @@ describe("Session events admission on existing Sessions", () => {
     } as never;
     const f = harness({
       session: localSession,
-      usageMeter: {
-        canStartSandbox: async () => ({ ok: false, balanceCents: 0 }),
-      },
-    });
-    await expect(f.service.sendSessionEvents({
-      sessionId: session.id,
-      events: [userMessage],
-    })).resolves.toMatchObject({ type: "accepted" });
-    expect(f.canStartSandbox).not.toHaveBeenCalled();
-    expect(f.appendCalls).toHaveLength(1);
-  });
-
-  it("fails open when the meter throws", async () => {
-    const f = harness({
-      usageMeter: {
-        canStartSandbox: async () => {
-          throw new Error("meter unavailable");
-        },
-      },
+      decide: async (input) => input.isLocalRuntime
+        ? { type: "allowed" }
+        : { type: "denied", status: 429, body: {} },
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [userMessage],
     })).resolves.toMatchObject({ type: "accepted" });
     expect(f.appendCalls).toHaveLength(1);
-    expect(f.dispatched).toHaveLength(1);
   });
 
-  it("does not gate a pure interrupt at $0", async () => {
+  it("does not consult the hook for a pure interrupt", async () => {
     const f = harness({
-      usageMeter: {
-        canStartSandbox: async () => ({ ok: false, balanceCents: 0 }),
-      },
+      decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [{ type: "user.interrupt" }],
     })).resolves.toMatchObject({ type: "accepted" });
-    expect(f.canStartSandbox).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
     expect(f.appendCalls).toHaveLength(1);
   });
 
-  it("keeps the settle-only 400 ahead of the usage gate", async () => {
+  it("keeps the settle-only 400 ahead of the admission hook", async () => {
     const f = harness({
       recent: [{
         id: "event_idle",
@@ -228,15 +196,13 @@ describe("Session events admission on existing Sessions", () => {
         processedAt: "2026-08-26T01:00:00.000Z",
         stopReason: { type: "requires_action", eventIds: ["tool_01"] },
       }],
-      usageMeter: {
-        canStartSandbox: async () => ({ ok: false, balanceCents: 0 }),
-      },
+      decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),
     });
     await expect(f.service.sendSessionEvents({
       sessionId: session.id,
       events: [userMessage],
     })).resolves.toMatchObject({ type: "invalid_request" });
-    expect(f.canStartSandbox).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
     expect(f.appendCalls).toEqual([]);
   });
 });
