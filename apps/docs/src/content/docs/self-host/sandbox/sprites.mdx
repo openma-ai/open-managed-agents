@@ -1,0 +1,68 @@
+---
+title: Self-host on Sprites sandboxes
+description: Run sessions on Sprites via SANDBOX_PROVIDER=sprites or the managed-runtime driver — persistent ext4 filesystem, automatic pause/wake, and native network policy.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sprites gives each Session a durable microVM with a provider-persistent ext4
+filesystem and automatic pause/wake: idle sandboxes suspend and resume on
+demand without losing workspace bytes. The driver keeps a stable Session
+name plus ownership labels and owner-validated deletion.
+
+## Prerequisites
+
+```bash
+SPRITES_TOKEN=        # required (or pass token: to the factory)
+```
+
+## Configuration
+
+On the standalone Node server, select the adapter directly:
+
+```bash
+SANDBOX_PROVIDER=sprites
+SPRITES_TOKEN=...
+```
+
+To embed the driver in the Runtime Host composition, use
+`createSpritesProvider`, `createSpritesManagedRuntime`, or
+`createSpritesManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-sprites`:
+
+```ts
+const driver = createSpritesManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  token: process.env.SPRITES_TOKEN, // falls back to the env var
+  // baseURL, timeoutMs, controlMode — SDK client options
+});
+```
+
+Client options: `token`, `baseURL`, `timeoutMs`, and `controlMode` (passed to
+the SDK's `SpritesClient`), plus `lifecycleRetry` (`maxAttempts`,
+`baseDelayMs`, `wait`) for transient provider errors. Per-acquisition knobs
+go through `createOptions` (sprite `config` ram/cpus/region/storageGB,
+`environment`, `urlSettings`, `waitForCapacity`, `runtime`) and
+`networkPolicy` (native domain rules with `allow`/`deny` actions).
+`memoryWorkspace`, `runtimeEnvironment`, `outputStore`, `outputKeyPrefix`,
+`credentialEgress`, `sessionInputs`, and `readiness` complete the option
+set.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | supported (provider auto-pause/wake) |
+| Workspace | `retained_runtime`, durable (persistent ext4) |
+| Outputs | `final_collect`, durable |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="note">
+  Sprites storage is provider-persistent but not a portable OpenMA checkpoint
+  — the conformance profile advertises `retained_runtime` only. The driver's
+  `networkPolicy` hook applies Sprites' native egress rules per Session;
+  credential interception still requires a certified `credentialEgress`
+  implementation.
+</Aside>
