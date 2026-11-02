@@ -12,6 +12,15 @@ import {
 } from "@open-managed-agents/tenant-dbs-store";
 import * as schema from "./db/schema";
 
+/** Sender used when EMAIL_FROM is unset. Must be on a domain onboarded to
+ *  Cloudflare Email Sending for the account that owns the SEND_EMAIL binding. */
+export const DEFAULT_EMAIL_FROM = "openma <noreply@openma.dev>";
+
+export function resolveEmailFrom(env: Pick<Env, "EMAIL_FROM">): string {
+  const v = env.EMAIL_FROM?.trim();
+  return v ? v : DEFAULT_EMAIL_FROM;
+}
+
 function sendEmail(
   env: Env,
   to: string,
@@ -24,7 +33,7 @@ function sendEmail(
     return;
   }
   return env.SEND_EMAIL.send({
-    from: "openma <noreply@openma.dev>",
+    from: resolveEmailFrom(env),
     to,
     subject,
     html,

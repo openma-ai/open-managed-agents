@@ -84,6 +84,11 @@ export interface Env {
    *  per-host scoping. */
   AUTH_COOKIE_DOMAIN?: string;
   AUTH_COOKIE_NAME?: string;
+  /** From header for auth emails (OTP / verification / reset) sent via
+   *  SEND_EMAIL, e.g. "openma <noreply@openma.ai>". The domain must be
+   *  onboarded to Cloudflare Email Sending. Defaults to
+   *  "openma <noreply@openma.dev>" when unset. */
+  EMAIL_FROM?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** Better Auth GitHub sign-in app credentials. These are intentionally
