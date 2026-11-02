@@ -12,6 +12,7 @@ import {
   type SessionThreadLifecycleCommandPort,
   type SessionThreadsApplicationPort,
   type SessionEnvironmentSourcePort,
+  type SessionCreateAdmissionPort,
 } from "@open-managed-agents/managed-agents-application";
 import {
   createApp,
@@ -52,6 +53,7 @@ import {
 import {
   deploymentSessionLauncherPort,
   sessionAgentSourcePort,
+  sessionCreateAdmissionPort,
   sessionEnvironmentSourcePort,
   sessionLifecyclePort,
   sessionResourceResolverPort,
@@ -113,6 +115,12 @@ export interface SqlManagedSessionsCompositionDependencies {
   client: SqlClient;
   environments: SessionEnvironmentSourcePort;
   lifecycle: SessionLifecycleCommandPort;
+  /**
+   * Session-create admission (rate limit, daily cap, usage gate). Required:
+   * hosts must wire it explicitly (CF: bindings; Node: its own adapters or
+   * `admitAllSessionCreates`). Runs before any Session is persisted.
+   */
+  admission: SessionCreateAdmissionPort;
   runtime: SqlManagedSessionsRuntime;
   /** Optional execution-authority router for accepted input events. */
   eventDispatch?: SessionEventDispatchPort;
@@ -241,6 +249,7 @@ export class SqlManagedSessionsComposition {
       clock,
       ids,
       lifecycle,
+      admission,
       runtime,
       environments,
       eventDispatch = runtime,
@@ -278,6 +287,7 @@ export class SqlManagedSessionsComposition {
         providePort(sessionEnvironmentSourcePort, environments),
         providePort(sessionResourceResolverPort, resources),
         providePort(sessionLifecyclePort, lifecycle),
+        providePort(sessionCreateAdmissionPort, admission),
         providePort(sessionEventStorePort, this.sessionEvents),
         providePort(sessionEventSourcePort, this.sessionSource),
         providePort(sessionEventExecutionContextSourcePort, this.executionContext),

@@ -30,6 +30,7 @@ import type { SessionEnvironmentSourcePort } from "./environment-source";
 import type { SessionStore } from "@open-managed-agents/session-store";
 import type { SessionResourceResolverPort } from "./resource-resolver";
 import type { SessionLifecycleCommandPort } from "../session-execution/lifecycle";
+import type { SessionCreateAdmissionPort } from "./admission";
 import type {
   DeploymentSessionLauncherPort,
   LaunchDeploymentSession,
@@ -102,6 +103,12 @@ export interface SessionsApplicationServiceDependencies {
   environments: SessionEnvironmentSourcePort;
   resources: SessionResourceResolverPort;
   lifecycle: SessionLifecycleCommandPort;
+  /**
+   * Rate limit / daily cap / usage gate, evaluated before any Session row,
+   * event, or runtime work is persisted. Required so no host can silently
+   * drop the gates.
+   */
+  admission: SessionCreateAdmissionPort;
   clock: { now(): Date };
   ids: { nextSessionId(): string };
 }
@@ -295,6 +302,15 @@ export class SessionsApplicationService
         message: `Environment ${command.environmentId} was not found`,
       };
     }
+
+    const admission = await this.dependencies.admission.admit({
+      workspaceId: this.dependencies.workspaceId,
+      agentId: agent.id,
+      environmentId: environment.id,
+      isLocalRuntime:
+        environment.config.type === "self_hosted" || agent.openma?.runtimeBinding != null,
+    });
+    if (admission.type !== "admitted") return admission;
 
     const timestamp = this.dependencies.clock.now().toISOString();
     const sessionId = this.dependencies.ids.nextSessionId();

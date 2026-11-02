@@ -129,6 +129,8 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
     if (operation === "sessions.create") {
       const command = await deps.mapping.prepareCreate(body);
       const created = await deps.sessions.createSession(command);
+      if (created.type === "rate_limited") throw new OpenAIAgentsProtocolError(429, created.message);
+      if (created.type === "payment_required") throw new OpenAIAgentsProtocolError(402, created.message);
       if (created.type !== "created") return invalid(created.message);
       const current = await snapshot(created.session.id);
       return body.stream === true ? {stream:stream(created.session.id,request.signal,true,current)} : {body:current.session};

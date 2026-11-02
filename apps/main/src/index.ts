@@ -170,6 +170,8 @@ import {
   cfOutputsAdapter,
   fetchVaultCredentials,
 } from "./lib/cf-session-lifecycle";
+import { cfSessionCreateAdmission } from "./lib/cf-session-create-admission";
+import type { KvStore } from "@open-managed-agents/kv-store";
 import { validateAgentLimits } from "./lib/limits";
 import { listMemberships, hasMembership } from "./auth-config";
 import legacyEnvironmentsRoutes from "./routes/environments";
@@ -766,8 +768,12 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
   const selfHostedWork = managedEnvironmentWorkApplicationFor(ctx)
     .port(environmentSessionWorkEnqueuerPort);
   const sessionLifecycleHooks = cfSessionLifecycle(ctx as never);
+  const services = (ctx.var as unknown as { services: { kv: KvStore } }).services;
   return new SqlManagedSessionsComposition({
     client,
+    // Rate limit + daily cap + USAGE_METER gate, evaluated by the shared
+    // Sessions application before any Session row or work is persisted.
+    admission: cfSessionCreateAdmission(ctx.env, services.kv),
     // Event acceptance and runtime work admission must share one D1 batch.
     // SessionDO is only an execution host; a failed service-binding wakeup
     // therefore cannot erase already accepted work.

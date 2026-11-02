@@ -1,3 +1,4 @@
+import { admitAllSessionCreates } from "@open-managed-agents/managed-agents-application";
 import { describe, expect, it } from "vitest";
 
 import { MemorySessionStore } from "@open-managed-agents/session-store-memory";
@@ -15,6 +16,7 @@ import {
   sessionAgentSourcePort,
   sessionEnvironmentSourcePort,
   sessionLifecyclePort,
+  sessionCreateAdmissionPort,
   sessionResourceResolverPort,
   sessionStorePort,
   sessionsModule,
@@ -73,6 +75,7 @@ describe("Sessions application module", () => {
             secrets: [],
           }),
         }),
+        providePort(sessionCreateAdmissionPort, admitAllSessionCreates),
         providePort(sessionLifecyclePort, {
           sessionStarted: async (input) => { started.push(input); },
           sessionStopped: async () => {},
