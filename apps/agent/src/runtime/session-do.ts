@@ -1,3 +1,4 @@
+import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
@@ -124,7 +125,7 @@ import {
   type ActiveOutcomeState,
   type OutcomeEvaluationRecord,
 } from "./outcome-supervisor";
-import { buildTools, disposeTools } from "../harness/tools";
+import { buildTools, disposeTools, ToolFailureError } from "../harness/tools";
 import { resolveProxiedToolCall } from "../harness/tool-proxy";
 import { MemoryStoreService } from "@open-managed-agents/memory-store";
 import { buildCfServices, buildCfTenantDbProvider, getCfServicesForTenant } from "@open-managed-agents/services";
@@ -1741,7 +1742,9 @@ export class SessionDO extends DurableObject<Env> {
     if (!this.env.MAIN_DB || !this.state.tenant_id || !this.state.session_id) return null;
     if (this._executionStore === null) {
       const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
-      this._executionStore = new SqlSessionExecutionStore(new CfD1SqlClient(db));
+      this._executionStore = new SqlSessionExecutionStore(new CfD1SqlClient(db), {
+        recoveryScope: { workspaceId: this.state.tenant_id, sessionId: this.state.session_id },
+      });
       this._executionStoreReady = ensureSessionExecutionCoordinatorSchema(
         new CfD1SqlClient(db),
       );
@@ -5242,7 +5245,9 @@ export class SessionDO extends DurableObject<Env> {
             const toolResultEvent: SessionEvent = {
               type: "agent.tool_result",
               tool_use_id: pending.toolCallId,
-              content: `Error: ${e instanceof Error ? e.message : String(e)}`,
+              // ToolFailureError messages are pre-formatted model-facing
+              // text ("Error: " prefix included); use them verbatim.
+              content: e instanceof ToolFailureError ? e.message : `Error: ${e instanceof Error ? e.message : String(e)}`,
               parent_event_id: pending.toolCallId,
             };
             history.append(toolResultEvent);
@@ -8210,13 +8215,13 @@ export class SessionDO extends DurableObject<Env> {
         ? {
             type: "agent.mcp_tool_result" as const,
             mcp_tool_use_id: id,
-            content: "Tool call interrupted (DO eviction or restart). Re-send your message to retry.",
+            content: UNKNOWN_TOOL_RESULT_TEXT,
             is_error: true,
           }
         : {
             type: "agent.tool_result" as const,
             tool_use_id: id,
-            content: "Tool call interrupted (DO eviction or restart). Re-send your message to retry.",
+            content: UNKNOWN_TOOL_RESULT_TEXT,
             is_error: true,
           };
       const tagged = (meta.thread

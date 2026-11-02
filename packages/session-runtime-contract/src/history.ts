@@ -68,3 +68,7 @@ export function decodeSessionEventDocument(document: string): {
     ...(typeof source.execution_id === 'string' && source.execution_id.length > 0 ? { executionId: source.execution_id } : {}),
   };
 }
+
+/** Model-facing result for a dispatched tool whose completion cannot be confirmed.
+ * Keep the ordinary tool-result envelope; unknown is not a success or a retry instruction. */
+export const UNKNOWN_TOOL_RESULT_TEXT = "Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.";

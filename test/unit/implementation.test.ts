@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { buildTools, getToolPermission } from "../../apps/agent/src/harness/tools";
+import { buildTools, getToolPermission, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
 import type { SandboxExecutor } from "../../apps/agent/src/harness/interface";
@@ -56,6 +56,19 @@ const TOOL_EXEC_OPTS = {
   messages: [],
   abortSignal: undefined as any,
 };
+
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
 
 // ============================================================
 // Fix 1: Permission policy enforcement
@@ -398,9 +411,8 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "https://evil.com/data" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://evil.com/data" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("not allowed");
     expect(result).toContain("evil.com");
@@ -475,9 +487,8 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "not-a-valid-url" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "not-a-valid-url" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("Invalid URL");
   });
@@ -507,9 +518,8 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "https://blocked.net/page" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://blocked.net/page" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("safe.com");
     expect(result).toContain("trusted.org");
