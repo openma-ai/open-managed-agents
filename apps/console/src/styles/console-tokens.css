@@ -56,6 +56,7 @@
   --switch-h: 20px;
   --switch-thumb-size: 14px;
   --switch-inset: 2px;
+  --switch-thumb-bg: #ffffff;
 
   --shell-stage-gap: var(--console-pad-sm);
   --shell-route-radius: var(--console-radius-card);
