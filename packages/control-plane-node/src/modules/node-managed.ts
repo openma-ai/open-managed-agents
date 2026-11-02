@@ -39,7 +39,7 @@ import { agentUsesAssemblySkillMount } from "@open-managed-agents/agent/harness/
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 
 import { buildCredentialRoutes as buildManagedCredentialRoutes, buildDeploymentRoutes as buildManagedDeploymentRoutes, buildDeploymentRunRoutes as buildManagedDeploymentRunRoutes, buildDreamRoutes as buildManagedDreamRoutes, buildEnvironmentRoutes as buildManagedEnvironmentRoutes, buildEnvironmentWorkRoutes as buildManagedEnvironmentWorkRoutes, buildFileRoutes as buildManagedFileRoutes, buildMemoryStoreRoutes as buildManagedMemoryStoreRoutes, buildMemoryRoutes as buildManagedMemoryRoutes, buildMemoryVersionRoutes as buildManagedMemoryVersionRoutes, buildModelRoutes as buildManagedModelRoutes, buildSkillRoutes as buildManagedSkillRoutes, buildSkillVersionRoutes as buildManagedSkillVersionRoutes, buildTunnelCertificateRoutes as buildManagedTunnelCertificateRoutes, buildTunnelRoutes as buildManagedTunnelRoutes, buildVaultRoutes as buildManagedVaultRoutes, buildUserProfileRoutes as buildManagedUserProfileRoutes } from "@open-managed-agents/managed-agents-api";
-import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
+import { SessionCreateAdmissionService, SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService, type MemoriesApplicationPort, type Session, type SessionEnvironmentSourcePort } from "@open-managed-agents/managed-agents-application";
 import { bindPort, defineAppModule, providePort } from "@open-managed-agents/app";
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
 import { deploymentAgentSourcePort, deploymentEnvironmentSourcePort, deploymentFileSourcePort, deploymentMemoryStoreSourcePort, deploymentSchedulePlannerPort, deploymentSessionLauncherPort, deploymentVaultSourcePort } from "@open-managed-agents/app/modules/deployments";
@@ -909,6 +909,9 @@ export async function createManagedNodeRuntime(
     : secrets.cipherFor("managed.sessions.resources");
   const managedSessionsComposition = new SqlManagedSessionsComposition({
     client: sql,
+    // Same shared admission policy as Cloudflare. Self-hosted Node has no
+    // rate-limit, quota or billing adapters, so every create is admitted.
+    admission: new SessionCreateAdmissionService({ clock: { now: () => new Date() } }),
     executionOutbox: true,
     environments: nodeManagedEnvironments,
     lifecycle: managedSessionLifecycle,

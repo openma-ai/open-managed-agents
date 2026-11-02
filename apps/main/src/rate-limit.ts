@@ -15,7 +15,7 @@ import { verifyTurnstile } from "./turnstile";
 
 /** Apply a rate-limiting binding. Soft-passes when binding is absent
  *  (dev/test harness). Returns true when the request should be rejected. */
-async function exceeded(
+export async function exceeded(
   binding: RateLimit | undefined,
   key: string,
 ): Promise<boolean> {

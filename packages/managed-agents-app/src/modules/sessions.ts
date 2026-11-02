@@ -2,6 +2,7 @@ import {
   SessionsApplicationService,
   type DeploymentSessionLauncherPort,
   type SessionAgentSourcePort,
+  type SessionCreateAdmissionPort,
   type SessionEnvironmentSourcePort,
   type SessionResourceResolverPort,
 } from "@open-managed-agents/managed-agents-application";
@@ -46,6 +47,11 @@ export const sessionLifecyclePort =
     "managed-agents.outbound.sessions.lifecycle",
   );
 
+export const sessionCreateAdmissionPort =
+  createPortToken<SessionCreateAdmissionPort>(
+    "managed-agents.outbound.sessions.create-admission",
+  );
+
 export const deploymentSessionLauncherPort =
   createPortToken<DeploymentSessionLauncherPort>(
     "managed-agents.application.deployment-session-launcher",
@@ -67,6 +73,7 @@ export function sessionsModule(): AppModule {
       sessionEnvironmentSourcePort,
       sessionResourceResolverPort,
       sessionLifecyclePort,
+      sessionCreateAdmissionPort,
       managedAgentsPortTokens.sessionEvents,
     ],
     setup({ port }) {
@@ -82,6 +89,7 @@ export function sessionsModule(): AppModule {
         environments: port(sessionEnvironmentSourcePort),
         resources: port(sessionResourceResolverPort),
         lifecycle: port(sessionLifecyclePort),
+        admission: port(sessionCreateAdmissionPort),
         budgetEvents: (() => {
           const events = port(managedAgentsPortTokens.sessionEvents);
           return events?.recordBudgetUpdate === undefined

@@ -6,7 +6,7 @@ import type {
 import type { Agent } from "../src/domain/agent";
 import type { Environment } from "../src/domain/environment";
 import type { SessionView } from "../src/ports/sessions";
-import { SessionsApplicationService } from "../src/index";
+import { SessionsApplicationService, admitAllSessionCreates } from "../src/index";
 
 class MemorySessionStore implements SessionStore {
   private readonly records = new Map<string, StoredSession>();
@@ -221,6 +221,7 @@ describe("SessionsApplicationService", () => {
   it("rejects a missing or archived environment before persisting a session", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -249,6 +250,7 @@ describe("SessionsApplicationService", () => {
   it("rejects an archived Environment entity before persisting a session", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -282,6 +284,7 @@ describe("SessionsApplicationService", () => {
   it("rejects latest and pinned selections when the current Agent is archived", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -323,6 +326,7 @@ describe("SessionsApplicationService", () => {
     const store = new MemorySessionStore();
     const lifecycleSignals: object[] = [];
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -465,6 +469,7 @@ describe("SessionsApplicationService", () => {
     const store = new MemorySessionStore();
     const versionLookups: object[] = [];
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -496,6 +501,7 @@ describe("SessionsApplicationService", () => {
   it("passes resolved GitHub credentials into the atomic session insert", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -561,6 +567,7 @@ describe("SessionsApplicationService", () => {
   it("applies session-only agent overrides to the selected snapshot", async () => {
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -658,6 +665,7 @@ describe("SessionsApplicationService", () => {
     };
     const versionLookups: object[] = [];
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -716,6 +724,7 @@ describe("SessionsApplicationService", () => {
 
   it("rejects unsupported coordinator data rather than silently dropping an advisor", async () => {
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01", store: new MemorySessionStore(),
       agents: { findCurrent: async () => ({ ...structuredClone(agent), multiagent: { type: "coordinator", agents: [{ type: "advisor", model: "m" }] } as never }), findVersion: async () => null },
       environments: availableSessionEnvironment, resources: emptySessionResources,
@@ -730,6 +739,7 @@ describe("SessionsApplicationService", () => {
     async function setup(status: SessionView["status"]) {
       const store = new MemorySessionStore();
       const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
         workspaceId: "workspace_01",
         store,
         agents: {
@@ -833,6 +843,7 @@ describe("SessionsApplicationService", () => {
     let now = new Date("2026-08-26T02:00:00.000Z");
     const store = new MemorySessionStore();
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -910,6 +921,7 @@ describe("SessionsApplicationService", () => {
   it("returns an explicit version conflict when the stored revision changes", async () => {
     const store = new MemorySessionStore(true);
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store,
       agents: {
@@ -942,6 +954,7 @@ describe("SessionsApplicationService", () => {
     let now = new Date("2026-08-26T02:00:00.000Z");
     const lifecycleSignals: object[] = [];
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store: new MemorySessionStore(),
       agents: {
@@ -1002,6 +1015,7 @@ describe("SessionsApplicationService", () => {
   it("deletes a session so it can no longer be retrieved", async () => {
     const lifecycleSignals: object[] = [];
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store: new MemorySessionStore(),
       agents: {
@@ -1051,6 +1065,7 @@ describe("SessionsApplicationService", () => {
     let now = new Date("2026-08-26T00:00:00.000Z");
     let nextId = 0;
     const service = new SessionsApplicationService({
+    admission: admitAllSessionCreates,
       workspaceId: "workspace_01",
       store: new MemorySessionStore(),
       agents: {

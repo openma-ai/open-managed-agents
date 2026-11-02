@@ -101,7 +101,9 @@ export type SessionView = Session;
 export type CreateSessionResult =
   | { type: "created"; session: SessionView }
   | { type: "invalid_request"; message: string }
-  | { type: "dependency_not_found"; message: string };
+  | { type: "dependency_not_found"; message: string }
+  | { type: "rate_limited"; message: string }
+  | { type: "payment_required"; message: string; balanceCents: number };
 
 export type RetrieveSessionResult =
   | { type: "found"; session: SessionView }
