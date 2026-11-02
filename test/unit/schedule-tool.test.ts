@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi } from "vitest";
-import { buildTools, ALL_TOOLS } from "../../apps/agent/src/harness/tools";
+import { buildTools, ALL_TOOLS, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
 
@@ -22,6 +22,19 @@ const TOOL_EXEC_OPTS = {
   messages: [],
   abortSignal: undefined as any,
 };
+
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
 
 function makeScheduleEnv() {
   const scheduleWakeup = vi.fn(async (a: any) => ({
@@ -191,7 +204,7 @@ describe("schedule tool — execution", () => {
     expect(r.success).toBe(false);
   });
 
-  it("safe wrapper converts scheduleWakeup throws into Error: string", async () => {
+  it("safe wrapper rejects scheduleWakeup throws as ToolFailureError carrying the Error: text", async () => {
     const sandbox = new TestSandbox();
     const env = {
       ...makeScheduleEnv(),
@@ -201,11 +214,9 @@ describe("schedule tool — execution", () => {
     };
     const tools = await buildTools(makeAgentConfig(), sandbox, env);
 
-    const result = await tools.schedule.execute(
-      { delay_seconds: 60, prompt: "x" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.schedule.execute({ delay_seconds: 60, prompt: "x" }, TOOL_EXEC_OPTS),
     );
-    expect(typeof result).toBe("string");
     expect(result).toContain("Error: session is terminated");
   });
 });
