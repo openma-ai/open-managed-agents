@@ -1,0 +1,202 @@
+---
+title: Claude Managed Agents 兼容性
+description: "OpenMA 实现了哪些 Claude Managed Agents 面——API 矩阵、会话语义（steer、requires_action、预算）、Worker 边界，以及诚实的缺口清单。"
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+OpenMA 实现了与 **Claude Managed Agents（CMA）兼容的控制面 API**，以及其上的
+**Environment Worker 协议边界**。它不是 Anthropic 托管的 CMA 产品：这里的
+「兼容」指协议与线上形状兼容，而不是与托管服务的功能对等。
+
+两条性质保证这个说法站得住：
+
+- [`packages/managed-agents-api/src/contracts/`](https://github.com/openma-ai/open-managed-agents/tree/main/packages/managed-agents-api/src/contracts)
+  中的请求/响应合同是 Zod schema，并用 `satisfies` 对照官方
+  `@anthropic-ai/sdk@0.120.0` 的 `beta/*` 资源类型。SDK 的 Managed Agents 面
+  一变，合同编译就会失败，直到 OpenMA 跟上。
+- 下表每个端点都存在于
+  [`packages/managed-agents-api/src/routes/`](https://github.com/openma-ai/open-managed-agents/tree/main/packages/managed-agents-api/src/routes)，
+  并同时挂在 Cloudflare Worker（`apps/main`）与 Node 服务（`apps/main-node`）
+  的 `/v1` 上。OpenMA 自有扩展放在 `/v1/oma/*`，以保持兼容面干净。
+
+Anthropic SDK 会自动带上所需的 `anthropic-beta` 标志。手工调用时请发送矩阵中
+列出的标志（例如 `anthropic-beta: managed-agents-2026-04-01`），否则路由会拒绝。
+
+## API 面矩阵
+
+| CMA 面 | OpenMA | 代码位置 |
+|---|---|---|
+| Agents CRUD + 版本 | **已实现**——创建、列表、读取、更新、删除、归档，`versions` 列表 + 读取 | `routes/agents.ts` → `/v1/agents` |
+| Session | **已实现**——创建、列表、读取、更新、删除、归档 | `routes/sessions.ts` → `/v1/sessions` |
+| Session 事件 | **已实现**——`POST /events`、`GET /events`（JSON）、`GET /events/stream`（SSE） | `routes/session-events.ts` |
+| Session 资源 | **已实现**——挂载、列出、更新、移除 `file`、`github_repository`、`memory_store` | `routes/session-resources.ts` |
+| Session 线程 | **已实现**——列出、读取、归档；线程事件 + 流在同一路由上 | `routes/session-threads.ts`（`/:sessionId/threads/:threadId/events`、`/stream`） |
+| Session 输出 | **已实现**（OpenMA 扩展）——`GET /outputs`、`GET /outputs/:filename` | `routes/session-outputs.ts` |
+| Environment | **已实现**——CRUD + 归档 | `routes/environments.ts` → `/v1/environments` |
+| Environment Work（Worker API） | **已实现**——列表、`work/poll`、读取、更新、`ack`、`heartbeat`、`stop`、`work/stats` | `routes/environment-work.ts` → `/v1/environments/:id/work` |
+| Memory stores | **已实现**——store CRUD + 归档，memories CRUD（CAS `precondition`），`memory_versions` 历史 + redact | `routes/memory-stores.ts`、`memories.ts`、`memory-versions.ts` → `/v1/memory_stores`（`anthropic-beta: agent-memory-2026-07-22`） |
+| Skills | **已实现**——skill CRUD、versions、版本内容下载 | `routes/skills.ts`、`skill-versions.ts` → `/v1/skills`（`anthropic-beta: skills-2025-10-02`） |
+| Files | **已实现**——上传、读取、content、删除 | `routes/files.ts` → `/v1/files`（`anthropic-beta: files-api-2025-04-14`） |
+| Vault 与凭据 | **已实现**——vault CRUD + 归档，credential CRUD + 归档，`mcp_oauth_validate` | `routes/vaults.ts`、`credentials.ts` → `/v1/vaults` |
+| Models | **已实现**（只读）——列表 + 读取 | `routes/models.ts` → `/v1/models`；由租户 Model Cards 投影 |
+| Deployments 与 deployment runs | **已实现**——deployment CRUD、`run`、run 列表/读取 | `routes/deployments.ts`、`deployment-runs.ts` → `/v1/deployments`、`/v1/deployment_runs` |
+| Dreams | **已实现**——`anthropic-beta: dreaming-2026-04-21` | `routes/dreams.ts` → `/v1/dreams` |
+| MCP tunnels | **已实现**——tunnel CRUD、证书、`reveal_token`、`rotate_token` | `routes/tunnels.ts`、`tunnel-certificates.ts` → `/v1/tunnels`（`anthropic-beta: mcp-tunnels-2026-06-22`） |
+| User profiles | **已实现**——`anthropic-beta: user-profiles-2026-08-18` | `routes/user-profiles.ts` → `/v1/user_profiles` |
+| MCP servers | **已实现**——作为 Agent 配置上的 `mcp_servers` 字段（URL/HTTP/SSE/stdio）；SDK 面没有独立 MCP-server 资源 | `routes/agents.ts`、`contracts/agent-input-components.ts` |
+| Callable agents | **已实现**——Agent 配置上的 `callable_agents` 派生 `call_agent_*` 工具 | `routes/agents.ts`、`contracts/agents.ts`；OMA 集成（GitHub/Slack/Linear/飞书）在 `/v1/oma/integrations/*` |
+| `/openai/v1` 适配器 | **已实现**——在同一套原生 Session 上投影 OpenAI Agents API | `packages/openai-agents-api`、`openai-agents-compat`；挂在 `apps/main/src/index.ts` 的 `/openai` |
+
+### 可发送的 Session 事件
+
+`POST /v1/sessions/:id/events` 接受官方可发送事件联合
+（`contracts/session-event-inputs.ts` 中的 `sendableEventSchema`）：
+
+| 事件 | 方向 |
+|---|---|
+| `user.message` | 用户回合（文本或文件块）。运行中：**在下一个模型/工具边界 steer 进当前回合**（不是下一回合 outbox）。 |
+| `user.interrupt` | 中断正在进行的回合，可选按 `session_thread_id` 限定。中断后，随后的 `user.message` 开启**新**回合。 |
+| `user.tool_confirmation` | 对权限门控的工具调用 `allow`/`deny` |
+| `user.custom_tool_result` | 使 Session 暂停的自定义工具结果 |
+| `user.tool_result` | 客户端侧工具调用结果 |
+| `user.define_outcome` | 评估用结果量规（`max_iterations` ≤ 20） |
+| `system.message` | 系统注入的文本块 |
+
+**没有**单独的 `POST .../pending/:id/steer` 扩展。普通的运行中 `user.message`
+**就是** steer。DO 本地的 `pending_events` 表已退役：排队的中途输入作为
+append-only `events` 日志里未盖章的行存在（消费前 `processed_at` 为 null）。
+见 [`docs/implementation/cma-steer-coherent-turn.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/implementation/cma-steer-coherent-turn.md)。
+
+## 对客户端重要的会话语义
+
+这些行为属于 OpenMA 遵循的 CMA 线上合同。细节亦见
+[API 端点 → Session budgets](/reference/api/#session-budgets)。
+
+### `requires_action` 与 `budget_reached` 仅接受 settle
+
+当 Session（或线程）空闲且
+`stop_reason: {"type": "requires_action"}`（仍有 outstanding `event_ids`）或
+`{"type": "budget_reached"}` 时，**只接受 settle 事件**：
+
+- `user.tool_confirmation`
+- `user.tool_result`
+- `user.custom_tool_result`
+- `user.interrupt`（预算暂停时接受并忽略）
+
+此时发 `user.message` 会返回 **400** `invalid_request_error`，不会延迟或入队。
+两者都可能适用时，`requires_action` 优先于 `budget_reached`。
+
+### Session 预算
+
+Session 可携带
+`{"budget": {"type": "limit", "max_list_cost": {"amount": "500", "currency": "USD"}}}`
+（金额为整美分的整数字符串）。仅当 Session 有 `max_list_cost` **且**其
+model card 有 `pricing` 时预算才生效。越过上限会发出带
+`stop_reason: budget_reached` 的 idle/`usage`。`PATCH` 规则（只能新建、
+只能上调 `max_list_cost`、`null` 单向清除）见 API 参考页。
+
+### 重试 / exhausted 保留
+
+在 `retry_status: retrying` / `session.status_rescheduled` 期间，中途输入被
+持有（不 flush、不作为新回合启动）。在 `retries_exhausted` 时，未处理的中途
+行**保留**，并随下一轮事件进入上下文（相对 SDK「清空排队输入」的措辞，这是
+有意的分歧）。
+
+## Worker 协议边界
+
+沙箱/Worker 边界遵循
+[`docs/claude-managed-agents-sandbox-provider-audit.md`](https://github.com/openma-ai/open-managed-agents/blob/main/docs/claude-managed-agents-sandbox-provider-audit.md)
+中的不变量：
+
+- **Environment 是 Work 队列。** Worker 持续轮询
+  `GET /v1/environments/{id}/work/poll`，或由带签名的 webhook 唤醒
+  （`session.status_run_started`，Standard Webhooks 签名，最多三次）。webhook
+  只是提示——Work 由 poll 认领，从不由 webhook 投递认领。
+- **一条凭据路径。** Environment 作用域的 `oma_env_` 服务密钥仅 Bearer、仅对该
+  Environment 的 `/work/**` 有效，可通过创建/吊销轮换，且从不授权 Session
+  资源。每条被认领的 Work 携带独立的、与认领绑定的 `sessions_token`（经
+  `ANTHROPIC_WORK_SECRET` 下发）；重新认领会轮换并围栏旧所有者。
+- **ACK/heartbeat/stop 所有权明确。** 三种内嵌激活策略：`claim_then_acquire`、
+  `poll_unacked_then_dispatch`、`acquire_then_session_poll`。
+- **事件日志是事实来源。** Work 与 webhook 载荷只带 Session ID——Worker 再用其
+  `sessions_token` 取回被认领的 Session 并回放只追加日志。
+- **凭据设计为不进入沙箱。** 强制透明 HTTPS 拦截仅存在于 `cloudflare`
+  managed-runtime 驱动；其他地方边界会把密钥留在会话外，但不声称网络层强制——
+  Node/Docker 上的 `oma-vault` env 代理是建议性的，其余驱动报告 `unsupported`。
+- **外部 Worker 是一等通道。** `external_worker` 模式暴露不变的 Work API，且
+  不启动 OpenMA 沙箱。
+
+### 驱动通道
+
+按
+[`packages/managed-runtime-host/src/provider-conformance.ts`](https://github.com/openma-ai/open-managed-agents/blob/main/packages/managed-runtime-host/src/provider-conformance.ts)
+中的 `MANAGED_RUNTIME_PROVIDER_CONFORMANCE`，每个 managed-runtime 驱动都支持
+`ama_worker` 通道；多数还支持 `openma_supervised`：
+
+| 提供商驱动 | `ama_worker` | `openma_supervised` |
+|---|---|---|
+| `node-docker` | 是 | 是 |
+| `cloudflare` | 是 | 是 |
+| `cloudflare-bridge` | 是 | 否 |
+| `e2b` | 是 | 是 |
+| `daytona` | 是 | 是 |
+| `litebox` | 是 | 是 |
+| `boxrun` | 是 | 是 |
+| `blaxel` | 是 | 是 |
+| `sprites` | 是 | 是 |
+| `vercel` | 是 | 否 |
+| `modal` | 是 | 是 |
+| `superserve` | 是 | 是 |
+
+OpenSandbox 以 `packages/sandbox-adapter-opensandbox` 交付，尚未进入上述
+managed-runtime 符合性表。每驱动生命周期/工作区能力写在同一文件——它是机器
+可读的真相来源；[托管运行时宿主](/self-host/managed-runtime-host/) 页面负责叙述。
+
+## 尚未实现
+
+- **Warm pools——规划中。** 没有可移植的 warm-pool 面。唯一真实绑定是 GKE
+  dispatch Port 的 `warmPool` 字段（`packages/environment-dispatch-gke`）。
+- **`fork`——规划中。** 没有 session/沙箱 fork 面。
+- **通用出口白名单代理——规划中**（见
+  [#297](https://github.com/openma-ai/open-managed-agents/issues/297)）。
+  `Environment.config.networking` `type: "limited"` 与 `allowed_hosts` **仅在
+  `web_fetch` 工具内**强制。`bash`/`curl`、`web_search` 与 MCP 调用不受其限制。
+- **凭据出口仅在一个驱动上强制。** 只有 `managed-runtime-cloudflare` 声明强制
+  的 live HTTPS 拦截。除非运营方通过 `options.credentialEgress` 注入经认证的
+  实现，其他驱动报告 `unsupported`。
+- **没有进程内存 checkpoint/restore。** 符合性表中每个驱动的
+  `runtimeCheckpoints` 都是 `[]`。提供商 pause/suspend 原语表现为
+  `retained_runtime` 工作区策略，不是可移植的 OpenMA checkpoint。
+- **无状态 Messages API。** `/v1/messages` 是核心 Anthropic API，不是 Managed
+  Agents 面，OpenMA 不实现它。
+
+## 相对托管 CMA 的已知差异
+
+- **按资源族强制 beta 标志。** 缺少文档中的 `anthropic-beta` 值会得到 400
+  （`packages/managed-agents-api/src/beta.ts` 中的 `requireBeta`）。
+- **Session 列表过滤。** `metadata_key` / `metadata_value` 查询参数以 400 拒绝——
+  列表过滤覆盖 `agent_id`、`agent_version`、`created_at` 边界、`deployment_id`、
+  `memory_store_id`、`statuses[]`、`order`、`include_archived`。
+- **Exhausted 时中途输入保留。** 在 `retries_exhausted` 时，OpenMA 保留未处理的
+  中途输入而不是清空（见上文 steer 文档）。
+- **OpenAI 适配器限制。** `/openai/v1` 适配器支持无沙箱 Session
+  （`environment: { "type": "none" }`），但不接受高级环境配置、插件或运行时
+  文件操作。托管 OpenAI 动态子代理控制不可用（由 Node runtime 提供）。详见
+  `docs/openai-agents-compatibility-status.md`。
+- **OMA 扩展共用宿主。** `/v1/oma/*`（API keys、`me`、租户、集成、Matter/Loops、
+  evals、stats、MCP/推理代理）以及 `POST /v1/sessions/:id/messages` 之类便捷
+  路由是 OpenMA 自有面，不是 CMA——见 [API 端点](/reference/api/)。
+
+<Aside type="note">
+  当代码与本页不一致时，以代码为准。`provider-conformance.ts` 中的符合性表、
+  `packages/managed-agents-api/src/routes/` 下的路由文件，以及
+  `docs/implementation/cma-steer-coherent-turn.md` 是真相来源——发现漂移请提
+  issue。
+</Aside>
+
+## 深入阅读
+
+<LinkCard title="API 端点" href="/reference/api/" description="逐端点 REST 参考，含 Session 预算与 settle-only 规则。" />
+<LinkCard title="托管运行时宿主" href="/self-host/managed-runtime-host/" description="Worker 激活策略、两条驱动通道与凭据路径。" />
+<LinkCard title="CLI 与 SDK" href="/build/cli-sdk/" description="把 Anthropic SDK 指向 OpenMA；扩展可选 @openma/sdk。" />
