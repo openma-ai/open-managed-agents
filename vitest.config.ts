@@ -439,6 +439,7 @@ export default defineConfig({
       "scripts/provider-package-boundaries.test.mjs",
       "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",
+      "scripts/ci-impact-surfaces.test.mjs",
       "scripts/release-check.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
       // workerd cannot import node:child_process from this file.
