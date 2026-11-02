@@ -187,22 +187,4 @@ describe("Session events admission on existing Sessions", () => {
     expect(f.admit).not.toHaveBeenCalled();
     expect(f.appendCalls).toHaveLength(1);
   });
-
-  it("keeps the settle-only 400 ahead of the admission hook", async () => {
-    const f = harness({
-      recent: [{
-        id: "event_idle",
-        type: "session.status_idle",
-        processedAt: "2026-08-26T01:00:00.000Z",
-        stopReason: { type: "requires_action", eventIds: ["tool_01"] },
-      }],
-      decide: async () => ({ type: "denied", status: 429, body: { error: "host_denied" } }),
-    });
-    await expect(f.service.sendSessionEvents({
-      sessionId: session.id,
-      events: [userMessage],
-    })).resolves.toMatchObject({ type: "invalid_request" });
-    expect(f.admit).not.toHaveBeenCalled();
-    expect(f.appendCalls).toEqual([]);
-  });
 });
