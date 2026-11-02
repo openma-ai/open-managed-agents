@@ -1,4 +1,7 @@
 :root {
+  /* Shared brand ships white-on-coral in light mode (3.41:1). Reuse
+     its dark ink for readable action labels without changing the coral. */
+  --brand-fg: #1a0e09;
   /* Linear template geometry, with OpenMA's existing coral brand and warm
      neutral materials. Components consume these aliases instead of
      reintroducing approximate spacing values. */
@@ -48,6 +51,11 @@
   --data-head-body-gap: var(--console-gap-lg);
   --control-h: calc(var(--type-line) + var(--density-unit) * 10);
   --chip-h: 26px;
+  --filter-chip-max-w: 240px;
+  --switch-w: 36px;
+  --switch-h: 20px;
+  --switch-thumb-size: 14px;
+  --switch-inset: 2px;
 
   --shell-stage-gap: var(--console-pad-sm);
   --shell-route-radius: var(--console-radius-card);

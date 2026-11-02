@@ -56,7 +56,7 @@ export function FilterChip({
             {display && (
               <>
                 <span className="text-fg-subtle">:</span>
-                <span>{display}</span>
+                <span className="console-filter-chip-value" title={display}>{display}</span>
               </>
             )}
             {!active && <ChevronDownIcon className="size-3.5 opacity-60" />}

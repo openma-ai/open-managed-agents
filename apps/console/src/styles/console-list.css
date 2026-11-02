@@ -49,6 +49,7 @@
   display: inline-flex;
   height: var(--chip-h);
   min-width: 0;
+  max-width: min(100%, var(--filter-chip-max-w));
   flex: 0 0 auto;
   align-items: center;
   gap: 0;
@@ -98,10 +99,20 @@
 }
 
 .console-filter-chip-trigger {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
   gap: var(--console-gap-sm);
   padding-inline: var(--console-pad-md);
   font-size: var(--console-type-body);
   font-weight: 500;
+}
+
+.console-filter-chip-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .console-filter-chip[data-active="true"] .console-filter-chip-trigger {
