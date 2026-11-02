@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 import { authClient } from "../lib/auth-client";
 import { useAuth } from "../lib/auth";
@@ -374,18 +375,7 @@ export function Login() {
     "relative h-auto min-h-0 px-0 py-0 text-brand after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']";
 
   return (
-    <ModernLoginShell below={mode !== "chooser" && turnstileSiteKey ? (
-      <div role="region" aria-label="Security verification">
-        <Turnstile
-          resetKey={turnstileNonce}
-          siteKey={turnstileSiteKey}
-          onToken={handleTurnstileToken}
-          onExpire={clearTurnstileToken}
-          onError={clearTurnstileToken}
-          appearance="always"
-        />
-      </div>
-    ) : null}>
+    <ModernLoginShell>
       <div className="flex flex-col gap-8">
         <header className="flex flex-col items-center text-center">
           <Logo size="lg" />
@@ -616,6 +606,18 @@ export function Login() {
                         ? "Reset password"
                         : "Verify"}
             </Button>
+            {turnstileSiteKey && (
+              <motion.div layout="position" initial={false} role="region" aria-label="Security verification">
+                <Turnstile
+                  resetKey={turnstileNonce}
+                  siteKey={turnstileSiteKey}
+                  onToken={handleTurnstileToken}
+                  onExpire={clearTurnstileToken}
+                  onError={clearTurnstileToken}
+                  appearance="always"
+                />
+              </motion.div>
+            )}
             {mode === "login" && (
               <Button
                 type="button"
@@ -665,7 +667,9 @@ export function Login() {
           </Button>
         )}
 
-        <div
+        <motion.div
+          layout="position"
+          initial={false}
           role="group"
           aria-label="Account options"
           className="flex min-h-6 select-none items-center justify-center gap-1 text-center text-sm text-fg-muted"
@@ -785,7 +789,7 @@ export function Login() {
               Go back
             </Button>
           )}
-        </div>
+        </motion.div>
       </div>
     </ModernLoginShell>
   );
