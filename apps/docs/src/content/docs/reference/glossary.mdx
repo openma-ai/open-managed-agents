@@ -1,6 +1,6 @@
 ---
 title: Glossary
-description: Every openma term, alphabetized, with cross-links.
+description: Every openma term, alphabetized, with cross-links — including OpenMatter Super-agent nouns (Loop, Bond, AgentDriver, steer, coordinator/worker).
 ---
 
 import { LinkCard } from '@astrojs/starlight/components';
@@ -16,6 +16,10 @@ Token used to authenticate REST API and CLI calls (sent as the `x-api-key` heade
 ## Built-in toolset
 
 The shipped set of tools (`bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`) referenced as `agent_toolset_20260401`. See [Skills & Tools → Built-in tools](/build/skills-and-tools/#built-in-tools).
+
+## Bond (OpenMatter)
+
+OpenMatter identity plus `SecretRef`s for a work platform. Secret values stay with a credential resolver. See [OpenMatter Super-agent](/ecosystem/openmatter-super-agent/).
 
 ## Container
 
@@ -53,6 +57,10 @@ A way to publish an agent into a third-party platform (Linear, GitHub, Slack). S
 
 The interface every integration implements. Defined in `packages/integrations-core/src/provider.ts`. See [Custom Integrations](/build/integrations/).
 
+## Loop (OpenMatter)
+
+Application-declared OpenMatter process: event subscriptions, WorkThread/Session routing, and whether an event wakes an agent. Distinct from the in-session openma Harness. See [OpenMatter Super-agent](/ecosystem/openmatter-super-agent/).
+
 ## MCP
 
 Model Context Protocol — open standard for connecting language models to tools. openma auto-generates `mcp__<server>__<tool>` (double underscore) for any registered MCP server. See [Skills & Tools → MCP servers](/build/skills-and-tools/#mcp-servers).
@@ -64,6 +72,10 @@ Per-agent semantic memory backed by Vectorize + Workers AI embeddings. See [Conc
 ## Model card
 
 Per-tenant executable LLM binding: stable `model_id`, open Pi provider id, wire model, optional Pi metadata/base URL/custom headers, and API key. Legacy `ant`/`oai` tags remain migration aliases. The api_key is AES-GCM-encrypted at rest under `PLATFORM_ROOT_SECRET` directly on the row (not via a Vault). Agent-version `effort`, `speed`, and `inference_geo` are intentionally not Card fields. See [Reference → Model Cards](/reference/api/#model-cards).
+
+## OpenMatter
+
+Embeddable TypeScript framework for durable agent Loops in work systems. Sister project to openma; docs map at [OpenMatter Super-agent](/ecosystem/openmatter-super-agent/). Site: [matter.openma.dev/doc](https://matter.openma.dev/doc/).
 
 ## Outbound proxy
 
@@ -92,6 +104,10 @@ Server-Sent Events. The transport for `/v1/sessions/:id/events`. See [REST API �
 ## Skill
 
 Reusable prompt fragment + reference files mounted into the sandbox. See [Concepts → Skill](/concepts/#skill) and [Skills & Tools → Custom skills](/build/skills-and-tools/#custom-skills).
+
+## Super-agent
+
+Design label from DeepSeek Harness's [《Super-agent 设计探索》](https://mp.weixin.qq.com/s/zoS7GlReWPhfCjENGxXCdg) for a long-lived personal agent across work surfaces. OpenMatter's short map of Loop / Bond / AgentDriver / Turn / steer / coordinator-worker is at [OpenMatter Super-agent](/ecosystem/openmatter-super-agent/).
 
 ## Tenant
 

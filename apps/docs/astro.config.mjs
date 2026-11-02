@@ -71,6 +71,10 @@ export default defineConfig({
             { label: 'Quickstart', slug: 'quickstart' },
             { label: 'Concepts', slug: 'concepts' },
             { label: 'Sandboxes', slug: 'sandboxes' },
+            {
+              label: 'OpenMatter Super-agent',
+              slug: 'ecosystem/openmatter-super-agent',
+            },
           ],
         },
         {
