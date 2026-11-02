@@ -1,0 +1,53 @@
+---
+title: 在 Sprites 沙箱上自托管
+description: 通过 SANDBOX_PROVIDER=sprites 或托管运行时驱动在 Sprites 上运行 Session——持久 ext4 文件系统、自动暂停/唤醒和原生网络策略。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sprites 为每个 Session 提供一台持久的微虚机，带提供商持久化的 ext4 文件系统和自动暂停/唤醒：空闲沙箱挂起后按需恢复，工作区字节不丢。驱动保持稳定的 Session 名称和归属标签，并做属主校验的删除。
+
+## 前置条件
+
+```bash
+SPRITES_TOKEN=        # 必需（或向工厂传入 token:）
+```
+
+## 配置
+
+在独立的 Node 服务器上，直接选择该适配器：
+
+```bash
+SANDBOX_PROVIDER=sprites
+SPRITES_TOKEN=...
+```
+
+若要把驱动嵌入运行时宿主组合，使用
+`@open-managed-agents/managed-runtime-sprites` 提供的
+`createSpritesProvider`、`createSpritesManagedRuntime` 或
+`createSpritesManagedRuntimeDriver`：
+
+```ts
+const driver = createSpritesManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  token: process.env.SPRITES_TOKEN, // 缺省回退到该环境变量
+  // baseURL、timeoutMs、controlMode —— SDK 客户端选项
+});
+```
+
+客户端选项：`token`、`baseURL`、`timeoutMs` 和 `controlMode`（传给 SDK 的 `SpritesClient`），另有 `lifecycleRetry`（`maxAttempts`、`baseDelayMs`、`wait`）用于提供商瞬时错误重试。按分配实例的开关走 `createOptions`（sprite 的 `config` 内存/CPU/区域/存储、`environment`、`urlSettings`、`waitForCapacity`、`runtime`）和 `networkPolicy`（原生域名规则，`allow`/`deny` 动作）。`memoryWorkspace`、`runtimeEnvironment`、`outputStore`、`outputKeyPrefix`、`credentialEgress`、`sessionInputs` 和 `readiness` 构成其余选项。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 支持（提供商自动暂停/唤醒） |
+| 工作区 | `retained_runtime`，持久（持久化 ext4） |
+| 输出 | `final_collect`，持久 |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="note">
+  Sprites 存储是提供商侧持久的，但不是可移植的 OpenMA 检查点——一致性档案只声明 `retained_runtime`。驱动的 `networkPolicy` 钩子对每个 Session 应用 Sprites 原生出口规则；凭证拦截仍需经认证的 `credentialEgress` 实现。
+</Aside>

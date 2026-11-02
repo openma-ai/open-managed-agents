@@ -1,0 +1,54 @@
+---
+title: 在 Vercel 沙箱上自托管
+description: 在 Vercel Sandboxes 上运行 Session——持久命名微虚机，自动快照/恢复、默认拒绝防火墙和路径作用域的凭证变换。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Vercel 把每个 Session 作为一个持久命名沙箱运行，通过官方 `@vercel/sandbox` SDK 创建（动态导入，因此必须已安装）。驱动在就绪前重新应用默认拒绝的防火墙策略，支持提供商侧的凭证变换与转发，并做属主校验的硬删除。
+
+## 前置条件
+
+```bash
+VERCEL_TOKEN=         # 必需
+VERCEL_TEAM_ID=       # 必需
+VERCEL_PROJECT_ID=    # 必需
+```
+
+## 配置
+
+Vercel 通过运行时宿主组合接入，而不是 `SANDBOX_PROVIDER`。使用
+`@open-managed-agents/managed-runtime-vercel` 提供的
+`createVercelProvider`、`createVercelManagedRuntime` 或
+`createVercelManagedRuntimeDriver`：
+
+```ts
+const driver = createVercelManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  credentials: {
+    token: process.env.VERCEL_TOKEN!,
+    teamId: process.env.VERCEL_TEAM_ID!,
+    projectId: process.env.VERCEL_PROJECT_ID!,
+  },
+  networkPolicy: () => ({
+    // 就绪前重新应用的默认拒绝规则集
+  }),
+});
+```
+
+`createOptions` 接收分配上下文并返回任意 `VercelCreateOptions`（镜像、资源、超时、端口、环境变量）。`networkPolicy` 返回 `VercelNetworkPolicy`——提供商的默认拒绝匹配器集，包括路径作用域的请求头变换和转发代理规则。工厂还接受 `client`、`runtimeEnvironment`、`outputStore`、`outputKeyPrefix`、`credentialEgress`、`sessionInputs` 和 `readiness`。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | 仅 `ama_worker` |
+| suspendResume | 支持（持久文件系统 + 快照恢复） |
+| 工作区 | `retained_runtime`，持久 |
+| 输出 | `final_collect`，持久 |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="caution">
+  在一致性档案中，Vercel 是**仅 `ama_worker`** 的驱动——`openma_supervised` 通道不可用。提供商快照算作保留运行时状态，而非可移植的 OpenMA 检查点；原始沙箱端口上也不支持流式进程标准输入。
+</Aside>

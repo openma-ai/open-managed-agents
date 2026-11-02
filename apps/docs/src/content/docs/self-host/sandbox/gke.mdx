@@ -1,0 +1,72 @@
+---
+title: Self-host on GKE sandboxes
+description: Dispatch sessions to GKE Agent Sandbox pods — poll_unacked_then_dispatch strategy with SandboxClaim get-or-create, warm-pool binding, and in-pod Work ownership.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The GKE backend dispatches Session Work to Agent Sandbox pods on a Google
+Kubernetes Engine cluster. It uses the `poll_unacked_then_dispatch`
+strategy: the dispatcher reserves Work without ACK, reaps stale
+SandboxClaims, binds one warm pod through an atomic get-or-create claim, and
+posts only the Session/Work ids. The in-pod `ant beta:worker run` then owns
+the Work ACK, heartbeat, and stop.
+
+## Prerequisites
+
+- A GKE cluster with the Agent Sandbox CRDs installed, a claim template, and
+  a warm pool.
+- A `GkeSandboxClaimControlPlanePort` implementation — either a Kubernetes
+  SDK adapter or the OpenMA-owned in-cluster driver service.
+- A `GkeManagedWorkControlPort` so the dispatcher can force-stop Work that
+  exceeds `maxRedispatch`.
+
+## Configuration
+
+GKE is wired through the `provider_dispatch` mode of
+`createManagedEnvironmentWorkerInstallation`, or directly via
+`createManagedEnvironmentWorkDispatchPort` in
+`@open-managed-agents/environment-dispatch-gke`:
+
+```ts
+const dispatch = createManagedEnvironmentWorkDispatchPort({
+  controlPlane,   // SandboxClaim list/delete/create/postSession
+  workControl,    // Work stop
+  namespace: "openma",
+  template: "openma-sandbox-template",
+  warmPool: "openma-warm-pool",
+  readyTimeoutMs: 120_000,  // default
+  maxRedispatch: 3,         // default
+});
+```
+
+`namespace`, `template`, and `warmPool` are required, non-empty strings; the
+`warmPool` names the Kubernetes Agent Sandbox warm pool each claim binds to.
+The port reports provider `gke-agent-sandbox` with strategy
+`poll_unacked_then_dispatch`.
+
+Claims carry labels `openma.environment-id`, `openma.session-id`,
+`openma.work-id`, and `openma.dispatch-count`. Each dispatch lists the
+session's existing claims, deletes stale ones for other Work ids, and
+creates the next claim under the idempotency key `<workId>:<dispatchCount>`.
+When `dispatchCount` would exceed `maxRedispatch`, the port stops the Work
+instead of looping forever.
+
+## Capabilities
+
+| | |
+|---|---|
+| Provider | `gke-agent-sandbox` |
+| Strategy | `poll_unacked_then_dispatch` |
+| Work ownership | in-pod `ant beta:worker run` (ACK, heartbeat, stop) |
+| Stale claims | reaped on every dispatch |
+| Redispatch | `maxRedispatch` bound (default 3) |
+
+<Aside type="note">
+  The `warmPool` field here is a real binding to the Kubernetes Agent
+  Sandbox warm pool configured for the template — it is not an OpenMA-level
+  compute warm pool feature. Session sandbox capabilities (suspend/resume,
+  workspace persistence, egress) are whatever the deployed pod template and
+  worker image implement; OpenMA itself remains the Work and fencing
+  authority.
+</Aside>

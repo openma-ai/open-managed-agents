@@ -1,0 +1,63 @@
+---
+title: 在 Daytona 沙箱上自托管
+description: 通过 SANDBOX_PROVIDER=daytona 或托管运行时驱动，在 Daytona Cloud 工作区上运行 Session——稳定命名生命周期、快照、停止/启动和网络控制。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Daytona Cloud 为每个 Session 提供一台托管的 Linux 虚机，具有稳定名称、归属标签、停止/启动、快照和活动续约的租约。驱动遵循 Daytona 自身的冲突恢复生命周期，因此恢复 Session 时会重新挂接到同一台虚机，而不是新开一台。
+
+## 前置条件
+
+```bash
+DAYTONA_API_KEY=      # 必需
+DAYTONA_API_URL=      # 可选端点覆盖
+SANDBOX_IMAGE=        # 可选镜像引用
+```
+
+## 配置
+
+在独立的 Node 服务器上，直接选择该适配器：
+
+```bash
+SANDBOX_PROVIDER=daytona
+DAYTONA_API_KEY=...
+```
+
+若要把驱动嵌入运行时宿主组合，使用
+`@open-managed-agents/managed-runtime-daytona` 提供的
+`createDaytonaProvider`、`createDaytonaManagedRuntime` 或
+`createDaytonaManagedRuntimeDriver`：
+
+```ts
+const driver = createDaytonaManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  apiKey: process.env.DAYTONA_API_KEY,
+  apiUrl: process.env.DAYTONA_API_URL,   // 可选
+  image: "node:22-slim",                  // 或 snapshot: "<快照名>"
+  autoStopInterval: 0,
+  autoArchiveInterval: 0,
+});
+```
+
+完整选项集：`apiKey`、`apiUrl`、`target`、`snapshot`、`image`、
+`autoStopInterval`、`autoPauseInterval`、`autoArchiveInterval`、
+`autoDeleteInterval`、`networkBlockAll`、`networkAllowList`、
+`domainAllowList`、`outboundProxyUrl`、`outputStore`、`outputKeyPrefix`、
+`credentialEgress`、`sessionInputs`、`runtimeEnvironment`、`readiness`、
+`client`，以及必需的 `leaseTtlMs`。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 支持（提供商停止/启动 + 快照） |
+| 工作区 | `retained_runtime` + `checkpoint_restore`，持久 |
+| 输出 | `final_collect`，持久 |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="caution">
+  Daytona 暴露的网络开关会由驱动透传——`networkBlockAll`、`networkAllowList`、`domainAllowList` 和 `outboundProxyUrl`。这些是提供商的网络控制，不是 OpenMA 的凭证拦截：在提供经认证的 `options.credentialEgress` 之前，描述符仍报告 `{enforcement: "unsupported", credentialMode: "snapshot", interceptedProtocols: []}`。
+</Aside>

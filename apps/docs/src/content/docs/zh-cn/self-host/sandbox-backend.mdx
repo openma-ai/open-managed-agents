@@ -51,6 +51,7 @@ export type SandboxFactory = (
 | `litebox`、`boxlite` | `@open-managed-agents/sandbox-adapter-litebox` |
 | `boxrun` | `@open-managed-agents/sandbox-adapter-boxrun` |
 | `daytona` | `@open-managed-agents/sandbox-adapter-daytona` |
+| `opensandbox` | `@open-managed-agents/sandbox-adapter-opensandbox` |
 | `e2b` | `@open-managed-agents/sandbox-adapter-e2b` |
 
 空值、未知值或 `subprocess` 会抛错。仅当 `NODE_ENV=test` 时，`OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess` 才加载 `@open-managed-agents/sandbox/adapters/local-subprocess`。该适配器没有隔离边界。
@@ -179,7 +180,7 @@ Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对�
 | 后台进程 | 可选 `startProcess` → `ProcessHandle`（`kill`、`getLogs`、`getStatus`） | 仅当适配器实现了它才存在 |
 | 实时 stdio | `SandboxDuplexProcessPort.spawnDuplexProcess` → stdin、stdout、stderr、`kill`、`exited` | `acp-sandbox` 需要它；当 supervisor 是子进程时，`openma_supervised` 也需要它。方法缺失时 `SandboxSpawner` 抛出 `SandboxAcpUnsupportedError` |
 | 文件 | `readFile` / `writeFile`。可选 `readFileBytes` / `writeFileBytes` | 共享的 `POST /v1/sessions/:id/files` 调用 `readSandboxFile`，返回 null 时响应 400。在 Node 上，缺少 `readFileBytes` 就是这个 null。Cloudflare 读取沙箱 DO 的 `/file` 端点。托管的 output 收集在缺少 `readFileBytes` 时抛错 |
-| Memory 挂载 | 可选 `mountMemoryStore`，路径为 `/mnt/memory/<storeName>/`；当挂载是拷贝投影时还有 `synchronizeMemoryStores` | Cloudflare 使用 R2 + FUSE。本地 subprocess 符号链接 `memoryRoot`。无法挂载的远程 factory 使用宿主的 `memoryWorkspace` 桥。没有单独的 memory 工具 |
+| Memory 挂载 | 可选 `mountMemoryStore`，路径为 `/mnt/memory/<storeName>/`；当挂载是拷贝投影时还有 `synchronizeMemoryStores` | Cloudflare 使用 R2 + FUSE。本地 subprocess 符号链接 `memoryRoot`。无法挂载的远程 factory 通过 `exec`/`readFile`/`writeFile` 做文件同步（Node 默认方式，见 `docs/memory-stores.md`）。没有单独的 memory 工具 |
 | Session outputs | `SandboxSessionOutputMountPort`，或托管的 `SessionOutputPort`，路径 `/mnt/session/outputs` | 策略：`durable_mount`、`watch_and_upload`、`final_collect`。会收集的已发布预设使用 `final_collect` |
 | Workspace | 托管的 `WorkspacePersistencePort`，路径 `/workspace` | 策略：`durable_mount`、`retained_runtime`、`checkpoint_restore`、`ephemeral`。提交点见持久化页 |
 | 网络策略 | 公开的 `Environment.config.networking`：`unrestricted` 或 `limited`，带 `allowed_hosts`、`allow_mcp_servers`、`allow_package_managers` | 存在 environment 上，并映射进 Managed Agents 的 networking 对象。强制执行因后端而异（Cloudflare 出站处理器、provider 允许列表、Docker 网络）。存下来的允许列表本身不是包过滤器 |
@@ -236,14 +237,15 @@ Scope 是 `{ workspaceId, environmentId, sessionId, workId }`。一份租约对�
 
 `apps/main/src/routes/environments.ts` 记录了以下移除：按 environment 的 GitHub Actions 镜像构建、`/build-complete` 回调，以及 `image_strategy` 选择。创建立即返回，`status` 为 `"ready"`。environments store 仍有 `image_strategy: "base_snapshot" | "dockerfile" | null`。`base_snapshot` 在那里被记为保留接缝。惰性安装器被撤回，是因为 Cloudflare 在 `blockConcurrencyWhile` 里的 `exec` 大约 10–15 秒就会被取消。
 
-仍在运行的包安装只在 Cloudflare：`apps/agent/src/runtime/setup-on-warmup.ts`，由 SessionDO 预热调用。
+两个控制面共用同一个包安装器：`packages/sandbox/src/environment-packages.ts` 中的 `ensureEnvironmentPackages`。Cloudflare 在 SessionDO 预热时调用；Node 控制面在准备 sandbox 时经 `installEnvironmentPackages`（`packages/control-plane-node/src/lib/environment-packages.ts`）调用，并把安装出的工具目录加入 `PATH`。两边安装失败都会让 session 失败。
 
 - 暖标记 `/tmp/.oma-setup-warm` 匹配 → 无操作。
 - 只有 `/workspace/.oma-setup-restored` 匹配 → 重新跑 apt。语言包放在 `/workspace` 下，所以 workspace 恢复会把它们带回来。Apt 装到 `/usr`，workspace 备份不包含它。
 - 两个标记都没有 → 完整安装。
 - 输入里的 `gem` 会被接受然后跳过（基础镜像没有 Ruby）。
+- 选择了目录中的 sandbox 镜像时，其别名会写进两个标记。
 
-Node、E2B、Daytona 和其他驱动不调用 `setup-on-warmup`。它们的镜像必须已经包含 harness 二进制和该 session 需要的包。**缺口：** `config.packages` 和 `config.dockerfile` 不是新后端可用的可移植镜像构建钩子。
+安装器只需要 `exec`（Node 上还需要 `setEnvVars`），所以任何能在 `/workspace` 里执行命令的后端都会在 session 启动时得到 `config.packages`。镜像仍必须包含 harness 二进制。**缺口：** `config.dockerfile` 不是新后端可用的可移植镜像构建钩子，运行时装包也不能替代预构建镜像。
 
 **缺口：** 没有跨后端的镜像仓库凭据、层缓存、摘要强制、多架构拉取或缓存失效约定。自己缓存镜像的后端要写明自己的行为。OpenMA 仍会在每次 acquire 时重新探测 harness 可执行文件。
 
@@ -272,7 +274,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 
 `projectHostedInferenceForAcpAgent` 接着让 `@open-managed-agents/harness-inference-adapters` 写出 harness 原生的环境变量和配置文件。当前已发布的适配器：`pi`、`dsh`、`claude`、`codex`、`gemini`、`opencode`、`kimi`。文件通过 `AcpSandboxAgentStatePort.writeFile` 落盘。代理令牌从环境引用（`proxyTokenEnvVar: "HOSTED_INFERENCE_TOKEN"`），不复制进持久的原生状态允许列表。
 
-网关是 `apps/main` 与 `apps/main-node`（`apps/main-node/src/lib/http-inference-proxy.ts`）上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。`forwardHostedInferenceRequest`：
+网关是 `apps/main` 与 Node 控制面（`apps/main/src/routes/inference-proxy.ts` 与 `packages/control-plane-node/src/lib/http-inference-proxy.ts`）上的 `/v1/oma/inference-proxy/:sessionId/*`，方法为 `POST` 以及其他方法。两者都经过 `sendHostedInference`（`packages/http-routes`）和 `planHostedInferenceRequest`（`packages/inference-proxy`）：
 
 - 丢弃入站的 `authorization`、`x-api-key`、`api-key`、`x-goog-api-key` 和 `proxy-authorization`；
 - 在宿主上解析该 session 的模型卡；

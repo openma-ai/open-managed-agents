@@ -70,6 +70,7 @@ factory reads only its own keys (`E2B_API_KEY`, `BOXRUN_URL`, `SANDBOX_IMAGE`,
 | `litebox`, `boxlite` | `@open-managed-agents/sandbox-adapter-litebox` |
 | `boxrun` | `@open-managed-agents/sandbox-adapter-boxrun` |
 | `daytona` | `@open-managed-agents/sandbox-adapter-daytona` |
+| `opensandbox` | `@open-managed-agents/sandbox-adapter-opensandbox` |
 | `e2b` | `@open-managed-agents/sandbox-adapter-e2b` |
 
 An empty, unknown, or `subprocess` value throws. `OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess`
@@ -252,7 +253,7 @@ advertisement with the live ports.
 | Background process | Optional `startProcess` → `ProcessHandle` (`kill`, `getLogs`, `getStatus`) | Present only when the adapter implements it |
 | Live stdio | `SandboxDuplexProcessPort.spawnDuplexProcess` → stdin, stdout, stderr, `kill`, `exited` | Required for `acp-sandbox` and for `openma_supervised` when the supervisor is a child process. `SandboxSpawner` throws `SandboxAcpUnsupportedError` when the method is absent |
 | Files | `readFile` / `writeFile`. Optional `readFileBytes` / `writeFileBytes` | Shared `POST /v1/sessions/:id/files` calls `readSandboxFile` and returns 400 when that returns null. On Node, a missing `readFileBytes` is that null. Cloudflare reads the sandbox DO `/file` endpoint. Managed output collection throws if `readFileBytes` is missing |
-| Memory mount | Optional `mountMemoryStore` at `/mnt/memory/<storeName>/`, plus `synchronizeMemoryStores` when the mount is a copied projection | Cloudflare uses R2 + FUSE. Local subprocess symlinks `memoryRoot`. Remote factories that cannot mount use the host `memoryWorkspace` bridge. There is no separate memory tool |
+| Memory mount | Optional `mountMemoryStore` at `/mnt/memory/<storeName>/`, plus `synchronizeMemoryStores` when the mount is a copied projection | Cloudflare uses R2 + FUSE. Local subprocess symlinks `memoryRoot`. Remote factories that cannot mount use file sync over `exec`/`readFile`/`writeFile` (the Node default; see `docs/memory-stores.md`). There is no separate memory tool |
 | Session outputs | `SandboxSessionOutputMountPort` or managed `SessionOutputPort` at `/mnt/session/outputs` | Strategies: `durable_mount`, `watch_and_upload`, `final_collect`. Shipped presets that collect do `final_collect` |
 | Workspace | Managed `WorkspacePersistencePort` at `/workspace` | Strategies: `durable_mount`, `retained_runtime`, `checkpoint_restore`, `ephemeral`. See the persistence page for commit points |
 | Network policy | Public `Environment.config.networking`: `unrestricted` or `limited`, with `allowed_hosts`, `allow_mcp_servers`, `allow_package_managers` | Stored on the environment and mapped into the Managed Agents networking object. Enforcement is per backend (Cloudflare outbound handler, provider allowlists, Docker network). A stored allowlist is not itself a packet filter |
@@ -340,8 +341,12 @@ The environments store still has `image_strategy: "base_snapshot" | "dockerfile"
 was reverted because Cloudflare `exec` inside `blockConcurrencyWhile` was
 canceled around 10–15s.
 
-Package install that still runs is Cloudflare-only:
-`apps/agent/src/runtime/setup-on-warmup.ts`, called from SessionDO warmup.
+Package install runs on both control planes through one shared installer,
+`ensureEnvironmentPackages` in `packages/sandbox/src/environment-packages.ts`.
+Cloudflare calls it from SessionDO warmup; the Node control plane calls it from
+`installEnvironmentPackages` (`packages/control-plane-node/src/lib/environment-packages.ts`)
+while preparing a sandbox, and puts the installed tool directories on `PATH`.
+A failed install fails the session on both.
 
 - Warm marker `/tmp/.oma-setup-warm` matches → no-op.
 - Only `/workspace/.oma-setup-restored` matches → re-run apt. Language
@@ -349,11 +354,13 @@ Package install that still runs is Cloudflare-only:
   Apt installs into `/usr`, which the workspace backup does not include.
 - Both markers missing → full setup.
 - `gem` is accepted in the input and skipped (the base image has no Ruby).
+- When a catalog sandbox image is selected, its alias is part of both markers.
 
-Node, E2B, Daytona, and the other drivers do not call `setup-on-warmup`.
-Their images have to already contain the harness binary and the packages the
-session needs. **Gap:** `config.packages` and `config.dockerfile` are not a
-portable image-build hook for a new backend.
+The installer only needs `exec` (and `setEnvVars` on Node), so any backend
+that runs commands in `/workspace` gets `config.packages` at session start.
+The image still has to contain the harness binary. **Gap:** `config.dockerfile`
+is not a portable image-build hook for a new backend, and runtime package
+install is not a substitute for a prebuilt image.
 
 **Gap:** no cross-backend convention for registry credentials, layer cache,
 digest enforcement, multi-arch pulls, or cache invalidation. A backend that
@@ -399,8 +406,10 @@ the durable native-state allowlist.
 
 The gateway is `POST` (and other methods) on
 `/v1/oma/inference-proxy/:sessionId/*` in both `apps/main` and
-`apps/main-node` (`apps/main-node/src/lib/http-inference-proxy.ts`).
-`forwardHostedInferenceRequest`:
+the Node control plane (`apps/main/src/routes/inference-proxy.ts` and
+`packages/control-plane-node/src/lib/http-inference-proxy.ts`). Both go through
+`sendHostedInference` (`packages/http-routes`) and `planHostedInferenceRequest`
+(`packages/inference-proxy`), which:
 
 - drops inbound `authorization`, `x-api-key`, `api-key`, `x-goog-api-key`,
   and `proxy-authorization`;
