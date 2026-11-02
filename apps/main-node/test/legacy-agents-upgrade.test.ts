@@ -10,8 +10,8 @@ import { BetterSqlite3SqlClient } from "@open-managed-agents/sql-client/adapters
 import { moveLegacyAgents } from "../src/lib/move-legacy-agents";
 
 const migrationTargets = [
-  { name: "SQLite", folder: resolve(import.meta.dirname, "../migrations-sqlite"), retirementTag: "0028_drop_legacy_agents" },
-  { name: "D1", folder: resolve(import.meta.dirname, "../../main/migrations"), retirementTag: "0024_drop_legacy_agents" },
+  { name: "SQLite", folder: resolve(import.meta.dirname, "../migrations-sqlite"), retirementTag: "0028_drop_legacy_agents", executionBootstrap: null },
+  { name: "D1", folder: resolve(import.meta.dirname, "../../main/migrations"), retirementTag: "0024_drop_legacy_agents", executionBootstrap: "0020_session_execution_store.sql" },
 ];
 const directories: string[] = [];
 const databases: Database.Database[] = [];
@@ -22,20 +22,18 @@ afterEach(async () => {
 });
 
 /** A database before legacy agent retirement, holding one agent as the previous release stored it. */
-async function previousRelease(folder: string, retirementTag: string): Promise<Database.Database> {
+async function previousRelease(folder: string, retirementTag: string, executionBootstrap: string | null): Promise<Database.Database> {
   const directory = await mkdtemp(join(tmpdir(), "legacy-agents-"));
   directories.push(directory);
   await mkdir(join(directory, "meta"));
   const journal = JSON.parse(await readFile(join(folder, "meta/_journal.json"), "utf8"));
-  // Drizzle applies by journal *count*, so a "previous release" DB must stop
-  // *before* the retirement migration. Filtering only that tag while keeping later
-  // additive tags records those as applied and the full migrate then never runs
-  // the retirement guard/DROP.
-  const dropIdx = journal.entries.findIndex(
+  // A previous-release fixture stops before retirement. Keeping later additive
+  // tags would record them as applied and skip the retirement guard on upgrade.
+  const retirementIdx = journal.entries.findIndex(
     (entry: { tag: string }) => entry.tag === retirementTag,
   );
-  if (dropIdx < 0) throw new Error(`${retirementTag} missing from migrations journal`);
-  journal.entries = journal.entries.slice(0, dropIdx);
+  if (retirementIdx < 0) throw new Error(`${retirementTag} missing from migrations journal`);
+  journal.entries = journal.entries.slice(0, retirementIdx);
   await writeFile(join(directory, "meta/_journal.json"), JSON.stringify(journal));
   for (const entry of journal.entries) {
     await cp(join(folder, `${entry.tag}.sql`), join(directory, `${entry.tag}.sql`));
@@ -43,6 +41,12 @@ async function previousRelease(folder: string, retirementTag: string): Promise<D
   const db = new Database(":memory:");
   databases.push(db);
   migrate(drizzle(db), { migrationsFolder: directory });
+  if (executionBootstrap !== null) {
+    // D1 applies SQL files outside Drizzle's journal too (see test/test-worker.ts).
+    // Seed the previous-release execution table, not today's runtime installer:
+    // held_after_exhausted_ms must still be added by the upgrade migration.
+    db.exec(await readFile(join(folder, executionBootstrap), "utf8"));
+  }
   const created = Date.parse("2026-10-01T00:00:00.000Z");
   db.prepare("INSERT INTO agents (id, tenant_id, config, version, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
     "agent_keep", "ws", JSON.stringify({ id: "agent_keep", name: "keep", model: { id: "m" }, harness: "acp-sandbox", version: 2 }),
@@ -57,9 +61,9 @@ async function previousRelease(folder: string, retirementTag: string): Promise<D
 const tables = (db: Database.Database) =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(({ name }) => name);
 
-describe.each(migrationTargets)("$name legacy agent upgrade", ({ folder: migrationsFolder, retirementTag }) => {
+describe.each(migrationTargets)("$name legacy agent upgrade", ({ folder: migrationsFolder, retirementTag, executionBootstrap }) => {
   it("moves agents and their history into managed tables and retains empty legacy tables", async () => {
-    const db = await previousRelease(migrationsFolder, retirementTag);
+    const db = await previousRelease(migrationsFolder, retirementTag, executionBootstrap);
     const sql = new BetterSqlite3SqlClient(db);
 
     await moveLegacyAgents(sql, "sqlite");
@@ -84,7 +88,7 @@ describe.each(migrationTargets)("$name legacy agent upgrade", ({ folder: migrati
   });
 
   it.each(["agents", "agent_versions"])("refuses retirement while %s has unmoved rows", async (table) => {
-    const db = await previousRelease(migrationsFolder, retirementTag);
+    const db = await previousRelease(migrationsFolder, retirementTag, executionBootstrap);
     if (table === "agents") db.prepare("DELETE FROM agent_versions").run();
     else db.prepare("DELETE FROM agents").run();
     expect(() => migrate(drizzle(db), { migrationsFolder })).toThrow(/legacy_agents_guard/);
@@ -93,7 +97,7 @@ describe.each(migrationTargets)("$name legacy agent upgrade", ({ folder: migrati
   });
 
   it("restarts databases where the previous release already dropped the legacy tables", async () => {
-    const db = await previousRelease(migrationsFolder, retirementTag);
+    const db = await previousRelease(migrationsFolder, retirementTag, executionBootstrap);
     const sql = new BetterSqlite3SqlClient(db);
     await moveLegacyAgents(sql, "sqlite");
     migrate(drizzle(db), { migrationsFolder });

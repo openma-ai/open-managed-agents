@@ -946,6 +946,8 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const builtTools = { bash: { type: "tool" } };
     let nextId = 0;
     const runner = new Runner({
+      // Isolate monotonic stamps from other tests using this session scope.
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => sandbox,
