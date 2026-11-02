@@ -166,6 +166,7 @@ export function Turnstile({ siteKey, onToken, onExpire, onError, resetKey = 0, a
       if (widgetId.current && window.turnstile) {
         try { window.turnstile.remove(widgetId.current); } catch {}
         widgetId.current = null;
+        callbacks.current.onExpire?.();
       }
     };
   }, [siteKey, appearance, size]);

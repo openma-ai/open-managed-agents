@@ -96,3 +96,21 @@ it("requires a new token for verification email after sign-in consumes its token
     fetchOptions: { headers: { "cf-turnstile-token": "new-email-token" } },
   });
 });
+
+it("does not reuse a prior widget's success after returning through the sign-in chooser", async () => {
+  const renderWidget = vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1");
+  window.turnstile = { render: renderWidget, remove: vi.fn(), reset: vi.fn() };
+  const user = userEvent.setup();
+  render(<MemoryRouter><I18nProvider><Login /></I18nProvider></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Continue with email" }));
+  await user.click(screen.getByRole("button", { name: "Sign in with email code" }));
+  await user.type(screen.getByLabelText("Email"), "person@example.com");
+  await waitFor(() => expect(renderWidget).toHaveBeenCalled());
+  await act(async () => renderWidget.mock.calls.at(-1)![1].callback("old-token"));
+  expect(screen.getByRole("button", { name: "Send code" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await user.click(screen.getByRole("button", { name: "Back to sign in options" }));
+  await user.click(screen.getByRole("button", { name: "Continue with email" }));
+  await user.click(screen.getByRole("button", { name: "Sign in with email code" }));
+  expect(screen.getByRole("button", { name: "Send code" })).toBeDisabled();
+});
