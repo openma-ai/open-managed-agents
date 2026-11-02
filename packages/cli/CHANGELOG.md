@@ -1,5 +1,15 @@
 # @openma/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 1599e16: Create and update agents with the `multiagent_20261001` configuration: `oma agents create|update` accept `--subagent <id[:version]>`, `--inline-only` and `--multiagent <JSON>`.
+
+### Patch Changes
+
+- 59d8112: Depend on `@openma/common` from npm (`^0.9.1`) instead of a GitHub commit, so installing the CLI no longer fetches from codeload.github.com.
+
 ## 0.6.5
 
 ### Patch Changes
