@@ -1,6 +1,6 @@
 import { NoopLogger } from "@open-managed-agents/observability";
 import { CasConflict } from "@open-managed-agents/sql-client";
-import { installDbUnhandledRejectionNet } from "../../src/lib/db-unhandled-rejection.js";
+import { installDbUnhandledRejectionNet } from "../../../../packages/control-plane-node/src/lib/db-unhandled-rejection.js";
 
 const logger = new NoopLogger();
 logger.fatal = (obj) => {

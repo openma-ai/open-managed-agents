@@ -9,7 +9,8 @@
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "test:coverage": "vitest run --config vitest.coverage.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:certification": "OMA_CLOUDFLARE_BRIDGE_CERTIFICATION=1 vitest run --config vitest.config.ts test/cloudflare-bridge-certification.e2e.test.ts"
   },
   "dependencies": {
     "@open-managed-agents/blob-store": "workspace:*",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "../src/openai-no-environment";
+import { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "../../../packages/control-plane-node/src/openai-no-environment";
 
 describe("OpenAI none environment uses no compute resource", () => {
   it("denies filesystem and process execution through the existing SandboxPort", async () => {

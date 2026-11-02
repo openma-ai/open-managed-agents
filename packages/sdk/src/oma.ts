@@ -47,6 +47,39 @@ export interface OmaModelListResponse {
   data: OmaProviderModel[];
 }
 
+/** Agent loop location, independent of tool/runtime access. `host` may itself
+ * be cloud-hosted; these are descriptors, not Agent execution settings. */
+export type OmaHarnessExecutionPlacement = "host" | "sandbox" | "runtime" | "unknown";
+
+export interface OmaHarnessDescriptor {
+  id: string;
+  label: string;
+  description: string;
+  execution: { placement: OmaHarnessExecutionPlacement };
+  capabilities: {
+    /** Consumes _oma.runtime_binding, not general runtime tool access. null is
+     * undeclared. Informational only: never use to clear Agent configuration. */
+    runtime_binding: boolean | null;
+  };
+  /** Required public Agent configuration paths, never configuration values. */
+  requirements: string[];
+}
+
+export interface OmaHarnessCatalog {
+  object: "list";
+  data: OmaHarnessDescriptor[];
+  /** Resolved implementation for omitted/null/"default" _oma.harness; null if unset. */
+  default_harness_id: string | null;
+}
+
+export class OmaHarnessesResource {
+  constructor(private readonly client: Anthropic) {}
+
+  list(options?: Anthropic.RequestOptions) {
+    return this.client.get<OmaHarnessCatalog>("/v1/oma/harnesses", options);
+  }
+}
+
 export type OmaPath = `/v1/oma/${string}`;
 export type OmaHTTPMethod = "get" | "post" | "put" | "patch" | "delete";
 
@@ -187,10 +220,12 @@ export class OmaModelCardsResource {
 export class OmaResources {
   readonly models: OmaModelsResource;
   readonly modelCards: OmaModelCardsResource;
+  readonly harnesses: OmaHarnessesResource;
 
   constructor(private readonly client: Anthropic) {
     this.models = new OmaModelsResource(client);
     this.modelCards = new OmaModelCardsResource(client);
+    this.harnesses = new OmaHarnessesResource(client);
   }
 
   request<Response>(params: OmaRequestParams) {

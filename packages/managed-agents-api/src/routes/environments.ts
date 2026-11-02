@@ -24,8 +24,33 @@ import {
 } from "../mappers/environments";
 import type { EnvironmentsApplicationPort } from "../ports/environments";
 
+/**
+ * The operator's sandbox image catalog as seen by the HTTP layer. Only the
+ * alias set is needed for validation; provider references never reach here.
+ */
+export interface EnvironmentSandboxImageCatalog {
+  has(alias: string): boolean;
+}
+
+export interface EnvironmentRoutesOptions {
+  /** Absent: this deployment publishes no images and rejects any selection. */
+  sandboxImages?: EnvironmentSandboxImageCatalog;
+}
+
+function sandboxImageError(
+  extension: { sandbox_image?: string | null } | undefined,
+  catalog: EnvironmentSandboxImageCatalog | undefined,
+): string | null {
+  const alias = extension?.sandbox_image;
+  if (alias === undefined || alias === null) return null;
+  if (catalog?.has(alias)) return null;
+  return `Invalid request field _oma.sandbox_image: "${alias}" is not an available sandbox image; ` +
+    "list choices with GET /v1/oma/sandbox_images";
+}
+
 export function buildEnvironmentRoutes(
   source: ApplicationPortSource<EnvironmentsApplicationPort>,
+  options: EnvironmentRoutesOptions = {},
 ): Hono {
   const app = new Hono();
   app.use("*", requireBeta(MANAGED_AGENTS_BETA));
@@ -47,6 +72,11 @@ export function buildEnvironmentRoutes(
         ),
         400,
       );
+    }
+
+    const createImageError = sandboxImageError(parsed.data._oma, options.sandboxImages);
+    if (createImageError !== null) {
+      return c.json(invalidRequest(createImageError), 400);
     }
 
     const result = await resolveApplicationPort(source, c).createEnvironment(
@@ -140,6 +170,11 @@ export function buildEnvironmentRoutes(
         ),
         400,
       );
+    }
+
+    const updateImageError = sandboxImageError(parsed.data._oma, options.sandboxImages);
+    if (updateImageError !== null) {
+      return c.json(invalidRequest(updateImageError), 400);
     }
 
     const result = await resolveApplicationPort(source, c).updateEnvironment(

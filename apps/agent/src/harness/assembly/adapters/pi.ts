@@ -3,11 +3,16 @@ import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
 import type { HarnessContext } from "../../interface";
 import { toolsToPi } from "../../pi-loop-tools";
 import { createToolCatalogSearch } from "../components/tool-catalog-search";
+import { createMcpInvokeTool } from "../components/mcp-invoke";
+import { supportsNativeToolLoading } from "../model-capabilities";
+import { MCP_INVOKE_TOOL_NAME } from "../../tool-proxy";
 import { createToolExposureStrategy } from "../strategies/exposure";
 import { planSkillExposure } from "../strategies/skill-exposure";
-import { buildToolCatalog } from "../catalog";
+import { buildToolCatalog, isMcpToolName } from "../catalog";
 import { resolveToolAssemblyConfig } from "../config";
 import { resolveSkillAssemblyConfig } from "../skill-config";
+import { resolveReassemblyConfig } from "../reassembly-config";
+import { resolvePostCompactionAssembly } from "../post-compaction-reassembly";
 import {
   broadcastLoadedToolNames,
   restoreLoadedToolNames,
@@ -96,17 +101,35 @@ function appendSkillSection(systemPrompt: string, section: string): string {
 export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
   const toolConfig = resolveToolAssemblyConfig(ctx.agent);
   const skillConfig = resolveSkillAssemblyConfig(ctx.agent);
-  const deferredHints = createDeferredHintCoordinator(toolConfig.deferredHintStrategy);
+  const reassemblyConfig = resolveReassemblyConfig(ctx.agent);
+  const model = ctx.pi!.model;
+  // Without native mid-conversation tool declarations, loading a deferred tool would resend the
+  // whole tool list and invalidate the cached prefix. Such models reach deferred tools through
+  // `mcp_invoke` instead, so their tool list stays fixed for the session.
+  const nativeToolLoading = supportsNativeToolLoading(model);
+  const deferredHints = createDeferredHintCoordinator(
+    toolConfig.deferredHintStrategy ?? (nativeToolLoading ? "claude_code" : "pi"),
+  );
   const exposure = createToolExposureStrategy();
   const search = createToolCatalogSearch();
   const skillMounts = skillMountsFromContext(ctx);
   const mountsById = new Map(skillMounts.map((mount) => [mount.skillId, mount]));
   const allTools = toolsToPi(ctx);
   const toolCatalog = buildToolCatalog(allTools);
-  const loadedTools = restoreLoadedToolNames(ctx.runtime.history.getEvents());
-  const loadedSkills = restoreLoadedSkillIds(ctx.runtime.history.getEvents());
+  const events = ctx.runtime.history.getEvents();
+  const loadedTools = restoreLoadedToolNames(events);
+  const loadedSkills = restoreLoadedSkillIds(events);
   const baseSystemPrompt = ctx.systemPrompt;
-  const model = ctx.pi!.model;
+
+  const postCompaction = resolvePostCompactionAssembly({
+    events,
+    mounts: skillMounts,
+    loadedTools,
+    config: reassemblyConfig,
+    model,
+    broadcast: ctx.runtime.broadcast.bind(ctx.runtime),
+  });
+  const postCompactionSkillSection = postCompaction.skillRetentionSection;
 
   function combinedSearchCatalog(): ToolCatalogEntry[] {
     const liveSkillPlan = planSkillExposure({
@@ -167,7 +190,10 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
     label: TOOL_SEARCH_NAME,
     description:
       "Search deferred MCP tools and deferred skills by keyword, server name, +required terms, or select:name1,name2. "
-      + "Loaded entries become available on the next model turn.",
+      + (nativeToolLoading
+        ? "Loaded entries become available on the next model turn."
+        : `Returns each tool's JSON schema; call the tools through ${MCP_INVOKE_TOOL_NAME}. `
+          + "Loaded skills become available on the next model turn."),
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       limit: Type.Optional(Type.Number({ description: "Max results (default from agent config)" })),
@@ -186,7 +212,7 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
         if (skillId) {
           loadedSkills.add(skillId);
           loadedSkillIds.push(skillId);
-        } else {
+        } else if (nativeToolLoading) {
           loadedTools.add(entry.name);
           loadedToolNames.push(entry.name);
         }
@@ -197,9 +223,13 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
       if (loadedSkillIds.length > 0) {
         broadcastLoadedSkillIds(ctx.runtime.broadcast.bind(ctx.runtime), loadedSkillIds);
       }
+      const header = nativeToolLoading
+        ? `Loaded ${result.entries.length} item(s) for the next turn:`
+        : `Found ${result.entries.length} item(s). Call tools through ${MCP_INVOKE_TOOL_NAME} `
+          + `with {"tool_name": "<name>", "arguments": {...}}; skills are loaded for the next turn:`;
       const text = result.entries.length === 0
         ? "No tools matched. Try different keywords or select:tool_name."
-        : `Loaded ${result.entries.length} item(s) for the next turn:\n\n${formatSearchResult(result.entries, allTools, skillMounts)}`;
+        : `${header}\n\n${formatSearchResult(result.entries, allTools, skillMounts)}`;
       return {
         content: [{ type: "text", text }],
         details: { loadedToolNames, loadedSkillIds },
@@ -207,10 +237,19 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
     },
   };
 
+  const allToolsByName = new Map(allTools.map((tool) => [tool.name, tool]));
+  const mcpInvokeTool = nativeToolLoading
+    ? undefined
+    : createMcpInvokeTool({
+      resolveTarget: (name) => (isMcpToolName(name) ? allToolsByName.get(name) : undefined),
+    });
+
   const toolsWithSearch = [
-    ...allTools.filter((t) => t.name !== TOOL_SEARCH_NAME && t.name !== SKILL_TOOL_NAME),
+    ...allTools.filter((t) =>
+      t.name !== TOOL_SEARCH_NAME && t.name !== SKILL_TOOL_NAME && t.name !== MCP_INVOKE_TOOL_NAME),
     ...(skillTool ? [skillTool] : []),
     toolSearchPiTool,
+    ...(mcpInvokeTool ? [mcpInvokeTool] : []),
   ];
 
   function deferredSkillIdsForSearch(): string[] {
@@ -230,6 +269,7 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
       config: toolConfig,
       model,
       forceToolSearch,
+      nativeToolLoading,
     });
   }
 
@@ -237,7 +277,8 @@ export function createPiToolAssembly(ctx: HarnessContext): PiToolAssembly {
     plan: { toolSearchEnabled: boolean; deferredNames: string[] },
     skillSection: string,
   ): string {
-    const withSkills = appendSkillSection(baseSystemPrompt, skillSection);
+    const skillParts = [skillSection, postCompactionSkillSection].filter((s) => s.trim().length > 0);
+    const withSkills = appendSkillSection(baseSystemPrompt, skillParts.join("\n\n"));
     return deferredHints.augmentSystemPrompt(withSkills, plan);
   }
 

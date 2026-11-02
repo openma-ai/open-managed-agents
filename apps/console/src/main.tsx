@@ -20,8 +20,10 @@ import { AuthProvider } from "./lib/auth";
 import { I18nProvider } from "./i18n";
 import { Toaster } from "./components/ui/sonner";
 import { AppShell } from "./components/AppShell";
+import { OpenmaStartupLoader } from "./components/OpenmaStartupLoader";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { queryClient } from "./lib/query-client";
+import { loadBranding } from "./lib/branding";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { AgentsList } from "./pages/AgentsList";
@@ -36,6 +38,7 @@ import { SkillsList } from "./pages/SkillsList";
 import { MemoryStoresList } from "./pages/MemoryStoresList";
 import { MemoryStoreDetail } from "./pages/MemoryStoreDetail";
 import { ModelCardsList } from "./pages/ModelCardsList";
+import { Budget } from "./pages/Budget";
 import { WorkspaceMembers, JoinWorkspace } from "./pages/WorkspaceMembers";
 import { ApiKeysList } from "./pages/ApiKeysList";
 import { CliLogin } from "./pages/CliLogin";
@@ -59,11 +62,8 @@ import {
   IntegrationsSlackWorkspace,
   IntegrationsSlackPublishPage,
 } from "./pages/IntegrationsSlack";
-import {
-  IntegrationsFeishuList,
-  IntegrationsFeishuWorkspace,
-  IntegrationsFeishuPublishPage,
-} from "./pages/IntegrationsFeishu";
+import { LoopEditPage, LoopsPage, LoopTemplatesPage } from "./pages/Loops";
+import { BondDetailPage, BondLinkPage, BondsPage } from "./pages/Bonds";
 import { consolePlugins } from "./plugins/registry";
 
 /**
@@ -172,9 +172,38 @@ const protectedRoutes: RouteObject[] = [
     ],
   },
   { path: "model-cards", element: <ModelCardsList />, handle: { crumb: "Model Cards" } },
+  { path: "budget", element: <Budget />, handle: { crumb: "Budget" } },
   { path: "members", element: <WorkspaceMembers />, handle: { crumb: "Members" } },
   { path: "api-keys", element: <ApiKeysList />, handle: { crumb: "API Keys" } },
   { path: "runtimes", element: <RuntimesList />, handle: { crumb: "Local Runtimes" } },
+  {
+    path: "loops",
+    handle: { crumb: "Loops" },
+    children: [
+      { index: true, element: <LoopsPage /> },
+      { path: "new", element: <LoopEditPage />, handle: { crumb: "New" } },
+      { path: "templates", element: <LoopTemplatesPage />, handle: { crumb: "Templates" } },
+      { path: ":id", element: <LoopEditPage />, handle: { crumb: "Loop" } },
+    ],
+  },
+  {
+    path: "bonds",
+    handle: { crumb: "Bonds" },
+    children: [
+      { index: true, element: <BondsPage /> },
+      { path: "new", element: <BondLinkPage />, handle: { crumb: "New" } },
+      {
+        path: ":id",
+        element: <BondDetailPage />,
+        handle: {
+          crumb: (m: UIMatch) => {
+            const id = (m.params.id as string | undefined) ?? "Bond";
+            return id.slice(id.indexOf(":") + 1);
+          },
+        },
+      },
+    ],
+  },
   {
     path: "integrations",
     handle: { crumb: "Integrations" },
@@ -236,21 +265,9 @@ const protectedRoutes: RouteObject[] = [
         ],
       },
       {
-        path: "feishu",
-        handle: { crumb: "Feishu" },
-        children: [
-          { index: true, element: <IntegrationsFeishuList /> },
-          {
-            path: "publish",
-            element: <IntegrationsFeishuPublishPage />,
-            handle: { crumb: "Publish" },
-          },
-          {
-            path: "installations/:id",
-            element: <IntegrationsFeishuWorkspace />,
-            handle: { crumb: "Workspace" },
-          },
-        ],
+        // Feishu now lives under Loops: link the app from a Loop's Bond field.
+        path: "feishu/*",
+        element: <Navigate to="/loops?template=feishu-agent" replace />,
       },
     ],
   },
@@ -273,13 +290,15 @@ const router = createBrowserRouter([
   },
 ]);
 
+void loadBranding();
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ErrorBoundary>
       <I18nProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
-          <Suspense fallback={null}>
+          <Suspense fallback={<div className="flex h-screen items-center justify-center bg-bg"><OpenmaStartupLoader /></div>}>
               <RouterProvider router={router} />
             </Suspense>
           </AuthProvider>

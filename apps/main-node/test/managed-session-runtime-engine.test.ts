@@ -11,8 +11,8 @@ import type {
   ArchiveNodeManagedSessionThread,
   StartNodeManagedSessionRuntime,
   StopNodeManagedSessionRuntime,
-} from "../src/lib/node-managed-session-runtime.js";
-import * as engineModule from "../src/lib/node-managed-session-runtime.js";
+} from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
+import * as engineModule from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 
 const session: Session = {
   id: "session_01",

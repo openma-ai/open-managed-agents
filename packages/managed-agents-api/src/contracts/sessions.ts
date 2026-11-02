@@ -25,7 +25,16 @@ type OfficialSessionAgentOverride = Extract<
   OfficialSessionAgent,
   { type: "agent_with_overrides" }
 >;
-export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent"> & {
+type OfficialSessionResource = NonNullable<OfficialSessionCreateBody["resources"]>[number];
+/** OMA extension: a repository without `authorization_token` is cloned with
+ * the workspace's Bond for its host. */
+export type SessionResourceBody =
+  | Exclude<OfficialSessionResource, { type: "github_repository" }>
+  | (Omit<Extract<OfficialSessionResource, { type: "github_repository" }>, "authorization_token"> & {
+      authorization_token?: string;
+    });
+export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent" | "resources"> & {
+  resources?: SessionResourceBody[];
   agent:
     | string
     | Exclude<OfficialSessionAgent, { type: "agent_with_overrides" }>
@@ -83,7 +92,7 @@ const sessionResourceInputSchema: z.ZodType<
     .strict(),
   z
     .object({
-      authorization_token: z.string().min(1),
+      authorization_token: z.string().min(1).optional(),
       type: z.literal("github_repository"),
       url: z.string().min(1),
       checkout: sessionCheckoutInputSchema.nullable().optional(),

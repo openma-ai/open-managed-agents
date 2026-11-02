@@ -1,5 +1,9 @@
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
 import { mcpServerNameFromToolName } from "./catalog";
+import {
+  indexOfLastCompactionBoundary,
+  readContextReassembledDetails,
+} from "./context-reassembled-state";
 
 export const TOOL_ASSEMBLY_WARNING_SOURCE = "oma.tool_assembly";
 
@@ -40,7 +44,7 @@ function namesFromToolSearchResultContent(content: string | ContentBlock[] | unk
 /**
  * Rebuild the set of MCP tools loaded via `tool_search` from the session event log.
  */
-export function restoreLoadedToolNames(events: readonly SessionEvent[]): Set<string> {
+function restoreLoadedToolNamesFromEvents(events: readonly SessionEvent[]): Set<string> {
   const loaded = new Set<string>();
   const pendingSearch = new Map<string, string>();
 
@@ -74,6 +78,16 @@ export function restoreLoadedToolNames(events: readonly SessionEvent[]): Set<str
     }
   }
 
+  return loaded;
+}
+
+export function restoreLoadedToolNames(events: readonly SessionEvent[]): Set<string> {
+  const loaded = restoreLoadedToolNamesFromEvents(events);
+  const compactionIdx = indexOfLastCompactionBoundary(events);
+  const details = readContextReassembledDetails(events);
+  if (details && compactionIdx >= 0 && details.afterCompactionIndex === compactionIdx) {
+    return new Set(details.loadedToolNames);
+  }
   return loaded;
 }
 

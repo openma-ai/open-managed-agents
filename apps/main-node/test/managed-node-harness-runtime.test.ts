@@ -29,7 +29,7 @@ interface ManagedHarnessRuntimeConstructor {
 
 describe("ManagedNodeHarnessRuntime", () => {
   it("encodes history and serializes stamped harness output", async () => {
-    const modulePath = "../src/lib/node-managed-harness-runtime.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts", import.meta.url).href;
     const runtimeModule = await import(/* @vite-ignore */ modulePath).catch(
       () => ({}),
     ) as { ManagedNodeHarnessRuntime?: ManagedHarnessRuntimeConstructor };
@@ -98,7 +98,7 @@ describe("ManagedNodeHarnessRuntime", () => {
 
   it("reportUsage emits session.usage for managed projection", async () => {
     const { ManagedNodeHarnessRuntime } = await import(
-      "../src/lib/node-managed-harness-runtime.ts"
+      "../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts"
     ) as { ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor };
     const output: unknown[] = [];
     const runtime = new ManagedNodeHarnessRuntime({
@@ -134,7 +134,7 @@ describe("ManagedNodeHarnessRuntime", () => {
       toolUseId: "event_custom_tool_01",
     },
   ])("projects $type into harness tool history without emitting a new official event", async (result) => {
-    const modulePath = "../src/lib/node-managed-harness-runtime.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts", import.meta.url).href;
     const runtimeModule = await import(/* @vite-ignore */ modulePath) as {
       ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor;
     };
@@ -189,7 +189,7 @@ describe("ManagedNodeHarnessRuntime", () => {
   });
 
   it("stamps events strictly increasing so same-millisecond events replay in order", async () => {
-    const { ManagedNodeHarnessRuntime } = await import("../src/lib/node-managed-harness-runtime.ts") as unknown as
+    const { ManagedNodeHarnessRuntime } = await import("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts") as unknown as
       { ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor };
     const output: Array<{ type: string; processed_at: string }> = [];
     let next = 0;
@@ -209,7 +209,7 @@ describe("ManagedNodeHarnessRuntime", () => {
   });
 
   it("keeps a final system.message as mid-conversation system context", async () => {
-    const modulePath = "../src/lib/node-managed-harness-runtime.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts", import.meta.url).href;
     const runtimeModule = await import(/* @vite-ignore */ modulePath) as {
       ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor;
     };
@@ -248,7 +248,7 @@ describe("ManagedNodeHarnessRuntime", () => {
   });
 
   it("projects user.define_outcome into a deterministic harness task message", async () => {
-    const modulePath = "../src/lib/node-managed-harness-runtime.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts", import.meta.url).href;
     const runtimeModule = await import(/* @vite-ignore */ modulePath) as {
       ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor;
     };
@@ -283,5 +283,25 @@ describe("ManagedNodeHarnessRuntime", () => {
         ].join("\n"),
       }],
     }]);
+  });
+
+  it("advertises steering only when wired and appends steered inputs to this turn's history", async () => {
+    const { ManagedNodeHarnessRuntime } = await import("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime");
+    const base = {
+      initialEvents: [], events: [], sandbox: {} as SandboxExecutor,
+      output: async () => {}, clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+      ids: { nextEventId: () => "event_x" },
+    };
+    expect(new ManagedNodeHarnessRuntime(base).takeSteeringInputs).toBeUndefined();
+    const steering = new ManagedNodeHarnessRuntime({
+      ...base,
+      takeSteeringInputs: async () => [{
+        id: "u_mid", type: "user.message", content: [{ type: "text", text: "also" }], processedAt: null,
+      } as unknown as SessionEventView],
+    });
+    const taken = await steering.takeSteeringInputs!();
+    expect(taken).toEqual([expect.objectContaining({ id: "u_mid", type: "user.message" })]);
+    expect(steering.history.getEvents().map((e) => (e as { id?: string }).id)).toContain("u_mid");
+    expect(steering.getApplicationHistoryEvents().map((e) => e.id)).toContain("u_mid");
   });
 });

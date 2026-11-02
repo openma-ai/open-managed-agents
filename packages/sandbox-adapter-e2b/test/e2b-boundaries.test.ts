@@ -228,7 +228,7 @@ describe("E2BSandboxExecutor boundaries", () => {
     expect(command.closeStdin).toHaveBeenCalled();
     expect(options).toMatchObject({ background: true, stdin: true, timeoutMs: 0, cwd: "/workspace", envs: { KEEP: "y", SECRET: "z", ADD: "v" } });
     expect(options?.envs).not.toHaveProperty("REMOVE");
-    expect(sb.commands.run.mock.calls[0]?.[0]).toBe("'agent' 'a'\\''b'");
+    expect(sb.commands.run.mock.calls[0]?.[0]).toBe("'env' '-u' 'REMOVE' '--' 'agent' 'a'\\''b'");
     (options?.onStdout as (data: string) => void)("");
     (options?.onStdout as (data: string) => void)("out");
     (options?.onStderr as (data: string) => void)("err");
@@ -238,6 +238,36 @@ describe("E2BSandboxExecutor boundaries", () => {
     await expect(stderr).resolves.toBe("err");
     await expect(writer.write(new Uint8Array([3]))).rejects.toThrow();
     await child.kill();
+  });
+
+  it.each(["kill", "abort"] as const)("does not treat a remote %s acknowledgement as confirmed process exit", async operation => {
+    const wait = deferred<CommandResult>();
+    const sb = remote();
+    sb.commands.run.mockResolvedValueOnce({ pid: 3, kill: async () => true, wait: () => wait.promise, sendStdin: async () => {}, closeStdin: async () => {} });
+    const child = await new E2BSandboxExecutor(sb as never, {}).spawnDuplexProcess({ command: "agent" });
+    let exited = false;
+    void child.exited.then(() => { exited = true; });
+    if (operation === "kill") await child.kill("SIGKILL");
+    else await child.stdin.getWriter().abort();
+    await Promise.resolve();
+    expect(exited).toBe(false);
+    wait.resolve({ stdout: "", stderr: "", exitCode: 137 });
+    await expect(child.exited).resolves.toEqual({ code: 137, signal: "SIGKILL" });
+  });
+
+  it.each(["kill", "abort"] as const)("still dispatches remote %s after wait loses transport, without confirming exit", async operation => {
+    const wait = deferred<CommandResult>();
+    const kill = vi.fn(async () => true);
+    const sb = remote();
+    sb.commands.run.mockResolvedValueOnce({ pid: 3, kill, wait: () => wait.promise, sendStdin: async () => {}, closeStdin: async () => {} });
+    const child = await new E2BSandboxExecutor(sb as never, {}).spawnDuplexProcess({ command: "agent" });
+    wait.reject(new Error("connection reset"));
+    await expect(child.exited).rejects.toThrow("connection reset");
+    if (operation === "kill") await child.kill("SIGKILL");
+    else await child.stdin.getWriter().abort();
+    expect(kill).toHaveBeenCalledOnce();
+    // An acknowledged kill cannot retroactively make the failed exit barrier safe.
+    await expect(child.exited).rejects.toThrow("connection reset");
   });
 
   it("maps duplex kill/abort and all wait rejection shapes", async () => {
@@ -250,14 +280,14 @@ describe("E2BSandboxExecutor boundaries", () => {
     }
     const killed = await spawned();
     await killed.child.kill("SIGKILL");
-    await expect(killed.child.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
-    killed.wait.reject(new Error("late"));
+    killed.wait.reject({ exitCode: 137 });
+    await expect(killed.child.exited).resolves.toEqual({ code: 137, signal: "SIGKILL" });
 
     const aborted = await spawned();
     const writer = aborted.child.stdin.getWriter();
     await writer.abort();
-    await expect(aborted.child.exited).resolves.toEqual({ code: null, signal: "SIGKILL" });
-    aborted.wait.reject(new Error("late"));
+    aborted.wait.reject({ exitCode: 137 });
+    await expect(aborted.child.exited).resolves.toEqual({ code: 137, signal: "SIGKILL" });
 
     const coded = await spawned();
     coded.wait.reject({ exitCode: 17 });
@@ -266,7 +296,7 @@ describe("E2BSandboxExecutor boundaries", () => {
     const failed = await spawned();
     const reader = failed.child.stdout.getReader();
     failed.wait.reject("transport");
-    await expect(failed.child.exited).resolves.toEqual({ code: null, signal: null });
+    await expect(failed.child.exited).rejects.toThrow("transport");
     await expect(reader.read()).rejects.toThrow("transport");
 
     const failedWithError = await spawned();
@@ -402,6 +432,19 @@ describe("E2BSandboxExecutor boundaries", () => {
       MEMORY_S3_ENDPOINT: "endpoint", MEMORY_S3_ACCESS_KEY: "access", MEMORY_S3_SECRET_KEY: "secret", MEMORY_S3_BUCKET: "bucket",
     });
     expect(sdk.create).toHaveBeenLastCalledWith("template", expect.objectContaining({ apiUrl: "api", sandboxUrl: "sandbox", domain: "domain" }));
+  });
+
+  it("declares no prepared-base capability; compositions opt in explicitly", () => {
+    expect(sandboxFactory.capabilities).toBeUndefined();
+  });
+
+  it("uses an Environment-selected catalog image as the template instead of SANDBOX_IMAGE", async () => {
+    sdk.create.mockResolvedValue(remote({ sandboxId: "selected" }));
+    await sandboxFactory(
+      { sessionId: "s", workdir: "/w", image: { alias: "analytics", reference: "tmpl-analytics" } },
+      { E2B_API_KEY: "key", SANDBOX_IMAGE: "template" },
+    );
+    expect(sdk.create).toHaveBeenLastCalledWith("tmpl-analytics", expect.objectContaining({ apiKey: "key" }));
   });
 
   it("explains a missing optional SDK", async () => {

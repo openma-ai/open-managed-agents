@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { bootstrapTestDb } from "./_helpers/bootstrap-test-db";
-import { createSqliteAgentService } from "@open-managed-agents/agents-store";
+import { seedAgent } from "./seed-agent";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
 import { createSqliteSessionService } from "@open-managed-agents/sessions-store";
@@ -23,15 +23,11 @@ describe("OmaVaultResolver Node wire", () => {
       .bind(TENANT, "Cap", Date.now(), Date.now())
       .run();
 
-    const agents = createSqliteAgentService({ db });
     const vaults = createSqliteVaultService({ db });
     const credentials = createSqliteCredentialService({ db });
     const sessions = createSqliteSessionService({ db });
 
-    const agentRow = await agents.create({
-      tenantId: TENANT,
-      input: { name: "Cap Agent", model: "claude-haiku-4-5-20251001" },
-    });
+    const agentRow = await seedAgent(sql, TENANT, { name: "Cap Agent", model: { id: "claude-haiku-4-5-20251001" } });
     const vault = await vaults.create({ tenantId: TENANT, name: "GitHub vault" });
     await credentials.create({
       tenantId: TENANT,

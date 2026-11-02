@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -23,8 +23,7 @@ function get(path: string, extraHeaders?: Record<string, string>) {
   return api(path, { headers: { ...H, ...extraHeaders } });
 }
 
-// Register a noop harness for stress tests
-registerHarness("noop", () => ({ async run() {} }));
+registerTestHarnesses();
 
 // Helper: create agent + env + session quickly
 async function createFullSession(overrides?: Record<string, unknown>) {
@@ -32,7 +31,7 @@ async function createFullSession(overrides?: Record<string, unknown>) {
     name: "Stress Agent",
     model: "claude-sonnet-4-6",
     system: "You are helpful.",
-    harness: "noop",
+    _oma: { harness: "noop" },
     ...overrides,
   });
   const agent = (await agentRes.json()) as any;
@@ -130,7 +129,7 @@ describe("Session DO - direct", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "DO Direct Agent",
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const agent = (await agentRes.json()) as any;
     const envRes = await post("/v1/oma/environments", {
@@ -309,6 +308,32 @@ describe("History - complex conversions", () => {
       title: "History Test",
     });
     for (const event of events) {
+      // Official CMA rejects orphan custom_tool_result — seed the matching
+      // agent.custom_tool_use into history first when the fixture omits it.
+      if (event?.type === "user.custom_tool_result" && event.custom_tool_use_id) {
+        const stub = env.SESSION_DO!.get(env.SESSION_DO!.idFromName(historyId));
+        await runInDurableObject(stub, async (instance, state) => {
+          const room = instance as any;
+          room._ensureCfAgentsSchema?.();
+          room.ensureSchema?.();
+          room._coldStartFlushDone = true;
+          const history = new SqliteHistory(state.storage.sql, null);
+          const exists = history.getEvents().some(
+            (e: any) =>
+              (e.type === "agent.custom_tool_use" || e.type === "agent.tool_use") &&
+              e.id === event.custom_tool_use_id,
+          );
+          if (!exists) {
+            history.append({
+              type: "agent.custom_tool_use",
+              id: event.custom_tool_use_id,
+              name: "custom_tool",
+              input: {},
+              processed_at: new Date().toISOString(),
+            } as never);
+          }
+        });
+      }
       await postDoEvent(historyId, event);
     }
     // Read events back via WS replay
@@ -396,7 +421,7 @@ describe("History - complex conversions", () => {
 describe("Stress tests", () => {
   it("handles 20 agents created simultaneously", async () => {
     const promises = Array.from({ length: 20 }, (_, i) =>
-      post("/v1/oma/agents", { name: `Stress-${i}`, model: "claude-sonnet-4-6", harness: "noop" })
+      post("/v1/oma/agents", { name: `Stress-${i}`, model: "claude-sonnet-4-6", _oma: { harness: "noop" } })
     );
     const results = await Promise.all(promises);
     expect(results.every((r) => r.status === 201)).toBe(true);
@@ -408,7 +433,7 @@ describe("Stress tests", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "Multi-Session",
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const agent = (await agentRes.json()) as any;
     const envRes = await post("/v1/oma/environments", {
@@ -462,7 +487,7 @@ describe("Stress tests", () => {
     const res = await post("/v1/oma/agents", {
       name: longName,
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
@@ -495,12 +520,11 @@ describe("Stress tests", () => {
       name: "EmptyFields",
       model: "claude-sonnet-4-6",
       system: "",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    // system defaults to "" when falsy but is stored as ""
-    expect(agent.system).toBeNull();
+    expect(agent.system).toBe("");
     // Also verify empty title on session is preserved
     const envRes = await post("/v1/oma/environments", {
       name: "empty-env",
@@ -522,7 +546,7 @@ describe("Stress tests", () => {
       name: special,
       model: "claude-sonnet-4-6",
       system: special,
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
@@ -555,7 +579,7 @@ describe("Full lifecycle", () => {
       name: "Lifecycle Agent",
       model: "claude-sonnet-4-6",
       system: "lifecycle test",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     expect(agentRes.status).toBe(201);
     const agent = (await agentRes.json()) as any;
@@ -632,7 +656,7 @@ describe("Full lifecycle", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "Shared Env Agent",
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const agent = (await agentRes.json()) as any;
     const envRes = await post("/v1/oma/environments", {
@@ -735,7 +759,7 @@ describe("Error boundaries", () => {
     const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: { "x-api-key": "test-key" },
-      body: JSON.stringify({ name: "NoCT", model: "claude-sonnet-4-6", harness: "noop" }),
+      body: JSON.stringify({ name: "NoCT", model: "claude-sonnet-4-6", _oma: { harness: "noop" } }),
     });
     // Hono should still parse the body
     expect(res.status).toBeLessThan(500);
@@ -747,7 +771,7 @@ describe("Error boundaries", () => {
       name: "BigAgent",
       model: "claude-sonnet-4-6",
       system: "z".repeat(2 * 1024 * 1024),
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const res = await api("/v1/oma/agents", {
       method: "POST",
@@ -770,7 +794,7 @@ describe("Error boundaries", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "DoubleArchive",
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const agent = (await agentRes.json()) as any;
 
@@ -789,7 +813,7 @@ describe("Error boundaries", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "DoubleDelete",
       model: "claude-sonnet-4-6",
-      harness: "noop",
+      _oma: { harness: "noop" },
     });
     const agent = (await agentRes.json()) as any;
 

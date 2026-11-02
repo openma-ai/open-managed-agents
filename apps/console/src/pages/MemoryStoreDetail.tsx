@@ -17,6 +17,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/memory-stores/memory-versions";
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
+import { OpenmaStartupLoader } from "../components/OpenmaStartupLoader";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
@@ -87,7 +88,7 @@ export function MemoryStoreDetail() {
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
     </div>
   );
-  if (!store) return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
+  if (!store) return <div className="flex flex-1 items-center justify-center p-8"><OpenmaStartupLoader /></div>;
 
   return (
     <Page

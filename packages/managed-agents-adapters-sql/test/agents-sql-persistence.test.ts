@@ -7,29 +7,6 @@ import { SqlAgentPersistence } from "../src";
 import { agentStorePortContract } from "./contracts/store-port-contracts";
 
 const SCHEMA_SQL = `
-CREATE TABLE agents (
-  id text PRIMARY KEY NOT NULL,
-  tenant_id text NOT NULL,
-  config text NOT NULL,
-  version integer NOT NULL,
-  created_at integer NOT NULL,
-  updated_at integer,
-  archived_at integer
-);
-CREATE INDEX idx_agents_tenant_created_id
-  ON agents (tenant_id, created_at, id);
-
-CREATE TABLE agent_versions (
-  agent_id text NOT NULL,
-  tenant_id text NOT NULL,
-  version integer NOT NULL,
-  snapshot text NOT NULL,
-  created_at integer NOT NULL,
-  PRIMARY KEY (agent_id, version)
-);
-CREATE INDEX idx_agent_versions_tenant_agent
-  ON agent_versions (tenant_id, agent_id, version);
-
 CREATE TABLE managed_agents (
   id text PRIMARY KEY NOT NULL,
   workspace_id text NOT NULL,
@@ -142,43 +119,6 @@ describe("SqlAgentPersistence", () => {
         agentId: agent.id,
       }),
     ).resolves.toBeNull();
-  });
-
-  it("stores official Managed Agents independently from the legacy agents table", async () => {
-    await client
-      .prepare(
-        `INSERT INTO agents
-          (id, tenant_id, config, version, created_at, updated_at, archived_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        agent.id,
-        "workspace_legacy",
-        JSON.stringify({ legacy: true }),
-        99,
-        1,
-        1,
-        null,
-      )
-      .run();
-    const persistence = new SqlAgentPersistence(client);
-
-    await persistence.insert({ workspaceId: "workspace_01", agent });
-
-    await expect(
-      client
-        .prepare("SELECT config FROM agents WHERE id = ?")
-        .bind(agent.id)
-        .first<{ config: string }>(),
-    ).resolves.toEqual({ config: JSON.stringify({ legacy: true }) });
-    await expect(
-      client
-        .prepare(
-          "SELECT COUNT(*) AS count FROM managed_agents WHERE workspace_id = ? AND id = ?",
-        )
-        .bind("workspace_01", agent.id)
-        .first<{ count: number }>(),
-    ).resolves.toEqual({ count: 1 });
   });
 
   it("atomically replaces the current agent, snapshots the prior version, and rejects stale CAS", async () => {

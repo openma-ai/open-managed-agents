@@ -1,10 +1,9 @@
-/**
- * Public Node control-plane entry point. The implementation is split by
- * concern under ./modules; importing this file never listens or starts work.
- */
+// Compatibility path: the control plane lives in
+// @open-managed-agents/control-plane-node. Kept so existing imports of
+// @open-managed-agents/main-node/control-plane keep working.
 export {
-  assembleNodeControlPlane as createNodeControlPlane,
+  createNodeControlPlane,
   type NodeControlPlane,
   type NodeControlPlaneApp,
-} from "./modules/node-assembly.js";
-export type { NodeEnvironment } from "./config.js";
+  type NodeEnvironment,
+} from "@open-managed-agents/control-plane-node";

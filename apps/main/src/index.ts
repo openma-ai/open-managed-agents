@@ -3,6 +3,7 @@ import { createResourcesHandler, createArtifactsHandler, createSessionsHandler, 
 import { SessionRuntimeHistoryApplicationService } from "@open-managed-agents/managed-agents-application";
 import { SqlSessionRuntimeHistorySource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { Env } from "@open-managed-agents/shared";
 import {
@@ -23,6 +24,7 @@ import {
   buildMeRoutes,
   buildTenantRoutes,
   mintApiKeyOnStorage,
+  buildSandboxImageRoutes,
 } from "@open-managed-agents/http-routes";
 import {
   buildAgentRoutes as buildManagedAgentRoutes,
@@ -117,6 +119,7 @@ import {
   SqlSessionResourceSecretSource,
   SqlSessionSource,
   SqlSessionRuntimeProjectionPersistence,
+  SqlSessionEventPersistence,
 } from "@open-managed-agents/managed-agents-adapters-sql";
 import { BlobFileContentStore } from "@open-managed-agents/managed-agents-adapters-blob";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
@@ -134,6 +137,7 @@ import { toEnvironmentConfig } from "@open-managed-agents/environments-store";
 import { authMiddleware } from "./auth";
 import { rateLimitMiddleware, authRateLimitMiddleware } from "./rate-limit";
 import { cfRouteServices } from "./lib/cf-route-services";
+import { cfDreamCredentialResolver } from "./lib/workspace-model-credentials";
 import { cfApiKeyStorage } from "./lib/cf-api-key-storage";
 import { CfSessionRouter } from "./lib/cf-session-router";
 import { CfManagedRuntimeFetcher } from "./lib/cf-managed-runtime-fetcher";
@@ -327,6 +331,7 @@ const legacyAgentsRoutes = new Hono<{
   const ctx = c as unknown as AppCtx;
   const services = ctx.var.services;
   const app = buildLegacyAgentRoutes({
+    application: managedCoreApplicationFor(ctx).port(managedAgentsPortTokens.agents),
     services: () => cfRouteServicesFromCtx(ctx),
     validateModel: async (tenantId, model) => {
       const cards = await services.modelCards.list({ tenantId });
@@ -344,8 +349,9 @@ const legacyAgentsRoutes = new Hono<{
     },
     validateAgentLimits: (body) =>
       validateAgentLimits(body as Parameters<typeof validateAgentLimits>[0]),
-    hasActiveSessionsByAgent: (tenantId, agentId) =>
-      services.sessions.hasActiveByAgent({ tenantId, agentId }),
+    hasActiveSessionsByAgent: async (tenantId, agentId) =>
+      await services.sessions.hasActiveByAgent({ tenantId, agentId }) ||
+      (await new CfD1SqlClient(ctx.var.tenantDb).prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND agent_id = ? AND archived_at IS NULL LIMIT 1").bind(tenantId, agentId).first()) !== null,
     hasActiveEvalsByAgent: (tenantId, agentId) =>
       services.evals.hasActiveByAgent({ tenantId, agentId }),
   });
@@ -701,6 +707,42 @@ const tenantsRoutes = new Hono<{
   });
   return invokePackage(c, app);
 });
+
+/**
+ * OMA queue extension for Managed sessions: remove one queued user.message
+ * before it is absorbed. Mid-run accept already steers into the current turn
+ * at the next LLM/tool-call boundary (no explicit /pending/.../steer).
+ * The SessionDO owns the queue; it updates the D1 execution outbox and
+ * broadcasts `system.user_message_cancelled` (and steered frames from
+ * takeSteeringInputs) that openma-common decodes into OpenMA queue-lifecycle
+ * events.
+ */
+const managedSessionQueueRoutes = new Hono<{
+  Bindings: Env;
+  Variables: { tenant_id: string; tenantDb: D1Database };
+}>();
+async function forwardManagedQueueCancel(
+  c: Context<{ Bindings: Env; Variables: { tenant_id: string; tenantDb: D1Database } }>,
+): Promise<Response> {
+  const sessionId = c.req.param("sessionId") ?? "";
+  const eventId = c.req.param("eventId") ?? "";
+  const workspaceId = c.var.tenant_id;
+  const row = await c.var.tenantDb
+    .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
+    .bind(workspaceId, sessionId)
+    .first();
+  if (!row) return c.json({ error: "Session not found" }, 404);
+  const res = await new CfManagedRuntimeFetcher(c.env).fetch(
+    `https://managed-runtime/sessions/${encodeURIComponent(sessionId)}/pending/${encodeURIComponent(eventId)}`,
+    { method: "DELETE", headers: { "x-oma-workspace-id": workspaceId } },
+  );
+  return new Response(await res.text(), {
+    status: res.status,
+    headers: { "content-type": "application/json" },
+  });
+}
+managedSessionQueueRoutes.delete("/:sessionId/pending/:eventId", (c) =>
+  forwardManagedQueueCancel(c));
 
 const legacySessionsRoutes = new Hono<{
   Bindings: Env;
@@ -1078,19 +1120,12 @@ const managedEnvironmentWorkRoutes = new Hono<{
 });
 
 function managedDreamCuratorFor(ctx: AppCtx) {
-  const environment = ctx.env as Env & {
-    ANTHROPIC_API_KEY?: string;
-    ANTHROPIC_BASE_URL?: string;
-    DREAM_CURATOR_MODE?: string;
-  };
-  return environment.DREAM_CURATOR_MODE === "dedup" ||
-      environment.ANTHROPIC_API_KEY === undefined
+  // No platform model key: each curation resolves the Dream workspace's own
+  // model card for dream.model, exactly like a Session turn.
+  return ctx.env.DREAM_CURATOR_MODE === "dedup"
     ? new DeduplicatingDreamCurator()
     : new AnthropicMessagesDreamCurator({
-        apiKey: environment.ANTHROPIC_API_KEY,
-        ...(environment.ANTHROPIC_BASE_URL !== undefined && {
-          baseUrl: environment.ANTHROPIC_BASE_URL,
-        }),
+        resolveCredentials: cfDreamCredentialResolver(ctx.env),
       });
 }
 function managedDreamsApplicationFor(ctx: AppCtx) {
@@ -1354,6 +1389,7 @@ app.all("/openai/*", c => c.json({ error: {
 
 app.route("/v1/sessions", managedSessionsRoutes);
 app.route("/v1/oma/sessions", managedRuntimeIngressRoutes);
+app.route("/v1/oma/sessions", managedSessionQueueRoutes);
 app.route("/v1/oma/sessions", legacySessionsRoutes);
 app.route("/v1/vaults", managedVaultsRoutes);
 app.route("/v1/vaults", managedCredentialsRoutes);
@@ -1449,6 +1485,9 @@ app.route("/v1/oma/integrations", integrationsRoutes);
 app.route("/v1/oma/runtimes", runtimesRoutes);
 app.route("/v1/oma/oauth", oauthRoutes);
 app.route("/v1/oma/model_cards", modelCardsRoutes);
+// Cloudflare sandboxes run one container image; there is no operator image
+// catalog, so the list is empty and `_oma.sandbox_image` is rejected.
+app.route("/v1/oma/sandbox_images", buildSandboxImageRoutes({ list: () => [] }));
 // /v1/oma/mcp-proxy is intentionally NOT aliased: auth.ts path-prefix skip is
 // scoped to that exact prefix, and the proxy does its own session-ownership
 // check downstream. Re-mounting under /v1/oma/mcp-proxy would route through
@@ -1854,6 +1893,31 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
     return { type: "version_conflict" };
   }
 
+  async managedSessionEventsMarkProcessed(opts: {
+    workspaceId: string;
+    sessionId: string;
+    eventIds: string[];
+    processedAt: string;
+  }): Promise<
+    | { type: "marked"; events: unknown[] }
+    | { type: "not_found" }
+  > {
+    const tenantDb = await buildCfTenantDbProvider(this.env).resolve(
+      opts.workspaceId,
+    );
+    const store = new SqlSessionEventPersistence(new CfD1SqlClient(tenantDb));
+    const { markSessionEventsProcessed } = await import(
+      "@open-managed-agents/managed-agents-application"
+    );
+    const marked = await markSessionEventsProcessed(store, {
+      workspaceId: opts.workspaceId,
+      sessionId: opts.sessionId,
+      eventIds: opts.eventIds,
+      processedAt: opts.processedAt,
+    });
+    return { type: "marked", events: marked };
+  }
+
   async mcpForward(opts: {
     tenantId: string;
     sessionId: string;
@@ -1968,6 +2032,11 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       this.env,
       tenantId,
     );
+    const agentId = request.headers.get("x-oma-agent-id");
+    const agentVersion = request.headers.get("x-oma-agent-version");
+    if ((agentId === null) !== (agentVersion === null) || (agentVersion !== null && (!/^\d+$/.test(agentVersion) || Number(agentVersion) < 1))) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
     const target = await resolveProxyTargetByTenant(
       this.env,
       services,
@@ -1976,6 +2045,7 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       serverName,
       sessionSource,
       credentialSource,
+      agentId !== null && agentVersion !== null ? { id: agentId, version: Number(agentVersion) } : undefined,
     );
     if (!target) {
       return new Response('{"error":"forbidden"}', {

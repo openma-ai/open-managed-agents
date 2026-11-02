@@ -5,7 +5,7 @@ import {
   creditHarnessUsage,
   ledgerToApiTokenUsage,
   ledgerToManagedSessionUsage,
-} from "../src/lib/node-harness-usage.ts";
+} from "../../../packages/control-plane-node/src/lib/node-harness-usage.ts";
 
 describe("node-harness-usage", () => {
   it("accumulates reportUsage and cache span fields", () => {

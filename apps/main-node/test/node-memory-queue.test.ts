@@ -7,7 +7,7 @@ import {
   InMemoryMemoryRepo,
 } from "@open-managed-agents/memory-store/test-fakes";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
-import { startNodeMemoryQueue } from "../src/lib/node-memory-queue.js";
+import { startNodeMemoryQueue } from "../../../packages/control-plane-node/src/lib/node-memory-queue.js";
 
 const roots: string[] = [];
 

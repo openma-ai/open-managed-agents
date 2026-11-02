@@ -153,6 +153,13 @@ export class SessionStateMachine {
   async runHarnessTurn(
     agentId: string,
     userMessage: UserMessageEvent,
+    opts: {
+      /** CMA coherent-turn steering (after-call): mid-run inputs absorbed
+       *  into this turn at the next LLM/tool-call boundary. Wired onto the
+       *  harness runtime when the shell's runtime does not already provide
+       *  one. Absent → drain-after-idle fallback in the shell. */
+      takeSteeringInputs?: () => Promise<SessionEvent[]>;
+    } = {},
   ): Promise<void> {
     const agent = await this.deps.loadAgent(agentId);
     if (!agent) throw new Error(`agent ${agentId} not found`);
@@ -187,6 +194,13 @@ export class SessionStateMachine {
         tools,
         model,
       });
+
+      if (opts.takeSteeringInputs && ctx !== null && typeof ctx === "object") {
+        const runtime = (ctx as { runtime?: { takeSteeringInputs?: unknown } }).runtime;
+        if (runtime && typeof runtime === "object" && runtime.takeSteeringInputs === undefined) {
+          runtime.takeSteeringInputs = opts.takeSteeringInputs;
+        }
+      }
 
       const harness = await this.resolveHarness(agent);
       await harness.run(ctx);

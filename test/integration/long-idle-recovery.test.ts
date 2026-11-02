@@ -35,15 +35,11 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
 
-class NoopHarness implements HarnessInterface {
-  async run(_ctx: HarnessContext): Promise<void> { /* no LLM */ }
-}
-registerHarness("noop", () => new NoopHarness());
+registerTestHarnesses();
 
 const HALF_HOUR_MS = 30 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;

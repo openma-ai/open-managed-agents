@@ -13,8 +13,12 @@ export interface ToolAssemblyConfig {
   autoThresholdFraction: number;
   /** Tool names always exposed (in addition to built-in / custom). */
   alwaysLoad: Set<string>;
-  /** Turn-boundary / bootstrap hints for deferred tools (default `claude_code`). */
-  deferredHintStrategy: DeferredHintStrategy;
+  /**
+   * Turn-boundary / bootstrap hints for deferred tools. Undefined when the agent does not set it;
+   * the assembly then picks `claude_code` for direct loading and `pi` for `mcp_invoke` proxying,
+   * whose deferred list never shrinks and would otherwise be repeated every turn.
+   */
+  deferredHintStrategy?: DeferredHintStrategy;
 }
 
 const DEFAULT_SEARCH_LIMIT = 8;
@@ -58,21 +62,20 @@ export function resolveToolAssemblyConfig(agent: AgentConfig): ToolAssemblyConfi
 
   const rawHintStrategy =
     readString(metadata, "tool_search_deferred_hints")
-    ?? (oma && readString(oma, "tool_search_deferred_hints"))
-    ?? "claude_code";
-  const deferredHintStrategy: DeferredHintStrategy =
+    ?? (oma && readString(oma, "tool_search_deferred_hints"));
+  const deferredHintStrategy: DeferredHintStrategy | undefined =
     rawHintStrategy === "claude_code"
     || rawHintStrategy === "pi"
     || rawHintStrategy === "codex"
     || rawHintStrategy === "incremental"
       ? rawHintStrategy
-      : "claude_code";
+      : undefined;
 
   return {
     mode,
     searchLimit: Math.max(1, Math.min(32, Math.floor(limit))),
     autoThresholdFraction: Math.min(0.95, Math.max(0.01, threshold)),
     alwaysLoad,
-    deferredHintStrategy,
+    ...(deferredHintStrategy ? { deferredHintStrategy } : {}),
   };
 }

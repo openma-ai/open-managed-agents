@@ -1,11 +1,12 @@
 ---
 name: openma
 description: >
-  Use the openma platform to build, deploy, and manage AI agents. Trigger when
+  Use an existing OpenMA instance to build and manage AI agents. Trigger when
   users want to create agents, start sessions, manage environments, configure
   model cards, handle vaults/credentials, install skills, connect MCP servers,
   or interact with the openma HTTP API. Also trigger when users mention "oma",
-  "openma", "managed agents", or ask how to deploy/run/manage an agent on openma.
+  "openma", "managed agents", or ask how to run/manage an agent on OpenMA. For deploying the platform
+  itself, use the deploy-openma skill instead.
 ---
 
 # openma
@@ -17,22 +18,41 @@ execution, credential management, and session state.
 ## Setup
 
 ```bash
-npx open-managed-agents            # or: npm i -g open-managed-agents
-export OMA_BASE_URL=https://your-instance.workers.dev
-export OMA_API_KEY=oma_xxxxxx      # generate at Console → API Keys
+npm install -g @openma/cli
+oma auth login --base-url https://app.openma.ai
 ```
 
-Run `oma --help` for all commands.
+For self-hosted instances, replace the login URL with the user's server origin.
+Confirm the instance and workspace before creating resources. Let the user complete
+browser authentication. For automation, accept `OMA_BASE_URL` and `OMA_API_KEY`
+from an existing secret manager or protected environment; do not ask for secrets
+in chat or print them in logs.
+
+Run `oma --help` and `oma api` to check the installed CLI's commands and API shape.
+The CLI connects to an existing server; installing it does not deploy OpenMA.
 
 ## Core Workflow
 
 ```bash
-oma agents create "my-agent" --model claude-sonnet-4-6
-oma envs list                      # reuse existing, or:
-oma envs create default
-oma sessions create --agent <agent-id> --env <env-id>
-oma sessions message <session-id> "Your task here"
+oma models list
+oma envs list
+oma agents list
 ```
+
+Use an existing Model Card's `model_id`, not its database record ID. Choose a
+ready environment with the needed runtime capabilities. Create missing resources
+only as required for the user's task; replace the placeholders below with the
+returned IDs:
+
+```bash
+oma agents create "my-agent" --model <model-id> --system "Help with the requested task."
+oma sessions create --agent <agent-id> --env <environment-id>
+oma sessions chat <session-id> "Your task here"
+```
+
+`chat` sends a turn and streams its reply. `message` sends without waiting;
+`tail` follows events. A delivered message is not proof that the task succeeded.
+Check the resulting session status, events and outputs.
 
 ## Resources
 
@@ -50,11 +70,12 @@ oma sessions message <session-id> "Your task here"
 
 ## Model Cards
 
-```bash
-oma models create --name "anthropic" --provider ant --model-id claude-sonnet-4-6 --api-key sk-ant-xxx
-```
-
-Providers: `ant`, `oai`, `ant-compatible`, `oai-compatible`.
+Prefer Console Model Cards for entering provider credentials. `oma models list`
+shows configured card handles; use `oma api models` for the current API contract.
+Providers use Pi IDs such as `anthropic`, `openai`, `deepseek`, and `openrouter`;
+legacy aliases remain accepted. Custom providers can require `base_url` and
+`pi_config.api`; use the [SDK guide](https://github.com/openma-ai/open-managed-agents/tree/main/packages/sdk#pi-backed-model-cards)
+for that shape rather than assuming the CLI exposes every field.
 
 ## MCP Server Connections
 
@@ -73,7 +94,7 @@ resource (agents, sessions, environments, models, vaults, oauth, skills, files,
 memory, keys, evals, clawhub).
 
 All `/v1/*` endpoints require `x-api-key` header. Use SSE streaming via
-`GET /v1/sessions/:id/stream` for real-time agent responses.
+`GET /v1/sessions/:id/events/stream` for real-time agent responses.
 
 ## Tips
 

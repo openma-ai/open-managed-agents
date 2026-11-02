@@ -357,7 +357,7 @@ describe("SqlSessionEventPersistence", () => {
     expect(executions.results).toEqual([{ id: "event_winner" }]);
   });
 
-  it("atomically signals the running attempt and queues non-interrupt work from a mixed batch", async () => {
+  it("atomically signals the running attempt, keeps prior queued work, and queues non-interrupt work from a mixed batch", async () => {
     const persistence = new SqlSessionEventPersistence(client, {
       executionOutbox: true,
     });
@@ -424,10 +424,12 @@ describe("SqlSessionEventPersistence", () => {
       state: "queued",
       events: [next],
     });
+    // Store policy (Backchat): queued executions survive an interrupt; only
+    // the running attempt is signaled. Per-item removal uses cancelQueued.
     await expect(coordinator.find({
       workspaceId: "workspace_01",
       executionId: "event_already_queued",
-    })).resolves.toMatchObject({ state: "cancelled" });
+    })).resolves.toMatchObject({ state: "queued" });
     await expect(coordinator.find({
       workspaceId: "workspace_01",
       executionId: interrupt.id,

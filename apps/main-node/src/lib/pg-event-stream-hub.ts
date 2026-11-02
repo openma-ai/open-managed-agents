@@ -22,7 +22,7 @@
 
 import type { SessionEvent } from "@open-managed-agents/shared";
 import { getLogger } from "@open-managed-agents/observability";
-import type { EventStreamHub, EventWriter } from "./event-stream-hub";
+import type { EventStreamHub, EventWriter } from "@open-managed-agents/control-plane-node";
 
 const log = getLogger("pg-hub");
 

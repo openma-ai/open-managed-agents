@@ -351,6 +351,7 @@ describe("Environment Work application", () => {
     const claimed = {
       ...stored,
       claim: {
+        generation: 1,
         claimedAt: "2026-08-26T09:20:00.000Z",
         workerId: "worker_01",
       },
@@ -423,6 +424,7 @@ describe("Environment Work application", () => {
     const claimed = {
       ...stored,
       claim: {
+        generation: 1,
         claimedAt: "2026-08-26T09:20:00.000Z",
         workerId: "worker_01",
       },
@@ -490,6 +492,7 @@ describe("Environment Work application", () => {
     const claimed = {
       ...stored,
       claim: {
+        generation: 1,
         claimedAt: "2026-08-26T09:19:59.000Z",
         workerId: "worker_01",
       },

@@ -14,6 +14,7 @@ import { Logo } from "../components/Logo";
 import { setActiveTenantId } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { useI18n } from "../i18n";
+import { useBranding } from "../lib/branding";
 
 // Clear browser-cached tenant pin on every successful auth transition.
 // The pin is per-user — different login → different membership set →
@@ -60,6 +61,7 @@ function GoogleIcon() {
 
 export function Login() {
   const { isAuthenticated, isLoading } = useAuth();
+  const branding = useBranding();
   const nav = useNavigate();
   const [mode, setMode] = useState<Mode>("chooser");
   const [email, setEmail] = useState("");
@@ -75,10 +77,17 @@ export function Login() {
   // re-mounts so a navigation between modes doesn't refetch.
   const { data: authInfo } = useApiQuery<{
     providers?: string[];
+    oidc?: { id: string; name: string }[];
+    email_password?: boolean;
     turnstile_site_key?: string | null;
   }>("/auth-info");
   const googleEnabled = !!authInfo?.providers?.includes("google");
   const githubEnabled = !!authInfo?.providers?.includes("github");
+  // Deployment-configured OpenID Connect providers, for example a company SSO.
+  const oidcProviders = authInfo?.oidc ?? [];
+  // A deployment may turn email and password off and leave only SSO. Older
+  // backends omit the field; treat that as on.
+  const emailEnabled = authInfo?.email_password !== false;
   // Whether the backend gates sign-up behind an email-OTP verification.
   // /auth-info advertises "email-otp" iff AUTH_REQUIRE_EMAIL_VERIFY=1 on
   // the server. When absent (default self-host), the sign-up flow does
@@ -355,6 +364,15 @@ export function Login() {
     });
   };
 
+  const handleOidcSignIn = async (providerId: string) => {
+    setError("");
+    const { error } = await authClient.signIn.oauth2({
+      providerId,
+      callbackURL: nextUrl,
+    });
+    if (error) setError(error.message ?? "Sign-in failed");
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
@@ -366,7 +384,7 @@ export function Login() {
   const isOtpMode = mode === "verify-signup" || mode === "verify-login" || mode === "reset-otp";
 
   const titles: Record<Mode, string> = {
-    chooser: "Log in to openma",
+    chooser: branding.loginTitle ?? `Log in to ${branding.productName}`,
     login: "Log in with email",
     signup: "Create your account",
     "otp-login": "Sign in with email code",
@@ -377,9 +395,9 @@ export function Login() {
   };
 
   const subtitles: Record<Mode, string> = {
-    chooser: "",
+    chooser: branding.loginSubtitle ?? "",
     login: "Use your email and password",
-    signup: "Get started with openma",
+    signup: `Get started with ${branding.productName}`,
     "otp-login": "We'll send a 6-digit code to your email",
     "verify-signup": `We sent a code to ${email}`,
     "verify-login": `We sent a code to ${email}`,
@@ -407,10 +425,32 @@ export function Login() {
 
         {mode === "chooser" && (
           <div role="group" aria-label="Sign in options" className="flex flex-col gap-3">
+            {error && (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2.5 text-sm leading-5 text-danger"
+              >
+                {error}
+              </div>
+            )}
+            {oidcProviders.map((p, i) => (
+              <Button
+                key={p.id}
+                type="button"
+                size="lg"
+                variant={i === 0 ? "default" : "outline"}
+                onClick={() => handleOidcSignIn(p.id)}
+                className="h-11 w-full rounded-full"
+              >
+                Continue with {p.name}
+              </Button>
+            ))}
             {googleEnabled && (
               <Button
                 type="button"
                 size="lg"
+                variant={oidcProviders.length > 0 ? "outline" : "default"}
                 onClick={() => handleSocialSignIn("google")}
                 className="h-11 w-full rounded-full"
               >
@@ -430,18 +470,24 @@ export function Login() {
                 Continue with GitHub
               </Button>
             )}
-            <Button
-              type="button"
-              variant={googleEnabled || githubEnabled ? "outline" : "default"}
-              size="lg"
-              onClick={() => {
-                setMode("login");
-                setError("");
-              }}
-              className="h-11 w-full rounded-full"
-            >
-              Continue with email
-            </Button>
+            {emailEnabled && (
+              <Button
+                type="button"
+                variant={
+                  googleEnabled || githubEnabled || oidcProviders.length > 0
+                    ? "outline"
+                    : "default"
+                }
+                size="lg"
+                onClick={() => {
+                  setMode("login");
+                  setError("");
+                }}
+                className="h-11 w-full rounded-full"
+              >
+                Continue with email
+              </Button>
+            )}
           </div>
         )}
 
@@ -658,7 +704,7 @@ export function Login() {
           aria-label="Account options"
           className="flex min-h-6 items-center justify-center gap-1 text-center text-sm text-fg-muted"
         >
-          {mode === "chooser" && (
+          {mode === "chooser" && emailEnabled && (
             <>
               <span>Don't have an account?</span>
               <Button
@@ -677,7 +723,7 @@ export function Login() {
           )}
           {mode === "login" && (
             <>
-              <span>New to openma?</span>
+              <span>New to {branding.productName}?</span>
               <Button
                 type="button"
                 variant="link"

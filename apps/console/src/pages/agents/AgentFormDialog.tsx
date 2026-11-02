@@ -2,15 +2,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import { Activity, BookOpen, ChartNoAxesCombined, FileText, ListTodo, MessageCircle, Plug, Workflow } from "lucide-react";
+import { GitHubIcon, LinearIcon, SlackIcon } from "../../components/icons";
 import { useNavigate } from "react-router";
 import yaml from "js-yaml";
 import type {
-  AgentCreateParams,
-  AgentUpdateParams,
-} from "@anthropic-ai/sdk/resources/beta/agents/agents";
+  OpenMaAgentCreateParams as AgentCreateParams,
+  OpenMaAgentUpdateParams as AgentUpdateParams,
+} from "@openma/sdk";
 
 import { useManagedApi } from "../../lib/useManagedApi";
+import { useApi } from "../../lib/api";
+import { HarnessPicker } from "./HarnessPicker";
+import { harnessCatalogSchema, harnessValidationError, openMaFields, type HarnessCatalog } from "./harnessCatalog";
 import { Button } from "@/components/ui/button";
 import { Select, SelectOption } from "../../components/Select";
 import { Combobox } from "../../components/Combobox";
@@ -33,6 +38,50 @@ import {
   type SkillEntry,
   type ToolOverride,
 } from "./agentFormCodec";
+
+type MultiagentDraft = {
+  type: string;
+  advisor?: { type: string } | null;
+  workflows?: { type: string } | null;
+  subagents?: {
+    type: string;
+    inline_agents?: { type: string } | null;
+    predefined_agents?: Array<string | { type: string; id?: string; version?: number | string }> | null;
+  } | null;
+};
+
+function validateMultiagent(value: MultiagentDraft | null | undefined) {
+  if (!value) return;
+  if (value.type !== "multiagent_20261001") throw new Error("旧版 multiagent 不受支持，请使用 JSON / YAML 迁移。");
+  if ([value.advisor, value.workflows].some((v) => v && v.type !== "disabled")) {
+    throw new Error("advisor / workflows 暂不支持启用。");
+  }
+  const seen = new Set<string>();
+  for (const entry of value.subagents?.predefined_agents ?? []) {
+    const id = typeof entry === "string" ? entry : entry.type === "self" ? "self" : entry.id?.trim();
+    if (!id) throw new Error("子 Agent ID 不能为空。");
+    if (seen.has(id)) throw new Error("子 Agent 引用不能重复。");
+    seen.add(id);
+    if (typeof entry !== "string" && entry.version !== undefined &&
+      (typeof entry.version !== "number" || !Number.isSafeInteger(entry.version) || entry.version < 1)) {
+      throw new Error("版本必须为正整数。");
+    }
+  }
+}
+
+// Reuse local connector marks; other integrations/skills use Lucide, never remote favicons.
+const TEMPLATE_TAG_ICONS: Record<string, { label: string; Icon: ComponentType<{ className?: string }> }> = {
+  github: { label: "GitHub", Icon: GitHubIcon },
+  linear: { label: "Linear", Icon: LinearIcon },
+  slack: { label: "Slack", Icon: SlackIcon },
+  notion: { label: "Notion", Icon: BookOpen },
+  sentry: { label: "Sentry", Icon: Activity },
+  asana: { label: "Asana", Icon: ListTodo },
+  intercom: { label: "Intercom", Icon: MessageCircle },
+  atlassian: { label: "Atlassian", Icon: Workflow },
+  amplitude: { label: "Amplitude", Icon: ChartNoAxesCombined },
+  docx: { label: "Word (docx)", Icon: FileText },
+};
 
 const ANTHROPIC_SKILLS = [
   { id: "xlsx", label: "Excel (xlsx)" },
@@ -103,6 +152,7 @@ export function AgentFormDialog({
   modelCards,
 }: AgentFormDialogProps) {
   const managedApi = useManagedApi();
+  const { api } = useApi();
   const nav = useNavigate();
   const { t } = useI18n();
   const isEdit = !!editingAgent;
@@ -111,6 +161,9 @@ export function AgentFormDialog({
   const [createStep, setCreateStep] = useState<"template" | "form">("template");
   const [templateSearch, setTemplateSearch] = useState("");
   const [form, setForm] = useState({ ...INITIAL_FORM });
+  // Keep the wire shape: omitted and null are different update operations.
+  const [multiagent, setMultiagent] = useState<MultiagentDraft | null>();
+  const memberCount = multiagent?.subagents?.predefined_agents?.length ?? 0;
   /** Full config baseline for lossless Form↔code merges on edit. */
   const [preservedConfig, setPreservedConfig] = useState<Record<string, unknown> | null>(
     null,
@@ -120,6 +173,28 @@ export function AgentFormDialog({
   const [codeValue, setCodeValue] = useState("");
   const [showMcpPicker, setShowMcpPicker] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Keep the wire value separately: omitted, null and explicit "default" must not collapse.
+  const [harness, setHarness] = useState<unknown>();
+  const [harnessCatalog, setHarnessCatalog] = useState<HarnessCatalog | null>(null);
+  const [harnessLoading, setHarnessLoading] = useState(true);
+  const [harnessError, setHarnessError] = useState("");
+  const [harnessRefresh, setHarnessRefresh] = useState(0);
+
+  useEffect(() => {
+    if (!open || createStep !== "form") return;
+    const controller = new AbortController();
+    setHarnessLoading(true);
+    setHarnessCatalog(null);
+    setHarnessError("");
+    void api<unknown>("/v1/oma/harnesses", { signal: controller.signal }).then((response) => {
+      if (!controller.signal.aborted) setHarnessCatalog(harnessCatalogSchema.parse(response));
+    }).catch(() => {
+      if (!controller.signal.aborted) setHarnessError("Unable to load harness catalog. Retry to verify the deployment's registered implementations.");
+    }).finally(() => {
+      if (!controller.signal.aborted) setHarnessLoading(false);
+    });
+    return () => controller.abort();
+  }, [open, createStep, harnessRefresh, api]);
 
   const createDialogRef = useRef<HTMLDivElement>(null);
   const createPreviousFocus = useRef<HTMLElement | null>(null);
@@ -130,6 +205,8 @@ export function AgentFormDialog({
     if (!open) return;
     if (editingAgent) {
       setForm(agentToForm(editingAgent));
+      setHarness(openMaFields(editingAgent as unknown as Record<string, unknown>).harness);
+      setMultiagent(editingAgent.multiagent as MultiagentDraft | null | undefined);
       setPreservedConfig(agentToPreservedConfig(editingAgent));
       setCreateStep("form");
       setTab("basic");
@@ -158,6 +235,8 @@ export function AgentFormDialog({
   }, [createStep, modelCards.length]);
 
   const closeCreate = () => {
+    setHarness(undefined);
+    setMultiagent(undefined);
     setCreateStep("template");
     setTemplateSearch("");
     setForm({ ...INITIAL_FORM });
@@ -219,7 +298,15 @@ export function AgentFormDialog({
     };
   }, [open]);
 
+  const effectiveHarnessFields = (payload: Record<string, unknown>) => openMaFields(
+    editingAgent ? materializeAgentUpdate(agentToPreservedConfig(editingAgent), payload) : payload,
+  );
+
   const persistAgent = async (payload: Record<string, unknown>): Promise<Agent> => {
+    if (harnessLoading || !harnessCatalog) throw new Error(harnessError || "Harness catalog is not ready. Retry before saving.");
+    const fields = effectiveHarnessFields(payload);
+    const harnessProblem = harnessValidationError(harnessCatalog, fields.harness, fields);
+    if (harnessProblem) throw new Error(harnessProblem);
     if (isEdit && editingAgent) {
       const updated = await managedApi.agents.update(editingAgent.id, {
         ...payload,
@@ -238,7 +325,7 @@ export function AgentFormDialog({
     setCreateError("");
     setSaving(true);
     try {
-      const payload = mergeFormIntoConfig(form, preservedConfig, { forUpdate: isEdit });
+      const payload = formToConfig();
       if (isEdit && editingAgent) {
         const updated = await persistAgent(payload);
         closeCreate();
@@ -307,17 +394,9 @@ export function AgentFormDialog({
     }
   };
 
-  const addCallable = (agentId: string) => {
-    if (form.callableAgents.find((c) => c.id === agentId)) return;
-    setForm({
-      ...form,
-      callableAgents: [...form.callableAgents, { type: "agent", id: agentId }],
-    });
-  };
-  const removeCallable = (i: number) =>
-    setForm({ ...form, callableAgents: form.callableAgents.filter((_, j) => j !== i) });
-
   const selectTemplate = (tmpl: AgentTemplate) => {
+    setHarness(undefined);
+    setMultiagent(undefined);
     if (tmpl.id === "blank") {
       setForm({ ...INITIAL_FORM });
       setPreservedConfig(null);
@@ -344,18 +423,34 @@ export function AgentFormDialog({
   };
 
   // Convert current form state to a config object (lossless vs preservedConfig).
-  const formToConfig = () =>
-    mergeFormIntoConfig(form, preservedConfig, { forUpdate: isEdit });
+  const formToConfig = (forCode = false) => {
+    const unsupported = multiagent && (multiagent.type !== "multiagent_20261001" ||
+      [multiagent.advisor, multiagent.workflows].some((v) => v && v.type !== "disabled"));
+    // Unsupported configurations remain reachable in code mode for explicit migration.
+    if (!forCode || !unsupported) validateMultiagent(multiagent);
+    const payload = mergeFormIntoConfig(form, preservedConfig, { forUpdate: isEdit });
+    const fields = openMaFields(payload);
+    if (harness === undefined) delete fields.harness;
+    else fields.harness = harness;
+    if (Object.keys(fields).length) payload._oma = fields;
+    else delete payload._oma;
+    if (multiagent === undefined) delete payload.multiagent;
+    else payload.multiagent = multiagent;
+    return payload;
+  };
 
   // Switch between form/yaml/json modes
   const switchMode = (mode: "form" | "yaml" | "json") => {
     if (mode === createMode) return;
     if (createMode === "form") {
       // form → code: serialize merged form + preserved unsupported fields
-      const config = formToConfig();
-      setCodeValue(
-        mode === "yaml" ? yaml.dump(config, { lineWidth: -1 }) : JSON.stringify(config, null, 2),
-      );
+      try {
+        const config = formToConfig(true);
+        setCodeValue(mode === "yaml" ? yaml.dump(config, { lineWidth: -1 }) : JSON.stringify(config, null, 2));
+      } catch (error) {
+        setCreateError(error instanceof Error ? error.message : "Invalid config");
+        return;
+      }
     } else if (mode === "form") {
       // code → form: parse into preserved baseline, then extract form fields
       try {
@@ -363,8 +458,24 @@ export function AgentFormDialog({
         const config = isEdit
           ? materializeAgentUpdate(preservedConfig ?? {}, parsed)
           : parsed;
+        if (isEdit && editingAgent) {
+          // An update editor contains a patch against the saved agent, not the last preview.
+          // Retain explicit extension clears in the form baseline so code round-trips stay lossless.
+          const saved = agentToPreservedConfig(editingAgent);
+          const extensionPatch = Object.hasOwn(parsed, "_oma") ? { _oma: parsed._oma } : {};
+          const fields = openMaFields(materializeAgentUpdate(saved, extensionPatch));
+          for (const [key, value] of Object.entries(openMaFields(parsed))) {
+            if (value === null) fields[key] = null;
+          }
+          if (Object.keys(fields).length) config._oma = fields;
+          else delete config._oma;
+        }
         setPreservedConfig(config);
         setForm(configToForm(config));
+        // Preserve explicit null/omission in an update patch, not only the materialized value.
+        setHarness(openMaFields(parsed).harness);
+        // Preserve the user's update patch rather than materializing omitted/null fields.
+        setMultiagent(parsed.multiagent as MultiagentDraft | null | undefined);
       } catch (error) {
         setCreateError(error instanceof Error ? error.message : "Invalid config");
         return;
@@ -439,6 +550,20 @@ export function AgentFormDialog({
   const selectedCardId =
     form.modelCardId || modelCards.find((mc) => mc.model_id === form.model)?.id || "";
 
+  let harnessFields: Record<string, unknown> = {};
+  let formConfigError = "";
+  if (createMode === "form") {
+    try {
+      // Preview the same effective payload that persistAgent validates, not the saved baseline.
+      harnessFields = effectiveHarnessFields(formToConfig(true));
+    } catch (error) {
+      // Partially edited metadata/MCP JSON must not throw during rendering.
+      formConfigError = error instanceof Error ? error.message : "Invalid config";
+    }
+  }
+  const effectiveHarness = harness === undefined && isEdit ? harnessFields.harness : harness;
+  const harnessProblem = formConfigError || (harnessCatalog ? harnessValidationError(harnessCatalog, effectiveHarness, harnessFields) : "");
+
   if (!open) {
     // Render the MCP picker anyway? No — it only makes sense while the
     // form dialog is mounted.
@@ -476,28 +601,35 @@ export function AgentFormDialog({
                 />
               </div>
               <div className="flex-1 overflow-y-auto px-6 py-4">
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {filteredTemplates.map((tmpl) => (
                     <Button variant="ghost"
                       key={tmpl.id}
+                      type="button"
                       onClick={() => selectTemplate(tmpl)}
-                      className="text-left border border-border rounded-lg p-4 hover:border-brand hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
+                      className="h-auto min-w-0 flex-col items-start justify-start gap-0 whitespace-normal text-left border border-border rounded-lg p-4 hover:border-brand hover:bg-bg-surface transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
                     >
-                      <div className="font-medium text-sm text-fg">{tmpl.name}</div>
-                      <div className="text-xs text-fg-muted mt-1 line-clamp-2">
+                      <span className="w-full min-w-0 break-words font-medium text-sm text-fg">{tmpl.name}</span>
+                      <span className="w-full min-w-0 break-words text-xs font-normal text-fg-muted mt-1">
                         {tmpl.description}
-                      </div>
+                      </span>
                       {tmpl.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {tmpl.tags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="px-1.5 py-0.5 bg-bg-surface text-fg-muted rounded text-xs"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
+                        <span className="flex w-full min-w-0 flex-wrap gap-1.5 mt-3">
+                          {tmpl.tags.map((tag) => {
+                            const { label, Icon } = TEMPLATE_TAG_ICONS[tag] ?? { label: tag, Icon: Plug };
+                            return (
+                              <span
+                                key={tag}
+                                role="img"
+                                title={label}
+                                aria-label={label}
+                                className="inline-flex size-7 shrink-0 items-center justify-center rounded bg-bg-surface text-fg-muted"
+                              >
+                                <span aria-hidden="true"><Icon className="size-4" /></span>
+                              </span>
+                            );
+                          })}
+                        </span>
                       )}
                     </Button>
                   ))}
@@ -625,9 +757,9 @@ export function AgentFormDialog({
                       className={tabCls("agents")}
                     >
                       Multi-Agent{" "}
-                      {form.callableAgents.length > 0 && (
+                      {memberCount > 0 && (
                         <span className="ml-1 text-xs opacity-60">
-                          ({form.callableAgents.length})
+                          ({memberCount})
                         </span>
                       )}
                     </Button>
@@ -661,6 +793,9 @@ export function AgentFormDialog({
                     inputCls={inputCls}
                     modelCards={modelCards}
                     selectedCardId={selectedCardId}
+                    harnessPicker={<HarnessPicker value={effectiveHarness} fields={harnessFields} configError={formConfigError} onChange={setHarness}
+                      catalog={harnessCatalog} loading={harnessLoading} error={harnessError}
+                      retry={() => setHarnessRefresh((value) => value + 1)} />}
                   />
                 )}
 
@@ -690,11 +825,10 @@ export function AgentFormDialog({
 
                 {createMode === "form" && tab === "agents" && (
                   <AgentsTab
-                    form={form}
-                    setForm={setForm}
+                    value={multiagent}
+                    onChange={setMultiagent}
                     allAgents={allAgents}
-                    addCallable={addCallable}
-                    removeCallable={removeCallable}
+                    error={createError}
                   />
                 )}
               </div>
@@ -709,8 +843,8 @@ export function AgentFormDialog({
                       {form.mcpServers.length > 0 && (
                         <span className="mr-3">{form.mcpServers.length} MCP</span>
                       )}
-                      {form.callableAgents.length > 0 && (
-                        <span>{form.callableAgents.length} agents</span>
+                      {memberCount > 0 && (
+                        <span>{memberCount} agents</span>
                       )}
                     </>
                   )}
@@ -721,7 +855,7 @@ export function AgentFormDialog({
                     {t.common.cancel}
                   </Button>
                   {createMode === "form" ? (
-                    <Button onClick={create} disabled={!form.name || saving}>
+                    <Button onClick={create} disabled={!form.name || saving || harnessLoading || !harnessCatalog || !!harnessProblem}>
                       {saving
                         ? isEdit
                           ? t.common.saving
@@ -770,6 +904,7 @@ interface BasicTabProps {
   inputCls: string;
   modelCards: ModelCard[];
   selectedCardId: string;
+  harnessPicker: React.ReactNode;
 }
 
 function BasicTab({
@@ -779,6 +914,7 @@ function BasicTab({
   inputCls,
   modelCards,
   selectedCardId,
+  harnessPicker,
 }: BasicTabProps) {
   return (
     <div className="space-y-3">
@@ -799,6 +935,7 @@ function BasicTab({
           placeholder="Coding Assistant"
         />
       </div>
+      {harnessPicker}
       {/* Model picker — see comments at the original call site. */}
       {modelCards.length === 0 ? (
           <p className="text-xs text-fg-subtle bg-bg-surface px-3 py-2 rounded-lg">
@@ -1370,99 +1507,66 @@ function McpTab({
   );
 }
 
-function AgentsTab({
-  form,
-  setForm,
-  allAgents,
-  addCallable,
-  removeCallable,
-}: {
-  form: FormState;
-  setForm: FormSetter;
+function AgentsTab({ value, onChange, allAgents, error }: {
+  value: MultiagentDraft | null | undefined;
+  onChange: (value: MultiagentDraft | null | undefined) => void;
   allAgents: Agent[];
-  addCallable: (agentId: string) => void;
-  removeCallable: (i: number) => void;
+  error: string;
 }) {
+  const subagents = value?.subagents;
+  const enabled = subagents?.type === "enabled";
+  const entries = subagents?.predefined_agents ?? [];
+  const unsupported = !!value && (value.type !== "multiagent_20261001" ||
+    [value.advisor, value.workflows].some((v) => v && v.type !== "disabled"));
+  const patch = (next: NonNullable<MultiagentDraft["subagents"]>) =>
+    onChange({ ...value, type: "multiagent_20261001", subagents: next });
+  const setEntries = (next: typeof entries) => patch({ ...subagents, type: "enabled", predefined_agents: next });
   return (
     <div className="space-y-5">
       <div>
-        <Label className="text-sm font-medium text-fg block">Callable Agents</Label>
-        <p className="text-xs text-fg-subtle mb-2">
-          Specific agents this agent can delegate to via{" "}
-          <span className="font-mono">call_agent_&lt;id&gt;</span> tools.
-        </p>
+        <Label className="text-sm font-medium text-fg block">多 Agent 协作</Label>
+        <p className="text-xs text-fg-subtle mt-1">multiagent_20261001 · advisor / workflows 仅支持 disabled，暂不支持启用。</p>
+        <p className="text-xs text-fg-subtle mt-1">未操作的 omitted / null 字段保持原样；版本留空使用最新版本。</p>
       </div>
-
-      {form.callableAgents.map((ca, i) => {
-        const agentInfo = allAgents.find((a) => a.id === ca.id);
-        return (
-          <div
-            key={i}
-            className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg"
-          >
-            <div className="flex-1">
-              <div className="text-sm font-medium text-fg">{agentInfo?.name || ca.id}</div>
-              <div className="text-xs text-fg-subtle font-mono">{ca.id}</div>
-            </div>
-            <div className="w-24">
-              <Label htmlFor={`callable-version-${i}`} className="text-xs text-fg-subtle">
-                Version
-              </Label>
-              <Input
-                id={`callable-version-${i}`}
-                type="number"
-                min="1"
-                value={ca.version ?? ""}
-                onChange={(event) => {
-                  const callableAgents = [...form.callableAgents];
-                  if (event.target.value === "") {
-                    callableAgents[i] = { ...ca, version: undefined };
-                  } else {
-                    const version = Number(event.target.value);
-                    if (!Number.isInteger(version) || version < 1) return;
-                    callableAgents[i] = { ...ca, version };
-                  }
-                  setForm({ ...form, callableAgents });
-                }}
-                className="w-full border border-border rounded px-2 py-1 text-xs bg-bg text-fg"
-                placeholder="latest"
-              />
-            </div>
-            <Button variant="ghost"
-              onClick={() => removeCallable(i)}
-              className="inline-flex items-center justify-center min-w-11 min-h-11 sm:min-w-0 sm:min-h-0 px-2 text-fg-subtle hover:text-danger transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)]"
-            >
-              ×
-            </Button>
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      {unsupported ? <p role="alert" className="text-sm text-danger">当前配置不受支持，请使用 JSON / YAML 迁移；表单不会自动转换。</p> : <>
+        <Label className="flex items-center gap-2 text-sm">
+          <Checkbox checked={enabled} onCheckedChange={(checked) => patch(checked
+            ? { type: "enabled", inline_agents: { type: "enabled" }, predefined_agents: [] }
+            : { type: "disabled" })} />启用子 Agent
+        </Label>
+        {enabled && <>
+          <Label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={subagents?.inline_agents?.type === "enabled"} onCheckedChange={(checked) => patch({ ...subagents, type: "enabled", inline_agents: { type: checked ? "enabled" : "disabled" } })} />允许 inline Agent
+          </Label>
+          <p className="text-xs text-fg-subtle">预定义列表可为空。仅启用 inline 即为 inline-only，无需先创建其他 Agent。</p>
+          {entries.map((entry, i) => {
+            const row = typeof entry === "string" ? { type: "agent", id: entry } : entry;
+            return <div key={i} className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg">
+              {row.type === "self" ? <span className="flex-1 text-sm">self（当前 Agent）</span> : <>
+                <div className="flex-1 min-w-0">
+                  <Label htmlFor={`subagent-id-${i}`} className="text-xs text-fg-subtle">Agent ID {i + 1}</Label>
+                  <Input id={`subagent-id-${i}`} value={row.id ?? ""} onChange={(e) => setEntries(entries.map((v, j) => j === i ? { ...row, id: e.target.value } : v))} />
+                  <span className="text-xs text-fg-subtle">{allAgents.find((a) => a.id === row.id)?.name}</span>
+                </div>
+                <div className="w-24">
+                  <Label htmlFor={`subagent-version-${i}`} className="text-xs text-fg-subtle">版本 {i + 1}</Label>
+                  <Input id={`subagent-version-${i}`} inputMode="numeric" value={row.version ?? ""} placeholder="latest" onChange={(e) => setEntries(entries.map((v, j) => j === i ? { ...row, version: e.target.value === "" ? undefined : /^\d+$/.test(e.target.value) ? Number(e.target.value) : e.target.value } : v))} />
+                </div>
+              </>}
+              <Button variant="ghost" aria-label={`移除引用 ${i + 1}`} onClick={() => setEntries(entries.filter((_, j) => j !== i))}>×</Button>
+            </div>;
+          })}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setEntries([...entries, { type: "agent", id: "" }])}>添加子 Agent</Button>
+            <Button variant="outline" disabled={entries.some((v) => typeof v !== "string" && v.type === "self")} onClick={() => setEntries([...entries, { type: "self" }])}>添加 self 引用</Button>
           </div>
-        );
-      })}
-
-      <div>
-        <Label className="text-xs text-fg-muted block mb-1">Add agent</Label>
-        <Combobox<Agent>
-          value=""
-          onValueChange={(v) => {
-            if (v) addCallable(v);
-          }}
-          endpoint="/v1/agents"
-          getValue={(a) => a.id}
-          getLabel={(a) => (
-            <span>
-              {a.name} <span className="text-fg-subtle text-sm">({a.id})</span>
-            </span>
-          )}
-          getTextLabel={(a) => `${a.name} (${a.id})`}
-          placeholder="Select an agent..."
-          excludeIds={form.callableAgents.map((c) => c.id)}
-        />
+        </>}
+      </>}
+      <div className="flex gap-2">
+        <Button variant="ghost" onClick={() => onChange(undefined)}>省略配置（保留服务端值）</Button>
+        <Button variant="ghost" onClick={() => onChange(null)}>清空配置（null）</Button>
       </div>
-
-      {form.callableAgents.length === 0 && allAgents.length === 0 && (
-        <p className="text-xs text-fg-subtle">
-          Create other agents first to enable multi-agent delegation.
-        </p>
-      )}
     </div>
   );
 }

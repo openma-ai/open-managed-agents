@@ -9,31 +9,46 @@ export interface ResolvedModelCardCredentials {
   piConfig?: PiModelConfig;
 }
 
-export interface StoredModelCardProviderConfig {
-  model: string;
+/** The fields of a resolved workspace model card this projection reads. */
+export interface StoredWorkspaceModelCredentials {
+  wireModel: string;
+  apiKey: string;
+  baseURL?: string;
   provider: string;
-  base_url: string | null;
-  custom_headers: Record<string, string> | null;
-  pi_config: Record<string, unknown> | null;
+  customHeaders?: Record<string, string>;
+  piConfig?: Record<string, unknown>;
 }
 
 /**
- * Replace the complete environment fallback once a stored card is selected.
- * A missing card endpoint means "use Pi's provider catalog", not "inherit
- * ANTHROPIC_BASE_URL". Keeping this projection pure makes that isolation a
- * testable boundary for every platform composition.
+ * Project a resolved workspace model card into Pi runtime inputs. A missing
+ * card endpoint means "use Pi's provider catalog". There is no environment
+ * layer underneath: nothing from the Worker env can leak into the call.
  */
 export function bindStoredModelCardCredentials(
-  fallback: ResolvedModelCardCredentials,
-  card: StoredModelCardProviderConfig,
-  apiKey: string,
+  card: StoredWorkspaceModelCredentials,
 ): ResolvedModelCardCredentials {
   return {
-    model: card.model,
-    apiKey,
-    baseURL: card.base_url ?? undefined,
+    model: card.wireModel,
+    apiKey: card.apiKey,
+    baseURL: card.baseURL,
     provider: card.provider,
-    customHeaders: card.custom_headers ?? undefined,
-    piConfig: (card.pi_config as PiModelConfig | null) ?? undefined,
+    customHeaders: card.customHeaders,
+    piConfig: card.piConfig as PiModelConfig | undefined,
+  };
+}
+
+/**
+ * The credential fields handed to buildTools / HarnessContext.env. They are
+ * the session's own resolved model-card credentials, so callable_agents and
+ * sub-agents inherit the parent's workspace credentials and never read a
+ * platform key from the Worker environment.
+ */
+export function delegationCredentials(creds: ResolvedModelCardCredentials): {
+  ANTHROPIC_API_KEY: string;
+  ANTHROPIC_BASE_URL: string | undefined;
+} {
+  return {
+    ANTHROPIC_API_KEY: creds.apiKey,
+    ANTHROPIC_BASE_URL: creds.baseURL,
   };
 }

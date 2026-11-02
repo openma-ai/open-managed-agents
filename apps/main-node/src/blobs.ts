@@ -1,47 +1,17 @@
-// Blob components: where memory documents and workspace files live.
+// The default blob components: a local directory or S3 for memory documents
+// and workspace files, chosen from NodeConfig.
 
 import { mkdirSync } from "node:fs";
 
 import { LocalFsBlobStore as MemoryLocalFsBlobStore } from "@open-managed-agents/memory-store/adapters/local-fs-blob";
-import type { BlobStore as MemoryBlobStore } from "@open-managed-agents/memory-store";
-import { S3BlobStore as FilesS3BlobStore, type BlobStore } from "@open-managed-agents/blob-store";
+import { S3BlobStore as FilesS3BlobStore } from "@open-managed-agents/blob-store";
 import { LocalFsBlobStore as FilesLocalFsBlobStore } from "@open-managed-agents/blob-store/adapters/local-fs";
+
+import type { FilesBlobs, MemoryBlobs } from "@open-managed-agents/control-plane-node";
 
 import type { NodeConfig } from "./config.js";
 
-export interface S3Location {
-  endpoint: string;
-  bucket: string;
-  accessKey: string;
-  secretKey: string;
-  region: string;
-  prefix?: string;
-  forcePathStyle?: boolean;
-  requestChecksumCalculation?: "WHEN_REQUIRED" | "WHEN_SUPPORTED";
-  conditionalCreate?: "if-none-match" | "oss-forbid-overwrite";
-}
-
-export interface MemoryBlobs {
-  store: MemoryBlobStore;
-  description: string;
-  /**
-   * Set when the store is a local directory: enables the filesystem watcher
-   * and gives sandboxes a memoryRoot. Absent for remote or custom stores.
-   */
-  localDir?: string;
-  /** Set when the store is S3: enables the cross-replica S3 poller. */
-  s3?: S3Location & { pollIntervalMs: number };
-}
-
-export interface FilesBlobs {
-  store: BlobStore;
-  description: string;
-}
-
-export interface NodeBlobs {
-  memory: MemoryBlobs;
-  files: FilesBlobs;
-}
+export type { FilesBlobs, MemoryBlobs, NodeBlobs, S3Location } from "@open-managed-agents/control-plane-node";
 
 export async function createMemoryBlobs(config: NodeConfig["blobs"]["memory"]): Promise<MemoryBlobs> {
   if (config.kind === "s3") {
@@ -72,6 +42,10 @@ export async function createMemoryBlobs(config: NodeConfig["blobs"]["memory"]): 
       }),
       description: `s3 ${s3.endpoint}/${s3.bucket}`,
       s3,
+      startPoller: async (context) => {
+        const { startS3MemoryPoller } = await import("./lib/s3-memory-poller.js");
+        return startS3MemoryPoller({ ...context, intervalMs: s3.pollIntervalMs, s3 });
+      },
     };
   }
   return {

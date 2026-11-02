@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ensureTenantSqlite } from "@open-managed-agents/auth-config";
+import { ensureTenantSqlite } from "@open-managed-agents/control-plane-node";
 import { applyTenantSchema } from "@open-managed-agents/schema";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 

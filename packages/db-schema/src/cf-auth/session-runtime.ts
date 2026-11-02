@@ -28,6 +28,7 @@ export const managed_session_executions = sqliteTable(
     interrupt_requested_at_ms: integer("interrupt_requested_at_ms"),
     settled_at_ms: integer("settled_at_ms"),
     failure: text("failure"),
+    held_after_exhausted_ms: integer("held_after_exhausted_ms"),
     revision: integer("revision").notNull().default(1),
   },
   (table) => [

@@ -289,6 +289,25 @@ describe("LiteBoxSandbox", () => {
     await defaults.destroy();
   });
 
+  it("factory rejects a prepared sandbox base", async () => {
+    await expect(sandboxFactory(
+      { sessionId: "session", preparedBase: { provider: "litebox", id: "base_1" } } as never,
+      { SANDBOX_IMAGE: "image" },
+    )).rejects.toThrow("SANDBOX_PROVIDER=litebox cannot create a sandbox from a prepared base");
+  });
+
+  it("factory prefers an Environment-selected catalog image over SANDBOX_IMAGE", async () => {
+    const selected = await sandboxFactory(
+      { sessionId: "session", image: { alias: "analytics", reference: "registry.example/analytics:1" } } as never,
+      { SANDBOX_IMAGE: "image" },
+    );
+    expect((selected as unknown as { opts: { image?: string } }).opts.image).toBe("registry.example/analytics:1");
+    const fallback = await sandboxFactory({ sessionId: "session" } as never, { SANDBOX_IMAGE: "image" });
+    expect((fallback as unknown as { opts: { image?: string } }).opts.image).toBe("image");
+    await selected.destroy();
+    await fallback.destroy();
+  });
+
   it("factory scopes copy staging to the session workdir lifecycle", async () => {
     const workdir = await fs.mkdtemp(join(tmpdir(), "openma-litebox-session-"));
     const sandbox = await sandboxFactory({ sessionId: "session", workdir }, {});

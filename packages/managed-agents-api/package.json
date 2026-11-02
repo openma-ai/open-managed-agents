@@ -10,6 +10,7 @@
     "test:official-worker": "vitest run --config vitest.worker.config.ts"
   },
   "dependencies": {
+    "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/managed-agents-application": "workspace:*",
     "hono": "4.12.12",
     "zod": "4.3.6"

@@ -388,6 +388,7 @@ describe("SessionsApplicationService", () => {
           mcpServers: [
             { type: "url", name: "docs", url: "https://mcp.test" },
           ],
+          metadata: { owner: "agents" },
           model: {
             id: "claude-opus-5",
             effort: "high",
@@ -644,8 +645,14 @@ describe("SessionsApplicationService", () => {
       id: "agent_coordinator",
       name: "Coordinator",
       multiagent: {
-        type: "coordinator",
-        agents: [{ type: "agent", agentId: member.id, version: member.version }],
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inlineAgents: { type: "disabled" },
+          predefinedAgents: [{ type: "agent", agentId: member.id, version: member.version }],
+        },
+        workflows: { type: "disabled" },
       },
       version: 4,
     };
@@ -685,20 +692,38 @@ describe("SessionsApplicationService", () => {
         agent: {
           id: coordinator.id,
           multiagent: {
-            type: "coordinator",
-            agents: [
-              {
-                type: "agent",
-                id: member.id,
-                name: member.name,
-                version: member.version,
-              },
-            ],
+            type: "multiagent_20261001",
+            advisor: { type: "disabled" },
+            subagents: {
+              type: "enabled",
+              inlineAgents: { type: "disabled" },
+              predefinedAgents: [
+                {
+                  type: "agent",
+                  id: member.id,
+                  name: member.name,
+                  version: member.version,
+                },
+              ],
+            },
+            workflows: { type: "disabled" },
           },
         },
       },
     });
     expect(versionLookups).toEqual([]);
+  });
+
+  it("rejects unsupported coordinator data rather than silently dropping an advisor", async () => {
+    const service = new SessionsApplicationService({
+      workspaceId: "workspace_01", store: new MemorySessionStore(),
+      agents: { findCurrent: async () => ({ ...structuredClone(agent), multiagent: { type: "coordinator", agents: [{ type: "advisor", model: "m" }] } as never }), findVersion: async () => null },
+      environments: availableSessionEnvironment, resources: emptySessionResources,
+      lifecycle: silentSessionLifecycle, clock: { now: () => new Date("2026-08-26T02:00:00.000Z") },
+      ids: { nextSessionId: () => "invalid" },
+    });
+    const result = await service.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: environment.id });
+    expect(result.type).not.toBe("created");
   });
 
   describe("agent update idle boundary", () => {
@@ -759,6 +784,23 @@ describe("SessionsApplicationService", () => {
         status: "running", title: "Renamed", metadata: { owner: "integrations" },
         agent: before.session.agent,
       });
+    });
+
+    it("emits a budget session.updated through the budget events port only on a budget change", async () => {
+      const { store, service, scope } = await setup("idle");
+      const created = (await store.findCurrent(scope))!;
+      await store.replaceCurrent({ ...scope, expectedRevision: created.revision,
+        next: { ...created.session, budget: { amountMinor: "300", currency: "USD" } } });
+      const calls: unknown[] = [];
+      (service as any).dependencies.budgetEvents = {
+        recordBudgetUpdate: async (command: unknown) => { calls.push(command); return { type: "recorded", resumed: false }; },
+      };
+      await service.updateSession({ sessionId: scope.sessionId, title: "x" });
+      await service.updateSession({ sessionId: scope.sessionId, budget: { amountMinor: "300", currency: "USD" } });
+      expect(calls).toHaveLength(0);
+      await service.updateSession({ sessionId: scope.sessionId, budget: { amountMinor: "500", currency: "USD" } });
+      expect(calls).toHaveLength(1);
+      expect((calls[0] as any).previous.budget).toEqual({ amountMinor: "300", currency: "USD" });
     });
 
     it("does not overwrite a concurrent transition from idle to running", async () => {

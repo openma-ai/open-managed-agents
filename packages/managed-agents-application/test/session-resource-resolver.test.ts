@@ -2,6 +2,41 @@ import { describe, expect, it } from "vitest";
 import { SessionResourceResolverService } from "../src/index";
 
 describe("SessionResourceResolverService", () => {
+  it("records a repository without a token as Bond-backed and stores no secret for it", async () => {
+    const resolver = new SessionResourceResolverService({
+      files: { find: async () => null },
+      memoryStores: { find: async () => null },
+      ids: { nextResourceId: () => "sesrsc_bond" },
+    });
+    const result = await resolver.resolve({
+      workspaceId: "workspace_01",
+      sessionId: "session_01",
+      createdAt: "2026-08-26T12:00:00.000Z",
+      resources: [{ type: "github_repository", url: "https://gitlab.example.com/group/app.git" }],
+    });
+    expect(result).toEqual({
+      type: "resolved",
+      resources: [{
+        id: "sesrsc_bond",
+        type: "github_repository",
+        createdAt: "2026-08-26T12:00:00.000Z",
+        credentialSource: "bond",
+        mountPath: "/workspace/app",
+        updatedAt: "2026-08-26T12:00:00.000Z",
+        url: "https://gitlab.example.com/group/app.git",
+      }],
+      secrets: [],
+    });
+    // An empty token is still a mistake, not a request for the Bond.
+    const empty = await resolver.resolve({
+      workspaceId: "workspace_01",
+      sessionId: "session_01",
+      createdAt: "2026-08-26T12:00:00.000Z",
+      resources: [{ type: "github_repository", url: "https://gitlab.example.com/group/app.git", authorizationToken: "" }],
+    });
+    expect(empty.type).toBe("invalid_request");
+  });
+
   it("resolves every create variant into public snapshots plus isolated secrets", async () => {
     let nextId = 0;
     const resolver = new SessionResourceResolverService({

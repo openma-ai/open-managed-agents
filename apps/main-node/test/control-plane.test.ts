@@ -15,7 +15,7 @@ import { InMemoryBlobStore } from "@open-managed-agents/blob-store/adapters/in-m
 import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults, type NodeComponentOverrides } from "../src/components";
-import type { EventStreamHub } from "../src/lib/event-stream-hub";
+import type { EventStreamHub } from "../../../packages/control-plane-node/src/lib/event-stream-hub";
 
 const created: NodeControlPlane[] = [];
 const dirs: string[] = [];

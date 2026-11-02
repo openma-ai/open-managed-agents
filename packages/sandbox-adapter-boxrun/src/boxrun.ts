@@ -40,6 +40,7 @@
 
 import type { SandboxExecutor, SandboxFactory } from "@open-managed-agents/sandbox";
 import { getLogger } from "@open-managed-agents/observability";
+import { rejectPreparedBase } from "@open-managed-agents/sandbox";
 
 const moduleLogger = getLogger("boxrun-sandbox");
 
@@ -451,6 +452,7 @@ function extractFirstRegularFile(tar: Uint8Array): Uint8Array {
 // adapter cares about is read here, in the adapter's own file.
 
 export const sandboxFactory: SandboxFactory = async (ctx, env) => {
+  rejectPreparedBase("boxrun", ctx.preparedBase);
   const baseUrl = env.BOXRUN_URL;
   if (!baseUrl) {
     throw new Error(
@@ -460,7 +462,8 @@ export const sandboxFactory: SandboxFactory = async (ctx, env) => {
   }
   return new BoxRunSandbox({
     baseUrl,
-    image: env.SANDBOX_IMAGE,
+    // An Environment-selected catalog image overrides the process default.
+    image: ctx.image?.reference ?? env.SANDBOX_IMAGE,
     cpus: env.BOXRUN_CPUS ? Number(env.BOXRUN_CPUS) : undefined,
     memoryMib: env.BOXRUN_MEMORY_MIB ? Number(env.BOXRUN_MEMORY_MIB) : undefined,
     bearerToken: env.BOXRUN_TOKEN,

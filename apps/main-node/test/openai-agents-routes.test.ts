@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import { describe, expect, it } from "vitest";
 import { createAuthMiddleware } from "@open-managed-agents/auth";
 import { resourcesFixture } from "../../../packages/openai-agents-compat/test/helpers/resources";
-import { buildNodeOpenAIAgentsRoutes } from "../src/openai-agents";
+import { buildNodeOpenAIAgentsRoutes } from "../../../packages/control-plane-node/src/openai-agents";
 
 function fixture() {
   const scopes = { a: resourcesFixture(), b: resourcesFixture() };

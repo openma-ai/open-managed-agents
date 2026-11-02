@@ -13,10 +13,28 @@ export interface ModelCard {
   custom_headers?: Record<string, string>; // custom HTTP headers (compatible providers)
   /** Pi-native serializable Model fields for custom/catalog overrides. */
   pi_config?: Record<string, unknown>;
+  /** List prices used to compute a session's `list_cost`. Absent = unpriced:
+   * session budgets are inactive for sessions on this card. */
+  pricing?: ModelPricing;
   is_default?: boolean;
   created_at: string;
   updated_at?: string;
   archived_at?: string;
+}
+
+/**
+ * Model list prices, in USD per million tokens, as decimal strings
+ * (e.g. "3", "0.30"). `version` versions the shape; `effective_at` records when
+ * these prices took effect (informational, ISO-8601).
+ */
+export interface ModelPricing {
+  version: 1;
+  currency: "USD";
+  effective_at?: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cache_read_per_mtok?: string;
+  cache_write_per_mtok?: string;
 }
 
 // --- Agent ---
@@ -42,6 +60,25 @@ export interface CustomToolConfig {
 }
 
 export type ToolConfig = ToolsetConfig | CustomToolConfig;
+
+export type MultiagentConfig<T> = {
+  type: "multiagent_20261001";
+  advisor: { type: "disabled" };
+  subagents: { type: "disabled" } | {
+    type: "enabled";
+    inline_agents: { type: "enabled" } | { type: "disabled" };
+    predefined_agents: T[];
+  };
+  workflows: { type: "disabled" };
+};
+
+export type RuntimeAgentConfig = Omit<AgentConfig, "multiagent"> & {
+  multiagent?: MultiagentConfig<Omit<AgentConfig, "multiagent"> & {
+    type: "agent";
+    mcp_servers: NonNullable<AgentConfig["mcp_servers"]>;
+    skills: NonNullable<AgentConfig["skills"]>;
+  }>;
+};
 
 export interface AgentConfig {
   id: string;
@@ -74,7 +111,9 @@ export interface AgentConfig {
       }
   >;
   skills?: Array<{ skill_id: string; type: string; version?: string }>;
+  /** @deprecated Not consumed by the managed runtime. */
   callable_agents?: Array<{ type: "agent"; id: string; version?: number }>;
+  multiagent?: MultiagentConfig<{ type: "agent"; id: string; version: number }>;
   /**
    * Optional auxiliary model used by tools for in-process LLM work
    * (e.g. web_fetch summarization). Same shape as `model`.
@@ -97,7 +136,12 @@ export interface AgentConfig {
       /** Canonical ACP registry id. Enables the matching native-state adapter;
        * legacy records without it fall back to matching the command basename. */
       id?: string;
-      command: string;
+      /** Explicit process (Harbor's `local` distribution). Exactly one of
+       * `command` or `registry` is set. */
+      command?: string;
+      /** Pinned ACP registry reference such as `claude-acp@0.94.0`; the
+       * sandbox installs it and spawns a generated launcher. */
+      registry?: string;
       args?: string[];
       env?: Record<string, string | undefined>;
       cwd?: string;
@@ -458,7 +502,7 @@ export interface SessionTerminatedEvent extends EventBase {
 export interface SessionStatusEvent extends EventBase {
   type: "session.status_idle";
   stop_reason?: {
-    type: "end_turn" | "requires_action";
+    type: "end_turn" | "requires_action" | "retries_exhausted" | "budget_reached";
     event_ids?: string[];
     // requires_action sub-type for SDK routing
     action_type?: "tool_confirmation" | "custom_tool_result";
@@ -547,7 +591,8 @@ export interface SessionErrorEvent extends EventBase {
   error: string | {
     type: string;
     message: string;
-    retry_status?: "retryable" | "non_retryable";
+    /** Official CMA: retrying | exhausted | terminal (legacy retryable/non_retryable kept). */
+    retry_status?: "retrying" | "exhausted" | "terminal" | "retryable" | "non_retryable";
   };
 }
 
@@ -810,23 +855,24 @@ export interface AuxModelCallEvent extends EventBase {
   error?: string;
 }
 
-// AMA-spec pending-queue notifications. New under the dual-table refactor:
-// turn-input events (user.message / user.tool_confirmation /
-// user.custom_tool_result) live in `pending_events` between POST
-// /v1/sessions/:id/events and drainEventQueue picking them up. These
-// `system.*` frames let live consumers render an outbox section without
-// polling /v1/sessions/:id/pending.
+// AMA-spec queued-input notifications. Queued turn inputs
+// (user.message / user.tool_confirmation / user.custom_tool_result) are
+// ordinary events rows with `processed_at = NULL` until drain promotes the
+// same row/id. There is no separate pending queue and no GET /pending.
+// These `system.*` frames let live consumers render an outbox section; the
+// canonical source is the events list (seq is null while queued).
 //
 // Old SDK consumers don't filter on `system.*` so the new frames are
 // silently ignored. New consumers (Console) listen for them to maintain
-// a Map<event_id, pending_row> client-side.
+// a Map<event_id, queued event> client-side.
 export interface SystemUserMessagePendingEvent extends EventBase {
   type: "system.user_message_pending";
   /** Mirrors data.id of the queued event. */
   event_id: string;
-  /** AUTOINCREMENT order within the pending_events queue. */
+  /** Internal events.seq while queued (wire `seq` stays null until the
+   *  same row is promoted by setting processed_at). */
   pending_seq: number;
-  /** Wall-clock ms when the event hit the queue. */
+  /** Wall-clock ms when the event hit the log. */
   enqueued_at: number;
   session_thread_id: string;
   /** The full canonical user.* event (so consumers that key on
@@ -836,13 +882,13 @@ export interface SystemUserMessagePendingEvent extends EventBase {
 
 export interface SystemUserMessagePromotedEvent extends EventBase {
   type: "system.user_message_promoted";
+  /** Same event id that was queued — promotion never invents a new id. */
   event_id: string;
-  /** May be absent when the row was promoted via the legacy backfill
-   *  path (those rows never lived in `pending_events`). */
+  /** Internal events.seq, now canonical because processed_at is set. */
   pending_seq?: number;
-  /** AUTOINCREMENT seq the row got in `events` at INSERT time. */
+  /** Canonical events.seq assigned to the row (same row, now ingested). */
   seq?: number;
-  /** ISO timestamp drain stamped at INSERT. */
+  /** ISO timestamp drain stamped on the same row. */
   processed_at: string;
   session_thread_id: string;
 }
@@ -1101,7 +1147,10 @@ export interface SessionResource {
 // --- Stored Event ---
 
 export interface StoredEvent {
-  seq: number;
+  /** Canonical events.seq. NULL for queued turn inputs that have not been
+   *  ingested yet (processed_at NULL); clients order those by arrival/ts
+   *  and correlate by the embedded event id. */
+  seq: number | null;
   type: string;
   data: string; // JSON-serialized SessionEvent
   ts: string;

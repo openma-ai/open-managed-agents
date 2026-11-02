@@ -1,3 +1,4 @@
+import { validateBudgetUpdate } from "./budget";
 import type { Agent } from "../domain/agent";
 import type { Session, SessionAgent } from "../domain/session";
 import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
@@ -104,6 +105,9 @@ export interface SessionsApplicationServiceDependencies {
   lifecycle: SessionLifecycleCommandPort;
   clock: { now(): Date };
   ids: { nextSessionId(): string };
+  /** Emits `session.updated` for budget changes and resumes a session paused
+   * at budget_reached. Optional: without it budget changes are stored only. */
+  budgetEvents?: Pick<Required<import("../ports/session-events").SessionEventsApplicationPort>, "recordBudgetUpdate">;
 }
 
 function snapshotThreadAgent(agent: Agent): SessionThreadAgent {
@@ -112,6 +116,7 @@ function snapshotThreadAgent(agent: Agent): SessionThreadAgent {
     id: agent.id,
     description: agent.description,
     mcpServers: agent.mcpServers,
+    metadata: agent.metadata,
     model: agent.model,
     name: agent.name,
     ...(agent.openma !== undefined && { openma: agent.openma }),
@@ -134,23 +139,23 @@ async function findPinnedAgent(
   return source.findVersion({ workspaceId, agentId, version });
 }
 
-async function snapshotAgent(
+export async function snapshotSessionAgent(
   agent: Agent,
   source: SessionAgentSourcePort,
   workspaceId: string,
 ): Promise<SessionAgent | null> {
   const roster: SessionThreadAgent[] = [];
-  for (const entry of agent.multiagent?.agents ?? []) {
-    if (entry.type === "advisor") {
-      roster.push({ type: entry.type, model: entry.model });
-      continue;
-    }
-    const member = await findPinnedAgent(
-      source,
-      workspaceId,
-      entry.agentId,
-      entry.version,
-    );
+  const configuredMultiagent = agent.multiagent;
+  if (configuredMultiagent !== null && (
+    configuredMultiagent.type !== "multiagent_20261001" ||
+    configuredMultiagent.advisor?.type !== "disabled" ||
+    configuredMultiagent.workflows?.type !== "disabled" ||
+    configuredMultiagent.subagents == null
+  )) return null;
+  const subagents = configuredMultiagent?.subagents;
+  const entries = subagents?.type === "enabled" ? subagents.predefinedAgents : [];
+  for (const entry of entries) {
+    const member = await findPinnedAgent(source, workspaceId, entry.agentId, entry.version);
     if (member === null) return null;
     roster.push(snapshotThreadAgent(member));
   }
@@ -158,11 +163,26 @@ async function snapshotAgent(
     id: agent.id,
     description: agent.description,
     mcpServers: agent.mcpServers,
+    metadata: agent.metadata,
     model: agent.model,
     multiagent:
       agent.multiagent === null
         ? null
-        : { type: "coordinator", agents: roster },
+        : {
+            type: "multiagent_20261001",
+            advisor: { type: "disabled" },
+            subagents:
+              subagents?.type === "disabled"
+                ? { type: "disabled" }
+                : {
+                    type: "enabled",
+                    inlineAgents: subagents?.type === "enabled"
+                      ? subagents.inlineAgents
+                      : { type: "disabled" },
+                    predefinedAgents: roster,
+                  },
+            workflows: { type: "disabled" },
+          },
     name: agent.name,
     ...(agent.openma !== undefined && { openma: agent.openma }),
     skills: agent.skills,
@@ -188,7 +208,7 @@ async function applyOverrides(
   source: SessionAgentSourcePort,
   workspaceId: string,
 ): Promise<SessionAgent | null> {
-  const snapshot = await snapshotAgent(agent, source, workspaceId);
+  const snapshot = await snapshotSessionAgent(agent, source, workspaceId);
   if (snapshot === null) return null;
   if (selector.type !== "overrides") return snapshot;
   return {
@@ -444,6 +464,11 @@ export class SessionsApplicationService
     });
     if (current === null) return { type: "not_found" };
 
+    const budgetError = validateBudgetUpdate(current.session, command.budget);
+    if (budgetError !== null) {
+      return { type: "invalid_request", message: budgetError };
+    }
+
     const updatesAgent = command.agent?.tools !== undefined
       || command.agent?.mcpServers !== undefined;
     if (updatesAgent && current.session.status !== "idle") {
@@ -486,6 +511,16 @@ export class SessionsApplicationService
         type: "version_conflict",
         message: `Session changed concurrently at revision ${replaced.actualRevision}`,
       };
+    }
+    if (
+      command.budget !== undefined &&
+      this.dependencies.budgetEvents !== undefined &&
+      !sameBudget(current.session.budget ?? null, command.budget)
+    ) {
+      await this.dependencies.budgetEvents.recordBudgetUpdate({
+        sessionId: command.sessionId,
+        previous: current.session,
+      });
     }
     return { type: "updated", session: replaced.record.session };
   }
@@ -612,4 +647,12 @@ export class SessionsApplicationService
       },
     };
   }
+}
+
+function sameBudget(
+  a: { amountMinor: string; currency: string } | null,
+  b: { amountMinor: string; currency: string } | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return a.amountMinor === b.amountMinor && a.currency === b.currency;
 }

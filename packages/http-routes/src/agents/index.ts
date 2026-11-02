@@ -1,573 +1,84 @@
-// Agents — full CRUD with AMA-shape envelope.
-//
-// Sourced from apps/main/src/routes/agents.ts pre-extract: same AMA shape,
-// same `_oma:` envelope, same multiagent → callable_agents transform,
-// same field acceptance (no silent body field drops).
-//
-// Differences vs CF:
-//   - validateModel + validateAgentLimits have to be plumbed in by the
-//     runtime (services.modelCards isn't on the runtime-agnostic
-//     RouteServices because main-node doesn't ship a model_cards-store
-//     yet); we accept any model id and skip the cap check.
-//   - The DELETE-on-active-sessions check uses sql directly since
-//     services.sessions.hasActiveByAgent isn't on the abstract service
-//     in the Node port either.
-
-import { Hono } from "hono";
-import type {
-  AgentConfig,
-} from "@open-managed-agents/shared";
-import {
-  AgentNotFoundError,
-  AgentVersionMismatchError,
-} from "@open-managed-agents/agents-store";
-import type { RouteServicesArg } from "../types";
-import { resolveServices } from "../types";
-
-interface Vars {
-  Variables: { tenant_id: string; user_id?: string };
-}
-
-function formatAgent(agent: AgentConfig) {
-  const model =
-    !agent.model || typeof agent.model === "string"
-      ? { id: agent.model || "", speed: "standard" as const }
-      : { id: agent.model.id, speed: agent.model.speed || ("standard" as const) };
-
-  // OMA-only fields nest under `_oma:` so AMA SDK consumers ignore them
-  // while OMA tooling can read the platform extensions.
-  const oma: Record<string, unknown> = {};
-  if (agent.aux_model) {
-    oma.aux_model =
-      typeof agent.aux_model === "string"
-        ? { id: agent.aux_model, speed: "standard" as const }
-        : { id: agent.aux_model.id, speed: agent.aux_model.speed || ("standard" as const) };
-  }
-  if (agent.harness) oma.harness = agent.harness;
-  if (agent.acp) oma.acp = agent.acp;
-  if (agent.runtime_binding) oma.runtime_binding = agent.runtime_binding;
-  if (agent.appendable_prompts && agent.appendable_prompts.length > 0) {
-    oma.appendable_prompts = agent.appendable_prompts;
-  }
-
-  const callable = agent.callable_agents ?? [];
-  const multiagent =
-    callable.length > 0
-      ? {
-          type: "coordinator" as const,
-          agents: callable.map((c) => ({
-            type: "agent" as const,
-            id: c.id,
-            version: c.version ?? 1,
-          })),
-        }
-      : null;
-
-  const {
-    aux_model: _aux,
-    harness: _harness,
-    acp: _acp,
-    runtime_binding: _rb,
-    appendable_prompts: _ap,
-    callable_agents: _ca,
-    ...rest
-  } = agent;
-
-  return {
-    type: "agent" as const,
-    ...rest,
-    model,
-    system: agent.system || null,
-    description: agent.description || null,
-    skills: agent.skills || [],
-    mcp_servers: agent.mcp_servers || [],
-    multiagent,
-    callable_agents: callable,
-    metadata: agent.metadata || {},
-    archived_at: agent.archived_at || null,
-    ...(Object.keys(oma).length > 0 ? { _oma: oma } : {}),
-  };
-}
-
-function toApiAgent(row: AgentConfig & { tenant_id?: string }) {
-  const { tenant_id: _t, ...rest } = row;
-  return formatAgent(rest);
-}
-
-function multiagentToCallableAgents(
-  multiagent: unknown,
-): { list: AgentConfig["callable_agents"]; error?: string } {
-  if (multiagent === null || multiagent === undefined) return { list: undefined };
-  if (typeof multiagent !== "object")
-    return { list: [], error: "multiagent must be an object" };
-  const m = multiagent as { type?: string; agents?: unknown };
-  if (m.type !== "coordinator")
-    return { list: [], error: `multiagent.type must be "coordinator"` };
-  if (!Array.isArray(m.agents))
-    return { list: [], error: "multiagent.agents must be an array" };
-  const out: NonNullable<AgentConfig["callable_agents"]> = [];
-  for (const entry of m.agents) {
-    if (typeof entry === "string") {
-      out.push({ type: "agent", id: entry, version: 1 });
-      continue;
-    }
-    if (entry && typeof entry === "object") {
-      const e = entry as { type?: string; id?: string; version?: number };
-      if (e.type === "self") {
-        return { list: [], error: `multiagent.agents: {"type":"self"} is not yet supported` };
-      }
-      if (e.type === "agent" && typeof e.id === "string") {
-        out.push({
-          type: "agent",
-          id: e.id,
-          version: typeof e.version === "number" ? e.version : 1,
-        });
-        continue;
-      }
-    }
-    return { list: [], error: `multiagent.agents: invalid roster entry ${JSON.stringify(entry)}` };
-  }
-  return { list: out };
-}
+import { Hono, type Context } from "hono";
+import { buildAgentRoutes as buildManagedAgentRoutes } from "@open-managed-agents/managed-agents-api";
+import { resolveServices, type RouteServicesArg } from "../types";
 
 export interface AgentRoutesDeps {
-  services: RouteServicesArg;
-  /** Optional model card validation. CF passes a function backed by
-   *  services.modelCards; Node passes nothing → validation skipped. */
-  validateModel?: (
-    tenantId: string,
-    model: string | { id: string; speed?: string },
-  ) => Promise<{ valid: boolean; error?: string }>;
-  /** Optional field-size cap check. CF passes apps/main/src/lib/limits;
-   *  Node currently passes nothing. */
+  application: Parameters<typeof buildManagedAgentRoutes>[0];
+  services?: RouteServicesArg;
+  validateModel?: (tenantId: string, model: string | { id: string; speed?: string }) => Promise<{ valid: boolean; error?: string }>;
   validateAgentLimits?: (body: unknown) => { ok: boolean; error?: string };
-  /** Active-sessions guard for DELETE — true means "refuse with 409". */
-  hasActiveSessionsByAgent?: (
-    tenantId: string,
-    agentId: string,
-  ) => Promise<boolean>;
-  /** Active-evals guard for DELETE — CF blocks while runs target this
-   *  agent. Node returns false (no eval runner yet). */
-  hasActiveEvalsByAgent?: (
-    tenantId: string,
-    agentId: string,
-  ) => Promise<boolean>;
+  hasActiveSessionsByAgent?: (tenantId: string, agentId: string) => Promise<boolean>;
+  hasActiveEvalsByAgent?: (tenantId: string, agentId: string) => Promise<boolean>;
 }
 
+/** Protocol aliases and OMA deployment checks only; agent semantics belong to
+ * the shared application/API, never a callable_agents conversion. */
 export function buildAgentRoutes(deps: AgentRoutesDeps) {
-  const app = new Hono<Vars>();
-
-  // POST /v1/agents — create
-  app.post("/", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const raw = await c.req.json<{
-      name: string;
-      model: string | { id: string; speed?: "standard" | "fast" };
-      system?: string;
-      tools?: AgentConfig["tools"];
-      description?: string;
-      mcp_servers?: AgentConfig["mcp_servers"];
-      skills?: AgentConfig["skills"];
-      callable_agents?: AgentConfig["callable_agents"];
-      multiagent?: { type: "coordinator"; agents: unknown[] } | null;
-      metadata?: Record<string, unknown>;
-      harness?: string;
-      _oma?: {
-        aux_model?: string | { id: string; speed?: "standard" | "fast" };
-        harness?: string;
-        acp?: AgentConfig["acp"];
-        runtime_binding?: AgentConfig["runtime_binding"];
-        appendable_prompts?: string[];
-      };
-    }>();
-
-    const ma = multiagentToCallableAgents(raw.multiagent);
-    if (ma.error) return c.json({ error: ma.error }, 422);
-
-    const body = {
-      ...raw,
-      callable_agents: ma.list ?? raw.callable_agents,
-      aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness ?? raw.harness,
-      acp: raw._oma?.acp,
-      runtime_binding: raw._oma?.runtime_binding,
-      appendable_prompts: raw._oma?.appendable_prompts,
-    };
-
-    if (!body.name) return c.json({ error: "name is required" }, 400);
-    if (body.harness === "acp-sandbox" && !body.acp?.agent?.command) {
-      return c.json(
-        { error: "_oma.acp.agent.command is required for acp-sandbox" },
-        422,
-      );
-    }
-    if (!body.runtime_binding && !body.model) {
-      return c.json({ error: "model is required for cloud agents" }, 400);
-    }
-
-    if (deps.validateAgentLimits) {
-      const limitCheck = deps.validateAgentLimits(body);
-      if (!limitCheck.ok) return c.json({ error: limitCheck.error }, 400);
-    }
-
-    const tenantId = c.var.tenant_id;
-    const isLocalRuntime = !!body.runtime_binding;
-    if (!isLocalRuntime && deps.validateModel) {
-      const r = await deps.validateModel(tenantId, body.model);
-      if (!r.valid) return c.json({ error: r.error }, 400);
-      if (body.aux_model !== undefined) {
-        const aux = body.aux_model ?? body.model;
-        const ar = await deps.validateModel(tenantId, aux);
-        if (!ar.valid) return c.json({ error: `aux_model: ${ar.error}` }, 400);
+  const app = new Hono<{ Variables: { tenant_id: string } }>();
+  const forward = async (c: Context, path: string, method = c.req.method) => {
+    const application = typeof deps.application === "function" ? deps.application(c) : deps.application;
+    const tenantId = c.get("tenant_id") as string;
+    let body: string | undefined;
+    if (method === "POST" && !path.endsWith("/archive")) {
+      body = await c.req.text();
+      let raw;
+      try { raw = JSON.parse(body); } catch { return c.json({ error: "Request body must be valid JSON" }, 400); }
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return c.json({ error: "Request body must be an object" }, 400);
+      const limits = deps.validateAgentLimits?.(raw);
+      if (limits && !limits.ok) return c.json({ error: limits.error }, 400);
+      const id = c.req.param("id");
+      const found = id && (deps.validateModel || raw._oma?.harness || raw._oma?.acp)
+        ? await application.retrieveAgent({ agentId: id }) : undefined;
+      const current = found?.type === "found" ? found.agent : undefined;
+      const extension = raw._oma ?? {};
+      const harness = extension.harness ?? current?.openma?.harness;
+      const acp = extension.acp === null ? undefined : extension.acp ?? current?.openma?.acp;
+      if (harness === "acp-sandbox" && !acp?.agent?.command && !acp?.agent?.registry) return c.json({ error: "_oma.acp.agent.command or _oma.acp.agent.registry is required for acp-sandbox" }, 422);
+      const binding = extension.runtime_binding === null ? null : extension.runtime_binding ?? current?.openma?.runtimeBinding;
+      if (!binding && deps.validateModel) {
+        for (const model of [raw.model, extension.aux_model]) {
+          if (model == null) continue;
+          if (typeof model !== "string" && (typeof model !== "object" || typeof model.id !== "string")) continue;
+          const result = await deps.validateModel(tenantId, model);
+          if (!result.valid) return c.json({ error: result.error }, 400);
+        }
       }
     }
-
-    const row = await services.agents.create({
-      tenantId,
-      input: {
-        name: body.name,
-        model: body.model ?? "",
-        system: body.system,
-        tools: body.tools,
-        harness: body.harness,
-        acp: body.acp,
-        description: body.description,
-        mcp_servers: body.mcp_servers,
-        skills: body.skills,
-        callable_agents: body.callable_agents,
-        metadata: body.metadata,
-        aux_model: body.aux_model,
-        appendable_prompts: body.appendable_prompts,
-        runtime_binding: body.runtime_binding,
-        enable_general_subagent: (body as { enable_general_subagent?: boolean })
-          .enable_general_subagent,
-      },
-    });
-    return c.json(toApiAgent(row), 201);
-  });
-
-  // GET /v1/agents — cursor-paginated list
-  app.get("/", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const limitStr = c.req.query("limit");
-    const limit = limitStr ? Math.min(Math.max(1, Number(limitStr)), 100) : 50;
-    const cursor = c.req.query("cursor") ?? undefined;
-    const includeArchivedRaw = c.req.query("include_archived");
-    const includeArchived = includeArchivedRaw === "true";
-    const q = c.req.query("q") ?? undefined;
-    const orderRaw = c.req.query("order");
-    if (orderRaw !== undefined && orderRaw !== "asc" && orderRaw !== "desc") {
-      return c.json({ error: "order must be asc or desc" }, 400);
-    }
-
-    // status: enum filter on archive state. Whitelist strictly — any
-    // unknown value is a 400, NOT a silent fallback to "any". Allowing
-    // arbitrary strings here would mask client bugs (typo'd "active "
-    // returning every row looks like a feature).
-    const statusRaw = c.req.query("status");
-    let status: "active" | "archived" | "any" | undefined;
-    if (statusRaw !== undefined) {
-      if (statusRaw === "active" || statusRaw === "archived" || statusRaw === "any") {
-        status = statusRaw;
-      } else {
-        return c.json(
-          {
-            error: {
-              type: "invalid_request_error",
-              code: "invalid_status",
-              message: `Invalid status '${statusRaw}'; expected one of active|archived|any.`,
-            },
-          },
-          400,
-        );
-      }
-    }
-
-    // created_after / created_before: ISO timestamps → epoch ms. Reject
-    // unparseable values explicitly so the client knows it's a malformed
-    // request, not just "no results".
-    const parseMs = (
-      raw: string | undefined,
-      field: string,
-    ): { value: number | undefined; err?: Response } => {
-      if (raw === undefined) return { value: undefined };
-      const ms = Date.parse(raw);
-      if (Number.isNaN(ms)) {
-        return {
-          value: undefined,
-          err: c.json(
-            {
-              error: {
-                type: "invalid_request_error",
-                code: "invalid_timestamp",
-                message: `Invalid ${field} '${raw}'; expected ISO-8601 timestamp.`,
-              },
-            },
-            400,
-          ),
-        };
-      }
-      return { value: ms };
-    };
-    const createdAfterRes = parseMs(c.req.query("created_after"), "created_after");
-    if (createdAfterRes.err) return createdAfterRes.err;
-    const createdBeforeRes = parseMs(c.req.query("created_before"), "created_before");
-    if (createdBeforeRes.err) return createdBeforeRes.err;
-
-    const page = await services.agents.listPage({
-      tenantId: c.var.tenant_id,
-      limit,
-      ...(cursor ? { cursor } : {}),
-      // Prefer the new `status` filter. Keep includeArchived as a back-
-      // compat fallback (used by older console builds that only know the
-      // checkbox). The service layer maps includeArchived→status when
-      // status is unset, so passing both is fine.
-      ...(status !== undefined ? { status } : {}),
-      ...(includeArchivedRaw !== undefined ? { includeArchived } : {}),
-      ...(q ? { q } : {}),
-      ...(createdAfterRes.value !== undefined
-        ? { createdAfter: createdAfterRes.value }
-        : {}),
-      ...(createdBeforeRes.value !== undefined
-        ? { createdBefore: createdBeforeRes.value }
-        : {}),
-    });
-    const items = [...page.items];
-    if (orderRaw === "asc") {
-      items.sort((a, b) => {
-        const created = a.created_at.localeCompare(b.created_at);
-        return created !== 0 ? created : a.id.localeCompare(b.id);
-      });
-    }
-    return c.json({
-      data: items.map(toApiAgent),
-      ...(page.nextCursor ? { next_cursor: page.nextCursor } : {}),
-      has_more: !!page.nextCursor,
-    });
-  });
-
-  // GET /v1/agents/:id — get
-  app.get("/:id", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const row = await services.agents.get({
-      tenantId: c.var.tenant_id,
-      agentId: c.req.param("id"),
-    });
-    if (!row) return c.json({ error: "Agent not found" }, 404);
-    return c.json(toApiAgent(row));
-  });
-
-  // POST/PUT /v1/agents/:id — update
-  const updateAgent = async (
-    c: import("hono").Context<Vars, "/:id">,
-  ): Promise<Response> => {
-    const services = resolveServices(deps.services, c);
-    const id = c.req.param("id");
-    const tenantId = c.var.tenant_id;
-    const existing = await services.agents.get({ tenantId, agentId: id });
-    if (!existing) return c.json({ error: "Agent not found" }, 404);
-
-    const raw = (await c.req.json()) as {
-      name?: string;
-      model?: string | { id: string; speed?: "standard" | "fast" };
-      system?: string | null;
-      tools?: AgentConfig["tools"];
-      description?: string | null;
-      mcp_servers?: AgentConfig["mcp_servers"] | null;
-      skills?: AgentConfig["skills"] | null;
-      callable_agents?: AgentConfig["callable_agents"] | null;
-      multiagent?: { type: "coordinator"; agents: unknown[] } | null;
-      metadata?: Record<string, unknown>;
-      version?: number;
-      harness?: string;
-      _oma?: {
-        aux_model?: string | { id: string; speed?: "standard" | "fast" } | null;
-        harness?: string;
-        acp?: AgentConfig["acp"] | null;
-        runtime_binding?: AgentConfig["runtime_binding"] | null;
-        appendable_prompts?: string[] | null;
-      };
-    };
-
-    let callableAgents: AgentConfig["callable_agents"] | null | undefined;
-    if (raw.multiagent === null) {
-      callableAgents = null;
-    } else if (raw.multiagent !== undefined) {
-      const ma = multiagentToCallableAgents(raw.multiagent);
-      if (ma.error) return c.json({ error: ma.error }, 422);
-      callableAgents = ma.list;
-    } else if (raw.callable_agents !== undefined) {
-      callableAgents = raw.callable_agents;
-    }
-
-    const body = {
-      ...raw,
-      callable_agents: callableAgents,
-      aux_model: raw._oma?.aux_model,
-      harness: raw._oma?.harness ?? raw.harness,
-      acp: raw._oma?.acp,
-      runtime_binding: raw._oma?.runtime_binding,
-      appendable_prompts: raw._oma?.appendable_prompts,
-    };
-
-    const effectiveHarness = body.harness ?? existing.harness;
-    const effectiveAcp = body.acp === null ? undefined : (body.acp ?? existing.acp);
-    if (effectiveHarness === "acp-sandbox" && !effectiveAcp?.agent?.command) {
-      return c.json(
-        { error: "_oma.acp.agent.command is required for acp-sandbox" },
-        422,
-      );
-    }
-
-    if (deps.validateAgentLimits) {
-      const limitCheck = deps.validateAgentLimits(body);
-      if (!limitCheck.ok) return c.json({ error: limitCheck.error }, 400);
-    }
-
-    const effectiveBinding =
-      body.runtime_binding === null
-        ? null
-        : (body.runtime_binding ?? existing.runtime_binding);
-    const isLocalRuntime = !!effectiveBinding;
-
-    if (!isLocalRuntime && deps.validateModel && body.model !== undefined) {
-      const eff = body.model ?? existing.model;
-      const r = await deps.validateModel(tenantId, eff);
-      if (!r.valid) return c.json({ error: r.error }, 400);
-    }
-    if (!isLocalRuntime && deps.validateModel && body.aux_model !== undefined) {
-      const aux =
-        body.aux_model === null ? undefined : (body.aux_model ?? existing.aux_model);
-      if (aux !== undefined) {
-        const ar = await deps.validateModel(tenantId, aux);
-        if (!ar.valid) return c.json({ error: `aux_model: ${ar.error}` }, 400);
-      }
-    }
-
-    try {
-      const row = await services.agents.update({
-        tenantId,
-        agentId: id,
-        expectedVersion: body.version,
-        input: {
-          name: body.name,
-          model: body.model,
-          system: body.system,
-          tools: body.tools,
-          harness: body.harness,
-          acp: body.acp,
-          description: body.description,
-          mcp_servers: body.mcp_servers,
-          skills: body.skills,
-          callable_agents: body.callable_agents,
-          metadata: body.metadata,
-          aux_model: body.aux_model,
-          appendable_prompts: body.appendable_prompts,
-          runtime_binding: body.runtime_binding,
-          enable_general_subagent: (body as { enable_general_subagent?: boolean })
-            .enable_general_subagent,
-        },
-      });
-      return c.json(toApiAgent(row));
-    } catch (err) {
-      if (err instanceof AgentVersionMismatchError) {
-        return c.json(
-          { error: "Version mismatch. Agent has been updated since you last read it." },
-          409,
-        );
-      }
-      if (err instanceof AgentNotFoundError) {
-        return c.json({ error: "Agent not found" }, 404);
-      }
-      throw err;
-    }
+    const url = new URL(c.req.url);
+    url.pathname = path;
+    const headers = new Headers(c.req.raw.headers);
+    // OMA routes historically do not require the public API's opt-in header.
+    headers.set("anthropic-beta", "managed-agents-2026-04-01");
+    return buildManagedAgentRoutes(application).fetch(new Request(url, { method, headers, ...(body !== undefined && { body }) }));
   };
-  app.post("/:id", updateAgent);
-  app.put("/:id", updateAgent);
-
-  // GET /v1/agents/:id/versions — list all versions
-  app.get("/:id/versions", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const id = c.req.param("id");
-    const tenantId = c.var.tenant_id;
-    const exists = await services.agents.get({ tenantId, agentId: id });
-    if (!exists) return c.json({ error: "Agent not found" }, 404);
-    const versions = await services.agents.listVersions({ tenantId, agentId: id });
-    const data = versions
-      .map((v) => formatAgent(v.snapshot))
-      .sort((a, b) => a.version - b.version);
-    return c.json({ data });
+  app.get("/", (c) => forward(c, "/"));
+  app.post("/", (c) => forward(c, "/"));
+  app.get("/:id/versions/:version", (c) => {
+    const url = new URL(c.req.url);
+    url.searchParams.set("version", c.req.param("version"));
+    // Preserve the requested version while forwarding through the common mapper.
+    const application = typeof deps.application === "function" ? deps.application(c) : deps.application;
+    url.pathname = `/${encodeURIComponent(c.req.param("id"))}`;
+    const headers = new Headers(c.req.raw.headers);
+    headers.set("anthropic-beta", "managed-agents-2026-04-01");
+    return buildManagedAgentRoutes(application).fetch(new Request(url, { headers }));
   });
-
-  // GET /v1/agents/:id/versions/:version
-  app.get("/:id/versions/:version", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const id = c.req.param("id");
-    const v = parseInt(c.req.param("version"), 10);
-    if (Number.isNaN(v)) return c.json({ error: "Version not found" }, 404);
-    const row = await services.agents.getVersion({
-      tenantId: c.var.tenant_id,
-      agentId: id,
-      version: v,
-    });
-    if (!row) return c.json({ error: "Version not found" }, 404);
-    return c.json(formatAgent(row.snapshot));
-  });
-
-  // POST /v1/agents/:id/archive
-  app.post("/:id/archive", async (c) => {
-    const services = resolveServices(deps.services, c);
-    try {
-      const row = await services.agents.archive({
-        tenantId: c.var.tenant_id,
-        agentId: c.req.param("id"),
-      });
-      return c.json(toApiAgent(row));
-    } catch (err) {
-      if (err instanceof AgentNotFoundError) {
-        return c.json({ error: "Agent not found" }, 404);
-      }
-      throw err;
-    }
-  });
-
-  // DELETE /v1/agents/:id
+  app.get("/:id/versions", (c) => forward(c, `/${encodeURIComponent(c.req.param("id"))}/versions`));
+  app.get("/:id", (c) => forward(c, `/${encodeURIComponent(c.req.param("id"))}`));
+  app.post("/:id", (c) => forward(c, `/${encodeURIComponent(c.req.param("id"))}`));
+  app.put("/:id", (c) => forward(c, `/${encodeURIComponent(c.req.param("id"))}`, "POST"));
+  app.post("/:id/archive", (c) => forward(c, `/${encodeURIComponent(c.req.param("id"))}/archive`));
   app.delete("/:id", async (c) => {
-    const services = resolveServices(deps.services, c);
-    const id = c.req.param("id");
-    const tenantId = c.var.tenant_id;
-    const existing = await services.agents.get({ tenantId, agentId: id });
-    if (!existing) return c.json({ error: "Agent not found" }, 404);
-
-    if (deps.hasActiveSessionsByAgent) {
-      const has = await deps.hasActiveSessionsByAgent(tenantId, id);
-      if (has) {
-        return c.json(
-          {
-            error:
-              "Cannot delete agent with active sessions. Archive or delete sessions first.",
-          },
-          409,
-        );
-      }
-    }
-
-    if (deps.hasActiveEvalsByAgent) {
-      const has = await deps.hasActiveEvalsByAgent(tenantId, id);
-      if (has) {
-        return c.json(
-          {
-            error:
-              "Cannot delete agent with active eval runs. Wait for them to finish first.",
-          },
-          409,
-        );
-      }
-    }
-
-    await services.agents.delete({ tenantId, agentId: id });
-    return c.json({ type: "agent_deleted", id });
+    if (!deps.services) return c.json({ error: "Agent deletion is unavailable" }, 501);
+    const tenantId = c.get("tenant_id") as string;
+    const agentId = c.req.param("id");
+    const application = typeof deps.application === "function" ? deps.application(c) : deps.application;
+    if ((await application.retrieveAgent({ agentId })).type === "not_found") return c.json({ error: "Agent not found" }, 404);
+    if (await deps.hasActiveSessionsByAgent?.(tenantId, agentId)) return c.json({ error: "Cannot delete agent with active sessions" }, 409);
+    if (await deps.hasActiveEvalsByAgent?.(tenantId, agentId)) return c.json({ error: "Cannot delete agent with active eval runs" }, 409);
+    const deleted = await resolveServices(deps.services, c).agents.deleteCurrent({ workspaceId: tenantId, agentId });
+    if (deleted.type === "not_found") return c.json({ error: "Agent not found" }, 404);
+    return c.json({ type: "agent_deleted", id: agentId });
   });
-
   return app;
 }

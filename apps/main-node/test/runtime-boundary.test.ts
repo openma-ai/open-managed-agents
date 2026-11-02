@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
-import { createNodeRuntime } from "../src/modules/node-runtime";
-import { createNodeFoundation } from "../src/modules/node-foundation";
-import { createManagedNodeRuntime } from "../src/modules/node-managed";
-import { mountNodeHttp } from "../src/modules/node-http";
-import { Disposables } from "../src/lifecycle";
+import { createNodeRuntime } from "../../../packages/control-plane-node/src/modules/node-runtime";
+import { createNodeFoundation } from "../../../packages/control-plane-node/src/modules/node-foundation";
+import { createManagedNodeRuntime } from "../../../packages/control-plane-node/src/modules/node-managed";
+import { mountNodeHttp } from "../../../packages/control-plane-node/src/modules/node-http";
+import { Disposables } from "../../../packages/control-plane-node/src/lifecycle";
 
 describe("Node runtime stage", () => {
   it("builds the foundation independently of managed sessions and HTTP", async () => {

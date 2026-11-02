@@ -47,7 +47,7 @@ function minimalEvent(type: string): SessionEventView {
           inputTokens: 1,
           outputTokens: 2,
           cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
+          cacheCreation: { ephemeralOneHourInputTokens: 0, ephemeralFiveMinuteInputTokens: 0 },
         },
       };
     case "span.model_request_end":

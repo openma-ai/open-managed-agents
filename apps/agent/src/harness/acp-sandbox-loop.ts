@@ -8,6 +8,7 @@ import {
 } from "@open-managed-agents/sandbox";
 import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 
+import { answerAcpPermission } from "./acp-permission";
 import { AcpTranslator } from "./acp-translate";
 import type {
   HarnessContext,
@@ -18,6 +19,7 @@ import type {
 import {
   captureAcpSandboxAgentState,
   hasRequiredAcpSandboxAgentState,
+  installAcpSandboxAgent,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
   materializeHostedInferenceConfigFiles,
@@ -76,8 +78,8 @@ export class AcpSandboxHarness implements HarnessInterface {
     const runtime = ctx.runtime;
     this.#runtime = runtime;
     const config = ctx.agent.acp;
-    if (!config?.agent?.command) {
-      this.#emitError(runtime, "AcpSandboxHarness requires agent.acp.agent.command");
+    if (!config?.agent?.command && !config?.agent?.registry) {
+      this.#emitError(runtime, "AcpSandboxHarness requires agent.acp.agent.command or agent.acp.agent.registry");
       return;
     }
     if (!supportsDuplexProcess(runtime.sandbox)) {
@@ -95,10 +97,16 @@ export class AcpSandboxHarness implements HarnessInterface {
       return;
     }
 
-    const preparation = prepareAcpSandboxAgent({
-      sessionId: ctx.session_id,
-      agent: config.agent,
-    });
+    let preparation: AcpSandboxAgentPreparation;
+    try {
+      preparation = prepareAcpSandboxAgent({
+        sessionId: ctx.session_id,
+        agent: config.agent,
+      });
+    } catch (error) {
+      this.#emitError(runtime, error instanceof Error ? error.message : String(error));
+      return;
+    }
     const stateBinding = preparation.binding;
     const configKey = JSON.stringify({ config, stateAdapter: stateBinding.adapterId });
     await materializeAcpSandboxAgentState(runtime.sandbox, preparation);
@@ -140,6 +148,10 @@ export class AcpSandboxHarness implements HarnessInterface {
     });
     try {
       if (!this.#session) {
+        // Harbor-style install: pinned registry agents get their launcher
+        // before spawn. A failure rejects into the turn error below; it never
+        // falls back to a bare command or an unpinned package.
+        preparation = await installAcpSandboxAgent(runtime.sandbox, preparation);
         const acpRuntime = createAcpRuntime({
           type: "sandbox",
           sandbox: runtime.sandbox,
@@ -209,6 +221,11 @@ export class AcpSandboxHarness implements HarnessInterface {
             ? { resumeAcpSessionId: this.#resumeAcpSessionId }
             : {}),
           ...(mcpServers.length === 0 ? {} : { mcpServers }),
+          // Without this callback ACP cancels every permission request, so
+          // the agent could not run any tool that asks (e.g. Claude's Bash).
+          clientCallbacks: {
+            requestPermission: async (params) => answerAcpPermission(ctx.agent, params),
+          },
         });
         this.#configKey = configKey;
         this.#preparation = preparation;
@@ -225,7 +242,7 @@ export class AcpSandboxHarness implements HarnessInterface {
       const recoveryReason = this.#semanticRecoveryReason;
       const promptText = recoveryReason
         ? buildAcpSemanticRecoveryPrompt(
-            runtime.history.getEvents(),
+            ctx.acpRecoveryHistory ?? runtime.history.getEvents(),
             ctx.userMessage,
             { reason: recoveryReason },
           )
@@ -279,8 +296,14 @@ export class AcpSandboxHarness implements HarnessInterface {
       if (leaseLost && this.#session) {
         const fencedSession = this.#session;
         this.#resumeAcpSessionId = fencedSession.acpSessionId || null;
-        this.#session = null;
-        await fencedSession.dispose().catch(() => undefined);
+        try {
+          await fencedSession.dispose();
+          this.#session = null;
+        } catch (disposeError) {
+          // Retain the failed disposal barrier so the host's finally/dispose
+          // also rejects instead of capturing/deleting state under a live child.
+          this.#emitError(runtime, disposeError instanceof Error ? disposeError.message : String(disposeError));
+        }
       }
       await translator.flush(aborted ? "aborted" : "completed");
       if (!runtime.abortSignal?.aborted) {
@@ -303,12 +326,10 @@ export class AcpSandboxHarness implements HarnessInterface {
     this.#runtime = null;
     this.#preparation = null;
     this.#semanticRecoveryReason = null;
+    // A failed dispose means exit was not confirmed. Do not race the live
+    // process by copying or deleting any of its native state.
+    await session?.dispose();
     let failure: unknown;
-    try {
-      await session?.dispose();
-    } catch (error) {
-      failure = error;
-    }
     // A host shutdown is a placement change, not logical session deletion.
     // Keep the native ACP id and session artifacts in /workspace so a
     // replacement host can resume after restoring the provider filesystem

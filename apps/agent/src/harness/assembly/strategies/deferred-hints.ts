@@ -4,10 +4,13 @@ import {
   formatIncrementalDeferredChangeReminder,
 } from "../deferred-prompt";
 import type { DeferredHintStrategy } from "../config";
+import type { DeferredToolInvocation } from "./exposure";
 
 export interface DeferredHintPlan {
   toolSearchEnabled: boolean;
   deferredNames: string[];
+  /** How deferred tools are called; hint wording follows it. Defaults to `direct`. */
+  invocation?: DeferredToolInvocation;
 }
 
 export interface DeferredHintBootstrapMessage {
@@ -45,7 +48,7 @@ function createClaudeCodeStrategy(): DeferredHintCoordinator {
     },
     bootstrapTurnMessages(plan) {
       if (!plan.toolSearchEnabled || plan.deferredNames.length === 0) return [];
-      return [userReminder(formatClaudeCodeDeferredReminder(plan.deferredNames))];
+      return [userReminder(formatClaudeCodeDeferredReminder(plan.deferredNames, plan.invocation))];
     },
     prepareNextTurn(plan) {
       if (!plan.toolSearchEnabled || plan.deferredNames.length === 0) {
@@ -53,7 +56,7 @@ function createClaudeCodeStrategy(): DeferredHintCoordinator {
       }
       const key = deferredHintKey(plan.deferredNames);
       return {
-        messages: [userReminder(formatClaudeCodeDeferredReminder(plan.deferredNames))],
+        messages: [userReminder(formatClaudeCodeDeferredReminder(plan.deferredNames, plan.invocation))],
         nextDeferredHintKey: key,
       };
     },
@@ -67,7 +70,7 @@ function createPiStrategy(): DeferredHintCoordinator {
   return {
     augmentSystemPrompt(base, plan) {
       if (!plan.toolSearchEnabled) return base;
-      return appendDeferredIndex(base, plan.deferredNames);
+      return appendDeferredIndex(base, plan.deferredNames, plan.invocation);
     },
     bootstrapTurnMessages() {
       return [];
@@ -102,7 +105,7 @@ function createIncrementalStrategy(): DeferredHintCoordinator {
   return {
     augmentSystemPrompt(base, plan) {
       if (!plan.toolSearchEnabled) return base;
-      return appendDeferredIndex(base, plan.deferredNames);
+      return appendDeferredIndex(base, plan.deferredNames, plan.invocation);
     },
     bootstrapTurnMessages() {
       return [];

@@ -15,8 +15,8 @@ describe("auth provider configuration", () => {
         githubClientSecret: "github-secret",
       }),
     ).toEqual({
-      google: { clientId: "google-id", clientSecret: "google-secret" },
-      github: { clientId: "github-id", clientSecret: "github-secret" },
+      google: { clientId: "google-id", clientSecret: "google-secret", overrideUserInfoOnSignIn: true },
+      github: { clientId: "github-id", clientSecret: "github-secret", overrideUserInfoOnSignIn: true },
     });
   });
 

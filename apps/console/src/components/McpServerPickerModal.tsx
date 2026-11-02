@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { useScrollFade } from "@/hooks/useScrollFade";
 import { Input } from "@/components/ui/input";
 // Pick a known MCP server from the shared MCP_REGISTRY (same registry the
 // vault page's "Connect a service" flow uses). Keeps the agent-config
@@ -39,6 +40,7 @@ export function McpServerPickerModal({
   alreadyAddedUrls = [],
   onPick,
 }: McpServerPickerModalProps): JSX.Element {
+  const listFade = useScrollFade<HTMLDivElement>();
   const [search, setSearch] = useState("");
   const addedSet = new Set(alreadyAddedUrls);
   const filtered = search
@@ -68,7 +70,7 @@ export function McpServerPickerModal({
           placeholder="Search services"
           autoFocus
         />
-        <div className="max-h-80 overflow-y-auto -mx-1">
+        <div ref={listFade.ref} className={`console-scroll-fade ${listFade.className} max-h-80 overflow-y-auto -mx-1`}>
           {filtered.map((entry) => {
             const alreadyAdded = addedSet.has(entry.url);
             return (

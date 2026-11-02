@@ -207,6 +207,39 @@ test("cost attribution adapters are isolated packages with one factory shape", a
   assert.deepEqual(await providerPackageBoundaryViolations(isolated), []);
 });
 
+test("database adapters load their drivers, including subpath imports, as optional peers", async () => {
+  const leaky = await fixture(
+    { dependencies: { "acme-sql": "^1.0.0" } },
+    'import { drizzle } from "drizzle-orm/acme-sql"; import "acme-sql/promise"; export {};',
+    "node-database-acme",
+  );
+  assert.deepEqual(await providerPackageBoundaryViolations(leaky), [
+    "packages/node-database-acme/package.json: external runtime dependency acme-sql",
+    "packages/node-database-acme/src/index.ts: provider import acme-sql/promise is not an optional peer dependency",
+    "packages/node-database-acme/src/index.ts: provider import drizzle-orm/acme-sql is not an optional peer dependency",
+  ]);
+
+  const isolated = await fixture(
+    {
+      dependencies: { "@open-managed-agents/node-database": "workspace:*" },
+      peerDependencies: { "acme-sql": "^1.0.0", "drizzle-orm": "^0.45.0" },
+      peerDependenciesMeta: { "acme-sql": { optional: true }, "drizzle-orm": { optional: true } },
+    },
+    'import { drizzle } from "drizzle-orm/acme-sql"; import "acme-sql/promise"; export {};',
+    "node-database-acme",
+  );
+  assert.deepEqual(await providerPackageBoundaryViolations(isolated), []);
+});
+
+test("the database contract package is not mistaken for an adapter", async () => {
+  const root = await fixture(
+    { dependencies: { "@open-managed-agents/sql-client": "workspace:*" } },
+    'import type { SqlClient } from "@open-managed-agents/sql-client"; export type Client = SqlClient;',
+    "node-database",
+  );
+  assert.deepEqual(await providerPackageBoundaryViolations(root), []);
+});
+
 test("the workspace does not auto-install every optional provider SDK", async () => {
   const root = await mkdtemp(join(tmpdir(), "oma-provider-workspace-"));
   fixtureRoots.add(root);

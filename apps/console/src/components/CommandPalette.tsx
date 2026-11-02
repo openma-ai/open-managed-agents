@@ -55,6 +55,7 @@ function useCommands(): NavCommand[] {
     { label: t.nav.skills, to: "/skills", icon: SkillsIcon },
     { label: t.nav.memoryStores, to: "/memory", icon: MemoryIcon },
     { label: t.nav.modelCards, to: "/model-cards", icon: ModelCardsIcon },
+    { label: t.nav.budget, to: "/budget", icon: ModelCardsIcon, aliases: "spend cost list_cost" },
     { label: t.nav.apiKeys, to: "/api-keys", icon: ApiKeysIcon, aliases: "tokens" },
     { label: t.nav.localRuntimes, to: "/runtimes", icon: RuntimesIcon },
     { label: "Linear", to: "/integrations/linear", icon: LinearIcon },

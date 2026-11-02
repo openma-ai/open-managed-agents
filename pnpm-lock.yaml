@@ -111,9 +111,6 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
-      '@open-managed-agents/agents-store':
-        specifier: workspace:*
-        version: link:../../packages/agents-store
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../../packages/api-types
@@ -126,6 +123,9 @@ importers:
       '@open-managed-agents/credentials-store':
         specifier: workspace:*
         version: link:../../packages/credentials-store
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-domain
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../../packages/environments-store
@@ -247,8 +247,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/integrations-core
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.13.0
+        version: 0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -446,8 +446,8 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       astro:
         specifier: ^6.1.9
         version: 6.1.9(@types/node@26.6.3)(@typescript/typescript6@6.0.2)(@vercel/functions@3.9.7(@aws-sdk/credential-provider-web-identity@3.972.78)(ws@8.21.0))(aws4fetch@1.0.20)(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.62.4)(tsx@4.21.0)(yaml@2.9.1)
@@ -518,9 +518,6 @@ importers:
       '@open-managed-agents/acp-runtime':
         specifier: workspace:*
         version: link:../../packages/acp-runtime
-      '@open-managed-agents/agents-store':
-        specifier: workspace:*
-        version: link:../../packages/agents-store
       '@open-managed-agents/app':
         specifier: workspace:*
         version: link:../../packages/managed-agents-app
@@ -669,8 +666,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vaults-store
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -708,174 +705,45 @@ importers:
       '@fly/sprites':
         specifier: ^0.2.2
         version: 0.2.2
-      '@hono/node-server':
-        specifier: ^1.13.0
-        version: 1.19.14(hono@4.12.12)
-      '@larksuiteoapi/node-sdk':
-        specifier: ^1.73.0
-        version: 1.73.0
-      '@open-managed-agents/agent':
-        specifier: workspace:*
-        version: link:../agent
-      '@open-managed-agents/agents-store':
-        specifier: workspace:*
-        version: link:../../packages/agents-store
-      '@open-managed-agents/api-types':
-        specifier: workspace:*
-        version: link:../../packages/api-types
-      '@open-managed-agents/app':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-app
-      '@open-managed-agents/auth':
-        specifier: workspace:*
-        version: link:../../packages/auth
       '@open-managed-agents/auth-config':
         specifier: workspace:*
         version: link:../../packages/auth-config
       '@open-managed-agents/blob-store':
         specifier: workspace:*
         version: link:../../packages/blob-store
-      '@open-managed-agents/browser-harness':
+      '@open-managed-agents/control-plane-node':
         specifier: workspace:*
-        version: link:../../packages/browser-harness
-      '@open-managed-agents/credential-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/credential-store-sql
-      '@open-managed-agents/credentials-store':
-        specifier: workspace:*
-        version: link:../../packages/credentials-store
-      '@open-managed-agents/db-schema':
-        specifier: workspace:*
-        version: link:../../packages/db-schema
-      '@open-managed-agents/deployment-run-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/deployment-run-store-sql
-      '@open-managed-agents/deployment-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/deployment-store-sql
-      '@open-managed-agents/dream-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/dream-store-sql
-      '@open-managed-agents/dreams-store':
-        specifier: workspace:*
-        version: link:../../packages/dreams-store
+        version: link:../../packages/control-plane-node
       '@open-managed-agents/email':
         specifier: workspace:*
         version: link:../../packages/email
-      '@open-managed-agents/environment-work-store':
-        specifier: workspace:*
-        version: link:../../packages/environment-work-store
-      '@open-managed-agents/environment-work-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/environment-work-store-sql
-      '@open-managed-agents/environments-store':
-        specifier: workspace:*
-        version: link:../../packages/environments-store
-      '@open-managed-agents/evals-runner':
-        specifier: workspace:*
-        version: link:../../packages/evals-runner
-      '@open-managed-agents/evals-store':
-        specifier: workspace:*
-        version: link:../../packages/evals-store
       '@open-managed-agents/event-log':
         specifier: workspace:*
         version: link:../../packages/event-log
-      '@open-managed-agents/feishu':
-        specifier: workspace:*
-        version: link:../../packages/feishu
-      '@open-managed-agents/file-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/file-store-sql
-      '@open-managed-agents/files-store':
-        specifier: workspace:*
-        version: link:../../packages/files-store
-      '@open-managed-agents/github':
-        specifier: workspace:*
-        version: link:../../packages/github
-      '@open-managed-agents/http-routes':
-        specifier: workspace:*
-        version: link:../../packages/http-routes
-      '@open-managed-agents/inference-proxy':
-        specifier: workspace:*
-        version: link:../../packages/inference-proxy
-      '@open-managed-agents/integrations-adapters-node':
-        specifier: workspace:*
-        version: link:../../packages/integrations-adapters-node
-      '@open-managed-agents/integrations-core':
-        specifier: workspace:*
-        version: link:../../packages/integrations-core
-      '@open-managed-agents/kv-store':
-        specifier: workspace:*
-        version: link:../../packages/kv-store
-      '@open-managed-agents/linear':
-        specifier: workspace:*
-        version: link:../../packages/linear
-      '@open-managed-agents/managed-agents-adapters-blob':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-adapters-blob
-      '@open-managed-agents/managed-agents-adapters-http':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-adapters-http
-      '@open-managed-agents/managed-agents-adapters-runtime':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-adapters-runtime
-      '@open-managed-agents/managed-agents-adapters-sql':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-adapters-sql
-      '@open-managed-agents/managed-agents-api':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-api
-      '@open-managed-agents/managed-agents-application':
-        specifier: workspace:*
-        version: link:../../packages/managed-agents-application
       '@open-managed-agents/managed-runtime-sprites':
         specifier: workspace:*
         version: link:../../packages/managed-runtime-sprites
-      '@open-managed-agents/markdown':
-        specifier: workspace:*
-        version: link:../../packages/markdown
-      '@open-managed-agents/mcp-access-loss':
-        specifier: workspace:*
-        version: link:../../packages/mcp-access-loss
-      '@open-managed-agents/memory-document-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/memory-document-store-sql
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../../packages/memory-store
-      '@open-managed-agents/memory-store-store-sql':
+      '@open-managed-agents/node-database':
         specifier: workspace:*
-        version: link:../../packages/memory-store-store-sql
-      '@open-managed-agents/model-cards-store':
+        version: link:../../packages/node-database
+      '@open-managed-agents/node-database-mysql':
         specifier: workspace:*
-        version: link:../../packages/model-cards-store
+        version: link:../../packages/node-database-mysql
+      '@open-managed-agents/node-database-postgres':
+        specifier: workspace:*
+        version: link:../../packages/node-database-postgres
+      '@open-managed-agents/node-database-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/node-database-sqlite
       '@open-managed-agents/observability':
         specifier: workspace:*
         version: link:../../packages/observability
-      '@open-managed-agents/oma-cap-adapter':
-        specifier: workspace:*
-        version: link:../../packages/oma-cap-adapter
-      '@open-managed-agents/openai-agents-api':
-        specifier: workspace:*
-        version: link:../../packages/openai-agents-api
-      '@open-managed-agents/openai-agents-compat':
-        specifier: workspace:*
-        version: link:../../packages/openai-agents-compat
       '@open-managed-agents/platform-node':
         specifier: workspace:*
         version: link:../../packages/platform-node
-      '@open-managed-agents/queue':
-        specifier: workspace:*
-        version: link:../../packages/queue
-      '@open-managed-agents/quotas':
-        specifier: workspace:*
-        version: link:../../packages/quotas
-      '@open-managed-agents/rate-limit':
-        specifier: workspace:*
-        version: link:../../packages/rate-limit
-      '@open-managed-agents/runtime-resource-contract':
-        specifier: workspace:*
-        version: link:../../packages/runtime-resource-contract
       '@open-managed-agents/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
@@ -891,24 +759,115 @@ importers:
       '@open-managed-agents/sandbox-adapter-litebox':
         specifier: workspace:*
         version: link:../../packages/sandbox-adapter-litebox
-      '@open-managed-agents/scheduler':
+      '@open-managed-agents/sandbox-adapter-opensandbox':
         specifier: workspace:*
-        version: link:../../packages/scheduler
+        version: link:../../packages/sandbox-adapter-opensandbox
       '@open-managed-agents/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../../packages/sql-client
+      croner:
+        specifier: ^9.0.0
+        version: 9.1.0
+      nanoid:
+        specifier: ^5.1.0
+        version: 5.1.9
+      pino:
+        specifier: ^9.5.0
+        version: 9.14.0
+      pino-pretty:
+        specifier: ^11.2.2
+        version: 11.3.0
+      postgres:
+        specifier: ^3.4.0
+        version: 3.4.9
+      prom-client:
+        specifier: ^15.1.3
+        version: 15.1.3
+      turndown:
+        specifier: ^7.2.0
+        version: 7.2.4
+    devDependencies:
+      '@anthropic-ai/sdk':
+        specifier: 0.120.0
+        version: 0.120.0(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: 1.1.0
+        version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(@smithy/signature-v4@5.7.3)(undici@8.10.0)(ws@8.21.0)(zod@4.4.3)
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.12)
+      '@open-managed-agents/acp-runtime':
+        specifier: workspace:*
+        version: link:../../packages/acp-runtime
+      '@open-managed-agents/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@open-managed-agents/agent-store-memory':
+        specifier: workspace:*
+        version: link:../../packages/agent-store-memory
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../../packages/agent-store-sql
+      '@open-managed-agents/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@open-managed-agents/credentials-store':
+        specifier: workspace:*
+        version: link:../../packages/credentials-store
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../../packages/db-schema
+      '@open-managed-agents/feishu':
+        specifier: workspace:*
+        version: link:../../packages/feishu
+      '@open-managed-agents/files-store':
+        specifier: workspace:*
+        version: link:../../packages/files-store
+      '@open-managed-agents/http-routes':
+        specifier: workspace:*
+        version: link:../../packages/http-routes
+      '@open-managed-agents/integrations-core':
+        specifier: workspace:*
+        version: link:../../packages/integrations-core
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-runtime
+      '@open-managed-agents/managed-agents-adapters-sql':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-adapters-sql
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../../packages/managed-agents-application
+      '@open-managed-agents/mcp-access-loss':
+        specifier: workspace:*
+        version: link:../../packages/mcp-access-loss
+      '@open-managed-agents/model-cards-store':
+        specifier: workspace:*
+        version: link:../../packages/model-cards-store
+      '@open-managed-agents/oma-cap-adapter':
+        specifier: workspace:*
+        version: link:../../packages/oma-cap-adapter
+      '@open-managed-agents/openai-agents-api':
+        specifier: workspace:*
+        version: link:../../packages/openai-agents-api
+      '@open-managed-agents/openai-agents-compat':
+        specifier: workspace:*
+        version: link:../../packages/openai-agents-compat
+      '@open-managed-agents/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@open-managed-agents/session-realtime':
         specifier: workspace:*
         version: link:../../packages/session-realtime
       '@open-managed-agents/session-realtime-memory':
         specifier: workspace:*
         version: link:../../packages/session-realtime-memory
-      '@open-managed-agents/session-resource-store':
-        specifier: workspace:*
-        version: link:../../packages/session-resource-store
-      '@open-managed-agents/session-resource-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/session-resource-store-sql
       '@open-managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
@@ -924,97 +883,9 @@ importers:
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../../packages/sessions-store
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
-      '@open-managed-agents/skill-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/skill-store-sql
-      '@open-managed-agents/slack':
-        specifier: workspace:*
-        version: link:../../packages/slack
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../../packages/sql-client
-      '@open-managed-agents/tunnel-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/tunnel-store-sql
-      '@open-managed-agents/user-profile-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/user-profile-store-sql
-      '@open-managed-agents/vault-forward':
-        specifier: workspace:*
-        version: link:../../packages/vault-forward
-      '@open-managed-agents/vault-store-sql':
-        specifier: workspace:*
-        version: link:../../packages/vault-store-sql
       '@open-managed-agents/vaults-store':
         specifier: workspace:*
         version: link:../../packages/vaults-store
-      ai:
-        specifier: ^7.0.123
-        version: 7.0.123(zod@4.4.3)
-      better-auth:
-        specifier: ^1.6.3
-        version: 1.6.3(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(better-sqlite3@13.0.3)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9))(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.4)
-      better-sqlite3:
-        specifier: ^13.0.3
-        version: 13.0.3
-      chokidar:
-        specifier: ^4.0.0
-        version: 4.0.3
-      croner:
-        specifier: ^9.0.0
-        version: 9.1.0
-      effect:
-        specifier: 3.22.1
-        version: 3.22.1
-      fflate:
-        specifier: ^0.8.2
-        version: 0.8.2
-      hono:
-        specifier: ^4.7.0
-        version: 4.12.12
-      mysql2:
-        specifier: ^3.24.4
-        version: 3.24.4(@types/node@26.6.3)
-      nanoid:
-        specifier: ^5.1.0
-        version: 5.1.9
-      pg:
-        specifier: ^8.20.0
-        version: 8.20.0
-      pino:
-        specifier: ^9.5.0
-        version: 9.14.0
-      pino-pretty:
-        specifier: ^11.2.2
-        version: 11.3.0
-      postgres:
-        specifier: ^3.4.0
-        version: 3.4.9
-      prom-client:
-        specifier: ^15.1.3
-        version: 15.1.3
-      tar:
-        specifier: 7.5.22
-        version: 7.5.22
-      turndown:
-        specifier: ^7.2.0
-        version: 7.2.4
-    devDependencies:
-      '@anthropic-ai/sdk':
-        specifier: 0.120.0
-        version: 0.120.0(zod@4.4.3)
-      '@earendil-works/pi-ai':
-        specifier: 1.1.0
-        version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(@smithy/signature-v4@5.7.3)(undici@8.10.0)(ws@8.21.0)(zod@4.4.3)
-      '@open-managed-agents/acp-runtime':
-        specifier: workspace:*
-        version: link:../../packages/acp-runtime
-      '@open-managed-agents/agent-store-memory':
-        specifier: workspace:*
-        version: link:../../packages/agent-store-memory
       '@testcontainers/mysql':
         specifier: ^12.1.0
         version: 12.1.0
@@ -1030,15 +901,34 @@ importers:
       '@types/turndown':
         specifier: ^5.0.5
         version: 5.0.6
+      ai:
+        specifier: ^7.0.123
+        version: 7.0.123(zod@4.4.3)
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
+      hono:
+        specifier: ^4.7.0
+        version: 4.12.12
+      mysql2:
+        specifier: ^3.24.4
+        version: 3.24.4(@types/node@26.6.3)
       openai:
         specifier: 7.15.0
         version: 7.15.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.3)(undici@8.10.0)(ws@8.21.0)(zod@4.4.3)
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       tsx:
         specifier: ^4.19.0
         version: 4.21.0
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+    optionalDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
 
   apps/main-vercel:
     dependencies:
@@ -1074,6 +964,64 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
+  apps/matter:
+    dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.76.0
+        version: 1.76.0
+      '@openma/common':
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-feishu':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@larksuiteoapi/node-sdk@1.76.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-gitlab':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-host-local':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-inbox-mysql':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-inbox-sqlite':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-loop':
+        specifier: 0.2.7
+        version: 0.2.7
+      '@openma/matter-store-mysql':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-store-sqlite':
+        specifier: 0.2.7
+        version: 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      cron-parser:
+        specifier: 5.10.2
+        version: 5.10.2
+      effect:
+        specifier: 3.22.1
+        version: 3.22.1
+      mysql2:
+        specifier: 3.15.3
+        version: 3.15.3
+      qrcode:
+        specifier: ^1.5.4
+        version: 1.5.4
+    devDependencies:
+      '@types/qrcode':
+        specifier: ^1.5.6
+        version: 1.5.6
+      tsx:
+        specifier: ^4.19.0
+        version: 4.21.0
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
   apps/oma-vault:
     dependencies:
       '@open-managed-agents/observability':
@@ -1085,9 +1033,6 @@ importers:
       '@open-managed-agents/sql-client':
         specifier: workspace:*
         version: link:../../packages/sql-client
-      better-sqlite3:
-        specifier: ^13.0.3
-        version: 13.0.3
       mockttp:
         specifier: 4.3.1
         version: 4.3.1
@@ -1107,6 +1052,10 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.21.0
+    optionalDependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
 
   apps/web:
     dependencies:
@@ -1126,8 +1075,8 @@ importers:
         specifier: ^5.2.8
         version: 5.3.0
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#d00d876c41a3e244c5f14f7d7ff145d957df7a7f
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/d00d876c41a3e244c5f14f7d7ff145d957df7a7f(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@tailwindcss/vite':
         specifier: ^4.1.0
         version: 4.2.2(vite@7.3.6(@types/node@26.6.3)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
@@ -1154,8 +1103,8 @@ importers:
         specifier: workspace:*
         version: link:../sandbox
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@3.25.76))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@3.25.76)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@3.25.76))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -1205,21 +1154,6 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
-  packages/agents-store:
-    dependencies:
-      '@open-managed-agents/db-schema':
-        specifier: workspace:*
-        version: link:../db-schema
-      '@open-managed-agents/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
-      drizzle-orm:
-        specifier: ^0.45.2
-        version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
-
   packages/api-types: {}
 
   packages/auth:
@@ -1243,9 +1177,6 @@ importers:
       '@open-managed-agents/shared':
         specifier: workspace:*
         version: link:../shared
-      '@open-managed-agents/sql-client':
-        specifier: workspace:*
-        version: link:../sql-client
       better-auth:
         specifier: ^1.6.3
         version: 1.6.3(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(better-sqlite3@13.0.3)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9))(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.4)
@@ -1302,8 +1233,8 @@ importers:
         specifier: workspace:*
         version: link:../managed-agents-runtime
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@types/node':
         specifier: ^26.6.3
         version: 26.6.3
@@ -1395,6 +1326,264 @@ importers:
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
+  packages/control-plane-node:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.12)
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.73.0
+        version: 1.73.0
+      '@open-managed-agents/acp-runtime':
+        specifier: workspace:*
+        version: link:../acp-runtime
+      '@open-managed-agents/agent':
+        specifier: workspace:*
+        version: link:../../apps/agent
+      '@open-managed-agents/agent-store':
+        specifier: workspace:*
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
+      '@open-managed-agents/api-types':
+        specifier: workspace:*
+        version: link:../api-types
+      '@open-managed-agents/app':
+        specifier: workspace:*
+        version: link:../managed-agents-app
+      '@open-managed-agents/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@open-managed-agents/blob-store':
+        specifier: workspace:*
+        version: link:../blob-store
+      '@open-managed-agents/credential-store-sql':
+        specifier: workspace:*
+        version: link:../credential-store-sql
+      '@open-managed-agents/credentials-store':
+        specifier: workspace:*
+        version: link:../credentials-store
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
+      '@open-managed-agents/deployment-run-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-run-store-sql
+      '@open-managed-agents/deployment-store-sql':
+        specifier: workspace:*
+        version: link:../deployment-store-sql
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
+      '@open-managed-agents/dream-store-sql':
+        specifier: workspace:*
+        version: link:../dream-store-sql
+      '@open-managed-agents/dreams-store':
+        specifier: workspace:*
+        version: link:../dreams-store
+      '@open-managed-agents/email':
+        specifier: workspace:*
+        version: link:../email
+      '@open-managed-agents/environment-work-store':
+        specifier: workspace:*
+        version: link:../environment-work-store
+      '@open-managed-agents/environment-work-store-sql':
+        specifier: workspace:*
+        version: link:../environment-work-store-sql
+      '@open-managed-agents/environments-store':
+        specifier: workspace:*
+        version: link:../environments-store
+      '@open-managed-agents/evals-runner':
+        specifier: workspace:*
+        version: link:../evals-runner
+      '@open-managed-agents/evals-store':
+        specifier: workspace:*
+        version: link:../evals-store
+      '@open-managed-agents/event-log':
+        specifier: workspace:*
+        version: link:../event-log
+      '@open-managed-agents/feishu':
+        specifier: workspace:*
+        version: link:../feishu
+      '@open-managed-agents/file-store-sql':
+        specifier: workspace:*
+        version: link:../file-store-sql
+      '@open-managed-agents/files-store':
+        specifier: workspace:*
+        version: link:../files-store
+      '@open-managed-agents/github':
+        specifier: workspace:*
+        version: link:../github
+      '@open-managed-agents/http-routes':
+        specifier: workspace:*
+        version: link:../http-routes
+      '@open-managed-agents/inference-proxy':
+        specifier: workspace:*
+        version: link:../inference-proxy
+      '@open-managed-agents/integrations-adapters-node':
+        specifier: workspace:*
+        version: link:../integrations-adapters-node
+      '@open-managed-agents/integrations-core':
+        specifier: workspace:*
+        version: link:../integrations-core
+      '@open-managed-agents/kv-store':
+        specifier: workspace:*
+        version: link:../kv-store
+      '@open-managed-agents/linear':
+        specifier: workspace:*
+        version: link:../linear
+      '@open-managed-agents/managed-agents-adapters-blob':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-blob
+      '@open-managed-agents/managed-agents-adapters-http':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-http
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-runtime
+      '@open-managed-agents/managed-agents-adapters-sql':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-sql
+      '@open-managed-agents/managed-agents-api':
+        specifier: workspace:*
+        version: link:../managed-agents-api
+      '@open-managed-agents/managed-agents-application':
+        specifier: workspace:*
+        version: link:../managed-agents-application
+      '@open-managed-agents/managed-runtime-sandbox':
+        specifier: workspace:*
+        version: link:../managed-runtime-sandbox
+      '@open-managed-agents/markdown':
+        specifier: workspace:*
+        version: link:../markdown
+      '@open-managed-agents/mcp-access-loss':
+        specifier: workspace:*
+        version: link:../mcp-access-loss
+      '@open-managed-agents/memory-document-store-sql':
+        specifier: workspace:*
+        version: link:../memory-document-store-sql
+      '@open-managed-agents/memory-store':
+        specifier: workspace:*
+        version: link:../memory-store
+      '@open-managed-agents/memory-store-store-sql':
+        specifier: workspace:*
+        version: link:../memory-store-store-sql
+      '@open-managed-agents/model-cards-store':
+        specifier: workspace:*
+        version: link:../model-cards-store
+      '@open-managed-agents/node-database':
+        specifier: workspace:*
+        version: link:../node-database
+      '@open-managed-agents/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@open-managed-agents/oma-cap-adapter':
+        specifier: workspace:*
+        version: link:../oma-cap-adapter
+      '@open-managed-agents/openai-agents-api':
+        specifier: workspace:*
+        version: link:../openai-agents-api
+      '@open-managed-agents/openai-agents-compat':
+        specifier: workspace:*
+        version: link:../openai-agents-compat
+      '@open-managed-agents/platform-node':
+        specifier: workspace:*
+        version: link:../platform-node
+      '@open-managed-agents/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@open-managed-agents/runtime-resource-contract':
+        specifier: workspace:*
+        version: link:../runtime-resource-contract
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      '@open-managed-agents/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@open-managed-agents/session-event-store':
+        specifier: workspace:*
+        version: link:../session-event-store
+      '@open-managed-agents/session-realtime':
+        specifier: workspace:*
+        version: link:../session-realtime
+      '@open-managed-agents/session-realtime-memory':
+        specifier: workspace:*
+        version: link:../session-realtime-memory
+      '@open-managed-agents/session-resource-store':
+        specifier: workspace:*
+        version: link:../session-resource-store
+      '@open-managed-agents/session-resource-store-sql':
+        specifier: workspace:*
+        version: link:../session-resource-store-sql
+      '@open-managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
+      '@open-managed-agents/session-runtime-contract':
+        specifier: workspace:*
+        version: link:../session-runtime-contract
+      '@open-managed-agents/session-runtime-sql':
+        specifier: workspace:*
+        version: link:../session-runtime-sql
+      '@open-managed-agents/session-thread-store-sql':
+        specifier: workspace:*
+        version: link:../session-thread-store-sql
+      '@open-managed-agents/sessions-store':
+        specifier: workspace:*
+        version: link:../sessions-store
+      '@open-managed-agents/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@open-managed-agents/skill-store-sql':
+        specifier: workspace:*
+        version: link:../skill-store-sql
+      '@open-managed-agents/slack':
+        specifier: workspace:*
+        version: link:../slack
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+      '@open-managed-agents/tunnel-store-sql':
+        specifier: workspace:*
+        version: link:../tunnel-store-sql
+      '@open-managed-agents/user-profile-store-sql':
+        specifier: workspace:*
+        version: link:../user-profile-store-sql
+      '@open-managed-agents/vault-forward':
+        specifier: workspace:*
+        version: link:../vault-forward
+      '@open-managed-agents/vault-store-sql':
+        specifier: workspace:*
+        version: link:../vault-store-sql
+      '@open-managed-agents/vaults-store':
+        specifier: workspace:*
+        version: link:../vaults-store
+      ai:
+        specifier: ^7.0.123
+        version: 7.0.123(zod@4.3.6)
+      chokidar:
+        specifier: ^4.0.0
+        version: 4.0.3
+      effect:
+        specifier: 3.22.1
+        version: 3.22.1
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
+      hono:
+        specifier: ^4.7.0
+        version: 4.12.12
+      nanoid:
+        specifier: ^5.1.0
+        version: 5.1.9
+      tar:
+        specifier: 7.5.22
+        version: 7.5.22
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
 
   packages/cost-attribution: {}
 
@@ -1780,9 +1969,9 @@ importers:
 
   packages/evals-runner:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
       '@open-managed-agents/environments-store':
         specifier: workspace:*
         version: link:../environments-store
@@ -1792,6 +1981,9 @@ importers:
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../kv-store
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-runtime
       '@open-managed-agents/sessions-store':
         specifier: workspace:*
         version: link:../sessions-store
@@ -1940,8 +2132,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime-resource-contract
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#4d9bb469d3af8ade05d020a9b65bae2bd978101d
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       fflate:
         specifier: ^0.8.2
         version: 0.8.2
@@ -1968,9 +2160,9 @@ importers:
 
   packages/http-routes:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
       '@open-managed-agents/api-types':
         specifier: workspace:*
         version: link:../api-types
@@ -1998,12 +2190,21 @@ importers:
       '@open-managed-agents/event-log':
         specifier: workspace:*
         version: link:../event-log
+      '@open-managed-agents/inference-proxy':
+        specifier: workspace:*
+        version: link:../inference-proxy
       '@open-managed-agents/integrations-core':
         specifier: workspace:*
         version: link:../integrations-core
       '@open-managed-agents/kv-store':
         specifier: workspace:*
         version: link:../kv-store
+      '@open-managed-agents/managed-agents-adapters-runtime':
+        specifier: workspace:*
+        version: link:../managed-agents-adapters-runtime
+      '@open-managed-agents/managed-agents-api':
+        specifier: workspace:*
+        version: link:../managed-agents-api
       '@open-managed-agents/memory-store':
         specifier: workspace:*
         version: link:../memory-store
@@ -2042,6 +2243,10 @@ importers:
         version: 5.1.9
 
   packages/inference-proxy:
+    dependencies:
+      '@open-managed-agents/domain':
+        specifier: workspace:*
+        version: link:../managed-agents-domain
     devDependencies:
       vitest:
         specifier: ^4.1.3
@@ -2319,6 +2524,9 @@ importers:
 
   packages/managed-agents-api:
     dependencies:
+      '@open-managed-agents/acp-runtime':
+        specifier: workspace:*
+        version: link:../acp-runtime
       '@open-managed-agents/managed-agents-application':
         specifier: workspace:*
         version: link:../managed-agents-application
@@ -2523,9 +2731,12 @@ importers:
         specifier: workspace:*
         version: link:../vault-store
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
+      '@open-managed-agents/session-store-memory':
+        specifier: workspace:*
+        version: link:../session-store-memory
       vitest:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
@@ -2538,8 +2749,8 @@ importers:
         specifier: workspace:*
         version: link:../acp-runtime
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       vitest:
         specifier: ^4.1.3
@@ -2710,8 +2921,8 @@ importers:
         specifier: workspace:*
         version: link:../runtime-resource-contract
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       standardwebhooks:
         specifier: 1.0.0
@@ -3000,6 +3211,99 @@ importers:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
 
+  packages/node-database:
+    dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+
+  packages/node-database-mysql:
+    dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
+      '@open-managed-agents/node-database':
+        specifier: workspace:*
+        version: link:../node-database
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
+      mysql2:
+        specifier: ^3.24.4
+        version: 3.24.4(@types/node@26.6.3)
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
+  packages/node-database-postgres:
+    dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
+      '@open-managed-agents/node-database':
+        specifier: workspace:*
+        version: link:../node-database
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
+      postgres:
+        specifier: ^3.4.0
+        version: 3.4.9
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
+  packages/node-database-sqlite:
+    dependencies:
+      '@open-managed-agents/db-schema':
+        specifier: workspace:*
+        version: link:../db-schema
+      '@open-managed-agents/node-database':
+        specifier: workspace:*
+        version: link:../node-database
+      '@open-managed-agents/sql-client':
+        specifier: workspace:*
+        version: link:../sql-client
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@5.20260929.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(@types/pg@8.20.0)(better-sqlite3@13.0.3)(kysely@0.28.16)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.20.0)(postgres@3.4.9)
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
   packages/observability:
     dependencies:
       '@open-managed-agents/shared':
@@ -3102,8 +3406,8 @@ importers:
         specifier: workspace:*
         version: link:../openai-agents-api
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       openai:
         specifier: 7.15.0
@@ -3440,8 +3744,8 @@ importers:
   packages/runtime-relay:
     dependencies:
       '@openma/common':
-        specifier: git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       vitest:
         specifier: ^4.1.3
@@ -3545,6 +3849,25 @@ importers:
         specifier: ^4.1.3
         version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
 
+  packages/sandbox-adapter-opensandbox:
+    dependencies:
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+    devDependencies:
+      '@alibaba-group/opensandbox':
+        specifier: 1.1.1
+        version: 1.1.1
+      '@open-managed-agents/managed-runtime-sandbox':
+        specifier: workspace:*
+        version: link:../managed-runtime-sandbox
+      '@types/node':
+        specifier: ^26.6.3
+        version: 26.6.3
+      vitest:
+        specifier: ^4.1.3
+        version: 4.1.4(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/coverage-v8@4.1.4)(jiti@2.6.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(msw@2.14.6(@types/node@26.6.3)(typescript@7.0.2))(tsx@4.21.0)(yaml@2.9.1)
+
   packages/scheduler:
     dependencies:
       '@open-managed-agents/memory-store':
@@ -3601,9 +3924,12 @@ importers:
 
   packages/services:
     dependencies:
-      '@open-managed-agents/agents-store':
+      '@open-managed-agents/agent-store':
         specifier: workspace:*
-        version: link:../agents-store
+        version: link:../agent-store
+      '@open-managed-agents/agent-store-sql':
+        specifier: workspace:*
+        version: link:../agent-store-sql
       '@open-managed-agents/blob-store':
         specifier: workspace:*
         version: link:../blob-store
@@ -4197,6 +4523,11 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
+  '@agentclientprotocol/sdk@1.9.0':
+    resolution: {integrity: sha512-saCOTPYBK1iqWqJFAYHXbg3+zCoFXyZZFoqQAwdTWkbrZZPpAETr80QOnYr2l+dzPwL0jpNhn3eDY8MoEIDbUA==}
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
+
   '@ai-sdk/anthropic@4.0.69':
     resolution: {integrity: sha512-8qO73NwcxpUb4onZ4V85RGZbXYSyy2AhOw4lgs1BF8MY0iGk9ti00Qt//y1wxCMXK0IvB2YGDcA0vxigWfi+/Q==}
     engines: {node: '>=22'}
@@ -4236,6 +4567,10 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
+
+  '@alibaba-group/opensandbox@1.1.1':
+    resolution: {integrity: sha512-QZEmeKize8W8YeIH/qYxXRhZOE5RwvYw5s3r2xzgD2AgjABbYAqRH1KktK/I1+uqFA0Dc0AE/EaODr03wS34og==}
+    engines: {node: '>=20'}
 
   '@antfu/install-pkg@1.1.0':
     resolution: {integrity: sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ==}
@@ -6607,6 +6942,9 @@ packages:
   '@larksuiteoapi/node-sdk@1.73.0':
     resolution: {integrity: sha512-gs4EiupJ6RdYAEJGtuYrCVsB7wSMBwtUDK+ilpmOHD6RTvbtciW6AWciQO9coOQVuBZfh7hvAi25dPfCsny/nA==}
 
+  '@larksuiteoapi/node-sdk@1.76.0':
+    resolution: {integrity: sha512-v/bxQNCugwAmMPbZtBGJtSu8hdQLiB1/29Jr+GBIG18DyQ4LYyp7gxQ74pkhXVSuoUeH4v+/ZHAw/SW+KMrj2g==}
+
   '@manypkg/find-root@3.1.0':
     resolution: {integrity: sha512-BcSqCyKhBVZ5YkSzOiheMCV41kqAFptW6xGqYSTjkVTl9XQpr+pqHhwgGCOHQtjDCv7Is6EFyA14Sm5GVbVABA==}
     engines: {node: '>=20.0.0'}
@@ -6704,9 +7042,26 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d':
-    resolution: {gitHosted: true, integrity: sha512-1saYX3PpLTC2/RlT6QyiWf9ogu7InPnwLifh4ksh9OgJpEJaM3IoDoyBBq9TAOSHJckjGqVVi6lY5tqhelvtIw==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d}
-    version: 0.5.0
+  '@openma/common@0.13.0':
+    resolution: {integrity: sha512-KpDl+GrFTcnSHb1TTdbwyAvzzsmpUuB4TGCrYSKwQAvcdOIda7CZu1uRty3/6E/oP0wS8cfk047m88NNDTn1+w==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@anthropic-ai/sdk': 0.120.x
+      '@opentelemetry/api': ^1.9.0
+      react: '>=18'
+      react-dom: '>=18'
+    peerDependenciesMeta:
+      '@anthropic-ai/sdk':
+        optional: true
+      '@opentelemetry/api':
+        optional: true
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
+  '@openma/common@0.9.1':
+    resolution: {integrity: sha512-1AwTA/RX9ifFW8DDCHpRVR4bT7JCyjMbxlSZ+A/s/nK0sHV1WNsMMXA+JfW27mr1z3viNjNuAqBXagQxQ46fuQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@anthropic-ai/sdk': 0.120.x
@@ -6720,37 +7075,56 @@ packages:
       react-dom:
         optional: true
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/d00d876c41a3e244c5f14f7d7ff145d957df7a7f':
-    resolution: {gitHosted: true, integrity: sha512-hmokfH7YmWDQ5aM5eNA85rOZ3L2V//6GWH0zkV944ZHnPMGTFOH8MLxvuN15zw+iHoIh/x/lvE9EgZb3BFrQuw==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/d00d876c41a3e244c5f14f7d7ff145d957df7a7f}
-    version: 0.4.0
-    engines: {node: '>=20'}
+  '@openma/matter-feishu@0.2.7':
+    resolution: {integrity: sha512-wzbUuMOozj43ZzRT7OOvMgx05w2va/Zmrj+C6yB6O7rdJahz+v7TGTvKAYNbmAccACdw9TJkZuy8vjPPG+7TZw==}
     peerDependencies:
-      '@anthropic-ai/sdk': 0.120.x
-      react: '>=18'
-      react-dom: '>=18'
+      '@larksuiteoapi/node-sdk': ^1.76.0
+      effect: ^3.22.1
     peerDependenciesMeta:
-      '@anthropic-ai/sdk':
-        optional: true
-      react:
-        optional: true
-      react-dom:
+      '@larksuiteoapi/node-sdk':
         optional: true
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9':
-    resolution: {gitHosted: true, integrity: sha512-1zaT4V3WVl9LFXDm2mgpg60XpyWrj2/j4/MXONvDdF0AOdwCFllZP19ii/zYF0aBVOOqvA6EWn7OzQGQuKBZBg==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9}
-    version: 0.4.0
-    engines: {node: '>=20'}
+  '@openma/matter-gitlab@0.2.7':
+    resolution: {integrity: sha512-z6JFX6GOYuLArEcbdSmuNFhmSoWvczFYXBiUaExkr2Tx4lHhJk+sZNeLa5D0Ah9dcaLVwscWJ4s2XE1148HTNA==}
     peerDependencies:
-      '@anthropic-ai/sdk': 0.120.x
-      react: '>=18'
-      react-dom: '>=18'
-    peerDependenciesMeta:
-      '@anthropic-ai/sdk':
-        optional: true
-      react:
-        optional: true
-      react-dom:
-        optional: true
+      effect: ^3.22.1
+
+  '@openma/matter-host-local@0.2.7':
+    resolution: {integrity: sha512-iYUKQZK4c01QJa8qpdCenAKE8axZL6BLccQwt46oBLnvA6mD6X1zOLJIGePmLOTOm3LQFnPh6bPjfzRva8aktw==}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@openma/matter-inbox-mysql@0.2.7':
+    resolution: {integrity: sha512-2D3IUrsqY2OmrUNk4sMgO6LwXdBV/MwjelpZxfknIPCqoX6s0G1+fjpJpolV3blhlukj9Hk7APROIYE1PCXluA==}
+    engines: {node: '>=22.13'}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@openma/matter-inbox-sqlite@0.2.7':
+    resolution: {integrity: sha512-/+FRvAcGqUGEjEwkWlRYAMSSXRzIOMUtT1S0A9UStqTJRuHhfnDlAx+XGiPo8Ex72WHFefi3wtgzspGA/QwYSw==}
+    engines: {node: '>=22.5'}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@openma/matter-loop@0.2.7':
+    resolution: {integrity: sha512-pfnnzc0uMrR8k6HwAB+FKLdIww4TDA+snF9ZdOTUGJij6Wlc8+uc0scAuhDRaEEf9JSr1MvjY32l0kvqqq5ebw==}
+
+  '@openma/matter-store-mysql@0.2.7':
+    resolution: {integrity: sha512-GnQb4N659o2uDADw29VtZwwaHCYSV1jfE9AOYl2vVMdV7VSfwCbg3B3zJgdBXsrI9m6rZudWIGij1p54JTvxHg==}
+    engines: {node: '>=22.13'}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@openma/matter-store-sqlite@0.2.7':
+    resolution: {integrity: sha512-P/371YqZjKRN5viAVYyc6Ar0rb63iujPB5wEOV/vKO7CCz41zaPC4adL9SM0+FVaUSQzrE/LOCm1rySq9WmVoQ==}
+    engines: {node: '>=22.13'}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@openma/matter@0.2.7':
+    resolution: {integrity: sha512-WAGl3iNdy52xPvIh7WfQfZu26VCb8bdRmMpuO+3OAPyO3W9quHGglP5/xNovDswDUfqOHxovVCktmWEujElnwg==}
+    peerDependencies:
+      effect: ^3.22.1
 
   '@opentelemetry/api-logs@0.222.0':
     resolution: {integrity: sha512-9mb1If+IF6u0ZVXkHQ6ogEae5HwA6ajIVUgpSDQyRASxft6BSXHvBvPooRle3yFN/fKnCdSOnuu0OC3PLcF6+g==}
@@ -7136,6 +7510,7 @@ packages:
   '@opentelemetry/propagator-jaeger@2.11.0':
     resolution: {integrity: sha512-RUOqgoIqXOPQTOhpBrs07Y8sBlxVoLY5Fka6ueZ0prW+k6fWQsba/nHDY4gm+gmfuwtRqbX5Y9YKhDvktjbIqQ==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Package no longer supported. See https://github.com/open-telemetry/opentelemetry-js/pull/7077
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 
@@ -7200,12 +7575,14 @@ packages:
   '@opentelemetry/sdk-trace-base@2.11.0':
     resolution: {integrity: sha512-H19x/TX/LZdqiYOjM7fqtSxwlplC5pgelavqbQdHbhdq0q/AI/TGkM2dfGuuynTXmJPeF2HoZVoPDu+TGoW78A==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.3.0 <1.10.0'
 
   '@opentelemetry/sdk-trace-node@2.11.0':
     resolution: {integrity: sha512-CuvCMJmZxswhNLlM2LfuLOW3h3fZujA4hsG4B+Sz4dX2zvaXO8Ng74cnDHWD64gLszTlhiG3c0iNUjj4g+0/sA==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 
@@ -8367,17 +8744,38 @@ packages:
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
 
+  '@slack/logger@5.0.0':
+    resolution: {integrity: sha512-VGXhmmgsAo9shdQYh4tFDndd+7nsgp0Y5h0UPDaUp8K359pBasI6YdkMqFW3mCOxLQkq09qj7o7cq6f3DuXcJQ==}
+    engines: {node: '>= 20', npm: '>=9.6.4'}
+
+  '@slack/socket-mode@3.0.0':
+    resolution: {integrity: sha512-QShO60SB0E+HH+TbcKj3CBEQbodToRyiXnxuSB4t1kvUlqEmuGA1nOOjrRDkDJbOECAZ13PLe4ek9SrntpfoYg==}
+    engines: {node: '>=20', npm: '>=9.6.4'}
+    peerDependencies:
+      undici: ^7.0.0
+
+  '@slack/types@3.2.0':
+    resolution: {integrity: sha512-IN4gdtlzQt8UJoj+1v+qAHeR4TxHO0KMlIs841SFfDQAcFFnsrWaGsEAE4goxVt8O/JOAFaGGdrFTzhNBop/Fg==}
+    engines: {node: '>= 20', npm: '>=9.6.4'}
+
+  '@slack/web-api@8.2.0':
+    resolution: {integrity: sha512-bIW8/8BLD/HLuHLIA2LfA7AhSokzui4swCbMJuwoRJxn/kzHVla6YEKLvN1nCFHK/DfX7g+4Wj3ess/ZSh/tWQ==}
+    engines: {node: '>= 20', npm: '>=9.6.4'}
+
   '@smithy/core@3.30.0':
     resolution: {integrity: sha512-dl2yRglDxfzH9uJ4fSo4zTaAHa0zH7+V7BZMRWy8hEYIKT1BiqMUK/CN6T3ADQ3kbA5N1tmUulroJ2UtONS7Kw==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/core@3.33.3':
     resolution: {integrity: sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/core@3.35.1':
     resolution: {integrity: sha512-i4YPS4B6ts7bjn7UwLnGjiZdprOvHvgGobFZsYK3GIY3E5hIqtj0rReU69BcTpGp+fvtraSNXeG1l+jtJvF55w==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.4.14':
     resolution: {integrity: sha512-QgbuahIb2qxQeZQvNK0sw3aF3JH5zwH8j2lLp5DUasVXexGGMWULAR+7z0omPXFolCP/m5wN9M5lm9EGdSviTQ==}
@@ -8577,9 +8975,18 @@ packages:
       react: '>=16.8'
       react-dom: '>=16.8'
 
+  '@tanstack/react-virtual@3.14.17':
+    resolution: {integrity: sha512-b7b5LwydgQAWcsAWEZyd3iZkN5/QcC6S0K5E1zNheyFoSZl7E78foepGeDHlX2+JuXilA+VIGGFsUYPFddOrig==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
   '@tanstack/table-core@8.21.3':
     resolution: {integrity: sha512-ldZXEhOBb8Is7xLs01fR3YEc3DERiz5silj8tnGkFZytt1abEvl/GhUmCE0PMLaMPTa3Jk4HbKmRlHmu+gCftg==}
     engines: {node: '>=12'}
+
+  '@tanstack/virtual-core@3.19.2':
+    resolution: {integrity: sha512-Ch+e8t097FdTfuihfRwBMqz/OfRZKHOH/C213dbM1lXDZ8bv6r330Bcc9k9XCrP6NkoMYy0/ZCHcddOAPihW4w==}
 
   '@testcontainers/minio@12.1.0':
     resolution: {integrity: sha512-coIZA1CFNZyLElcAgIxR3YcJxohm/2Q2XbSmM+PhxmzCrjcXgw2BIqoSeh1IBwjdIzndWNayXwmfV7wbQuFYjQ==}
@@ -8817,6 +9224,9 @@ packages:
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
 
+  '@types/qrcode@1.5.6':
+    resolution: {integrity: sha512-te7NQcV2BOvdj2b1hCAHzAoMNuj65kNBMz0KBaxM6c3VGBOhU0dURQKOtH8CFNI/dsKkwlv32p26qYQTWoB5bw==}
+
   '@types/react-dom@19.2.7':
     resolution: {integrity: sha512-I8bPpDLcHBv1qiIiXDCy71Rt8eQDKJP0sMSWJphDdAcdqiJ1sGpZamavoEIRZmYzjia9LuEb2HlYdDpmoENpvQ==}
     peerDependencies:
@@ -8827,6 +9237,9 @@ packages:
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
+
+  '@types/retry@0.12.5':
+    resolution: {integrity: sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw==}
 
   '@types/sax@1.2.7':
     resolution: {integrity: sha512-rO73L89PJxeYM3s3pPPjiPgVVcymqU490g0YO5n5By0k2Erzj6tay/4lr1CHAAU4JyOWd1rpQ8bCf6cZfHU96A==}
@@ -9563,6 +9976,10 @@ packages:
     resolution: {integrity: sha512-P8BjAsXvZS+VIDUI11hHCQEv74YT67YUi5JJFNWIqL235sBmjX4+qx9Muvls5ivyNENctx46xQLQ3aTuE7ssaQ==}
     engines: {node: '>=6'}
 
+  camelcase@5.3.1:
+    resolution: {integrity: sha512-L28STB170nwWS63UjtlEOE3dldQApaJXZkOI1uMFfzf3rRuPegHaHesyee+YxQ+W6SvRDQV6UrdOdRiR153wJg==}
+    engines: {node: '>=6'}
+
   camelcase@8.0.0:
     resolution: {integrity: sha512-8WB3Jcas3swSvjIeA2yvCJ+Miyz5l1ZmB6HFb9R1317dt9LCQoswg/BGrmAmkWVEszSrrg4RwmO46qIm2OEnSA==}
     engines: {node: '>=16'}
@@ -9639,6 +10056,9 @@ packages:
   cli-width@4.1.0:
     resolution: {integrity: sha512-ouuZd4/dm2Sw5Gmqy6bGyNNNe1qt9RpmxveLSO7KcgsTnU7RXfsw+/bukWGo1abgBiMAic068rclZsO4IWmmxQ==}
     engines: {node: '>= 12'}
+
+  cliui@6.0.0:
+    resolution: {integrity: sha512-t6wbgtoCXvAzst7QgXxJYqPt0usEfbgQdftEPbLL/cvv6HPE5VgvqCuAIDR0NgU52ds6rFwqrgakNLrHEjCbrQ==}
 
   cliui@8.0.1:
     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
@@ -9775,6 +10195,10 @@ packages:
   crc32-stream@6.0.0:
     resolution: {integrity: sha512-piICUB6ei4IlTv1+653yq5+KoqfBYmj9bw6LqXoOneTMDXk5nM1qt12mFW1caG3LlJXEKW1Bp0WggEmIfQB34g==}
     engines: {node: '>= 14'}
+
+  cron-parser@5.10.2:
+    resolution: {integrity: sha512-JfAYMY0LZaWQTuict8PhtF/ksSnq8xefSDmQUnnoqvkPYkU/y3UP0DTWzJKFBz0P1IXsDG8q0vY3zHkoFZOhvw==}
+    engines: {node: '>=18'}
 
   cron-schedule@6.0.0:
     resolution: {integrity: sha512-BoZaseYGXOo5j5HUwTaegIog3JJbuH4BbrY9A1ArLjXpy+RWb3mV28F/9Gv1dDA7E2L8kngWva4NWisnLTyfgQ==}
@@ -10022,6 +10446,10 @@ packages:
       supports-color:
         optional: true
 
+  decamelize@1.2.0:
+    resolution: {integrity: sha512-z2S+W9X73hAUUki+N+9Za2lBlun89zigOyGrsax+KUQ6wKW4ZoWpEYBkGhQjwAjjDCkWxhY0VKEhk8wzY7F5cA==}
+    engines: {node: '>=0.10.0'}
+
   decimal.js@10.6.0:
     resolution: {integrity: sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==}
 
@@ -10069,6 +10497,10 @@ packages:
     resolution: {integrity: sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==}
     engines: {node: '>=0.4.0'}
 
+  denque@2.1.0:
+    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
+    engines: {node: '>=0.10'}
+
   depd@2.0.0:
     resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
     engines: {node: '>= 0.8'}
@@ -10104,6 +10536,9 @@ packages:
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
     engines: {node: '>=0.3.1'}
+
+  dijkstrajs@1.0.3:
+    resolution: {integrity: sha512-qiSlmBq9+BCdCA/L46dw8Uy93mloxsPSbwnm5yrKn2vMPiy8KyAskTF6zuV/j5BMsmOGZDPs7KjU+mjb670kfA==}
 
   direction@2.0.1:
     resolution: {integrity: sha512-9S6m9Sukh1cZNknO1CWAr2QAWsbKLafQiyM5gZ7VgXHeuaoUwffKN4q6NC4A/Mf9iiPlOXQEKW/Mv/mh9/3YFA==}
@@ -10448,6 +10883,9 @@ packages:
   eventemitter3@3.1.2:
     resolution: {integrity: sha512-tvtQIeLVHjDkJYnzf2dgVMxfuSGJeM/7UCG17TT4EumTfNtF+0nebF/4zWOIkCreAbtNqhGEboB6BWrwqNaw4Q==}
 
+  eventemitter3@4.0.7:
+    resolution: {integrity: sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw==}
+
   eventemitter3@5.0.4:
     resolution: {integrity: sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw==}
 
@@ -10596,6 +11034,10 @@ packages:
   finalhandler@2.1.1:
     resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
     engines: {node: '>= 18.0.0'}
+
+  find-up@4.1.0:
+    resolution: {integrity: sha512-PpOwAdQ/YlXQ2vj8a3h8IipDuYRi3wceVQQGYWxNINccq40Anw7BlsEXCMbt1Zt+OLA6Fq9suIpIWD0OsnISlw==}
+    engines: {node: '>=8'}
 
   flattie@1.1.1:
     resolution: {integrity: sha512-9UbaD6XdAL97+k/n+N7JwX46K/M6Zc6KcFYskrYL8wbBV/Uyk0CTAMY0VT+qiK5PM7AIc9aTWYtq65U7T+aCNQ==}
@@ -11370,6 +11812,10 @@ packages:
   lines-and-columns@1.2.4:
     resolution: {integrity: sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==}
 
+  locate-path@5.0.0:
+    resolution: {integrity: sha512-t7hw9pI+WvuwNJXwk5zVHpyhIqzg2qTlklJOf0mVxGSbe3Fp2VieZcduNYjaLDoy6p9uGpQEGWG87WpMKlNq8g==}
+    engines: {node: '>=8'}
+
   lodash-es@4.18.1:
     resolution: {integrity: sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==}
 
@@ -11424,6 +11870,10 @@ packages:
     resolution: {integrity: sha512-yXCCWxGFYT6bLIPYC4SY6fPQPRs/d797rRIue+J9XP2Td6vQvD53gaQRBCnIVT1kTQRHtAtxlfOQNWAuIF8ELg==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  luxon@3.7.2:
+    resolution: {integrity: sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==}
+    engines: {node: '>=12'}
 
   lz-string@1.5.0:
     resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
@@ -11819,6 +12269,10 @@ packages:
     resolution: {integrity: sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw==}
     engines: {node: ^20.17.0 || >=22.9.0}
 
+  mysql2@3.15.3:
+    resolution: {integrity: sha512-FBrGau0IXmuqg4haEZRBfHNWB5mUARw6hNwPDXXGg0XzVJ50mr/9hb267lvpVMnhZ1FON3qNd4Xfcez1rbFwSg==}
+    engines: {node: '>= 8.0'}
+
   mysql2@3.24.4:
     resolution: {integrity: sha512-A2olluVlj0mvgyIRRISMEzXc51m+21mRtcMVjJyIpt2GG98+XrC9m9HzsqcMsX2LcnfccJvY5NB22g8fENBnOA==}
     engines: {node: '>= 8.0'}
@@ -11907,6 +12361,77 @@ packages:
   npm-run-path@6.0.0:
     resolution: {integrity: sha512-9qny7Z9DsQU8Ou39ERsPU4OZQlSTP47ShQzuKZ6PRXpYLtIFgl/DEBYEXKlvcEa+9tHVcK8CF81Y2V72qaZhWA==}
     engines: {node: '>=18'}
+
+  npm@11.21.0:
+    resolution: {integrity: sha512-Zov8KhamNneiLdELtj5YALtNmJW4L4fCLTzjfpzXG2w6MSHcf0UxgdlK5uloCuksWT+7mGUU7wi79cO6RqivPg==}
+    engines: {node: ^20.17.0 || >=22.9.0}
+    hasBin: true
+    bundledDependencies:
+      - '@isaacs/string-locale-compare'
+      - '@npmcli/arborist'
+      - '@npmcli/config'
+      - '@npmcli/fs'
+      - '@npmcli/map-workspaces'
+      - '@npmcli/metavuln-calculator'
+      - '@npmcli/package-json'
+      - '@npmcli/promise-spawn'
+      - '@npmcli/redact'
+      - '@npmcli/run-script'
+      - '@sigstore/tuf'
+      - abbrev
+      - archy
+      - cacache
+      - chalk
+      - ci-info
+      - fastest-levenshtein
+      - fs-minipass
+      - glob
+      - graceful-fs
+      - hosted-git-info
+      - ini
+      - init-package-json
+      - is-cidr
+      - json-parse-even-better-errors
+      - libnpmaccess
+      - libnpmdiff
+      - libnpmexec
+      - libnpmfund
+      - libnpmorg
+      - libnpmpack
+      - libnpmpublish
+      - libnpmsearch
+      - libnpmteam
+      - libnpmversion
+      - make-fetch-happen
+      - minimatch
+      - minipass
+      - minipass-pipeline
+      - ms
+      - node-gyp
+      - nopt
+      - npm-audit-report
+      - npm-install-checks
+      - npm-package-arg
+      - npm-pick-manifest
+      - npm-profile
+      - npm-registry-fetch
+      - npm-user-validate
+      - p-map
+      - pacote
+      - parse-conflict-json
+      - proc-log
+      - qrcode-terminal
+      - read
+      - semver
+      - spdx-expression-parse
+      - ssri
+      - supports-color
+      - tar
+      - text-table
+      - tiny-relative-date
+      - treeverse
+      - validate-npm-package-name
+      - which
 
   nth-check@2.1.1:
     resolution: {integrity: sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w==}
@@ -12020,6 +12545,12 @@ packages:
       zod:
         optional: true
 
+  openapi-fetch@0.14.1:
+    resolution: {integrity: sha512-l7RarRHxlEZYjMLd/PR0slfMVse2/vvIAGm75/F7J6MlQ8/b9uUQmUF2kCPrQhJqMXSxmYWObVgeYXbFYzZR+A==}
+
+  openapi-typescript-helpers@0.0.15:
+    resolution: {integrity: sha512-opyTPaunsklCBpTK8JGef6mfPhLSnyy5a0IN9vKtx3+4aExf+KxEqYwIy3hqkedXIB97u357uLMJsOnm3GVjsw==}
+
   ora@8.2.0:
     resolution: {integrity: sha512-weP+BZ8MVNnlCm8c0Qdc1WSWq4Qn7I+9CJGm7Qali6g44e/PUzbjNqJX5NJ9ljlNMosfJvg1fKEGILklK9cwnw==}
     engines: {node: '>=18'}
@@ -12031,6 +12562,14 @@ packages:
   outvariant@1.4.3:
     resolution: {integrity: sha512-+Sl2UErvtsoajRDKCE5/dBz4DIvHXQQnAxtQTF04OJxY0+DyZXSo5P5Bb7XYWOh81syohlYL24hbDwxedPUJCA==}
 
+  p-finally@1.0.0:
+    resolution: {integrity: sha512-LICb2p9CB7FS+0eR1oqWnHhp0FljGLZCWBE9aix0Uye9W8LTQPwMTYVGWQWIw9RdQiDg4+epXQODwIYJtSJaow==}
+    engines: {node: '>=4'}
+
+  p-limit@2.3.0:
+    resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
+    engines: {node: '>=6'}
+
   p-limit@6.2.0:
     resolution: {integrity: sha512-kuUqqHNUqoIWp/c467RI4X6mmyuojY5jGutNU0wVTmEOOfcuwLqyMVoAi9MKi2Ak+5i9+nhmrK4ufZE8069kHA==}
     engines: {node: '>=18'}
@@ -12038,6 +12577,14 @@ packages:
   p-limit@7.3.0:
     resolution: {integrity: sha512-7cIXg/Z0M5WZRblrsOla88S4wAK+zOQQWeBYfV3qJuJXMr+LnbYjaadrFaS0JILfEDPVqHyKnZ1Z/1d6J9VVUw==}
     engines: {node: '>=20'}
+
+  p-locate@4.1.0:
+    resolution: {integrity: sha512-R79ZZ/0wAxKGu3oYMlz8jy/kbhsNrS7SKZ7PxEHBgJ5+F2mtFW2fK2cOtBh1cHYkQsbzFV7I+EoRKe6Yt0oK7A==}
+    engines: {node: '>=8'}
+
+  p-queue@6.6.2:
+    resolution: {integrity: sha512-RwFpb72c/BhQLEXIZ5K2e+AhgNVmIejGlTgiB9MzZ0e93GRvqZ7uSi0dvRF7/XIXDeNkra2fNHBxTyPDGySpjQ==}
+    engines: {node: '>=8'}
 
   p-queue@8.1.1:
     resolution: {integrity: sha512-aNZ+VfjobsWryoiPnEApGGmf5WmNsCo9xu8dfaYamG5qaLP7ClhLN6NgsFe6SwJ2UbLEBK5dv9x8Mn5+RVhMWQ==}
@@ -12051,6 +12598,10 @@ packages:
     resolution: {integrity: sha512-312Id396EbJdvRONlngUx0NydfrIQ5lsYu0znKVUzVvArzEIt08V1qhtyESbGVd1FGX7UKtiFp5uwKZdM8wIuQ==}
     engines: {node: '>=8'}
 
+  p-timeout@3.2.0:
+    resolution: {integrity: sha512-rhIwUycgwwKcP9yTOOFK/AKsAopjjCakVqLHePO3CC6Mir1Z99xT+R63jZxAT5lFZLa2inS5h+ZS2GvR99/FBg==}
+    engines: {node: '>=8'}
+
   p-timeout@6.1.4:
     resolution: {integrity: sha512-MyIV3ZA/PmyBN/ud8vV9XzwTrNtR4jFrObymZYnZqMmW0zA8Z17vnT0rBgFE/TlohB+YCHqXMgZzb3Csp49vqg==}
     engines: {node: '>=14.16'}
@@ -12058,6 +12609,10 @@ packages:
   p-timeout@7.0.1:
     resolution: {integrity: sha512-AxTM2wDGORHGEkPCt8yqxOTMgpfbEHqF51f/5fJCmwFC3C/zNcGT63SymH2ttOAaiIws2zVg4+izQCjrakcwHg==}
     engines: {node: '>=20'}
+
+  p-try@2.2.0:
+    resolution: {integrity: sha512-R4nPAVTAU0B9D35/Gk3uJf/7XYbQcyohSKdvAxIRSNghFl4e71hVoGnBNQz9cWaXxO2I10KTC+3jMdvvoKw6dQ==}
+    engines: {node: '>=6'}
 
   pac-proxy-agent@7.2.0:
     resolution: {integrity: sha512-TEB8ESquiLMc0lV8vcd5Ql/JAKAoyzHFXaStwjkzpOpC5Yv+pIzLfHvjTSdf3vpa2bMiUQrg9i6276yn8666aA==}
@@ -12119,6 +12674,10 @@ packages:
 
   path-data-parser@0.1.0:
     resolution: {integrity: sha512-NOnmBpt5Y2RWbuv0LMzsayp3lVylAHLPUTut412ZA3l+C4uw4ZVkQbjShYCQ8TCpUMdPapr4YjUqLYD6v68j+w==}
+
+  path-exists@4.0.0:
+    resolution: {integrity: sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==}
+    engines: {node: '>=8'}
 
   path-expression-matcher@1.5.0:
     resolution: {integrity: sha512-cbrerZV+6rvdQrrD+iGMcZFEiiSrbv9Tfdkvnusy6y0x0GKBXREFg/Y65GhIfm0tnLntThhzCnfKwp1WRjeCyQ==}
@@ -12232,6 +12791,10 @@ packages:
     resolution: {integrity: sha512-C8oWjPR3F81yljW9o5OxcWzfh6avkVwDD2VYdwIGqTkl+OGFISgypqzfu7dOe4QNLL2aqcWBmI3PMtLIK233lw==}
     engines: {node: '>=18'}
     hasBin: true
+
+  pngjs@5.0.0:
+    resolution: {integrity: sha512-40QW5YalBNfQo5yRYmiw7Yz6TKKVr3h6970B2YE+3fQpsWcrbj1PzJgxeJ19DRQjhMbKPIuMY8rFaXc8moolVw==}
+    engines: {node: '>=10.13.0'}
 
   points-on-curve@0.2.0:
     resolution: {integrity: sha512-0mYKnYYe9ZcqMCWhUjItv/oHjvgEsfKvnUTg8sAtnHr3GVy7rGkXCb6d5cSyqrWqL4k81b9CPg3urd+T7aop3A==}
@@ -12375,6 +12938,11 @@ packages:
   pvutils@1.1.5:
     resolution: {integrity: sha512-KTqnxsgGiQ6ZAzZCVlJH5eOjSnvlyEgx1m8bkRJfOhmGRqfo5KLvmAlACQkrjEtOQ4B7wF9TdSLIs9O90MX9xA==}
     engines: {node: '>=16.0.0'}
+
+  qrcode@1.5.4:
+    resolution: {integrity: sha512-1ca71Zgiu6ORjHqFBDpnSMTR2ReToX4l1Au1VFLyVeBTFavzQnv5JxMFr3ukHVKpSrSA2MCk0lNJSykjUfz7Zg==}
+    engines: {node: '>=10.13.0'}
+    hasBin: true
 
   qs@6.15.1:
     resolution: {integrity: sha512-6YHEFRL9mfgcAvql/XhwTvf5jKcOiiupt2FiJxHkiX1z4j7WL8J/jRHYLluORvc1XxB5rV20KoeK00gVJamspg==}
@@ -12642,6 +13210,9 @@ packages:
     resolution: {integrity: sha512-QT7FVMXfWOYFbeRBF6nu+I6tr2Tf3u0q8RIEjNob/heKY/nh7drD/k7eeMFmSQgnTtCzLDcCu/XEnpW2wk4xCQ==}
     engines: {node: '>=9.3.0 || >=8.10.0 <9.0.0'}
 
+  require-main-filename@2.0.0:
+    resolution: {integrity: sha512-NKN5kMDylKuldxYLSUfrbo5Tuzh4hd+2E8NPPX02mZtn1VuREQToYe/ZdlJy+J3uCpfaiGF05e7B8W0iXbQHmg==}
+
   resolve-alpn@1.2.1:
     resolution: {integrity: sha512-0a1F4l73/ZFZOakJnQ3FvkJ2+gSTQWz/r2KE5OdDY0TxPm5h4GkqkWWfM47T7HsbnOtcJVEF4epCVy6u7Q3K+g==}
 
@@ -12759,9 +13330,15 @@ packages:
     resolution: {integrity: sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ==}
     engines: {node: '>= 18'}
 
+  seq-queue@0.0.5:
+    resolution: {integrity: sha512-hr3Wtp/GZIc/6DAGPDcV4/9WoZhjrkXsi5B/07QgX8tsdc6ilr7BFM6PM6rbdAX1kFSDYeZGLipIZZKyQP0O5Q==}
+
   serve-static@2.2.1:
     resolution: {integrity: sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==}
     engines: {node: '>= 18'}
+
+  set-blocking@2.0.0:
+    resolution: {integrity: sha512-KiKBS8AnWGEyLzofFfmvKwpdPzqiy16LvQfK3yv/fVH7Bj13/wl3JSR1J+rfgRE9q7xUJK4qvgS8raSOeLUehw==}
 
   set-cookie-parser@2.7.2:
     resolution: {integrity: sha512-oeM1lpU/UvhTxw+g3cIfxXHyJRc/uidd3yK1P242gzHds0udQBYzs3y8j4gCCW+ZJ7ad0yctld8RYO+bdurlvw==}
@@ -12857,6 +13434,10 @@ packages:
     resolution: {integrity: sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg==}
     engines: {node: '>= 18'}
 
+  smol-toml@1.9.1:
+    resolution: {integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==}
+    engines: {node: '>= 18'}
+
   socks-proxy-agent@8.0.5:
     resolution: {integrity: sha512-HehCEsotFqbPW9sJ8WVYB6UbmIMv7kUUORIF2Nncq4VQvBfNBLibW9YZR5dlYCSUhwcD628pRllm7n+E+YTzJw==}
     engines: {node: '>= 14'}
@@ -12902,6 +13483,10 @@ packages:
   sql-escaper@1.5.1:
     resolution: {integrity: sha512-4toX5E1fQbBrpfXidaHnF0669nkAdETeIPTs2SUjxxD7RRIs9ICG4gtpmfc68JCEKehsdwLFqBu9VlQqZ1P1gg==}
     engines: {bun: '>=1.0.0', deno: '>=2.0.0', node: '>=12.0.0'}
+
+  sqlstring@2.3.3:
+    resolution: {integrity: sha512-qC9iz2FlN7DQl3+wjwn3802RTyjCx7sDvfQEXchwa6CWOx07/WVfh91gBmQ9fahw8snwGEWU3xGzOt4tFyHLxg==}
+    engines: {node: '>= 0.6'}
 
   ssh-remote-port-forward@1.0.4:
     resolution: {integrity: sha512-x0LV1eVDwjf1gmG7TTnfqIzf+3VPRz7vrNIjX6oYLbeCrf/PeVY6hkT68Mg+q02qXxQhrLjB0jfgvhevoCRmLQ==}
@@ -13740,6 +14325,9 @@ packages:
     resolution: {integrity: sha512-1to4zXBxmXHV3IiSSEInrreIlu02vUOvrhxJJH5vcxYTBDAx51cqZiKdyTxlecdKNSjj8EcxGBxNf6Vg+945gw==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
 
+  which-module@2.0.1:
+    resolution: {integrity: sha512-iBdZ57RDvnOR9AGBhML2vFZf7h8vmBjhoaZqODJBFWHVtKkDmKuHai3cx5PgVMrX5YDNp27AofYbAwctSS+vhQ==}
+
   which-pm-runs@1.1.0:
     resolution: {integrity: sha512-n1brCuqClxfFfq/Rb0ICg9giSZqCS+pLtccdag6C2HyufBrh3fBOiy9nb6ggRMvWOVH5GrdJskj5iGTZNxd7SA==}
     engines: {node: '>=4'}
@@ -13792,6 +14380,10 @@ packages:
     peerDependenciesMeta:
       '@cloudflare/workers-types':
         optional: true
+
+  wrap-ansi@6.2.0:
+    resolution: {integrity: sha512-r6lPcBGxZXlIcymEu7InxDMhdW0KDxpLgoFLcguasxCaJ/SOIZwINatK9KY/tf+ZrlywOKU0UDj3ATXUBfxJXA==}
+    engines: {node: '>=8'}
 
   wrap-ansi@7.0.0:
     resolution: {integrity: sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q==}
@@ -13874,6 +14466,9 @@ packages:
   xxhash-wasm@1.1.0:
     resolution: {integrity: sha512-147y/6YNh+tlp6nd/2pWq38i9h6mz/EuQ6njIrmW8D1BS5nCqs0P6DG+m6zTGnNz5I+uhZ0SHxBs9BsPrwcKDA==}
 
+  y18n@4.0.3:
+    resolution: {integrity: sha512-JKhqTOwSrqNA1NY5lSztJ1GrBiUodLMmIZuLiDaMRJ+itFd+ABVE8XBjOvIWL+rSqNDC74LCSFmlb/U4UZ4hJQ==}
+
   y18n@5.0.8:
     resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
     engines: {node: '>=10'}
@@ -13909,6 +14504,10 @@ packages:
     engines: {node: '>= 14.6'}
     hasBin: true
 
+  yargs-parser@18.1.3:
+    resolution: {integrity: sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ==}
+    engines: {node: '>=6'}
+
   yargs-parser@21.1.1:
     resolution: {integrity: sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw==}
     engines: {node: '>=12'}
@@ -13916,6 +14515,10 @@ packages:
   yargs-parser@22.0.0:
     resolution: {integrity: sha512-rwu/ClNdSMpkSrUb+d6BRsSkLUq1fmfsY6TOpYzTwvwkg1/NRG85KBy3kq++A8LKQwX6lsu+aWad+2khvuXrqw==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=23}
+
+  yargs@15.4.1:
+    resolution: {integrity: sha512-aePbxDmcYW++PaqBsJ+HYUFwCdv4LVvdnhBy78E57PIor8/OVvhMrADFFEDh8DHDFRv/O9i3lPhsENjO7QX0+A==}
+    engines: {node: '>=8'}
 
   yargs@17.7.2:
     resolution: {integrity: sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w==}
@@ -13980,11 +14583,11 @@ snapshots:
 
   '@adobe/css-tools@4.4.4': {}
 
-  '@agentclientprotocol/sdk@1.4.0(zod@3.25.76)':
-    dependencies:
-      zod: 3.25.76
-
   '@agentclientprotocol/sdk@1.4.0(zod@4.4.3)':
+    dependencies:
+      zod: 4.4.3
+
+  '@agentclientprotocol/sdk@1.9.0(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
@@ -14055,6 +14658,12 @@ snapshots:
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
+
+  '@alibaba-group/opensandbox@1.1.1':
+    dependencies:
+      '@opentelemetry/api': 1.9.0
+      openapi-fetch: 0.14.1
+      undici: 7.30.0
 
   '@antfu/install-pkg@1.1.0':
     dependencies:
@@ -14180,7 +14789,7 @@ snapshots:
       remark-rehype: 11.1.2
       remark-smartypants: 3.0.2
       shiki: 3.23.0
-      smol-toml: 1.6.1
+      smol-toml: 1.9.1
       unified: 11.0.5
       unist-util-remove-position: 5.0.0
       unist-util-visit: 5.1.0
@@ -14206,7 +14815,7 @@ snapshots:
       remark-smartypants: 3.0.2
       retext-smartypants: 6.2.0
       shiki: 4.3.1
-      smol-toml: 1.6.1
+      smol-toml: 1.9.1
       unified: 11.0.5
       unist-util-remove-position: 5.0.0
       unist-util-visit: 5.1.0
@@ -16301,6 +16910,20 @@ snapshots:
       - debug
       - utf-8-validate
 
+  '@larksuiteoapi/node-sdk@1.76.0':
+    dependencies:
+      axios: 1.16.0
+      lodash.identity: 3.0.0
+      lodash.merge: 4.6.2
+      lodash.pickby: 4.6.0
+      protobufjs: 7.5.6
+      qs: 6.15.1
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - utf-8-validate
+
   '@manypkg/find-root@3.1.0':
     dependencies:
       '@manypkg/tools': 2.1.2
@@ -16483,58 +17106,48 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/4d9bb469d3af8ade05d020a9b65bae2bd978101d(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@openma/common@0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
+      '@agentclientprotocol/sdk': 1.9.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-virtual': 3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       clsx: 2.1.1
       fflate: 0.8.3
       lucide-react: 1.35.0(react@19.2.8)
+      npm: 11.21.0
+      smol-toml: 1.9.1
       streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       streaming-markdown: 0.2.15
       tailwind-merge: 3.6.0
       tar: 7.5.22
       use-stick-to-bottom: 1.1.4(react@19.2.8)
+      zod: 4.4.3
     optionalDependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
+      '@opentelemetry/api': 1.9.0
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
       - supports-color
-      - zod
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/d00d876c41a3e244c5f14f7d7ff145d957df7a7f(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@openma/common@0.9.1(@anthropic-ai/sdk@0.120.0(zod@3.25.76))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-virtual': 3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       clsx: 2.1.1
+      fflate: 0.8.3
       lucide-react: 1.35.0(react@19.2.8)
+      npm: 11.21.0
+      smol-toml: 1.9.1
       streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       streaming-markdown: 0.2.15
       tailwind-merge: 3.6.0
+      tar: 7.5.22
       use-stick-to-bottom: 1.1.4(react@19.2.8)
-    optionalDependencies:
-      '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
-      react: 19.2.8
-      react-dom: 19.2.8(react@19.2.8)
-    transitivePeerDependencies:
-      - '@types/react'
-      - '@types/react-dom'
-      - supports-color
-      - zod
-
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@3.25.76))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@3.25.76)':
-    dependencies:
-      '@agentclientprotocol/sdk': 1.4.0(zod@3.25.76)
-      '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      clsx: 2.1.1
-      lucide-react: 1.35.0(react@19.2.8)
-      streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      streaming-markdown: 0.2.15
-      tailwind-merge: 3.6.0
-      use-stick-to-bottom: 1.1.4(react@19.2.8)
+      zod: 4.4.3
     optionalDependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@3.25.76)
       react: 19.2.8
@@ -16543,18 +17156,23 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
       - supports-color
-      - zod
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/e196bdcac3d5f3165d6833c2531d4255a51620e9(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+  '@openma/common@0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-virtual': 3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       clsx: 2.1.1
+      fflate: 0.8.3
       lucide-react: 1.35.0(react@19.2.8)
+      npm: 11.21.0
+      smol-toml: 1.9.1
       streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       streaming-markdown: 0.2.15
       tailwind-merge: 3.6.0
+      tar: 7.5.22
       use-stick-to-bottom: 1.1.4(react@19.2.8)
+      zod: 4.4.3
     optionalDependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
       react: 19.2.8
@@ -16563,7 +17181,113 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
       - supports-color
-      - zod
+
+  '@openma/matter-feishu@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@larksuiteoapi/node-sdk@1.76.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-loop': 0.2.7
+      effect: 3.22.1
+    optionalDependencies:
+      '@larksuiteoapi/node-sdk': 1.76.0
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-gitlab@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-loop': 0.2.7
+      effect: 3.22.1
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-host-local@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@slack/socket-mode': 3.0.0(undici@7.29.0)
+      effect: 3.22.1
+      undici: 7.29.0
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-inbox-mysql@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      effect: 3.22.1
+      mysql2: 3.15.3
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-inbox-sqlite@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      effect: 3.22.1
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-loop@0.2.7': {}
+
+  '@openma/matter-store-mysql@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      effect: 3.22.1
+      mysql2: 3.15.3
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter-store-sqlite@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/matter': 0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      effect: 3.22.1
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
+
+  '@openma/matter@0.2.7(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(effect@3.22.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@openma/common': 0.9.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@openma/matter-loop': 0.2.7
+      effect: 3.22.1
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@types/react'
+      - '@types/react-dom'
+      - react
+      - react-dom
+      - supports-color
 
   '@opentelemetry/api-logs@0.222.0':
     dependencies:
@@ -18401,6 +19125,31 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
+  '@slack/logger@5.0.0':
+    dependencies:
+      '@types/node': 26.6.3
+
+  '@slack/socket-mode@3.0.0(undici@7.29.0)':
+    dependencies:
+      '@slack/logger': 5.0.0
+      '@slack/web-api': 8.2.0
+      '@types/node': 26.6.3
+      eventemitter3: 5.0.4
+      undici: 7.29.0
+
+  '@slack/types@3.2.0': {}
+
+  '@slack/web-api@8.2.0':
+    dependencies:
+      '@slack/logger': 5.0.0
+      '@slack/types': 3.2.0
+      '@types/node': 26.6.3
+      '@types/retry': 0.12.5
+      eventemitter3: 5.0.4
+      p-queue: 6.6.2
+      p-retry: 4.6.2
+      retry: 0.13.1
+
   '@smithy/core@3.30.0':
     dependencies:
       '@smithy/types': 4.16.1
@@ -18610,7 +19359,15 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
+  '@tanstack/react-virtual@3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@tanstack/virtual-core': 3.19.2
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+
   '@tanstack/table-core@8.21.3': {}
+
+  '@tanstack/virtual-core@3.19.2': {}
 
   '@testcontainers/minio@12.1.0':
     dependencies:
@@ -18923,6 +19680,10 @@ snapshots:
       pg-protocol: 1.13.0
       pg-types: 2.2.0
 
+  '@types/qrcode@1.5.6':
+    dependencies:
+      '@types/node': 26.6.3
+
   '@types/react-dom@19.2.7(@types/react@19.2.18)':
     dependencies:
       '@types/react': 19.2.18
@@ -18932,6 +19693,8 @@ snapshots:
       csstype: 3.2.3
 
   '@types/retry@0.12.0': {}
+
+  '@types/retry@0.12.5': {}
 
   '@types/sax@1.2.7':
     dependencies:
@@ -19834,6 +20597,8 @@ snapshots:
 
   callsites@3.1.0: {}
 
+  camelcase@5.3.1: {}
+
   camelcase@8.0.0: {}
 
   caniuse-lite@1.0.30001787: {}
@@ -19885,6 +20650,12 @@ snapshots:
   cli-spinners@2.9.2: {}
 
   cli-width@4.1.0: {}
+
+  cliui@6.0.0:
+    dependencies:
+      string-width: 4.2.3
+      strip-ansi: 6.0.1
+      wrap-ansi: 6.2.0
 
   cliui@8.0.1:
     dependencies:
@@ -20009,6 +20780,10 @@ snapshots:
     dependencies:
       crc-32: 1.2.2
       readable-stream: 4.7.0
+
+  cron-parser@5.10.2:
+    dependencies:
+      luxon: 3.7.2
 
   cron-schedule@6.0.0: {}
 
@@ -20269,6 +21044,8 @@ snapshots:
     dependencies:
       ms: 2.1.3
 
+  decamelize@1.2.0: {}
+
   decimal.js@10.6.0: {}
 
   decode-named-character-reference@1.3.0:
@@ -20304,6 +21081,8 @@ snapshots:
 
   delayed-stream@1.0.0: {}
 
+  denque@2.1.0: {}
+
   depd@2.0.0: {}
 
   dequal@2.0.3: {}
@@ -20329,6 +21108,8 @@ snapshots:
       dequal: 2.0.3
 
   diff@8.0.4: {}
+
+  dijkstrajs@1.0.3: {}
 
   direction@2.0.1: {}
 
@@ -20719,6 +21500,8 @@ snapshots:
 
   eventemitter3@3.1.2: {}
 
+  eventemitter3@4.0.7: {}
+
   eventemitter3@5.0.4: {}
 
   events-universal@1.0.1:
@@ -20925,6 +21708,11 @@ snapshots:
       statuses: 2.0.2
     transitivePeerDependencies:
       - supports-color
+
+  find-up@4.1.0:
+    dependencies:
+      locate-path: 5.0.0
+      path-exists: 4.0.0
 
   flattie@1.1.1: {}
 
@@ -21754,6 +22542,10 @@ snapshots:
 
   lines-and-columns@1.2.4: {}
 
+  locate-path@5.0.0:
+    dependencies:
+      p-locate: 4.1.0
+
   lodash-es@4.18.1: {}
 
   lodash.camelcase@4.3.0: {}
@@ -21798,6 +22590,8 @@ snapshots:
   lucide-react@1.35.0(react@19.2.8):
     dependencies:
       react: 19.2.8
+
+  luxon@3.7.2: {}
 
   lz-string@1.5.0: {}
 
@@ -22556,6 +23350,18 @@ snapshots:
 
   mute-stream@3.0.0: {}
 
+  mysql2@3.15.3:
+    dependencies:
+      aws-ssl-profiles: 1.1.2
+      denque: 2.1.0
+      generate-function: 2.3.1
+      iconv-lite: 0.7.3
+      long: 5.3.2
+      lru.min: 1.1.5
+      named-placeholders: 1.1.6
+      seq-queue: 0.0.5
+      sqlstring: 2.3.3
+
   mysql2@3.24.4(@types/node@26.6.3):
     dependencies:
       '@types/node': 26.6.3
@@ -22622,6 +23428,8 @@ snapshots:
     dependencies:
       path-key: 4.0.0
       unicorn-magic: 0.3.0
+
+  npm@11.21.0: {}
 
   nth-check@2.1.1:
     dependencies:
@@ -22718,6 +23526,12 @@ snapshots:
       ws: 8.21.0
       zod: 4.4.3
 
+  openapi-fetch@0.14.1:
+    dependencies:
+      openapi-typescript-helpers: 0.0.15
+
+  openapi-typescript-helpers@0.0.15: {}
+
   ora@8.2.0:
     dependencies:
       chalk: 5.6.2
@@ -22734,6 +23548,12 @@ snapshots:
 
   outvariant@1.4.3: {}
 
+  p-finally@1.0.0: {}
+
+  p-limit@2.3.0:
+    dependencies:
+      p-try: 2.2.0
+
   p-limit@6.2.0:
     dependencies:
       yocto-queue: 1.2.2
@@ -22741,6 +23561,15 @@ snapshots:
   p-limit@7.3.0:
     dependencies:
       yocto-queue: 1.2.2
+
+  p-locate@4.1.0:
+    dependencies:
+      p-limit: 2.3.0
+
+  p-queue@6.6.2:
+    dependencies:
+      eventemitter3: 4.0.7
+      p-timeout: 3.2.0
 
   p-queue@8.1.1:
     dependencies:
@@ -22757,9 +23586,15 @@ snapshots:
       '@types/retry': 0.12.0
       retry: 0.13.1
 
+  p-timeout@3.2.0:
+    dependencies:
+      p-finally: 1.0.0
+
   p-timeout@6.1.4: {}
 
   p-timeout@7.0.1: {}
+
+  p-try@2.2.0: {}
 
   pac-proxy-agent@7.2.0:
     dependencies:
@@ -22844,6 +23679,8 @@ snapshots:
   path-browserify@1.0.1: {}
 
   path-data-parser@0.1.0: {}
+
+  path-exists@4.0.0: {}
 
   path-expression-matcher@1.5.0: {}
 
@@ -22957,6 +23794,8 @@ snapshots:
       playwright-core: 1.59.1
     optionalDependencies:
       fsevents: 2.3.2
+
+  pngjs@5.0.0: {}
 
   points-on-curve@0.2.0: {}
 
@@ -23097,6 +23936,12 @@ snapshots:
       tslib: 2.8.1
 
   pvutils@1.1.5: {}
+
+  qrcode@1.5.4:
+    dependencies:
+      dijkstrajs: 1.0.3
+      pngjs: 5.0.0
+      yargs: 15.4.1
 
   qs@6.15.1:
     dependencies:
@@ -23506,6 +24351,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  require-main-filename@2.0.0: {}
+
   resolve-alpn@1.2.1: {}
 
   resolve-from@4.0.0: {}
@@ -23653,6 +24500,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  seq-queue@0.0.5: {}
+
   serve-static@2.2.1:
     dependencies:
       encodeurl: 2.0.0
@@ -23661,6 +24510,8 @@ snapshots:
       send: 1.2.1
     transitivePeerDependencies:
       - supports-color
+
+  set-blocking@2.0.0: {}
 
   set-cookie-parser@2.7.2: {}
 
@@ -23886,6 +24737,8 @@ snapshots:
 
   smol-toml@1.6.1: {}
 
+  smol-toml@1.9.1: {}
+
   socks-proxy-agent@8.0.5:
     dependencies:
       agent-base: 7.1.4
@@ -23926,6 +24779,8 @@ snapshots:
   split2@4.2.0: {}
 
   sql-escaper@1.5.1: {}
+
+  sqlstring@2.3.3: {}
 
   ssh-remote-port-forward@1.0.4:
     dependencies:
@@ -24727,6 +25582,8 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
+  which-module@2.0.1: {}
+
   which-pm-runs@1.1.0: {}
 
   which@2.0.2:
@@ -24797,6 +25654,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  wrap-ansi@6.2.0:
+    dependencies:
+      ansi-styles: 4.3.0
+      string-width: 4.2.3
+      strip-ansi: 6.0.1
+
   wrap-ansi@7.0.0:
     dependencies:
       ansi-styles: 4.3.0
@@ -24849,6 +25712,8 @@ snapshots:
 
   xxhash-wasm@1.1.0: {}
 
+  y18n@4.0.3: {}
+
   y18n@5.0.8: {}
 
   yallist@3.1.1: {}
@@ -24877,9 +25742,28 @@ snapshots:
 
   yaml@2.9.1: {}
 
+  yargs-parser@18.1.3:
+    dependencies:
+      camelcase: 5.3.1
+      decamelize: 1.2.0
+
   yargs-parser@21.1.1: {}
 
   yargs-parser@22.0.0: {}
+
+  yargs@15.4.1:
+    dependencies:
+      cliui: 6.0.0
+      decamelize: 1.2.0
+      find-up: 4.1.0
+      get-caller-file: 2.0.5
+      require-directory: 2.1.1
+      require-main-filename: 2.0.0
+      set-blocking: 2.0.0
+      string-width: 4.2.3
+      which-module: 2.0.1
+      y18n: 4.0.3
+      yargs-parser: 18.1.3
 
   yargs@17.7.2:
     dependencies:

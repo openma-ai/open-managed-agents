@@ -1,23 +1,12 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 import { SPEC_EVENT_TYPES } from "../../packages/api-types/src/types";
 
 const SPEC_TYPES_FOR_TEST = SPEC_EVENT_TYPES;
 
-// Register a test harness that completes immediately (no real LLM call).
-// This runs in the same isolate as the Worker, so the registry is shared.
-class TestHarness implements HarnessInterface {
-  async run(ctx: HarnessContext): Promise<void> {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "test response" }],
-    });
-  }
-}
-registerHarness("test", () => new TestHarness());
+registerTestHarnesses();
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -38,7 +27,7 @@ async function createFullSession(opts?: { agentOverrides?: Record<string, unknow
       model: "claude-sonnet-4-6",
       system: "You are helpful.",
       tools: [{ type: "agent_toolset_20260401" }],
-      harness: "test", // Use test harness — no real LLM call
+      _oma: { harness: "test" }, // Use test harness — no real LLM call
       ...opts?.agentOverrides,
     }),
   });
@@ -154,7 +143,7 @@ describe("Agent CRUD", () => {
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    expect(agent.id).toMatch(/^agent-/);
+    expect(agent.id).toMatch(/^agent_/);
     expect(agent.version).toBe(1);
     expect(agent.created_at).toBeTruthy();
 
@@ -165,14 +154,14 @@ describe("Agent CRUD", () => {
     expect(fetched.system).toBe("Be helpful.");
   });
 
-  it("defaults tools when omitted", async () => {
+  it("returns no tools when omitted", async () => {
     const res = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "Minimal", model: "claude-sonnet-4-6" }),
     });
     const agent = (await res.json()) as any;
-    expect(agent.tools).toEqual([{ type: "agent_toolset_20260401" }]);
+    expect(agent.tools).toEqual([]);
   });
 
   it("stores custom harness field", async () => {
@@ -225,7 +214,7 @@ describe("Agent CRUD", () => {
       type: "error",
       error: {
         type: "invalid_request_error",
-        message: "_oma.acp.agent.command is required for acp-sandbox",
+        message: "_oma.acp.agent.command or _oma.acp.agent.registry is required for acp-sandbox",
       },
     });
   });
@@ -246,7 +235,7 @@ describe("Agent CRUD", () => {
     });
     const agent = (await res.json()) as any;
     expect(agent.tools[0].default_config.enabled).toBe(false);
-    expect(agent.tools[0].configs[0]).toEqual({ name: "read", enabled: true });
+    expect(agent.tools[0].configs[0]).toMatchObject({ name: "read", enabled: true });
   });
 
   it("rejects agent without name", async () => {
@@ -293,9 +282,10 @@ describe("Agent CRUD", () => {
     const versionsRes = await api(`/v1/oma/agents/${agent.id}/versions`, { headers: HEADERS });
     expect(versionsRes.status).toBe(200);
     const versions = (await versionsRes.json()) as any;
-    expect(versions.data.length).toBe(1);
-    expect(versions.data[0].version).toBe(1);
-    expect(versions.data[0].system).toBe("v1 system");
+    // The list includes the current version, newest first.
+    expect(versions.data.map((v: any) => v.version)).toEqual([2, 1]);
+    expect(versions.data[0].system).toBe("v2 system");
+    expect(versions.data[1].system).toBe("v1 system");
 
     // Get specific version
     const v1Res = await api(`/v1/oma/agents/${agent.id}/versions/1`, { headers: HEADERS });
@@ -493,11 +483,10 @@ describe("DO resilience", () => {
     const events = await collectReplayedEvents(session.id);
 
     expect(events.length).toBeGreaterThanOrEqual(2);
-    // Post-dual-table refactor: user.message events live in
-    // pending_events until drain promotes them. The WS replay reads
-    // from events (history.getEvents); concurrent broadcast surfaces
-    // each pending message via system.user_message_pending. Look at
-    // either to find both inputs.
+    // Single-table queue: user.message rows live in events with
+    // processed_at NULL until drain promotes them in place. WS replay
+    // reads from events (history.getEvents) and concurrent broadcast
+    // surfaces each queued message via system.user_message_pending.
     const texts = events
       .flatMap((e: any) => {
         if (e.type === "user.message" && e.content?.[0]?.text) {
@@ -620,7 +609,7 @@ describe("Session isolation", () => {
         // This test exercises event-log isolation, not the provider adapter.
         // Keep it on the in-process harness so posting an event never reaches
         // the real Anthropic API.
-        harness: "test",
+        _oma: { harness: "test" },
       }),
     });
     const agent = (await agentRes.json()) as any;
@@ -813,9 +802,9 @@ describe("SSE endpoint matrix", () => {
   });
 
   // Helper: wait until the JSON history endpoint reports `n` user.message
-  // rows (drained from pending_events). Workerd test runtime varies a few
-  // hundred ms in drain latency, so polling is more reliable than a fixed
-  // sleep. Returns when the threshold is met or after `maxWaitMs`.
+  // rows (promoted in place from the null-processed queue). Workerd test
+  // runtime varies a few hundred ms in drain latency, so polling is more
+  // reliable than a fixed sleep. Returns when the threshold is met or after `maxWaitMs`.
   async function waitForUserMessages(sessionId: string, n: number, maxWaitMs = 5000): Promise<any[]> {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
@@ -837,8 +826,8 @@ describe("SSE endpoint matrix", () => {
     const { session } = await createFullSession();
     await postMessage(session.id, "turn one");
     await postMessage(session.id, "turn two");
-    // Wait for both user.message rows to land in the events table — drain
-    // promotes from pending_events asynchronously after the harness runs.
+    // Wait for both user.message rows to be promoted in the events table —
+    // drain stamps processed_at asynchronously after the harness runs.
     await waitForUserMessages(session.id, 2);
 
     const streamRes = await api(

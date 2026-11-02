@@ -1,8 +1,11 @@
-import { Input } from "@/components/ui/input";
 import { useEffect, useMemo, useState } from "react";
+import { useScrollFade } from "../hooks/useScrollFade";
 import { useApi } from "../lib/api";
 import { useApiQuery } from "../lib/useApiQuery";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Avatar } from "../components/Avatar";
 import { Logo } from "../components/Logo";
 
 // Browser-side handler for `oma auth login`. The CLI opens this URL with
@@ -43,6 +46,28 @@ interface MintedToken {
   role: string;
   token: string;
   key_id: string;
+}
+
+type TenantMembership = MeResponse["tenants"][number];
+
+interface UserIdentity {
+  id?: string | null;
+  email?: string | null;
+  name?: string | null;
+}
+
+/** Human-readable user label for the consent copy. Falls through each
+ *  identity field (trimmed, so "" / whitespace counts as missing) before
+ *  landing on a stable placeholder — the sentence must never read
+ *  "act on your behalf as ." when the session lacks a name/email/id. */
+export function userDisplayLabel(user: UserIdentity | null | undefined): string {
+  const name = user?.name?.trim();
+  if (name) return name;
+  const email = user?.email?.trim();
+  if (email) return email;
+  const id = user?.id?.trim();
+  if (id) return id;
+  return "this user";
 }
 
 function isLoopback(callbackUrl: string): boolean {
@@ -88,6 +113,7 @@ export function CliLogin() {
   const [authNeeded, setAuthNeeded] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string>("");
+  const listFade = useScrollFade<HTMLDivElement>();
 
   // /v1/oma/me lookup via TQ. `enabled: callbackOk` defers the fetch until
   // we've validated the callback URL — an invalid callback short-circuits
@@ -247,7 +273,7 @@ export function CliLogin() {
               The CLI on{" "}
               <span className="font-mono text-fg">{hostname}</span> wants to
               act on your behalf as{" "}
-              <span className="font-mono text-fg">{me.user?.email ?? me.user?.id ?? "this user"}</span>.
+              <span className="font-mono text-fg">{userDisplayLabel(me.user)}</span>.
             </p>
             <p className="text-xs text-fg-subtle mb-5">
               Approving mints one API key per selected workspace — visible
@@ -260,67 +286,70 @@ export function CliLogin() {
               </div>
             ) : me.tenants.length === 1 ? (
               <div className="mb-5">
-                <div className="block text-xs uppercase tracking-wider text-fg-subtle mb-2">
-                  Workspace
-                </div>
-                <div className="bg-bg border border-border rounded-lg px-3 py-2.5 text-sm flex items-center gap-2">
-                  <div className="w-6 h-6 rounded bg-brand/15 text-brand flex items-center justify-center text-xs font-mono font-bold shrink-0">
-                    {tenantDisplayName(me.tenants[0]).charAt(0).toUpperCase() || "·"}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-fg">{tenantDisplayName(me.tenants[0])}</div>
-                    <div className="text-xs text-fg-subtle font-mono uppercase tracking-wider">
-                      {me.tenants[0].role}
-                    </div>
-                  </div>
+                <div className="console-cli-workspace-heading">Workspace</div>
+                <div className="console-cli-workspace-list">
+                  {me.tenants.map((t) => {
+                    const display = tenantDisplayName(t);
+                    return (
+                      <div
+                        key={t.id}
+                        className="console-cli-workspace-item"
+                        data-static="true"
+                      >
+                        <Avatar name={display} size="xs" squared />
+                        <WorkspaceCopy tenant={t} display={display} />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
               <div className="mb-5">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs uppercase tracking-wider text-fg-subtle">
+                <div className="console-cli-workspace-heading">
+                  <span>
                     Workspaces ({selected.size}/{me.tenants.length})
-                  </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    <Button variant="ghost"
+                  </span>
+                  <span className="console-cli-workspace-actions">
+                    <Button
+                      variant="ghost"
                       type="button"
                       onClick={selectAll}
-                      className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+                      className="console-cli-workspace-action"
                     >
                       All
                     </Button>
-                    <span className="text-fg-subtle">·</span>
-                    <Button variant="ghost"
+                    <span aria-hidden="true">·</span>
+                    <Button
+                      variant="ghost"
                       type="button"
                       onClick={selectNone}
-                      className="inline-flex items-center min-h-11 sm:min-h-0 px-1 text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+                      className="console-cli-workspace-action"
                     >
                       None
                     </Button>
-                  </div>
+                  </span>
                 </div>
-                <div className="border border-border rounded-lg divide-y divide-border max-h-64 overflow-y-auto">
+                <div
+                  ref={listFade.ref}
+                  className={`console-cli-workspace-list console-scroll-fade ${listFade.className}`}
+                >
                   {me.tenants.map((t) => {
                     const isSelected = selected.has(t.id);
                     const display = tenantDisplayName(t);
                     return (
-                      <Button variant="ghost"
+                      <Label
                         key={t.id}
-                        type="button"
-                        onClick={() => toggle(t.id)}
-                        className={`w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-bg transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${isSelected ? "bg-bg/60" : ""}`}
+                        className="console-cli-workspace-item"
+                        data-selected={isSelected ? "true" : undefined}
                       >
-                        <Checkbox checked={isSelected} />
-                        <div className="w-7 h-7 rounded bg-brand/15 text-brand flex items-center justify-center text-xs font-mono font-bold shrink-0">
-                          {display.charAt(0).toUpperCase() || "·"}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm truncate text-fg">{display}</div>
-                          <div className="text-xs text-fg-subtle font-mono">
-                            {t.id} · {t.role}
-                          </div>
-                        </div>
-                      </Button>
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => toggle(t.id)}
+                          aria-label={`${display} (${t.role})`}
+                        />
+                        <Avatar name={display} size="xs" squared />
+                        <WorkspaceCopy tenant={t} display={display} />
+                      </Label>
                     );
                   })}
                 </div>
@@ -354,21 +383,29 @@ export function CliLogin() {
   );
 }
 
-/** Custom checkbox styled to match the rest of the app's surfaces — using
- *  a real <Input type=checkbox> would inherit the OS-native chrome that
- *  looks out of place on the auth card. */
-function Checkbox({ checked }: { checked: boolean }) {
+/** Primary workspace name plus the de-emphasized role/id line shared by the
+ *  single- and multi-workspace views. The raw tenant id only appears in the
+ *  secondary line for named workspaces (mono, truncated, low opacity); when
+ *  the name falls back to the id it is already the primary label. */
+function WorkspaceCopy({
+  tenant,
+  display,
+}: {
+  tenant: TenantMembership;
+  display: string;
+}) {
   return (
-    <div
-      className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors duration-[var(--dur-quick)] ease-[var(--ease-soft)] ${
-        checked ? "bg-brand border-brand" : "bg-bg border-border-strong"
-      }`}
-    >
-      {checked && (
-        <svg className="w-3 h-3 text-brand-fg" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
-      )}
-    </div>
+    <span className="console-cli-workspace-copy">
+      <span className="console-cli-workspace-name">{display}</span>
+      <span className="console-cli-workspace-meta">
+        <span className="console-cli-workspace-role">{tenant.role}</span>
+        {display !== tenant.id && (
+          <span className="console-cli-workspace-id" title={tenant.id}>
+            {tenant.id}
+          </span>
+        )}
+      </span>
+    </span>
   );
 }
+

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Disposables } from "../src/lifecycle";
+import { Disposables } from "../../../packages/control-plane-node/src/lifecycle";
 
 describe("Disposables", () => {
   it("stops registered resources in reverse registration order", async () => {

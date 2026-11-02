@@ -32,6 +32,15 @@ runtime decides. SQLite needs only `DATABASE_PATH`; server databases use
 uses the selected server database; only SQLite mode uses a separate
 `auth.db`.
 
+`better-sqlite3` is an optional dependency of `main-node` and `oma-vault`:
+it is installed by default, but a Postgres or MySQL image does not need its
+native addon. If it is missing or failed to build, a server-database
+deployment still starts, and SQLite mode refuses to start with a message
+naming the dependency. Installs use the prebuilt addon that `better-sqlite3`
+ships for Linux (glibc and musl), macOS and Windows on x64 and arm64; the
+workspace does not compile it (`allowBuilds` in `pnpm-workspace.yaml`), so an
+image build needs neither a C++ toolchain nor access to `nodejs.org`.
+
 ## Quickstart (Docker, SQLite)
 
 ```bash
@@ -127,6 +136,49 @@ email + password — sign-up creates a session immediately, no OTP screen.
 | **AUTH_DISABLED=1** | "I'm the only user, skip auth entirely" | `echo "AUTH_DISABLED=1" >> .env`, restart. Every request becomes `tenant_id=default`. |
 | **email + OTP gate** | Real prod, you wired up SMTP | `AUTH_REQUIRE_EMAIL_VERIFY=1`, override `sendVerificationOTP` in `apps/main-node/src/auth/config.ts` to call Resend / SES / SMTP / Postmark / etc. |
 | **Google OAuth** | Team SSO | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` in `.env`. Console renders Google button automatically. |
+| **OpenID Connect (company SSO)** | Keycloak, Okta, or an internal IdP | Pass `signIn.oidc` to `createBetterAuthComponent` in your composition root (below). Console renders one button per provider. |
+
+### OpenID Connect providers
+
+A deployment that builds its own composition root can offer any OpenID Connect
+provider and, optionally, turn email and password off. Users sign in with
+authorization code and PKCE. The first sign-in creates the user and a
+workspace, like any sign-up. Register this redirect URI with the provider:
+`<PUBLIC_BASE_URL>/auth/oauth2/callback/<id>`.
+
+```ts
+import { loadNodeConfig } from "@open-managed-agents/main-node/config";
+import {
+  createBetterAuthComponent,
+  nodeDefaults,
+  openNodeDatabase,
+} from "@open-managed-agents/main-node/components";
+
+const config = loadNodeConfig(process.env);
+const database = await openNodeDatabase(config.database);
+const auth = await createBetterAuthComponent({
+  config,
+  database,
+  email: null,
+  signIn: {
+    oidc: [{
+      id: "sso",                 // lowercase; appears in the callback path
+      name: "Company SSO",       // button label
+      discoveryUrl: "https://sso.example.com/.well-known/openid-configuration",
+      clientId: process.env.SSO_CLIENT_ID!,
+      clientSecret: process.env.SSO_CLIENT_SECRET!,
+      // scopes: ["openid", "profile", "email"],  // default
+      // clientAuthentication: "basic",           // default "post"
+    }],
+    emailPassword: false,        // only SSO can sign users in
+  },
+});
+const components = await nodeDefaults(config, { database, auth });
+```
+
+`/auth-info` reports the providers as `oidc: [{ id, name }]` and whether
+`email_password` is on. Discovery URLs must use HTTPS (loopback HTTP is
+allowed for local testing).
 
 ## Sandbox modes
 
@@ -215,6 +267,40 @@ curl -s -X POST localhost:8787/v1/vaults/$VID/credentials \
 
 Skip the sidecar if you don't need it: `docker compose up oma-server`.
 
+## Console branding
+
+Point `CONSOLE_BRANDING_DIR` at a directory with a `branding.json` and the
+files it names. Every field is optional:
+
+```json
+{
+  "product_name": "Acme Agents",
+  "logo": "logo.svg",
+  "logo_dark": "logo-dark.svg",
+  "favicon": "favicon.png",
+  "stylesheet": "theme.css",
+  "login": { "title": "Sign in to Acme Agents", "subtitle": "Use your Acme account" }
+}
+```
+
+- `product_name` replaces "openma" in the page title, the sign-in page, and
+  the dashboard heading.
+- `logo` / `logo_dark` replace the mark on the sign-in pages; the image keeps
+  the mark's height and its own width.
+- `stylesheet` loads after the console's CSS, so it can override the theme
+  tokens, for example:
+
+  ```css
+  :root { --brand: #2563eb; --brand-hover: #1d4ed8; --brand-subtle: #eff6ff; --brand-fg: #fff; }
+  .dark { --brand: #60a5fa; --brand-hover: #93c5fd; --brand-subtle: #172554; --brand-fg: #0b1220; }
+  ```
+
+The directory is served under `/branding/`. With `CONSOLE_DIR` set, the
+control plane also writes the title, favicon, stylesheet, and settings into
+`index.html`, so the first paint is already branded. File names must stay
+inside the directory, and the server refuses to start when `branding.json`
+is invalid or names a missing file.
+
 ## Operator gotchas
 
 - **`AUTH_DISABLED=1` belongs in `.env`, not the shell.** Compose
@@ -233,13 +319,29 @@ Skip the sidecar if you don't need it: `docker compose up oma-server`.
   `no such column: turn_id`, you're on a pre-migration build — pull a
   newer image.
 
+## Skill sources on a private network
+
+**Skills → Install from URL** makes the control plane fetch the given URL
+itself. To keep that from reaching internal services, it only fetches
+`https` URLs whose host resolves to a public address, checks the address
+again at connect time, and does not follow redirects. A skill source on
+your intranet needs an explicit allowlist entry:
+
+```bash
+# Host names, IP literals, or *.example.com (subdomains only)
+SKILL_SOURCES_ALLOW_HOSTS=skills.corp.example,*.git.corp.example
+```
+
+Allowed hosts skip the private-address check and may use plain `http`.
+Archive URLs in a v2 index must stay on the index's origin.
+
 ## Migrating between backends
 
 **SQLite → Postgres** (one-way):
 
 ```bash
 # Export
-sqlite3 ./data/oma.db ".dump agents agent_versions sessions session_events session_streams \
+sqlite3 ./data/oma.db ".dump managed_agents managed_agent_versions sessions session_events session_streams \
   memories memory_stores memory_versions vaults credentials session_memory_stores \
   tenant membership" > /tmp/oma-dump.sql
 

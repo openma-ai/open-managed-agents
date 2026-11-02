@@ -45,7 +45,7 @@ describe("durable Session input idempotency", () => {
   });
   it("does not confuse unrelated inputs and rejects shorter or changed retries", async () => {
     const f = fixture();
-    const message = { type: "user.message", content: [{ type: "text", text: "once" }] };
+    const message = { type: "user.message" as const, content: [{ type: "text" as const, text: "once" }] };
     const command: any = { sessionId: "session", idempotencyKey: "batch", events: [message, { type: "user.interrupt" }] };
     await f.service().sendSessionEvents({ ...command, idempotencyKey: "other", events: [message] });
     const accepted = await f.service().sendSessionEvents(command);
@@ -64,6 +64,21 @@ describe("durable Session input idempotency", () => {
     expect(accepted.type).toBe("accepted");
     expect(await f.service().sendSessionEvents(command)).toEqual(accepted);
     expect(await f.service().sendSessionEvents({ ...command, events: command.events.slice(0, 64) })).toMatchObject({ type: "idempotency_conflict" });
+    expect(f.dispatched).toHaveLength(1);
+  });
+
+  it("rejects new input to an archived Session but still replays accepted input", async () => {
+    const f = fixture();
+    const message = { type: "user.message" as const, content: [{ type: "text" as const, text: "once" }] };
+    const command: any = { sessionId: "session", idempotencyKey: "before-archive", events: [message] };
+    const accepted = await f.service().sendSessionEvents(command);
+    const session = (await f.dependencies.execution.find()).session;
+    session.archivedAt = "2026-09-11T01:00:00.000Z";
+    expect(await f.service().sendSessionEvents({ sessionId: "session", events: [message] })).toEqual({
+      type: "invalid_request", message: "Session session is archived and cannot receive new events",
+    });
+    expect(await f.service().sendSessionEvents(command)).toEqual(accepted);
+    expect(f.log.size).toBe(1);
     expect(f.dispatched).toHaveLength(1);
   });
 

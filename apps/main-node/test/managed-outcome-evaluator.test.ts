@@ -3,7 +3,7 @@ import type {
   Environment,
   Session,
 } from "@open-managed-agents/managed-agents-application";
-import { NodeManagedOutcomeEvaluator } from "../src/lib/node-managed-outcome-evaluator.js";
+import { NodeManagedOutcomeEvaluator } from "../../../packages/control-plane-node/src/lib/node-managed-outcome-evaluator.js";
 
 const session: Session = {
   id: "session_01",

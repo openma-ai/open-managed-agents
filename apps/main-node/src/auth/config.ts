@@ -5,8 +5,8 @@
 
 import {
   buildBetterAuth,
-  ensureTenantSqlite,
 } from "@open-managed-agents/auth-config";
+import { ensureTenantSqlite } from "@open-managed-agents/control-plane-node";
 import type { EmailSender } from "@open-managed-agents/email";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { getLogger } from "@open-managed-agents/observability";

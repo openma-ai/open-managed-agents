@@ -60,6 +60,11 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
       AUTH_DISABLED: ${AUTH_DISABLED:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Console → Integrations → Feishu talks to the `matter` service
+      # through /matter/*. Empty: the page says Feishu is not set up.
+      # With the `feishu` profile set MATTER_URL=http://matter:4720 in .env.
+      MATTER_URL: ${MATTER_URL:-}
+      MATTER_PROXY_SECRET: ${MATTER_PROXY_SECRET:-}
     volumes:
       - ./data:/app/data
     depends_on:
@@ -75,6 +80,44 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # OpenMatter for Feishu: the "Connect Feishu" flow, one long connection per
+  # connected app, and the MCP server whose reply tool the Agent calls.
+  # Opt-in: `docker compose --profile feishu up`. Needs in .env:
+  #   MATTER_URL=http://matter:4720, MATTER_PROXY_SECRET, MATTER_SECRET_KEY,
+  #   MATTER_OMA_API_KEY (an API key of the workspace it serves) and
+  #   MATTER_OMA_ENVIRONMENT_ID (the environment chat sessions run in).
+  matter:
+    profiles: ["feishu"]
+    image: openma/main-node:dev
+    container_name: oma-matter
+    working_dir: /app/apps/matter
+    command: ["pnpm", "start"]
+    # Missing settings make it exit with the list of problems (see logs).
+    environment:
+      MATTER_HOST: 0.0.0.0
+      MATTER_PORT: "4720"
+      MATTER_DATA_DIR: /app/data/matter
+      # mysql://… to keep state in MySQL instead (required for >1 replica).
+      MATTER_DATABASE_URL: ${MATTER_DATABASE_URL:-}
+      MATTER_PROXY_SECRET: ${MATTER_PROXY_SECRET:-}
+      MATTER_SECRET_KEY: ${MATTER_SECRET_KEY:-}
+      OMA_URL: http://oma-server:8787
+      OMA_API_KEY: ${MATTER_OMA_API_KEY:-}
+      OMA_TENANT_ID: ${MATTER_OMA_TENANT_ID:-default}
+      OMA_ENVIRONMENT_ID: ${MATTER_OMA_ENVIRONMENT_ID:-}
+      # Where OpenMA's harness reaches the MCP endpoint.
+      MATTER_MCP_URL: http://matter:4720/mcp
+      # Where GitLab reaches this service for webhooks (optional).
+      MATTER_PUBLIC_URL: ${MATTER_PUBLIC_URL:-}
+      # GitLab instances offered when linking a Bond, comma-separated (optional).
+      MATTER_GITLAB_URLS: ${MATTER_GITLAB_URLS:-}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      oma-server:
+        condition: service_started
+    restart: unless-stopped
 
   # Outbound credential injector — mockttp HTTPS MITM proxy. Reads vault
   # credentials from the same sqlite db as oma-server (./data/oma.db) and

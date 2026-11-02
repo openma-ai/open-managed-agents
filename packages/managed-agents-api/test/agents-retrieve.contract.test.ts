@@ -113,11 +113,14 @@ describe("Managed Agents API — GET /v1/agents/:agent_id", () => {
               },
             ],
             multiagent: {
-              type: "coordinator",
-              agents: [
-                { type: "agent", agentId: "agent_child", version: 2 },
-                { type: "advisor", model: "claude-sonnet-5" },
-              ],
+              type: "multiagent_20261001",
+              advisor: { type: "disabled" },
+              subagents: {
+                type: "enabled",
+                inlineAgents: { type: "disabled" },
+                predefinedAgents: [{ type: "agent", agentId: "agent_child", version: 2 }],
+              },
+              workflows: { type: "disabled" },
             },
             skills: [
               { type: "custom", skillId: "skill_review", version: "3" },
@@ -185,11 +188,14 @@ describe("Managed Agents API — GET /v1/agents/:agent_id", () => {
         },
       ],
       multiagent: {
-        type: "coordinator",
-        agents: [
-          { type: "agent", id: "agent_child", version: 2 },
-          { type: "advisor", model: "claude-sonnet-5" },
-        ],
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inline_agents: { type: "disabled" },
+          predefined_agents: [{ type: "agent", id: "agent_child", version: 2 }],
+        },
+        workflows: { type: "disabled" },
       },
       skills: [
         { type: "custom", skill_id: "skill_review", version: "3" },

@@ -64,11 +64,36 @@ describe("E2B SDK v2 adapter", () => {
       apiUrl: "http://127.0.0.1:3000",
       sandboxUrl: "http://127.0.0.1:3002",
       domain: "localhost",
+      timeoutMs: 30 * 60_000,
       lifecycle: {
         onTimeout: { action: "pause", keepMemory: true },
         autoResume: true,
       },
     });
+  });
+
+  it("gives the sandbox the configured lifetime and leaves renewal to the host lease", async () => {
+    const executor = await sandboxFactory(
+      { sessionId: "session_lifetime", workdir: "/tmp/unused" },
+      { E2B_API_KEY: "local", E2B_SANDBOX_TIMEOUT_MS: "3600000" },
+    );
+    expect(sdk.create).toHaveBeenCalledWith("base", expect.objectContaining({ timeoutMs: 3_600_000 }));
+    const sandbox = await sdk.create.mock.results.at(-1)!.value as ReturnType<typeof makeSdkSandbox>;
+    sandbox.commands.run.mockResolvedValue({ stdout: "ok", stderr: "", exitCode: 0 });
+    await executor.exec("true");
+    expect(sandbox.setTimeout).not.toHaveBeenCalled();
+    await (executor as unknown as E2BSandboxExecutor).renewLease({ ttlMs: 600_000 });
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(600_000);
+  });
+
+  it("rejects a malformed sandbox lifetime", async () => {
+    await expect(
+      sandboxFactory(
+        { sessionId: "session_bad_lifetime", workdir: "/tmp/unused" },
+        { E2B_API_KEY: "local", E2B_SANDBOX_TIMEOUT_MS: "soon" },
+      ),
+    ).rejects.toThrow(/E2B_SANDBOX_TIMEOUT_MS/);
+    expect(sdk.create).not.toHaveBeenCalled();
   });
 
   it("passes creation metadata from JSON to E2B-compatible providers", async () => {
@@ -155,6 +180,30 @@ describe("E2B SDK v2 adapter", () => {
 
     expect(await handle.getStatus()).toBe("error");
     expect(await handle.getLogs()).toEqual({ stdout: "boot\n", stderr: "crash\n" });
+  });
+
+  it.each(["BAD=NAME", "BAD;echo injected", "-u", ""])("rejects invalid duplex env names before remote execution: %s", async name => {
+    const sandbox = makeSdkSandbox("bad-env");
+    const adapter = new E2BSandboxExecutor(sandbox as never, {});
+    await expect(adapter.spawnDuplexProcess({ command: "node", env: { [name]: undefined } })).rejects.toThrow(/environment variable name/i);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+  });
+
+  it("removes inherited credentials from the remote duplex process environment", async () => {
+    let launch = "";
+    const sandbox = makeSdkSandbox("unset");
+    sandbox.commands.run.mockImplementation(async (command: string, options: { envs: Record<string, string> }) => {
+      launch = command;
+      expect(options.envs).not.toHaveProperty("ANTHROPIC_API_KEY");
+      return { wait: async () => ({ exitCode: 0 }), sendStdin: async () => {}, closeStdin: async () => {}, kill: async () => {} };
+    });
+    const adapter = new E2BSandboxExecutor(sandbox as never, {});
+    const child = await adapter.spawnDuplexProcess({ command: "node", args: ["-e", "process.stdout.write(process.env.ANTHROPIC_API_KEY ?? 'absent')"], env: { ANTHROPIC_API_KEY: undefined } });
+    await child.exited;
+    // Execute the actual remote command under an inherited secret, not just
+    // an assertion on the SDK mock's object shape.
+    const { execFileSync } = await import("node:child_process");
+    expect(execFileSync("sh", ["-c", launch], { env: { ...process.env, ANTHROPIC_API_KEY: "test-inherited-key" }, encoding: "utf8" })).toBe("absent");
   });
 
   it("uses the official live-stdin command channel for ACP", async () => {
@@ -338,6 +387,7 @@ describe("E2B SDK v2 adapter", () => {
       apiUrl: undefined,
       sandboxUrl: undefined,
       domain: "sandbox.test",
+      timeoutMs: 30 * 60_000,
       lifecycle: {
         onTimeout: { action: "pause", keepMemory: true },
         autoResume: true,
@@ -350,6 +400,71 @@ describe("E2B SDK v2 adapter", () => {
     expect(restored.runtimeHandle()).toEqual({
       provider: "e2b",
       runtimeId: "created:snap_portable_01",
+    });
+  });
+
+  describe("prepared sandbox base", () => {
+    it("captures a named snapshot and returns a serializable handle", async () => {
+      const executor = await sandboxFactory(
+        { sessionId: "builder", workdir: "/tmp/unused" },
+        { E2B_API_KEY: "local" },
+      ) as E2BSandboxExecutor;
+      const raw = await sdk.create.mock.results.at(-1)!.value as ReturnType<typeof makeSdkSandbox>;
+      raw.createSnapshot.mockResolvedValueOnce({ snapshotId: "snap_base_01", names: ["oma-base-abc"] });
+
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .resolves.toEqual({ provider: "e2b", id: "snap_base_01" });
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+    });
+
+    it("surfaces a provider that has no snapshot route as a capture failure", async () => {
+      // e2b@2.46.1 SandboxError from an E2B-compatible API without /sandboxes/{id}/snapshots.
+      class SandboxError extends Error {
+        override name = "SandboxError";
+      }
+      const raw = makeSdkSandbox("sb_no_snapshots");
+      raw.createSnapshot.mockRejectedValueOnce(new SandboxError("404: route not found"));
+      const executor = new E2BSandboxExecutor(raw as never, {});
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .rejects.toMatchObject({ name: "SandboxError", message: "404: route not found" });
+      expect(raw.createSnapshot).toHaveBeenCalledTimes(1);
+      expect(raw.createSnapshot).toHaveBeenCalledWith({ name: "oma-base-abc" });
+      expect(raw.kill).not.toHaveBeenCalled();
+    });
+
+    it("refuses to capture when the SDK has no createSnapshot", async () => {
+      const raw = makeSdkSandbox("sb_old") as Partial<ReturnType<typeof makeSdkSandbox>>;
+      delete raw.createSnapshot;
+      const executor = new E2BSandboxExecutor(raw as never, {});
+      await expect(executor.capturePreparedBase({ name: "oma-base-abc" }))
+        .rejects.toThrow("E2B SDK does not expose sandbox.createSnapshot");
+    });
+
+    it("creates from the base instead of the template, keeping lifetime and metadata", async () => {
+      const executor = await sandboxFactory(
+        {
+          sessionId: "session_hit",
+          workdir: "/tmp/unused",
+          image: { alias: "analytics", reference: "analytics-template" },
+          preparedBase: { provider: "e2b", id: "snap_base_01" },
+        },
+        { E2B_API_KEY: "local", SANDBOX_IMAGE: "code-interpreter", E2B_CREATE_METADATA: '{"team":"a"}' },
+      ) as E2BSandboxExecutor;
+
+      expect(sdk.create).toHaveBeenCalledTimes(1);
+      expect(sdk.create).toHaveBeenCalledWith("snap_base_01", expect.objectContaining({
+        metadata: { team: "a" },
+        timeoutMs: 30 * 60_000,
+      }));
+      expect(executor.runtimeHandle()).toEqual({ provider: "e2b", runtimeId: "created:snap_base_01" });
+    });
+
+    it("rejects a prepared base of another provider before calling E2B", async () => {
+      await expect(sandboxFactory(
+        { sessionId: "s", workdir: "/tmp/unused", preparedBase: { provider: "daytona", id: "x" } },
+        { E2B_API_KEY: "local" },
+      )).rejects.toThrow("E2B provider cannot create a sandbox from a daytona prepared base");
+      expect(sdk.create).not.toHaveBeenCalled();
     });
   });
 });

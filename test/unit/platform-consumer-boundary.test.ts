@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import nodeManaged from "../../apps/main-node/src/modules/node-managed.ts?raw";
-import nodeFoundation from "../../apps/main-node/src/modules/node-foundation.ts?raw";
-import nodeHttp from "../../apps/main-node/src/modules/node-http.ts?raw";
+import nodeManaged from "../../packages/control-plane-node/src/modules/node-managed.ts?raw";
+import nodeFoundation from "../../packages/control-plane-node/src/modules/node-foundation.ts?raw";
+import nodeHttp from "../../packages/control-plane-node/src/modules/node-http.ts?raw";
 const nodeComposition = [nodeManaged, nodeFoundation, nodeHttp].join("\n");
 import cloudflareComposition from "../../apps/main/src/index.ts?raw";
 

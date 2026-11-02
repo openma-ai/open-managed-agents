@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "@open-managed-agents/shared";
-import type { AgentConfig, EnvironmentConfig, VaultConfig, CredentialConfig } from "@open-managed-agents/shared";
+import type { AgentConfig, EnvironmentConfig, VaultConfig, CredentialConfig, RuntimeAgentConfig } from "@open-managed-agents/shared";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { generateVaultId } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import { forEachShardServices } from "@open-managed-agents/services";
@@ -179,8 +180,8 @@ app.post("/sessions", async (c) => {
   const tenantId = await resolveTenantId(c.env, body.userId);
   if (!tenantId) return c.json({ error: "user has no tenant" }, 404);
 
-  const agentRow = await c.var.services.agents.get({ tenantId, agentId: body.agentId });
-  if (!agentRow) return c.json({ error: "agent not found in tenant" }, 404);
+  const agentBase = await loadRuntimeAgentSnapshot(c.var.services.agents, tenantId, body.agentId);
+  if (!agentBase) return c.json({ error: "agent not found in tenant" }, 404);
 
   const envRow = await c.var.services.environments.get({
     tenantId,
@@ -199,14 +200,13 @@ app.post("/sessions", async (c) => {
   // (and so the per-session MCP-server augmentation actually takes effect on
   // the snapshot the DO uses, not just the one we persist below).
   const vaultIds = body.vaultIds ?? [];
-  const { tenant_id: _atid, ...agentBase } = agentRow;
-  let agentSnapshot: AgentConfig = agentBase;
+  let agentSnapshot = agentBase as RuntimeAgentConfig;
   if (body.mcpServers && body.mcpServers.length > 0) {
-    agentSnapshot = injectMcpServersIntoSnapshot(agentSnapshot, body.mcpServers);
+    agentSnapshot = { ...agentSnapshot, mcp_servers: injectMcpServersIntoSnapshot(agentSnapshot, body.mcpServers).mcp_servers };
   }
   // Provider-supplied system-prompt augmentation (Slack signal protocol etc.).
   // Idempotent on falsy input so it's safe to pass unconditionally.
-  agentSnapshot = appendToAgentSnapshotSystemPrompt(agentSnapshot, body.additionalSystemPrompt);
+  agentSnapshot = { ...agentSnapshot, system: appendToAgentSnapshotSystemPrompt(agentSnapshot, body.additionalSystemPrompt).system };
 
   // Allocate the session id by inserting the row first — sessions-store owns
   // id generation. Linear MCP wiring below augments the snapshot + metadata

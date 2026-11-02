@@ -17,7 +17,7 @@ import type {
   EvalRunRow,
   EvalRunStatus,
 } from "@open-managed-agents/evals-store";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
 import type { EnvironmentService } from "@open-managed-agents/environments-store";
 import type { RewardSpec } from "@open-managed-agents/shared";
 
@@ -37,7 +37,7 @@ export interface EvalTaskSpec {
 
 export interface EvalRoutesDeps {
   evals: EvalRunService;
-  agents: AgentService;
+  agents: AgentStore;
   /** Optional. When omitted we don't 404 on missing environments — Node
    *  doesn't have a per-tenant environments store yet (P5 work). */
   environments?: EnvironmentService;
@@ -68,12 +68,12 @@ export function buildEvalRoutes(deps: EvalRoutesDeps) {
     }
 
     const [agentRow, envRow] = await Promise.all([
-      deps.agents.get({ tenantId: t, agentId: body.agent_id }),
+      deps.agents.findCurrent({ workspaceId: t, agentId: body.agent_id }),
       deps.environments
         ? deps.environments.get({ tenantId: t, environmentId: body.environment_id })
         : Promise.resolve({} as unknown), // Node: skip env existence check
     ]);
-    if (!agentRow) return c.json({ error: "Agent not found" }, 404);
+    if (!agentRow || agentRow.archivedAt !== null) return c.json({ error: "Agent not found" }, 404);
     if (deps.environments && !envRow) return c.json({ error: "Environment not found" }, 404);
 
     const initialResults = {

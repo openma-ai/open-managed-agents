@@ -8,9 +8,9 @@ import { createDeferredHintCoordinator } from "../src/harness/assembly/strategie
 const DEFERRED = ["mcp__github__create_issue", "mcp__docs__lookup"];
 
 describe("resolveToolAssemblyConfig deferred hints", () => {
-  it("defaults to claude_code", () => {
+  it("leaves the strategy unset so the assembly picks it by invocation mode", () => {
     const config = resolveToolAssemblyConfig({ id: "a", model: "m", system: "s" });
-    expect(config.deferredHintStrategy).toBe("claude_code");
+    expect(config.deferredHintStrategy).toBeUndefined();
   });
 
   it("reads tool_search_deferred_hints from metadata", () => {

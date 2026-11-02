@@ -405,14 +405,17 @@ describe("agentFormCodec lossless update", () => {
     expect(payload._oma).toEqual({ aux_model: { id: "deepseek-chat" } });
   });
 
-  it("preserves advisor roster members that the Form does not edit", () => {
+  it("preserves multiagent toggles and pinned members on unrelated edits", () => {
     const agent = sampleAgent({
       multiagent: {
-        type: "coordinator",
-        agents: [
-          { type: "agent", id: "agent_reviewer", version: 3 },
-          { type: "advisor", model: "claude-haiku-4-5" },
-        ],
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        workflows: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inline_agents: { type: "disabled" },
+          predefined_agents: [{ type: "agent", id: "agent_reviewer", version: 3 }],
+        },
       },
     });
     const form = agentToForm(agent);
@@ -428,8 +431,10 @@ describe("agentFormCodec lossless update", () => {
   it("does not silently pin an unversioned callable agent to version 1", () => {
     const config = agentToPreservedConfig(sampleAgent());
     config.multiagent = {
-      type: "coordinator",
-      agents: [{ type: "agent", id: "agent_reviewer" }],
+      type: "multiagent_20261001",
+      advisor: { type: "disabled" },
+      workflows: { type: "disabled" },
+      subagents: { type: "enabled", inline_agents: { type: "enabled" }, predefined_agents: [{ type: "agent", id: "agent_reviewer" }] },
     };
     const form = configToForm(config);
 
@@ -440,8 +445,10 @@ describe("agentFormCodec lossless update", () => {
       mergeFormIntoConfig(form, config, { forUpdate: true })
         .multiagent,
     ).toEqual({
-      type: "coordinator",
-      agents: [{ type: "agent", id: "agent_reviewer" }],
+      type: "multiagent_20261001",
+      advisor: { type: "disabled" },
+      workflows: { type: "disabled" },
+      subagents: { type: "enabled", inline_agents: { type: "enabled" }, predefined_agents: [{ type: "agent", id: "agent_reviewer" }] },
     });
   });
 });

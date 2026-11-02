@@ -4,7 +4,7 @@ import type {
   Environment,
   Session,
 } from "@open-managed-agents/managed-agents-application";
-import { NodeManagedConfirmedToolExecutor } from "../src/lib/node-managed-confirmed-tool-executor.js";
+import { NodeManagedConfirmedToolExecutor } from "../../../packages/control-plane-node/src/lib/node-managed-confirmed-tool-executor.js";
 
 const session: Session = {
   id: "session_01",

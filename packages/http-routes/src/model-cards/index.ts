@@ -4,6 +4,7 @@
 // Console Model Cards page works against CF and main-node without branching.
 
 import { Hono } from "hono";
+import { validateModelPricing, type ModelPricing } from "@open-managed-agents/model-cards-store";
 import {
   ModelCardDuplicateModelIdError,
   ModelCardNotFoundError,
@@ -28,6 +29,7 @@ function toApiShape(card: ModelCardRow) {
     base_url: card.base_url ?? undefined,
     custom_headers: card.custom_headers ?? undefined,
     pi_config: card.pi_config ?? undefined,
+    pricing: card.pricing ?? undefined,
     is_default: card.is_default,
     created_at: card.created_at,
     updated_at: card.updated_at ?? undefined,
@@ -150,6 +152,7 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
       base_url?: string;
       custom_headers?: Record<string, string>;
       pi_config?: Record<string, unknown>;
+      pricing?: unknown;
       is_default?: boolean;
     }>();
 
@@ -162,6 +165,12 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
     ) {
       return c.json({ error: "pi_config must be a JSON object" }, 400);
     }
+    let pricing: ModelPricing | null = null;
+    if (body.pricing !== undefined && body.pricing !== null) {
+      try { pricing = validateModelPricing(body.pricing); } catch (err) {
+        return c.json({ error: (err as Error).message }, 400);
+      }
+    }
     try {
       const card = await modelCards.create({
         tenantId: t,
@@ -172,6 +181,7 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
         baseUrl: body.base_url ?? null,
         customHeaders: body.custom_headers ?? null,
         piConfig: body.pi_config ?? null,
+        pricing,
         makeDefault: !!body.is_default,
       });
       const probe = await probeModelCard({
@@ -267,6 +277,7 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
       base_url?: string | null;
       custom_headers?: Record<string, string> | null;
       pi_config?: Record<string, unknown> | null;
+      pricing?: unknown;
       is_default?: boolean;
     }>();
     if (
@@ -275,6 +286,13 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
       && (typeof body.pi_config !== "object" || Array.isArray(body.pi_config))
     ) {
       return c.json({ error: "pi_config must be a JSON object or null" }, 400);
+    }
+    let pricingUpdate: ModelPricing | null | undefined;
+    if (body.pricing === null) pricingUpdate = null;
+    else if (body.pricing !== undefined) {
+      try { pricingUpdate = validateModelPricing(body.pricing); } catch (err) {
+        return c.json({ error: (err as Error).message }, 400);
+      }
     }
     try {
       const updated = await modelCards.update({
@@ -290,6 +308,7 @@ export function buildModelCardRoutes(deps: ModelCardRoutesDeps) {
             ? undefined
             : body.custom_headers || null,
         piConfig: body.pi_config,
+        pricing: pricingUpdate,
         apiKey: body.api_key,
         isDefault: body.is_default,
       });

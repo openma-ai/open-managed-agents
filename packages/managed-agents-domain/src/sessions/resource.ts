@@ -5,6 +5,14 @@ export type RepositoryCheckout =
 
 export type RepositoryCheckoutInput = RepositoryCheckout;
 
+/**
+ * Where a repository's clone credential comes from. Absent: the token given
+ * when the resource was added (Claude Managed Agents). `bond`: the
+ * workspace's Bond for the repository's host, resolved again each time a
+ * sandbox is prepared; the Session stores no token (OMA extension).
+ */
+export type RepositoryCredentialSource = "bond";
+
 export type SessionResourceInput =
   | {
       type: "file";
@@ -13,7 +21,8 @@ export type SessionResourceInput =
     }
   | {
       type: "github_repository";
-      authorizationToken: string;
+      /** Omitted: clone with the workspace's Bond for the host (OMA extension). */
+      authorizationToken?: string;
       url: string;
       checkout?: RepositoryCheckoutInput | null;
       mountPath?: string | null;
@@ -42,6 +51,7 @@ export type SessionResource =
       updatedAt: string;
       url: string;
       checkout?: RepositoryCheckout | null;
+      credentialSource?: RepositoryCredentialSource;
     }
   | {
       type: "memory_store";

@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
 import { EnvironmentDetail } from "./EnvironmentDetail";
+import { I18nProvider } from "../i18n";
 
 vi.mock("../lib/api", () => ({
   useApi: () => ({ api: vi.fn() }),
@@ -43,7 +44,7 @@ describe("EnvironmentDetail focus treatment", () => {
     render(
       <MemoryRouter initialEntries={["/environments/env-1"]}>
         <Routes>
-          <Route path="/environments/:id" element={<EnvironmentDetail />} />
+          <Route path="/environments/:id" element={<I18nProvider><EnvironmentDetail /></I18nProvider>} />
         </Routes>
       </MemoryRouter>,
     );
@@ -60,7 +61,7 @@ describe("EnvironmentDetail focus treatment", () => {
     render(
       <MemoryRouter initialEntries={["/environments/env-1"]}>
         <Routes>
-          <Route path="/environments/:id" element={<EnvironmentDetail />} />
+          <Route path="/environments/:id" element={<I18nProvider><EnvironmentDetail /></I18nProvider>} />
         </Routes>
       </MemoryRouter>,
     );

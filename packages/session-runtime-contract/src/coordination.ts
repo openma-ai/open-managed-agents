@@ -32,6 +32,9 @@ export interface SessionExecution {
   settledAt: string | null;
   failure: string | null;
   revision: number;
+  /** Set while queued after retries_exhausted: not claimable alone; rides
+   *  with the next admission on this lane (absorb at claim/admit). */
+  heldAfterExhaustedAt: string | null;
 }
 
 /**
@@ -76,6 +79,14 @@ export interface ClaimSessionExecution {
   attemptId: string;
   claimedAt: string;
   leaseTtlMs: number;
+  /**
+   * Claim only turn continuations (user.custom_tool_result /
+   * user.tool_confirmation), letting them pass queued user.messages in the
+   * same lane. Set while the lane is parked in requires_action: a queued
+   * user.message must wait for the paused turn instead of starting a new
+   * turn over unmatched tool_use blocks.
+   */
+  continuationsOnly?: boolean;
 }
 
 export type ClaimSessionExecutionResult =
@@ -111,6 +122,9 @@ export interface SessionExecutionStorePort {
     settledAt: string;
     outcome: "completed" | "failed" | "cancelled";
     failure?: string;
+    /** retries_exhausted: mark remaining queued rows on this lane held so
+     *  they are not claimed alone; they advance with the next admission. */
+    holdQueuedOnLane?: boolean;
   }): Promise<SettleSessionExecutionResult>;
   requestInterrupt(input: {
     workspaceId: string;
@@ -118,6 +132,42 @@ export interface SessionExecutionStorePort {
     laneId?: string;
     requestedAt: string;
   }): Promise<{ type: "requested" | "idle" }>;
+  /** Remove one queued execution before it is claimed (Backchat queue
+   *  "remove"). An interrupt never cancels queued executions; this is the
+   *  only per-item cancel. */
+  /** Compare-and-cancel: succeeds only while state is `queued`. When the
+   *  item already left the queue, `not_queued.reason` tells the client why
+   *  (already_processing / already_cancelled / already_completed / not_found)
+   *  so an edit race can branch on the HTTP response immediately. */
+  cancelQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    cancelledAt: string;
+  }): Promise<
+    | { type: "cancelled"; execution: SessionExecution }
+    | {
+        type: "not_queued";
+        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found" | "held_after_exhausted";
+        execution?: SessionExecution;
+      }
+  >;
+  /** Absorb one queued execution into the running turn (steering). The
+   *  row settles as completed so it never runs as its own turn. */
+  steerQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    steeredAt: string;
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }>;
+  /** Queued (unclaimed) executions on one lane, admission order. Used by the
+   *  running turn to find mid-run inputs to steer at the next after-call
+   *  boundary (see takeQueuedSteeringInputs). */
+  listQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+  }): Promise<SessionExecution[]>;
   cancelSession(input: {
     workspaceId: string;
     sessionId: string;
@@ -143,7 +193,12 @@ export type SessionExecutionCoordinatorPort = SessionExecutionStorePort;
 export function sessionExecutionEvents(
   events: readonly SentSessionEvent[],
 ): SentSessionEvent[] {
-  const executable = events.filter((event) => event.type !== "user.interrupt");
+  const executable = events.filter((event) =>
+    event.type !== "user.interrupt" &&
+    // A budget `session.updated` is control-only unless it resumes a
+    // budget_reached pause.
+    !(event.type === "session.updated" && event.resume !== true)
+  );
   return executable.some((event) => event.type !== "system.message")
     ? executable
     : [];
@@ -187,6 +242,7 @@ export function sessionExecutionEventBatches(
     if (event.type === "user.interrupt" || event.type === "system.message") {
       continue;
     }
+    if (event.type === "session.updated" && event.resume !== true) continue;
     const laneId = "sessionThreadId" in event
       ? event.sessionThreadId ?? "sthr_primary"
       : "sthr_primary";
@@ -203,3 +259,86 @@ export function sessionExecutionEventBatches(
   }
   return [...lanes.values()];
 }
+
+/** Event types that may be absorbed into a running turn by steering. */
+function steerableEvent(event: SentSessionEvent): boolean {
+  return event.type === "user.message" || event.type === "system.message";
+}
+
+/**
+ * CMA coherent-turn steering over the shared execution store (ADR 0006: only
+ * SessionExecutionStorePort). Every queued execution on the running lane whose
+ * events are plain mid-run `user.message`s (plus carried system messages) is
+ * compare-and-set from `queued` to `completed` via `steerQueued`, so it never
+ * runs as its own next turn, and its events are returned for the caller to
+ * stamp (`processed_at` + seq at consume) and hand to the harness at the next
+ * LLM/tool-call boundary (after-call). Executions another host already claimed
+ * or that carry non-steerable events (tool confirmations, interrupts) are left
+ * queued. Mirrors CF SessionDO.takeSteeringInputs.
+ * See docs/implementation/cma-steer-coherent-turn.md.
+ */
+export async function takeQueuedSteeringInputs(
+  store: Pick<SessionExecutionStorePort, "listQueued" | "steerQueued">,
+  input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+    steeredAt: string;
+    /** The running execution itself (never steered into itself). */
+    excludeExecutionId?: string;
+  },
+): Promise<SentSessionEvent[]> {
+  const queued = await store.listQueued({
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+    laneId: input.laneId,
+  });
+  const out: SentSessionEvent[] = [];
+  for (const execution of queued) {
+    if (execution.id === input.excludeExecutionId) continue;
+    if (!execution.events.some((event) => event.type === "user.message")) continue;
+    if (!execution.events.every(steerableEvent)) continue;
+    const result = await store.steerQueued({
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      executionId: execution.id,
+      steeredAt: input.steeredAt,
+    });
+    if (result.type !== "steered") continue;
+    out.push(...execution.events);
+  }
+  return out;
+}
+
+/** Thrown / returned when a turn ends in retries_exhausted so the execution
+ *  host can settle with holdQueuedOnLane (owner lock: retain mid-run inputs,
+ *  do not auto-run them alone). */
+export class SessionRetriesExhaustedError extends Error {
+  readonly holdQueuedOnLane = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionRetriesExhaustedError";
+  }
+}
+
+export function errorHoldsQueuedOnLane(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    (error as { holdQueuedOnLane?: unknown }).holdQueuedOnLane === true;
+}
+
+/** Annotate unprocessed events whose execution is held after exhausted so
+ *  events.list can surface the hold (no separate pending endpoint). */
+export function annotateHeldAfterExhaustedEvents<T extends { id: string; processedAt?: string | null }>(
+  events: readonly T[],
+  heldEventIds: ReadonlySet<string>,
+): Array<T & { heldAfterExhausted?: boolean }> {
+  return events.map((event) =>
+    event.processedAt == null && heldEventIds.has(event.id)
+      ? { ...event, heldAfterExhausted: true }
+      : event,
+  );
+}
+
+// Shared lease/sweep policy lives beside the execution coordinator contract so
+// every adapter (Node SQL store, CF SessionDO) applies identical decisions.
+export * from "./coordination-policy";

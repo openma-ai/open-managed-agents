@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as legacyHub from "../src/lib/event-stream-hub";
+import * as legacyHub from "../../../packages/control-plane-node/src/lib/event-stream-hub";
 
 interface TestFrame {
   sequence: number;

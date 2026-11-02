@@ -158,11 +158,14 @@ describe("Managed Agents API — POST /v1/agents", () => {
           },
         ],
         multiagent: {
-          type: "coordinator",
-          agents: [
-            { type: "agent", id: "agent_child", version: 2 },
-            { type: "advisor", model: "claude-sonnet-5" },
-          ],
+          type: "multiagent_20261001",
+          advisor: { type: "disabled" },
+          subagents: {
+            type: "enabled",
+            inline_agents: { type: "disabled" },
+            predefined_agents: [{ type: "agent", id: "agent_child", version: 2 }],
+          },
+          workflows: { type: "disabled" },
         },
         skills: [{ type: "custom", skill_id: "skill_review", version: "3" }],
         tools: [
@@ -206,11 +209,14 @@ describe("Managed Agents API — POST /v1/agents", () => {
           },
         ],
         multiagent: {
-          type: "coordinator",
-          agents: [
-            { type: "agent", agentId: "agent_child", version: 2 },
-            { type: "advisor", model: "claude-sonnet-5" },
-          ],
+          type: "multiagent_20261001",
+          advisor: { type: "disabled" },
+          subagents: {
+            type: "enabled",
+            inlineAgents: { type: "disabled" },
+            predefinedAgents: [{ type: "agent", agentId: "agent_child", version: 2 }],
+          },
+          workflows: { type: "disabled" },
         },
         skills: [
           { type: "custom", skillId: "skill_review", version: "3" },
@@ -473,6 +479,81 @@ describe("Managed Agents API — POST /v1/agents", () => {
         enable_general_subagent: true,
       },
     });
+  });
+
+  it("maps a pinned ACP registry reference without inventing a command", async () => {
+    const createCalls: unknown[] = [];
+    const api = buildAgentsTestApi(
+      makeAgentsPort({
+        createAgent: async (input) => {
+          createCalls.push(input);
+          return {
+            type: "created",
+            agent: {
+              ...agentView,
+              openma: {
+                harness: "acp-sandbox",
+                acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
+              },
+            },
+          };
+        },
+      }),
+    );
+
+    const response = await api.request("/v1/agents", {
+      method: "POST",
+      headers: {
+        "anthropic-beta": "managed-agents-2026-04-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "Coding Assistant",
+        model: "claude-opus-5",
+        _oma: {
+          harness: "acp-sandbox",
+          acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect((createCalls[0] as { openma: unknown }).openma).toEqual({
+      harness: "acp-sandbox",
+      acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
+    });
+    expect((await response.json())._oma).toEqual({
+      harness: "acp-sandbox",
+      acp: { agent: { registry: "claude-acp@0.94.0", cwd: "/workspace" } },
+    });
+  });
+
+  it.each([
+    [{ cwd: "/workspace" }],
+    [{ command: "claude-agent-acp", registry: "claude-acp@0.94.0" }],
+  ])("rejects an ACP agent without exactly one of command or registry: %j", async (agent) => {
+    const createCalls: unknown[] = [];
+    const api = buildAgentsTestApi(
+      makeAgentsPort({
+        createAgent: async (input) => {
+          createCalls.push(input);
+          throw new Error("agent create port must not run for an invalid ACP agent");
+        },
+      }),
+    );
+
+    const response = await api.request("/v1/agents", {
+      method: "POST",
+      headers: {
+        "anthropic-beta": "managed-agents-2026-04-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "n", model: "claude-opus-5", _oma: { acp: { agent } } }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(await response.json())).toContain("exactly one of command or registry");
+    expect(createCalls).toEqual([]);
   });
 
   it("rejects unknown fields inside the OpenMA namespace", async () => {

@@ -28,7 +28,7 @@ import type {
   SessionEventView,
 } from "@open-managed-agents/managed-agents-application";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
-import { DefaultNodeManagedSessionRunner } from "../src/lib/node-managed-session-runner";
+import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner";
 
 describe(
   "PiHarness over SandboxPort",

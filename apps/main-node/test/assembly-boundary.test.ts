@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
-import { assembleNodeControlPlane } from "../src/modules/node-assembly";
+import { assembleNodeControlPlane } from "../../../packages/control-plane-node/src/modules/node-assembly";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

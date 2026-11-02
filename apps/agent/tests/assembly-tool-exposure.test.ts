@@ -148,4 +148,65 @@ describe("tool exposure strategy", () => {
     });
     expect(plan.toolSearchEnabled).toBe(true);
   });
+
+  describe("proxy invocation (no native mid-conversation tool loading)", () => {
+    const search: AgentTool = {
+      name: "tool_search",
+      label: "tool_search",
+      description: "search",
+      parameters: Type.Object({ query: Type.String() }),
+      execute: async () => ({ content: [{ type: "text", text: "" }] }),
+    };
+    const invoke: AgentTool = {
+      name: "mcp_invoke",
+      label: "mcp_invoke",
+      description: "invoke",
+      parameters: Type.Object({ tool_name: Type.String() }),
+      execute: async () => ({ content: [{ type: "text", text: "" }] }),
+    };
+    const config: ToolAssemblyConfig = {
+      mode: "on",
+      searchLimit: 8,
+      autoThresholdFraction: 0.1,
+      alwaysLoad: new Set(["mcp__github__get_me"]),
+    };
+    const all = [
+      builtinTool("read"),
+      mcpTool("mcp__github__search"),
+      mcpTool("mcp__github__get_me"),
+      search,
+      invoke,
+    ];
+
+    it("exposes resident tools, tool_search and mcp_invoke regardless of loaded tools", () => {
+      const fresh = exposure.plan({
+        allTools: all, loadedToolNames: new Set(), config, model, nativeToolLoading: false,
+      });
+      const loaded = exposure.plan({
+        allTools: all,
+        loadedToolNames: new Set(["mcp__github__search"]),
+        config,
+        model,
+        nativeToolLoading: false,
+      });
+      expect(fresh.invocation).toBe("proxy");
+      expect(fresh.exposed.map((t) => t.name)).toEqual(["read", "mcp__github__get_me", "tool_search", "mcp_invoke"]);
+      expect(loaded.exposed.map((t) => t.name)).toEqual(fresh.exposed.map((t) => t.name));
+      expect(loaded.deferredNames).toEqual(["mcp__github__search"]);
+    });
+
+    it("never exposes mcp_invoke when tool search is off or loading is native", () => {
+      const off = exposure.plan({
+        allTools: all,
+        loadedToolNames: new Set(),
+        config: { ...config, mode: "off" },
+        model,
+        nativeToolLoading: false,
+      });
+      const native = exposure.plan({ allTools: all, loadedToolNames: new Set(), config, model });
+      expect(off.exposed.map((t) => t.name)).not.toContain("mcp_invoke");
+      expect(native.invocation).toBe("direct");
+      expect(native.exposed.map((t) => t.name)).not.toContain("mcp_invoke");
+    });
+  });
 });

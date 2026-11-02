@@ -22,7 +22,7 @@ import {
 import type { SessionEvent } from "@open-managed-agents/shared";
 import { getStorageIntegrationConfig } from "../../../test/storage-integration.js";
 import { PgEventStreamHub } from "../src/lib/pg-event-stream-hub";
-import type { EventWriter } from "../src/lib/event-stream-hub";
+import type { EventWriter } from "../../../packages/control-plane-node/src/lib/event-stream-hub";
 
 const PG_URL = getStorageIntegrationConfig().postgres.eventFanout;
 

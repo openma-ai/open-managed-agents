@@ -5,6 +5,7 @@ packages:
   - 'apps/main-fly'
   - 'apps/main-vercel'
   - 'apps/oma-vault'
+  - 'apps/matter'
   - 'apps/agent'
   - 'apps/console'
   - 'apps/integrations'
@@ -29,7 +30,12 @@ peerDependencyRules:
 allowBuilds:
   '@anthropic-ai/tokenizer': true
   '@google/genai': false
-  better-sqlite3: true
+  # better-sqlite3 13 ships prebuilt addons for linux (glibc and musl),
+  # darwin and win32 on x64 and arm64, and lib/binding.js loads them before
+  # any local build. It has no install script, so the only build pnpm would
+  # run is the implicit `node-gyp rebuild`, which needs a C++ toolchain and
+  # downloads Node headers from nodejs.org.
+  better-sqlite3: false
   # Optional Modal SDK acceleration. Keep provider installation portable and
   # prevent an adapter from gaining native install-script execution by default.
   cbor-extract: false

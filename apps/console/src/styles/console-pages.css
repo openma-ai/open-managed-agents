@@ -680,3 +680,152 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* CLI authorization page: workspace picker rows lay flat on the panel like
+   DataTable/detail-table rows instead of the old boxed menu list. Short
+   membership lists grow naturally; the stack only scrolls once it exceeds
+   roughly five rows. */
+.console-cli-workspace-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--console-gap-lg);
+  margin-bottom: var(--console-gap-lg);
+  color: var(--fg-muted);
+  font-size: var(--console-type-label);
+  line-height: var(--type-line);
+}
+
+.console-cli-workspace-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--console-gap-sm);
+  color: var(--fg-subtle);
+}
+
+.console-cli-workspace-action {
+  height: auto;
+  border: 0;
+  padding: 0;
+  font-weight: normal;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--console-type-label);
+  line-height: var(--type-line);
+  cursor: pointer;
+}
+
+.console-cli-workspace-action:hover {
+  background: transparent;
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: var(--console-gap-3xs);
+}
+
+.console-cli-workspace-list {
+  --cli-workspace-row-h: calc(
+    var(--type-line) * 2 + var(--console-pad-xs) * 2
+  );
+  display: flex;
+  /* Rows use the same height and gap as console table rows; show ~5.5 rows
+     before scrolling so the half-row cue signals more content. */
+  /* Exactly five full rows + gaps, then half of the sixth as a scroll
+     cue. Rows have an explicit height (border-box) so this is exact. */
+  max-height: calc(
+    (var(--cli-workspace-row-h) + var(--data-row-gap)) * 5 +
+    var(--cli-workspace-row-h) * 0.5
+  );
+  flex-direction: column;
+  gap: var(--data-row-gap);
+  overflow-y: auto;
+}
+
+.console-cli-workspace-item {
+  display: flex;
+  width: 100%;
+  height: var(--cli-workspace-row-h);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-start;
+  font-weight: normal;
+  gap: var(--console-gap-lg);
+  box-sizing: border-box;
+  border: thin solid var(--pill-border);
+  border-radius: var(--console-radius-row);
+  padding: var(--console-pad-xs) var(--console-pad-sm);
+  background: var(--pill-bg);
+  background-clip: padding-box;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--console-type-body);
+  line-height: var(--type-line);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick) var(--ease-soft),
+    border-color var(--dur-quick) var(--ease-soft);
+}
+
+.console-cli-workspace-item:hover {
+  border-color: var(--border-strong);
+  background: var(--pill-hover-bg);
+}
+
+.console-cli-workspace-item:has(:focus-visible) {
+  border-color: var(--fg-muted);
+}
+
+.console-cli-workspace-item[data-static="true"] {
+  cursor: default;
+}
+
+.console-cli-workspace-item[data-static="true"]:hover {
+  border-color: var(--pill-border);
+  background: var(--pill-bg);
+}
+
+.console-cli-workspace-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.console-cli-workspace-name {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: var(--console-type-body);
+  line-height: var(--type-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-cli-workspace-meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--console-gap-sm);
+  color: var(--fg-subtle);
+  font-family: var(--font-sans);
+  font-size: var(--console-type-label);
+  line-height: var(--type-line);
+}
+
+.console-cli-workspace-role {
+  flex: 0 0 auto;
+  color: var(--fg-subtle);
+  font-family: var(--font-sans);
+  font-size: var(--console-type-label);
+}
+
+.console-cli-workspace-id {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--console-type-label);
+  opacity: 0.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -312,6 +312,7 @@ describe("Dream execution runtime adapters", () => {
     const curator = new DeduplicatingDreamCurator();
     await expect(
       curator.curate({
+        workspaceId: "ws_01",
         inputMemories: [
           { path: "/z.md", content: "old" },
           { path: "/a.md", content: "a" },
@@ -335,11 +336,19 @@ describe("Dream execution runtime adapters", () => {
     });
   });
 
-  it("curates through Anthropic Messages using the Dream model and semantic usage", async () => {
+  it("curates with the Dream workspace's own model card credentials", async () => {
     const requests: Request[] = [];
+    const lookups: Array<{ workspaceId: string; modelId: string }> = [];
     const curator = new AnthropicMessagesDreamCurator({
-      apiKey: "sk-ant-test",
-      baseUrl: "https://anthropic.example",
+      resolveCredentials: async (lookup) => {
+        lookups.push(lookup);
+        return {
+          wireModel: "claude-opus-5-wire",
+          apiKey: "sk-ant-workspace-card",
+          baseUrl: "https://anthropic.example/",
+          customHeaders: { "x-card": "ws_01" },
+        };
+      },
       fetch: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
@@ -366,6 +375,7 @@ describe("Dream execution runtime adapters", () => {
 
     await expect(
       curator.curate({
+        workspaceId: "ws_01",
         inputMemories: [{ path: "/input.md", content: "raw" }],
         inputSessions: [{ id: "session_01", title: "Architecture" }],
         instructions: "Keep decisions",
@@ -382,11 +392,36 @@ describe("Dream execution runtime adapters", () => {
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toBe("https://anthropic.example/v1/messages");
-    expect(requests[0]!.headers.get("x-api-key")).toBe("sk-ant-test");
+    expect(requests[0]!.headers.get("x-api-key")).toBe("sk-ant-workspace-card");
+    expect(requests[0]!.headers.get("x-card")).toBe("ws_01");
+    expect(lookups).toEqual([{ workspaceId: "ws_01", modelId: "claude-opus-5" }]);
     expect(await requests[0]!.json()).toMatchObject({
-      model: "claude-opus-5",
+      model: "claude-opus-5-wire",
       max_tokens: 8192,
       messages: [{ role: "user" }],
     });
+  });
+
+  it("fails curation without calling a provider when the workspace has no model card", async () => {
+    let fetched = 0;
+    const curator = new AnthropicMessagesDreamCurator({
+      resolveCredentials: async ({ modelId }) => {
+        throw new Error(`Model "${modelId}" is not configured for this workspace.`);
+      },
+      fetch: async () => {
+        fetched += 1;
+        return Response.json({});
+      },
+    });
+    await expect(
+      curator.curate({
+        workspaceId: "ws_without_cards",
+        inputMemories: [],
+        inputSessions: [],
+        instructions: null,
+        model: { modelId: "claude-opus-5" },
+      }),
+    ).rejects.toThrow(/not configured for this workspace/);
+    expect(fetched).toBe(0);
   });
 });

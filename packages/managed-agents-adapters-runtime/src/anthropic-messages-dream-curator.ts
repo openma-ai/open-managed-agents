@@ -5,9 +5,25 @@ import type {
   DreamMemoryDocument,
 } from "@open-managed-agents/managed-agents-application";
 
-export interface AnthropicMessagesDreamCuratorDependencies {
+/** Credentials for one curation call, taken from the workspace's model card. */
+export interface DreamCuratorModelCredentials {
+  /** Wire-level model string sent to the provider. */
+  wireModel: string;
   apiKey: string;
   baseUrl?: string;
+  customHeaders?: Record<string, string>;
+}
+
+export interface AnthropicMessagesDreamCuratorDependencies {
+  /**
+   * Resolve `modelId` for `workspaceId` through the same model-card policy
+   * Sessions use. Called on every curation; there is no platform key, so a
+   * workspace without a matching card makes the Dream fail with that reason.
+   */
+  resolveCredentials(input: {
+    workspaceId: string;
+    modelId: string;
+  }): Promise<DreamCuratorModelCredentials>;
   fetch?: typeof fetch;
 }
 
@@ -28,30 +44,31 @@ const SYSTEM =
   "Every path must start with /.";
 
 export class AnthropicMessagesDreamCurator implements DreamCuratorPort {
-  private readonly baseUrl: string;
   private readonly fetcher: typeof fetch;
 
   constructor(
     private readonly dependencies: AnthropicMessagesDreamCuratorDependencies,
   ) {
-    if (dependencies.apiKey.length === 0) {
-      throw new Error("Anthropic API key is required for Dream curation");
-    }
-    this.baseUrl = (dependencies.baseUrl ?? "https://api.anthropic.com")
-      .replace(/\/+$/u, "");
     this.fetcher = dependencies.fetch ?? globalThis.fetch;
   }
 
   async curate(input: CurateDream): Promise<CuratedDream> {
-    const response = await this.fetcher(`${this.baseUrl}/v1/messages`, {
+    const credentials = await this.dependencies.resolveCredentials({
+      workspaceId: input.workspaceId,
+      modelId: input.model.modelId,
+    });
+    const baseUrl = (credentials.baseUrl ?? "https://api.anthropic.com")
+      .replace(/\/+$/u, "");
+    const response = await this.fetcher(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
-        "x-api-key": this.dependencies.apiKey,
+        ...(credentials.customHeaders ?? {}),
+        "x-api-key": credentials.apiKey,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: input.model.modelId,
+        model: credentials.wireModel,
         max_tokens: 8192,
         system: SYSTEM,
         messages: [{ role: "user", content: this.prompt(input) }],

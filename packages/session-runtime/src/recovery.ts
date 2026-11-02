@@ -30,6 +30,7 @@
 // Warnings are returned (not appended to the event log) so the caller
 // can broadcast them to live WS subscribers without polluting history.
 
+import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { StreamRepo, EventLogRepo } from "@open-managed-agents/event-log";
 
@@ -37,6 +38,17 @@ export interface RecoveryWarning {
   source: "stream_interrupted" | "tool_call_interrupted" | "custom_tool_call_interrupted";
   message: string;
   details: Record<string, unknown>;
+}
+
+export interface RecoverInterruptedStateOptions {
+  /**
+   * Tool-use ids owned by the caller that are intentionally unpaired
+   * (e.g. an always_ask tool waiting for user.tool_confirmation, or a
+   * custom tool waiting for user.custom_tool_result persisted in the
+   * shell's state). Recovery leaves these untouched so the eventual
+   * client answer is still the single result for that use.
+   */
+  skipToolUseIds?: ReadonlySet<string>;
 }
 
 export interface RecoveryReport {
@@ -55,6 +67,7 @@ export interface RecoveryReport {
 export async function recoverInterruptedState(
   streams: StreamRepo,
   history: Pick<EventLogRepo, "append" | "getEvents">,
+  opts: RecoverInterruptedStateOptions = {},
 ): Promise<RecoveryReport> {
   const report: RecoveryReport = {
     finalizedStreams: [],
@@ -116,14 +129,21 @@ export async function recoverInterruptedState(
     }
   }
 
+  const parkedToolUseIds = opts.skipToolUseIds;
   for (const [useId, info] of useTypes) {
     if (resolved.has(useId)) continue;
-    const placeholder = "(interrupted by maintenance restart — retry if needed)";
+    if (parkedToolUseIds?.has(useId)) continue;
+    const placeholder = UNKNOWN_TOOL_RESULT_TEXT;
     if (info.type === "agent.tool_use") {
       history.append({
         type: "agent.tool_result",
         tool_use_id: useId,
         content: placeholder,
+        // A placeholder result for a use that never completed is an
+        // error result, not a successful tool outcome. Console/history
+        // collapse the bubble on is_error and the next provider call
+        // still sees the required one-to-one pairing.
+        is_error: true,
       } as SessionEvent);
       report.injectedToolResults.push(useId);
     } else if (info.type === "agent.mcp_tool_use") {

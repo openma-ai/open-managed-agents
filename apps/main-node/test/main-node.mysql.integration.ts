@@ -14,7 +14,7 @@ import {
 } from "@open-managed-agents/queue";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store";
 import { ensureSessionExecutionClaimLockSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
-import { NodeManagedWorkspaceCheckpoints } from "../src/lib/node-managed-workspace-checkpoints";
+import { NodeManagedWorkspaceCheckpoints } from "../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints";
 import {
   createMysql2SqlClient,
   type SqlClient,

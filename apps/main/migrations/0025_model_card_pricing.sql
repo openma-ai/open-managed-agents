@@ -1,0 +1,1 @@
+ALTER TABLE `model_cards` ADD `pricing` text;

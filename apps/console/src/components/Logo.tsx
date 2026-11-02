@@ -7,6 +7,8 @@
  * trip) and filled with the semantic brand token so a parent text color cannot
  * accidentally turn the product mark gray.
  */
+import { useBranding } from "../lib/branding";
+
 const SIZE_PX = {
   sm: 24,
   md: 28,
@@ -23,6 +25,26 @@ interface LogoProps {
 
 export function Logo({ size = "sm", tone = "brand", className = "" }: LogoProps) {
   const px = SIZE_PX[size];
+  const branding = useBranding();
+  if (branding.logoUrl) {
+    // A deployment logo keeps the mark's height; its width follows the image.
+    const img = (src: string, variant: string) => (
+      <img
+        src={src}
+        alt={branding.productName}
+        style={{ height: px, width: "auto", maxWidth: px * 6 }}
+        className={`shrink-0 object-contain ${variant} ${className}`.trim()}
+      />
+    );
+    return branding.logoDarkUrl ? (
+      <>
+        {img(branding.logoUrl, "dark:hidden")}
+        {img(branding.logoDarkUrl, "hidden dark:block")}
+      </>
+    ) : (
+      img(branding.logoUrl, "")
+    );
+  }
   const fill = tone === "brand" ? "var(--brand)" : "currentColor";
   return (
     <svg
@@ -30,7 +52,7 @@ export function Logo({ size = "sm", tone = "brand", className = "" }: LogoProps)
       height={px}
       viewBox="240 244 548 454"
       role="img"
-      aria-label="openma"
+      aria-label={branding.productName}
       className={`shrink-0 ${className}`.trim()}
       xmlns="http://www.w3.org/2000/svg"
     >

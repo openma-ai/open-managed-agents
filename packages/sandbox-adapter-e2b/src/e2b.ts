@@ -27,6 +27,8 @@ import type {
   SandboxFactoryContext,
   SandboxFactoryEnv,
   SandboxPort,
+  SandboxPreparedBaseHandle,
+  SandboxPreparedBasePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
@@ -109,8 +111,17 @@ export interface E2BSandboxOptions {
    *   Template().fromImage("ubuntu:latest").aptInstall(["s3fs"])
    */
   templateId?: string;
+  /** E2B snapshot id to create the sandbox from instead of `templateId`
+   * (a prepared base captured by {@link E2BSandboxExecutor.capturePreparedBase}). */
+  preparedBaseId?: string;
   /** Default per-command timeout in ms. */
   defaultTimeoutMs?: number;
+  /**
+   * Initial sandbox lifetime in ms (E2B's sandbox `timeoutMs`). Hosts extend
+   * it through `renewLease` while a turn runs (OpenMA's sandbox heartbeat).
+   * Defaults to 30 minutes; without it E2B gives a sandbox 5 minutes.
+   */
+  lifetimeMs?: number;
   /** Logger for debug output. */
   logger?: { warn: (msg: string, ctx?: unknown) => void };
   /**
@@ -139,7 +150,7 @@ export async function createE2BSandbox(
 ): Promise<E2BSandboxExecutor> {
   const mod = await loadE2BModule();
   const sb = await mod.Sandbox.create(
-    opts.templateId ?? "base",
+    opts.preparedBaseId ?? opts.templateId ?? "base",
     creationOptions(opts),
   );
   if (opts.readiness !== false) {
@@ -176,7 +187,7 @@ async function waitForSandboxReady(
 }
 
 export class E2BSandboxExecutor
-  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort {
+  implements SandboxPort, SandboxDuplexProcessPort, SandboxRuntimePort, SandboxPreparedBasePort {
   private envVars: Record<string, string> = {};
   private commandSecrets: Array<{ prefix: string; secrets: Record<string, string> }> = [];
   private defaultTimeoutMs: number;
@@ -283,6 +294,19 @@ export class E2BSandboxExecutor
     };
   }
 
+  /** Snapshot this sandbox as a reusable creation source. Reusing a name
+   * appends a new build under it; the returned id pins this exact build. */
+  async capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle> {
+    if (typeof this.sandbox.createSnapshot !== "function") {
+      throw new Error("E2B SDK does not expose sandbox.createSnapshot");
+    }
+    const snapshot = await this.sandbox.createSnapshot({ name: input.name });
+    if (!snapshot.snapshotId) {
+      throw new Error("E2B SDK did not return a snapshotId for the prepared base");
+    }
+    return { provider: "e2b", id: snapshot.snapshotId };
+  }
+
   async exec(command: string, timeout?: number): Promise<string> {
     const wrapped = this.applyEnv(command);
     const result = await settleCommand(this.sandbox.commands.run(wrapped, {
@@ -310,6 +334,11 @@ export class E2BSandboxExecutor
   async spawnDuplexProcess(
     spec: SandboxDuplexProcessSpec,
   ): Promise<SandboxDuplexProcess> {
+    for (const name of Object.keys(spec.env ?? {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw new TypeError(`Invalid environment variable name: ${JSON.stringify(name)}`);
+      }
+    }
     let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
     let stderrController!: ReadableStreamDefaultController<Uint8Array>;
     let streamsSettled = false;
@@ -344,7 +373,12 @@ export class E2BSandboxExecutor
       }
     };
 
-    const command = [spec.command, ...(spec.args ?? [])]
+    const unset = Object.entries(spec.env ?? {})
+      .filter(([, value]) => value === undefined)
+      .flatMap(([name]) => ["-u", name]);
+    // Omitting an envs entry does not remove envd/image-inherited values.
+    // env -u implements the duplex Port's explicit-undefined contract remotely.
+    const command = [...(unset.length ? ["env", ...unset, "--"] : []), spec.command, ...(spec.args ?? [])]
       .map(shellEscape)
       .join(" ");
     const handle = (await this.sandbox.commands.run(command, {
@@ -372,28 +406,32 @@ export class E2BSandboxExecutor
 
     let requestedSignal: "SIGTERM" | "SIGKILL" | null = null;
     let exitedSettled = false;
+    // A broken wait transport settles the observation, not the remote process.
+    let exitConfirmed = false;
     let resolveExited!: (
       value: { code: number | null; signal: string | null },
     ) => void;
+    let rejectExited!: (error: Error) => void;
     const exited = new Promise<{ code: number | null; signal: string | null }>(
-      (resolve) => { resolveExited = resolve; },
+      (resolve, reject) => { resolveExited = resolve; rejectExited = reject; },
     );
+    void exited.catch(() => undefined);
     const finish = (code: number | null, signal: string | null, error?: Error) => {
       settleStreams(error);
       if (exitedSettled) return;
       exitedSettled = true;
-      resolveExited({ code, signal });
+      if (error) rejectExited(error);
+      else {
+        exitConfirmed = true;
+        resolveExited({ code, signal });
+      }
     };
     void handle.wait().then(
       (result) => finish(result.exitCode, requestedSignal),
       (cause: unknown) => {
-        if (requestedSignal !== null) {
-          finish(null, requestedSignal);
-          return;
-        }
         const exitCode = readExitCode(cause);
         if (exitCode !== null) {
-          finish(exitCode, null);
+          finish(exitCode, requestedSignal);
           return;
         }
         const error = cause instanceof Error ? cause : new Error(String(cause));
@@ -410,10 +448,10 @@ export class E2BSandboxExecutor
         if (!exitedSettled) await handle.closeStdin!();
       },
       abort: async () => {
-        if (exitedSettled) return;
+        if (exitConfirmed) return;
         requestedSignal = "SIGKILL";
         await handle.kill();
-        finish(null, requestedSignal);
+        // Only wait() confirms exit; kill's acknowledgement is not a barrier.
       },
     });
 
@@ -423,12 +461,12 @@ export class E2BSandboxExecutor
       stderr,
       exited,
       kill: async (signal = "SIGTERM") => {
-        if (exitedSettled) return;
+        if (exitConfirmed) return;
         // E2B v2 currently exposes SIGKILL only. Preserve the caller's
         // requested signal in the portable lifecycle result.
         requestedSignal = signal;
         await handle.kill();
-        finish(null, requestedSignal);
+        // Only wait() confirms exit; kill's acknowledgement is not a barrier.
       },
     };
   }
@@ -760,6 +798,7 @@ type E2BConnectionOptions = Pick<
 
 type E2BCreateOptions = E2BConnectionOptions & {
   metadata?: Record<string, string>;
+  timeoutMs?: number;
   lifecycle: {
     onTimeout: { action: "pause"; keepMemory: true };
     autoResume: true;
@@ -791,10 +830,27 @@ function connectionOptions(opts: E2BConnectionOptions): E2BConnectionOptions {
   };
 }
 
+const DEFAULT_SANDBOX_LIFETIME_MS = 30 * 60_000;
+
+const sandboxLifetime = (opts: E2BSandboxOptions): number =>
+  opts.lifetimeMs !== undefined && Number.isSafeInteger(opts.lifetimeMs) && opts.lifetimeMs > 0
+    ? opts.lifetimeMs
+    : DEFAULT_SANDBOX_LIFETIME_MS;
+
+function parseLifetime(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error("E2B_SANDBOX_TIMEOUT_MS must be a positive integer of milliseconds");
+  }
+  return ms;
+}
+
 function creationOptions(opts: E2BSandboxOptions): E2BCreateOptions {
   return {
     ...connectionOptions(opts),
     ...(opts.createMetadata === undefined ? {} : { metadata: opts.createMetadata }),
+    timeoutMs: sandboxLifetime(opts),
     // ACP keeps a live JSON-RPC process in the sandbox. Killing the sandbox
     // at the end of its lease loses that process and forces a cold restore;
     // a memory pause preserves it and E2B resumes it transparently on the
@@ -825,20 +881,33 @@ function parseCreateMetadata(value: string | undefined): Record<string, string> 
   return parsed as Record<string, string>;
 }
 
-function optionsFromFactory(env: SandboxFactoryEnv): E2BSandboxOptions {
+function optionsFromFactory(
+  env: SandboxFactoryEnv,
+  ctx?: Pick<SandboxFactoryContext, "image" | "preparedBase">,
+): E2BSandboxOptions {
+  const preparedBase = ctx?.preparedBase;
+  if (preparedBase !== undefined && (preparedBase.provider !== "e2b" || !preparedBase.id)) {
+    throw new Error(
+      `E2B provider cannot create a sandbox from a ${preparedBase.provider} prepared base`,
+    );
+  }
   return {
     apiKey: env.E2B_API_KEY,
     apiUrl: env.E2B_API_URL,
     sandboxUrl: env.E2B_SANDBOX_URL,
     domain: env.E2B_DOMAIN,
     createMetadata: parseCreateMetadata(env.E2B_CREATE_METADATA),
-    templateId: env.SANDBOX_IMAGE,
+    lifetimeMs: parseLifetime(env.E2B_SANDBOX_TIMEOUT_MS),
+    // An Environment-selected catalog image overrides the process default.
+    templateId: ctx?.image?.reference ?? env.SANDBOX_IMAGE,
+    // A prepared base was built from that same image, so it wins over it.
+    ...(preparedBase === undefined ? {} : { preparedBaseId: preparedBase.id }),
     memoryBucket: readS3MemoryBucket(env),
   };
 }
 
 export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
-  create: async (_ctx, env) => createE2BSandbox(optionsFromFactory(env)),
+  create: async (ctx, env) => createE2BSandbox(optionsFromFactory(env, ctx)),
   resume: async (handle, _ctx, env) => {
     if (handle.provider !== "e2b" || !handle.runtimeId) {
       throw new Error("E2B provider received an incompatible runtime handle");
@@ -869,6 +938,9 @@ export const sandboxProvider: SandboxProviderPort<E2BSandboxExecutor> = {
   },
 };
 
+/** Declares no capabilities: many E2B-compatible services cannot snapshot.
+ * A composition that knows its service can opts in with
+ * `withSandboxFactoryCapabilities(sandboxFactory, { preparedBase: true })`. */
 export const sandboxFactory: SandboxFactory = (
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,

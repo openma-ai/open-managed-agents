@@ -66,6 +66,8 @@ export interface ApiQueryOpts<T> {
   staleTime?: number;
   /** Useful for things like polling; supply a number in ms or a fn. */
   refetchInterval?: UseQueryOptions<T>["refetchInterval"];
+  /** Per-query retry override (e.g. `false` for optional capability probes). */
+  retry?: UseQueryOptions<T>["retry"];
 }
 
 export function useApiQuery<T>(
@@ -93,6 +95,7 @@ export function useApiQuery<T>(
     enabled: (opts.enabled ?? true) && !!path,
     staleTime: opts.staleTime,
     refetchInterval: opts.refetchInterval,
+    ...(opts.retry !== undefined && { retry: opts.retry }),
     // Stale-while-revalidate: when params change (filter chip, search,
     // tenant switch), keep the previous result rendered while the new
     // fetch runs in the background. Pages that read `isLoading` only see

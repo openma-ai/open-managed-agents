@@ -4,7 +4,8 @@
 // A non-idle session fails fast and does not receive the event.
 
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import type { HarnessContext } from "../../apps/agent/src/harness/interface";
@@ -16,6 +17,8 @@ import {
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+
+beforeAll(() => ensureModelCards(["resume-mcp-mock", "claude-sonnet-4-6"]));
 
 const SECRET = "test-internal-secret";
 const H = { "x-api-key": "test-key", "content-type": "application/json" };
@@ -151,7 +154,7 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
       name: `Resume MCP ${userId}`,
       model: "resume-mcp-mock",
       system: "frozen system prompt",
-      harness: HARNESS,
+      _oma: { harness: HARNESS },
       tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] }],
     });
     expect(agentRes.status).toBe(201);
@@ -222,7 +225,7 @@ describe("Cloudflare session resume picks up published MCP tools", () => {
       name: `Resume idle ${userId}`,
       model: "claude-sonnet-4-6",
       system: "stay frozen",
-      harness: "noop-test",
+      _oma: { harness: "noop-test" },
     });
     expect(agentRes.status).toBe(201);
     const agentId = ((await agentRes.json()) as { id: string }).id;

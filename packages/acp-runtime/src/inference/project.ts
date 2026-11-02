@@ -36,10 +36,10 @@ function stripProviderSecrets(
 ): Record<string, string | undefined> {
   const next = { ...env };
   for (const key of MODEL_PROVIDER_SECRET_ENV_KEYS) {
-    delete next[key];
+    next[key] = undefined;
   }
   for (const key of EXTRA_STRIP_ENV_KEYS) {
-    delete next[key];
+    next[key] = undefined;
   }
   return next;
 }
@@ -97,7 +97,8 @@ export function projectHostedInferenceForAcpAgent(
     ...plan.env,
   };
   for (const key of plan.unsetEnv) {
-    delete env[key];
+    // Preserve explicit unsets so spawners cannot inherit provider credentials.
+    env[key] = undefined;
   }
 
   return { env, files: plan.files };

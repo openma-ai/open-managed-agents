@@ -11,6 +11,11 @@ import {
   type AcpStatefulAgentSpec,
 } from "./native-state.js";
 import type { InferenceConfigFile } from "./inference/types.js";
+import {
+  ACP_PROVIDER_SECRET_ENV_KEYS,
+  resolvePinnedAcpRegistryAgent,
+  type PinnedAcpRegistryAgent,
+} from "./acp-registry-pins.js";
 
 /**
  * The small amount of per-agent knowledge needed before an ACP child starts.
@@ -55,12 +60,14 @@ export interface AcpSandboxAgentPreparation {
   readonly binding: AcpAgentStateBinding;
   readonly launch: AcpSandboxAgentLaunchSpec;
   readonly lifecycle: AcpSandboxAgentLifecyclePolicy;
+  /** Pinned registry distribution to install before spawn (absent for an explicit command). */
+  readonly install?: PinnedAcpRegistryAgent;
 }
 
 /** Minimal filesystem/process surface required by the installed-agent state adapter. */
 export interface AcpSandboxAgentStatePort {
   writeFile(path: string, content: string): Promise<unknown>;
-  exec(command: string): Promise<string>;
+  exec(command: string, timeout?: number): Promise<string>;
 }
 
 export type AcpSandboxAgentReleaseReason = "replace" | "shutdown" | "destroy";
@@ -299,10 +306,11 @@ export function resolveAcpSandboxAgentAdapter(
  */
 export function prepareAcpSandboxAgent(input: {
   sessionId: string;
-  agent: AcpStatefulAgentSpec;
+  agent: AcpSandboxAgentSpec;
 }): AcpSandboxAgentPreparation {
-  const binding = bindAcpAgentState(input);
-  const adapter = resolveAcpSandboxAgentAdapter(input.agent);
+  const { agent, install } = resolveAcpSandboxAgentSpec(input.agent);
+  const binding = bindAcpAgentState({ sessionId: input.sessionId, agent });
+  const adapter = resolveAcpSandboxAgentAdapter(agent);
   return {
     adapter,
     binding,
@@ -313,7 +321,189 @@ export function prepareAcpSandboxAgent(input: {
       env: { ...(binding.agent.env ?? {}) },
     },
     lifecycle: LIFECYCLE_POLICY,
+    ...(install ? { install } : {}),
   };
+}
+
+/**
+ * An ACP process declaration: either an explicit `command` (Harbor's `local`
+ * distribution) or a pinned `registry` reference such as `claude-acp@0.94.0`
+ * that is installed in the sandbox before the child is spawned.
+ */
+export type AcpSandboxAgentSpec = Omit<AcpStatefulAgentSpec, "command"> & {
+  command?: string;
+  registry?: string;
+};
+
+function resolveAcpSandboxAgentSpec(spec: AcpSandboxAgentSpec): {
+  agent: AcpStatefulAgentSpec;
+  install?: PinnedAcpRegistryAgent;
+} {
+  const { registry, command, ...rest } = spec;
+  const hasCommand = typeof command === "string" && command.length > 0;
+  const hasRegistry = typeof registry === "string" && registry.length > 0;
+  if (hasCommand === hasRegistry) {
+    throw new Error("ACP sandbox agent requires exactly one of command or registry");
+  }
+  if (hasCommand) return { agent: { ...rest, command } };
+  const install = resolvePinnedAcpRegistryAgent(registry!);
+  if (rest.id !== undefined && rest.id !== install.id) {
+    throw new Error(
+      `ACP sandbox agent id "${rest.id}" does not match registry agent "${install.id}"`,
+    );
+  }
+  // The launcher path is only known inside the sandbox; installAcpSandboxAgent
+  // fills it in. The registry id keeps native-state adapter identity.
+  return { agent: { ...rest, id: install.id, command: "" }, install };
+}
+
+const INSTALL_OK_MARKER = "OMA_ACP_INSTALL_OK";
+const LAUNCHER_MARKER = "OMA_ACP_LAUNCHER=";
+const LAUNCHER_EOF = "OMA_ACP_LAUNCHER_EOF";
+const NVM_VERSION = "v0.40.2";
+// Cold path: nvm Node install (~1-2 min) plus the pinned package prefetch
+// (~190 MB for claude-acp, measured ~3 min on a slow link). 20 minutes keeps
+// headroom for slow mirrors while still bounding a hung install.
+const INSTALL_TIMEOUT_MS = 1_200_000;
+
+/**
+ * Harbor-style install step for a pinned registry agent.
+ *
+ * Mirrors Harbor's AcpAgent.install() for npx distributions: ensure Node,
+ * then write an `acp-launch.sh` that only `exec`s the pinned package and
+ * forwards `"$@"`. Node is reused when the image already satisfies the
+ * package engine; otherwise it is installed through nvm like Harbor. The
+ * launcher lives under the sandbox user's HOME (no root needed) and never
+ * contains launch env values: credentials stay in the spawn environment.
+ *
+ * Any failure rejects; there is no fallback to a bare command or to latest.
+ * Re-running is idempotent (atomic rewrite of identical content, Node reuse).
+ */
+export async function installAcpSandboxAgent(
+  sandbox: Pick<AcpSandboxAgentStatePort, "exec">,
+  preparation: AcpSandboxAgentPreparation,
+): Promise<AcpSandboxAgentPreparation> {
+  const install = preparation.install;
+  if (!install) return preparation;
+  const label = `${install.id}@${install.version}`;
+  let output: string;
+  try {
+    output = await sandbox.exec(buildAcpSandboxInstallScript(install), INSTALL_TIMEOUT_MS);
+  } catch (error) {
+    throw new Error(
+      `ACP agent install failed for ${label}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const launcher = parseAcpSandboxInstallOutput(output);
+  if (!launcher) {
+    throw new Error(`ACP agent install failed for ${label}:\n${output.trim().slice(-2_000)}`);
+  }
+  return {
+    ...preparation,
+    binding: {
+      ...preparation.binding,
+      agent: { ...preparation.binding.agent, command: launcher },
+    },
+    launch: { ...preparation.launch, command: launcher },
+  };
+}
+
+/**
+ * Return the launcher path only for a provably successful install.
+ *
+ * Exec ports report exit status in two shapes: Cloudflare prefixes
+ * `exit=N\n` and appends `\nstderr: ...`; local/e2b append `\n[exit N]`
+ * (or `[exit signal=...]`) only on failure. Any non-zero or signal exit
+ * fails, the success marker must be the last non-empty line (so an early
+ * sentinel followed by a later failure is rejected), and the last launcher
+ * line wins.
+ */
+function parseAcpSandboxInstallOutput(raw: string): string | undefined {
+  let body = raw;
+  const prefixed = /^exit=(-?\d+)\n?/.exec(body);
+  if (prefixed) {
+    if (prefixed[1] !== "0") return undefined;
+    body = body.slice(prefixed[0].length);
+  }
+  const lines = body.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.some((line) => /^\[exit\b/.test(line))) return undefined;
+  if (lines.at(-1) !== INSTALL_OK_MARKER) return undefined;
+  const launcher = lines
+    .filter((line) => line.startsWith(LAUNCHER_MARKER))
+    .at(-1)
+    ?.slice(LAUNCHER_MARKER.length)
+    .trim();
+  return launcher?.startsWith("/") ? launcher : undefined;
+}
+
+function buildAcpSandboxLauncherScript(install: PinnedAcpRegistryAgent): string {
+  const exports = Object.entries(install.env)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}\n`)
+    .join("");
+  const exec = ["npx", "-y", shellQuote(install.package), ...install.args.map(shellQuote), '"$@"']
+    .join(" ");
+  return "#!/usr/bin/env sh\n"
+    + "set -eu\n"
+    // dash does not abort on `set -u` inside $(...); check HOME explicitly so a
+    // missing HOME never silently falls through to whatever npx is on PATH.
+    + 'if [ -z "${HOME:-}" ]; then echo "acp-launch.sh: HOME is not set" >&2; exit 1; fi\n'
+    // Prefer an nvm-installed Node (present only when the image Node was unsuitable).
+    + 'nvm_node_bin="$(ls -d "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin 2>/dev/null | sort -V | tail -n 1)"\n'
+    + 'if [ -n "$nvm_node_bin" ]; then PATH="$nvm_node_bin:$PATH"; export PATH; fi\n'
+    + exports
+    + `exec ${exec}\n`;
+}
+
+function buildAcpSandboxInstallScript(install: PinnedAcpRegistryAgent): string {
+  const launcher = buildAcpSandboxLauncherScript(install);
+  if (launcher.includes(LAUNCHER_EOF)) {
+    throw new Error("ACP launcher content collides with the install heredoc delimiter");
+  }
+  const dir = `$HOME/.oma/installed-agent/${install.id}/${install.version}`;
+  const major = install.nodeMajor;
+  const nvm = [
+    "set -eo pipefail",
+    `curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | env -u NODE_VERSION bash`,
+    '. "$NVM_DIR/nvm.sh"',
+    `nvm install ${major}`,
+    `nvm alias default ${major}`,
+  ].join("; ");
+  const unsetSecrets = ACP_PROVIDER_SECRET_ENV_KEYS.map((key) => `-u ${key}`).join(" ");
+  return [
+    // One ordered stream, so the success marker is reliably the last line.
+    "exec 2>&1",
+    "set -eu",
+    'if [ -z "${HOME:-}" ]; then echo "HOME is not set in the sandbox" >&2; exit 1; fi',
+    'NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; export NVM_DIR',
+    'oma_nvm_path() { nvm_bin="$(ls -d "$NVM_DIR"/versions/node/*/bin 2>/dev/null | sort -V | tail -n 1)"; if [ -n "$nvm_bin" ]; then PATH="$nvm_bin:$PATH"; export PATH; fi; }',
+    "oma_node_ok() { major=\"$(node --version 2>/dev/null | sed -n 's/^v\\([0-9][0-9]*\\).*/\\1/p')\"; "
+      + `[ -n "$major" ] && [ "$major" -ge ${major} ] && command -v npx >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; }`,
+    "oma_nvm_path",
+    "if ! oma_node_ok; then",
+    `  command -v curl >/dev/null 2>&1 || { echo "Node >= ${major} with npx and npm is required and curl is unavailable to install it" >&2; exit 1; }`,
+    `  bash -c ${shellQuote(nvm)} || { echo "nvm failed to install Node ${major}" >&2; exit 1; }`,
+    "  oma_nvm_path",
+    `  oma_node_ok || { echo "Node >= ${major} with npx and npm is unavailable after nvm install" >&2; exit 1; }`,
+    "fi",
+    // Prefetch the exact pinned package into the npx cache with the same
+    // node/npm the launcher resolves, so the first spawn does not download it.
+    // `node -e 0` exits at once; the agent binary itself would wait on stdin.
+    // Provider secrets are stripped; npm config (cache, registry) is kept.
+    `env ${unsetSecrets} npm exec --yes --package=${shellQuote(install.package)} -- node -e 0 </dev/null`
+      + ` || { echo "npm failed to prefetch ${install.package}" >&2; exit 1; }`,
+    `oma_dir="${dir}"`,
+    'mkdir -p "$oma_dir"',
+    'oma_tmp="$oma_dir/.acp-launch.sh.$$"',
+    `cat > "$oma_tmp" <<'${LAUNCHER_EOF}'`,
+    launcher.trimEnd(),
+    LAUNCHER_EOF,
+    'chmod 755 "$oma_tmp"',
+    'mv -f "$oma_tmp" "$oma_dir/acp-launch.sh"',
+    `echo "${LAUNCHER_MARKER}$oma_dir/acp-launch.sh"`,
+    `echo "OMA_ACP_NODE=$(node --version)"`,
+    `echo ${INSTALL_OK_MARKER}`,
+  ].join("\n");
 }
 
 /** Publish the exact native-session allowlist before the child can write state. */

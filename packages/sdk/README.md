@@ -141,8 +141,20 @@ tool. Configure via agent `metadata` (top-level or `_oma` mirror):
 | `tool_search_limit` | `8` | Max tools returned per search (1–32). |
 | `tool_search_auto_threshold` | `0.1` | Fraction of context window used in `auto` mode. |
 | `tool_search_always_load` | `[]` | MCP tool names always exposed without search. |
+| `tool_search_deferred_hints` | by mode | How deferred tool names are hinted: `claude_code` (per-turn reminder), `pi` (system-prompt index), `incremental`, or `codex` (none). Defaults to `claude_code` when found tools load directly and `pi` when they are called through `mcp_invoke`. |
 
-Loaded tools persist in the session event log and are restored on harness resume.
+How a found tool is called depends on the model's Pi `compat`:
+
+- With mid-conversation tool declarations (`supportsMidConvoSystemMessages` plus
+  `supportsMidConvoToolChanges` or `supportsMidConvoToolAdditions`), found tools
+  are declared for the next model turn and called by name. Loaded tools persist
+  in the session event log and are restored on harness resume.
+- Otherwise the tool list stays fixed for the session: `tool_search` returns each
+  tool's schema and the model calls it through `mcp_invoke` with
+  `{"tool_name": ..., "arguments": {...}}`, so loading a tool does not
+  invalidate the cached prompt prefix. Arguments are validated against the
+  target's schema, and `always_ask` targets pause for confirmation like direct
+  calls.
 
 ### Skill mounting (`skill_mount`)
 

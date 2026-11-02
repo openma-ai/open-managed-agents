@@ -6,6 +6,10 @@ import { join, resolve } from "node:path";
 import type { Socket } from "node:net";
 import OpenAI from "openai";
 import { detachedProcessOptions, killProcessTree } from "../helpers/process-tree";
+import { bootstrapModelCards, parseBootstrapConfig } from "../../../../scripts/bootstrap-model-card.mjs";
+
+/** Model handles the OpenAI-compatible e2e suites create agents with. */
+export const FIXTURE_MODEL_HANDLES = ["claude-sonnet-4-20250514"];
 
 export type ModelReply = { text: string } | { name: string; input: Record<string, unknown> } | null;
 export type OpenAINodeModel = (input: Record<string, any>) => Promise<ModelReply> | ModelReply;
@@ -51,6 +55,13 @@ export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, opti
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk);
       const input = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, any>;
+      // The model-card capability probe (max_tokens=1, non-streaming) is not a
+      // turn; answer it without consuming the scripted reply sequence.
+      if (input.stream !== true && input.max_tokens === 1) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ id: "msg_probe", type: "message", role: "assistant", model: input.model, content: [{ type: "text", text: "" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+        return;
+      }
       requests.push(input);
       const requestNumber = requests.length;
       const output = await reply(input);
@@ -127,7 +138,7 @@ export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, opti
         ...detachedProcessOptions, cwd: root, env: {
           ...inherited, PORT: "0", HOST: "127.0.0.1", DATABASE_URL: "", OPENMA_PROCESS_MODE: "standalone",
           DATABASE_PATH: join(directory, "oma.db"), AUTH_DATABASE_PATH: join(directory, "auth.db"), SANDBOX_WORKDIR: join(directory, "sandboxes"), MEMORY_BLOB_DIR: join(directory, "memories"), FILES_BLOB_DIR: join(directory, "files"), SESSION_OUTPUTS_DIR: join(directory, "outputs"),
-          AUTH_DISABLED: "1", PLATFORM_ROOT_SECRET: "openai-node-test-configuration-secret", NODE_ENV: "test", DREAM_CURATOR_MODE: "dedup", ANTHROPIC_API_KEY: "local-test-model-key", ANTHROPIC_BASE_URL: `http://127.0.0.1:${modelPort}`,
+          AUTH_DISABLED: "1", PLATFORM_ROOT_SECRET: "openai-node-test-configuration-secret", NODE_ENV: "test", DREAM_CURATOR_MODE: "dedup",
           MEMORY_S3_ENDPOINT: "", FILES_S3_ENDPOINT: "", SANDBOX_PROVIDER: "litebox",
         }, stdio: ["ignore", "pipe", "pipe"],
       });
@@ -140,15 +151,26 @@ export async function bootOpenAINode(reply: OpenAINodeModel = defaultReply, opti
       while (Date.now() < deadline) {
         if (spawnError !== undefined) throw spawnError;
         if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Node exited: ${currentLogs.join("")}`);
+        let listeningPort: number | undefined;
         for (const line of currentLogs.join("").split("\n")) {
           try {
             const event = JSON.parse(line);
-            if (event.op === "main-node.listening" && event.port) {
-              baseURL = `http://127.0.0.1:${event.port}`;
-              client = new OpenAI({ apiKey: "test", baseURL: `${baseURL}/openai/v1`, maxRetries: 0 });
-              return;
-            }
+            if (event.op === "main-node.listening" && event.port) listeningPort = event.port;
           } catch { /* Dependencies may log plain text or partial lines. */ }
+        }
+        if (listeningPort !== undefined) {
+          baseURL = `http://127.0.0.1:${listeningPort}`;
+          client = new OpenAI({ apiKey: "test", baseURL: `${baseURL}/openai/v1`, maxRetries: 0 });
+          // No platform model key: the workspace pays with its own card,
+          // installed through the self-host bootstrap script (idempotent
+          // across restart()).
+          await bootstrapModelCards(parseBootstrapConfig({
+            OMA_BASE_URL: baseURL,
+            ANTHROPIC_API_KEY: "local-test-model-key",
+            ANTHROPIC_BASE_URL: `http://127.0.0.1:${modelPort}`,
+            OMA_MODEL_CARDS: FIXTURE_MODEL_HANDLES.join(","),
+          }));
+          return;
         }
         await new Promise(resolve => setTimeout(resolve, 100));
       }

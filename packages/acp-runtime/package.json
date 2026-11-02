@@ -12,6 +12,7 @@
     "./known-agents": "./src/known-agents.ts",
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
+    "./registry-pins": "./src/acp-registry-pins.ts",
     "./inference-config": "./src/inference/index.ts"
   },
   "scripts": {
@@ -22,7 +23,7 @@
   "dependencies": {
     "@open-managed-agents/inference-proxy": "workspace:*",
     "@open-managed-agents/sandbox": "workspace:*",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#e196bdcac3d5f3165d6833c2531d4255a51620e9",
+    "@openma/common": "^0.9.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {

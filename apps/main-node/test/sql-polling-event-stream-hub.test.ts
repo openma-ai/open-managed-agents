@@ -5,8 +5,8 @@
 import { describe, expect, it } from "vitest";
 import { createBetterSqlite3SqlClient, type SqlClient } from "@open-managed-agents/sql-client";
 import type { SessionEvent } from "@open-managed-agents/shared";
-import { SqlPollingEventStreamHub } from "../src/lib/sql-polling-event-stream-hub";
-import type { EventWriter } from "../src/lib/event-stream-hub";
+import { SqlPollingEventStreamHub } from "../../../packages/control-plane-node/src/lib/sql-polling-event-stream-hub";
+import type { EventWriter } from "../../../packages/control-plane-node/src/lib/event-stream-hub";
 
 type Ev = SessionEvent & { seq?: number };
 

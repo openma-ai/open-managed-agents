@@ -12,12 +12,13 @@ import { registerHarness } from "@open-managed-agents/agent/harness/registry";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import type { UserMessageEvent } from "@open-managed-agents/shared";
 import { createScriptedMcpServer } from "../../../test/fakes/scripted-mcp-server";
+import { seedAgent } from "./seed-agent";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
-import { Disposables } from "../src/lifecycle";
-import { NodeInstallBridge } from "../src/lib/node-install-bridge.js";
-import { mountNodeHttp } from "../src/modules/node-http";
-import { createNodeRuntime } from "../src/modules/node-runtime";
+import { Disposables } from "../../../packages/control-plane-node/src/lifecycle";
+import { NodeInstallBridge } from "../../../packages/control-plane-node/src/lib/node-install-bridge.js";
+import { mountNodeHttp } from "../../../packages/control-plane-node/src/modules/node-http";
+import { createNodeRuntime } from "../../../packages/control-plane-node/src/modules/node-runtime";
 
 const TENANT = "tn_live_resume";
 const USER = "usr_live_resume";
@@ -118,7 +119,6 @@ describe("Node service resume applies published MCP tools", () => {
       MEMORY_BLOB_DIR: join(dir, "memory"),
       FILES_BLOB_DIR: join(dir, "files"),
       SESSION_OUTPUTS_DIR: join(dir, "outputs"),
-      ANTHROPIC_API_KEY: "test-key-not-used",
       PLATFORM_ROOT_SECRET: "test-platform-root-secret-padded-to-thirtytwo",
     });
     const components = await nodeDefaults(config);
@@ -143,15 +143,24 @@ describe("Node service resume applies published MCP tools", () => {
       `INSERT INTO membership (user_id, tenant_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
     ).bind(USER, TENANT, now).run();
 
-    const agent = await runtime.agentsService.create({
+    // Even a deterministic harness resolves credentials in its own workspace.
+    await runtime.modelCardsService.create({
       tenantId: TENANT,
-      input: {
-        name: "Live resume",
-        model: "claude-sonnet-4-6",
-        system: "frozen system prompt",
-        harness: "resume-mcp-probe",
-        tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] }],
-      },
+      modelId: "claude-sonnet-4-6",
+      provider: "ant",
+      apiKey: "test-key-not-used",
+    });
+
+    const agent = await seedAgent(runtime.sql, TENANT, {
+      name: "Live resume",
+      model: { id: "claude-sonnet-4-6" },
+      system: "frozen system prompt",
+      openma: { harness: "resume-mcp-probe" },
+      tools: [{
+        type: "agent_toolset_20260401",
+        configs: [{ name: "bash", enabled: false, permissionPolicy: { type: "always_allow" } }],
+        defaultConfig: { enabled: true, permissionPolicy: { type: "always_allow" } },
+      }],
     });
     const vault = await runtime.vaultService.create({ tenantId: TENANT, name: "slack" });
     await runtime.credentialService.create({
@@ -173,7 +182,7 @@ describe("Node service resume applies published MCP tools", () => {
       vaults: runtime.vaultService,
       credentials: runtime.credentialService,
       sessions: runtime.sessionsService,
-      agents: runtime.agentsService,
+      agents: runtime.agentStore,
       resolveTenantId: async (userId) => (userId === USER ? TENANT : null),
       appendUserEvent: async (sessionId, tenantId, agentId, event) => {
         const entry = await runtime.sessionRegistry.getOrCreate(sessionId, tenantId);

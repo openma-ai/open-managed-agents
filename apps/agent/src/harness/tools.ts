@@ -7,7 +7,8 @@ import {
   connectHttpMcpClient,
   type McpClientPort,
 } from "@open-managed-agents/mcp";
-import type { AgentConfig, ToolsetConfig, CustomToolConfig, SessionEvent } from "@open-managed-agents/shared";
+import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
+import type { ToolsetConfig, CustomToolConfig, SessionEvent } from "@open-managed-agents/shared";
 import type { ToMarkdownProvider } from "@open-managed-agents/markdown";
 import type { SandboxPort, ProcessHandle } from "./interface";
 import { nanoid } from "nanoid";
@@ -15,6 +16,15 @@ import { nanoid } from "nanoid";
 // Concrete adapters (CF / Node / CDP / Disabled) live in the package and
 // dynamic-import their workerd / Node peers only at first launch().
 import type { BrowserHarness, BrowserBillingHook } from "@open-managed-agents/browser-harness";
+import { fetchWebSearchGet, postTavilySearch, WEB_SEARCH_DDG_TIMEOUT_MS } from "./tool-http-fetch";
+import {
+  fetchWebFetchUrl,
+  webFetchGuardError,
+  webFetchHttpErrorMessage,
+  WEB_FETCH_RAW_TIMEOUT_MS,
+  WEB_FETCH_TIMEOUT_MS,
+  type WebFetchNetworking,
+} from "./web-fetch-http";
 
 // Source of truth for which tool names are part of the agent_toolset_20260401
 // built-in suite. Used by buildTools() below to decide which tool entries to
@@ -131,36 +141,87 @@ If the page is an error/404/login wall/empty result, output exactly one line sta
 
 
 /**
- * Wrap a tool execute function so errors are returned as strings to the LLM
- * instead of crashing the entire harness (matching Claude Code's behavior).
- * The LLM sees the error and can retry, try a different approach, or inform the user.
+ * A tool failure that already carries its complete model-facing text
+ * (the same string the tool used to return, "Error: " prefix included).
+ *
+ * Built-in tools report failures as error values so the model can read
+ * what went wrong and recover (matching Claude Code's behavior). But when
+ * the failure travels as a plain result string, the harness loops cannot
+ * tell it apart from a successful result, so the canonical
+ * agent.tool_result event goes out with is_error: false and API clients
+ * cannot trust the flag (#359). safe() therefore throws ToolFailureError
+ * instead of returning the string, and executes throw it directly for
+ * failures they detect in-band. Both loops already turn a thrown tool
+ * error into an error result whose content is the error's message, so
+ * the model sees exactly the text it saw before — now with the error
+ * flag set.
+ *
+ * toString() returns the message verbatim: Error#toString would prepend
+ * "ToolFailureError: ", and consumers that stringify the error (AI SDK
+ * error results, event normalization) must reproduce the pre-formatted
+ * message byte-for-byte.
+ */
+export class ToolFailureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolFailureError";
+  }
+
+  override toString(): string {
+    return this.message;
+  }
+}
+
+/**
+ * Wrap a tool execute function so a failure cannot be mistaken for a
+ * successful result: errors are thrown as ToolFailureError (see above)
+ * instead of being returned as strings, and the harness loops mark the
+ * tool result as an error. The LLM still sees the error text and can
+ * retry, try a different approach, or inform the user.
  *
  * Result type is `string | object`: most tools return text, but multimodal tools
  * (e.g. Read returning an image block) return structured objects that toModelOutput
  * converts for the AI SDK.
  */
 type ToolResultValue = string | Record<string, unknown>;
-function safe<T>(fn: (args: T) => Promise<ToolResultValue>): (args: T) => Promise<ToolResultValue> {
-  return async (args: T) => {
+
+/**
+ * The part of a tool failure the model can act on: the error message, plus
+ * the message of its cause when that adds something (e.g. ECONNREFUSED under
+ * "fetch failed"). Never a stack trace.
+ */
+export function modelFacingError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  let msg = err.message || err.name;
+  const cause = err.cause;
+  if (cause !== undefined && cause !== null) {
+    const causeMessage = cause instanceof Error ? cause.message || cause.name : String(cause);
+    if (causeMessage && !msg.includes(causeMessage)) msg += `\ncause: ${causeMessage}`;
+  }
+  return msg;
+}
+type ToolExecuteOptions = { abortSignal?: AbortSignal };
+function safe<T>(
+  fn: (args: T, toolOpts?: ToolExecuteOptions) => Promise<ToolResultValue>,
+): (args: T, toolOpts?: ToolExecuteOptions) => Promise<ToolResultValue> {
+  return async (args: T, toolOpts?: ToolExecuteOptions) => {
     try {
-      const result = await fn(args);
+      const result = await fn(args, toolOpts);
       // Handle empty string results (CC pattern: prevent model stop sequence issues)
       if (typeof result === "string" && result.trim() === "") return "(completed with no output)";
       return result;
     } catch (err) {
-      let msg = err instanceof Error ? err.message : String(err);
-      // Include stack trace for better debugging
-      if (err instanceof Error && err.stack) {
-        msg += "\n" + err.stack.split("\n").slice(1, 5).join("\n");
-      }
-      // Include cause if present
-      if (err instanceof Error && err.cause) {
-        msg += "\ncause: " + String(err.cause);
-      }
+      // Already carries its model-facing text (thrown by the execute
+      // itself for an in-band failure); do not re-wrap or re-prefix it.
+      if (err instanceof ToolFailureError) throw err;
+      const msg = modelFacingError(err);
+      // Stack traces and the full cause chain are for operators, not the
+      // model: it cannot act on server source locations.
+      console.warn("[tool] execution failed:", err);
       const truncated = msg.length > 10000
         ? msg.slice(0, 5000) + `\n[${msg.length - 10000} characters truncated]\n` + msg.slice(-5000)
         : msg;
-      return `Error: ${truncated}`;
+      throw new ToolFailureError(`Error: ${truncated}`);
     }
   };
 }
@@ -345,6 +406,8 @@ export async function buildTools(
   agentConfig: AgentConfig,
   sandbox: SandboxPort,
   env?: {
+    /** The calling session's own resolved model-card key and endpoint
+     *  (never a platform env key). Gates and powers callable_agents. */
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_BASE_URL?: string;
     TAVILY_API_KEY?: string;
@@ -355,9 +418,7 @@ export async function buildTools(
     toMarkdown?: ToMarkdownProvider;
     delegateToAgent?: (agentId: string, message: string) => Promise<string>;
     environmentConfig?: {
-      networking?: {
-        type: string;
-        allowed_hosts?: string[];
+      networking?: WebFetchNetworking & {
         allow_mcp_servers?: boolean;
         allow_package_managers?: boolean;
       };
@@ -418,7 +479,15 @@ export async function buildTools(
       prompt: string;
       kind: "one_shot" | "cron";
     }>;
-  }
+  },
+  options?: {
+    /**
+     * Strip `execute` from `always_ask` tools so the harness pauses them for confirmation
+     * (default true). The confirmation handler passes false: the user has already approved the
+     * call and needs the executable tool.
+     */
+    enforcePermissions?: boolean;
+  },
 ): Promise<Record<string, any>> {
   const enabled = getEnabledTools(agentConfig.tools);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -491,9 +560,9 @@ export async function buildTools(
           const m = raw.match(/^exit=(-?\d+)\n([\s\S]*)$/);
           if (!m) return raw;
           const code = parseInt(m[1], 10);
-          if (code !== 0) return `Error reading file (exit=${code}): ${m[2].slice(0, 200)}`;
+          if (code !== 0) throw new ToolFailureError(`Error reading file (exit=${code}): ${m[2].slice(0, 200)}`);
           const data = m[2].trimEnd();
-          if (!data) return "Error: file is empty or unreadable";
+          if (!data) throw new ToolFailureError("Error: file is empty or unreadable");
 
           if (imageMedia) {
             return {
@@ -570,14 +639,14 @@ export async function buildTools(
       execute: safe(async ({ file_path, old_string, new_string, replace_all }) => {
         const content = await sandbox.readFile(file_path);
         if (!content.includes(old_string)) {
-          return "Error: old_string not found in file";
+          throw new ToolFailureError("Error: old_string not found in file");
         }
         // Default behavior: require uniqueness (matches Anthropic Edit semantics)
         if (!replace_all) {
           const occurrences = content.split(old_string).length - 1;
           if (occurrences > 1) {
-            return `Error: old_string appears ${occurrences} times in file. ` +
-              `Provide more surrounding context to make it unique, or pass replace_all=true.`;
+            throw new ToolFailureError(`Error: old_string appears ${occurrences} times in file. ` +
+              `Provide more surrounding context to make it unique, or pass replace_all=true.`);
           }
         }
         const updated = replace_all
@@ -611,7 +680,7 @@ export async function buildTools(
         if (!m) return raw;
         const code = parseInt(m[1], 10);
         const out = m[2].trimEnd();
-        if (code !== 0) return truncateResult(`Error: glob exited with code ${code}\n${out}`);
+        if (code !== 0) throw new ToolFailureError(truncateResult(`Error: glob exited with code ${code}\n${out}`));
         if (!out) return "No files matched the pattern";
         const files = out.split("\n").filter(Boolean);
         return truncateResult(`Found ${files.length} file${files.length === 1 ? "" : "s"}\n${files.join("\n")}`);
@@ -725,7 +794,7 @@ export async function buildTools(
           return "No matches found";
         }
         // Real error
-        return truncateResult(`Error: grep exited with code ${code}\n${out}`);
+        throw new ToolFailureError(truncateResult(`Error: grep exited with code ${code}\n${out}`));
       }),
     });
   }
@@ -748,22 +817,21 @@ export async function buildTools(
           .optional()
           .describe("Truncate returned markdown to this many chars (default 50000)"),
       }),
-      execute: safe(async ({ url, max_length }) => {
-        // Networking restriction enforcement (limited mode)
-        if (env?.environmentConfig?.networking?.type === "limited") {
-          const allowedHosts = env.environmentConfig.networking.allowed_hosts || [];
-          try {
-            const parsedUrl = new URL(url);
-            const isAllowed = allowedHosts.some(
-              h => parsedUrl.hostname === h || parsedUrl.hostname.endsWith(`.${h}`)
-            );
-            if (!isAllowed) {
-              return `Error: Host "${parsedUrl.hostname}" is not allowed. Allowed hosts: ${allowedHosts.join(", ")}`;
-            }
-          } catch {
-            return "Error: Invalid URL";
-          }
-        }
+      execute: safe(async ({ url, max_length }, toolOpts) => {
+        const fetchNetworking: WebFetchNetworking | undefined =
+          env?.environmentConfig?.networking;
+        const fetchOpts = {
+          networking: fetchNetworking,
+          abortSignal: toolOpts?.abortSignal,
+          timeoutMs: WEB_FETCH_TIMEOUT_MS,
+        };
+        const fetchHeaders = {
+          "User-Agent": "OMA-Agent/1.0 (+web_fetch)",
+          Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
+        };
+
+        const guardErr = webFetchGuardError(url, fetchNetworking);
+        if (guardErr) throw new ToolFailureError(guardErr);
 
         const cap = max_length || 50000;
         const truncate = (s: string) => (s.length > cap ? s.slice(0, cap) + `\n\n…[truncated to ${cap} chars]` : s);
@@ -777,14 +845,7 @@ export async function buildTools(
         let isRaw = false;
         if (env?.toMarkdown) {
           try {
-            const r = await fetch(url, {
-              headers: {
-                "User-Agent": "OMA-Agent/1.0 (+web_fetch)",
-                Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
-              },
-              redirect: "follow",
-              signal: AbortSignal.timeout(20_000),
-            });
+            const r = await fetchWebFetchUrl(url, { headers: fetchHeaders }, fetchOpts);
             if (r.ok) {
               const buf = await r.arrayBuffer();
               const ct = r.headers.get("content-type") || "text/html";
@@ -815,13 +876,17 @@ export async function buildTools(
           }
         }
         if (markdown === null) {
-          // Fallback: raw curl from sandbox (last-resort, model gets warning)
-          const raw = await sandbox.exec(
-            `curl -sL -m 30 '${url.replace(/'/g, "'\\''")}' | head -c ${cap}`,
-            35000,
-          );
-          markdown = `[NOTE: markdown extraction unavailable for this URL — returning raw response. Look for the actual content between HTML tags.]\n\n${truncateResult(raw)}`;
-          isRaw = true;
+          try {
+            const r = await fetchWebFetchUrl(url, { headers: fetchHeaders }, {
+              ...fetchOpts,
+              timeoutMs: WEB_FETCH_RAW_TIMEOUT_MS,
+            });
+            const body = await r.text();
+            markdown = `[NOTE: markdown extraction unavailable for this URL — returning raw response. Look for the actual content between HTML tags.]\n\n${truncateResult(body.slice(0, cap))}`;
+            isRaw = true;
+          } catch (err) {
+            throw new ToolFailureError(`Error: ${webFetchHttpErrorMessage(err, WEB_FETCH_RAW_TIMEOUT_MS)}`);
+          }
         }
 
         // ── Step 2: Aux summarization + offload (when configured) ──
@@ -997,26 +1062,34 @@ export async function buildTools(
         query: z.string().describe("Search query"),
         max_results: z.number().optional().describe("Max results (default 5)"),
       }),
-      execute: safe(async ({ query, max_results }) => {
+      execute: safe(async ({ query, max_results }, toolOpts) => {
         const count = max_results || 5;
         // Step 1: Get VQD token from DuckDuckGo
-        const vqdRes = await fetch(`https://duckduckgo.com/?${new URLSearchParams({ q: query, ia: "web" })}`);
-        if (!vqdRes.ok) return `DuckDuckGo error: ${vqdRes.status}`;
+        const vqdRes = await fetchWebSearchGet(
+          `https://duckduckgo.com/?${new URLSearchParams({ q: query, ia: "web" })}`,
+          toolOpts?.abortSignal,
+          WEB_SEARCH_DDG_TIMEOUT_MS,
+        );
+        if (!vqdRes.ok) throw new ToolFailureError(`DuckDuckGo error: ${vqdRes.status}`);
         const vqdText = await vqdRes.text();
         const vqd = /vqd=['"](\d+-\d+(?:-\d+)?)['"]/?.exec(vqdText)?.[1];
-        if (!vqd) return "DuckDuckGo: failed to get search token";
+        if (!vqd) throw new ToolFailureError("DuckDuckGo: failed to get search token");
 
         // Step 2: Fetch search results
         const params = new URLSearchParams({
           q: query, l: "en-us", kl: "wt-wt", s: "0", dl: "en",
           ct: "US", ss_mkt: "us", vqd, sp: "1", bpa: "1",
         });
-        const searchRes = await fetch(`https://links.duckduckgo.com/d.js?${params}`);
-        if (!searchRes.ok) return `DuckDuckGo search error: ${searchRes.status}`;
+        const searchRes = await fetchWebSearchGet(
+          `https://links.duckduckgo.com/d.js?${params}`,
+          toolOpts?.abortSignal,
+          WEB_SEARCH_DDG_TIMEOUT_MS,
+        );
+        if (!searchRes.ok) throw new ToolFailureError(`DuckDuckGo search error: ${searchRes.status}`);
         const body = await searchRes.text();
 
         if (body.includes("DDG.deep.anomalyDetectionBlock"))
-          return "DuckDuckGo rate limited. Try again in a moment.";
+          throw new ToolFailureError("DuckDuckGo rate limited. Try again in a moment.");
 
         // Step 3: Parse results from JSONP-like response
         const match = /DDG\.pageLayout\.load\('d',(\[.+?\])\);DDG\.duckbar\.load/.exec(body);
@@ -1047,18 +1120,22 @@ export async function buildTools(
         query: z.string().describe("Search query"),
         max_results: z.number().optional().describe("Max results (default 5)"),
       }),
-      execute: safe(async ({ query, max_results }) => {
+      execute: safe(async ({ query, max_results }, toolOpts) => {
         if (!tavilyKey)
           return "web_search unavailable: TAVILY_API_KEY not configured";
-        const res = await fetch("https://api.tavily.com/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            api_key: tavilyKey,
-            query,
-            max_results: max_results || 5,
-          }),
-        });
+        let res: Response;
+        try {
+          res = await postTavilySearch(
+            JSON.stringify({
+              api_key: tavilyKey,
+              query,
+              max_results: max_results || 5,
+            }),
+            toolOpts?.abortSignal,
+          );
+        } catch (err) {
+          throw new ToolFailureError(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const data = (await res.json()) as any;
         return JSON.stringify(
@@ -1146,6 +1223,8 @@ export async function buildTools(
           req.headers.set("x-oma-tenant", tenantId);
           req.headers.set("x-oma-session", sessionId);
           req.headers.set("x-oma-mcp-server", serverName);
+          req.headers.set("x-oma-agent-id", agentConfig.id);
+          req.headers.set("x-oma-agent-version", String(agentConfig.version));
           return mcpBinding.fetch(req);
         };
         let mcpClient: McpClientPort | undefined;
@@ -1210,9 +1289,11 @@ export async function buildTools(
 
 
 
-  // Multi-agent tools — create a call tool for each callable agent
-  if (agentConfig.callable_agents?.length && env?.ANTHROPIC_API_KEY) {
-    for (const ca of agentConfig.callable_agents) {
+  // Multi-agent tools — create a call tool for each callable agent. Sub-agents
+  // are billed to the same workspace model card, never to a platform key.
+  const subagents = agentConfig.multiagent?.subagents;
+  if (subagents?.type === "enabled" && env?.delegateToAgent) {
+    for (const ca of subagents.predefined_agents) {
       const toolName = `call_agent_${ca.id.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 
       tools[toolName] = tool({
@@ -1234,14 +1315,9 @@ export async function buildTools(
     }
   }
 
-  // Built-in general sub-agent tool — opt-in via
-  // agentConfig.enable_general_subagent. Reserved id "general" routes
-  // to a synthesized config in runSubAgent (apps/agent/src/runtime/
-  // session-do.ts), so the user doesn't need to pre-create + add a
-  // sub-agent to the callable_agents roster. Inherits this agent's
-  // model + sandbox; runs with a generic system prompt and a safe
-  // built-in toolset (no schedule, no further delegate, no MCP).
-  if (agentConfig.enable_general_subagent && env?.delegateToAgent) {
+  // Inline children inherit the pinned parent configuration and share its
+  // sandbox, but have their own conversation and cannot delegate again.
+  if (subagents?.type === "enabled" && subagents.inline_agents.type === "enabled" && env?.delegateToAgent) {
     tools.general_subagent = tool({
       description:
         "Delegate a focused, well-scoped sub-task to a fresh general sub-agent. " +
@@ -1249,7 +1325,7 @@ export async function buildTools(
         "and returns a single text response when done. Use for: research, code " +
         "exploration, file scanning, batch operations — anything you want a clean " +
         "context for. The sub-agent shares this agent's sandbox + model but cannot " +
-        "delegate further or use MCP tools.",
+        "delegate further. It inherits the parent's system, tools, MCP servers, and skills.",
       inputSchema: z.object({
         task: z
           .string()
@@ -1273,6 +1349,7 @@ export async function buildTools(
 
   // Strip execute from always_ask tools so AI SDK returns them as pending calls
   // requiring user confirmation before execution
+  if (options?.enforcePermissions === false) return tools;
   for (const [name, t] of Object.entries(tools)) {
     if (getToolPermission(agentConfig, name) === "always_ask") {
       tools[name] = tool({

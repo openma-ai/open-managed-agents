@@ -36,7 +36,9 @@ import {
   SessionResourceMaxExceededError,
   SessionResourceNotFoundError,
 } from "@open-managed-agents/sessions-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { SessionRouter, SessionInitParams } from "@open-managed-agents/session-runtime";
+import { settleOnlyBatchRejection, wireEventsFromPage } from "@open-managed-agents/session-runtime/settle-batch";
 import type { RouteServicesArg } from "../types";
 import { resolveServices } from "../types";
 import { createSseStream } from "./sse-stream";
@@ -199,37 +201,32 @@ function mapSessionError(c: Context, err: unknown): Response {
 
 function snapshotToSessionAgent(
   agentId: string,
-  snapshot: AgentConfig | null,
+  snapshot: AgentConfig | import("@open-managed-agents/shared").RuntimeAgentConfig | null,
 ): Record<string, unknown> {
   if (!snapshot) return { type: "agent", id: agentId, version: 1 };
-  const {
-    aux_model: _a,
-    harness: _h,
-    runtime_binding: _rb,
-    appendable_prompts: _ap,
-    callable_agents,
-    archived_at: _ar,
-    created_at: _ca,
-    updated_at: _ua,
-    metadata: _md,
-    ...rest
-  } = snapshot;
-  const multiagent = (callable_agents ?? []).length > 0
-    ? {
-        type: "coordinator" as const,
-        agents: (callable_agents ?? []).map((c) => ({
-          type: "agent" as const,
-          id: c.id,
-          version: c.version ?? 1,
-        })),
-      }
-    : null;
+  const multiagent = snapshot.multiagent;
   return {
     type: "agent",
-    ...rest,
     id: agentId,
     version: snapshot.version ?? 1,
-    multiagent,
+    name: snapshot.name,
+    model: snapshot.model,
+    system: snapshot.system,
+    description: snapshot.description,
+    tools: snapshot.tools,
+    skills: snapshot.skills ?? [],
+    mcp_servers: snapshot.mcp_servers ?? [],
+    multiagent: multiagent ? {
+      type: multiagent.type,
+      advisor: multiagent.advisor,
+      workflows: multiagent.workflows,
+      subagents: multiagent.subagents.type === "disabled" ? { type: "disabled" } : {
+        type: "enabled",
+        inline_agents: multiagent.subagents.inline_agents,
+        predefined_agents: multiagent.subagents.predefined_agents.map((member) =>
+          "model" in member ? snapshotToSessionAgent(member.id, member) : { type: "agent", id: member.id, version: member.version }),
+      },
+    } : null,
   };
 }
 
@@ -353,10 +350,10 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       }
     }
 
-    const agentRow = await services.agents.get({ tenantId: t, agentId });
-    if (!agentRow) return c.json({ error: "Agent not found" }, 404);
+    const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, t, agentId);
+    if (!agentSnapshot) return c.json({ error: "Agent not found" }, 404);
 
-    const agentIsLocalRuntime = !!agentRow.runtime_binding;
+    const agentIsLocalRuntime = !!agentSnapshot.runtime_binding;
 
     if (deps.lifecycle?.preCreateGate) {
       const gate = await deps.lifecycle.preCreateGate({
@@ -375,7 +372,6 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       envId = deps.localRuntimeEnvId ?? "env_local_runtime";
     }
 
-    const { tenant_id: _atid, ...agentSnapshot } = agentRow;
     const envSnap = deps.loadEnvironment
       ? await deps.loadEnvironment({ tenantId: t, environmentId: envId })
       : null;
@@ -675,7 +671,23 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     const sess = await services.sessions.get({ tenantId: t, sessionId: id });
     if (!sess) return c.json({ error: "Session not found" }, 404);
     if ((sess as unknown as { archived_at?: string | null }).archived_at) {
-      return c.json({ error: "Session is archived and cannot receive new events" }, 409);
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Session is archived and cannot receive new events",
+        },
+      }, 409);
+    }
+    if ((sess as unknown as { terminated_at?: string | null }).terminated_at
+      || (sess as unknown as { status?: string }).status === "terminated") {
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Session is terminated and cannot receive new events",
+        },
+      }, 409);
     }
     const body = await c.req.json<{ events: SessionEvent[] }>();
     if (!Array.isArray(body.events) || body.events.length === 0) {
@@ -684,6 +696,27 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     for (const ev of body.events) {
       if (!ALLOWED_EVENT_TYPES.has(ev.type)) {
         return c.json({ error: `Unsupported event type: ${ev.type}` }, 400);
+      }
+    }
+
+    // Official CMA settle-only window is enforced by SessionDO / Node managed
+    // accept (requires_action / budget_reached → 400 for user.message, t307u).
+    // Propagate router 400s below.
+    // Events are appended one by one below, so a mixed batch (e.g.
+    // [user.interrupt, user.message] during requires_action) must be gated as
+    // a whole first: otherwise the interrupt lands and only the message 400s.
+    if (
+      body.events.length > 1 &&
+      body.events.some((ev) => ev.type === "user.message") &&
+      body.events.some((ev) => ev.type !== "user.message")
+    ) {
+      const recent = await router.getEvents(id, { order: "desc", limit: 200 });
+      const reject = settleOnlyBatchRejection(
+        wireEventsFromPage([...recent.data].reverse()),
+        body.events as unknown as Array<{ type?: string }>,
+      );
+      if (reject !== null) {
+        return c.json({ type: "error", error: { type: "invalid_request_error", message: reject } }, 400);
       }
     }
 
@@ -891,19 +924,21 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
     }
   });
 
-  // ── Pending events (AMA) ──────────────────────────────────────────────
-  // GET /v1/sessions/:id/pending — list user.* events enqueued but not
-  // yet drained by the harness. Forwards opaque query string (?session_
-  // thread_id, ?include_cancelled) to the SessionRouter.
-  app.get("/:id/pending", async (c) => {
+  // ── Queued inputs (AMA) ───────────────────────────────────────────────
+  // GET /v1/sessions/:id/pending is intentionally removed: queued turn
+  // inputs are events rows with `processed_at` null and are listed through
+  // GET /v1/sessions/:id/events (wire seq null until promoted in place).
+  //
+  // DELETE /v1/sessions/:id/pending/:event_id — OMA extension: remove one
+  // queued user.* event before it runs (Backchat queue "remove"). Kept as
+  // a one-release cancel shim; it marks the null-processed row cancelled.
+  app.delete("/:id/pending/:event_id", async (c) => {
     const services = resolveServices(deps.services, c);
     const router = resolveRouter(deps.router, c);
-    const tenantId = c.var.tenant_id;
     const sessionId = c.req.param("id");
-    const sess = await services.sessions.get({ tenantId, sessionId });
+    const sess = await services.sessions.get({ tenantId: c.var.tenant_id, sessionId });
     if (!sess) return c.json({ error: "Session not found" }, 404);
-    const url = new URL(c.req.url);
-    const result = await router.getPending(sessionId, { rawSearch: url.search });
+    const result = await router.cancelPending(sessionId, c.req.param("event_id"));
     return new Response(result.body, {
       status: result.status,
       headers: { "content-type": "application/json" },

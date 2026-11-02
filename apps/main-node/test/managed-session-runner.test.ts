@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { withReportedArtifactPublication } from "../src/openai-artifact-publication";
+import { withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import type { SessionEvent } from "@open-managed-agents/shared";
+import { createSessionClockRegistry, type SessionEvent } from "@open-managed-agents/shared";
 import type {
   Environment,
   Session,
@@ -11,7 +11,7 @@ import type {
 import type {
   NodeManagedSessionRunner,
   NodeManagedSessionRunnerAcceptInput,
-} from "../src/lib/node-managed-session-runtime.js";
+} from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 
 const session: Session = {
   id: "session_01",
@@ -156,12 +156,13 @@ interface RunnerConstructor {
     clock: { now(): Date };
     ids: { nextEventId(): string };
     runtimeGenerations?: { next(): string };
+    sessionClocks?: unknown;
   }): NodeManagedSessionRunner & { connectedSandbox(input: { workspaceId: string; sessionId: string }): SandboxExecutor | null };
 }
 
 describe("DefaultNodeManagedSessionRunner", () => {
   it("prepares Session inputs after sandbox creation and before it becomes executable", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -170,6 +171,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       destroy: vi.fn(async () => { order.push("destroy"); }),
     } as unknown as SandboxExecutor;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => {
@@ -215,12 +217,13 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("destroys a new sandbox when Session input preparation fails", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
     const destroy = vi.fn(async () => undefined);
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({ destroy } as unknown as SandboxExecutor),
@@ -244,7 +247,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("replaces a prepared sandbox when the Session resource snapshot changes", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -252,6 +255,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const preparedResourceCounts: number[] = [];
     let generation = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => {
@@ -303,7 +307,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("runs a user message between official lifecycle events", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath).catch(
       () => ({}),
     ) as { DefaultNodeManagedSessionRunner?: RunnerConstructor };
@@ -448,13 +452,14 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   async function failingHarnessTurn(run: (context: { runtime: { broadcast(event: unknown): void } }) => Promise<void>) {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
     let nextId = 0;
     let runs = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({}) as SandboxExecutor,
@@ -523,12 +528,13 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("reports a failed fenced final collection as exhausted and goes idle", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({} as SandboxExecutor),
@@ -610,7 +616,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       toolUseId: "event_custom_tool_01",
     },
   ])("resumes one turn for $type", async (result) => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -618,6 +624,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let nextId = 0;
     const contexts: Array<{ acceptedEvents: unknown[] }> = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({} as SandboxExecutor),
@@ -706,7 +713,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
       expectedExecutions: 0,
     },
   ])("handles a $result tool confirmation before resuming", async (verdict) => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -715,6 +722,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let runs = 0;
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: {
         execute: async (input) => {
@@ -811,7 +819,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("runs and evaluates a defined outcome through official spans", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -819,6 +827,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let nextId = 0;
     const evaluations: object[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: {
         evaluate: async (input) => {
           evaluations.push(input);
@@ -938,7 +947,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("revises an outcome until max_iterations_reached", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -947,6 +956,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const iterations: number[] = [];
     const contexts: unknown[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: {
         evaluate: async (input) => {
           iterations.push(input.iteration);
@@ -1037,7 +1047,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("interrupts the active turn without starting another harness run", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -1048,6 +1058,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let runs = 0;
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => sandbox,
@@ -1134,7 +1145,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("does not report a failed turn when the execution lease was lost (another owner takes over)", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -1142,6 +1153,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     let nextId = 0;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async () => ({}) as SandboxExecutor,
@@ -1176,13 +1188,14 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("owns and destroys sandboxes by workspace and session scope", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
     const built: string[] = [];
     const destroyed: string[] = [];
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: async ({ workspaceId }) => {
@@ -1226,7 +1239,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("aborts sandbox acquisition when startup is cancelled and destroys a late sandbox", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
@@ -1235,6 +1248,7 @@ describe("DefaultNodeManagedSessionRunner", () => {
     let finishCreate: ((sandbox: SandboxExecutor) => void) | undefined;
     let destroyed = false;
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: () => {
@@ -1269,13 +1283,14 @@ describe("DefaultNodeManagedSessionRunner", () => {
   });
 
   it("cancels an in-flight sandbox acquisition through runner.cancel", async () => {
-    const modulePath = "../src/lib/node-managed-session-runner.ts";
+    const modulePath = new URL("../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts", import.meta.url).href;
     const runnerModule = await import(/* @vite-ignore */ modulePath) as {
       DefaultNodeManagedSessionRunner: RunnerConstructor;
     };
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const runner = new runnerModule.DefaultNodeManagedSessionRunner({
+      sessionClocks: createSessionClockRegistry(),
       outcomes: { evaluate: async () => { throw new Error("unexpected outcome evaluation"); } },
       confirmedTools: { execute: async () => { throw new Error("unexpected confirmed tool execution"); } },
       buildSandbox: ({ signal }) => {

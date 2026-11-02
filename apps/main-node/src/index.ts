@@ -1,7 +1,8 @@
 // Node-side single-process entrypoint and compatibility module.
 //
-// The control plane itself is assembled by createNodeControlPlane() in
-// ./control-plane.ts from a NodeConfig. This module keeps the historical
+// The control plane itself is assembled by createNodeControlPlane() from
+// @open-managed-agents/control-plane-node, given the components nodeDefaults()
+// builds from a NodeConfig. This module keeps the historical
 // side-effect contract: importing it builds one control plane from
 // process.env, exports its Hono `app` and `shutdownNodeApp`, and — in
 // standalone mode — starts background work, listens, and handles signals.
@@ -12,9 +13,8 @@
 //   @open-managed-agents/main-node/serve          serveNodeControlPlane
 
 import { loadNodeConfig } from "./config.js";
-import { createNodeControlPlane } from "./control-plane.js";
+import { createNodeControlPlane, serveNodeControlPlane } from "@open-managed-agents/control-plane-node";
 import { nodeDefaults } from "./components.js";
-import { serveNodeControlPlane } from "./serve.js";
 
 export {
   loadNodeConfig,
@@ -27,7 +27,7 @@ export {
   createNodeControlPlane,
   type NodeControlPlane,
   type NodeControlPlaneApp,
-} from "./control-plane.js";
+} from "@open-managed-agents/control-plane-node";
 export {
   nodeDefaults,
   type NodeAuth,
@@ -38,7 +38,7 @@ export {
   type NodeRealtime,
   type NodeSecrets,
 } from "./components.js";
-export { serveNodeControlPlane, type NodeServer } from "./serve.js";
+export { serveNodeControlPlane, type NodeServer } from "@open-managed-agents/control-plane-node";
 
 // The only read of process.env: everything else receives typed configuration,
 // and the control plane receives components built from it.

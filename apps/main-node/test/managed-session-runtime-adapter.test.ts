@@ -7,15 +7,15 @@ import type {
 import {
   NodeManagedSessionRuntimeAdapter,
   type NodeManagedSessionRuntimeDriver,
-} from "../src/lib/node-managed-session-runtime.js";
+} from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 
 const runtimeAdapterSources = import.meta.glob(
-  "../src/lib/node-managed-session-runtime.ts",
+  "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.ts",
   { eager: true, import: "default", query: "?raw" },
 ) as Record<string, string>;
 
 const managedRunnerSources = import.meta.glob(
-  "../src/lib/node-managed-session-runner.ts",
+  "../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts",
   { eager: true, import: "default", query: "?raw" },
 ) as Record<string, string>;
 
@@ -313,7 +313,7 @@ describe("NodeManagedSessionRuntimeAdapter", () => {
 
   it("depends inward without importing legacy session routing or stores", () => {
     expect(Object.keys(runtimeAdapterSources)).toEqual([
-      "../src/lib/node-managed-session-runtime.ts",
+      "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.ts",
     ]);
     const source = Object.values(runtimeAdapterSources)[0] ?? "";
     expect(source).toContain("@open-managed-agents/managed-agents-application");
@@ -328,7 +328,7 @@ describe("NodeManagedSessionRuntimeAdapter", () => {
 
   it("keeps the managed runner seam strongly typed and free of legacy lookups", () => {
     expect(Object.keys(managedRunnerSources)).toEqual([
-      "../src/lib/node-managed-session-runner.ts",
+      "../../../packages/control-plane-node/src/lib/node-managed-session-runner.ts",
     ]);
     const source = Object.values(managedRunnerSources)[0] ?? "";
     expect(source).not.toMatch(/\b(?:unknown|any|object)\b/);

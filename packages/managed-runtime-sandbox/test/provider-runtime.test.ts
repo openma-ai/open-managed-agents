@@ -14,7 +14,7 @@ import {
   createProviderManagedRuntime,
   type ProviderManagedRuntimeProviderPort,
 } from "../src/index";
-import { createSandboxSessionMemoryFilePort } from "../src/provider-runtime";
+import { createSandboxSessionMemoryFilePort } from "../src/session-memory-workspace";
 
 const scope = {
   workspaceId: "workspace_1",
@@ -89,31 +89,30 @@ function runtime(id: string): Runtime {
 describe("sandbox Session Memory filesystem adapter", () => {
   it("scans nested files and preserves their mount-relative paths", async () => {
     const live = runtime("memory-files");
-    vi.mocked(live.exec).mockResolvedValueOnce(btoa(
-      "/workspace/memory/a.md\0/workspace/memory/nested/b.md\0",
-    ));
+    vi.mocked(live.exec).mockResolvedValueOnce(btoa("./a.md\0./nested/b.md\0"));
     vi.mocked(live.readFile)
       .mockResolvedValueOnce("a")
       .mockResolvedValueOnce("b");
     const files = createSandboxSessionMemoryFilePort(live);
 
-    await expect(files.scan("/workspace/memory/", new AbortController().signal))
+    await expect(files.scan("/mnt/memory/notes", new AbortController().signal))
       .resolves.toEqual(new Map([
         ["a.md", "a"],
         ["nested/b.md", "b"],
       ]));
+    expect(live.readFile).toHaveBeenCalledWith("/mnt/memory/notes/nested/b.md");
   });
 
   it.each([
     ["/outside/a.md\0", /escaped its mount root/u],
-    ["/workspace/memory/\0", /unsafe path/u],
-    ["/workspace/memory/../a.md\0", /unsafe path/u],
+    ["./\0", /unsafe path/u],
+    ["./../a.md\0", /unsafe path/u],
   ])("rejects an unsafe scan result %#", async (paths, expected) => {
     const live = runtime("unsafe-memory-files");
     vi.mocked(live.exec).mockResolvedValueOnce(btoa(paths));
     const files = createSandboxSessionMemoryFilePort(live);
 
-    await expect(files.scan("/workspace/memory", new AbortController().signal))
+    await expect(files.scan("/mnt/memory/notes", new AbortController().signal))
       .rejects.toThrow(expected);
   });
 
@@ -125,24 +124,49 @@ describe("sandbox Session Memory filesystem adapter", () => {
     vi.mocked(live.readFile).mockResolvedValueOnce("value");
     const files = createSandboxSessionMemoryFilePort(live);
 
-    await expect(files.read("/workspace/memory/a.md", new AbortController().signal))
+    await expect(files.read("/mnt/memory/notes/a.md", new AbortController().signal))
       .resolves.toBe("value");
-    await expect(files.read("/workspace/memory/b.md", new AbortController().signal))
+    await expect(files.read("/mnt/memory/notes/b.md", new AbortController().signal))
       .rejects.toThrow(/invalid output/u);
   });
 
-  it("writes and replaces through the runtime while handling root-level paths", async () => {
+  it("surfaces a non-zero exit status instead of trusting the output", async () => {
+    const live = runtime("memory-exit");
+    vi.mocked(live.exec).mockResolvedValueOnce("exit=1\nstderr: find: permission denied");
+    const files = createSandboxSessionMemoryFilePort(live);
+
+    await expect(files.scan("/mnt/memory/notes", new AbortController().signal))
+      .rejects.toThrow(/scan of \/mnt\/memory\/notes failed \(exit 1\).*permission denied/su);
+  });
+
+  it("replaces a store directory and protects a read-only copy", async () => {
     const live = runtime("memory-write");
     const files = createSandboxSessionMemoryFilePort(live);
     const signal = new AbortController().signal;
 
-    await files.write("leaf", "value", signal);
-    await files.replace("", new Map([["", "root"], ["nested/a.md", "a"]]), signal);
+    await files.replace(
+      "/mnt/memory/notes",
+      new Map([["a.md", "a"], ["nested/b.md", "b"]]),
+      signal,
+      { readOnly: true },
+    );
 
-    expect(live.exec).toHaveBeenCalledWith("mkdir -p -- '/'", 10_000);
-    expect(live.writeFile).toHaveBeenCalledWith("leaf", "value");
-    expect(live.writeFile).toHaveBeenCalledWith("/", "root");
-    expect(live.writeFile).toHaveBeenCalledWith("/nested/a.md", "a");
+    const commands = vi.mocked(live.exec).mock.calls.map(([command]) => command);
+    expect(commands[0]).toBe("mkdir -p -- '/mnt/memory' && [ -w '/mnt/memory' ]");
+    expect(commands).toContain("mkdir -p -- '/mnt/memory/notes/nested'");
+    expect(commands.at(-1)).toBe("chmod -R a-w '/mnt/memory/notes'");
+    expect(live.writeFile).toHaveBeenCalledWith("/mnt/memory/notes/a.md", "a");
+    expect(live.writeFile).toHaveBeenCalledWith("/mnt/memory/notes/nested/b.md", "b");
+  });
+
+  it("reports an unwritable memory root as an image precondition", async () => {
+    const live = runtime("memory-root");
+    vi.mocked(live.exec).mockResolvedValueOnce("exit=1\nstderr: mkdir: Permission denied");
+    const files = createSandboxSessionMemoryFilePort(live);
+
+    await expect(files.replace("/mnt/memory/notes", new Map(), new AbortController().signal, { readOnly: false }))
+      .rejects.toMatchObject({ name: "SessionMemoryRootNotWritableError", directory: "/mnt/memory" });
+    expect(live.writeFile).not.toHaveBeenCalled();
   });
 });
 

@@ -12,52 +12,58 @@
 // NodeConfig keeps the plain values (paths, ports, limits); this module is
 // where behaviour is chosen.
 
-import type { EmailSender } from "@open-managed-agents/email";
 import { NodemailerSender } from "@open-managed-agents/email/adapters/nodemailer";
-import type { NodePlatformStores } from "@open-managed-agents/platform-node";
+import {
+  createNodeSecrets,
+  type NodeComponentOverrides,
+  type NodeComponents,
+} from "@open-managed-agents/control-plane-node";
 import type { SandboxFactory } from "@open-managed-agents/sandbox";
 
-import { createBetterAuthComponent, type NodeAuth } from "./auth/node-auth.js";
-import { createFilesBlobs, createMemoryBlobs, type NodeBlobs } from "./blobs.js";
+import { createBetterAuthComponent } from "./auth/node-auth.js";
+import { createFilesBlobs, createMemoryBlobs } from "./blobs.js";
 import type { NodeConfig } from "./config.js";
-import { openNodeDatabase, type NodeDatabase } from "./database.js";
-import { createNodeRealtime, type NodeRealtime } from "./realtime.js";
+import { openNodeDatabase } from "./database.js";
+import { createNodeRealtime } from "./realtime.js";
 import { resolveSandboxProviderForEnvironment } from "./sandbox-provider.js";
-import { createNodeSecrets, type NodeSecrets } from "./secrets.js";
 
 // Building blocks. Each default is an ordinary exported constructor, so a
 // composition root can call the ones it wants and hand-build the rest.
-export { createBetterAuthComponent, type NodeAuth, type NodeAuthSession } from "./auth/node-auth.js";
-export { createFilesBlobs, createMemoryBlobs, type FilesBlobs, type MemoryBlobs, type NodeBlobs } from "./blobs.js";
+export {
+  createBetterAuthComponent,
+  type BetterAuthComponentOptions,
+  type NodeAuth,
+  type NodeAuthSession,
+  type NodeSignInMethods,
+} from "./auth/node-auth.js";
+export type { OidcSignInProvider } from "@open-managed-agents/auth-config";
+export { createFilesBlobs, createMemoryBlobs } from "./blobs.js";
+export type {
+  FilesBlobs,
+  MemoryBlobs,
+  NodeBlobs,
+  NodeComponentOverrides,
+  NodeComponents,
+  NodeRealtime,
+} from "@open-managed-agents/control-plane-node";
 export {
   migrateNodeDatabase,
   openNodeDatabase,
+  type NodeAuthDatabase,
+  type NodeAuthDatabaseOptions,
   type NodeDatabase,
-  type NodeDatabaseDriver,
   type NodeDialect,
 } from "./database.js";
-export { createNodeRealtime, type NodeRealtime } from "./realtime.js";
-export { InProcessEventStreamHub, type EventStreamHub } from "./lib/event-stream-hub.js";
+export { createNodeRealtime } from "./realtime.js";
+export {
+  createNodeSecrets,
+  InProcessEventStreamHub,
+  SqlPollingEventStreamHub,
+  type EventStreamHub,
+  type NodeSecrets,
+  type PurposeCipher,
+} from "@open-managed-agents/control-plane-node";
 export { PgEventStreamHub } from "./lib/pg-event-stream-hub.js";
-export { SqlPollingEventStreamHub } from "./lib/sql-polling-event-stream-hub.js";
-export { createNodeSecrets, type NodeSecrets, type PurposeCipher } from "./secrets.js";
-
-export interface NodeComponents {
-  config: NodeConfig;
-  database: NodeDatabase;
-  /** null: nothing that needs sealing (vault credentials, integrations, …) is available. */
-  secrets: NodeSecrets | null;
-  /** null: every request is the "default" tenant (AUTH_DISABLED). */
-  auth: NodeAuth | null;
-  email: EmailSender | null;
-  sandbox: SandboxFactory;
-  realtime: NodeRealtime;
-  blobs: NodeBlobs;
-  /** Replace individual managed-platform stores; anything omitted is SQL-backed. */
-  stores?: Partial<NodePlatformStores>;
-}
-
-export type NodeComponentOverrides = Partial<Omit<NodeComponents, "config">>;
 
 /**
  * Build every component the config asks for, except those the caller

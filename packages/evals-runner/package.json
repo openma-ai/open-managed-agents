@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@open-managed-agents/shared": "workspace:*",
-    "@open-managed-agents/agents-store": "workspace:*",
+    "@open-managed-agents/agent-store": "workspace:*",
+    "@open-managed-agents/managed-agents-adapters-runtime": "workspace:*",
     "@open-managed-agents/sessions-store": "workspace:*",
     "@open-managed-agents/evals-store": "workspace:*",
     "@open-managed-agents/environments-store": "workspace:*",
