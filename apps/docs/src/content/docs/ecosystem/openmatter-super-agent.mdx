@@ -1,0 +1,91 @@
+---
+title: OpenMatter Super-agent
+description: OpenMatter puts DeepSeek Harness Super-agent-style Loop, Bond, AgentDriver, Turn, steer, and coordinator/worker decisions outside a replaceable harness. Short docs map with links to OpenMatter, pi-bot, and the Chinese article.
+head:
+  - tag: title
+    content: OpenMatter Super-agent — Loop outside any harness | openma
+  - tag: meta
+    attrs:
+      name: keywords
+      content: DeepSeek Harness, Super-agent, dsh Super-agent, OpenMatter Super-agent, OpenMatter, Loop, Bond, AgentDriver, Turn, steer, coordinator, worker, personal agent, harness, Claude Tag, Linear Agent Session, Claude Projects, openma
+  - tag: meta
+    attrs:
+      property: og:title
+      content: OpenMatter Super-agent — Loop outside any harness
+  - tag: meta
+    attrs:
+      property: og:description
+      content: Map from Open Managed Agents docs to OpenMatter Loop/Bond/AgentDriver Super-agent orchestration, pi-bot, and the Chinese long article.
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+**Open Managed Agents (openma)** is the session, sandbox, vault, and recovery
+platform. **OpenMatter** is a separate, embeddable TypeScript framework for
+durable agent **Loops** in work systems (Slack, GitHub, Linear, and others).
+This page exists so people searching openma docs for **DeepSeek Harness /
+Super-agent / OpenMatter / coordinator-worker** find the right repo and the
+short argument — without pasting the long Chinese article here.
+
+## What OpenMatter adds next to openma
+
+openma's [Harness](/concepts/#harness) is the agent loop that decides what the
+model does next inside a session. OpenMatter sits on the *work* side: it
+accepts platform events, builds authorized context, chooses WorkThread and
+Session routing, optionally runs a coordinator with workers, and commits one
+terminal Reaction per accepted event. A replaceable **AgentDriver** connects
+those Sessions and Turns to ACP, managed runtimes, in-process SDKs, or custom
+agents — including harnesses that also run on openma.
+
+The design point, shared with the OpenMatter README: the four Super-agent-style
+decisions (routing/session continuity, whether to wake, mid-Turn interruption,
+and how replies reach the user) live **outside** the agent, so the harness
+stays swappable.
+
+Comparison context already used in the long article — not product claims that
+OpenMatter replaces them — includes Claude Tag, Linear Agent Session, and
+Claude Projects, alongside DeepSeek Harness's Super-agent design discussion.
+
+## Where to go
+
+<LinkCard
+  title="OpenMatter docs — Super-agent on any harness"
+  href="https://matter.openma.dev/doc/guides/super-agent/"
+  description="Short English landing page on the OpenMatter Starlight site (Loop, Bond, AgentDriver, Turn, steer, coordinator/worker)."
+/>
+
+<LinkCard
+  title="OpenMatter docs — 中文短页"
+  href="https://matter.openma.dev/doc/guides/super-agent-zh/"
+  description="Same landing argument in Chinese."
+/>
+
+<LinkCard
+  title="用 OpenMatter 在任意 harness 上搭 Super-agent"
+  href="https://github.com/clash-art/draft/blob/openmatter-super-agent-v6.49/content/openmatter-super-agent/article.zh.md"
+  description="Full Chinese article with figures; links DeepSeek Harness Super-agent WeChat post and dsh-superagent-prototype."
+/>
+
+<LinkCard
+  title="OpenMatter repository"
+  href="https://github.com/openma-ai/OpenMatter"
+  description="Framework source, README Core concepts, and architecture figure."
+/>
+
+<LinkCard
+  title="pi-bot personal agent"
+  href="https://github.com/openma-ai/pi-bot"
+  description="Pi-based personal agent that integrates OpenMatter Project host (coordinator/worker), reply freshness, and steer."
+/>
+
+<LinkCard
+  title="dsh 《Super-agent 设计探索》"
+  href="https://mp.weixin.qq.com/s/zoS7GlReWPhfCjENGxXCdg"
+  description="DeepSeek Harness team WeChat post; architecture discussion with a public prototype."
+/>
+
+<Aside type="note">
+  Until the OpenMatter docs deploy that includes the Super-agent pages, the
+  GitHub article and OpenMatter README sections remain the canonical text.
+  openma itself does not re-implement OpenMatter Loops inside this docs tree.
+</Aside>
