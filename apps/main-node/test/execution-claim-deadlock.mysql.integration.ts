@@ -16,7 +16,7 @@ import {
 } from "@open-managed-agents/session-runtime-sql";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { openNodeDatabase } from "../src/database.js";
-import { NodeSessionExecutionWorker } from "../src/lib/node-session-execution-worker.js";
+import { NodeSessionExecutionWorker } from "../../../packages/control-plane-node/src/lib/node-session-execution-worker.js";
 
 /**
  * Concurrent replicas against one MySQL 8.4 (REPEATABLE READ).

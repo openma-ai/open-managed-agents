@@ -52,6 +52,11 @@ export interface SessionUpdateFields {
   agentSnapshot?: AgentConfig | null;
   environmentSnapshot?: EnvironmentConfig | null;
   updatedAt: number;
+  /**
+   * When set, the write is applied only if the row's status still matches.
+   * A miss leaves the row unchanged so the caller can fail the attempt.
+   */
+  expectedStatus?: SessionStatus;
 }
 
 export interface SessionListOptions {

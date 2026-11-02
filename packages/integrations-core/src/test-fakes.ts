@@ -47,6 +47,7 @@ import type {
   PublicationCredentials,
   PublicationCredentialsInput,
   PublicationStatus,
+  ResumeSessionOptions,
   SessionCreator,
   SessionEventInput,
   SessionId,
@@ -151,7 +152,12 @@ export class FakeHttpClient implements HttpClient {
 
 export class FakeSessionCreator implements SessionCreator {
   readonly created: CreateSessionInput[] = [];
-  readonly resumed: { userId: string; sessionId: SessionId; event: SessionEventInput }[] = [];
+  readonly resumed: {
+    userId: string;
+    sessionId: SessionId;
+    event: SessionEventInput;
+    options?: ResumeSessionOptions;
+  }[] = [];
   private counter = 0;
 
   async create(input: CreateSessionInput): Promise<{ sessionId: SessionId }> {
@@ -159,8 +165,13 @@ export class FakeSessionCreator implements SessionCreator {
     this.counter += 1;
     return { sessionId: `sess_${this.counter}` };
   }
-  async resume(userId: string, sessionId: SessionId, event: SessionEventInput): Promise<void> {
-    this.resumed.push({ userId, sessionId, event });
+  async resume(
+    userId: string,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    options?: ResumeSessionOptions,
+  ): Promise<void> {
+    this.resumed.push({ userId, sessionId, event, options });
   }
 }
 

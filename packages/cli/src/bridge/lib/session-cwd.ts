@@ -54,8 +54,12 @@ function dirNameFor(sessionId: string): string {
  * `files: [{path, content}]` array fetched from main's
  * `/agents/runtime/sessions/:sid/bundle` before issuing session/new.
  */
+export function sessionScratchDirPath(sessionId: string): string {
+  return join(paths().sessionsDir, dirNameFor(sessionId));
+}
+
 export async function ensureSessionCwd(sessionId: string): Promise<string> {
-  const cwd = join(paths().sessionsDir, dirNameFor(sessionId));
+  const cwd = sessionScratchDirPath(sessionId);
   await mkdir(cwd, { recursive: true });
   return cwd;
 }
@@ -70,6 +74,33 @@ export async function ensureSessionCwd(sessionId: string): Promise<string> {
 export function acpProcessCwd(scratchDir: string, requestedCwd?: string): string {
   const requested = requestedCwd?.trim();
   return requested ? requested : scratchDir;
+}
+
+/** Wire shape for daemon → harness session.ready after session.start. */
+export function acpSessionReadyOut(params: {
+  session_id: string;
+  tenant_id: string;
+  acp_session_id: string;
+  scratchDir?: string;
+  freshSpawn?: boolean;
+}): {
+  type: "session.ready";
+  session_id: string;
+  tenant_id: string;
+  acp_session_id: string;
+  bundle_dir?: string;
+  fresh?: boolean;
+} {
+  const base = {
+    type: "session.ready" as const,
+    session_id: params.session_id,
+    tenant_id: params.tenant_id,
+    acp_session_id: params.acp_session_id,
+  };
+  if (params.freshSpawn && params.scratchDir) {
+    return { ...base, bundle_dir: params.scratchDir, fresh: true };
+  }
+  return base;
 }
 
 /**

@@ -1,0 +1,22 @@
+{
+  "name": "@open-managed-agents/harness-inference-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/inference-proxy": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.3"
+  }
+}

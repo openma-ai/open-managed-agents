@@ -8,7 +8,7 @@ import { ensureSessionExecutionClaimLockSchema, SqlSessionExecutionCoordinator }
 import { loadNodeConfig } from "../src/config.js";
 import { nodeDefaults, createMemoryBlobs } from "../src/components.js";
 import { createNodeControlPlane } from "../src/control-plane.js";
-import { NodeSharedSessionOutputs } from "../src/lib/node-shared-session-outputs.js";
+import { NodeSharedSessionOutputs } from "../../../packages/control-plane-node/src/lib/node-shared-session-outputs.js";
 
 const beta = { "anthropic-beta": "managed-agents-2026-04-01" };
 let root: string | undefined;

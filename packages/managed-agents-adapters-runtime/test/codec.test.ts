@@ -61,8 +61,50 @@ describe("Managed session runtime codec", () => {
       processedAt: "2026-08-26T00:00:01.000Z",
     });
     expect(
-      decodeRuntimeEvent({ type: "session.warning", message: "extension" }, new Set()),
-    ).toEqual([]);
+      decodeRuntimeProducedSessionEvent({
+        id: "event_warn_01",
+        type: "session.warning",
+        source: "harness_deprecated",
+        message: "deprecated harness",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toEqual({
+      id: "event_warn_01",
+      type: "session.warning",
+      source: "harness_deprecated",
+      message: "deprecated harness",
+      processedAt: "2026-08-26T00:00:01.000Z",
+    });
+  });
+
+
+  it("string session.error defaults retryStatus to exhausted (not terminal)", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_01",
+        type: "session.error",
+        error: "boom",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      type: "session.error",
+      error: { type: "unknown_error", message: "boom", retryStatus: "exhausted" },
+    });
+  });
+
+  it("preserves structured retry_status exhausted/retrying/terminal", () => {
+    for (const retry of ["retrying", "exhausted", "terminal"] as const) {
+      expect(
+        decodeRuntimeProducedSessionEvent({
+          id: `event_err_${retry}`,
+          type: "session.error",
+          error: { type: "unknown_error", message: "x", retry_status: retry },
+          processed_at: "2026-08-26T00:00:01.000Z",
+        }),
+      ).toMatchObject({
+        error: { retryStatus: retry },
+      });
+    }
   });
 
   it.each(["agent.tool_result", "agent.mcp_tool_result"] as const)(
@@ -234,22 +276,28 @@ describe("Managed session runtime codec", () => {
             speed: "fast",
           },
           multiagent: {
-            type: "coordinator",
-            agents: [
-              {
-                type: "agent",
-                id: "agent_reviewer",
-                description: null,
-                mcpServers: [],
-                model: { id: "claude-sonnet-4-6" },
-                name: "Reviewer",
-                skills: [],
-                system: null,
-                tools: [],
-                version: 7,
-              },
-              { type: "advisor", model: "claude-haiku-4-5" },
-            ],
+            type: "multiagent_20261001",
+            advisor: { type: "disabled" },
+            subagents: {
+              type: "enabled",
+              inlineAgents: { type: "disabled" },
+              predefinedAgents: [
+                {
+                  type: "agent",
+                  id: "agent_reviewer",
+                  description: null,
+                  mcpServers: [],
+                  model: { id: "claude-sonnet-4-6" },
+                  name: "Reviewer",
+                  openma: { harness: "custom", auxiliaryModel: { id: "aux-child", providerOptions: { keep_key: true } }, appendablePrompts: ["child instructions"] },
+                  skills: [],
+                  system: null,
+                  tools: [],
+                  version: 7,
+                },
+              ],
+            },
+            workflows: { type: "disabled" },
           },
           name: "Coordinator",
           skills: [
@@ -388,10 +436,50 @@ describe("Managed session runtime codec", () => {
             },
           },
         ],
-        callable_agents: [
-          { type: "agent", id: "agent_reviewer", version: 7 },
-        ],
+        multiagent: { subagents: { predefined_agents: [
+          { type: "agent", id: "agent_reviewer", version: 7, name: "Reviewer",
+            model: { id: "claude-sonnet-4-6" }, system: "", tools: [], mcp_servers: [], skills: [],
+            harness: "custom", aux_model: { id: "aux-child", provider_options: { keep_key: true } }, appendable_prompts: ["child instructions"] },
+        ] } },
       },
+    });
+  });
+});
+
+
+describe("normalizeRuntimeError via decodeRuntimeProducedSessionEvent", () => {
+  it("string session.error normalizes to exhausted (not terminal)", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_01",
+        type: "session.error",
+        error: "boom",
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      type: "session.error",
+      error: {
+        type: "unknown_error",
+        message: "boom",
+        retryStatus: "exhausted",
+      },
+    });
+  });
+
+  it("preserves explicit terminal retry_status", () => {
+    expect(
+      decodeRuntimeProducedSessionEvent({
+        id: "event_err_02",
+        type: "session.error",
+        error: {
+          type: "unknown_error",
+          message: "fatal",
+          retry_status: { type: "terminal" },
+        },
+        processed_at: "2026-08-26T00:00:01.000Z",
+      }),
+    ).toMatchObject({
+      error: { retryStatus: "terminal" },
     });
   });
 });

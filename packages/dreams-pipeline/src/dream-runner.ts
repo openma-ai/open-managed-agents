@@ -167,21 +167,23 @@ const consoleLogger = {
 // same backing implementation.
 // ============================================================
 
-import { AnthropicDreamCurator, DedupOnlyDreamCurator } from "./curator";
+import {
+  AnthropicDreamCurator,
+  DedupOnlyDreamCurator,
+  type DreamCuratorCredentialResolver,
+} from "./curator";
 
 /**
- * Minimal env shape the curator factory reads. The full `Env` (CF) and
- * a plain `process.env`-shaped object (Node) both satisfy this — keeping
- * the factory framework-agnostic so dreams-pipeline doesn't pull in
- * @open-managed-agents/shared's Cloudflare binding type tree.
+ * Inputs the curator factory reads. `DREAM_CURATOR_MODE=dedup` selects the
+ * offline curator; otherwise every curation resolves the dream workspace's
+ * own model card through `resolveCredentials`. There is no environment key.
  */
 export interface DreamCuratorEnv {
   DREAM_CURATOR_MODE?: string;
-  ANTHROPIC_API_KEY?: string;
-  ANTHROPIC_BASE_URL?: string;
+  resolveCredentials: DreamCuratorCredentialResolver;
 }
 
 export function pickCurator(env: DreamCuratorEnv): DreamCurator {
   if (env.DREAM_CURATOR_MODE === "dedup") return new DedupOnlyDreamCurator();
-  return new AnthropicDreamCurator(env.ANTHROPIC_API_KEY ?? "", env.ANTHROPIC_BASE_URL);
+  return new AnthropicDreamCurator(env.resolveCredentials);
 }

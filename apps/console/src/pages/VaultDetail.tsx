@@ -17,6 +17,7 @@ import { useManagedApi } from "../lib/useManagedApi";
 
 import { Modal } from "../components/Modal";
 import { Page } from "../components/Page";
+import { OpenmaStartupLoader } from "../components/OpenmaStartupLoader";
 import { PageHeader } from "../components/PageHeader";
 import { Disclosure } from "../components/Disclosure";
 import { LocalCombobox } from "../components/LocalCombobox";
@@ -209,7 +210,7 @@ export function VaultDetail() {
   if (!id) return <div className="flex-1 p-8">Missing vault id.</div>;
   if (errorMsg)
     return <div className="flex-1 p-8 text-danger">Error: {errorMsg}</div>;
-  if (!vault) return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
+  if (!vault) return <div className="flex flex-1 items-center justify-center p-8"><OpenmaStartupLoader /></div>;
 
   const archived = !!vault.archived_at;
   const updatedAt = vault.updated_at;

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 
-import { NodeManagedSessionOutputCollector } from "../src/lib/node-managed-session-outputs.js";
+import { NodeManagedSessionOutputCollector } from "../../../packages/control-plane-node/src/lib/node-managed-session-outputs.js";
 
 const roots: string[] = [];
 
@@ -76,7 +76,7 @@ describe("NodeManagedSessionOutputCollector", () => {
     const { InMemoryBlobStore } = await import("@open-managed-agents/blob-store");
     const { createBetterSqlite3SqlClient } = await import("@open-managed-agents/sql-client");
     const { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } = await import("@open-managed-agents/session-runtime-sql");
-    const { NodeSharedSessionOutputs } = await import("../src/lib/node-shared-session-outputs.js");
+    const { NodeSharedSessionOutputs } = await import("../../../packages/control-plane-node/src/lib/node-shared-session-outputs.js");
     const sql = await createBetterSqlite3SqlClient(join(root, "output.db"));
     await ensureSessionExecutionCoordinatorSchema(sql);
     const coordinator = new SqlSessionExecutionCoordinator(sql);

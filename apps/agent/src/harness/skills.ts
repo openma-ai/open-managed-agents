@@ -6,6 +6,24 @@ export interface Skill {
   tools?: Record<string, unknown>;
 }
 
+/** Platform skill mount metadata for assembly-layer exposure (PR3+). */
+export interface SkillMountDescriptor {
+  skillId: string;
+  name: string;
+  description: string;
+  mountRoot: string;
+  body?: string;
+  source?: "builtin" | "custom";
+}
+
+export function skillMountRoot(skillId: string, requestedVersion: string): string {
+  return `/workspace/.openma/skills/${encodeURIComponent(skillId)}/${encodeURIComponent(requestedVersion)}/`;
+}
+
+export function progressiveSkillReminder(descriptor: SkillMountDescriptor): string {
+  return `Skill "${descriptor.name}" is mounted at ${descriptor.mountRoot}. Read SKILL.md there before applying it.`;
+}
+
 export interface SkillFile {
   filename: string;
   /** Raw bytes ready for writeFileBytes(). */
@@ -129,75 +147,101 @@ export function resolveSkills(skillConfigs: Array<{ skill_id: string }>): Skill[
  * Versioned manifest: t:{tenant}:skillver:{skill_id}:{version} -> { files: [{filename, ...}], ... }
  * SKILL.md bytes live in R2 at the skillFileR2Key path.
  */
+async function fetchCustomSkillBody(
+  cfg: { skill_id: string; version?: string },
+  kv: KVNamespace,
+  filesBucket: R2Bucket | undefined,
+  tenantId: string,
+  meta: { latest_version?: string },
+): Promise<string> {
+  let body = "";
+  const version = (cfg.version && cfg.version !== "latest") ? cfg.version : meta.latest_version;
+  if (!filesBucket || !version) return body;
+  try {
+    const verRaw = await kv.get(`t:${tenantId}:skillver:${cfg.skill_id}:${version}`);
+    if (!verRaw) return body;
+    const verData = JSON.parse(verRaw) as { files?: Array<{ filename: string }> };
+    const hasSkillMd = verData.files?.some((f) => f.filename === "SKILL.md");
+    if (!hasSkillMd) return body;
+    const obj = await filesBucket.get(
+      skillFileR2Key(tenantId, cfg.skill_id, version, "SKILL.md"),
+    );
+    if (obj) body = await obj.text();
+  } catch {
+    // metadata-only fallback
+  }
+  return body;
+}
+
+export async function resolveCustomSkillMounts(
+  skillConfigs: Array<{ skill_id: string; type?: string; version?: string }>,
+  kv: KVNamespace,
+  filesBucket: R2Bucket | undefined,
+  tenantId: string,
+  options: { fetchBodies?: boolean } = {},
+): Promise<SkillMountDescriptor[]> {
+  const customConfigs = skillConfigs.filter(
+    (s) => s.type === "custom" && !skillRegistry.has(s.skill_id),
+  );
+  const fetchBodies = options.fetchBodies ?? false;
+  const mounts: SkillMountDescriptor[] = [];
+
+  for (const cfg of customConfigs) {
+    try {
+      const raw = await kv.get(`t:${tenantId}:skill:${cfg.skill_id}`);
+      if (!raw) continue;
+      const meta = JSON.parse(raw) as {
+        name?: string;
+        display_title?: string;
+        description?: string;
+        latest_version?: string;
+      };
+      const name = meta.display_title || meta.name || cfg.skill_id;
+      const description = meta.description || "";
+      const requestedVersion = cfg.version ?? "latest";
+      const body = fetchBodies
+        ? await fetchCustomSkillBody(cfg, kv, filesBucket, tenantId, meta)
+        : "";
+      mounts.push({
+        skillId: cfg.skill_id,
+        name,
+        description,
+        mountRoot: skillMountRoot(cfg.skill_id, requestedVersion),
+        ...(body ? { body } : {}),
+        source: "custom",
+      });
+    } catch {
+      // skip unresolved
+    }
+  }
+  return mounts;
+}
+
 export async function resolveCustomSkills(
   skillConfigs: Array<{ skill_id: string; type?: string; version?: string }>,
   kv: KVNamespace,
   filesBucket: R2Bucket | undefined,
   tenantId: string,
 ): Promise<Skill[]> {
-  const customConfigs = skillConfigs.filter(
-    s => s.type === "custom" && !skillRegistry.has(s.skill_id),
+  const mounts = await resolveCustomSkillMounts(
+    skillConfigs,
+    kv,
+    filesBucket,
+    tenantId,
+    { fetchBodies: true },
   );
-
   const skills: Skill[] = [];
-  for (const cfg of customConfigs) {
-    try {
-      const raw = await kv.get(`t:${tenantId}:skill:${cfg.skill_id}`);
-      if (!raw) continue;
-
-      const meta = JSON.parse(raw) as {
-        id: string;
-        name?: string;
-        display_title?: string;
-        description?: string;
-        latest_version?: string;
-      };
-
-      const name = meta.display_title || meta.name || cfg.skill_id;
-      const description = meta.description || "";
-
-      // Try to inline the full SKILL.md so the model sees it in the
-      // system prompt without a read-tool round-trip. Falls back to
-      // a metadata-only addition if R2 / version manifest aren't
-      // available — keeps the lazy-load path as a safety net.
-      let body = "";
-      const version = (cfg.version && cfg.version !== "latest") ? cfg.version : meta.latest_version;
-      if (filesBucket && version) {
-        try {
-          const verRaw = await kv.get(`t:${tenantId}:skillver:${cfg.skill_id}:${version}`);
-          if (verRaw) {
-            const verData = JSON.parse(verRaw) as {
-              files?: Array<{ filename: string }>;
-            };
-            const hasSkillMd = verData.files?.some((f) => f.filename === "SKILL.md");
-            if (hasSkillMd) {
-              const obj = await filesBucket.get(
-                skillFileR2Key(tenantId, cfg.skill_id, version, "SKILL.md"),
-              );
-              if (obj) body = await obj.text();
-            }
-          }
-        } catch {
-          // Fall through to metadata-only.
-        }
-      }
-
-      const requestedVersion = cfg.version ?? "latest";
-      const addition = body
-        ? `<skill name="${name}">\n${body}\n</skill>`
-        : `[Skill: ${name}] ${description}. Locate its SKILL.md under /workspace/.openma/skills/${encodeURIComponent(cfg.skill_id)}/${encodeURIComponent(requestedVersion)}/.`;
-
-      skills.push({
-        id: cfg.skill_id,
-        name,
-        source: "custom",
-        system_prompt_addition: addition,
-      });
-    } catch {
-      // Skip skills that can't be resolved from KV
-    }
+  for (const mount of mounts) {
+    const addition = mount.body
+      ? `<skill name="${mount.name}">\n${mount.body}\n</skill>`
+      : `[Skill: ${mount.name}] ${mount.description}. Locate its SKILL.md under ${mount.mountRoot}.`;
+    skills.push({
+      id: mount.skillId,
+      name: mount.name,
+      source: "custom",
+      system_prompt_addition: addition,
+    });
   }
-
   return skills;
 }
 

@@ -230,11 +230,15 @@ export class SqlSessionRepo implements SessionRepo {
           ? JSON.stringify(update.environmentSnapshot)
           : null;
     }
+    const conds = [eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId)];
+    if (update.expectedStatus !== undefined) {
+      conds.push(eq(sessions.status, update.expectedStatus));
+    }
     await runOnce(
       this.db
         .update(sessions)
         .set(set)
-        .where(and(eq(sessions.id, sessionId), eq(sessions.tenant_id, tenantId))),
+        .where(and(...conds)),
     );
     const row = await this.get(tenantId, sessionId);
     if (!row) throw new SessionNotFoundError();

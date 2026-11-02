@@ -7,8 +7,8 @@ import type { BlobStore } from "@open-managed-agents/blob-store";
 import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import { NodeManagedSessionOutputCollector } from "../src/lib/node-managed-session-outputs.js";
-import { NodeSharedSessionOutputs } from "../src/lib/node-shared-session-outputs.js";
+import { NodeManagedSessionOutputCollector } from "../../../packages/control-plane-node/src/lib/node-managed-session-outputs.js";
+import { NodeSharedSessionOutputs } from "../../../packages/control-plane-node/src/lib/node-shared-session-outputs.js";
 
 const roots: string[] = [];
 afterEach(async () => {

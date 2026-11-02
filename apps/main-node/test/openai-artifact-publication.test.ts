@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resourcesFixture } from "../../../packages/openai-agents-compat/test/helpers/resources";
 import { encodeResourceMetadata } from "../../../packages/openai-agents-compat/src/resource-metadata";
-import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../src/openai-artifact-publication";
+import { createNodeOpenAIArtifactPublisher, withReportedArtifactPublication } from "../../../packages/control-plane-node/src/openai-artifact-publication";
 
 async function fixture(mode = "completed", environmentType = "openai_hosted") {
   const resources = resourcesFixture();

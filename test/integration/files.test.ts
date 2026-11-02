@@ -1,8 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
@@ -18,8 +17,7 @@ function del(path: string) {
   return api(path, { method: "DELETE", headers: H });
 }
 
-// Register test harness
-registerHarness("files-test", () => ({ async run() {} }));
+registerTestHarnesses();
 
 // ============================================================
 // File Upload (JSON body)
@@ -228,7 +226,7 @@ describe("Session resource add/list/delete", () => {
 
   beforeAll(async () => {
     // Create agent + env + session
-    const a = await post("/v1/oma/agents", { name: "ResAgent", model: "claude-sonnet-4-6", harness: "files-test" });
+    const a = await post("/v1/oma/agents", { name: "ResAgent", model: "claude-sonnet-4-6", _oma: { harness: "files-test" } });
     const e = await post("/v1/oma/environments", { name: "res-env", config: { type: "cloud" } });
     const s = await post("/v1/oma/sessions", {
       agent: ((await a.json()) as any).id,
@@ -353,7 +351,7 @@ describe("Session creation with resources", () => {
   let fileId: string;
 
   beforeAll(async () => {
-    const a = await post("/v1/oma/agents", { name: "WithRes", model: "claude-sonnet-4-6", harness: "files-test" });
+    const a = await post("/v1/oma/agents", { name: "WithRes", model: "claude-sonnet-4-6", _oma: { harness: "files-test" } });
     agentId = ((await a.json()) as any).id;
     const e = await post("/v1/oma/environments", { name: "withres-env", config: { type: "cloud" } });
     envId = ((await e.json()) as any).id;

@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session } from "@open-managed-agents/managed-agents-application";
 
-import { NodeManagedSessionInputPreparer } from "../src/lib/node-managed-session-inputs.js";
-import * as nodeManagedInputs from "../src/lib/node-managed-session-inputs.js";
+import { NodeManagedSessionInputPreparer } from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
+import * as nodeManagedInputs from "../../../packages/control-plane-node/src/lib/node-managed-session-inputs.js";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
@@ -102,7 +102,7 @@ describe("NodeManagedSessionInputPreparer", () => {
     const preparer = new NodeManagedSessionInputPreparer({
       sharedOutputs: true,
       files: {} as never, skillVersions: {} as never,
-      repositoryCredentials: {} as never, memorySnapshots: {} as never,
+      repositoryCredentials: {} as never, memoryStores: { mode: "native", snapshots: {} as never },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -179,7 +179,7 @@ describe("NodeManagedSessionInputPreparer", () => {
       files,
       skillVersions,
       repositoryCredentials,
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await preparer.prepare({
@@ -281,10 +281,13 @@ describe("NodeManagedSessionInputPreparer", () => {
         }),
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: {
-        materialize: async () => {
-          order.push("memory-snapshot");
-          return { mountStoreId: "managed-snapshot/memory_01/revision" };
+      memoryStores: {
+        mode: "native",
+        snapshots: {
+          materialize: async () => {
+            order.push("memory-snapshot");
+            return { mountStoreId: "managed-snapshot/memory_01/revision" };
+          },
         },
       },
     });
@@ -319,7 +322,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await preparer.prepare({ workspaceId: "workspace_inputs", session, sandbox });
@@ -353,7 +356,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => "ghp_private" },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await expect(preparer.prepare({
@@ -361,6 +364,119 @@ describe("NodeManagedSessionInputPreparer", () => {
       session,
       sandbox,
     })).rejects.toThrow(/retained repository.*does not match/i);
+  });
+
+  describe("repositories cloned with the workspace's Bond", () => {
+    const bondSession = () => {
+      const session = managedSession();
+      session.agent.skills = [];
+      session.resources = [{
+        id: "resource_repo_bond",
+        type: "github_repository",
+        url: "https://gitlab.example.test/group/app.git",
+        mountPath: "/workspace/app",
+        credentialSource: "bond",
+        createdAt: "2026-09-08T00:00:00.000Z",
+        updatedAt: "2026-09-08T00:00:00.000Z",
+      }];
+      return session;
+    };
+    const sandboxWith = (retained: boolean) => ({
+      sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
+      mountSessionOutputs: vi.fn(async () => undefined),
+      readFile: vi.fn(async () => {
+        if (retained) return "ref: refs/heads/main";
+        throw new Error("missing");
+      }),
+      exec: vi.fn(async (command: string) =>
+        command.includes("remote get-url origin") ? "https://gitlab.example.test/group/app.git" : ""),
+      registerCommandSecrets: vi.fn(),
+    });
+    const preparerWith = (repositoryBonds?: { repositoryToken: (input: { workspaceId: string; url: string }) => Promise<string> }) =>
+      new NodeManagedSessionInputPreparer({
+        files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+        skillVersions: {
+          listSkillVersions: async () => { throw new Error("unexpected skill listing"); },
+          downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
+        },
+        repositoryCredentials: { findGithubToken: async () => { throw new Error("a Bond repository has no stored token"); } },
+        memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+        ...(repositoryBonds === undefined ? {} : { repositoryBonds }),
+      });
+
+    it("asks the Bond for the token and scopes it to git commands", async () => {
+      const repositoryToken = vi.fn(async () => "glpat-bond");
+      const sandbox = sandboxWith(false);
+      await preparerWith({ repositoryToken }).prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandbox as unknown as SandboxExecutor,
+      });
+      expect(repositoryToken).toHaveBeenCalledWith({
+        workspaceId: "workspace_inputs",
+        url: "https://gitlab.example.test/group/app.git",
+      });
+      expect(sandbox.registerCommandSecrets).toHaveBeenCalledWith("git", {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.https://gitlab.example.test/group/app.git.extraHeader",
+        GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from("x-access-token:glpat-bond").toString("base64")}`,
+      });
+      const commands = sandbox.exec.mock.calls.map(([command]) => command);
+      expect(commands).toContain("git clone -- 'https://gitlab.example.test/group/app.git' 'app'");
+      expect(commands.join("\n")).not.toContain("glpat-bond");
+    });
+
+    it("fetches new tags into a retained repository without touching its working tree", async () => {
+      const sandbox = sandboxWith(true);
+      await preparerWith({ repositoryToken: async () => "glpat-bond" }).prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandbox as unknown as SandboxExecutor,
+      });
+      const commands = sandbox.exec.mock.calls.map(([command]) => command);
+      expect(commands).toEqual([
+        "git -C 'app' remote get-url origin",
+        "git -C 'app' fetch --quiet --tags --force --prune origin",
+      ]);
+    });
+
+    it("keeps a token repository's retained clone as it is", async () => {
+      const session = managedSession();
+      session.agent.skills = [];
+      session.resources = [{ ...session.resources[1]!, checkout: null } as Session["resources"][number]];
+      const sandbox = sandboxWith(true);
+      sandbox.exec = vi.fn(async () => "http://git.example.test/repository.git");
+      await new NodeManagedSessionInputPreparer({
+        files: { downloadFile: async () => { throw new Error("unexpected file download"); } },
+        skillVersions: {
+          listSkillVersions: async () => { throw new Error("unexpected skill listing"); },
+          downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
+        },
+        repositoryCredentials: { findGithubToken: async () => "ghp_private" },
+        repositoryBonds: { repositoryToken: async () => { throw new Error("a token repository never asks a Bond"); } },
+        memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
+      }).prepare({ workspaceId: "workspace_inputs", session, sandbox: sandbox as unknown as SandboxExecutor });
+      expect(sandbox.exec.mock.calls.map(([command]) => command)).toEqual([
+        "git -C 'repository' remote get-url origin",
+      ]);
+    });
+
+    it("fails closed without a Bond source or when the Bond refuses", async () => {
+      await expect(preparerWith().prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandboxWith(false) as unknown as SandboxExecutor,
+      })).rejects.toThrow(/has no token, and this deployment has no Bonds/);
+      const sandbox = sandboxWith(false);
+      await expect(preparerWith({
+        repositoryToken: async () => { throw new Error("No Bond credential for repository x: no GitLab Bond for this host"); },
+      }).prepare({
+        workspaceId: "workspace_inputs",
+        session: bondSession(),
+        sandbox: sandbox as unknown as SandboxExecutor,
+      })).rejects.toThrow(/no GitLab Bond for this host/);
+      expect(sandbox.exec).not.toHaveBeenCalled();
+    });
   });
 
   it("fails closed when the selected sandbox cannot mount durable outputs", async () => {
@@ -371,7 +487,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
 
     await expect(preparer.prepare({
@@ -389,7 +505,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const session = managedSession();
     session.resources = [];
@@ -421,7 +537,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -454,7 +570,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         downloadSkillVersion: async () => { throw new Error("unexpected skill download"); },
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize },
+      memoryStores: { mode: "native", snapshots: { materialize } },
     });
     const sandbox = {
       sessionOutputMountCapabilities: () => ({ durability: "durable" as const }),
@@ -524,7 +640,7 @@ describe("NodeManagedSessionInputPreparer", () => {
         })),
       },
       repositoryCredentials: { findGithubToken: async () => null },
-      memorySnapshots: { materialize: async () => ({ mountStoreId: "unused" }) },
+      memoryStores: { mode: "native", snapshots: { materialize: async () => ({ mountStoreId: "unused" }) } },
     });
     const session = managedSession();
     session.resources = [];

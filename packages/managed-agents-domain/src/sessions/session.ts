@@ -18,6 +18,9 @@ export interface SessionAgent {
   id: string;
   description: string | null;
   mcpServers: AgentMcpServer[];
+  /** The Agent's metadata, for the runtime only. Absent on Sessions created
+   *  before it was snapshotted. */
+  metadata?: Record<string, string>;
   model: AgentModel;
   multiagent: SessionAgentMultiagent | null;
   name: string;
@@ -29,8 +32,16 @@ export interface SessionAgent {
 }
 
 export interface SessionAgentMultiagent {
-  agents: SessionThreadAgent[];
-  type: "coordinator";
+  type: "multiagent_20261001";
+  advisor: { type: "disabled" };
+  subagents:
+    | { type: "disabled" }
+    | {
+        type: "enabled";
+        inlineAgents: { type: "enabled" } | { type: "disabled" };
+        predefinedAgents: SessionThreadAgent[];
+      };
+  workflows: { type: "disabled" };
 }
 
 export interface SessionStats {
@@ -47,6 +58,10 @@ export interface SessionUsage {
   cacheReadInputTokens?: number;
   inputTokens?: number;
   listCost?: MonetaryAmount | null;
+  /** Domain property: exact consumed list cost in picodollars (1e-12 USD)
+   * as an integer string. Never on the public wire; persisted via
+   * ListCostPicoStore. ONE name — adapters must not invent camelCase aliases. */
+  list_cost_pico?: string | null;
   outputTokens?: number;
   serverToolUse?: {
     webFetchRequests?: number;

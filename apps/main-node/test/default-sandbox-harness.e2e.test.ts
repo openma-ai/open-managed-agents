@@ -14,6 +14,8 @@ import {
 } from "../../../test/fakes/scripted-language-model";
 import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
 import type { HarnessRuntime } from "@open-managed-agents/agent/harness/interface";
+import { DefaultHarness } from "@open-managed-agents/agent/harness/default-loop";
+import { PiHarness } from "@open-managed-agents/agent/harness/pi-loop";
 import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
@@ -24,7 +26,13 @@ import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-
  * the ACP test, whose agent process itself runs inside the sandbox.
  */
 describe("DefaultHarness over a real local sandbox", () => {
-  it.each(["default", "ai-sdk"] as const)(
+  it("registers Pi as the default harness name", () => {
+    registerCoreHarnesses();
+    expect(resolveHarness("default")).toBeInstanceOf(PiHarness);
+    expect(resolveHarness("ai-sdk")).toBeInstanceOf(DefaultHarness);
+  });
+
+  it.each(["ai-sdk"] as const)(
     "executes the %s registry harness over a real local sandbox",
     async (harnessId) => {
       const workdir = await mkdtemp(join(tmpdir(), "oma-default-sandbox-"));

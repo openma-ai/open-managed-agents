@@ -1,4 +1,6 @@
-export type NodeProcessMode = "standalone" | "serverless";
+import type { NodeProcessMode } from "@open-managed-agents/control-plane-node";
+
+export type { NodeProcessMode };
 
 type ProcessEnvironment = Readonly<Record<string, string | undefined>>;
 

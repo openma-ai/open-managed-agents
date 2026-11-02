@@ -36,7 +36,7 @@ describe("Managed Agents HTTP adapter module", () => {
     expect(await response.json()).toMatchObject({
       data: expect.arrayContaining([
         expect.objectContaining({
-          id: "deepseek-v4-flash",
+          id: "deepseek-flash",
           provider: "deepseek",
           api: "openai-completions",
         }),

@@ -14,7 +14,7 @@ import {
 } from "@open-managed-agents/queue";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store";
 import { ensureSessionExecutionClaimLockSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
-import { NodeManagedWorkspaceCheckpoints } from "../src/lib/node-managed-workspace-checkpoints";
+import { NodeManagedWorkspaceCheckpoints } from "../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints";
 import {
   createMysql2SqlClient,
   type SqlClient,
@@ -508,7 +508,7 @@ describe.sequential("main-node MySQL composition root", () => {
     }
   });
 
-  it("lists sessions filtered by one metadata entry through GET /v1/sessions on MySQL", async () => {
+  it("persists session metadata on MySQL and rejects metadata list query params", async () => {
     const client = new Anthropic({
       apiKey: "mysql-integration-test",
       baseURL: baseUrl,
@@ -527,56 +527,29 @@ describe.sequential("main-node MySQL composition root", () => {
     const agent = await client.beta.agents.create({
       name: `mysql-metadata-${suffix}`,
       model: "mysql-test-model",
-      system: "MySQL metadata list filter",
+      system: "MySQL session metadata persistence",
     });
-    const quotedMetadataKey = "team.region";
-    const matching = await client.beta.sessions.create({
+    const created = await client.beta.sessions.create({
       agent: { type: "agent", id: agent.id, version: agent.version },
       environment_id: environment.id,
-      metadata: {
-        project_id: "proj_a",
-        [quotedMetadataKey]: "us-west",
-      },
-      title: `mysql-metadata-match-${suffix}`,
+      metadata: { project_id: "proj_a", team: "platform" },
+      title: `mysql-metadata-${suffix}`,
     });
-    const otherProject = await client.beta.sessions.create({
-      agent: { type: "agent", id: agent.id, version: agent.version },
-      environment_id: environment.id,
-      metadata: { project_id: "proj_b" },
-      title: `mysql-metadata-other-project-${suffix}`,
-    });
-    const otherRegion = await client.beta.sessions.create({
-      agent: { type: "agent", id: agent.id, version: agent.version },
-      environment_id: environment.id,
-      metadata: {
-        project_id: "proj_a",
-        [quotedMetadataKey]: "eu-central",
-      },
-      title: `mysql-metadata-other-region-${suffix}`,
+    const retrieved = await client.beta.sessions.retrieve(created.id);
+    expect(retrieved.metadata).toEqual({
+      project_id: "proj_a",
+      team: "platform",
     });
 
     const betaHeaders = {
       "x-api-key": "mysql-integration-test",
       "anthropic-beta": "managed-agents-2026-04-01",
     };
-    const listByProject = await fetch(
+    const listWithMetadataFilter = await fetch(
       `${baseUrl}/v1/sessions?metadata_key=project_id&metadata_value=proj_a`,
       { headers: betaHeaders },
     );
-    expect(listByProject.status).toBe(200);
-    const projectPage = await listByProject.json() as { data: Array<{ id: string }> };
-    expect(projectPage.data.map((session) => session.id).sort()).toEqual(
-      [matching.id, otherRegion.id].sort(),
-    );
-    expect(projectPage.data.map((session) => session.id)).not.toContain(otherProject.id);
-
-    const listByQuotedKey = await fetch(
-      `${baseUrl}/v1/sessions?metadata_key=${encodeURIComponent(quotedMetadataKey)}&metadata_value=${encodeURIComponent("us-west")}`,
-      { headers: betaHeaders },
-    );
-    expect(listByQuotedKey.status).toBe(200);
-    const regionPage = await listByQuotedKey.json() as { data: Array<{ id: string }> };
-    expect(regionPage.data.map((session) => session.id)).toEqual([matching.id]);
+    expect(listWithMetadataFilter.status).toBe(400);
   });
 
   it("boots Better Auth on MySQL and provisions the v1 tenant boundary", async () => {

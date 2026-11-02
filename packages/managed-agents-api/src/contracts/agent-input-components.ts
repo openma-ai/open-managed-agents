@@ -165,24 +165,44 @@ export const agentSkillInputSchema = z.discriminatedUnion("type", [
     .strict(),
 ]) satisfies z.ZodType<BetaManagedAgentsSkillParams>;
 
+const multiagentToggleInputSchema = z
+  .object({ type: z.enum(["enabled", "disabled"]) })
+  .strict();
+
+const predefinedAgentInputSchema = z.union([
+  z.string().min(1),
+  z
+    .object({
+      id: z.string().min(1).max(128),
+      type: z.literal("agent"),
+      version: z.number().int().min(1).optional(),
+    })
+    .strict(),
+  z.object({ type: z.literal("self") }).strict(),
+]);
+
 export const agentMultiagentInputSchema = z
   .object({
-    type: z.literal("coordinator"),
-    agents: z.array(
-      z.union([
-        z.string().min(1),
-        z
-          .object({
-            id: z.string().min(1),
-            type: z.literal("agent"),
-            version: z.number().int().min(1).optional(),
-          })
-          .strict(),
-        z.object({ type: z.literal("self") }).strict(),
-        z
-          .object({ model: z.string().min(1), type: z.literal("advisor") })
-          .strict(),
-      ]),
-    ),
+    type: z.literal("multiagent_20261001"),
+    advisor: z
+      .object({ type: z.literal("disabled") })
+      .strict()
+      .nullable()
+      .optional(),
+    subagents: z.union([
+      z.object({ type: z.literal("disabled") }).strict(),
+      z
+        .object({
+          type: z.literal("enabled"),
+          inline_agents: multiagentToggleInputSchema.nullable().optional(),
+          predefined_agents: z.array(predefinedAgentInputSchema).nullable().optional(),
+        })
+        .strict(),
+    ]).nullable().optional(),
+    workflows: z
+      .object({ type: z.literal("disabled") })
+      .strict()
+      .nullable()
+      .optional(),
   })
-  .strict() satisfies z.ZodType<AgentMultiagentInput>;
+  .strict();

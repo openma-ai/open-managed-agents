@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createManagedIdGenerator, managedIdPrefixes } from "../src/managed-ids";
+import { createManagedIdGenerator, managedIdPrefixes } from "../../../packages/control-plane-node/src/managed-ids";
 
 // Every namespace the official application modules ask the id generator for,
 // with the prefix the Node control plane has always minted for it. A change
@@ -66,7 +66,7 @@ describe("managed id generator", () => {
 
 describe("Node control plane composition", () => {
   it("assembles one managed platform graph per process", () => {
-    const source = readFileSync(resolve(__dirname, "../src/modules/node-managed.ts"), "utf8");
+    const source = readFileSync(resolve(__dirname, "../../../packages/control-plane-node/src/modules/node-managed.ts"), "utf8");
     const calls = source.match(/createNodePlatform\(/g) ?? [];
     expect(calls).toHaveLength(1);
     expect(source).not.toMatch(/managed(Agents|EnvironmentWork|Deployments|Dreams|Tunnels|Skills|Credentials)Platform\b/);

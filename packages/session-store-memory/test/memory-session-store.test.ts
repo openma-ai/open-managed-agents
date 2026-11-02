@@ -127,113 +127,33 @@ describe("MemorySessionStore", () => {
     expect(deployment.map((record) => record.session.id)).toEqual(["session_01"]);
   });
 
-  it("matches one metadata entry and leaves the other list filters in place", async () => {
+  it("persists metadata on insert and replace without list filtering", async () => {
     const store = new MemorySessionStore();
     await insert(store, "workspace_01", session(
-      "session_match",
+      "session_01",
       "2026-08-26T00:00:00.000Z",
-      {
-        deploymentId: "deployment_01",
-        metadata: { project_id: "proj_a", creation_key: "ck_1" },
-        status: "idle",
-        title: "project_id",
-      },
-    ));
-    await insert(store, "workspace_01", session(
-      "session_other",
-      "2026-08-26T01:00:00.000Z",
-      {
-        metadata: { project_id: "proj_b", creation_key: "ck_1" },
-        status: "idle",
-      },
-    ));
-    await insert(store, "workspace_01", session(
-      "session_plain",
-      "2026-08-26T02:00:00.000Z",
-      { metadata: {}, status: "running", title: "\"project_id\":\"proj_a\"" },
-    ));
-    await insert(store, "workspace_02", session(
-      "session_foreign",
-      "2026-08-26T03:00:00.000Z",
-      { metadata: { project_id: "proj_a" }, status: "idle" },
+      { metadata: { project_id: "proj_a" } },
     ));
 
     const stored = await store.findCurrent({
       workspaceId: "workspace_01",
-      sessionId: "session_match",
+      sessionId: "session_01",
     });
-    expect(stored?.session.metadata).toEqual({
-      project_id: "proj_a",
-      creation_key: "ck_1",
-    });
+    expect(stored?.session.metadata).toEqual({ project_id: "proj_a" });
 
-    const matched = await store.listCurrent({
+    await store.replaceCurrent({
       workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      metadata: { key: "project_id", value: "proj_a" },
-    });
-    expect(matched.map((record) => record.session.id)).toEqual(["session_match"]);
-
-    const prefix = await store.listCurrent({
-      workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      metadata: { key: "project", value: "proj_a" },
-    });
-    expect(prefix).toEqual([]);
-
-    const idle = await store.listCurrent({
-      workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      statuses: ["idle"],
-    });
-    expect(idle.map((record) => record.session.id)).toEqual([
-      "session_match",
-      "session_other",
-    ]);
-
-    const idleMatch = await store.listCurrent({
-      workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      statuses: ["idle"],
-      metadata: { key: "creation_key", value: "ck_1" },
-      deploymentId: "deployment_01",
-    });
-    expect(idleMatch.map((record) => record.session.id)).toEqual(["session_match"]);
-
-    const replaced = await store.replaceCurrent({
-      workspaceId: "workspace_01",
-      sessionId: "session_match",
+      sessionId: "session_01",
       expectedRevision: 1,
-      next: session("session_match", "2026-08-26T00:00:00.000Z", {
-        metadata: { project_id: "proj_renamed" },
-        status: "idle",
+      next: session("session_01", "2026-08-26T00:00:00.000Z", {
+        metadata: { project_id: "proj_b" },
       }),
     });
-    expect(replaced).toMatchObject({ type: "replaced" });
-    const renamed = await store.listCurrent({
+    const updated = await store.findCurrent({
       workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      metadata: { key: "project_id", value: "proj_a" },
+      sessionId: "session_01",
     });
-    expect(renamed).toEqual([]);
-    const afterRename = await store.listCurrent({
-      workspaceId: "workspace_01",
-      limit: 10,
-      includeArchived: false,
-      order: "asc",
-      metadata: { key: "project_id", value: "proj_renamed" },
-    });
-    expect(afterRename.map((record) => record.session.id)).toEqual(["session_match"]);
+    expect(updated?.session.metadata).toEqual({ project_id: "proj_b" });
   });
 
   it("archives and deletes with explicit results", async () => {

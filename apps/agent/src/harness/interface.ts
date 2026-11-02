@@ -1,6 +1,8 @@
+import type { SessionBudgetGate } from "./budget";
 import type { ModelMessage, LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
-import type { AgentConfig, SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
+import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
+import type { SessionEvent, UserMessageEvent } from "@open-managed-agents/shared";
 import type { FileResolver } from "../runtime/history";
 import type { PiModelRuntime } from "./pi-provider";
 
@@ -112,6 +114,17 @@ export interface HarnessInterface {
 
 export interface HarnessRuntime {
   history: HistoryStore;
+
+  /**
+   * Steering (optional). Called by the loop at each model-step boundary.
+   * Returns queued user.message events the platform just absorbed into this
+   * turn (already appended to history, stamped and re-emitted) — CMA
+   * coherent-turn semantics. Undefined when the agent does not advertise
+   * steering: mid-turn messages stay as mid-state (`processed_at` null) and
+   * the host falls back to drain-after-idle (capability gap, not the CMA
+   * contract). See docs/implementation/cma-steer-coherent-turn.md.
+   */
+  takeSteeringInputs?: () => Promise<SessionEvent[]>;
   sandbox: SandboxPort;
   /**
    * Append an event to history AND broadcast to WS subscribers. The single
@@ -198,7 +211,17 @@ export interface HarnessRuntime {
 
 export interface HarnessContext {
   agent: AgentConfig;
+  /**
+   * Session list-cost budget gate. Present only when the session has
+   * `budget.max_list_cost` AND its model card has pricing. The harness checks
+   * it before every model request; at the cap it makes no request and sets
+   * `budget.reached`, and the host emits the budget_reached idle sequence.
+   */
+  budget?: SessionBudgetGate | null;
   userMessage: UserMessageEvent;
+  /** Host-scoped canonical history for ACP recovery, excluding this execution's
+   * accepted inputs and future queued inputs. Undefined retains legacy hosts. */
+  acpRecoveryHistory?: readonly SessionEvent[];
   /**
    * The OMA session id this turn belongs to. Optional during the transition
    * for legacy harnesses; AcpProxyHarness needs it to address the
@@ -213,6 +236,14 @@ export interface HarnessContext {
    * harnesses ignore it. SessionDO populates this from its `state.tenant_id`.
    */
   tenant_id?: string;
+
+  /**
+   * When the agent uses `runtime_binding` (AcpProxyHarness), the host
+   * filesystem path for an attached `github_repository` resource. Forwarded
+   * on `session.start.cwd` so the ACP child runs in the project tree while
+   * the daemon keeps the OMA bundle in its scratch directory.
+   */
+  acpSessionStartCwd?: string;
 
   /** Platform-prepared tools: built from agent config, ready to pass to generateText. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -258,6 +289,19 @@ export interface HarnessContext {
   platformReminders?: Array<{ source: string; text: string }>;
 
   /**
+   * Resolved skill mounts for assembly-layer exposure (Pi / default harness).
+   * When set, SKILL.md bodies are not inlined into `systemPrompt` by default.
+   */
+  skillMounts?: Array<{
+    skillId: string;
+    name: string;
+    description: string;
+    mountRoot: string;
+    body?: string;
+    source?: "builtin" | "custom";
+  }>;
+
+  /**
    * Resolve a `file_id` (Anthropic Managed Agents ImageBlock/DocumentBlock
    * `source.type === "file"`) into inline bytes + media type + filename for
    * the next derive cycle. SessionDO populates this with a
@@ -272,6 +316,8 @@ export interface HarnessContext {
   fileFetcher?: FileResolver;
 
   env: {
+    /** The session's own resolved model-card key and endpoint. Runtimes
+     *  never populate these from a platform environment variable. */
     ANTHROPIC_API_KEY: string;
     ANTHROPIC_BASE_URL?: string;
     /** Official Environment Work secret (base64url JSON). Only its
@@ -290,6 +336,20 @@ export interface HarnessContext {
     mcpProxy?: {
       gatewayBaseUrl: string;
       sessionsToken: string;
+    };
+    /** Same Work capability as mcpProxy; used to project hosted inference env. */
+    hostedInference?: {
+      gatewayBaseUrl: string;
+      sessionsToken: string;
+      model?: {
+        providerId: string;
+        baseUrl: string | null;
+        protocolEndpoints?: readonly {
+          protocol: "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
+          proxyPathSegment: string;
+          upstreamBaseUrl: string;
+        }[];
+      };
     };
     environmentConfig?: { networking?: { type: string; allowed_hosts?: string[] } };
     /** Register a background task for completion notification (CC-style task_notification). */

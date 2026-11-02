@@ -1,3 +1,4 @@
+import { budgetExhausted } from "./budget";
 import { streamText, stepCountIs, wrapLanguageModel } from "ai";
 import type { ContentPart, ModelMessage, LanguageModel, SystemModelMessage } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -8,7 +9,10 @@ import { eventsToMessagesAsync } from "../runtime/history";
 import { SummarizeCompactionStrategy, resolveCompactionStrategy } from "./compaction";
 import type { CompactionStrategy } from "./compaction";
 import { ALL_TOOLS } from "./tools";
+import { MCP_INVOKE_TOOL_NAME, resolveProxiedToolCall } from "./tool-proxy";
 import { llmLoggingMiddleware, llmLogKey } from "./llm-logging-middleware";
+import { readHarnessAgentModelSettings } from "./agent-model-settings";
+import { warnAiSdkHarnessDeprecatedOnce } from "./ai-sdk-deprecation";
 
 // Single source of truth lives in ./tools.ts (ALL_TOOLS). Importing here so
 // adding a new toolset entry can't drift the event-classification list — the
@@ -16,13 +20,19 @@ import { llmLoggingMiddleware, llmLogKey } from "./llm-logging-middleware";
 // `cancel_schedule`, and `list_schedules` to mis-emit as
 // `agent.custom_tool_use` instead of `agent.tool_use`.
 const BUILTIN_TOOLS = new Set(ALL_TOOLS);
-const isMcpTool = (name: string) => name.startsWith("mcp_");
+// `mcp_invoke` shares the legacy `mcp_` prefix but is the harness proxy for MCP
+// tools, not one itself: it is projected like the tool the model called.
+export const isMcpTool = (name: string) =>
+  name.startsWith("mcp_") && name !== MCP_INVOKE_TOOL_NAME;
 // Exported so tests can assert classification directly. Returning true here
 // makes `runtime.broadcast` emit `agent.tool_use`; false routes to
 // `agent.custom_tool_use`. Down-stream consumers (Console UI, SDK event
 // filters, billing dashboards) split on those event types.
 export const isBuiltinTool = (name: string): boolean =>
-  BUILTIN_TOOLS.has(name) || isMcpTool(name) || name.startsWith("call_agent_");
+  BUILTIN_TOOLS.has(name)
+  || isMcpTool(name)
+  || name === MCP_INVOKE_TOOL_NAME
+  || name.startsWith("call_agent_");
 
 
 /** Extract the MCP server name from current and legacy projected tool names. */
@@ -100,7 +110,9 @@ function emitToolCallEvent(
       name: toolName,
       input: callInput,
     };
-    if (!tools[toolName]?.execute) event.evaluated_permission = "ask";
+    // A proxied call needs confirmation when its target does.
+    const target = resolveProxiedToolCall(toolName, callInput);
+    if (!tools[target.toolName]?.execute) event.evaluated_permission = "ask";
     runtime.broadcast(event);
   } else {
     runtime.broadcast({
@@ -110,6 +122,22 @@ function emitToolCallEvent(
       input: callInput,
     });
   }
+}
+
+/** Shared wire mapping for Pi and AI SDK harness tool-call events. */
+export function emitHarnessToolUseFromCall(
+  runtime: HarnessContext["runtime"],
+  tools: Record<string, any>,
+  toolCallId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): void {
+  emitToolCallEvent(runtime, tools, {
+    type: "tool-call",
+    toolCallId,
+    toolName,
+    input,
+  } as ContentPart<any> & { type: "tool-call" });
 }
 
 /**
@@ -159,7 +187,7 @@ function emitToolResultEvent(
     runtime.broadcast({
       type: "agent.mcp_tool_result",
       mcp_tool_use_id: toolCallId,
-      content: typeof content === "string" ? content : JSON.stringify(content),
+      content,
       ...(part.type === "tool-error" && { is_error: true }),
       // v1-additive: causal predecessor is the matching agent.mcp_tool_use,
       // whose EventBase.id is set explicitly to toolCallId in
@@ -254,6 +282,12 @@ function normalizeToolOutputForWire(raw: unknown): string | ContentBlock[] {
   return JSON.stringify(raw);
 }
 
+/**
+ * Legacy agent loop built on the Vercel AI SDK (`generateText` + tool loop).
+ *
+ * @deprecated Use the default Pi harness (`harness` unset, `default`, or `pi`).
+ * Register explicitly via `harness: "ai-sdk"` only for backward compatibility.
+ */
 export class DefaultHarness implements HarnessInterface {
   /**
    * Compaction strategy resolved from agent config. Cached on the harness
@@ -264,6 +298,13 @@ export class DefaultHarness implements HarnessInterface {
 
   async run(ctx: HarnessContext): Promise<void> {
     const { agent, userMessage, runtime, tools, model, systemPrompt } = ctx;
+    warnAiSdkHarnessDeprecatedOnce(ctx.session_id ?? "unknown", (event) => { runtime.broadcast(event); });
+    // Pre-request budget gate (turn entry only; the deprecated AI SDK loop
+    // runs its multi-step tool loop inside one streamText call).
+    if (budgetExhausted(ctx.budget, runtime.history.getEvents())) {
+      ctx.budget!.reached = true;
+      return;
+    }
     const providerOptions =
       typeof agent.model === "object"
         ? agent.model.provider_options as SharedV3ProviderOptions | undefined
@@ -349,6 +390,7 @@ export class DefaultHarness implements HarnessInterface {
     //    per-call timing + per-call usage that Anthropic's Managed Agents wire
     //    spec exposes.
     const modelId = typeof agent.model === "string" ? agent.model : agent.model.id;
+    const agentMaxTokens = readHarnessAgentModelSettings(agent.model)?.maxTokens;
 
     // 5. Run agent loop with retry + timeout + prompt caching.
     //
@@ -402,6 +444,8 @@ export class DefaultHarness implements HarnessInterface {
       // NoOutputGeneratedError. Keep the real error so the turn fails with it.
       let streamError: unknown;
       let stepSawFirstChunk = false;
+      const steerInsertions: Array<{ at: number; messages: ModelMessage[] }> = [];
+      let steerInsertedCount = 0;
 
       const streamStartedAt = Date.now();
       console.log(`[stream] streamText START model=${modelId} messages=${finalMessages.length} tools=${Object.keys(cached.tools ?? {}).length}`);
@@ -435,6 +479,7 @@ export class DefaultHarness implements HarnessInterface {
       try {
       const r = streamText({
       model: wrappedModel,
+      ...(agentMaxTokens !== undefined && { maxTokens: agentMaxTokens }),
       // Empty system prompt → omit entirely. Anthropic's API rejects an
       // empty `system` block ("system: text content blocks must be non-
       // empty"); the AI SDK forwards the empty string as a block instead
@@ -445,8 +490,51 @@ export class DefaultHarness implements HarnessInterface {
       messages: finalMessages,
       tools: cached.tools,
       providerOptions,
-      stopWhen: stepCountIs(100),
+      stopWhen: [
+        stepCountIs(100),
+        // Client-parked tools (always_ask / custom with execute stripped) must
+        // end the streamText loop. Continuing samples again with the unpaired
+        // tool_use still in context and emits agent.message text that lands
+        // BETWEEN tool_use and tool_result in the event log. DeepSeek's
+        // Anthropic-compat then 400s ("tool_use ids were found without
+        // tool_result blocks immediately after") even after settle — and
+        // concurrent two_clients traffic makes that interleaving routine.
+        ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolCallId: string }>; toolResults?: Array<{ toolCallId: string }> }> }) => {
+          const last = steps.at(-1);
+          if (!last) return false;
+          const resulted = new Set((last.toolResults ?? []).map((r) => r.toolCallId));
+          return (last.toolCalls ?? []).some((c) => !resulted.has(c.toolCallId));
+        },
+      ],
       abortSignal: runtime.abortSignal,
+      // CMA coherent-turn steering: at each step boundary absorb mid-turn
+      // queued user.message into this turn (not next-turn outbox). AI SDK
+      // rebuilds step input from the initial messages plus response
+      // messages, so remember where each steer landed and splice it back
+      // in on every later step.
+      ...(runtime.takeSteeringInputs
+        ? {
+            prepareStep: async ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {
+              if (stepNumber > 0) {
+                const steered = await runtime.takeSteeringInputs!();
+                if (steered.length > 0) {
+                  const converted = await eventsToMessagesAsync(steered, ctx.fileFetcher);
+                  steerInsertions.push({ at: messages.length - steerInsertedCount, messages: converted });
+                  steerInsertedCount += converted.length;
+                }
+              }
+              if (steerInsertions.length === 0) return undefined;
+              const out: ModelMessage[] = [];
+              let cursor = 0;
+              for (const ins of steerInsertions) {
+                out.push(...messages.slice(cursor, ins.at), ...ins.messages);
+                cursor = ins.at;
+              }
+              out.push(...messages.slice(cursor));
+              return { messages: out };
+            },
+          }
+        : {}),
 
       onChunk: ({ chunk }) => {
         // First chunk of this step → emit span.model_first_token. Pair via

@@ -2,7 +2,7 @@
 //
 // The legacy `dockerfile` build path (GitHub Actions → per-env worker →
 // /build-complete callback) was removed once setup-on-warmup landed
-// (apps/agent/src/runtime/setup-on-warmup.ts). Now env create writes a
+// (packages/sandbox/src/environment-packages.ts). Now env create writes a
 // D1 row and returns immediately — packages are installed at the FIRST
 // session warmup by the SessionDO, not at env-create time.
 //

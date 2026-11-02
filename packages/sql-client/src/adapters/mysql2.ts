@@ -7,7 +7,6 @@
 // concrete database.
 
 import { driverRetry } from "../db-errors";
-import { rewriteJsonExtract } from "../json-extract";
 import { translateMysql2Error } from "./mysql2-errors";
 
 const retryMysql = driverRetry(translateMysql2Error);
@@ -60,7 +59,7 @@ interface PortableStatement {
 }
 
 function translatePortableStatement(input: string): PortableStatement {
-  const portable = mysqlQuotedIdentifiers(rewriteJsonExtract(input, "mysql"));
+  const portable = mysqlQuotedIdentifiers(input);
   const returningMatch = portable.match(/\s+RETURNING\s+([\s\S]+?)\s*;?\s*$/i);
   const returning = returningMatch?.[1].trim() ?? null;
   let text = returningMatch

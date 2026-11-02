@@ -60,7 +60,7 @@ describe("HTTP provider model catalog adapter", () => {
       type: "success",
       models: expect.arrayContaining([
         expect.objectContaining({
-          id: "deepseek-v4-flash",
+          id: "deepseek-flash",
           name: expect.any(String),
           provider: "deepseek",
           api: "openai-completions",

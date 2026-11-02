@@ -14,7 +14,7 @@
 //   - Reads of the cleartext key go through `getApiKeyCipher` so the service
 //     can decrypt on demand without polluting the standard read shape.
 
-import type { ModelCardRow } from "./types";
+import type { ModelCardRow, ModelPricing } from "./types";
 import type { PageCursor } from "@open-managed-agents/shared";
 
 export interface NewModelCardInput {
@@ -29,6 +29,7 @@ export interface NewModelCardInput {
   baseUrl: string | null;
   customHeaders: Record<string, string> | null;
   piConfig: Record<string, unknown> | null;
+  pricing?: ModelPricing | null;
   apiKeyCipher: string;
   apiKeyPreview: string;
   /**
@@ -48,6 +49,7 @@ export interface ModelCardUpdateFields {
   baseUrl?: string | null;
   customHeaders?: Record<string, string> | null;
   piConfig?: Record<string, unknown> | null;
+  pricing?: ModelPricing | null;
   /** New ciphertext when the api_key is rotated. Pair with `apiKeyPreview`. */
   apiKeyCipher?: string;
   apiKeyPreview?: string;

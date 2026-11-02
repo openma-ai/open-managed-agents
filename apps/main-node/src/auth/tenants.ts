@@ -3,7 +3,7 @@
 // lives in @open-managed-agents/schema.
 
 import { applyTenantSchema } from "@open-managed-agents/schema";
-import { ensureTenantSqlite as _ensureTenantSqlite } from "@open-managed-agents/auth-config";
+import { ensureTenantSqlite as _ensureTenantSqlite } from "@open-managed-agents/control-plane-node";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 
 export const ensureTenantSchema = applyTenantSchema;

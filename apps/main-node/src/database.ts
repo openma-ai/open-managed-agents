@@ -1,45 +1,24 @@
 // Database component: one open connection to the Node control plane's
 // database, with schema migrated. Callers may pass their own NodeDatabase
 // (a pool they manage, a proxy, …) instead of the one openNodeDatabase builds.
+//
+// The drivers live in the per-dialect adapter packages; this module only
+// loads the one the config selects.
 
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-
-import type { OmaDb } from "@open-managed-agents/db-schema";
-import { migrateNodeMysqlSchema } from "@open-managed-agents/db-schema/node-mysql";
 import { ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/sql";
-import {
-  createBetterSqlite3SqlClient,
-  createMysql2SqlClient,
-  createPostgresSqlClient,
-  type SqlClient,
-} from "@open-managed-agents/sql-client";
+import type { NodeDatabase } from "@open-managed-agents/node-database";
 
 import type { DatabaseConfig } from "./config.js";
+import { loadBetterSqlite3 } from "./lib/better-sqlite3.js";
 import { reconcilePiModelConfigMigration } from "./lib/reconcile-pi-model-config-migration.js";
+import { moveLegacyAgents } from "./lib/move-legacy-agents.js";
 
-export type NodeDialect = "postgres" | "mysql" | "sqlite";
-
-/**
- * Driver-native handle for the few consumers that need one (better-auth
- * adapters). Optional: a caller-built NodeDatabase may omit it, in which
- * case those consumers must be supplied explicitly too.
- */
-export type NodeDatabaseDriver =
-  | { kind: "postgres"; connectionString: string }
-  | { kind: "mysql"; pool: import("mysql2/promise").Pool }
-  | { kind: "sqlite"; path: string };
-
-export interface NodeDatabase {
-  readonly dialect: NodeDialect;
-  readonly sql: SqlClient;
-  /** Drizzle handle over the same database; new-style adapters take this. */
-  readonly drizzle: OmaDb<Record<string, unknown>>;
-  /** Shown in /health and startup logs. Never includes credentials. */
-  readonly description: string;
-  readonly driver?: NodeDatabaseDriver;
-  stop?(): Promise<void>;
-}
+export type {
+  NodeAuthDatabase,
+  NodeAuthDatabaseOptions,
+  NodeDatabase,
+  NodeDialect,
+} from "@open-managed-agents/node-database";
 
 export interface OpenNodeDatabaseOptions {
   /** Apply the consolidated baseline migrations after connecting. Default true. */
@@ -57,82 +36,34 @@ export async function openNodeDatabase(
 
 async function connect(config: DatabaseConfig): Promise<NodeDatabase> {
   if (config.kind === "postgres") {
-    const url = config.url;
-    const sql = await createPostgresSqlClient(url);
-    const { drizzle } = await import("drizzle-orm/postgres-js");
-    const postgresMod = (await import("postgres" as string)) as { default: (dsn: string) => unknown };
-    const pgClient = postgresMod.default(url);
-    const u = new URL(url);
-    return {
-      dialect: "postgres",
-      sql,
-      drizzle: drizzle(pgClient as never) as unknown as OmaDb<Record<string, unknown>>,
-      description: `postgres ${u.hostname}:${u.port || 5432}${u.pathname}`,
-      driver: { kind: "postgres", connectionString: url },
-    };
+    const { openPostgresDatabase } = await import("@open-managed-agents/node-database-postgres");
+    return openPostgresDatabase({ url: config.url });
   }
   if (config.kind === "mysql") {
-    const url = config.url;
-    const sql = await createMysql2SqlClient(url);
-    const mysql = await import("mysql2/promise");
-    const pool = mysql.createPool({
-      uri: url,
-      supportBigNumbers: true,
-      bigNumberStrings: false,
-      timezone: "Z",
-    });
-    const { drizzle } = await import("drizzle-orm/mysql2");
-    const u = new URL(url);
-    return {
-      dialect: "mysql",
-      sql,
-      drizzle: drizzle(pool) as unknown as OmaDb<Record<string, unknown>>,
-      description: `mysql ${u.hostname}:${u.port || 3306}${u.pathname}`,
-      driver: { kind: "mysql", pool },
-      stop: async () => {
-        await pool.end();
-        await (sql as import("@open-managed-agents/sql-client").Mysql2SqlClient).close();
-      },
-    };
+    const { openMysqlDatabase } = await import("@open-managed-agents/node-database-mysql");
+    return openMysqlDatabase({ url: config.url });
   }
-  const path = config.path;
-  mkdirSync(dirname(path), { recursive: true });
-  const sql = await createBetterSqlite3SqlClient(path);
-  const { drizzle } = await import("drizzle-orm/better-sqlite3");
-  const BetterSqlite3 = (await import("better-sqlite3")).default;
-  const raw = new BetterSqlite3(path);
-  // Match D1's runtime default — FK enforcement off. See packages/sql-client
-  // for the rationale (publication-first install + a few other paths).
-  raw.exec("PRAGMA foreign_keys = OFF");
-  return {
-    dialect: "sqlite",
-    sql,
-    drizzle: drizzle(raw) as unknown as OmaDb<Record<string, unknown>>,
-    description: `sqlite ${path}`,
-    driver: { kind: "sqlite", path },
-  };
+  // better-sqlite3 is optional; resolve it first so a missing install fails
+  // with an actionable message instead of the adapter's bare import error.
+  await loadBetterSqlite3();
+  const { openSqliteDatabase } = await import("@open-managed-agents/node-database-sqlite");
+  return openSqliteDatabase({ path: config.path });
 }
 
 /**
  * Apply the consolidated baseline (Drizzle migrate runner — one folder per
- * dialect, generated by `pnpm db:generate:node-{pg,sqlite}`), then the
- * event-log's own idempotent ensureSchema (session_events is still its own
- * concern and runs after the baseline applies the rest).
+ * dialect, generated by `pnpm db:generate:node-{pg,sqlite}`; MySQL translates
+ * the SQLite folder), then the event-log's own idempotent ensureSchema
+ * (session_events is still its own concern and runs after the baseline
+ * applies the rest).
  */
 export async function migrateNodeDatabase(database: NodeDatabase): Promise<void> {
-  const { dialect, sql, drizzle } = database;
+  const { dialect, sql } = database;
   const migrationsFolder = dialect === "postgres"
     ? new URL("../migrations", import.meta.url).pathname
     : new URL("../migrations-sqlite", import.meta.url).pathname;
   await reconcilePiModelConfigMigration(sql, dialect);
-  if (dialect === "postgres") {
-    const { migrate } = await import("drizzle-orm/postgres-js/migrator");
-    await migrate(drizzle as never, { migrationsFolder });
-  } else if (dialect === "mysql") {
-    await migrateNodeMysqlSchema(sql, migrationsFolder);
-  } else {
-    const { migrate } = await import("drizzle-orm/better-sqlite3/migrator");
-    migrate(drizzle as never, { migrationsFolder });
-  }
+  await moveLegacyAgents(sql, dialect);
+  await database.applyMigrations(migrationsFolder);
   if (dialect !== "mysql") await ensureEventLogSchema(sql, dialect);
 }

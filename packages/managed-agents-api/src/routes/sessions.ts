@@ -54,6 +54,18 @@ export function buildSessionRoutes(
   app.use("*", requireBeta(MANAGED_AGENTS_BETA));
 
   app.get("/", async (c) => {
+    if (
+      c.req.query("metadata_key") !== undefined
+      || c.req.query("metadata_value") !== undefined
+    ) {
+      return c.json(
+        invalidRequest(
+          "metadata_key and metadata_value are not supported when listing sessions",
+        ),
+        400,
+      );
+    }
+
     const query = sessionListQuerySchema.safeParse({
       limit: c.req.query("limit"),
       page: c.req.query("page"),
@@ -66,8 +78,6 @@ export function buildSessionRoutes(
       deployment_id: c.req.query("deployment_id"),
       include_archived: c.req.query("include_archived"),
       memory_store_id: c.req.query("memory_store_id"),
-      metadata_key: c.req.query("metadata_key"),
-      metadata_value: c.req.query("metadata_value"),
       order: c.req.query("order"),
       statuses: c.req.queries("statuses[]"),
     });

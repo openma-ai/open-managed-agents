@@ -1,8 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 import { isRateLimited, windows } from "../../apps/main/src/rate-limit";
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -19,16 +18,7 @@ function del(path: string) {
   return api(path, { method: "DELETE", headers: H });
 }
 
-// Register test harness
-registerHarness("parity-noop", () => ({ async run() {} }));
-registerHarness("parity-echo", () => ({
-  async run(ctx: HarnessContext) {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "parity echo" }],
-    });
-  },
-}));
+registerTestHarnesses();
 
 // ============================================================
 // Rate Limiting — unit tests on isRateLimited
@@ -75,7 +65,7 @@ describe("user.define_outcome event", () => {
     const a = await post("/v1/oma/agents", {
       name: "OutcomeAgent",
       model: "claude-sonnet-4-6",
-      harness: "parity-noop",
+      _oma: { harness: "parity-noop" },
     });
     const e = await post("/v1/oma/environments", {
       name: "outcome-env",

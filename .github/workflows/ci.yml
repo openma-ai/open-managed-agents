@@ -11,13 +11,14 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Full repository tests plus browser, storage and MySQL integration now
     # approach 20 minutes on GitHub runners; allow cleanup to finish.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -31,6 +32,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+
+      - name: Check dependency sources before install
+        run: |
+          node --test scripts/check-dependency-sources.test.mjs
+          node scripts/check-dependency-sources.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -49,6 +55,18 @@ jobs:
 
       - name: Protocol coverage gate
         run: pnpm test:coverage:protocol
+
+      - name: Harness web HTTP coverage (#281)
+        run: pnpm test:coverage:harness-web-http
+
+      - name: Upload harness web HTTP coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/harness-web-http/lcov.info,coverage/harness-tools-wiring/lcov.info
+          flags: harness_web_http
+          name: harness-web-http
+          fail_ci_if_error: true
+          verbose: true
 
       - name: Storage integration tests
         run: pnpm test:integration:storage
@@ -70,11 +88,14 @@ jobs:
       - name: MySQL integration tests
         run: pnpm test:integration:mysql
 
+      - name: PostgreSQL MCP access-loss integration
+        run: pnpm --filter @open-managed-agents/main-node test:integration:postgres
+
   # Separate from verify so it does not wait on the 20+ minute suite and does
   # not use the Litebox /dev/kvm action. Checkout plus a Node script only.
   release-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout

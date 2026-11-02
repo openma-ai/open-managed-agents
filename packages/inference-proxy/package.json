@@ -1,0 +1,19 @@
+{
+  "name": "@open-managed-agents/inference-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./endpoint-catalog": "./src/endpoint-catalog.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  },
+  "dependencies": {
+    "@open-managed-agents/domain": "workspace:*"
+  }
+}

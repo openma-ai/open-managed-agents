@@ -68,7 +68,7 @@ export function UserProfile() {
           className="console-sidebar-row"
         >
           <span data-sidebar-slot data-sidebar-track="icon">
-            <Avatar name={label} size="sm" />
+            <Avatar name={label} src={user.image} size="sm" />
           </span>
           <div className="min-w-0 text-left leading-tight" data-sidebar-track="label">
             <div className="text-sm text-sidebar-foreground truncate">

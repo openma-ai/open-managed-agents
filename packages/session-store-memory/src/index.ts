@@ -23,15 +23,6 @@ function compareSessions(
     || left.session.id.localeCompare(right.session.id);
 }
 
-function metadataEquals(
-  metadata: Record<string, string>,
-  key: string,
-  value: string,
-): boolean {
-  return Object.prototype.hasOwnProperty.call(metadata, key)
-    && metadata[key] === value;
-}
-
 export class MemorySessionStore implements SessionStore {
   private readonly workspaces = new Map<string, Map<string, StoredSession>>();
 
@@ -111,9 +102,6 @@ export class MemorySessionStore implements SessionStore {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Session list limit must be a positive integer");
     }
-    if (input.metadata !== undefined && input.metadata.key.length === 0) {
-      throw new Error("Session metadata filter key must not be empty");
-    }
     if (input.statuses !== undefined && input.statuses.length === 0) return [];
 
     const direction = input.order === "asc" ? 1 : -1;
@@ -132,13 +120,6 @@ export class MemorySessionStore implements SessionStore {
         || record.session.resources.some(
           (resource) => resource.type === "memory_store"
             && resource.memoryStoreId === input.memoryStoreId,
-        ))
-      .filter((record) =>
-        input.metadata === undefined
-        || metadataEquals(
-          record.session.metadata,
-          input.metadata.key,
-          input.metadata.value,
         ))
       .filter((record) => {
         if (input.position === undefined) return true;

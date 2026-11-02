@@ -49,8 +49,13 @@
  */
 
 import { Hono } from "hono";
-import type { Env, AgentConfig, CredentialConfig } from "@open-managed-agents/shared";
+import {
+  bindAccessLossHooks,
+  type AccessLossRuntime,
+} from "@open-managed-agents/mcp-access-loss";
+import type { Env, CredentialConfig, RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/shared";
 import { log, logWarn } from "@open-managed-agents/shared";
+import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
@@ -58,6 +63,7 @@ import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-s
 import { SqlCredentialStore } from "@open-managed-agents/credential-store-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { WebCryptoAesGcm } from "@open-managed-agents/integrations-adapters-cf";
+import { createCloudflareAccessLossRuntime } from "../lib/mcp-access-loss";
 
 // Module-level: the cap spec registry is pure data + immutable. Building
 // once amortises validation across every outbound request.
@@ -83,13 +89,18 @@ type McpProxyServer =
       env?: Record<string, string>;
     };
 
+interface McpProxyAgent {
+  id?: string;
+  version?: number;
+  mcpServers: McpProxyServer[];
+  multiagent?: { subagents: { type: "disabled" } | { type: "enabled"; predefinedAgents: Array<{ type: string; id?: string; version?: number; mcpServers?: McpProxyServer[] }> } } | null;
+}
+
 export interface McpProxySessionSource {
   find(input: { workspaceId: string; sessionId: string }): Promise<{
     archivedAt: string | null;
     vaultIds: string[];
-    agent: {
-      mcpServers: McpProxyServer[];
-    };
+    agent: McpProxyAgent;
   } | null>;
 }
 
@@ -223,6 +234,8 @@ export interface ForwardHttpMcpProxyRequestInput {
   sessionId: string;
   serverName: string;
   request: Request;
+  /** When set, a terminal lost-access result closes that scope and cancels wakeups. */
+  accessLoss?: AccessLossRuntime;
 }
 
 async function sha256(input: string): Promise<string> {
@@ -261,6 +274,7 @@ export async function resolveProxyTargetByTenant(
   serverName: string,
   sessionSource?: McpProxySessionSource,
   credentialSource?: McpProxyCredentialSource,
+  agentIdentity?: { id: string; version: number },
 ): Promise<ProxyTarget | null> {
   // 1. Session must exist, belong to the same tenant, not archived.
   const managedSessionRecord = sessionSource
@@ -283,13 +297,22 @@ export async function resolveProxyTargetByTenant(
   };
   if (legacySession.archived_at || managedSession.archivedAt) return null;
 
-  // 2. agent_snapshot must declare the requested mcp server.
-  const legacyAgent = legacySession.agent_snapshot;
+  // Select exclusively from the immutable Session roster, never a latest Agent row.
+  const rootLegacy = legacySession.agent_snapshot;
+  const rootManaged = managedSessionRecord?.agent;
+  const legacyAgent = !agentIdentity || (rootLegacy?.id === agentIdentity.id && rootLegacy.version === agentIdentity.version)
+    ? rootLegacy
+    : rootLegacy?.multiagent?.subagents.type === "enabled"
+      ? rootLegacy.multiagent.subagents.predefined_agents.find(member => member.id === agentIdentity.id && member.version === agentIdentity.version)
+      : undefined;
+  const managedAgent = !agentIdentity || (rootManaged?.id === agentIdentity.id && rootManaged.version === agentIdentity.version)
+    ? rootManaged
+    : rootManaged?.multiagent?.subagents.type === "enabled"
+      ? rootManaged.multiagent.subagents.predefinedAgents.find(member => member.type === "agent" && member.id === agentIdentity.id && member.version === agentIdentity.version)
+      : undefined;
   const server = legacyAgent
-    ? (legacyAgent.mcp_servers ?? []).find((candidate) => candidate.name === serverName)
-    : (managedSession.agent?.mcpServers ?? []).find(
-        (candidate) => candidate.name === serverName,
-      );
+    ? (legacyAgent.mcp_servers ?? []).find(candidate => candidate.name === serverName)
+    : (managedAgent?.mcpServers ?? []).find(candidate => candidate.name === serverName);
   if (!server || !("url" in server) || !server.url) return null;
 
   // 3. Resolve credential. agent.mcp_servers[].authorization_token, if set,
@@ -638,10 +661,9 @@ export async function resolveOutboundCredentialByHost(
 }
 
 /**
- * Forward an MCP request to the upstream server, swapping the authorization
- * header for the resolved upstream token. Strips any session-/proxy-specific
- * CF headers so the upstream sees only what it would have if the agent had
- * called it directly with the real credential.
+ * Forward an MCP request to the upstream server with the resolved upstream
+ * token. Header hygiene (hop-by-hop, caller credentials, edge and OpenMA
+ * routing headers) is the shared HTTP hop's, `sendMcpUpstream`.
  *
  * Streams the response back as-is — MCP-over-HTTP clients expect to read
  * the body progressively (SSE / chunked NDJSON). Both the HTTP endpoint
@@ -653,29 +675,13 @@ export async function forwardToUpstream(
   inboundHeaders: Headers,
   body: BodyInit | null,
 ): Promise<Response> {
-  const upstreamHeaders = new Headers(inboundHeaders);
-  upstreamHeaders.set("authorization", `Bearer ${target.upstreamToken}`);
-  upstreamHeaders.delete("host");
-  upstreamHeaders.delete("cf-connecting-ip");
-  upstreamHeaders.delete("cf-ray");
-  upstreamHeaders.delete("x-forwarded-for");
-  upstreamHeaders.delete("x-forwarded-proto");
-  upstreamHeaders.delete("x-real-ip");
-  upstreamHeaders.delete("x-api-key");
-  upstreamHeaders.delete("proxy-authorization");
-  upstreamHeaders.delete("cookie");
-  upstreamHeaders.delete("x-active-tenant");
-
-  const upstreamReq = new Request(target.upstreamUrl, {
+  return sendMcpUpstream({
+    upstreamUrl: target.upstreamUrl,
     method,
-    headers: upstreamHeaders,
-    body: ["GET", "HEAD"].includes(method) ? undefined : body,
-    // A redirect is a new destination and must be re-authorized explicitly;
-    // never let fetch replay a Vault bearer automatically.
-    redirect: "manual",
+    headers: inboundHeaders,
+    body,
+    accessToken: target.upstreamToken,
   });
-
-  return fetch(upstreamReq);
 }
 
 /**
@@ -701,6 +707,43 @@ export async function forwardToUpstream(
  * persistence is now D1-direct so the canonical credential row is the
  * single source of truth and stays consistent across sessions.
  */
+export interface McpProxyForwardHooks {
+  onFinal?: (info: {
+    status: number;
+    bodyText: string;
+    refreshed: boolean;
+    refreshFailed: boolean;
+    refreshFailureCode: string | null;
+  }) => Promise<void>;
+}
+
+async function finishMcpProxyResponse(
+  response: Response,
+  info: {
+    refreshed: boolean;
+    refreshFailed: boolean;
+    refreshFailureCode: string | null;
+  },
+  hooks?: McpProxyForwardHooks,
+): Promise<Response> {
+  if (!hooks?.onFinal) return response;
+  const bodyText = await response.text();
+  await hooks.onFinal({
+    status: response.status,
+    bodyText,
+    ...info,
+  });
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.delete("transfer-encoding");
+  return new Response(bodyText, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export async function forwardWithRefresh(
   services: Services,
   tenantId: string,
@@ -718,6 +761,7 @@ export async function forwardWithRefresh(
     serverName?: string;
     callerKind: "http" | "rpc-mcp" | "rpc-outbound";
   },
+  hooks?: McpProxyForwardHooks,
 ): Promise<Response> {
   const started = Date.now();
   let upstreamHost: string | undefined;
@@ -759,7 +803,11 @@ export async function forwardWithRefresh(
       },
       "mcp_proxy forward",
     );
-    return first;
+    return finishMcpProxyResponse(first, {
+      refreshed: false,
+      refreshFailed: false,
+      refreshFailureCode: null,
+    }, hooks);
   }
 
   // Drain so we can return a fresh Response without two outstanding
@@ -771,7 +819,14 @@ export async function forwardWithRefresh(
     /* already consumed / closed */
   }
 
-  const fresh = await tryRefreshOauth(services, tenantId, target.refresh, target.upstreamToken);
+  const refreshFailure: { code: string | null } = { code: null };
+  const fresh = await tryRefreshOauth(
+    services,
+    tenantId,
+    target.refresh,
+    target.upstreamToken,
+    refreshFailure,
+  );
   if (!fresh) {
     // Refresh failed: re-issue the original request unchanged so the
     // caller gets the upstream's actual 401 (matches old behavior).
@@ -789,7 +844,11 @@ export async function forwardWithRefresh(
       },
       "mcp_proxy refresh failed; surfacing upstream 401",
     );
-    return retry;
+    return finishMcpProxyResponse(retry, {
+      refreshed: false,
+      refreshFailed: true,
+      refreshFailureCode: refreshFailure.code,
+    }, hooks);
   }
 
   const retried = await forwardToUpstream(
@@ -813,7 +872,11 @@ export async function forwardWithRefresh(
     },
     "mcp_proxy forward (after refresh)",
   );
-  return retried;
+  return finishMcpProxyResponse(retried, {
+    refreshed: true,
+    refreshFailed: false,
+    refreshFailureCode: null,
+  }, hooks);
 }
 
 async function tryRefreshOauth(
@@ -821,6 +884,7 @@ async function tryRefreshOauth(
   tenantId: string,
   refresh: NonNullable<ProxyTarget["refresh"]>,
   staleAccessToken: string,
+  failure?: { code: string | null },
 ): Promise<string | null> {
   const tokenField = refresh.tokenField ?? "access_token";
   let managedCurrent: ManagedProxyCredentialRecord | null = null;
@@ -890,6 +954,16 @@ async function tryRefreshOauth(
     return null;
   }
   if (!res.ok) {
+    if (failure && failure.code === null) {
+      try {
+        const payload = await res.clone().json() as { error?: unknown };
+        if (typeof payload.error === "string" && payload.error.length > 0) {
+          failure.code = payload.error;
+        }
+      } catch {
+        /* token endpoint body is not JSON */
+      }
+    }
     // token_endpoint rejected our refresh_token. Two distinct cases:
     //   (a) Real failure: refresh_token revoked / scopes removed → no
     //       way forward, return null and the caller surfaces the
@@ -1068,6 +1142,14 @@ export async function forwardHttpMcpProxyRequest(
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.text();
+  const hooks = input.accessLoss
+    ? await bindAccessLossHooks(input.accessLoss, {
+      workspaceId: input.tenantId,
+      sessionId: input.sessionId,
+      serverName: input.serverName,
+      requestBody: body,
+    })
+    : undefined;
   return forwardWithRefresh(
     input.services,
     input.tenantId,
@@ -1080,6 +1162,7 @@ export async function forwardHttpMcpProxyRequest(
       serverName: input.serverName,
       callerKind: "http",
     },
+    hooks,
   );
 }
 
@@ -1099,8 +1182,9 @@ app.all("/:sid/:server", async (c) => {
     if (!tenantId) return c.json({ error: "forbidden" }, 403);
   }
   const services = c.get("services");
-  const sessionSource = new SqlSessionSource(new CfD1SqlClient(c.get("tenantDb")));
-  const credentialSource = createManagedMcpProxyCredentialSource(c.env, c.get("tenantDb"));
+  const tenantDb = c.get("tenantDb");
+  const sessionSource = new SqlSessionSource(new CfD1SqlClient(tenantDb));
+  const credentialSource = createManagedMcpProxyCredentialSource(c.env, tenantDb);
   return forwardHttpMcpProxyRequest({
     env: c.env,
     services,
@@ -1110,6 +1194,7 @@ app.all("/:sid/:server", async (c) => {
     sessionId: sid,
     serverName,
     request: c.req.raw,
+    accessLoss: createCloudflareAccessLossRuntime(c.env, tenantDb),
   });
 });
 

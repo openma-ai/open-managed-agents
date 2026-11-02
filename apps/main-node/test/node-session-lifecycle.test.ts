@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { nodeOutputsAdapter } from "../src/lib/node-outputs-adapter.js";
-import { nodeSessionLifecycle } from "../src/lib/node-session-lifecycle.js";
+import { nodeOutputsAdapter } from "../../../packages/control-plane-node/src/lib/node-outputs-adapter.js";
+import { nodeSessionLifecycle } from "../../../packages/control-plane-node/src/lib/node-session-lifecycle.js";
 
 const temporaryRoots: string[] = [];
 

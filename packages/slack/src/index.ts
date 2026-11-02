@@ -53,3 +53,4 @@ export type {
   SlackPublicationCredentialState,
   SlackSessionScopeRepo,
 } from "./ports";
+export { slackAccessLossCatalog } from "./access-loss";

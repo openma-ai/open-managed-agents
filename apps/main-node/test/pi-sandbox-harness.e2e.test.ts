@@ -28,7 +28,7 @@ import type {
   SessionEventView,
 } from "@open-managed-agents/managed-agents-application";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
-import { DefaultNodeManagedSessionRunner } from "../src/lib/node-managed-session-runner";
+import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner";
 
 describe(
   "PiHarness over SandboxPort",
@@ -185,7 +185,7 @@ describe(
         sandbox,
         session,
         pi: { models, model },
-        triggerFraction: (contextBuild) => contextBuild === 1 ? 0.01 : 0.95,
+        compactionTriggerInputTokens: (build) => (build === 1 ? 100 : 9_999_999),
         eventPrefix: "event_pi_compaction",
       });
 
@@ -234,9 +234,9 @@ describe(
             text: "The user requires durable Pi compaction across managed turns.",
           }],
         });
-        expect(requests[0]).toMatchObject({
-          tools: [],
-          systemPrompt: "You are a helpful AI assistant tasked with summarizing conversations.",
+        expect(requests[0]?.messages[0]).toMatchObject({
+          role: "system",
+          content: "You are a helpful AI assistant tasked with summarizing conversations.",
         });
         expect(JSON.stringify(requests[1]?.messages)).toContain("<conversation-summary>");
 
@@ -299,6 +299,7 @@ describe(
           requests.push(JSON.stringify(context.messages));
           return fauxAssistantMessage("Recovered after one compact-and-retry.");
         },
+        () => fauxAssistantMessage("overflow-buffer"),
       ]);
 
       const session = managedSessionFixture();
@@ -307,9 +308,8 @@ describe(
         sandbox,
         session,
         pi: { models, model },
-        // Keep proactive compaction off: this case must enter through Pi's
-        // overflow classification and forced recovery branch.
-        triggerFraction: () => 0.95,
+        // Keep proactive compaction off: overflow recovery only.
+        compactionTriggerInputTokens: 9_999_999,
         eventPrefix: "event_pi_overflow",
       });
       const currentUser = userEvent("event_user_overflow", "Please continue.");
@@ -373,10 +373,10 @@ function createManagedPiRunner(input: {
   sandbox: LocalSubprocessSandbox;
   session: Session;
   pi: NonNullable<HarnessContext["pi"]>;
-  triggerFraction(contextBuild: number): number;
+  compactionTriggerInputTokens: number | ((build: number) => number);
   eventPrefix: string;
 }): DefaultNodeManagedSessionRunner {
-  let contextBuilds = 0;
+  let harnessBuilds = 0;
   let nextEventId = 0;
   return new DefaultNodeManagedSessionRunner({
     buildSandbox: async () => input.sandbox,
@@ -384,7 +384,10 @@ function createManagedPiRunner(input: {
     buildTools: async () => ({}),
     buildHarness: () => new PiHarness(),
     buildHarnessContext: async (context) => {
-      contextBuilds += 1;
+      harnessBuilds += 1;
+      const triggerValue = typeof input.compactionTriggerInputTokens === "function"
+        ? input.compactionTriggerInputTokens(harnessBuilds)
+        : input.compactionTriggerInputTokens;
       return {
         agent: {
           id: input.session.agent.id,
@@ -395,8 +398,14 @@ function createManagedPiRunner(input: {
           harness: "pi",
           version: input.session.agent.version,
           created_at: input.session.createdAt,
-          metadata: {
-            compaction_trigger_fraction: input.triggerFraction(contextBuilds),
+          context_management: {
+            edits: [{
+              type: "compact",
+              trigger: {
+                type: "input_tokens",
+                value: triggerValue,
+              },
+            }],
           },
         },
         userMessage: { type: "user.message", content: [] },

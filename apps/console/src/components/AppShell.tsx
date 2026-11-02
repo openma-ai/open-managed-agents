@@ -9,7 +9,7 @@ import { useChordKeybinding, type ChordBinding } from "../lib/useChordKeybinding
 import { ROUTE_CHORDS } from "../lib/route-chords";
 import { AppSidebar } from "./AppSidebar";
 import { AppBreadcrumb } from "./AppBreadcrumb";
-import { BrandLoader } from "./BrandLoader";
+import { OpenmaStartupLoader } from "./OpenmaStartupLoader";
 import { CommandPalette } from "./CommandPalette";
 import { ConsoleShell } from "./ConsoleShell";
 import { NavigationProgress } from "./NavigationProgress";
@@ -45,7 +45,7 @@ export function AppShell() {
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-bg">
-        <BrandLoader size="lg" label="Loading session" />
+        <OpenmaStartupLoader />
       </div>
     );
   }

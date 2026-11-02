@@ -258,6 +258,14 @@ function isAllowedWorkCapabilityPath(
     && parts[4]!.length > 0
   ) return true;
   if (
+    parts.length >= 5
+    && parts[0] === "v1"
+    && parts[1] === "oma"
+    && parts[2] === "inference-proxy"
+    && parts[3] === params.sessionId
+    && parts[4]!.length > 0
+  ) return true;
+  if (
     parts.length >= 3
     && parts[0] === "v1"
     && parts[1] === "sessions"

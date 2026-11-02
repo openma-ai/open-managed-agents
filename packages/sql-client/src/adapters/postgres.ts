@@ -30,7 +30,6 @@
 // require `postgres` to be installed.
 
 import { driverRetry } from "../db-errors";
-import { rewriteJsonExtract } from "../json-extract";
 import { translatePostgresError } from "./postgres-errors";
 
 const retryPostgres = driverRetry(translatePostgresError);
@@ -166,9 +165,7 @@ export class PostgresSqlClient implements SqlClient {
   constructor(private readonly sql: PgSql) {}
 
   prepare(text: string): SqlStatement {
-    const { text: translated, count } = translatePlaceholders(
-      rewriteJsonExtract(text, "postgres"),
-    );
+    const { text: translated, count } = translatePlaceholders(text);
     return new PostgresSqlStatement(this.sql, translated, count);
   }
 

@@ -35,15 +35,28 @@ export type AgentSkillInput =
       version?: string | null;
     };
 
-export type AgentMultiagentRosterEntryInput =
+export type AgentMultiagentPredefinedAgentInput =
   | string
   | { agentId: string; type: "agent"; version?: number }
-  | { type: "self" }
-  | { model: string; type: "advisor" };
+  | { type: "self" };
+
+export type AgentMultiagentToggle = { type: "enabled" } | { type: "disabled" };
+
+export interface AgentMultiagentSubagentsInput {
+  type: "enabled";
+  inlineAgents?: AgentMultiagentToggle | null;
+  predefinedAgents?: AgentMultiagentPredefinedAgentInput[] | null;
+}
+
+export type AgentMultiagentSubagentsInputValue =
+  | { type: "disabled" }
+  | AgentMultiagentSubagentsInput;
 
 export interface AgentMultiagentInput {
-  agents: AgentMultiagentRosterEntryInput[];
-  type: "coordinator";
+  type: "multiagent_20261001";
+  advisor?: { type: "disabled" } | { type: "enabled"; model?: string } | null;
+  subagents?: AgentMultiagentSubagentsInputValue | null;
+  workflows?: { type: "disabled" } | null;
 }
 
 export interface AgentToolDefaultConfigInput {
@@ -141,13 +154,26 @@ export type AgentSkill =
   | { skillId: string; type: "anthropic"; version: string }
   | { skillId: string; type: "custom"; version: string };
 
-export type AgentMultiagentRosterEntry =
-  | { agentId: string; type: "agent"; version: number }
-  | { model: string; type: "advisor" };
+export type AgentMultiagentPredefinedAgent =
+  { agentId: string; type: "agent"; version: number };
+
+export interface AgentMultiagentSubagents {
+  type: "enabled";
+  inlineAgents: AgentMultiagentToggle;
+  predefinedAgents: AgentMultiagentPredefinedAgent[];
+}
+
+export interface AgentMultiagentResolvedSubagents {
+  type: "enabled";
+  inlineAgents: AgentMultiagentToggle;
+  predefinedAgents: AgentMultiagentPredefinedAgent[];
+}
 
 export interface AgentMultiagent {
-  agents: AgentMultiagentRosterEntry[];
-  type: "coordinator";
+  type: "multiagent_20261001";
+  advisor: { type: "disabled" };
+  subagents: { type: "disabled" } | AgentMultiagentResolvedSubagents;
+  workflows: { type: "disabled" };
 }
 
 export interface AgentToolDefaultConfig {

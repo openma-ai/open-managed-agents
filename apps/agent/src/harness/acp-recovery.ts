@@ -145,14 +145,18 @@ function eventToRecoveryLines(
         ? [`Completed tool ${toolNames.get(event.tool_use_id) ?? "unknown"}: ${result.trim()}`]
         : [];
     }
-    case "agent.mcp_tool_result":
-      return event.content.trim()
+    case "agent.mcp_tool_result": {
+      const result = typeof event.content === "string"
+        ? event.content
+        : contentToText(event.content);
+      return result.trim()
         ? [
             `${event.is_error ? "Failed" : "Completed"} tool ${
               toolNames.get(event.mcp_tool_use_id) ?? "unknown"
-            }: ${event.content.trim()}`,
+            }: ${result.trim()}`,
           ]
         : [];
+    }
     case "user.custom_tool_result": {
       const result = contentToText(event.content).trim();
       return result

@@ -8,22 +8,37 @@ import {
   type ProviderHeaders,
   type ProviderStreams,
   type ModelThinkingLevel,
+  type Context,
   type SimpleStreamOptions,
-  clampThinkingLevel,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
+import {
+  findPiCatalogModel,
+  PI_UNKNOWN_MODEL_CONTEXT_WINDOW,
+  PI_UNKNOWN_MODEL_MAX_TOKENS,
+  resolvePiCatalogContextWindow,
+  resolvePiCatalogModelId,
+} from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 export { toAiSdkLanguageModel } from "./pi-ai-sdk";
+
+export {
+  PI_UNKNOWN_MODEL_CONTEXT_WINDOW,
+  PI_UNKNOWN_MODEL_MAX_TOKENS,
+  resolvePiCatalogModelId,
+} from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 
 export interface PiModelRuntime {
   models: Models;
   model: Model<Api>;
   /** JSON-compatible defaults from Agent `model.provider_options.pi`. */
   providerOptions?: SimpleStreamOptions;
-  /** Pi-native per-agent default. `off` is Pi's own default. */
-  thinkingLevel: ModelThinkingLevel;
+  /** Pi reasoning level when agent effort is set; omitted to use provider defaults. */
+  thinkingLevel?: ModelThinkingLevel;
   /** Managed Agents request priority. Model cards do not own this setting. */
   speed: "standard" | "fast";
 }
@@ -66,6 +81,8 @@ export interface PiModelCardBinding {
   thinkingLevel?: ModelThinkingLevel;
   /** Managed Agents `model.speed`; inherited by sessions pinned to this agent version. */
   speed?: "standard" | "fast";
+  /** Agent `model.max_tokens` override (catalog `Model.maxTokens` when unset). */
+  modelMaxTokens?: number;
 }
 
 interface ProviderPlan {
@@ -88,7 +105,8 @@ interface ProviderPlan {
 export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime {
   const plan = resolveProviderPlan(input.provider, input.piConfig);
   const catalogModels = plan.catalog?.getModels() ?? [];
-  const catalogModel = catalogModels.find((model) => model.id === input.model);
+  const catalogModel = catalogModels.find((model) => model.id === resolvePiCatalogModelId(input.model))
+    ?? findPiCatalogModel(input.model);
   const baseUrl = input.baseURL ?? catalogModel?.baseUrl ?? plan.catalog?.baseUrl;
   const api = input.piConfig?.api
     ?? plan.api
@@ -119,8 +137,8 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
         // Pi requires capacity hints for custom models. These are deliberately
         // conservative fallbacks, not request/protocol behavior; a future
         // model-card metadata field can replace them without changing the Port.
-        contextWindow: 128_000,
-        maxTokens: 32_768,
+        contextWindow: PI_UNKNOWN_MODEL_CONTEXT_WINDOW,
+        maxTokens: PI_UNKNOWN_MODEL_MAX_TOKENS,
       };
   const model: Model<Api> = {
     ...baseModel,
@@ -131,6 +149,7 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
     provider: plan.id,
     api,
     baseUrl,
+    ...(input.modelMaxTokens !== undefined && { maxTokens: input.modelMaxTokens }),
   };
   const providerStreams = resolveProviderStreams(plan, model, catalogModel);
 
@@ -159,9 +178,17 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
     models,
     model,
     providerOptions: structuredClone(input.providerOptions ?? {}) as SimpleStreamOptions,
-    thinkingLevel: clampThinkingLevel(model, input.thinkingLevel ?? "off"),
+    ...(input.thinkingLevel !== undefined && { thinkingLevel: input.thinkingLevel }),
     speed: input.speed ?? "standard",
   };
+}
+
+/** Harness/runtime context window from pi-ai catalog (alias + 256k fallback). */
+export function resolvePiAgentModelContextWindow(
+  modelId: string,
+  piConfig?: PiModelConfig,
+): number {
+  return resolvePiCatalogContextWindow(modelId, piConfig?.contextWindow);
 }
 
 /**
@@ -171,6 +198,7 @@ export function createPiModelRuntime(input: PiModelCardBinding): PiModelRuntime 
 export function withPiRuntimeRequestOptions(
   runtime: PiModelRuntime,
   options: SimpleStreamOptions = {},
+  requestContext?: Context,
 ): SimpleStreamOptions {
   const providerOptions = runtime.providerOptions ?? {};
   const merged: SimpleStreamOptions = {
@@ -187,6 +215,20 @@ export function withPiRuntimeRequestOptions(
         : {}
     ),
   };
+  if (merged.maxTokens === undefined) {
+    merged.maxTokens = runtime.model.maxTokens;
+  }
+  if (
+    requestContext !== undefined
+    && runtime.model.contextWindow > 0
+    && merged.maxTokens !== undefined
+  ) {
+    merged.maxTokens = clampMaxTokensToContext(
+      runtime.model,
+      requestContext as TranscriptContext,
+      merged.maxTokens,
+    );
+  }
   const baseFetch = merged.fetch ?? observablePiFetch;
   if (runtime.speed !== "fast") return { ...merged, fetch: baseFetch };
 

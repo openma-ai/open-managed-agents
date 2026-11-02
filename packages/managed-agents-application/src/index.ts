@@ -1,4 +1,5 @@
 export * from "./agents/application";
+export * from "./agents/pi-model-catalog";
 export * from "./agents/definition-resolution";
 export * from "./agents/port";
 export * from "./domain/agent";
@@ -73,6 +74,7 @@ export * from "./sessions/resource-resolver-service";
 export * from "./session-events/application";
 export * from "./session-events/session-source";
 export * from "./session-events/stream";
+export * from "./session-events/processing";
 export * from "./session-execution/events";
 export * from "./session-execution/application";
 export * from "./session-execution/lifecycle";
@@ -112,3 +114,4 @@ export * from "./credentials/persistence";
 export * from "./credentials/validation";
 export * from "./credentials/vault-source";
 export type * from "./ports";
+export * from "./sessions/budget";

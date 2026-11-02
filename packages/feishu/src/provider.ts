@@ -501,6 +501,7 @@ export class FeishuProvider implements IntegrationProvider {
             senderOpenId: event.senderOpenId,
           },
         },
+        { mcpServers: [{ name: "feishu", url: "https://open.feishu.cn/mcp" }] },
       );
       await this.container.webhookEvents.attachSession(
         event.deliveryId,

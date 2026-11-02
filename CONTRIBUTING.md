@@ -119,7 +119,29 @@ Dependabot 和手工 lockfile 更新都要做兼容性检查。CI 变绿只是�
 发布之后，下游另开 bump PR，把依赖改到刚发布的版本，并跑下游自己的 CI：
 
 - Martty 的 `npm/package.json` 依赖 `@openma/deepseek-harness-acp`。CHANGELOG 记录过随 0.4.29、0.4.31 的升级；#135 跟上了 0.4.35 的打包修复。
-- openma-common 打 tag 之后，两个消费仓库改到新 tag 并提交 lockfile（该仓库 `CONTRIBUTING.md` 的 release checklist）。
+- openma-common 打 tag 并发布到 npm 之后，消费仓库把 `@openma/common` 改到新版本并提交 lockfile（该仓库 `CONTRIBUTING.md` 的 release checklist）。
+
+## 沙箱 provider 适配器 / Sandbox provider adapters
+
+### 反例：#353 OpenSandbox adapter / Anti-pattern
+
+[#353](https://github.com/openma-ai/open-managed-agents/pull/353) 是我们自己的反例。
+
+**做了什么。** 手写了一套 lifecycle / execd HTTP 客户端，把厂商协议重新实现了一遍。测试只对着我们自己写的 HTTP 替身跑，替身是照我们对文档的理解写的。合并后还发了博客，说 OpenMA 已经支持 OpenSandbox。
+
+**真实服务上坏在哪。** 外部贡献者 @jwx0925 在真实服务器上跑出了下面的问题：
+
+- 命令流是空行分隔的 JSON 记录，不带 `data:` 前缀。我们按 SSE 解析，`execution_complete` 被丢掉。
+- 上传时 `metadata` 被当成普通文本字段发出去，服务端要求它是 multipart 的文件 part，于是返回 HTTP 400 `INVALID_FILE_METADATA`。重启后恢复 session 输出也要走上传，所以这一条也坏了。
+
+[#363](https://github.com/openma-ai/open-managed-agents/pull/363) 在手写客户端上打了补丁（已关闭）。[#364](https://github.com/openma-ai/open-managed-agents/pull/364) 换成了官方 SDK。
+
+**规则。**
+
+- 厂商有官方 SDK 就用 SDK。按本仓库的 provider 依赖边界（`scripts/provider-package-boundaries.test.mjs`）声明成可选 peer dependency，并且懒加载。
+- 测试替身只能来自真实服务上抓到的流量，或者直接用 SDK 本身。不能照我们自己对文档的理解来写。
+- 合并前，必须对真实服务跑过一次 live 认证测试。测试默认不跑、需要显式开启，写法参照 #364 的 `test:certification`。PR 的验证证据里写明跑的是哪个服务、哪个版本。
+- live 验证之前，博客、docs、README 里都不能说支持。
 
 ## 发布 / Release
 
@@ -131,7 +153,7 @@ Dependabot 和手工 lockfile 更新都要做兼容性检查。CI 变绿只是�
 2. dsh 与 Martty 在 `main` 上的发版提交主题为 `release: vX.Y.Z`（dsh `v0.4.36`、Martty `v0.3.0`）。openma-common 是发版 PR 合并后再打同名 tag。
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`。tag 指向 `main` 上的那次提交。
 4. tag 触发发布：dsh `release.yml` 先确认 tag 在 `main` 上，再跑测试、dsh 兼容矩阵和 standalone smoke，然后用 npm OIDC 发布。Martty `package-npm.yml` 监听 `v*.*.*`。
-5. openma-common 是 `private: true` 的 git 依赖：打 tag 后更新消费方，不发 npm。
+5. openma-common 的 `v*` tag 由 `release-tag.yml` 校验后用 npm OIDC 发布 `@openma/common`；发布后再更新消费方。
 
 **Changesets。** 用来发布 `@openma/cli` / `@openma/sdk`。步骤在「本仓库」。本仓库的 `version-pr` 会跑 MySQL 集成，但没有 `Enable KVM for Litebox`；没有 `/dev/kvm` 时 Litebox 用例会失败。
 
@@ -183,7 +205,7 @@ Workflow `CI`（`.github/workflows/ci.yml`，PR 与 `main`，job `verify`，`run
 
 **KVM。** 步骤注释写明：ubuntu-24.04 runner 上有 `/dev/kvm`，属主 `root:kvm`，模式 `0660`，runner 用户不在 `kvm` 组。`Enable KVM for Litebox` 在 MySQL 之前执行。设备不存在就报错并让 job 失败，MySQL 不会跑。它写入 udev 规则，再 `chmod 666 /dev/kvm`。`chmod` 失败，或当前用户最终不是既可读又可写，同样失败。
 
-`pnpm test:integration:mysql` 里，`apps/main-node/test/persistence.mysql.integration.ts` 的 “runs official /v1/sessions on two real Node owners…”（#237）会启动两个真实 Node owner，`SANDBOX_PROVIDER=litebox`。在 Linux 上它要求 `/dev/kvm` 可读可写。真实的是 Litebox 沙箱。模型不是上游 LLM：两个 owner 的 `ANTHROPIC_API_KEY` 是 `fixture`，`ANTHROPIC_BASE_URL` 指向测试进程在 `127.0.0.1` 上起的 SSE 服务器，按脚本回放 `tool_use` 和文本。这不是 Haven，不是托管环境，也不是 boxrun（另一台机器上的 `boxlite serve`）。同一文件里其余用例是 MySQL + MinIO 上的独立 actor 进程，不起 microVM。`main-node.mysql.integration.ts` 把被测服务的 `OPENMA_TEST_SANDBOX_PROVIDER` 设为 `local-subprocess`，也不是 Litebox。
+`pnpm test:integration:mysql` 里，`apps/main-node/test/persistence.mysql.integration.ts` 的 “runs official /v1/sessions on two real Node owners…”（#237）会启动两个真实 Node owner，`SANDBOX_PROVIDER=litebox`。在 Linux 上它要求 `/dev/kvm` 可读可写。真实的是 Litebox 沙箱。模型不是上游 LLM：测试用 `scripts/bootstrap-model-card.mjs` 给工作区建一张 model card（key 是 `fixture`，`base_url` 指向测试进程在 `127.0.0.1` 上起的 SSE 服务器），按脚本回放 `tool_use` 和文本；两个 owner 从共享 MySQL 读同一张卡，进程环境里没有模型 key。这不是 Haven，不是托管环境，也不是 boxrun（另一台机器上的 `boxlite serve`）。同一文件里其余用例是 MySQL + MinIO 上的独立 actor 进程，不起 microVM。`main-node.mysql.integration.ts` 把被测服务的 `OPENMA_TEST_SANDBOX_PROVIDER` 设为 `local-subprocess`，也不是 Litebox。
 
 `packages/sandbox-adapter-litebox` 的单测仍然 `vi.mock("@boxlite-ai/boxlite")`，不打开 `/dev/kvm`。`pnpm test` 里这份通过，不能当成 microVM 已经跑过。`Release` 的 `version-pr` 见下面的表。
 

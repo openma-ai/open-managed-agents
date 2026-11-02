@@ -9,8 +9,8 @@ import { createBetterSqlite3SqlClient } from "@open-managed-agents/sql-client";
 import { ensureSessionExecutionCoordinatorSchema, SqlSessionExecutionCoordinator } from "@open-managed-agents/session-runtime-sql";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import { NodeManagedWorkspaceCheckpoints } from "../src/lib/node-managed-workspace-checkpoints.js";
-import { DefaultNodeManagedSessionRunner } from "../src/lib/node-managed-session-runner.js";
+import { NodeManagedWorkspaceCheckpoints } from "../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints.js";
+import { DefaultNodeManagedSessionRunner } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner.js";
 
 const roots: string[] = [];
 afterEach(async () => {

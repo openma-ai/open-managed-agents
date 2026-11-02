@@ -59,15 +59,16 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.120.0",
     "@open-managed-agents/acp-runtime": "workspace:*",
+    "@open-managed-agents/harness-inference-adapters": "workspace:*",
     "@open-managed-agents/harness-supervisor": "workspace:*",
     "@open-managed-agents/managed-runtime-host": "workspace:*",
     "@open-managed-agents/runtime-resource-contract": "workspace:*",
     "@open-managed-agents/runtime": "workspace:*",
-    "@openma/common": "git+https://github.com/openma-ai/openma-common.git#4d9bb469d3af8ade05d020a9b65bae2bd978101d",
+    "@openma/common": "^0.9.1",
     "fflate": "^0.8.2"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.3",
     "esbuild": "^0.25.0",
     "vitest": "^4.1.3"
   }

@@ -12,7 +12,6 @@ import type {
   SessionStore,
 } from "@open-managed-agents/session-store";
 import type { SessionResourceSecretSealer } from "./secret-sealer";
-import { sessionMetadataJsonPath } from "./metadata-path";
 import { sessionBootstrapExecutionEvents, sessionExecutionEventBatches } from "@open-managed-agents/session-runtime-contract/coordination";
 
 export type { SessionResourceSecretSealer } from "./secret-sealer";
@@ -307,9 +306,6 @@ export class SqlSessionStore implements SessionStore {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Session list limit must be a positive integer");
     }
-    if (input.metadata !== undefined && input.metadata.key.length === 0) {
-      throw new Error("Session metadata filter key must not be empty");
-    }
     if (input.statuses !== undefined && input.statuses.length === 0) return [];
     const conditions = ["workspace_id = ?"];
     const parameters: Array<string | number> = [input.workspaceId];
@@ -356,13 +352,6 @@ export class SqlSessionStore implements SessionStore {
         )`,
       );
       parameters.push(input.memoryStoreId);
-    }
-    if (input.metadata !== undefined) {
-      conditions.push("json_extract(document, ?) = ?");
-      parameters.push(
-        sessionMetadataJsonPath(input.metadata.key),
-        input.metadata.value,
-      );
     }
     if (input.position !== undefined) {
       const nextOperator = input.order === "asc" ? ">" : "<";

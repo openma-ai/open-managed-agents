@@ -14,6 +14,7 @@ import {
 import { EmptyState } from "../components/EmptyState";
 import { Skeleton } from "../components/Skeleton";
 import { useI18n } from "../i18n";
+import { useBranding } from "../lib/branding";
 import { useApiQuery } from "../lib/useApiQuery";
 import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 
@@ -49,6 +50,7 @@ function QuickstartStep({
 
 export function Dashboard() {
   const navigate = useNavigate();
+  const branding = useBranding();
   const [copied, setCopied] = useState<string | null>(null);
   const { t } = useI18n();
   const statsQuery = useApiQuery<Stats>("/v1/oma/stats");
@@ -93,7 +95,7 @@ export function Dashboard() {
     <DashboardLayout
       intro={
         <header>
-          <h1>Get started with openma</h1>
+          <h1>Get started with {branding.productName}</h1>
           <p>{t.dashboard.handPlatformToAgent}</p>
         </header>
       }

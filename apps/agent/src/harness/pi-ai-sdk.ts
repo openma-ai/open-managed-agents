@@ -14,6 +14,7 @@ import type {
   AssistantMessageEvent,
   Context,
   ImageContent,
+  JsonObject,
   Message,
   Model,
   SimpleStreamOptions,
@@ -51,9 +52,10 @@ async function generateWithPi(
   options: LanguageModelV3CallOptions,
 ): Promise<LanguageModelV3GenerateResult> {
   const warnings = collectWarnings(options);
+  const piContext = toPiContext(options, runtime.model);
   const message = await runtime.models.completeSimple(
     runtime.model,
-    toPiContext(options, runtime.model),
+    piContext,
     toPiStreamOptions(runtime, options),
   );
   if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -167,7 +169,7 @@ function toPiContext(
             type: "toolCall",
             id: part.toolCallId,
             name: part.toolName,
-            arguments: asRecord(part.input),
+            arguments: asJsonObject(part.input),
           });
         }
       }
@@ -275,9 +277,12 @@ function toPiStreamOptions(
     ...(options.stopSequences ? { stop: options.stopSequences } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
   };
+  const piContext = toPiContext(options, runtime.model);
   return withPiRuntimeRequestOptions(runtime, {
     ...piOptions,
-    ...(piOptions.reasoning === undefined && runtime.thinkingLevel !== "off"
+    ...(piOptions.reasoning === undefined
+      && runtime.thinkingLevel !== undefined
+      && runtime.thinkingLevel !== "off"
       ? { reasoning: runtime.thinkingLevel }
       : {}),
     ...(signal ? { signal } : {}),
@@ -285,7 +290,7 @@ function toPiStreamOptions(
     ...(options.maxOutputTokens !== undefined ? { maxTokens: options.maxOutputTokens } : {}),
     ...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
     toolChoice: options.toolChoice?.type === "none" ? "none" : "auto",
-  });
+  }, piContext);
 }
 
 function toAiSdkStreamParts(event: AssistantMessageEvent): LanguageModelV3StreamPart[] {
@@ -481,9 +486,9 @@ function emptyPiUsage(): Usage {
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+function asJsonObject(value: unknown): JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as JsonObject)
     : {};
 }
 

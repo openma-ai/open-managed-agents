@@ -12,7 +12,7 @@ import {
   resetFeishuAgentTools,
   resolveFeishuAgentTools,
   type SessionMetadataReader,
-} from "../src/lib/feishu-agent-tools";
+} from "../../../packages/control-plane-node/src/lib/feishu-agent-tools";
 
 // Integration test for the in-process Feishu agent tools. Proves the reviewer's
 // requested chain end-to-end at the tool boundary:

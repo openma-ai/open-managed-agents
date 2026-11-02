@@ -317,7 +317,7 @@ describe("CredentialsApplicationService", () => {
       expect(stored.accessToken === rotatedAccess).toBe(true);
       expect(stored.refresh?.refreshToken === rotatedRefresh).toBe(true);
       expect(stored.expiresAt).toBe("2026-08-26T01:00:00.000Z");
-      expect(stored.refresh?.tokenEndpointAuth.clientSecret === clientSecret).toBe(true);
+      expect(stored.refresh?.tokenEndpointAuth).toEqual({ type: "client_secret_post", clientSecret });
     }
   });
 

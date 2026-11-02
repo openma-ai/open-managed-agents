@@ -1,6 +1,6 @@
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { gateExhausted, meterPiRuntime } from "./budget";
+import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import {
-  Type,
   type Api,
   type AssistantMessage,
   type ImageContent,
@@ -9,10 +9,15 @@ import {
   type TextContent,
   type ToolResultMessage,
   type Usage,
+  type JsonObject,
   isContextOverflow,
+  isRecoverableLength,
 } from "@earendil-works/pi-ai";
+import {
+  estimateContextTokens,
+  estimateTextTokens,
+} from "@earendil-works/pi-ai/utils/estimate";
 import type { ModelMessage } from "ai";
-import { z } from "zod";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
 import {
   classifyExternalError,
@@ -22,11 +27,20 @@ import {
 import { eventsToMessagesAsync } from "../runtime/history";
 import type { HarnessContext, HarnessInterface } from "./interface";
 import {
+  PI_CONTEXT_OUTPUT_RESERVE_TOKENS,
   resolvePiCompactionPolicy,
   type PiCompactionPolicy,
   type PiCompactionResult,
 } from "./pi-compaction";
+import { readHarnessAgentModelSettings } from "./agent-model-settings";
+import {
+  resolveCompactionSummaryInstructions,
+  resolveCompactionTriggerInputTokens,
+} from "./compaction-config";
+import { emitHarnessToolUseFromCall, isMcpTool } from "./default-loop";
 import { withPiRuntimeRequestOptions } from "./pi-provider";
+import { createPiToolAssembly } from "./assembly/adapters/pi";
+import { toolsToPi, valueToPiContent } from "./pi-loop-tools";
 
 const EMPTY_USAGE: Usage = {
   input: 0,
@@ -70,21 +84,33 @@ export class PiHarness implements HarnessInterface {
       throw new ModelError("Pi harness requires a tenant-scoped Pi model runtime");
     }
 
+    // Model egress: every request (loop + compaction) goes through the
+    // session meter, which gates at the cap and records list cost.
+    ctx.pi = meterPiRuntime(ctx.pi, ctx.budget);
+    if (gateExhausted(ctx.budget)) {
+      ctx.budget!.reached = true;
+      return;
+    }
+
+    await this.compactIfInsufficientOutputRoom(ctx);
     const proactivelyCompacted = await this.compactBeforeTurn(ctx);
     let outcome = await this.runAgentOnce(ctx);
     if (
-      outcome.providerFailure
-      && !outcome.producedOutput
+      !ctx.runtime.abortSignal?.aborted
       && !proactivelyCompacted
-      && !ctx.runtime.abortSignal?.aborted
-      && isContextOverflow(outcome.providerFailure, ctx.pi.model.contextWindow)
+      && shouldRetryPiTurnAfterCompaction(outcome, ctx.pi.model)
     ) {
       const recovered = await this.compactBeforeTurn(ctx, true);
       if (recovered) outcome = await this.runAgentOnce(ctx);
     }
 
+    if (ctx.budget?.reached) return;
     if (outcome.providerFailure && !ctx.runtime.abortSignal?.aborted) {
-      const message = outcome.providerFailure.errorMessage ?? "Pi provider request failed";
+      const failure = outcome.providerFailure;
+      const detail = failure.errorMessage?.trim();
+      const message = detail && detail.length > 0
+        ? detail
+        : `Pi provider request failed (stop_reason=${failure.stopReason})`;
       const external = classifyExternalError(new Error(message));
       throw external instanceof Error ? external : new ModelError(message);
     }
@@ -95,7 +121,9 @@ export class PiHarness implements HarnessInterface {
 
   private async runAgentOnce(ctx: HarnessContext): Promise<PiRunOutcome> {
     const modelMessages = await eventsToMessagesAsync(ctx.runtime.history.getEvents(), ctx.fileFetcher);
-    const messages = modelMessagesToPi(modelMessages, ctx.pi!.model);
+    const messages = dropTrailingAssistantPiMessages(
+      modelMessagesToPi(modelMessages, ctx.pi!.model),
+    );
     if (messages.length === 0) {
       throw new ModelError("Pi harness cannot continue without a user message");
     }
@@ -109,24 +137,35 @@ export class PiHarness implements HarnessInterface {
     let providerFailure: AssistantMessage | undefined;
     let producedOutput = false;
 
+    const toolAssembly = createPiToolAssembly(ctx);
+    const bootstrapMessages = toolAssembly.bootstrapTurnMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      timestamp: message.timestamp,
+    }));
     const agent = new Agent({
       initialState: {
-        systemPrompt: ctx.systemPrompt,
+        systemPrompt: toolAssembly.systemPrompt,
         model: ctx.pi!.model,
-        messages,
-        tools: toolsToPi(ctx),
+        messages: [...bootstrapMessages, ...messages],
+        tools: toolAssembly.initialTools,
         // The tenant runtime maps effort to the model's supported Pi level.
         thinkingLevel: ctx.pi!.thinkingLevel,
       },
       sessionId: ctx.session_id,
-      streamFn: (model, context, options) =>
-        ctx.pi!.models.streamSimple(
+      streamFn: (model, context, options) => {
+        // The metered egress refuses follow-ups at the cap (aborted signal,
+        // no tokens); stop the agent loop as well.
+        if (gateExhausted(ctx.budget)) agent.abort();
+        return ctx.pi!.models.streamSimple(
           model,
           context,
-          withPiRuntimeRequestOptions(ctx.pi!, options),
-        ),
+          withPiRuntimeRequestOptions(ctx.pi!, options, context),
+        );
+      },
       toolExecution: "parallel",
     });
+    toolAssembly.attach(agent);
 
     const unsubscribe = agent.subscribe(async (event) => {
       const result = await translatePiEvent(event, ctx, state);
@@ -137,11 +176,60 @@ export class PiHarness implements HarnessInterface {
     const abort = () => agent.abort();
     ctx.runtime.abortSignal?.addEventListener("abort", abort, { once: true });
 
+    // CMA coherent-turn steering: takeSteeringInputs returns mid-turn
+    // user.message rows absorbed into this run (ordinary mid-run accept
+    // is the only path). Hand them to Pi's native steering queue; Pi
+    // drains after the current assistant/tool step (after-call) so they
+    // join this turn instead of waiting for after-turn settle.
+    let steerTimer: ReturnType<typeof setInterval> | undefined;
+    let steerPolling: Promise<void> | null = null;
+    const pollSteering = () => {
+      if (steerPolling || !ctx.runtime.takeSteeringInputs || !ctx.pi) return steerPolling;
+      steerPolling = pollSteeringOnce();
+      return steerPolling;
+    };
+    const pollSteeringOnce = async () => {
+      const take = ctx.runtime.takeSteeringInputs;
+      const pi = ctx.pi;
+      if (!take || !pi) return;
+      try {
+        const steered = await take();
+        if (steered.length > 0) {
+          const converted = modelMessagesToPi(
+            await eventsToMessagesAsync(steered, ctx.fileFetcher),
+            pi.model,
+          );
+          for (const message of converted) agent.steer(message);
+        }
+      } catch (err) {
+        console.warn("[pi-loop] steering poll failed", err);
+      } finally {
+        steerPolling = null;
+      }
+    };
+    if (ctx.runtime.takeSteeringInputs) {
+      steerTimer = setInterval(() => void pollSteering(), 250);
+    }
+
     try {
-      const run = () => agent.continue();
+      const run = async () => {
+        await agent.continue();
+        // A poll that promoted a steered message just as the run ended must
+        // not lose it: finish that poll and keep the run going.
+        if (steerTimer !== undefined) {
+          clearInterval(steerTimer);
+          steerTimer = undefined;
+          await steerPolling;
+          await pollSteering();
+          while (agent.hasQueuedMessages() && !ctx.runtime.abortSignal?.aborted) {
+            await agent.continue();
+          }
+        }
+      };
       if (ctx.runtime.keepAliveWhile) await ctx.runtime.keepAliveWhile(run);
       else await run();
     } finally {
+      if (steerTimer !== undefined) clearInterval(steerTimer);
       unsubscribe();
       ctx.runtime.abortSignal?.removeEventListener("abort", abort);
       await closeLiveStreams(ctx, state, ctx.runtime.abortSignal?.aborted ? "aborted" : "completed");
@@ -150,34 +238,71 @@ export class PiHarness implements HarnessInterface {
     return { producedOutput, ...(providerFailure ? { providerFailure } : {}) };
   }
 
+  private async compactIfInsufficientOutputRoom(ctx: HarnessContext): Promise<void> {
+    if (!ctx.pi || ctx.pi.model.contextWindow <= 0) return;
+    const events = ctx.runtime.history.getEvents();
+    const modelMessages = await eventsToMessagesAsync(events, ctx.fileFetcher);
+    const messages = modelMessagesToPi(modelMessages, ctx.pi.model);
+    const piTools = toolsToPi(ctx);
+    const { tokens: messageTokens } = estimateContextTokens(messages);
+    const systemTokens = ctx.systemPrompt.length > 0
+      ? estimateTextTokens(ctx.systemPrompt)
+      : 0;
+    const toolTokens = piTools.length > 0
+      ? estimateTextTokens(JSON.stringify(piTools))
+      : 0;
+    const remaining = ctx.pi.model.contextWindow - messageTokens - systemTokens - toolTokens;
+    if (remaining < PI_CONTEXT_OUTPUT_RESERVE_TOKENS) {
+      await this.compactBeforeTurn(ctx, true);
+    }
+  }
+
   private async compactBeforeTurn(ctx: HarnessContext, force: boolean = false): Promise<boolean> {
+    const metadata = (ctx.agent.metadata ?? {}) as Record<string, unknown>;
+    const summaryInstructions = resolveCompactionSummaryInstructions(ctx.agent);
     const policy = this.options.compaction === undefined
-      ? resolvePiCompactionPolicy((ctx.agent.metadata ?? {}) as Record<string, unknown>)
+      ? resolvePiCompactionPolicy(metadata, summaryInstructions)
       : this.options.compaction;
     if (!ctx.pi) return false;
 
     const events = ctx.runtime.history.getEvents();
     const modelMessages = await eventsToMessagesAsync(events, ctx.fileFetcher);
     const messages = modelMessagesToPi(modelMessages, ctx.pi.model);
-    const contextWindowTokens = ctx.pi.model.contextWindow || 128_000;
-    if (!force && !policy.shouldCompact(events, { messages, contextWindowTokens })) return false;
+    const piTools = toolsToPi(ctx);
+    const compactionCtx = {
+      messages,
+      model: ctx.pi.model,
+      systemPrompt: ctx.systemPrompt,
+      tools: piTools,
+      compactionTriggerInputTokens: resolveCompactionTriggerInputTokens(
+        ctx.pi.model,
+        ctx.agent,
+        metadata,
+      ),
+    };
+    if (!force && !policy.shouldCompact(events, compactionCtx)) return false;
 
     try {
       const result = await policy.compact(events, {
-        messages,
-        contextWindowTokens,
+        ...compactionCtx,
         models: ctx.pi.models,
-        model: ctx.pi.model,
-        systemPrompt: ctx.systemPrompt,
-        tools: toolsToPi(ctx),
         runtime: ctx.runtime,
         sessionId: ctx.session_id,
         abortSignal: ctx.runtime.abortSignal,
         requestOptions: withPiRuntimeRequestOptions(ctx.pi, {
-          ...(ctx.pi.thinkingLevel === "off" ? {} : { reasoning: ctx.pi.thinkingLevel }),
+          ...(ctx.pi.thinkingLevel !== undefined && ctx.pi.thinkingLevel !== "off"
+            ? { reasoning: ctx.pi.thinkingLevel }
+            : {}),
+        }, {
+          systemPrompt: compactionCtx.systemPrompt,
+          messages: compactionCtx.messages,
+          tools: compactionCtx.tools,
         }),
       });
-      return this.persistCompaction(result, ctx);
+      const compacted = this.persistCompaction(result, ctx);
+      // §6 post-compaction re-assembly runs when `createPiToolAssembly` builds the
+      // next turn (skill/tool retention + `oma.context_reassembled` marker).
+      return compacted;
     } catch (error) {
       // Context compaction is a best-effort optimization. The canonical
       // history remains untouched when a policy/model fails, so the main
@@ -288,6 +413,38 @@ async function translatePiEvent(
 
   if (event.type === "message_end" && event.message.role === "assistant") {
     const message = event.message;
+    const contextWindow = ctx.pi!.model.contextWindow;
+    const desiredMaxOutput = ctx.pi!.model.maxTokens || PI_CONTEXT_OUTPUT_RESERVE_TOKENS;
+    const overflowRecovery = isPiCompactionRecoverableAssistantEnd(
+      message,
+      contextWindow,
+      desiredMaxOutput,
+    ) && !message.content.some((block) => block.type === "toolCall");
+
+    if (overflowRecovery) {
+      const modelRequestStartId = state.spanId;
+      await closeLiveStreams(ctx, state, "aborted");
+      const usage = message.usage;
+      runtime.broadcast({
+        type: "span.model_request_end",
+        model: modelId,
+        model_request_start_id: modelRequestStartId ?? undefined,
+        provider_response_id: message.responseId,
+        model_usage: {
+          input_tokens: usage.input,
+          output_tokens: usage.output,
+          cache_read_input_tokens: usage.cacheRead,
+          cache_creation_input_tokens: usage.cacheWrite,
+        },
+        finish_reason: message.stopReason,
+        final_text_length: 0,
+        is_error: message.stopReason === "error",
+        ...(message.errorMessage ? { error_message: message.errorMessage.slice(0, 500) } : {}),
+      });
+      await runtime.reportUsage?.(usage.input, usage.output);
+      return { producedOutput: false, providerFailure: message };
+    }
+
     for (let index = 0; index < message.content.length; index++) {
       const block = message.content[index];
       if (block.type === "thinking") {
@@ -318,12 +475,13 @@ async function translatePiEvent(
       } else if (block.type === "toolCall") {
         const streamId = state.toolIds.get(index);
         if (streamId) await runtime.broadcastToolInputEnd(streamId, "completed");
-        runtime.broadcast({
-          type: "agent.tool_use",
-          id: block.id,
-          name: block.name,
-          input: block.arguments,
-        });
+        emitHarnessToolUseFromCall(
+          runtime,
+          ctx.tools as Record<string, unknown>,
+          block.id,
+          block.name,
+          block.arguments as Record<string, unknown>,
+        );
         producedOutput = true;
       }
     }
@@ -360,12 +518,22 @@ async function translatePiEvent(
   if (event.type === "tool_execution_end") {
     const details = event.result?.details as { openmaPendingConfirmation?: boolean } | undefined;
     if (!details?.openmaPendingConfirmation) {
-      runtime.broadcast({
-        type: "agent.tool_result",
-        tool_use_id: event.toolCallId,
-        content: piContentToWire(event.result?.content ?? []),
-        is_error: event.isError,
-      } as SessionEvent);
+      const content = piContentToWire(event.result?.content ?? []);
+      if (isMcpTool(event.toolName)) {
+        runtime.broadcast({
+          type: "agent.mcp_tool_result",
+          mcp_tool_use_id: event.toolCallId,
+          content,
+          ...(event.isError && { is_error: true }),
+        } as SessionEvent);
+      } else {
+        runtime.broadcast({
+          type: "agent.tool_result",
+          tool_use_id: event.toolCallId,
+          content,
+          is_error: event.isError,
+        } as SessionEvent);
+      }
     }
   }
 
@@ -453,61 +621,6 @@ function clearMessageState(state: LiveMessageState): void {
   state.toolIds.clear();
 }
 
-function toolsToPi(ctx: HarnessContext): AgentTool[] {
-  return Object.entries(ctx.tools).map(([name, raw]) => {
-    const tool = raw as {
-      description?: string;
-      inputSchema?: unknown;
-      parameters?: unknown;
-      execute?: (input: unknown, options?: unknown) => Promise<unknown>;
-    };
-    const schema = toJsonSchema(tool.inputSchema ?? tool.parameters);
-    return {
-      name,
-      label: name,
-      description: tool.description ?? name,
-      parameters: Type.Unsafe<Record<string, unknown>>(schema),
-      execute: async (toolCallId, params, signal) => {
-        if (!tool.execute) {
-          ctx.runtime.pendingConfirmations ??= [];
-          ctx.runtime.pendingConfirmations.push(toolCallId);
-          return {
-            content: [{ type: "text", text: "Tool confirmation required" }],
-            details: { openmaPendingConfirmation: true },
-            terminate: true,
-          };
-        }
-        const value = await tool.execute(params, {
-          toolCallId,
-          messages: [],
-          abortSignal: signal,
-        });
-        return { content: valueToPiContent(value), details: value };
-      },
-    };
-  });
-}
-
-function toJsonSchema(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== "object") {
-    return { type: "object", additionalProperties: true };
-  }
-  const candidate = input as { jsonSchema?: unknown; _zod?: unknown };
-  if (candidate.jsonSchema && typeof candidate.jsonSchema === "object") {
-    return candidate.jsonSchema as Record<string, unknown>;
-  }
-  try {
-    return z.toJSONSchema(input as z.ZodType) as Record<string, unknown>;
-  } catch {
-    return input as Record<string, unknown>;
-  }
-}
-
-function valueToPiContent(value: unknown): Array<TextContent | ImageContent> {
-  if (typeof value === "string") return [{ type: "text", text: value }];
-  return [{ type: "text", text: JSON.stringify(value) ?? String(value) }];
-}
-
 function piContentToWire(content: Array<TextContent | ImageContent>): ContentBlock[] {
   return content.map((block) =>
     block.type === "text"
@@ -569,7 +682,7 @@ function modelMessagesToPi(
               type: "toolCall",
               id: part.toolCallId,
               name: part.toolName,
-              arguments: (part.input ?? {}) as Record<string, unknown>,
+              arguments: (part.input ?? {}) as JsonObject,
             });
           }
         }
@@ -641,4 +754,51 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+function dropTrailingAssistantPiMessages(messages: Message[]): Message[] {
+  let end = messages.length;
+  while (end > 0 && messages[end - 1]?.role === "assistant") end--;
+  return end === messages.length ? messages : messages.slice(0, end);
+}
+
+function isPiLengthStopWithNoDeliverableOutput(message: AssistantMessage): boolean {
+  const hasText = message.content.some(
+    (block) => block.type === "text" && block.text.trim().length > 0,
+  );
+  const hasTools = message.content.some((block) => block.type === "toolCall");
+  return !hasText && !hasTools;
+}
+
+function isPiCompactionRecoverableAssistantEnd(
+  message: AssistantMessage,
+  contextWindow?: number,
+  desiredMaxOutput?: number,
+): boolean {
+  if (message.stopReason === "error" && contextWindow && isContextOverflow(message, contextWindow)) {
+    return true;
+  }
+  if (message.stopReason !== "length") return false;
+  if (contextWindow && isContextOverflow(message, contextWindow)) return true;
+  if (isPiLengthStopWithNoDeliverableOutput(message)) return true;
+  return desiredMaxOutput !== undefined && isRecoverableLength(message, desiredMaxOutput);
+}
+
+function shouldRetryPiTurnAfterCompaction(
+  outcome: PiRunOutcome,
+  model: Model<Api>,
+): boolean {
+  if (outcome.producedOutput) return false;
+  const failure = outcome.providerFailure;
+  if (!failure) return true;
+  if (failure.stopReason === "error" && isContextOverflow(failure, model.contextWindow)) {
+    return true;
+  }
+  if (failure.stopReason === "length") {
+    const desiredMax = model.maxTokens || PI_CONTEXT_OUTPUT_RESERVE_TOKENS;
+    return isContextOverflow(failure, model.contextWindow)
+      || isRecoverableLength(failure, desiredMax)
+      || isPiLengthStopWithNoDeliverableOutput(failure);
+  }
+  return false;
 }

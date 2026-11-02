@@ -78,7 +78,9 @@ function toSessionResourceInputs(
       case "github_repository":
         return {
           type: resource.type,
-          authorizationToken: resource.authorization_token,
+          ...(resource.authorization_token !== undefined && {
+            authorizationToken: resource.authorization_token,
+          }),
           url: resource.url,
           ...(resource.checkout !== undefined && {
             checkout: resource.checkout,
@@ -186,10 +188,6 @@ export function toListSessionsQuery(query: SessionListQuery): ListSessionsQuery 
     ...(query.memory_store_id !== undefined && {
       memoryStoreId: query.memory_store_id,
     }),
-    ...(query.metadata_key !== undefined &&
-      query.metadata_value !== undefined && {
-        metadata: { key: query.metadata_key, value: query.metadata_value },
-      }),
     ...(query.order !== undefined && { order: query.order }),
     ...(query.statuses !== undefined && { statuses: query.statuses }),
   };
@@ -204,10 +202,23 @@ export function toSessionAgentResponse(agent: SessionAgentView): object {
     multiagent:
       agent.multiagent === null
         ? null
-        : {
-            type: agent.multiagent.type,
-            agents: agent.multiagent.agents.map(fromSessionThreadAgent),
-          },
+        : agent.multiagent.subagents.type === "disabled"
+          ? {
+              type: agent.multiagent.type,
+              advisor: { type: "disabled" },
+              subagents: { type: "disabled" },
+              workflows: { type: "disabled" },
+            }
+          : {
+              type: agent.multiagent.type,
+              advisor: { type: "disabled" },
+              subagents: {
+                type: "enabled",
+                inline_agents: agent.multiagent.subagents.inlineAgents,
+                predefined_agents: agent.multiagent.subagents.predefinedAgents.map(fromSessionThreadAgent),
+              },
+              workflows: { type: "disabled" },
+            },
     name: agent.name,
     ...(agent.openma !== undefined &&
       Object.keys(agent.openma).length > 0 && {

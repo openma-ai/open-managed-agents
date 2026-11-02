@@ -15,7 +15,7 @@ import {
   startFeishuWsRunner,
   type FeishuWsConnectionFactory,
   type FeishuWsEventHandlers,
-} from "../src/lib/ws-feishu-runner";
+} from "../../../packages/control-plane-node/src/lib/ws-feishu-runner";
 
 // Unit tests for the Feishu WS runner's orchestration: envelope
 // reconstruction, dedup, status flip, backoff retry, and error isolation.

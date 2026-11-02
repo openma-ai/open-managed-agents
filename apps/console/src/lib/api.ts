@@ -1,5 +1,5 @@
 const BASE = "";
-const CONSOLE_API_BETAS = [
+export const CONSOLE_API_BETAS = [
   "managed-agents-2026-04-01",
   "files-api-2025-04-14",
   "skills-2025-10-02",
@@ -108,7 +108,22 @@ export function setActiveTenantId(id: string | null): void {
  *  way by the sidebar bootstrapping path. */
 const SILENT_AUTH_PATHS = ["/auth-info", "/v1/oma/me"];
 
+/** Optional OMA capability probes: a 404 only means "this deployment does
+ *  not offer it", which the caller renders as an absent feature. */
+const SILENT_NOT_FOUND_PATHS = ["/v1/oma/sandbox_images"];
+const SESSION_RETRIEVE_PATH = /^\/v1\/sessions\/[^/?]+(?:\?.*)?$/;
+
+/** Exported for tests. */
+export const shouldSilenceApiErrorToast = (path: string, status: number) =>
+  shouldSilenceAuthError(path, status);
+
 function shouldSilenceAuthError(path: string, status: number): boolean {
+  if (status === 404 && SILENT_NOT_FOUND_PATHS.some((p) => path === p || path.startsWith(`${p}?`))) {
+    return true;
+  }
+  // GET /v1/sessions/:id 404 renders SessionDetail's own "Session not found"
+  // view; a toast on top of it would be redundant.
+  if (status === 404 && SESSION_RETRIEVE_PATH.test(path)) return true;
   if (status !== 401 && status !== 403) return false;
   return SILENT_AUTH_PATHS.some((p) => path === p || path.startsWith(`${p}?`));
 }

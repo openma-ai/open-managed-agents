@@ -4,6 +4,7 @@ export const SANDBOX_PROVIDER_PATHS = {
   boxlite: "@open-managed-agents/sandbox-adapter-litebox",
   boxrun: "@open-managed-agents/sandbox-adapter-boxrun",
   daytona: "@open-managed-agents/sandbox-adapter-daytona",
+  opensandbox: "@open-managed-agents/sandbox-adapter-opensandbox",
   e2b: "@open-managed-agents/sandbox-adapter-e2b",
 } as const;
 

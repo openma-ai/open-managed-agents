@@ -33,9 +33,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/v1": proxyOpts,
+      "/matter": proxyOpts,
       "/auth": proxyOpts,
       "/auth-info": proxyOpts,
       "/health": proxyOpts,
+      "/branding": proxyOpts,
       "/linear": proxyOpts,
       "/linear-setup": proxyOpts,
       "/github": proxyOpts,

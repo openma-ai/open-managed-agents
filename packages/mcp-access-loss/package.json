@@ -1,0 +1,21 @@
+{
+  "name": "@open-managed-agents/mcp-access-loss",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@open-managed-agents/github": "workspace:*",
+    "@open-managed-agents/linear": "workspace:*",
+    "@open-managed-agents/slack": "workspace:*",
+    "@open-managed-agents/sql-client": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

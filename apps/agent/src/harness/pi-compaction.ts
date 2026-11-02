@@ -8,8 +8,22 @@ import type {
   TextContent,
   Tool,
 } from "@earendil-works/pi-ai";
+import {
+  estimateContextTokens,
+  estimateTextTokens,
+} from "@earendil-works/pi-ai/utils/estimate";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
 import type { HarnessRuntime } from "./interface";
+
+/** Matches pi-ai `CONTEXT_SAFETY_TOKENS` in simple-options (output margin). */
+export const PI_CONTEXT_OUTPUT_RESERVE_TOKENS = 4096;
+
+export function piCompactionInputBudget(model: Model<Api>): number {
+  return Math.max(
+    0,
+    model.contextWindow - model.maxTokens - PI_CONTEXT_OUTPUT_RESERVE_TOKENS,
+  );
+}
 
 export interface PiCompactionResult {
   summary: ContentBlock[];
@@ -20,7 +34,11 @@ export interface PiCompactionResult {
 
 export interface PiCompactionCheckContext {
   messages: Message[];
-  contextWindowTokens: number;
+  model: Model<Api>;
+  systemPrompt: string;
+  tools: Tool[];
+  /** Resolved input-token threshold (see compaction-config). */
+  compactionTriggerInputTokens: number;
 }
 
 export interface PiCompactionRunContext extends PiCompactionCheckContext {
@@ -78,10 +96,17 @@ export class PiSummaryCompactionPolicy implements PiCompactionPolicy {
 
   shouldCompact(
     _events: SessionEvent[],
-    { messages, contextWindowTokens }: PiCompactionCheckContext,
+    ctx: PiCompactionCheckContext,
   ): boolean {
-    return estimatePiMessagesTokens(messages)
-      > contextWindowTokens * normalizeTriggerFraction(this.options.triggerFraction);
+    const threshold = ctx.compactionTriggerInputTokens;
+    const { tokens: messageTokens } = estimateContextTokens(ctx.messages);
+    const systemTokens = ctx.systemPrompt.length > 0
+      ? estimateTextTokens(ctx.systemPrompt)
+      : 0;
+    const toolTokens = ctx.tools.length > 0
+      ? estimateTextTokens(JSON.stringify(ctx.tools))
+      : 0;
+    return messageTokens + systemTokens + toolTokens >= threshold;
   }
 
   async compact(
@@ -126,6 +151,10 @@ export class PiSummaryCompactionPolicy implements PiCompactionPolicy {
             model.maxTokens || 2_000,
           ),
           signal: abortSignal ?? requestOptions?.signal,
+          // Isolated compaction is a one-shot summary request. Do not create
+          // prompt-cache state that no later request can reuse. The explicit
+          // `summarize` strategy intentionally keeps the main-prefix cache.
+          ...(!cacheAware ? { cacheRetention: "none" as const } : {}),
           ...(sessionId
             ? { sessionId: cacheAware ? sessionId : `${sessionId}:compaction` }
             : {}),
@@ -178,6 +207,7 @@ export class PiSummaryCompactionPolicy implements PiCompactionPolicy {
 
 export function resolvePiCompactionPolicy(
   metadata: Record<string, unknown> | undefined,
+  summaryInstructions?: string,
 ): PiCompactionPolicy {
   const name = typeof metadata?.compaction_strategy === "string"
     ? metadata.compaction_strategy
@@ -186,12 +216,13 @@ export function resolvePiCompactionPolicy(
   const supportedName = name === "summarize" || name === "opencode-style" || name === "cc-style"
     ? name
     : "cc-style";
+  const metadataFraction = finiteNumber(metadata?.compaction_trigger_fraction);
   return new PiSummaryCompactionPolicy(supportedName, {
-    triggerFraction: finiteNumber(metadata?.compaction_trigger_fraction),
+    triggerFraction: metadataFraction,
     maxSummaryTokens: finiteNumber(metadata?.compaction_max_summary_tokens),
     summaryPrompt: typeof metadata?.compaction_summary_prompt === "string"
       ? metadata.compaction_summary_prompt
-      : undefined,
+      : summaryInstructions,
   });
 }
 

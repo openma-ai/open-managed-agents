@@ -8,6 +8,13 @@ OMA's **vault** is the single source of truth for upstream credentials (MCP-serv
 
 This mirrors [Anthropic Managed Agents' "credential proxy outside the harness"](https://www.anthropic.com/engineering/managed-agents) pattern — a prompt-injected agent has no credential to leak because there isn't one in its address space.
 
+Harness-in-sandbox ACP agents that call model providers use the same Work
+`sessions_token` against `/v1/oma/inference-proxy/<session>/…` (OpenAI-compatible
+subpaths). The control plane resolves the session agent's model card and signs
+the upstream request; the sandbox receives only `HOSTED_INFERENCE_URL` and
+`HOSTED_INFERENCE_TOKEN` (Harbor Hub credential-proxying shape), not
+`DEEPSEEK_API_KEY` / `OPENAI_API_KEY`.
+
 The official self-hosted Work `sessions_token` is used as the in-sandbox MCP
 gateway capability. It is safe only with all of these invariants:
 
@@ -18,7 +25,8 @@ gateway capability. It is safe only with all of these invariants:
 - every request is checked against the current stored Work claim, including
   exact token equality and heartbeat TTL;
 - the path is limited to that Session's events/resources and
-  `/v1/oma/mcp-proxy/{session}/{server}`;
+  `/v1/oma/mcp-proxy/{session}/{server}` and
+  `/v1/oma/inference-proxy/{session}/…` (OpenAI-compatible model calls);
 - a reclaim rotates the token, so an old sandbox fails before Vault lookup;
 - the gateway resolves `server` from the Session snapshot and `vault_ids`; the
   token is not a general Vault-read credential.

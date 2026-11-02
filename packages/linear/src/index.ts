@@ -23,3 +23,4 @@ export type {
   LinearIssueSessionRepo,
   LinearIssueSessionStatus,
 } from "./ports";
+export { linearAccessLossCatalog } from "./access-loss";

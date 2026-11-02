@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import * as snapshotsModule from "../src/lib/node-managed-memory-snapshots.js";
+import * as snapshotsModule from "../../../packages/control-plane-node/src/lib/node-managed-memory-snapshots.js";
 
 describe("NodeManagedMemorySnapshotMaterializer", () => {
   it("projects every current Memory into an immutable content-addressed blob prefix", async () => {

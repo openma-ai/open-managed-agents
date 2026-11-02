@@ -10,6 +10,13 @@ import type {
   SettleSessionExecutionResult,
 } from "@open-managed-agents/session-runtime-contract/coordination";
 import {
+  decideClaim,
+  decideExpiredExecution,
+  decideLeaseRenewal,
+  type CoordinationAction,
+  type ExecutionLeaseRecord,
+} from "@open-managed-agents/session-runtime-contract/coordination";
+import {
   annotateDbBoundary,
   CasConflict,
   isCasConflict,
@@ -17,6 +24,11 @@ import {
 } from "@open-managed-agents/sql-client/db-errors";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import { Cause, Effect, Exit, Option } from "effect";
+
+/** Row is a turn continuation (client answer to a paused tool call). */
+const CONTINUATION_SQL = (alias: string) =>
+  `${alias}.events_json LIKE '%"type":"user.custom_tool_result"%' OR ` +
+  `${alias}.events_json LIKE '%"type":"user.tool_confirmation"%'`;
 
 /** Promise port over an Effect program. FiberFailure stays inside. */
 function runCoordinatorPort<A>(effect: Effect.Effect<A, unknown>): Promise<A> {
@@ -49,6 +61,7 @@ const schemaStatements = [
     interrupt_requested_at_ms BIGINT,
     settled_at_ms BIGINT,
     failure TEXT,
+    held_after_exhausted_ms BIGINT,
     revision BIGINT NOT NULL DEFAULT 1,
     PRIMARY KEY (workspace_id, id)
   )`,
@@ -107,42 +120,44 @@ export async function upgradeSessionClaimLockColumns(
   }
 }
 
+function columnNameSet(rows: Array<{ name?: string }> | undefined): Set<string> {
+  return new Set(
+    (rows ?? [])
+      .map((row) => row.name?.toLowerCase())
+      .filter((name): name is string => typeof name === "string"),
+  );
+}
+
 async function claimLockColumnNames(
   sql: SqlClient,
   dialect?: "sqlite" | "mysql" | "postgres",
 ): Promise<Set<string> | null> {
-  const collect = (rows: Array<{ name?: string }> | undefined) =>
-    new Set(
-      (rows ?? [])
-        .map((row) => row.name?.toLowerCase())
-        .filter((name): name is string => typeof name === "string"),
-    );
   if (dialect === "postgres") {
     const rows = await sql.prepare(
       `SELECT column_name AS name FROM information_schema.columns
         WHERE table_name = 'managed_session_claim_locks'`,
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   }
   if (dialect === "mysql") {
     const rows = await sql.prepare(
       `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'managed_session_claim_locks'`,
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   }
   try {
     const rows = await sql.prepare(
       "PRAGMA table_info(managed_session_claim_locks)",
     ).all<{ name?: string }>();
-    return collect(rows.results);
+    return columnNameSet(rows.results);
   } catch {
     try {
       const rows = await sql.prepare(
         `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'managed_session_claim_locks'`,
       ).all<{ name?: string }>();
-      return collect(rows.results);
+      return columnNameSet(rows.results);
     } catch {
       return null;
     }
@@ -151,6 +166,7 @@ async function claimLockColumnNames(
 
 export async function ensureSessionExecutionCoordinatorSchema(
   sql: SqlClient,
+  dialect?: "sqlite" | "mysql" | "postgres",
 ): Promise<void> {
   // Create the table first.  Index DDL is deferred until after the additive
   // upgrade below so an old SQLite table without `lane_id` can be upgraded
@@ -161,20 +177,23 @@ export async function ensureSessionExecutionCoordinatorSchema(
   // earlier preview of this contract.  `CREATE TABLE IF NOT EXISTS` quite
   // correctly leaves those tables untouched, but a subsequent INSERT would
   // then fail on the newly required lease columns.  SQLite/D1 expose
-  // `PRAGMA table_info`; PostgreSQL does not, so the probe is intentionally
-  // best-effort and the real PG migrations remain the source of truth there.
+  // `PRAGMA table_info`; MySQL uses information_schema; PostgreSQL does not
+  // need the probe here, so it is intentionally best-effort and the real PG
+  // migrations remain the source of truth there.
   let existing: Set<string> | null = null;
   try {
-    const result = await sql
-      .prepare("PRAGMA table_info(managed_session_executions)")
-      .all<{ name?: string }>();
-    existing = new Set(
-      (result.results ?? [])
-        .map((column) => column.name)
-        .filter((name): name is string => typeof name === "string"),
-    );
+    const result = dialect === "mysql"
+      ? await sql.prepare(
+        `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'managed_session_executions'`,
+      ).all<{ name?: string }>()
+      : await sql
+        .prepare("PRAGMA table_info(managed_session_executions)")
+        .all<{ name?: string }>();
+    existing = columnNameSet(result.results);
   } catch {
-    // PostgreSQL (and non-SQLite adapters) use their own migration runner.
+    // Non-SQLite adapters that cannot probe fall through to migrations.
   }
   if (existing !== null && existing.size > 0) {
     const additions: Array<[string, string]> = [
@@ -189,6 +208,7 @@ export async function ensureSessionExecutionCoordinatorSchema(
       ["interrupt_requested_at_ms", "BIGINT"],
       ["settled_at_ms", "BIGINT"],
       ["failure", "TEXT"],
+      ["held_after_exhausted_ms", "BIGINT"],
       ["revision", "BIGINT NOT NULL DEFAULT 1"],
     ];
     for (const [name, definition] of additions) {
@@ -199,8 +219,39 @@ export async function ensureSessionExecutionCoordinatorSchema(
       }
     }
   }
-  for (const statement of schemaStatements.slice(1)) await sql.exec(statement);
-  await upgradeSessionClaimLockColumns(sql);
+  for (const statement of schemaStatements.slice(1)) {
+    await ensureIndex(sql, statement, dialect);
+  }
+  await upgradeSessionClaimLockColumns(sql, dialect);
+}
+
+/** MySQL has no `CREATE INDEX IF NOT EXISTS`; probe the catalog and emit a
+ * plain CREATE INDEX only when the index is missing. SQLite/Postgres keep
+ * the idempotent DDL used by their migration paths. */
+async function ensureIndex(
+  sql: SqlClient,
+  statement: string,
+  dialect?: "sqlite" | "mysql" | "postgres",
+): Promise<void> {
+  if (dialect !== "mysql" || !statement.startsWith("CREATE INDEX IF NOT EXISTS ")) {
+    await sql.exec(statement);
+    return;
+  }
+  const match = /^CREATE INDEX IF NOT EXISTS (\S+)\s+ON\s+(\S+)/.exec(statement);
+  if (match === null) {
+    await sql.exec(statement);
+    return;
+  }
+  const [, indexName, tableName] = match;
+  const existing = await sql.prepare(
+    `SELECT 1 AS present FROM information_schema.statistics
+      WHERE table_schema = DATABASE()
+        AND table_name = ?
+        AND index_name = ?
+      LIMIT 1`,
+  ).bind(tableName, indexName).first<{ present?: number }>();
+  if (existing !== null) return;
+  await sql.exec(statement.replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX"));
 }
 
 interface ExecutionRow {
@@ -223,6 +274,7 @@ interface ExecutionRow {
   interrupt_requested_at_ms: number | string | null;
   settled_at_ms: number | string | null;
   failure: string | null;
+  held_after_exhausted_ms: number | string | null;
   revision: number | string;
 }
 
@@ -240,8 +292,8 @@ function safeInteger(value: number | string, name: string): number {
   return parsed;
 }
 
-function optionalDate(value: number | string | null, name: string): string | null {
-  return value === null
+function optionalDate(value: number | string | null | undefined, name: string): string | null {
+  return value === null || value === undefined
     ? null
     : new Date(safeInteger(value, name)).toISOString();
 }
@@ -267,7 +319,7 @@ function columns(): string {
     events_fingerprint, state, attempt_id, owner_id, generation,
     attempt_count, max_attempts, deadline_at_ms,
     claimed_at_ms, lease_expires_at_ms, interrupt_requested_at_ms,
-    settled_at_ms, failure, revision`;
+    settled_at_ms, failure, held_after_exhausted_ms, revision`;
 }
 
 function toExecution(row: ExecutionRow): SessionExecution {
@@ -306,7 +358,41 @@ function toExecution(row: ExecutionRow): SessionExecution {
     ),
     settledAt: optionalDate(row.settled_at_ms, "settlement time"),
     failure: row.failure,
+    heldAfterExhaustedAt: optionalDate(row.held_after_exhausted_ms, "exhausted hold time"),
     revision: safeInteger(row.revision, "execution revision"),
+  };
+}
+
+function toLeaseRecord(row: ExecutionRow): ExecutionLeaseRecord {
+  return {
+    executionId: row.id,
+    laneId: row.lane_id,
+    state: row.state,
+    attemptCount: safeInteger(row.attempt_count, "execution attempt count"),
+    maxAttempts: safeInteger(row.max_attempts, "execution max attempts"),
+    admittedAtMs: safeInteger(row.admitted_at_ms, "execution admitted at"),
+    leaseExpiresAtMs: row.lease_expires_at_ms === null
+      ? null
+      : safeInteger(row.lease_expires_at_ms, "lease expiry"),
+    deadlineAtMs: safeInteger(row.deadline_at_ms, "execution deadline"),
+    ownerId: row.owner_id,
+    heldAfterExhausted: row.held_after_exhausted_ms !== null,
+  };
+}
+
+function toLeaseRecordFromExecution(execution: SessionExecution): ExecutionLeaseRecord {
+  return {
+    executionId: execution.id,
+    laneId: execution.laneId,
+    state: execution.state,
+    attemptCount: execution.attemptCount,
+    maxAttempts: execution.maxAttempts,
+    admittedAtMs: Date.parse(execution.admittedAt),
+    leaseExpiresAtMs:
+      execution.attempt === null ? null : Date.parse(execution.attempt.leaseExpiresAt),
+    deadlineAtMs: Date.parse(execution.deadlineAt),
+    ownerId: execution.attempt?.ownerId ?? null,
+    heldAfterExhausted: execution.heldAfterExhaustedAt !== null,
   };
 }
 
@@ -333,6 +419,9 @@ function validateTtl(ttlMs: number): void {
 }
 
 export interface SqlSessionExecutionStoreOptions {
+  /** A host with local recovery evidence must not sweep other Sessions or
+   * take over expired work before its explicit recovery pass has decided. */
+  recoveryScope?: { workspaceId: string; sessionId: string };
   /** Only checkpoint_restore enables this: all lanes of a Session share /workspace. */
   serializeSessionClaims?: boolean;
   /**
@@ -342,6 +431,23 @@ export interface SqlSessionExecutionStoreOptions {
    */
   sweepIntervalMs?: number;
   onError?(error: unknown, op: string): void;
+}
+
+export interface SweepExpiredOptions {
+  /**
+   * Do not requeue this owner's expired lease. A live worker must never
+   * reclaim its own in-flight attempt; only a different owner may take over.
+   */
+  excludeOwnerId?: string;
+  /**
+   * Override the default lease-only decision for one row. The CF adapter
+   * supplies canonical-stream evidence here so an applied-but-unfinished
+   * turn is finalized as interrupted instead of re-dispatched. Return null
+   * to leave the row alone.
+   */
+  decideForRecord?(record: ExecutionLeaseRecord): CoordinationAction | null;
+  /** Observe each policy decision (CF logs one line per transition). */
+  onDecision?(action: CoordinationAction): void;
 }
 
 export class SqlSessionExecutionStore
@@ -442,10 +548,17 @@ export class SqlSessionExecutionStore
   private async claimOnce(input: ClaimSessionExecution): Promise<ClaimSessionExecutionResult> {
     validateTtl(input.leaseTtlMs);
     const claimedAt = timestamp(input.claimedAt, "claim");
-    await this.sweepExpired(claimedAt);
+    await this.sweepExpired(claimedAt, { excludeOwnerId: input.ownerId });
+    // Exhausted hold: fold held queued rows into the next unheld admission on
+    // the same lane so they never run alone and advance in enqueue order.
+    await this.absorbHeldIntoUnheldAdmissions(input, claimedAt);
     const serial = this.options.serializeSessionClaims === true;
     const candidate = await this.selectCandidate(input, claimedAt, serial);
     if (candidate === null) return { type: "empty" };
+    // Shared policy is the final gate: a candidate that is still leased,
+    // held, over-budget, or past its deadline is never claimable even if a
+    // future SQL predicate regresses.
+    if (!decideClaim(candidate.lease, claimedAt).claim) return { type: "empty" };
     annotateDbBoundary({ sessionId: candidate.session_id });
     const claimed = serial
       ? await this.claimSerial(input, claimedAt, candidate)
@@ -460,6 +573,157 @@ export class SqlSessionExecutionStore
     });
   }
 
+  /**
+   * After retries_exhausted, mid-run queued rows are held. When a later
+   * unheld admission exists on the same lane, fold every held row's events
+   * into that admission (enqueue order) and complete the held rows so they
+   * never claim alone. See cma-steer-coherent-turn.md / exhausted retain.
+   */
+  private async absorbHeldIntoUnheldAdmissions(
+    input: ClaimSessionExecution,
+    absorbedAt: number,
+  ): Promise<void> {
+    const lanes = await this.sql.prepare(`
+      SELECT DISTINCT held.workspace_id, held.session_id, held.lane_id
+        FROM managed_session_executions AS held
+       WHERE held.state = 'queued'
+         AND held.held_after_exhausted_ms IS NOT NULL
+         AND (? IS NULL OR held.workspace_id = ?)
+         AND (? IS NULL OR held.session_id = ?)
+         AND (? IS NULL OR held.lane_id = ?)
+         AND EXISTS (
+           SELECT 1 FROM managed_session_executions AS next
+            WHERE next.workspace_id = held.workspace_id
+              AND next.session_id = held.session_id
+              AND next.lane_id = held.lane_id
+              AND next.state = 'queued'
+              AND next.held_after_exhausted_ms IS NULL
+         )
+    `).bind(
+      input.workspaceId ?? null, input.workspaceId ?? null,
+      input.sessionId ?? null, input.sessionId ?? null,
+      input.laneId ?? null, input.laneId ?? null,
+    ).all<{ workspace_id: string; session_id: string; lane_id: string }>();
+    for (const lane of lanes.results ?? []) {
+      await this.absorbHeldOnLane({
+        workspaceId: lane.workspace_id,
+        sessionId: lane.session_id,
+        laneId: lane.lane_id,
+        absorbedAt,
+      });
+    }
+  }
+
+  private async absorbHeldOnLane(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+    absorbedAt: number;
+  }): Promise<void> {
+    const held = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND lane_id = ?
+         AND state = 'queued' AND held_after_exhausted_ms IS NOT NULL
+       ORDER BY admitted_at_ms ASC, id ASC
+    `).bind(input.workspaceId, input.sessionId, input.laneId)
+      .all<ExecutionRow>();
+    const heldRows = held.results ?? [];
+    if (heldRows.length === 0) return;
+    const next = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND lane_id = ?
+         AND state = 'queued' AND held_after_exhausted_ms IS NULL
+       ORDER BY admitted_at_ms ASC, id ASC
+       LIMIT 1
+    `).bind(input.workspaceId, input.sessionId, input.laneId)
+      .first<ExecutionRow>();
+    if (next === null) return;
+    const heldEvents = heldRows.flatMap((row) =>
+      JSON.parse(row.events_json) as SessionExecution["events"],
+    );
+    const nextEvents = JSON.parse(next.events_json) as SessionExecution["events"];
+    const merged = [...heldEvents, ...nextEvents];
+    const mergedJson = stableJson(merged);
+    await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET events_json = ?, events_fingerprint = ?, revision = revision + 1
+       WHERE workspace_id = ? AND id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL AND revision = ?
+    `).bind(
+      mergedJson, mergedJson,
+      input.workspaceId, next.id, next.revision,
+    ).run();
+    for (const row of heldRows) {
+      await this.sql.prepare(`
+        UPDATE managed_session_executions
+           SET state = 'completed', settled_at_ms = ?,
+               held_after_exhausted_ms = NULL, failure = NULL,
+               revision = revision + 1
+         WHERE workspace_id = ? AND id = ? AND state = 'queued'
+           AND held_after_exhausted_ms IS NOT NULL
+      `).bind(input.absorbedAt, input.workspaceId, row.id).run();
+      await this.clearHeldAfterExhaustedOnEvents(
+        input.workspaceId, input.sessionId,
+        (JSON.parse(row.events_json) as SessionExecution["events"]).map((e) => e.id),
+      );
+    }
+  }
+
+  /** Best-effort: surface/clear hold on events.list documents (same DB). */
+  private async markHeldAfterExhaustedOnEvents(
+    workspaceId: string,
+    sessionId: string,
+    eventIds: readonly string[],
+  ): Promise<void> {
+    for (const eventId of eventIds) {
+      try {
+        const row = await this.sql.prepare(`
+          SELECT document FROM managed_session_events
+           WHERE workspace_id = ? AND session_id = ? AND id = ?
+        `).bind(workspaceId, sessionId, eventId)
+          .first<{ document: string }>();
+        if (row === null) continue;
+        const doc = JSON.parse(row.document) as Record<string, unknown>;
+        if (doc.processedAt != null) continue;
+        if (doc.heldAfterExhausted === true) continue;
+        const next = { ...doc, heldAfterExhausted: true };
+        await this.sql.prepare(`
+          UPDATE managed_session_events SET document = ?
+           WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?
+        `).bind(JSON.stringify(next), workspaceId, sessionId, eventId, row.document).run();
+      } catch {
+        // Event table may be absent in unit fixtures that only exercise the
+        // execution store; hold on the execution row is authoritative.
+      }
+    }
+  }
+
+  private async clearHeldAfterExhaustedOnEvents(
+    workspaceId: string,
+    sessionId: string,
+    eventIds: readonly string[],
+  ): Promise<void> {
+    for (const eventId of eventIds) {
+      try {
+        const row = await this.sql.prepare(`
+          SELECT document FROM managed_session_events
+           WHERE workspace_id = ? AND session_id = ? AND id = ?
+        `).bind(workspaceId, sessionId, eventId)
+          .first<{ document: string }>();
+        if (row === null) continue;
+        const doc = JSON.parse(row.document) as Record<string, unknown>;
+        if (doc.heldAfterExhausted !== true) continue;
+        const { heldAfterExhausted: _drop, ...rest } = doc;
+        await this.sql.prepare(`
+          UPDATE managed_session_events SET document = ?
+           WHERE workspace_id = ? AND session_id = ? AND id = ? AND document = ?
+        `).bind(JSON.stringify(rest), workspaceId, sessionId, eventId, row.document).run();
+      } catch {
+        // Same as mark: fixtures without the events table are fine.
+      }
+    }
+  }
+
   private async selectCandidate(
     input: ClaimSessionExecution,
     claimedAt: number,
@@ -469,23 +733,33 @@ export class SqlSessionExecutionStore
     session_id: string;
     id: string;
     revision: number | string;
+    lease: ExecutionLeaseRecord;
   } | null> {
-    return this.sql.prepare(`
-      SELECT candidate.workspace_id, candidate.session_id, candidate.id, candidate.revision
+    const continuations = input.continuationsOnly === true;
+    const row = await this.sql.prepare(`
+      SELECT candidate.workspace_id, candidate.session_id, candidate.lane_id,
+             candidate.id, candidate.revision, candidate.state,
+             candidate.attempt_count, candidate.max_attempts,
+             candidate.deadline_at_ms, candidate.lease_expires_at_ms,
+             candidate.owner_id, candidate.held_after_exhausted_ms
         FROM managed_session_executions AS candidate
        WHERE (? IS NULL OR candidate.workspace_id = ?)
          AND (? IS NULL OR candidate.session_id = ?)
          AND (? IS NULL OR candidate.lane_id = ?)
-         AND (candidate.state = 'queued' OR (candidate.state = 'running'
+         AND (candidate.state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND candidate.state = 'running'
            AND candidate.lease_expires_at_ms <= ? AND candidate.owner_id <> ?))
+         AND candidate.held_after_exhausted_ms IS NULL
          AND candidate.attempt_count < candidate.max_attempts
          AND candidate.deadline_at_ms > ?
+         ${continuations ? `AND (${CONTINUATION_SQL("candidate")})` : ""}
          AND NOT EXISTS (
            SELECT 1 FROM managed_session_executions AS earlier
             WHERE earlier.workspace_id = candidate.workspace_id
               AND earlier.session_id = candidate.session_id
               AND earlier.lane_id = candidate.lane_id
               AND earlier.state IN ('queued', 'running')
+              AND earlier.held_after_exhausted_ms IS NULL
+              ${continuations ? `AND NOT (earlier.state = 'queued' AND NOT (${CONTINUATION_SQL("earlier")}))` : ""}
               AND (earlier.admitted_at_ms < candidate.admitted_at_ms
                 OR (earlier.admitted_at_ms = candidate.admitted_at_ms AND earlier.id < candidate.id))
          )
@@ -507,9 +781,37 @@ export class SqlSessionExecutionStore
     ).first<{
       workspace_id: string;
       session_id: string;
+      lane_id: string;
       id: string;
       revision: number | string;
+      state: SessionExecution["state"];
+      attempt_count: number | string;
+      max_attempts: number | string;
+      deadline_at_ms: number | string;
+      lease_expires_at_ms: number | string | null;
+      owner_id: string | null;
+      held_after_exhausted_ms: number | string | null;
     }>();
+    if (row === null) return null;
+    return {
+      workspace_id: row.workspace_id,
+      session_id: row.session_id,
+      id: row.id,
+      revision: row.revision,
+      lease: {
+        executionId: row.id,
+        laneId: row.lane_id,
+        state: row.state,
+        attemptCount: safeInteger(row.attempt_count, "execution attempt count"),
+        maxAttempts: safeInteger(row.max_attempts, "execution max attempts"),
+        leaseExpiresAtMs: row.lease_expires_at_ms === null
+          ? null
+          : safeInteger(row.lease_expires_at_ms, "lease expiry"),
+        deadlineAtMs: safeInteger(row.deadline_at_ms, "execution deadline"),
+        ownerId: row.owner_id,
+        heldAfterExhausted: row.held_after_exhausted_ms !== null,
+      },
+    };
   }
 
   /**
@@ -596,7 +898,7 @@ export class SqlSessionExecutionStore
                WHEN ? < deadline_at_ms THEN ? ELSE deadline_at_ms END,
              settled_at_ms = NULL, failure = NULL, revision = revision + 1
        WHERE workspace_id = ? AND id = ? AND revision = ?
-         AND (state = 'queued' OR (state = 'running'
+         AND (state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND state = 'running'
            AND lease_expires_at_ms <= ? AND owner_id <> ?))
          AND attempt_count < max_attempts
          AND deadline_at_ms > ?
@@ -651,20 +953,31 @@ export class SqlSessionExecutionStore
     }, async () => {
       validateTtl(input.leaseTtlMs);
       const renewedAt = timestamp(input.renewedAt, "renewal");
-      await this.sweepExpired(renewedAt);
+      // Never sweep the caller's own lease out from under an in-flight
+      // renewal; a live owner may only extend, and the policy rejects an
+      // already-expired lease below.
+      await this.sweepExpired(renewedAt, { excludeOwnerId: input.fence.ownerId });
+      const current = await this.find({
+        workspaceId: input.fence.workspaceId,
+        executionId: input.fence.executionId,
+      });
+      if (current === null) return { type: "lost" as const };
+      const renewal = decideLeaseRenewal(
+        toLeaseRecordFromExecution(current),
+        renewedAt,
+        { leaseTtlMs: input.leaseTtlMs },
+      );
+      if (renewal === null) return { type: "lost" as const };
       const row = await this.sql.prepare(`
         UPDATE managed_session_executions
-           SET lease_expires_at_ms = CASE
-                 WHEN ? < deadline_at_ms THEN ? ELSE deadline_at_ms END,
-               revision = revision + 1
+           SET lease_expires_at_ms = ?, revision = revision + 1
          WHERE workspace_id = ? AND id = ? AND session_id = ?
            AND state = 'running' AND attempt_id = ? AND owner_id = ?
            AND generation = ? AND lease_expires_at_ms > ?
            AND deadline_at_ms > ?
         RETURNING ${columns()}
       `).bind(
-        renewedAt + input.leaseTtlMs,
-        renewedAt + input.leaseTtlMs,
+        renewal.leaseExpiresAtMs,
         input.fence.workspaceId,
         input.fence.executionId,
         input.fence.sessionId,
@@ -691,6 +1004,7 @@ export class SqlSessionExecutionStore
     settledAt: string;
     outcome: "completed" | "failed" | "cancelled";
     failure?: string;
+    holdQueuedOnLane?: boolean;
   }): Promise<SettleSessionExecutionResult> {
     return runCoordinatorPort(Effect.tryPromise({
       try: () => withDbBoundary({
@@ -727,7 +1041,17 @@ export class SqlSessionExecutionStore
         input.fence.generation,
         settledAt,
       ).first<ExecutionRow>();
-      if (row !== null) return { type: "settled" as const, execution: toExecution(row) };
+      if (row !== null) {
+        if (input.holdQueuedOnLane === true) {
+          await this.holdQueuedOnLane({
+            workspaceId: row.workspace_id,
+            sessionId: row.session_id,
+            laneId: row.lane_id,
+            heldAt: settledAt,
+          });
+        }
+        return { type: "settled" as const, execution: toExecution(row) };
+      }
       // A retried settle can observe its own commit: the row is already terminal
       // for this attempt. That is success, not a lost lease.
       const current = await this.find({
@@ -749,6 +1073,160 @@ export class SqlSessionExecutionStore
     }));
   }
 
+
+  private async holdQueuedOnLane(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+    heldAt: number;
+  }): Promise<void> {
+    const rows = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET held_after_exhausted_ms = COALESCE(held_after_exhausted_ms, ?),
+             revision = revision + 1
+       WHERE workspace_id = ? AND session_id = ? AND lane_id = ?
+         AND state = 'queued'
+      RETURNING ${columns()}
+    `).bind(
+      input.heldAt, input.workspaceId, input.sessionId, input.laneId,
+    ).all<ExecutionRow>();
+    const eventIds = (rows.results ?? []).flatMap((row) =>
+      (JSON.parse(row.events_json) as SessionExecution["events"]).map((e) => e.id),
+    );
+    await this.markHeldAfterExhaustedOnEvents(
+      input.workspaceId, input.sessionId, eventIds,
+    );
+  }
+
+  async cancelQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    cancelledAt: string;
+  }): Promise<
+    | { type: "cancelled"; execution: SessionExecution }
+    | {
+        type: "not_queued";
+        reason: "already_processing" | "already_cancelled" | "already_completed" | "not_found" | "held_after_exhausted";
+        execution?: SessionExecution;
+      }
+  > {
+    const cancelledAt = timestamp(input.cancelledAt, "queued cancellation");
+    const current = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND id = ?
+      LIMIT 1
+    `).bind(input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    if (current === null) return { type: "not_queued", reason: "not_found" };
+    if (current.state === "queued" && current.held_after_exhausted_ms !== null) {
+      return {
+        type: "not_queued",
+        reason: "held_after_exhausted",
+        execution: toExecution(current),
+      };
+    }
+    if (current.state !== "queued") {
+      const execution = toExecution(current);
+      const reason =
+        current.state === "running" ? "already_processing" as const
+        : current.state === "cancelled" ? "already_cancelled" as const
+        : current.state === "completed" ? "already_completed" as const
+        : "already_processing" as const;
+      return { type: "not_queued", reason, execution };
+    }
+    const row = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET state = 'cancelled', settled_at_ms = ?,
+             failure = 'removed from queue', revision = revision + 1
+       WHERE workspace_id = ? AND session_id = ? AND id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL
+      RETURNING ${columns()}
+    `).bind(cancelledAt, input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    if (row !== null) return { type: "cancelled", execution: toExecution(row) };
+    const again = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND id = ?
+      LIMIT 1
+    `).bind(input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    if (again === null) return { type: "not_queued", reason: "not_found" };
+    if (again.held_after_exhausted_ms !== null) {
+      return {
+        type: "not_queued",
+        reason: "held_after_exhausted",
+        execution: toExecution(again),
+      };
+    }
+    const execution = toExecution(again);
+    const reason =
+      again.state === "running" ? "already_processing" as const
+      : again.state === "cancelled" ? "already_cancelled" as const
+      : again.state === "completed" ? "already_completed" as const
+      : "already_processing" as const;
+    return { type: "not_queued", reason, execution };
+  }
+
+  async steerQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    steeredAt: string;
+  }): Promise<{ type: "steered"; execution: SessionExecution } | { type: "not_queued" }> {
+    const steeredAt = timestamp(input.steeredAt, "queued steering");
+    const row = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET state = 'completed', settled_at_ms = ?,
+             failure = NULL, revision = revision + 1
+       WHERE workspace_id = ? AND session_id = ? AND id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL
+      RETURNING ${columns()}
+    `).bind(steeredAt, input.workspaceId, input.sessionId, input.executionId)
+      .first<ExecutionRow>();
+    return row === null ? { type: "not_queued" } : { type: "steered", execution: toExecution(row) };
+  }
+
+  async listQueued(input: {
+    workspaceId: string;
+    sessionId: string;
+    laneId: string;
+  }): Promise<SessionExecution[]> {
+    const rows = await this.sql.prepare(`
+      SELECT ${columns()} FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ? AND lane_id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL
+       ORDER BY admitted_at_ms ASC, id ASC
+    `).bind(input.workspaceId, input.sessionId, input.laneId)
+      .all<ExecutionRow>();
+    return (rows.results ?? []).map(toExecution);
+  }
+
+  /** Owner lock (exhausted retain): mark one queued row held after
+   *  retries_exhausted. Used by hosts that admit a mid-run input only after
+   *  the exhausted settle (CF SessionDO local-pending fallback). */
+  async markHeldAfterExhausted(input: {
+    workspaceId: string;
+    sessionId: string;
+    executionId: string;
+    heldAt: Date;
+  }): Promise<void> {
+    const res = await this.sql.prepare(`
+      UPDATE managed_session_executions
+         SET held_after_exhausted_ms = ?, revision = revision + 1
+       WHERE workspace_id = ? AND id = ? AND state = 'queued'
+         AND held_after_exhausted_ms IS NULL
+    `).bind(input.heldAt.getTime(), input.workspaceId, input.executionId).run();
+    if (res.meta.changes === 1) {
+      const row = await this.find({ workspaceId: input.workspaceId, executionId: input.executionId });
+      if (row !== null) {
+        await this.markHeldAfterExhaustedOnEvents(
+          input.workspaceId, input.sessionId, row.events.map((ev) => ev.id),
+        );
+      }
+    }
+  }
+
   async requestInterrupt(input: {
     workspaceId: string;
     sessionId: string;
@@ -756,21 +1234,8 @@ export class SqlSessionExecutionStore
     requestedAt: string;
   }): Promise<{ type: "requested" | "idle" }> {
     const requestedAt = timestamp(input.requestedAt, "interrupt request");
-    const queued = this.sql.prepare(`
-      UPDATE managed_session_executions
-         SET state = 'cancelled', settled_at_ms = ?,
-             interrupt_requested_at_ms = COALESCE(interrupt_requested_at_ms, ?),
-             failure = 'interrupted before execution', revision = revision + 1
-       WHERE workspace_id = ? AND session_id = ? AND state = 'queued'
-         AND (? IS NULL OR lane_id = ?)
-    `).bind(
-      requestedAt,
-      requestedAt,
-      input.workspaceId,
-      input.sessionId,
-      input.laneId ?? null,
-      input.laneId ?? null,
-    );
+    // Queued executions survive an interrupt (Backchat policy): only the
+    // running turn is cancelled, and the lane drains the queue next.
     const expired = this.sql.prepare(`
       UPDATE managed_session_executions
          SET state = 'cancelled', settled_at_ms = ?,
@@ -804,7 +1269,7 @@ export class SqlSessionExecutionStore
       input.laneId ?? null,
       input.laneId ?? null,
     );
-    const results = await this.sql.batch([queued, expired, active]);
+    const results = await this.sql.batch([expired, active]);
     return results.reduce((total, result) => total + result.meta.changes, 0) === 0
       ? { type: "idle" }
       : { type: "requested" };
@@ -867,7 +1332,30 @@ export class SqlSessionExecutionStore
   }
 
 
-  private async sweepExpired(now: number): Promise<void> {
+  /** Durable work the lease policy can see: queued and running executions. */
+  async listActive(input: {
+    workspaceId: string;
+    sessionId: string;
+  }): Promise<SessionExecution[]> {
+    const rows = await this.sql.prepare(`
+      SELECT ${columns()}
+        FROM managed_session_executions
+       WHERE workspace_id = ? AND session_id = ?
+         AND state IN ('queued', 'running')
+       ORDER BY admitted_at_ms ASC, id ASC
+    `).bind(input.workspaceId, input.sessionId).all<ExecutionRow>();
+    return (rows.results ?? []).map(toExecution);
+  }
+
+  /**
+   * Apply the shared lease policy to every expired/deadline-missed execution.
+   * Public so the CF alarm can use the exact same sweep as Node's claim/renew
+   * paths instead of reimplementing expiry rules in the DO adapter.
+   */
+  async sweepExpired(
+    now: number,
+    options: SweepExpiredOptions = {},
+  ): Promise<void> {
     const interval = this.options.sweepIntervalMs ?? 0;
     if (interval > 0 && now < this.#nextSweepAt) return;
     if (interval > 0) {
@@ -875,18 +1363,52 @@ export class SqlSessionExecutionStore
     }
     try {
       await withDbBoundary({ op: "session_execution.sweep_expired" }, async () => {
-        await this.terminalizeMatching(
-          now,
-          "execution deadline exceeded",
-          "state IN ('queued', 'running') AND deadline_at_ms <= ?",
-          [now],
-        );
-        await this.terminalizeMatching(
-          now,
-          "execution attempt limit exhausted",
-          "state = 'running' AND lease_expires_at_ms <= ? AND attempt_count >= max_attempts",
-          [now],
-        );
+        for (let batch = 0; batch < 20; batch++) {
+          const selected = await this.sql.prepare(`
+            SELECT ${columns()}
+              FROM managed_session_executions
+             WHERE state IN ('queued', 'running')
+               ${this.options.recoveryScope ? 'AND workspace_id = ? AND session_id = ?' : ''}
+               AND (deadline_at_ms <= ?
+                 OR (state = 'running'
+                   AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)))
+             ORDER BY admitted_at_ms ASC, id ASC
+             LIMIT 100
+          `).bind(
+            ...(this.options.recoveryScope
+              ? [this.options.recoveryScope.workspaceId, this.options.recoveryScope.sessionId]
+              : []),
+            now, now,
+          ).all<ExecutionRow>();
+          const rows = selected.results ?? [];
+          if (rows.length === 0) return;
+          let changed = 0;
+          for (const row of rows) {
+            const lease = toLeaseRecord(row);
+            const decision = options.decideForRecord
+              ? options.decideForRecord(lease)
+              : decideExpiredExecution(lease, now);
+            if (decision === null) continue;
+            // Only the explicit, evidence-aware recovery pass may requeue
+            // expired work in a locally recovered Session.
+            if (this.options.recoveryScope && !options.decideForRecord && decision.type === "requeue") continue;
+            if (
+              decision.type === "requeue" &&
+              options.excludeOwnerId !== undefined &&
+              row.owner_id === options.excludeOwnerId
+            ) {
+              // A live owner must not lose its in-flight attempt to its own
+              // sweep; only another owner may reclaim an expired lease.
+              continue;
+            }
+            if (await this.applySweepDecision(row, decision, now)) {
+              changed++;
+              options.onDecision?.(decision);
+            }
+          }
+          if (rows.length < 100) return;
+          if (changed === 0) return;
+        }
       });
     } catch (error) {
       if (this.options.onError === undefined) throw error;
@@ -894,43 +1416,65 @@ export class SqlSessionExecutionStore
     }
   }
 
-  private async terminalizeMatching(
+  private async applySweepDecision(
+    row: ExecutionRow,
+    decision: CoordinationAction,
     now: number,
-    failure: string,
-    where: string,
-    binds: unknown[],
-  ): Promise<void> {
-    for (let batch = 0; batch < 20; batch++) {
-      const selected = await this.sql.prepare(`
-        SELECT workspace_id, id, revision
-          FROM managed_session_executions
-         WHERE ${where}
-         LIMIT 100
-      `).bind(...binds).all<{
-        workspace_id: string;
-        id: string;
-        revision: number | string;
-      }>();
-      const rows = selected.results ?? [];
-      if (rows.length === 0) return;
-      for (const row of rows) {
-        await this.sql.prepare(`
-          UPDATE managed_session_executions
-             SET state = 'failed', settled_at_ms = ?, failure = ?,
-                 revision = revision + 1
-           WHERE workspace_id = ? AND id = ? AND revision = ?
-             AND ${where}
-        `).bind(
-          now,
-          failure,
-          row.workspace_id,
-          row.id,
-          safeInteger(row.revision, "execution revision"),
-          ...binds,
-        ).run();
-      }
-      if (rows.length < 100) return;
+  ): Promise<boolean> {
+    const revision = safeInteger(row.revision, "execution revision");
+    if (decision.type === "requeue") {
+      const result = await this.sql.prepare(`
+        UPDATE managed_session_executions
+           SET state = 'queued', attempt_id = NULL, owner_id = NULL,
+               claimed_at_ms = NULL, lease_expires_at_ms = NULL,
+               settled_at_ms = NULL,
+               failure = 'requeued after owner lease expired',
+               revision = revision + 1
+         WHERE workspace_id = ? AND id = ? AND revision = ?
+           AND state = 'running'
+           AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)
+           AND attempt_count < max_attempts
+      `).bind(row.workspace_id, row.id, revision, now).run();
+      return result.meta.changes === 1;
     }
+    if (decision.type === "finalize-interrupted") {
+      const deadline = decision.reason === "deadline_exceeded";
+      const exhausted = decision.reason === "lease_expired_attempts_exhausted";
+      // Stream-decided interrupts (`input_applied` / `unpaired_tool_call` /
+      // `redispatch_exhausted`) finalize a still-running, expired owner even
+      // when attempt budget remains: rerunning applied work would duplicate
+      // provider output or an unpaired tool call.
+      const condition = deadline
+        ? "state IN ('queued', 'running') AND deadline_at_ms <= ?"
+        : exhausted
+          ? "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?) AND attempt_count >= max_attempts"
+          : "state = 'running' AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)";
+      const failure = deadline
+        ? "execution deadline exceeded"
+        : exhausted
+          ? "execution attempt limit exhausted"
+          : decision.reason === "unpaired_tool_call"
+            ? "execution interrupted on unpaired tool call"
+            : decision.reason === "redispatch_exhausted"
+              ? "execution redispatch limit exhausted"
+              : "execution interrupted after applied input";
+      const result = await this.sql.prepare(`
+        UPDATE managed_session_executions
+           SET state = 'failed', settled_at_ms = ?, failure = ?,
+               revision = revision + 1
+         WHERE workspace_id = ? AND id = ? AND revision = ?
+           AND ${condition}
+      `).bind(
+        now,
+        failure,
+        row.workspace_id,
+        row.id,
+        revision,
+        now,
+      ).run();
+      return result.meta.changes === 1;
+    }
+    return false;
   }
 }
 

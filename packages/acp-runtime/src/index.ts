@@ -44,6 +44,7 @@ export {
   hasRequiredAcpSandboxAgentState,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
+  materializeHostedInferenceConfigFiles,
   projectAcpSandboxMcpServers,
   prepareAcpSandboxAgent,
   releaseAcpSandboxAgentState,

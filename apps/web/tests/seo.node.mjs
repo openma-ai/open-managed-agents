@@ -138,3 +138,20 @@ test("generated pages do not expose internal SEO language to visitors", async ()
     );
   }
 });
+
+
+test("OpenAI Agents API article is published with a GitHub project path", async () => {
+  const article = await readFile(
+    new URL("../dist/blog/openai-agents-api-self-hosted/index.html", import.meta.url),
+    "utf8",
+  );
+  const blogIndex = await readFile(new URL("../dist/blog/index.html", import.meta.url), "utf8");
+  const sitemap = await readFile(new URL("../dist/sitemap-0.xml", import.meta.url), "utf8");
+
+  assert.match(article, /Which parts are open source\?/);
+  assert.match(article, /OpenAI Agents SDK/);
+  assert.match(article, /star the repository on GitHub/);
+  assert.match(article, /href="https:\/\/github\.com\/openma-ai\/open-managed-agents"/);
+  assert.match(blogIndex, /href="\/blog\/openai-agents-api-self-hosted\/"/);
+  assert.match(sitemap, /\/blog\/openai-agents-api-self-hosted\//);
+});

@@ -62,10 +62,9 @@ import {
   ModelCardService,
   createCfModelCardService,
 } from "@open-managed-agents/model-cards-store";
-import {
-  AgentService,
-  createCfAgentService,
-} from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
+import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
+import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import {
   EnvironmentService,
   createCfEnvironmentService,
@@ -133,7 +132,7 @@ export interface Services {
   files: FileService;
   evals: EvalRunService;
   modelCards: ModelCardService;
-  agents: AgentService;
+  agents: AgentStore;
   environments: EnvironmentService;
   dreams: DreamService;
   outboundSnapshots: OutboundSnapshotService;
@@ -306,8 +305,7 @@ export function buildServices(env: Env, db: D1Database): Services {
       // pg: () => createPgModelCardService({ pg: getPgPool(env) }),
     }),
     agents: pickBackend(overrides, "agents", {
-      cf: () => createCfAgentService({ db }),
-      // pg: () => createPgAgentService({ pg: getPgPool(env) }),
+      cf: () => new SqlAgentStore(new CfD1SqlClient(db)),
     }),
     environments: pickBackend(overrides, "environments", {
       cf: () => createCfEnvironmentService({ db }),

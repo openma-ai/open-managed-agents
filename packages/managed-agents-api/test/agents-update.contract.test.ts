@@ -47,11 +47,15 @@ describe("Managed Agents API — POST /v1/agents/:agent_id", () => {
         id: "claude-opus-5",
         effort: "max",
         inference_geo: "us",
-        provider_options: { anthropic: { beta: ["context-1m"] } },
         speed: "fast",
       },
       version: 3,
-    });
+    }, { body: {
+      description: "Updated description",
+      metadata: { owner: "platform", obsolete: null },
+      version: 3,
+      model: { id: "claude-opus-5", effort: "max", inference_geo: "us", provider_options: { anthropic: { beta: ["context-1m"] } }, speed: "fast" },
+    } });
 
     expect(updateCalls).toEqual([
       {

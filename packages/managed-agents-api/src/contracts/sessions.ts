@@ -25,7 +25,16 @@ type OfficialSessionAgentOverride = Extract<
   OfficialSessionAgent,
   { type: "agent_with_overrides" }
 >;
-export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent"> & {
+type OfficialSessionResource = NonNullable<OfficialSessionCreateBody["resources"]>[number];
+/** OMA extension: a repository without `authorization_token` is cloned with
+ * the workspace's Bond for its host. */
+export type SessionResourceBody =
+  | Exclude<OfficialSessionResource, { type: "github_repository" }>
+  | (Omit<Extract<OfficialSessionResource, { type: "github_repository" }>, "authorization_token"> & {
+      authorization_token?: string;
+    });
+export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent" | "resources"> & {
+  resources?: SessionResourceBody[];
   agent:
     | string
     | Exclude<OfficialSessionAgent, { type: "agent_with_overrides" }>
@@ -33,10 +42,7 @@ export type SessionCreateBody = Omit<OfficialSessionCreateBody, "agent"> & {
         mcp_servers?: OpenMaMcpServerBody[];
       });
 };
-export type SessionListQuery = Omit<SessionListParams, "betas"> & {
-  metadata_key?: string;
-  metadata_value?: string;
-};
+export type SessionListQuery = Omit<SessionListParams, "betas">;
 type OfficialSessionUpdateBody = Omit<SessionUpdateParams, "betas">;
 export type SessionUpdateBody = Omit<OfficialSessionUpdateBody, "agent"> & {
   agent?: Omit<NonNullable<OfficialSessionUpdateBody["agent"]>, "mcp_servers"> & {
@@ -86,7 +92,7 @@ const sessionResourceInputSchema: z.ZodType<
     .strict(),
   z
     .object({
-      authorization_token: z.string().min(1),
+      authorization_token: z.string().min(1).optional(),
       type: z.literal("github_repository"),
       url: z.string().min(1),
       checkout: sessionCheckoutInputSchema.nullable().optional(),
@@ -176,24 +182,12 @@ export const sessionListQuerySchema = z
       .transform((value) => value === "true")
       .optional(),
     memory_store_id: z.string().min(1).optional(),
-    metadata_key: z.string().min(1).optional(),
-    metadata_value: z.string().optional(),
     order: z.enum(["asc", "desc"]).optional(),
     statuses: z
       .array(z.enum(["rescheduling", "running", "idle", "terminated"]))
       .optional(),
   })
-  .strict()
-  .superRefine((query, context) => {
-    const hasKey = query.metadata_key !== undefined;
-    const hasValue = query.metadata_value !== undefined;
-    if (hasKey === hasValue) return;
-    context.addIssue({
-      code: "custom",
-      message: "metadata_key and metadata_value must be provided together",
-      path: [hasKey ? "metadata_value" : "metadata_key"],
-    });
-  });
+  .strict();
 
 export { sessionAgentResponseSchema } from "./agent-response-components";
 

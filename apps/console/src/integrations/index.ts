@@ -14,9 +14,6 @@ export { IntegrationsGitHubBindWizard } from "./pages/IntegrationsGitHubBindWiza
 export { IntegrationsSlackList } from "./pages/IntegrationsSlackList";
 export { IntegrationsSlackWorkspace } from "./pages/IntegrationsSlackWorkspace";
 export { IntegrationsSlackPublishWizard } from "./pages/IntegrationsSlackPublishWizard";
-export { IntegrationsFeishuList } from "./pages/IntegrationsFeishuList";
-export { IntegrationsFeishuWorkspace } from "./pages/IntegrationsFeishuWorkspace";
-export { IntegrationsFeishuPublishWizard } from "./pages/IntegrationsFeishuPublishWizard";
 export { IntegrationsApi } from "./api/client";
 export { StatusPill, type PublicationStatus } from "./components/StatusPill";
 export { relativeTime } from "./components/relativeTime";

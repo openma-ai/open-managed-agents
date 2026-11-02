@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { buildTools } from "../../apps/agent/src/harness/tools";
+import { buildTools, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
 import type { AgentConfig } from "@open-managed-agents/shared";
@@ -48,6 +48,19 @@ const TOOL_EXEC_OPTS = {
   abortSignal: undefined as any,
 };
 
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
+
 // ============================================================
 // 1. Built-in tool execution
 // ============================================================
@@ -62,6 +75,32 @@ describe("Built-in tool execution", () => {
     );
     expect(result).toContain("exit=0");
     expect(result).toContain("echo hello");
+  });
+
+  it("returns tool failures to the model without stack traces", async () => {
+    const failing = Object.assign(new TestSandbox(), {
+      exec: async () => {
+        throw new Error("fetch failed", { cause: new Error("connect ECONNREFUSED 10.0.0.1:443") });
+      },
+      readFile: async () => {
+        const error = new Error("This tool call was interrupted because the environment restarted.");
+        error.name = "SandboxReplacedError";
+        throw error;
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const tools = await buildTools(makeAgentConfig(), failing);
+      const bash = await failureText(tools.bash.execute({ command: "curl x" }, TOOL_EXEC_OPTS));
+      expect(bash).toBe("Error: fetch failed\ncause: connect ECONNREFUSED 10.0.0.1:443");
+      const read = await failureText(tools.read.execute({ file_path: "/workspace/a.txt" }, TOOL_EXEC_OPTS));
+      expect(read).toBe("Error: This tool call was interrupted because the environment restarted.");
+      for (const result of [bash, read]) expect(result).not.toMatch(/\n\s+at /);
+      // Operators still get the full error in the server log.
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("bash tool passes timeout to sandbox", async () => {
@@ -273,7 +312,7 @@ describe("Built-in tool execution", () => {
       writeFile: async () => "ok",
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
-    const result = await tools.grep.execute({ pattern: "x", path: "/missing" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.grep.execute({ pattern: "x", path: "/missing" }, TOOL_EXEC_OPTS));
     expect(result).toContain("Error");
     expect(result).toContain("code 2");
   });
@@ -339,9 +378,11 @@ describe("Built-in tool execution", () => {
       writeFile: async () => "ok",
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
-    const result = await tools.edit.execute(
-      { file_path: "/workspace/x", old_string: "foo", new_string: "baz" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.edit.execute(
+        { file_path: "/workspace/x", old_string: "foo", new_string: "baz" },
+        TOOL_EXEC_OPTS,
+      ),
     );
     expect(result).toContain("appears 2 times");
     expect(result).toContain("replace_all=true");
@@ -505,43 +546,34 @@ describe("Built-in tool execution", () => {
     expect(modelOutput.value).toBe("hello world");
   });
 
-  it("web_fetch tool constructs curl with URL", async () => {
-    let capturedCmd = "";
-    const sandbox: any = {
-      exec: async (cmd: string) => {
-        capturedCmd = cmd;
-        return "exit=0\n<html></html>";
-      },
-      readFile: async () => "",
-      writeFile: async () => "ok",
-    };
+  it("web_fetch tool fetches URL via harness egress fetch", async () => {
+    const fetchMock = vi.fn(async () => new Response("<html>page</html>", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox);
 
-    await tools.web_fetch.execute(
+    const result = await tools.web_fetch.execute(
       { url: "https://example.com" },
       TOOL_EXEC_OPTS
     );
-    expect(capturedCmd).toContain("curl");
-    expect(capturedCmd).toContain("https://example.com");
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(result)).toContain("page");
+    vi.restoreAllMocks();
   });
 
   it("web_fetch tool respects max_length param", async () => {
-    let capturedCmd = "";
-    const sandbox: any = {
-      exec: async (cmd: string) => {
-        capturedCmd = cmd;
-        return "exit=0\ndata";
-      },
-      readFile: async () => "",
-      writeFile: async () => "ok",
-    };
-    const tools = await buildTools(makeAgentConfig(), sandbox);
+    const longBody = "x".repeat(5000);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(longBody, { status: 200 })));
 
-    await tools.web_fetch.execute(
+    const tools = await buildTools(makeAgentConfig(), new TestSandbox());
+
+    const result = await tools.web_fetch.execute(
       { url: "https://example.com", max_length: 1000 },
       TOOL_EXEC_OPTS
     );
-    expect(capturedCmd).toContain("head -c 1000");
+    expect(String(result).length).toBeLessThanOrEqual(1200);
+    vi.restoreAllMocks();
   });
 
   it("web_fetch passes auxiliary-model provider options to its summarize call", async () => {
@@ -965,13 +997,15 @@ describe("Edit tool safety", () => {
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
 
-    const result = await tools.edit.execute(
-      {
-        path: "/test.py",
-        old_string: "nonexistent",
-        new_string: "replacement",
-      },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.edit.execute(
+        {
+          path: "/test.py",
+          old_string: "nonexistent",
+          new_string: "replacement",
+        },
+        TOOL_EXEC_OPTS,
+      ),
     );
     expect(result).toContain("not found");
   });

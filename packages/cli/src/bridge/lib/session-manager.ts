@@ -51,7 +51,14 @@ import {
   type SessionHostEvent,
   type SessionStartCommand,
 } from "@openma/common/session-kernel";
-import { acpProcessCwd, ensureSessionCwd, removeSessionCwd, writeBundle } from "./session-cwd.js";
+import {
+  acpProcessCwd,
+  acpSessionReadyOut,
+  ensureSessionCwd,
+  removeSessionCwd,
+  sessionScratchDirPath,
+  writeBundle,
+} from "./session-cwd.js";
 import { setupClaudeConfigDir } from "./claude-config-dir.js";
 
 export interface SessionStartParams {
@@ -78,7 +85,14 @@ export interface SessionPromptParams {
 }
 
 export type ManagerOut =
-  | { type: "session.ready"; session_id: string; tenant_id: string; acp_session_id: string }
+  | {
+      type: "session.ready";
+      session_id: string;
+      tenant_id: string;
+      acp_session_id: string;
+      bundle_dir?: string;
+      fresh?: boolean;
+    }
   | { type: "session.event"; session_id: string; tenant_id: string; turn_id: string; event: unknown }
   | { type: "session.complete"; session_id: string; tenant_id: string; turn_id: string }
   | { type: "session.error"; session_id: string; tenant_id?: string; turn_id?: string; message: string }
@@ -175,6 +189,8 @@ export class SessionManager {
    *  doesn't hit "session not ready" mid-stream just because the daemon
    *  is on its way out. */
   #draining = false;
+  /** Sessions awaiting their first session.ready on the managed runtime path. */
+  #freshSpawnPending = new Set<string>();
 
   constructor(send: Sender, runtimeDependencies?: SessionManagerRuntimeDependencies) {
     this.#send = send;
@@ -210,11 +226,25 @@ export class SessionManager {
 
   #publishManagedRuntimeEvent(event: SessionHostEvent): void {
     const scope = this.#runtimeScopes.get(event.sessionId);
-    this.#send(encodeSessionHostEvent(event, {
-      tenantId: scope?.id,
-    }) as ManagerOut);
+    if (event.type === "session.ready" && this.#freshSpawnPending.delete(event.sessionId)) {
+      this.#send(acpSessionReadyOut({
+        session_id: event.sessionId,
+        tenant_id: scope?.id ?? "",
+        acp_session_id: event.acpSessionId,
+        scratchDir: sessionScratchDirPath(event.sessionId),
+        freshSpawn: true,
+      }));
+    } else {
+      this.#send(encodeSessionHostEvent(event, {
+        tenantId: scope?.id,
+      }) as ManagerOut);
+    }
     if (event.type === "session.disposed") {
       this.#runtimeScopes.delete(event.sessionId);
+      this.#freshSpawnPending.delete(event.sessionId);
+    }
+    if (event.type === "session.error") {
+      this.#freshSpawnPending.delete(event.sessionId);
     }
   }
 
@@ -271,7 +301,11 @@ export class SessionManager {
       return;
     }
     for (const [session_id, sess] of this.#sessions) {
-      this.#send({ type: "session.ready", session_id, tenant_id: sess.tenantId, acp_session_id: sess.acpSessionId });
+      this.#send(acpSessionReadyOut({
+        session_id,
+        tenant_id: sess.tenantId,
+        acp_session_id: sess.acpSessionId,
+      }));
     }
   }
 
@@ -332,6 +366,7 @@ export class SessionManager {
           id: tenantId,
           agentApiKey: tenantKey,
         });
+        this.#freshSpawnPending.add(p.session_id);
       }
       await this.#managedRuntime.dispatch({
         type: "session.start",
@@ -348,12 +383,11 @@ export class SessionManager {
     // Idempotent: if we already have this session, just re-ack ready.
     const existing = this.#sessions.get(p.session_id);
     if (existing) {
-      this.#send({
-        type: "session.ready",
+      this.#send(acpSessionReadyOut({
         session_id: p.session_id,
         tenant_id: existing.tenantId,
         acp_session_id: existing.acpSessionId,
-      });
+      }));
       return;
     }
 
@@ -497,12 +531,13 @@ export class SessionManager {
         tenantId,
         turns: new Map(),
       });
-      this.#send({
-        type: "session.ready",
+      this.#send(acpSessionReadyOut({
         session_id: p.session_id,
         tenant_id: tenantId,
         acp_session_id: session.acpSessionId,
-      });
+        scratchDir,
+        freshSpawn: true,
+      }));
     } catch (e) {
       this.#send({
         type: "session.error",

@@ -8,7 +8,7 @@ import { MemoryAgentStore } from "@open-managed-agents/agent-store-memory";
 import { loadNodeConfig, type NodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults, type NodeAuth, type NodeComponents, type NodeSecrets } from "../src/components";
-import { InProcessEventStreamHub } from "../src/lib/event-stream-hub";
+import { InProcessEventStreamHub } from "../../../packages/control-plane-node/src/lib/event-stream-hub";
 
 const created: NodeControlPlane[] = [];
 const dirs: string[] = [];

@@ -2,6 +2,8 @@ import type {
   AgentRecord,
   AgentStore,
   ArchiveAgentRecord,
+  CountAgentRecords,
+  DeleteAgentRecordResult,
   ArchiveAgentRecordResult,
   FindAgentVersionRecord,
   FindCurrentAgentRecord,
@@ -136,5 +138,20 @@ export class MemoryAgentStore implements AgentStore {
       .sort((left, right) => right.version - left.version)
       .slice(0, input.limit)
       .map(clone);
+  }
+
+  async countCurrent(input: CountAgentRecords): Promise<number> {
+    const prefix = `${input.workspaceId}\u0000`;
+    return [...this.current.entries()].filter(([key, record]) =>
+      key.startsWith(prefix) && (input.includeArchived || record.archivedAt === null)).length;
+  }
+
+  async deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult> {
+    const key = currentKey(input.workspaceId, input.agentId);
+    if (!this.current.delete(key)) return { type: "not_found" };
+    for (const versionKey of [...this.versions.keys()]) {
+      if (versionKey.startsWith(`${key}\u0000`)) this.versions.delete(versionKey);
+    }
+    return { type: "deleted" };
   }
 }

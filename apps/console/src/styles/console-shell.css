@@ -457,3 +457,34 @@
     transition-duration: 0.01ms;
   }
 }
+
+/* Global rule: capped scroll containers fade into their surface at the
+   edge(s) that clip content. Pair with the useScrollFade() hook, which
+   toggles is-fade-top / is-fade-bottom; with neither class the mask is
+   fully opaque, so short lists render untouched. */
+.console-scroll-fade {
+  --scroll-fade-top: 0px;
+  --scroll-fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - var(--scroll-fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - var(--scroll-fade-bottom)),
+    transparent 100%
+  );
+}
+
+.console-scroll-fade.is-fade-top {
+  --scroll-fade-top: var(--scroll-fade-size);
+}
+
+.console-scroll-fade.is-fade-bottom {
+  --scroll-fade-bottom: var(--scroll-fade-size);
+}

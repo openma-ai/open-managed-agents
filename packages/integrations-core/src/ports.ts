@@ -136,14 +136,53 @@ export interface SessionEventInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Integration-owned MCP servers that must be present when a scoped session
+ * is resumed. The host refreshes only these servers and their toolsets on
+ * the frozen snapshot; it does not replace the user's agent configuration.
+ */
+export interface ResumeSessionOptions {
+  mcpServers?: ReadonlyArray<{ name: string; url: string; type?: string }>;
+}
+
+/**
+ * Thrown when a resume must refresh integration MCP wiring but the session
+ * is not idle. Callers fail this attempt and try again on the next resume
+ * instead of waiting or queueing the message behind a stale snapshot.
+ */
+export class SessionResumeNotIdleError extends Error {
+  readonly code = "session_not_idle" as const;
+  constructor(message = "Session must be idle to update the agent configuration") {
+    super(message);
+    this.name = "SessionResumeNotIdleError";
+  }
+}
+
+export function isSessionResumeNotIdleError(err: unknown): boolean {
+  return (
+    err instanceof SessionResumeNotIdleError ||
+    (err instanceof Error && (err as { code?: string }).code === "session_not_idle")
+  );
+}
+
 export interface SessionCreator {
   create(input: CreateSessionInput): Promise<{ sessionId: SessionId }>;
   /**
    * Append an event to an existing session (per_issue granularity). userId
    * is required so the host can resolve the session's tenant in O(1) without
    * scanning. Pass the same userId that owned the original `create` call.
+   *
+   * When `options.mcpServers` is set, the host refreshes those integration
+   * servers and toolsets via `sessions.update()` before the event is
+   * appended. A session that is not idle fails fast and the event is not
+   * sent.
    */
-  resume(userId: UserId, sessionId: SessionId, event: SessionEventInput): Promise<void>;
+  resume(
+    userId: UserId,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    options?: ResumeSessionOptions,
+  ): Promise<void>;
 }
 
 /**

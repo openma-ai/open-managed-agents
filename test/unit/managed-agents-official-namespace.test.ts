@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import cloudflareComposition from "../../apps/main/src/index.ts?raw";
-import nodeComposition from "../../apps/main-node/src/modules/node-http.ts?raw";
+import nodeComposition from "../../packages/control-plane-node/src/modules/node-http.ts?raw";
 import skillsConsole from "../../apps/console/src/pages/SkillsList.tsx?raw";
 
 const productionSources = import.meta.glob(
@@ -56,16 +56,16 @@ describe("official /v1 namespace", () => {
     ).toEqual([]);
   });
 
-  it("uses the official skills API while keeping file preview as an OMA extension", () => {
+  it("uses the official skills API, including version content preview", () => {
     expect(nodeComposition).toContain('v1.route("/skills", managedSkillsRoutes)');
     expect(nodeComposition).toContain('v1.route("/oma/skills", buildNodeSkillsRoutes');
     expect(nodeComposition).not.toContain('v1.route("/skills", buildNodeSkillsRoutes');
     expect(skillsConsole).toContain('const SKILLS_API = "/v1/skills"');
-    expect(skillsConsole).toContain('const SKILLS_PREVIEW_API = "/v1/oma/skills"');
+    expect(skillsConsole).not.toContain("/v1/oma/skills");
   });
 
   it("keeps every production caller off removed bare OMA aliases", () => {
-    const bareOmaPath = /\/v1\/(?:oauth|cap-cli|model_cards|models\/list|clawhub|api_keys|me|tenants|evals|cost_report|integrations|runtimes|stats|mcp-proxy|internal)(?=\/|[?'"`]|$)/u;
+    const bareOmaPath = /\/v1\/(?:oauth|cap-cli|model_cards|models\/list|clawhub|api_keys|me|tenants|evals|cost_report|integrations|runtimes|stats|mcp-proxy|inference-proxy|internal)(?=\/|[?'"`]|$)/u;
     for (const [path, source] of Object.entries(productionSources)) {
       expect(source, path).not.toMatch(bareOmaPath);
     }

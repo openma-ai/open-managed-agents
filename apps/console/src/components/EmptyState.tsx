@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import { BrandLoader } from "./BrandLoader";
+import { OpenmaStartupLoader } from "./OpenmaStartupLoader";
 import {
   EmptyAgentIcon,
   EmptyApiKeyIcon,
@@ -108,7 +109,7 @@ export function EmptyState({
     >
       <div className={`flex justify-center ${s.gap}`}>
         {loading ? (
-          <BrandLoader size={size} label={title} />
+          size === "lg" ? <OpenmaStartupLoader label={title} /> : <BrandLoader size={size} label={title} />
         ) : icon ? (
           <span aria-hidden="true" className={`text-fg-subtle inline-flex ${s.icon}`}>
             {icon}

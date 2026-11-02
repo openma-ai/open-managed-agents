@@ -303,6 +303,17 @@ function authorized(claims: EnvironmentWorkSessionTokenClaims, method: string, p
     return verb === "GET" || verb === "POST" || verb === "DELETE";
   }
 
+  if (
+    parts.length >= 5
+    && parts[0] === "v1"
+    && parts[1] === "oma"
+    && parts[2] === "inference-proxy"
+    && parts[3] === claims.sessionId
+    && parts[4]!.length > 0
+  ) {
+    return verb === "GET" || verb === "POST" || verb === "DELETE" || verb === "PATCH";
+  }
+
   if (parts[0] === "v1" && parts[1] === "skills" && verb === "GET") {
     const skill = claims.skills.find((candidate) => candidate.skillId === parts[2]);
     if (skill === undefined) return false;

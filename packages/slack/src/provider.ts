@@ -971,6 +971,15 @@ export class SlackProvider implements IntegrationProvider {
     };
   }
 
+  private async resumeIntegrationSession(
+    mcpServers: ReadonlyArray<{ name: string; url: string }>,
+    userId: string,
+    sessionId: string,
+    event: Parameters<SlackContainer["sessions"]["resume"]>[2],
+  ): Promise<void> {
+    await this.container.sessions.resume(userId, sessionId, event, { mcpServers });
+  }
+
   private async dispatchEvent(
     publication: Publication,
     installationId: string,
@@ -1041,7 +1050,7 @@ export class SlackProvider implements IntegrationProvider {
             "session_closed",
             { channelName: existing.channelName ?? null },
           );
-          await this.container.sessions.resume(
+          await this.resumeIntegrationSession(mcpServers, 
             publication.userId,
             existing.sessionId,
             sessionEvent,
@@ -1097,7 +1106,7 @@ export class SlackProvider implements IntegrationProvider {
           lastScanAt: existing.lastScanAt ?? null,
           channelName: existing.channelName ?? null,
         });
-        await this.container.sessions.resume(
+        await this.resumeIntegrationSession(mcpServers, 
           publication.userId,
           existing.sessionId,
           sessionEvent,
@@ -1115,7 +1124,7 @@ export class SlackProvider implements IntegrationProvider {
           channelName: existing?.channelName ?? null,
         });
         if (existing && existing.status === "active") {
-          await this.container.sessions.resume(
+          await this.resumeIntegrationSession(mcpServers, 
             publication.userId,
             existing.sessionId,
             sessionEvent,
@@ -1135,7 +1144,7 @@ export class SlackProvider implements IntegrationProvider {
         );
         // Follow-up resume with the actual trigger signal so the agent sees
         // both: "you're new here" + "and X just happened".
-        await this.container.sessions.resume(publication.userId, newId, sessionEvent);
+        await this.resumeIntegrationSession(mcpServers, publication.userId, newId, sessionEvent);
         return newId;
       }
 
@@ -1159,7 +1168,7 @@ export class SlackProvider implements IntegrationProvider {
             channelName: existing.channelName ?? null,
             reopened: intent === "reopen_session",
           });
-          await this.container.sessions.resume(
+          await this.resumeIntegrationSession(mcpServers, 
             publication.userId,
             existing.sessionId,
             sessionEvent,
@@ -1182,7 +1191,7 @@ export class SlackProvider implements IntegrationProvider {
         channelName: existing?.channelName ?? null,
       });
       if (existing && existing.status === "active") {
-        await this.container.sessions.resume(
+        await this.resumeIntegrationSession(mcpServers, 
           publication.userId,
           existing.sessionId,
           sessionEvent,
@@ -1209,7 +1218,7 @@ export class SlackProvider implements IntegrationProvider {
         perThreadKey,
       );
       if (existing && existing.status === "active") {
-        await this.container.sessions.resume(
+        await this.resumeIntegrationSession(mcpServers, 
           publication.userId,
           existing.sessionId,
           sessionEvent,
@@ -1253,7 +1262,7 @@ export class SlackProvider implements IntegrationProvider {
         perThreadKey,
       );
       if (winner && winner.status === "active") {
-        await this.container.sessions.resume(publication.userId, winner.sessionId, sessionEvent);
+        await this.resumeIntegrationSession(mcpServers, publication.userId, winner.sessionId, sessionEvent);
         return winner.sessionId;
       }
       // Edge: row exists but inactive (rerouted / completed). Fall through to
@@ -1364,7 +1373,7 @@ export class SlackProvider implements IntegrationProvider {
       // the winner and route to it; our just-created session is orphaned.
       const winner = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
       if (winner && winner.status === "active") {
-        await this.container.sessions.resume(
+        await this.resumeIntegrationSession(mcpServers, 
           publication.userId,
           winner.sessionId,
           sessionEvent,
@@ -1394,7 +1403,7 @@ export class SlackProvider implements IntegrationProvider {
           if (!fresh) break; // released — fall through to reactivation
           if (fresh.status === "pending") continue;
           if (fresh.status === "active") {
-            await this.container.sessions.resume(
+            await this.resumeIntegrationSession(mcpServers, 
               publication.userId,
               fresh.sessionId,
               sessionEvent,
@@ -1406,7 +1415,7 @@ export class SlackProvider implements IntegrationProvider {
         // Poll timed out OR winner released/failed. Fall through.
       }
     } else if (existing && existing.status === "active") {
-      await this.container.sessions.resume(
+      await this.resumeIntegrationSession(mcpServers, 
         publication.userId,
         existing.sessionId,
         sessionEvent,
@@ -1445,7 +1454,7 @@ export class SlackProvider implements IntegrationProvider {
     // Resume their session; our newly-created one is orphaned.
     const final = await this.container.sessionScopes.getByScope(publication.id, scopeKey);
     if (final && final.status === "active") {
-      await this.container.sessions.resume(
+      await this.resumeIntegrationSession(mcpServers, 
         publication.userId,
         final.sessionId,
         sessionEvent,

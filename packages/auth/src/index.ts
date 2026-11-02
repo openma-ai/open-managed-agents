@@ -15,6 +15,10 @@
 // backed by SqlClient + a new api_keys table + better-auth on PG/sqlite.
 
 import { createMiddleware } from "hono/factory";
+import {
+  extractHostedInferenceProxyToken,
+  isHostedInferenceProxyPath,
+} from "@open-managed-agents/inference-proxy";
 
 export interface AuthSession {
   userId: string;
@@ -85,7 +89,8 @@ export function allowsApiKeyRequest(
   if (resolution.credential?.type === "environment_work_session") {
     // The cryptographic Work-token resolver already validates the exact
     // Session/Work route, method, claim generation, and expiry.
-    return request.transport === "bearer";
+    if (request.transport === "bearer") return true;
+    return request.transport === "x-api-key" && isHostedInferenceProxyPath(request.path);
   }
 
   // A workspace key may administer Work through the normal x-api-key API,
@@ -121,6 +126,47 @@ function authorizationFailure(path: string, message: string) {
   return { error: message };
 }
 
+async function resolvePresentedApiCredential(
+  deps: AuthMiddlewareDeps,
+  input: BearerTokenRequest & { transport: "bearer" | "x-api-key" },
+): Promise<ApiKeyResolution | null> {
+  const scoped = deps.resolveBearerToken === undefined
+    ? null
+    : await deps.resolveBearerToken({
+        token: input.token,
+        method: input.method,
+        path: input.path,
+      });
+  return scoped ?? await deps.resolveApiKey(input.token);
+}
+
+async function applyResolvedCredential(
+  deps: AuthMiddlewareDeps,
+  c: { req: { path: string }; set: (key: "tenant_id" | "user_id" | "auth_credential", value: unknown) => void },
+  resolved: ApiKeyResolution,
+  transport: "bearer" | "x-api-key",
+): Promise<Response | null> {
+  if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport })) {
+    const message = transport === "bearer"
+      ? "Bearer token is not authorized for this resource"
+      : "API key is not authorized for this resource";
+    return new Response(JSON.stringify(authorizationFailure(c.req.path, message)), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (resolved.userId && !await deps.hasMembership(resolved.userId, resolved.tenantId)) {
+    return new Response(JSON.stringify(authorizationFailure(c.req.path, "Workspace membership revoked")), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  c.set("tenant_id", resolved.tenantId);
+  if (resolved.userId) c.set("user_id", resolved.userId);
+  if (resolved.credential !== undefined) c.set("auth_credential", resolved.credential);
+  return null;
+}
+
 export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
   const bypassPath = deps.bypassPath ?? DEFAULT_BYPASS;
   return createMiddleware<{
@@ -146,23 +192,38 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       return next();
     }
 
+    if (isHostedInferenceProxyPath(c.req.path)) {
+      const presented = extractHostedInferenceProxyToken(c.req.raw.headers);
+      if (presented.status === "missing") {
+        return c.json(authenticationFailure(c.req.path, "Unauthorized"), 401);
+      }
+      if (presented.status === "mismatch") {
+        return c.json(authenticationFailure(c.req.path, "Conflicting credentials"), 401);
+      }
+      const resolved = await resolvePresentedApiCredential(deps, {
+        token: presented.token,
+        method: c.req.method,
+        path: c.req.path,
+        transport: presented.transport,
+      });
+      if (!resolved) {
+        const message = presented.transport === "bearer"
+          ? "Invalid bearer token"
+          : "Invalid API key";
+        return c.json(authenticationFailure(c.req.path, message), 401);
+      }
+      const denied = await applyResolvedCredential(deps, c, resolved, presented.transport);
+      if (denied) return denied;
+      return next();
+    }
+
     // 1. API key
     const apiKey = c.req.header("x-api-key");
     if (apiKey) {
       const r = await deps.resolveApiKey(apiKey);
       if (!r) return c.json(authenticationFailure(c.req.path, "Invalid API key"), 401);
-      if (!allowsApiKeyRequest(r, { path: c.req.path, transport: "x-api-key" })) {
-        return c.json(
-          authorizationFailure(c.req.path, "API key is not authorized for this resource"),
-          403,
-        );
-      }
-      if (r.userId && !await deps.hasMembership(r.userId, r.tenantId)) {
-        return c.json(authorizationFailure(c.req.path, "Workspace membership revoked"), 403);
-      }
-      c.set("tenant_id", r.tenantId);
-      if (r.userId) c.set("user_id", r.userId);
-      if (r.credential !== undefined) c.set("auth_credential", r.credential);
+      const denied = await applyResolvedCredential(deps, c, r, "x-api-key");
+      if (denied) return denied;
       return next();
     }
 
@@ -173,31 +234,17 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
     const authorization = c.req.header("authorization") ?? "";
     if (authorization.startsWith("Bearer ")) {
       const token = authorization.slice("Bearer ".length);
-      const scoped = deps.resolveBearerToken === undefined
-        ? null
-        : await deps.resolveBearerToken({
-            token,
-            method: c.req.method,
-            path: c.req.path,
-          });
-      const resolved = scoped ?? await deps.resolveApiKey(token);
+      const resolved = await resolvePresentedApiCredential(deps, {
+        token,
+        method: c.req.method,
+        path: c.req.path,
+        transport: "bearer",
+      });
       if (!resolved) {
         return c.json(authenticationFailure(c.req.path, "Invalid bearer token"), 401);
       }
-      if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport: "bearer" })) {
-        return c.json(
-          authorizationFailure(c.req.path, "Bearer token is not authorized for this resource"),
-          403,
-        );
-      }
-      if (resolved.userId && !await deps.hasMembership(resolved.userId, resolved.tenantId)) {
-        return c.json(authorizationFailure(c.req.path, "Workspace membership revoked"), 403);
-      }
-      c.set("tenant_id", resolved.tenantId);
-      if (resolved.userId) c.set("user_id", resolved.userId);
-      if (resolved.credential !== undefined) {
-        c.set("auth_credential", resolved.credential);
-      }
+      const denied = await applyResolvedCredential(deps, c, resolved, "bearer");
+      if (denied) return denied;
       return next();
     }
 

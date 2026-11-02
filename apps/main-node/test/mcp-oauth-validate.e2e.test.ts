@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { nodeDefaults } from "../src/components";
 import { loadNodeConfig } from "../src/config";
-import { assembleNodeControlPlane, type NodeControlPlane } from "../src/modules/node-assembly";
+import { assembleNodeControlPlane, type NodeControlPlane } from "../../../packages/control-plane-node/src/modules/node-assembly";
 import { startOauthMcpTestServer, type OauthMcpTestServer } from "../../../test/fixtures/oauth-mcp-local-server";
 import { runMcpOauthValidationScenarios } from "../../../test/fixtures/oauth-mcp-validate-scenarios";
 

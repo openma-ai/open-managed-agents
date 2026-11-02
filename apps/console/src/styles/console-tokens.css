@@ -77,6 +77,8 @@
   --menu-picker-row-h: var(--control-h);
   --tenant-avatar-optical-x: 0px;
   --overlay-top: 15vh;
+  /* Edge fade for capped scroll containers (.console-scroll-fade). */
+  --scroll-fade-size: var(--console-pad-2xl);
 
   --surface-stage: var(--bg-sidebar);
   --surface-route: var(--bg);

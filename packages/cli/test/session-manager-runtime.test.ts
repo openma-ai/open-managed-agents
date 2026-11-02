@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SessionManager } from "../src/bridge/lib/session-manager";
+import { sessionScratchDirPath } from "../src/bridge/lib/session-cwd.js";
 import { acpSessionFixture } from "../../managed-agents-runtime/test/acp-fixtures";
 
 describe("SessionManager runtime adapter", () => {
@@ -68,6 +69,8 @@ describe("SessionManager runtime adapter", () => {
       session_id: "session-cli-runtime",
       tenant_id: "workspace-1",
       acp_session_id: "acp-cli-runtime",
+      bundle_dir: sessionScratchDirPath("session-cli-runtime"),
+      fresh: true,
     }]);
   });
 

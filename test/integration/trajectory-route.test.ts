@@ -1,32 +1,13 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { describe, it, expect, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
+import { registerTestHarnesses } from "../harnesses";
 import { toAnthropicMessages } from "@open-managed-agents/shared";
 
-// Test harness that emits a tool_use → tool_result → message sequence so we can
-// validate trajectory builder + anthropic projection on a non-trivial event stream.
-class TrajectoryHarness implements HarnessInterface {
-  async run(ctx: HarnessContext): Promise<void> {
-    ctx.runtime.broadcast({
-      type: "agent.tool_use",
-      id: "tu-test-1",
-      name: "bash",
-      input: { command: "echo hi" },
-    });
-    ctx.runtime.broadcast({
-      type: "agent.tool_result",
-      tool_use_id: "tu-test-1",
-      content: "hi\nexit=0",
-    });
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "hello from trajectory test" }],
-    });
-  }
-}
-registerHarness("trajectory-test", () => new TrajectoryHarness());
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
+
+registerTestHarnesses();
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -46,7 +27,7 @@ async function setup() {
       model: "claude-sonnet-4-6",
       system: "you are helpful",
       tools: [{ type: "agent_toolset_20260401" }],
-      harness: "trajectory-test",
+      _oma: { harness: "trajectory-test" },
     }),
   });
   const agent = (await agentRes.json()) as any;
@@ -108,7 +89,7 @@ describe("GET /v1/oma/sessions/:id/trajectory", () => {
     expect(t.schema_version).toBe("oma.trajectory.v1");
     expect(t.session_id).toBe(session.id);
     expect(t.trajectory_id).toMatch(/^tr-/);
-    expect(t.agent_config?.id).toMatch(/^agent-/);
+    expect(t.agent_config?.id).toMatch(/^agent_/);
     expect(t.environment_config?.id).toMatch(/^env-/);
     expect(Array.isArray(t.events)).toBe(true);
     expect(t.events.length).toBeGreaterThan(0);

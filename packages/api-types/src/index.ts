@@ -7,3 +7,4 @@
 // Anything importing only types should depend on this package, not @oma/shared.
 
 export * from "./types";
+export * from "./harness";

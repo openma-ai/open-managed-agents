@@ -10,6 +10,7 @@ import {
   type Api,
   type Model as PiModel,
 } from "@earendil-works/pi-ai";
+import { findPiCatalogModel } from "@open-managed-agents/managed-agents-application/agents/pi-model-catalog";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 export interface ModelCardCatalogRecord {
@@ -99,7 +100,8 @@ function resolvePiModel(card: ModelCardCatalogRecord): PiModel<Api> | null {
   try {
     const providerId = normalizeProviderId(card.provider);
     const provider = builtinProviders().find((candidate) => candidate.id === providerId);
-    const catalogModel = provider?.getModels().find((model) => model.id === card.model);
+    const catalogModel = findPiCatalogModel(card.model)
+      ?? provider?.getModels().find((model) => model.id === card.model);
     if (catalogModel) return catalogModel;
 
     const config = card.pi_config as Partial<PiModel<Api>> | null;
@@ -113,7 +115,7 @@ function resolvePiModel(card: ModelCardCatalogRecord): PiModel<Api> | null {
       reasoning: typeof config.reasoning === "boolean" ? config.reasoning : false,
       input: Array.isArray(config.input) ? config.input : ["text"],
       cost: config.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: typeof config.contextWindow === "number" ? config.contextWindow : 128_000,
+      contextWindow: typeof config.contextWindow === "number" ? config.contextWindow : 256_000,
       maxTokens: typeof config.maxTokens === "number" ? config.maxTokens : 32_768,
       ...(config.thinkingLevelMap ? { thinkingLevelMap: config.thinkingLevelMap } : {}),
       ...(config.samplingParams ? { samplingParams: config.samplingParams } : {}),

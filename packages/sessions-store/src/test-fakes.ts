@@ -185,6 +185,9 @@ export class InMemorySessionRepo implements SessionRepo {
   ): Promise<SessionRow> {
     const row = this.sessions.get(sessionId);
     if (!row || row.tenant_id !== tenantId) throw new SessionNotFoundError();
+    if (update.expectedStatus !== undefined && row.status !== update.expectedStatus) {
+      return toSessionRow(row);
+    }
     if (update.title !== undefined) row.title = update.title;
     if (update.status !== undefined) row.status = update.status;
     if (update.metadata !== undefined) row.metadata = update.metadata;

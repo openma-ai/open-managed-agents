@@ -203,6 +203,49 @@ describe("EnvironmentsApplicationService", () => {
     });
   });
 
+  it("stores, keeps, and clears the OpenMA sandbox image selection", async () => {
+    let nextId = 0;
+    const service = new EnvironmentsApplicationService({
+      workspaceId: "workspace_01",
+      store: new InMemoryEnvironmentPersistence(),
+      clock: { now: () => new Date("2026-08-26T22:00:00.000Z") },
+      ids: { nextEnvironmentId: () => `env_0${++nextId}` },
+    });
+    const plain = await service.createEnvironment({ name: "Plain" });
+    if (plain.type !== "created") throw new Error("expected created");
+    expect(plain.environment).not.toHaveProperty("openma");
+
+    const selected = await service.createEnvironment({
+      name: "Analytics",
+      openma: { sandboxImage: "analytics" },
+    });
+    expect(selected).toMatchObject({ environment: { openma: { sandboxImage: "analytics" } } });
+
+    const renamed = await service.updateEnvironment({ environmentId: "env_02", name: "Renamed" });
+    expect(renamed).toMatchObject({ environment: { name: "Renamed", openma: { sandboxImage: "analytics" } } });
+
+    const cleared = await service.updateEnvironment({
+      environmentId: "env_02",
+      openma: { sandboxImage: null },
+    });
+    if (cleared.type !== "updated") throw new Error("expected updated");
+    expect(cleared.environment).not.toHaveProperty("openma");
+
+    await expect(service.createEnvironment({
+      name: "Self hosted",
+      config: { type: "self_hosted" },
+      openma: { sandboxImage: "analytics" },
+    })).resolves.toEqual({
+      type: "invalid_request",
+      message: "_oma.sandbox_image is only supported for cloud environments",
+    });
+    await service.updateEnvironment({ environmentId: "env_02", openma: { sandboxImage: "analytics" } });
+    await expect(service.updateEnvironment({
+      environmentId: "env_02",
+      config: { type: "self_hosted" },
+    })).resolves.toMatchObject({ type: "invalid_request" });
+  });
+
   it("keeps an archived environment read-only", async () => {
     const persistence = new InMemoryEnvironmentPersistence();
     const service = new EnvironmentsApplicationService({

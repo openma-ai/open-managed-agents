@@ -25,6 +25,7 @@ function dependencies() {
       if (
         path !== "/v1/sessions/session_01"
         && path !== "/v1/environments/env_01/work/work_01/heartbeat"
+        && path !== "/v1/oma/inference-proxy/session_01/v1/messages"
       ) return null;
       return {
         tenantId: "workspace_session",
@@ -193,6 +194,47 @@ describe("managed worker bearer authentication", () => {
     expect(wrongEnvironment.status).toBe(403);
     expect(session.status).toBe(403);
     expect(header.status).toBe(403);
+  });
+
+  it("accepts a scoped Work session token through x-api-key on inference-proxy", async () => {
+    const deps = dependencies();
+    const app = new Hono();
+    app.use("*", createAuthMiddleware(deps));
+    app.post("/v1/oma/inference-proxy/:sessionId/*", (context) =>
+      context.json({ tenantId: context.get("tenant_id") }),
+    );
+
+    const response = await app.request(
+      "/v1/oma/inference-proxy/session_01/v1/messages",
+      { method: "POST", headers: { "x-api-key": "session-token" } },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ tenantId: "workspace_session" });
+    expect(deps.resolveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("rejects conflicting inference-proxy credentials", async () => {
+    const deps = dependencies();
+    const app = new Hono();
+    app.use("*", createAuthMiddleware(deps));
+    app.post("/v1/oma/inference-proxy/:sessionId/*", (context) =>
+      context.json({ ok: true }),
+    );
+
+    const response = await app.request(
+      "/v1/oma/inference-proxy/session_01/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer session-token",
+          "x-api-key": "other-token",
+        },
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(deps.resolveBearerToken).not.toHaveBeenCalled();
   });
 
   it("rejects an unresolved bearer without falling through to cookie auth", async () => {

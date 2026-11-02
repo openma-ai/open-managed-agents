@@ -135,6 +135,32 @@ On session start the system prompt receives:
 
 and the files mount at `/home/user/.skills/invoice-parser/SKILL.md` etc.
 
+### Install from a URL
+
+A self-hosted control plane (`main-node`) can install skills from any site that publishes an [Agent Skills discovery index](https://agentskills.io), the same URL you would pass to `npx skills add <url>`. In the Console: **Skills → Install from URL**, pick the skills, install. **Check for updates** compares each installed skill with its source and publishes a new version when it changed, like `npx skills update`.
+
+The index is looked up the way the `skills` CLI does it, at `<url>/.well-known/agent-skills/index.json`, then the legacy `.well-known/skills/` path, then the same two paths at the origin root. Both index versions work: v1 lists files next to the index, v2 points at a `SKILL.md` or a `.zip`/`.tar.gz` archive with a `sha256` digest that is checked before install. Installed skills are ordinary custom skills; the control plane only remembers which source and digest each one came from.
+
+```bash
+# List what a source offers
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/discover" \
+  -H "content-type: application/json" -d '{"url": "https://skills.example.com"}'
+
+# Install some of them (a new version if already installed and changed)
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/install" \
+  -H "content-type: application/json" \
+  -d '{"url": "https://skills.example.com", "skills": ["code-review"]}'
+
+# Compare installed skills with their sources, then update the changed ones
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/check-updates" -H "content-type: application/json" -d '{}'
+curl -X POST "$OMA_BASE_URL/v1/oma/skill-sources/update" -H "content-type: application/json" -d '{}'
+
+# Installed skills and the source each came from
+curl "$OMA_BASE_URL/v1/oma/skill-sources/installed"
+```
+
+`check-updates` and `update` accept an optional `skill_ids` array. A skill that disappears from its source is reported as `removed` and kept; delete it yourself if you no longer want it. Sources must be `https` and must not resolve to a private address; see [`SKILL_SOURCES_ALLOW_HOSTS`](/self-host/node-docker/#skill-sources-on-a-private-network) for intranet sources.
+
 ### Built-in skills
 
 Four ship out of the box (`type: "anthropic"`): `xlsx`, `pdf`, `docx`, `pptx`. Reference them by id from your agent — no upload needed.

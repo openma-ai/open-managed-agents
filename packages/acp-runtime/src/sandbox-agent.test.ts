@@ -12,6 +12,7 @@ import {
   hasRequiredAcpSandboxAgentState,
   managedMcpProxyFromWorkEnvironment,
   materializeAcpSandboxAgentState,
+  projectAcpSandboxHostedInferenceEnv,
   projectAcpSandboxMcpServers,
   prepareAcpSandboxAgent,
   releaseAcpSandboxAgentState,
@@ -89,6 +90,22 @@ describe("Harbor-style ACP sandbox agent preparation", () => {
       args: ["--workspace", "/workspace"],
       env: [],
     }]);
+  });
+
+  it("projects hosted inference env and strips provider API keys from the child", () => {
+    expect(projectAcpSandboxHostedInferenceEnv({
+      sessionId: "session/01",
+      gatewayBaseUrl: "https://api.openma.test",
+      sessionsToken: "sk-ant-req-v1.current-work",
+      env: {
+        DEEPSEEK_API_KEY: "must-not-reach-sandbox",
+        KEEP: "yes",
+      },
+    })).toEqual({
+      KEEP: "yes",
+      HOSTED_INFERENCE_URL: "https://api.openma.test/v1/oma/inference-proxy/session%2F01",
+      HOSTED_INFERENCE_TOKEN: "sk-ant-req-v1.current-work",
+    });
   });
 
   it("rejects a non-HTTP gateway and never falls back to the upstream MCP URL", () => {

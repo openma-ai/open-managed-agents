@@ -25,6 +25,12 @@ export function fromOpenMaAgentExtension(
     ...(extension.appendablePrompts !== undefined && {
       appendable_prompts: extension.appendablePrompts,
     }),
+    ...(extension.contextManagement !== undefined && {
+      context_management: extension.contextManagement,
+    }),
+    ...(extension.openaiModelSettings !== undefined && {
+      model_settings: extension.openaiModelSettings,
+    }),
     ...(extension.harness !== undefined && { harness: extension.harness }),
     ...(extension.acp !== undefined && {
       acp: {

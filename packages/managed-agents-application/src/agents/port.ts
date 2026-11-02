@@ -1,46 +1,29 @@
-import type {
-  Agent,
-  AgentAcpConfig,
-  AgentEffortLevel,
-  AgentModel,
-  AgentRuntimeBinding,
-  AgentSpeed,
-} from "../domain/agent";
-import type { JsonObject } from "../domain/json";
+import type { Agent, AgentModel } from "../domain/agent";
 import type {
   AgentMcpServerInput,
+  AgentModelInput,
   AgentMultiagentInput,
+  AgentOpenMaInput,
   AgentSkillInput,
   AgentToolInput,
-} from "../domain/agent-definition";
+} from "./wire-shape-input.js";
 
 export type {
   AgentMcpServerInput,
   AgentMultiagentInput,
   AgentSkillInput,
   AgentToolInput,
-} from "../domain/agent-definition";
+} from "./wire-shape-input.js";
 
 export type { AgentEffortLevel, AgentSpeed } from "../domain/agent";
 
-export interface AgentModelInput {
-  id: string;
-  effort?: AgentEffortLevel | null;
-  inferenceGeo?: string | null;
-  providerOptions?: JsonObject | null;
-  speed?: AgentSpeed | null;
-}
-
-export interface AgentOpenMaInput {
-  auxiliaryModel?: string | AgentModelInput | null;
-  appendablePrompts?: string[] | null;
-  harness?: string | null;
-  acp?: AgentAcpConfig | null;
-  runtimeBinding?: AgentRuntimeBinding | null;
-  enableGeneralSubagent?: boolean | null;
-  /** Internal protocol-adapter state, never accepted from the public API. */
-  compatibility?: JsonObject | null;
-}
+export type {
+  AgentContextManagementEditWireInput as AgentContextManagementEditInput,
+  AgentContextManagementWireInput as AgentContextManagementInput,
+  AgentModelInput,
+  AgentOpenAiModelSettingsWireInput as AgentOpenAiModelSettingsInput,
+  AgentOpenMaInput,
+} from "./wire-shape-input.js";
 
 export type AgentModelView = AgentModel;
 

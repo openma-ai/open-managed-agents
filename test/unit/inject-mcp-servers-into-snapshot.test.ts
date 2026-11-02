@@ -12,7 +12,10 @@
 // publish path" doesn't silently revert this.
 
 import { describe, it, expect } from "vitest";
-import { injectMcpServersIntoSnapshot } from "../../apps/main/src/routes/internal";
+import {
+  injectMcpServersIntoSnapshot,
+  refreshIntegrationMcpServers,
+} from "../../apps/main/src/routes/internal";
 import type { AgentConfig } from "@open-managed-agents/shared";
 
 function baseAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -126,5 +129,51 @@ describe("injectMcpServersIntoSnapshot", () => {
       { name: "slack", url: "https://mcp.slack.com/mcp" },
     ]);
     expect(out.mcp_servers?.[0]?.type).toBe("url");
+  });
+});
+
+describe("refreshIntegrationMcpServers", () => {
+  it("replaces the integration server and adds a missing toolset without touching the frozen session", () => {
+    const stale = baseAgent({
+      system: "Frozen integration protocol prompt",
+      metadata: { session_marker: "keep-me" },
+      tools: [
+        { type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] },
+      ],
+      mcp_servers: [
+        { name: "notion", type: "url", url: "https://notion.example/mcp" },
+        { name: "slack", type: "url", url: "https://old.example/mcp" },
+        { name: "linear", type: "url", url: "https://gateway.example/linear/mcp/sess_1" },
+      ],
+    });
+    const resumed = refreshIntegrationMcpServers(
+      stale,
+      [
+        { name: "slack", url: "https://mcp.slack.com/mcp" },
+        { name: "linear", url: "https://mcp.linear.app/mcp" },
+      ],
+      { preserveUrls: ["https://gateway.example/linear/mcp/sess_1"] },
+    );
+    expect(resumed.mcp_servers).toEqual([
+      { name: "notion", type: "url", url: "https://notion.example/mcp" },
+      { name: "slack", type: "url", url: "https://mcp.slack.com/mcp" },
+      { name: "linear", type: "url", url: "https://gateway.example/linear/mcp/sess_1" },
+      { name: "linear", type: "url", url: "https://mcp.linear.app/mcp" },
+    ]);
+    expect(resumed.tools).toEqual([
+      { type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] },
+      {
+        type: "mcp_toolset",
+        mcp_server_name: "slack",
+        default_config: { permission_policy: { type: "always_allow" } },
+      },
+      {
+        type: "mcp_toolset",
+        mcp_server_name: "linear",
+        default_config: { permission_policy: { type: "always_allow" } },
+      },
+    ]);
+    expect(resumed.system).toBe("Frozen integration protocol prompt");
+    expect(resumed.metadata).toEqual({ session_marker: "keep-me" });
   });
 });

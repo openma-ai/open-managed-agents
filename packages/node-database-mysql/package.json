@@ -1,0 +1,36 @@
+{
+  "name": "@open-managed-agents/node-database-mysql",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@open-managed-agents/db-schema": "workspace:*",
+    "@open-managed-agents/node-database": "workspace:*",
+    "@open-managed-agents/sql-client": "workspace:*"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^0.45.2",
+    "mysql2": "^3.24.4"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "drizzle-orm": "^0.45.2",
+    "mysql2": "^3.24.4",
+    "vitest": "^4.1.3"
+  }
+}

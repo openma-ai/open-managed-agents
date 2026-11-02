@@ -43,7 +43,7 @@ export async function createFullSession(opts?: { agentOverrides?: Record<string,
       model: "claude-sonnet-4-6",
       system: "You are helpful.",
       tools: [{ type: "agent_toolset_20260401" }],
-      harness: "test",
+      _oma: { harness: "test" },
       ...opts?.agentOverrides,
     }),
   });

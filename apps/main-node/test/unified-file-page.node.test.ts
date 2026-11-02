@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FileService, SqlFileRepo } from "@open-managed-agents/files-store";
-import { createFsSessionOutputSource } from "../src/lib/fs-session-output-source";
+import { createFsSessionOutputSource } from "../../../packages/control-plane-node/src/lib/fs-session-output-source";
 import { bootstrapTestDb, type TestDb } from "./_helpers/bootstrap-test-db";
 import type { UnifiedPageHarness } from "../../../packages/files-store/src/unified-page.harness";
 import { registerUnifiedFilePageScenarios } from "../../../packages/files-store/src/unified-page.scenarios";

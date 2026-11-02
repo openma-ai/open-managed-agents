@@ -25,33 +25,57 @@ function DockerAdapter(): new (options: any) => any {
   return candidate as new (options: any) => any;
 }
 
+type DockerResult = { stdout: string; stderr: string; exitCode: number };
+
+function quoted(command: string): string[] {
+  return [...command.matchAll(/'([^']*)'/gu)].map((match) => match[1]!);
+}
+
+/** The shell commands the shared Memory Store file sync sends through
+ * `docker exec <id> /bin/sh -c`, emulated over an in-memory file map. */
+function memoryShell(files: Map<string, string>, command: string): DockerResult {
+  const ok = (stdout = ""): DockerResult => ({ stdout, stderr: "", exitCode: 0 });
+  const [first] = quoted(command);
+  if (command.startsWith("if [ -d ")) {
+    const prefix = `${first}/`;
+    const relative = [...files.keys()]
+      .filter((path) => path.startsWith(prefix))
+      .map((path) => `./${path.slice(prefix.length)}\0`);
+    return ok(relative.length === 0 ? "" : Buffer.from(relative.join("")).toString("base64"));
+  }
+  if (command.startsWith("if [ -f ")) return ok(files.has(first!) ? "1" : "0");
+  if (command.startsWith("if [ -e ")) {
+    for (const path of [...files.keys()]) {
+      if (path === first || path.startsWith(`${first}/`)) files.delete(path);
+    }
+    return ok();
+  }
+  return ok();
+}
+
+function memoryScan(command: string): boolean {
+  return command.startsWith("if [ -d ");
+}
+
+function shellCommand(args: readonly string[]): string | undefined {
+  return args[0] === "exec" && args[2] === "/bin/sh" && args[3] === "-c" ? args[4] : undefined;
+}
+
 function statefulDocker(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
-  const run = vi.fn(async (args: string[]) => {
-    if (args[0] === "exec" && args[2] === "test" && args[3] === "-f") {
-      return { stdout: "", stderr: "", exitCode: files.has(args[4]!) ? 0 : 1 };
-    }
-    if (args[0] === "exec" && args[2] === "find") {
-      const root = args[3]!;
-      const paths = [...files.keys()].filter((path) => path.startsWith(`${root}/`));
-      return { stdout: paths.length === 0 ? "" : `${paths.join("\0")}\0`, stderr: "", exitCode: 0 };
-    }
-    if (args[0] === "exec" && args[2] === "rm" && args[3] === "-rf") {
-      const root = args.at(-1)!;
-      for (const path of [...files.keys()]) {
-        if (path === root || path.startsWith(`${root}/`)) files.delete(path);
-      }
-      return { stdout: "", stderr: "", exitCode: 0 };
-    }
+  const run = vi.fn(async (args: string[]): Promise<DockerResult> => {
+    const command = shellCommand(args);
+    if (command !== undefined) return memoryShell(files, command);
     if (args[0] === "cp") {
       const source = args[1]!;
       const target = args[2]!;
-      const sourcePrefix = "container-memory:";
-      const targetPrefix = "container-memory:";
-      if (source.startsWith(sourcePrefix)) {
-        await writeFile(target, files.get(source.slice(sourcePrefix.length)) ?? "", "utf8");
-      } else if (target.startsWith(targetPrefix)) {
-        files.set(target.slice(targetPrefix.length), await readFile(source, "utf8"));
+      const prefix = "container-memory:";
+      if (source.startsWith(prefix)) {
+        const content = files.get(source.slice(prefix.length));
+        if (content === undefined) return { stdout: "", stderr: "no such file", exitCode: 1 };
+        await writeFile(target, content, "utf8");
+      } else if (target.startsWith(prefix)) {
+        files.set(target.slice(prefix.length), await readFile(source, "utf8"));
       }
       return { stdout: "", stderr: "", exitCode: 0 };
     }
@@ -210,9 +234,8 @@ describe("DockerManagedRuntimeAdapter", () => {
     const docker = {
       run: vi.fn(async (args: string[]) => {
         calls.push(args);
-        if (args.includes("test") && args.includes("-f")) {
-          return { stdout: "", stderr: "", exitCode: 1 };
-        }
+        const command = shellCommand(args);
+        if (command?.startsWith("if [ -f ")) return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       }),
     };
@@ -329,59 +352,60 @@ describe("DockerManagedRuntimeAdapter", () => {
     expect(docker.files.get("/workspace/memory/notes.md")).toBe("local");
   });
 
-  it("treats an absent or empty Memory directory as untrusted and rehydrates it", async () => {
-    for (const findResult of [
-      { stdout: "", stderr: "no such file", exitCode: 1 },
-      { stdout: "", stderr: "", exitCode: 0 },
-      { stdout: "/workspace/memory/vanished.md\0", stderr: "", exitCode: 0 },
-    ]) {
-      const docker = statefulDocker();
-      const adapter = new (DockerAdapter())({ docker, image: "node:24-alpine" });
-      const context = {
-        scope,
-        fence,
-        session: {
-          id: scope.sessionId,
-          environmentId: scope.environmentId,
-          metadata: {},
-          resources: [{
-            type: "memory_store",
-            memory_store_id: "memstore_01",
-            mount_path: "/workspace/memory",
-            access: "read_write",
-          }],
+  it("resets a wiped Memory directory to the store and reports it", async () => {
+    const docker = statefulDocker();
+    const adapter = new (DockerAdapter())({ docker, image: "node:24-alpine" });
+    const create = vi.fn();
+    const remove = vi.fn();
+    const context = {
+      scope,
+      fence,
+      session: {
+        id: scope.sessionId,
+        environmentId: scope.environmentId,
+        metadata: {},
+        resources: [{
+          type: "memory_store",
+          memory_store_id: "memstore_01",
+          mount_path: "/workspace/memory",
+          access: "read_write",
+        }],
+      },
+      workspace: { bindingId: "workspace", mountPath: "/workspace" },
+      sandbox: { provider: "docker", runtimeId: "container-memory" },
+      activeWorkspaceCheckpoint: null,
+      resourceOwnership: { memoryStore: "materializer" as const },
+      idempotencyKey: "inputs-memory-rehydrate",
+      access: {
+        downloadFile: vi.fn(),
+        memories: {
+          list: vi.fn(async () => [{
+            id: "mem_01", path: "/notes.md", content: "canonical", contentSha256: "sha-canonical",
+          }]),
+          create,
+          update: vi.fn(),
+          delete: remove,
         },
-        workspace: { bindingId: "workspace", mountPath: "/workspace" },
-        sandbox: { provider: "docker", runtimeId: "container-memory" },
-        activeWorkspaceCheckpoint: null,
-        resourceOwnership: { memoryStore: "materializer" as const },
-        idempotencyKey: "inputs-memory-rehydrate",
-        access: {
-          downloadFile: vi.fn(),
-          memories: {
-            list: vi.fn(async () => []),
-            create: vi.fn(),
-            update: vi.fn(),
-            delete: vi.fn(),
-          },
-        },
-        authorize: vi.fn(async () => true),
-        signal: new AbortController().signal,
-      };
-      await adapter.materialize(context);
-      const original = docker.run.getMockImplementation()!;
-      docker.run.mockImplementation(async (args: string[]) =>
-        args[0] === "exec" && args[2] === "find" ? findResult : original(args));
-      await expect(adapter.synchronize(context)).resolves.toBeUndefined();
-      docker.run.mockImplementation(original);
+      },
+      authorize: vi.fn(async () => true),
+      signal: new AbortController().signal,
+    };
+    await adapter.materialize(context);
+    for (const path of [...docker.files.keys()]) {
+      if (path.startsWith("/workspace/memory/")) docker.files.delete(path);
     }
+
+    await expect(adapter.synchronize(context)).rejects.toThrow(/directory_missing/u);
+    expect(remove).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(docker.files.get("/workspace/memory/notes.md")).toBe("canonical");
   });
 
   it.each([
-    [{ stdout: "", stderr: "permission denied", exitCode: 2 }, /scan Session Memory failed/u],
-    [{ stdout: "/outside/a.md\0", stderr: "", exitCode: 0 }, /escaped its mount root/u],
-    [{ stdout: "/workspace/memory/\0", stderr: "", exitCode: 0 }, /unsafe path/u],
-    [{ stdout: "/workspace/memory/../a.md\0", stderr: "", exitCode: 0 }, /unsafe path/u],
+    [{ stdout: "", stderr: "permission denied", exitCode: 2 }, /scan of \/workspace\/memory failed \(exit 2\).*permission denied/su],
+    [{ stdout: Buffer.from("/outside/a.md\0").toString("base64"), stderr: "", exitCode: 0 }, /escaped its mount root/u],
+    [{ stdout: Buffer.from("./\0").toString("base64"), stderr: "", exitCode: 0 }, /unsafe path/u],
+    [{ stdout: Buffer.from("./../a.md\0").toString("base64"), stderr: "", exitCode: 0 }, /unsafe path/u],
   ])("rejects an invalid Docker Memory scan %#", async (findResult, expected) => {
     const docker = statefulDocker();
     const adapter = new (DockerAdapter())({ docker, image: "node:24-alpine" });
@@ -419,7 +443,7 @@ describe("DockerManagedRuntimeAdapter", () => {
     await adapter.materialize(context);
     const original = docker.run.getMockImplementation()!;
     docker.run.mockImplementation(async (args: string[]) =>
-      args[0] === "exec" && args[2] === "find" ? findResult : original(args));
+      memoryScan(shellCommand(args) ?? "") ? findResult : original(args));
 
     await expect(adapter.synchronize(context)).rejects.toThrow(expected);
   });
@@ -461,13 +485,13 @@ describe("DockerManagedRuntimeAdapter", () => {
     await adapter.materialize(context);
     const original = docker.run.getMockImplementation()!;
     docker.run.mockImplementation(async (args: string[]) => {
-      if (args[0] === "exec" && args[2] === "test" && args[4] === "/workspace/memory/.openma-memory-store") {
+      if (shellCommand(args)?.startsWith("if [ -f ")) {
         return { stdout: "", stderr: "daemon failure", exitCode: 2 };
       }
       return original(args);
     });
 
-    await expect(adapter.synchronize(context)).rejects.toThrow(/probe Session Memory file failed/u);
+    await expect(adapter.synchronize(context)).rejects.toThrow(/probe of .* failed \(exit 2\).*daemon failure/su);
   });
 
   it("reaps a deterministic container name when create is interrupted after the daemon side effect", async () => {

@@ -8,6 +8,7 @@
 // ports against specific runtime primitives (D1, KV, service bindings).
 
 export * from "./domain";
+export * from "./mcp-snapshot";
 export * from "./ports";
 export * from "./persistence";
 export * from "./provider";

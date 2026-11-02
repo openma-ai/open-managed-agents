@@ -1,8 +1,11 @@
+import { registerCoreHarnesses } from "../../apps/agent/src/harness/builtins";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
-import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 const headers = { Authorization: "Bearer test-key", "OpenAI-Beta": "agents=v1", "Content-Type": "application/json" };
 const request = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`http://localhost/openai/v1${path}`, { ...init, headers: init?.headers ?? headers }));
@@ -65,14 +68,15 @@ describe("Cloudflare OpenAI Agents mount", () => {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "Continue" }] }] }] }),
       });
-      expect(sent.status).toBe(204);
+      // openai-agents-compat accept returns 202 (live agents=v1 parity).
+      expect(sent.status).toBe(202);
       await expect.poll(async () => JSON.stringify(await (await request(`/agents/sessions/${session.id}/items`)).json()), { timeout: 15000 }).toContain("No sandbox reply 2");
       expect(turns).toBe(2);
       const history = await (await request(`/agents/sessions/${session.id}/items`)).json() as { data: Array<{ id: string; role?: string }> };
       expect(history.data.filter(item => item.role === "user")).toHaveLength(2);
       expect(new Set(history.data.map(item => item.id)).size).toBe(history.data.length);
     } finally {
-      registerHarness("default", () => new DefaultHarness());
+      registerCoreHarnesses();
     }
   }, 30000);
 

@@ -1,20 +1,11 @@
+// OMA_REALTIME_FANOUT / OMA_REALTIME_POLL_INTERVAL_MS → RealtimeFanoutConfig.
+// The modes themselves are documented with the type in the control plane.
+
+import type { RealtimeFanoutConfig, RealtimeFanoutMode } from "@open-managed-agents/control-plane-node";
+
+export type { RealtimeFanoutConfig, RealtimeFanoutMode };
+
 export type SqlDialect = "sqlite" | "postgres" | "mysql";
-
-/**
- * How live Session events reach SSE subscribers attached to other replicas.
- *
- *  - `memory`:   in-process only. Correct for a single replica (SQLite).
- *  - `pg-notify`: Postgres LISTEN/NOTIFY for the legacy `/v1/oma` stream,
- *                plus SQL tailing for the official `/v1/sessions` stream.
- *  - `sql-poll`: SQL tailing for both streams. Works on any shared SQL
- *                database; the default for MySQL.
- */
-export type RealtimeFanoutMode = "memory" | "pg-notify" | "sql-poll";
-
-export interface RealtimeFanoutConfig {
-  mode: RealtimeFanoutMode;
-  pollIntervalMs: number;
-}
 
 type ProcessEnvironment = Readonly<Record<string, string | undefined>>;
 

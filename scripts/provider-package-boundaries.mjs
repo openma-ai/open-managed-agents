@@ -85,7 +85,8 @@ export async function providerPackageBoundaryViolations(root) {
           || specifier.startsWith("node:")
           || specifier.startsWith("@open-managed-agents/")
         ) continue;
-        if (!(specifier in peers) || peerMeta[specifier]?.optional !== true) {
+        const packageName = importedPackageName(specifier);
+        if (!(packageName in peers) || peerMeta[packageName]?.optional !== true) {
           violations.push(
             `${relative(root, sourcePath)}: provider import ${specifier} is not an optional peer dependency`,
           );
@@ -141,6 +142,7 @@ function isProviderAdapterDirectory(name) {
   ) return true;
   if (name.startsWith("environment-dispatch-")) return true;
   if (name.startsWith("cost-attribution-")) return true;
+  if (name.startsWith("node-database-")) return true;
   return name.startsWith("managed-runtime-")
     && !["managed-runtime-host", "managed-runtime-node", "managed-runtime-sandbox"].includes(name);
 }
@@ -160,6 +162,12 @@ async function sourceFiles(directory) {
     else if ([".ts", ".tsx", ".mts"].includes(extname(entry.name))) files.push(path);
   }
   return files;
+}
+
+/** "pkg/sub" -> "pkg", "@scope/pkg/sub" -> "@scope/pkg". */
+function importedPackageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
 function importSpecifiers(source) {

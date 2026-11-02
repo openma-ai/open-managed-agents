@@ -264,7 +264,7 @@ export class CfSessionRouter implements SessionRouter {
         });
         all.push(...page.data);
         if (!page.has_more || page.data.length === 0) break;
-        afterSeq = page.data[page.data.length - 1].seq;
+        afterSeq = page.data[page.data.length - 1].seq ?? afterSeq;
       }
       return all;
     };
@@ -314,18 +314,17 @@ export class CfSessionRouter implements SessionRouter {
     return { status: res.status, body: await res.text() };
   }
 
-  async getPending(
+  async cancelPending(
     sessionId: string,
-    opts?: { rawSearch?: string },
+    eventId: string,
   ): Promise<{ status: number; body: string }> {
     const binding = await this.bindingForSession(sessionId);
     if (!binding) {
       return { status: 503, body: JSON.stringify({ error: "binding unavailable" }) };
     }
-    const search = opts?.rawSearch ?? "";
     const res = await binding.fetch(
-      `https://sandbox/sessions/${sessionId}/pending${search}`,
-      { method: "GET" },
+      `https://sandbox/sessions/${sessionId}/pending/${encodeURIComponent(eventId)}`,
+      { method: "DELETE" },
     );
     return { status: res.status, body: await res.text() };
   }
@@ -373,10 +372,7 @@ export class CfSessionRouter implements SessionRouter {
    *  Mirrors the legacy getSandboxBinding in apps/main/src/routes/
    *  sessions.ts. */
   private async bindingFor(_environmentId: string): Promise<Fetcher | null> {
-    const { env } = this.deps;
-    const svc = (env as unknown as Record<string, unknown>)["SANDBOX_sandbox_default"] as Fetcher | undefined;
-    if (svc) return svc;
-    return doFallbackFetcher(env);
+    return resolveSessionSandboxFetcher(this.deps.env);
   }
 
   /** Resolve binding from a sessionId by re-reading the session row. Most
@@ -389,6 +385,24 @@ export class CfSessionRouter implements SessionRouter {
     if (!sess || !sess.environment_id) return null;
     return this.bindingFor(sess.environment_id);
   }
+}
+
+/**
+ * Sandbox lane for a session. Production integrations bind
+ * `SANDBOX_<worker>`. The public router and combined-worker tests use
+ * `SANDBOX_sandbox_default`, then the local `SESSION_DO` namespace.
+ */
+export function resolveSessionSandboxFetcher(
+  env: Env,
+  sandboxWorkerName?: string | null,
+): Fetcher | null {
+  const bindings = env as unknown as Record<string, Fetcher | undefined>;
+  if (sandboxWorkerName) {
+    const named = bindings[`SANDBOX_${sandboxWorkerName.replace(/-/g, "_")}`];
+    if (named) return named;
+  }
+  if (bindings.SANDBOX_sandbox_default) return bindings.SANDBOX_sandbox_default;
+  return doFallbackFetcher(env);
 }
 
 /** Direct-to-DO fallback used by local-runtime sessions (no env image)

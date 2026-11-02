@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   CornerDownLeftIcon,
   LoaderCircleIcon,
@@ -23,6 +23,12 @@ export interface SessionComposerProps {
   interrupting: boolean;
   onError: NonNullable<PromptInputProps["onError"]>;
   onStop: () => void;
+  placeholder?: string;
+  /** Put text back into the composer (e.g. an edit of a queued message the
+   *  server had already started). A new `nonce` re-applies the same text. */
+  restoreDraft?: { text: string; nonce: number } | null;
+  /** Brief inline notice shown above the writing area. */
+  notice?: string | null;
   onSubmit: (
     message: PromptInputMessage,
     event: FormEvent<HTMLFormElement>,
@@ -41,10 +47,25 @@ export function SessionComposer({
   onError,
   onStop,
   onSubmit,
+  placeholder = "Send a message…",
+  restoreDraft,
+  notice,
   running,
   sending,
 }: SessionComposerProps) {
   const [draft, setDraft] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!restoreDraft) return;
+    const textarea = rootRef.current?.querySelector("textarea");
+    if (!textarea) return;
+    // Uncontrolled PromptInput textarea: set through the native setter and
+    // fire `input` so React's onChange keeps `draft` in sync.
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(textarea, restoreDraft.text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.focus();
+  }, [restoreDraft]);
 
   const handleSubmit = useCallback(
     async (message: PromptInputMessage, event: FormEvent<HTMLFormElement>) => {
@@ -55,6 +76,16 @@ export function SessionComposer({
   );
 
   return (
+    <div ref={rootRef}>
+    {notice ? (
+      <div
+        className="mx-auto mb-1.5 w-full max-w-3xl px-4 text-xs text-fg-muted"
+        data-session-composer-notice="true"
+        role="status"
+      >
+        {notice}
+      </div>
+    ) : null}
     <PromptInput
       accept="image/*"
       className="session-composer"
@@ -71,7 +102,7 @@ export function SessionComposer({
         className="session-composer-textarea"
         disabled={sending || interrupting}
         onChange={(event) => setDraft(event.currentTarget.value)}
-        placeholder="Send a message…"
+        placeholder={placeholder}
         rows={1}
       />
       <PromptInputFooter className="session-composer-footer">
@@ -87,6 +118,7 @@ export function SessionComposer({
         />
       </PromptInputFooter>
     </PromptInput>
+    </div>
   );
 }
 

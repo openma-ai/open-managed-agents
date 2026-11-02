@@ -21,7 +21,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { fileURLToPath } from "node:url";
 import { InMemoryBlobStore } from "@open-managed-agents/blob-store";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
-import { NodeWorkspaceBackupService } from "../src/lib/node-workspace-backup.js";
+import { NodeWorkspaceBackupService } from "../../../packages/control-plane-node/src/lib/node-workspace-backup.js";
 
 class FakeSandbox implements SandboxExecutor {
   workdir: string;

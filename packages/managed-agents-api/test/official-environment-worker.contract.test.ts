@@ -65,7 +65,7 @@ describe("official Anthropic EnvironmentWorker compatibility", () => {
         heartbeatEnvironmentWork: async (input) => {
           calls.push({ operation: "heartbeat", input });
           return {
-            type: "heartbeat",
+            type: "recorded",
             heartbeat: {
               lastHeartbeat: "2026-09-03T02:00:00.000Z",
               leaseExtended: true,

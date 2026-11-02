@@ -8,11 +8,13 @@ import type { ReactNode } from "react";
  * Tones map to design-system status colors. `running` gets an animated dot
  * to communicate "in progress" without users staring for a status change.
  */
-export type StatusTone = "idle" | "running" | "completed" | "errored" | "terminated" | "neutral";
+export type StatusTone = "idle" | "running" | "awaiting" | "completed" | "errored" | "terminated" | "neutral";
 
 const TONE_CLASS: Record<StatusTone, string> = {
   idle: "bg-bg-surface text-fg-muted",
   running: "bg-info-subtle text-info",
+  /** requires_action: parked on a tool result / confirmation. */
+  awaiting: "bg-warning-subtle text-warning",
   completed: "bg-success-subtle text-success",
   errored: "bg-danger-subtle text-danger",
   terminated: "bg-danger-subtle text-danger",

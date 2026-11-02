@@ -1,9 +1,20 @@
 // @ts-nocheck
-import { describe, it, expect } from "vitest";
-import { buildTools, getToolPermission } from "../../apps/agent/src/harness/tools";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { buildTools, getToolPermission, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
 import type { SandboxExecutor } from "../../apps/agent/src/harness/interface";
+
+function mockWebFetchNetwork() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("<html>stub</html>", { status: 200 })),
+  );
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // ============================================================
 // Helpers
@@ -45,6 +56,19 @@ const TOOL_EXEC_OPTS = {
   messages: [],
   abortSignal: undefined as any,
 };
+
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
 
 // ============================================================
 // Fix 1: Permission policy enforcement
@@ -179,6 +203,17 @@ describe("Permission policy enforcement", () => {
     const tools = await buildTools(config, new TestSandbox());
     expect(tools.bash.description).toBeTruthy();
     expect(tools.bash.inputSchema).toBeDefined();
+  });
+
+  it("keeps execute on always_ask tools when permissions are not enforced (approved confirmation)", async () => {
+    const config = makeAgentConfig({
+      tools: [{
+        type: "agent_toolset_20260401",
+        configs: [{ name: "bash", enabled: true, permission_policy: { type: "always_ask" } }],
+      }],
+    });
+    const tools = await buildTools(config, new TestSandbox(), undefined, { enforcePermissions: false });
+    expect(tools.bash.execute).toBeDefined();
   });
 });
 
@@ -365,6 +400,7 @@ describe("Outbound Worker registration", () => {
 // ============================================================
 describe("Networking limited mode", () => {
   it("web_fetch rejects disallowed hosts when networking is limited", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -375,15 +411,15 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "https://evil.com/data" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://evil.com/data" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("not allowed");
     expect(result).toContain("evil.com");
   });
 
   it("web_fetch allows requests to allowed hosts", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -398,12 +434,12 @@ describe("Networking limited mode", () => {
       { url: "https://api.example.com/data" },
       TOOL_EXEC_OPTS
     );
-    // TestSandbox returns a stub response, not an error
     expect(result).not.toContain("not allowed");
-    expect(result).toContain("exit=0");
+    expect(String(result)).toContain("stub");
   });
 
   it("web_fetch allows all hosts when networking is unrestricted", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -416,10 +452,11 @@ describe("Networking limited mode", () => {
       TOOL_EXEC_OPTS
     );
     expect(result).not.toContain("not allowed");
-    expect(result).toContain("exit=0");
+    expect(String(result)).toContain("stub");
   });
 
   it("web_fetch allows subdomain matching for allowed hosts", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -435,10 +472,11 @@ describe("Networking limited mode", () => {
       TOOL_EXEC_OPTS
     );
     expect(result).not.toContain("not allowed");
-    expect(result).toContain("exit=0");
+    expect(String(result)).toContain("stub");
   });
 
   it("web_fetch rejects invalid URLs when networking is limited", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -449,14 +487,14 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "not-a-valid-url" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "not-a-valid-url" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("Invalid URL");
   });
 
   it("web_fetch works normally when no environmentConfig provided", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox);
 
@@ -465,10 +503,11 @@ describe("Networking limited mode", () => {
       TOOL_EXEC_OPTS
     );
     expect(result).not.toContain("not allowed");
-    expect(result).toContain("exit=0");
+    expect(String(result)).toContain("stub");
   });
 
   it("web_fetch lists allowed hosts in error message", async () => {
+    mockWebFetchNetwork();
     const sandbox = new TestSandbox();
     const tools = await buildTools(makeAgentConfig(), sandbox, {
       environmentConfig: {
@@ -479,9 +518,8 @@ describe("Networking limited mode", () => {
       },
     });
 
-    const result = await tools.web_fetch.execute(
-      { url: "https://blocked.net/page" },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://blocked.net/page" }, TOOL_EXEC_OPTS),
     );
     expect(result).toContain("safe.com");
     expect(result).toContain("trusted.org");

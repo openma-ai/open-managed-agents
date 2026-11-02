@@ -320,7 +320,7 @@ export function SessionsList() {
       .then((row) => {
         if (cancelled) return;
         const urls = (row.mcp_servers ?? [])
-          .map((s) => s.url)
+          .map((s) => "url" in s ? s.url : undefined)
           .filter((u): u is string => typeof u === "string" && u.length > 0);
         setAgentMcpUrls(urls);
       })

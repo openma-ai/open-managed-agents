@@ -283,6 +283,7 @@ function sentEventBase(event: SentSessionEvent): object {
   return {
     id: event.id,
     ...(event.processedAt !== undefined && { processed_at: event.processedAt }),
+    ...(event.heldAfterExhausted === true && { held_after_exhausted: true }),
   };
 }
 
@@ -359,6 +360,14 @@ export function toSentSessionEventResponse(event: SentSessionEvent): object {
           text: block.text,
         })),
       };
+    case "session.updated":
+      return {
+        ...base,
+        type: event.type,
+        budget: event.budget === null
+          ? null
+          : { type: "limit", max_list_cost: fromMonetaryAmount(event.budget) },
+      };
   }
 }
 
@@ -408,7 +417,11 @@ function fromSessionUsage(usage: SessionUsageView): object {
   };
 }
 
-function fromSessionStopReason(reason: SessionStopReason): object {
+function fromSessionStopReason(reason: SessionStopReason | undefined): object {
+  // Legacy/error-path idle rows were persisted without a stop_reason; one
+  // such row used to 500 the whole events page. Spec requires the field and
+  // has no "interrupted"/"error" variant, so default to end_turn.
+  if (!reason) return { type: "end_turn" };
   return reason.type === "requires_action"
     ? { type: reason.type, event_ids: reason.eventIds }
     : { type: reason.type };
@@ -586,6 +599,16 @@ export function toSessionEventResponse(event: SessionEventView): object {
           session_thread_id: event.sessionThreadId,
         }),
       };
+    case "session.warning":
+      return {
+        ...(event.sessionThreadId !== undefined && { session_thread_id: event.sessionThreadId }),
+        id: event.id,
+        type: event.type,
+        source: event.source,
+        message: event.message,
+        processed_at: event.processedAt,
+        ...(event.details !== undefined && { details: event.details }),
+      };
     case "session.error":
       return {
         ...(event.sessionThreadId !== undefined && { session_thread_id: event.sessionThreadId }),
@@ -689,6 +712,15 @@ export function toSessionEventResponse(event: SessionEventView): object {
 
 export function toStreamSessionEventResponse(event: StreamSessionEvent): object {
   switch (event.type) {
+    case "oma.queue_lifecycle":
+      return {
+        type: `system.user_message_${event.kind}`,
+        event_id: event.eventId,
+        ...(event.sessionThreadId !== undefined && {
+          session_thread_id: event.sessionThreadId,
+        }),
+        [event.kind === "cancelled" ? "cancelled_at" : "steered_at"]: event.occurredAt,
+      };
     case "event_start":
       return {
         type: event.type,

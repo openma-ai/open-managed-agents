@@ -9,11 +9,12 @@ import {
 } from "../src/harness/registry";
 
 describe("production harness composition", () => {
-  it("keeps the OpenMA AI SDK loop as default and Pi as an explicit harness", () => {
+  it("uses Pi as the default harness and keeps AI SDK as an explicit opt-in", () => {
     registerCoreHarnesses();
-    expect(resolveHarness("default")).toBeInstanceOf(DefaultHarness);
-    expect(resolveHarness("ai-sdk")).toBeInstanceOf(DefaultHarness);
+    expect(resolveHarness()).toBeInstanceOf(PiHarness);
+    expect(resolveHarness("default")).toBeInstanceOf(PiHarness);
     expect(resolveHarness("pi")).toBeInstanceOf(PiHarness);
+    expect(resolveHarness("ai-sdk")).toBeInstanceOf(DefaultHarness);
   });
 
   it("reuses a session harness and disposes it when the binding changes", async () => {

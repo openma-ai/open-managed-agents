@@ -14,6 +14,10 @@ import {
   allowsApiKeyRequest,
   type ApiKeyResolution,
 } from "@open-managed-agents/auth";
+import {
+  extractHostedInferenceProxyToken,
+  isHostedInferenceProxyPath,
+} from "@open-managed-agents/inference-proxy";
 
 async function sha256(data: string): Promise<string> {
   const encoded = new TextEncoder().encode(data);
@@ -58,6 +62,69 @@ async function resolveWorkspaceApiKey(env: Env, apiKey: string): Promise<{
   }
 }
 
+async function resolvePresentedApiCredential(
+  c: { env: Env; req: { method: string; path: string } },
+  token: string,
+): Promise<ApiKeyResolution | null> {
+  if (token.startsWith("sk-ant-req-v1.") && c.env.PLATFORM_ROOT_SECRET) {
+    const platformRootSecret = c.env.PLATFORM_ROOT_SECRET;
+    const scoped = await authenticateEnvironmentWorkSessionBearer({
+      token,
+      method: c.req.method,
+      path: c.req.path,
+      crypto: new WebCryptoAesGcm(
+        platformRootSecret,
+        "managed.environment-work.session-token",
+      ),
+      now: () => new Date(),
+      isCurrent: async (claim) => {
+        const tenantDb = await buildCfTenantDbProvider(c.env).resolve(
+          claim.workspaceId,
+        );
+        const secretCrypto = new WebCryptoAesGcm(
+          platformRootSecret,
+          "managed.environment-work.secret",
+        );
+        const store = new SqlEnvironmentWorkStore(
+          new CfD1SqlClient(tenantDb),
+          {
+            seal: async ({ plaintext }) => ({
+              ciphertext: await secretCrypto.encrypt(plaintext),
+            }),
+            open: async ({ ciphertext }) => ({
+              plaintext: await secretCrypto.decrypt(ciphertext),
+            }),
+          },
+        );
+        return isCurrentEnvironmentWorkClaim(
+          { store, now: () => new Date() },
+          claim,
+        );
+      },
+    });
+    if (scoped !== null) {
+      return {
+        tenantId: scoped.workspaceId,
+        credential: {
+          type: "environment_work_session",
+          environmentId: scoped.environmentId,
+          sessionId: scoped.sessionId,
+          workId: scoped.workId,
+          claimedAt: scoped.claimedAt,
+          generation: scoped.generation,
+        },
+      };
+    }
+  }
+  const workspace = await resolveWorkspaceApiKey(c.env, token);
+  if (!workspace) return null;
+  return {
+    tenantId: workspace.tenantId,
+    userId: workspace.userId,
+    credential: workspace.credential,
+  };
+}
+
 export const authMiddleware = createMiddleware<{
   Bindings: Env;
   Variables: {
@@ -70,15 +137,23 @@ export const authMiddleware = createMiddleware<{
   if (c.req.path.startsWith("/v1/oma/internal/")) {
     return next();
   }
-  // 1. Try API Key authentication (for CLI / SDK)
-  const apiKey = c.req.header("x-api-key");
-    if (apiKey) {
-      const resolved = await resolveWorkspaceApiKey(c.env, apiKey);
-      if (!resolved) return c.json({ error: "Invalid API key" }, 401);
-      if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport: "x-api-key" })) {
-        return c.json({ error: "API key is not authorized for this resource" }, 403);
-      }
-    if (resolved.userId && !await c.env.MAIN_DB.prepare("SELECT 1 FROM membership WHERE user_id = ? AND tenant_id = ?").bind(resolved.userId, resolved.tenantId).first()) {
+
+  const commitResolvedAuth = async (
+    resolved: ApiKeyResolution,
+    transport: "bearer" | "x-api-key",
+  ) => {
+    if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport })) {
+      const message = transport === "bearer"
+        ? "Bearer token is not authorized for this resource"
+        : "API key is not authorized for this resource";
+      return c.json({ error: message }, 403);
+    }
+    if (
+      resolved.userId
+      && !await c.env.MAIN_DB.prepare(
+        "SELECT 1 FROM membership WHERE user_id = ? AND tenant_id = ?",
+      ).bind(resolved.userId, resolved.tenantId).first()
+    ) {
       return c.json({ error: "Workspace membership revoked" }, 403);
     }
     c.set("tenant_id", resolved.tenantId);
@@ -87,6 +162,32 @@ export const authMiddleware = createMiddleware<{
       c.set("auth_credential", resolved.credential);
     }
     return next();
+  };
+
+  if (isHostedInferenceProxyPath(c.req.path)) {
+    const presented = extractHostedInferenceProxyToken(c.req.raw.headers);
+    if (presented.status === "missing") {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    if (presented.status === "mismatch") {
+      return c.json({ error: "Conflicting credentials" }, 401);
+    }
+    const resolved = await resolvePresentedApiCredential(c, presented.token);
+    if (!resolved) {
+      const message = presented.transport === "bearer"
+        ? "Invalid bearer token"
+        : "Invalid API key";
+      return c.json({ error: message }, 401);
+    }
+    return commitResolvedAuth(resolved, presented.transport);
+  }
+
+  // 1. Try API Key authentication (for CLI / SDK)
+  const apiKey = c.req.header("x-api-key");
+    if (apiKey) {
+      const resolved = await resolveWorkspaceApiKey(c.env, apiKey);
+      if (!resolved) return c.json({ error: "Invalid API key" }, 401);
+      return commitResolvedAuth(resolved, "x-api-key");
   }
 
   // 2. Official EnvironmentWorker auth. Its helper clients deliberately emit
@@ -95,72 +196,9 @@ export const authMiddleware = createMiddleware<{
   const authorization = c.req.header("authorization") ?? "";
   if (authorization.startsWith("Bearer ")) {
     const token = authorization.slice("Bearer ".length);
-    let resolved: ApiKeyResolution | null = null;
-    if (token.startsWith("sk-ant-req-v1.") && c.env.PLATFORM_ROOT_SECRET) {
-      const platformRootSecret = c.env.PLATFORM_ROOT_SECRET;
-      const scoped = await authenticateEnvironmentWorkSessionBearer({
-        token,
-        method: c.req.method,
-        path: c.req.path,
-        crypto: new WebCryptoAesGcm(
-          platformRootSecret,
-          "managed.environment-work.session-token",
-        ),
-        now: () => new Date(),
-        isCurrent: async (claim) => {
-          const tenantDb = await buildCfTenantDbProvider(c.env).resolve(
-            claim.workspaceId,
-          );
-          const secretCrypto = new WebCryptoAesGcm(
-            platformRootSecret,
-            "managed.environment-work.secret",
-          );
-          const store = new SqlEnvironmentWorkStore(
-            new CfD1SqlClient(tenantDb),
-            {
-              seal: async ({ plaintext }) => ({
-                ciphertext: await secretCrypto.encrypt(plaintext),
-              }),
-              open: async ({ ciphertext }) => ({
-                plaintext: await secretCrypto.decrypt(ciphertext),
-              }),
-            },
-          );
-          return isCurrentEnvironmentWorkClaim(
-            { store, now: () => new Date() },
-            claim,
-          );
-        },
-      });
-      if (scoped !== null) {
-        resolved = {
-          tenantId: scoped.workspaceId,
-          credential: {
-            type: "environment_work_session",
-            environmentId: scoped.environmentId,
-            sessionId: scoped.sessionId,
-            workId: scoped.workId,
-            claimedAt: scoped.claimedAt,
-            generation: scoped.generation,
-          },
-        };
-      }
-    } else {
-      resolved = await resolveWorkspaceApiKey(c.env, token);
-    }
+    const resolved = await resolvePresentedApiCredential(c, token);
     if (resolved === null) return c.json({ error: "Invalid bearer token" }, 401);
-    if (!allowsApiKeyRequest(resolved, { path: c.req.path, transport: "bearer" })) {
-      return c.json({ error: "Bearer token is not authorized for this resource" }, 403);
-    }
-    if (resolved.userId && !await c.env.MAIN_DB.prepare("SELECT 1 FROM membership WHERE user_id = ? AND tenant_id = ?").bind(resolved.userId, resolved.tenantId).first()) {
-      return c.json({ error: "Workspace membership revoked" }, 403);
-    }
-    c.set("tenant_id", resolved.tenantId);
-    if (resolved.userId) c.set("user_id", resolved.userId);
-    if (resolved.credential !== undefined) {
-      c.set("auth_credential", resolved.credential);
-    }
-    return next();
+    return commitResolvedAuth(resolved, "bearer");
   }
 
   // 3. Try session cookie authentication (for Console)

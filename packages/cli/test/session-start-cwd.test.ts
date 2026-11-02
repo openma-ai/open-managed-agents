@@ -87,7 +87,12 @@ describe("session.start cwd", () => {
     ]);
     await expectBundle(scratch);
     expect(messages).toEqual([
-      expect.objectContaining({ type: "session.ready", session_id: sessionId }),
+      expect.objectContaining({
+        type: "session.ready",
+        session_id: sessionId,
+        bundle_dir: scratch,
+        fresh: true,
+      }),
     ]);
   });
 
@@ -119,7 +124,12 @@ describe("session.start cwd", () => {
     ]);
     await expectBundle(scratch);
     expect(messages).toEqual([
-      expect.objectContaining({ type: "session.ready", session_id: sessionId }),
+      expect.objectContaining({
+        type: "session.ready",
+        session_id: sessionId,
+        bundle_dir: scratch,
+        fresh: true,
+      }),
     ]);
   });
 

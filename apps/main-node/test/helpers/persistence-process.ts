@@ -7,8 +7,8 @@ import { S3BlobStore } from "@open-managed-agents/blob-store";
 import { createMysql2SqlClient } from "@open-managed-agents/sql-client";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
-import { NodeManagedWorkspaceCheckpoints } from "../../src/lib/node-managed-workspace-checkpoints.js";
-import { NodeSharedSessionOutputs } from "../../src/lib/node-shared-session-outputs.js";
+import { NodeManagedWorkspaceCheckpoints } from "../../../../packages/control-plane-node/src/lib/node-managed-workspace-checkpoints.js";
+import { NodeSharedSessionOutputs } from "../../../../packages/control-plane-node/src/lib/node-shared-session-outputs.js";
 
 type Config = {
   action: "upload" | "upload-outputs" | "restore" | "read-outputs"; databaseUrl: string;

@@ -155,6 +155,7 @@ export const agentModelResponseSchema = z
     inference_geo: z.string().optional(),
     provider_options: z.record(z.string(), z.json()).optional(),
     speed: z.enum(["standard", "fast"]).optional(),
+    max_tokens: z.number().int().positive().optional(),
   })
   .strict() satisfies z.ZodType<BetaManagedAgentsModelConfig>;
 
@@ -163,7 +164,8 @@ const openMaAgentAcpResponseSchema = z
     agent: z
       .object({
         id: z.string().min(1).optional(),
-        command: z.string().min(1),
+        command: z.string().min(1).optional(),
+        registry: z.string().min(1).optional(),
         args: z.array(z.string()).optional(),
         env: z.record(z.string(), z.string()).optional(),
         cwd: z.string().min(1).optional(),
@@ -182,10 +184,49 @@ const openMaAgentAcpResponseSchema = z
   })
   .strict();
 
+const openMaContextManagementResponseSchema = z
+  .object({
+    edits: z.array(
+      z
+        .object({
+          type: z.enum(["compact", "compact_20260112"]),
+          trigger: z
+            .object({
+              type: z.literal("input_tokens"),
+              value: z.number().int().positive(),
+            })
+            .strict()
+            .optional(),
+          instructions: z.string().optional(),
+          pause_after_compaction: z.boolean().optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const openMaModelSettingsResponseSchema = z
+  .object({
+    max_tokens: z.number().int().positive().optional(),
+    context_management: z
+      .array(
+        z
+          .object({
+            type: z.literal("compaction"),
+            compact_threshold: z.number().int().positive(),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict();
+
 export const openMaAgentExtensionResponseSchema = z
   .object({
     aux_model: agentModelResponseSchema.optional(),
     appendable_prompts: z.array(z.string().min(1)).optional(),
+    context_management: openMaContextManagementResponseSchema.optional(),
+    model_settings: openMaModelSettingsResponseSchema.optional(),
     harness: z.string().min(1).optional(),
     acp: openMaAgentAcpResponseSchema.optional(),
     runtime_binding: z
@@ -233,12 +274,27 @@ const resolvedAgentReferenceSchema = z
   })
   .strict();
 
+const multiagentToggleResponseSchema = z
+  .object({ type: z.enum(["enabled", "disabled"]) })
+  .strict();
+
 export const agentMultiagentResponseSchema = z
   .object({
-    agents: z.array(z.union([resolvedAgentReferenceSchema, advisorResponseSchema])),
-    type: z.literal("coordinator"),
+    type: z.literal("multiagent_20261001"),
+    advisor: z.object({ type: z.literal("disabled") }).strict(),
+    subagents: z.union([
+      z.object({ type: z.literal("disabled") }).strict(),
+      z
+        .object({
+          type: z.literal("enabled"),
+          inline_agents: multiagentToggleResponseSchema,
+          predefined_agents: z.array(resolvedAgentReferenceSchema),
+        })
+        .strict(),
+    ]),
+    workflows: z.object({ type: z.literal("disabled") }).strict(),
   })
-  .strict() satisfies z.ZodType<NonNullable<BetaManagedAgentsAgent["multiagent"]>>;
+  .strict();
 
 export const sessionThreadAgentResponseSchema = z
   .object({
@@ -258,10 +314,19 @@ export const sessionThreadAgentResponseSchema = z
 
 export const sessionAgentMultiagentResponseSchema = z
   .object({
-    agents: z.array(
-      z.union([sessionThreadAgentResponseSchema, advisorResponseSchema]),
-    ),
-    type: z.literal("coordinator"),
+    type: z.literal("multiagent_20261001"),
+    advisor: z.object({ type: z.literal("disabled") }).strict(),
+    subagents: z.union([
+      z.object({ type: z.literal("disabled") }).strict(),
+      z
+        .object({
+          type: z.literal("enabled"),
+          inline_agents: multiagentToggleResponseSchema,
+          predefined_agents: z.array(sessionThreadAgentResponseSchema),
+        })
+        .strict(),
+    ]),
+    workflows: z.object({ type: z.literal("disabled") }).strict(),
   })
   .strict();
 

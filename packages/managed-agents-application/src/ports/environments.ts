@@ -39,12 +39,18 @@ export type EnvironmentConfigView = EnvironmentConfig;
 
 export type EnvironmentView = Environment;
 
+/** `null` clears a field on update; absent leaves it unchanged. */
+export interface EnvironmentOpenMaInput {
+  sandboxImage?: string | null;
+}
+
 export interface CreateEnvironmentCommand {
   name: string;
   config?: EnvironmentConfigInput | null;
   description?: string | null;
   metadata?: Record<string, string>;
   scope?: "organization" | "account" | null;
+  openma?: EnvironmentOpenMaInput;
 }
 
 export interface RetrieveEnvironmentQuery {
@@ -58,6 +64,7 @@ export interface UpdateEnvironmentCommand {
   metadata?: Record<string, string | null>;
   name?: string | null;
   scope?: "organization" | "account" | null;
+  openma?: EnvironmentOpenMaInput;
 }
 
 export interface ListEnvironmentsQuery {

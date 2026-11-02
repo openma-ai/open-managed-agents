@@ -194,8 +194,8 @@ package mounted by both apps:
 | `@open-managed-agents/auth-config` | `buildBetterAuth` factory + tenant auto-create hook + `ensureTenantSqlite`. | Driver injected |
 | `@open-managed-agents/vault-forward` | `buildAuthHeader`, `refreshMcpOAuth`, `forwardWithRefresh` (401-then-refresh pure transport). | Pluggable fetcher |
 | `@open-managed-agents/http-routes` | Hono `mountXxxRoutes(app, services)` factories: agents / vaults / sessions / memory / tenants / me / api_keys. Same paths CF mounts today; behavior preserved. The sessions package routes the runtime layer through the `SessionRouter` interface (see below). | Runtime constructs `RouteServices` bundle |
-| `@open-managed-agents/session-runtime` | `SessionStateMachine` + `RuntimeAdapter` (Phase 2) plus `SessionRouter` — uniform contract over the per-runtime session routing layer. CF impl wraps the SessionDO RPC surface; Node impl wraps `SessionRegistry` + `SqlEventLog` + `EventStreamHub`. | `apps/main/src/lib/cf-session-router.ts`, `apps/main-node/src/lib/node-session-router.ts` |
-| `@open-managed-agents/sandbox/orchestrator` | `SandboxOrchestrator` — single entry point both runtimes use to provision a session sandbox: vault outbound (HTTPS_PROXY + CA), `/mnt/memory` mounts, `/mnt/session/outputs` mount, optional workspace backup/restore. Replaces the per-runtime plumbing that lived separately in `apps/agent/src/oma-sandbox.ts` and `apps/main-node/src/registry.ts`. Per-provider capability matrix lives in `docs/self-host.md`. | `DefaultSandboxOrchestrator` (both runtimes); CF wires the OmaSandbox + R2 squashfs backup; Node wires `NodeWorkspaceBackupService` (tar+upload to BlobStore). |
+| `@open-managed-agents/session-runtime` | `SessionStateMachine` + `RuntimeAdapter` (Phase 2) plus `SessionRouter` — uniform contract over the per-runtime session routing layer. CF impl wraps the SessionDO RPC surface; Node impl wraps `SessionRegistry` + `SqlEventLog` + `EventStreamHub`. | `apps/main/src/lib/cf-session-router.ts`, `packages/control-plane-node/src/lib/node-session-router.ts` |
+| `@open-managed-agents/sandbox/orchestrator` | `SandboxOrchestrator` — single entry point both runtimes use to provision a session sandbox: vault outbound (HTTPS_PROXY + CA), `/mnt/memory` mounts, `/mnt/session/outputs` mount, optional workspace backup/restore. Replaces the per-runtime plumbing that lived separately in `apps/agent/src/oma-sandbox.ts` and `packages/control-plane-node/src/registry.ts`. Per-provider capability matrix lives in `docs/self-host.md`. | `DefaultSandboxOrchestrator` (both runtimes); CF wires the OmaSandbox + R2 squashfs backup; Node wires `NodeWorkspaceBackupService` (tar+upload to BlobStore). |
 
 `apps/main-node/src/config.ts` is the only place the Node control plane reads
 environment variables: `loadNodeConfig(env)` turns them into a typed
@@ -223,9 +223,22 @@ const cp = await createNodeControlPlane(await nodeDefaults(config, {
 }));
 ```
 
-`apps/main-node/src/control-plane.ts` is the side-effect-free public export
-for `createNodeControlPlane(components)` and its handle types. Its assembly
-lives in `src/modules/`: `node-assembly.ts` owns the lifecycle and scheduler;
+The database splits the same way as the sandbox providers. The contract
+`@open-managed-agents/node-database` defines `NodeDatabase`: the SqlClient,
+the Drizzle handle, `applyMigrations` and `openAuthDatabase` for Better Auth.
+`node-database-sqlite`, `node-database-postgres` and `node-database-mysql`
+implement it. Each declares its driver and Drizzle as optional peers, and the
+architecture check holds them to that. `openNodeDatabase(config)` loads only
+the adapter the config names; a composition root may also call an adapter
+such as `openMysqlDatabase({ url })` directly.
+
+The control plane itself is the library `@open-managed-agents/control-plane-node`
+(`packages/control-plane-node`). It exports `createNodeControlPlane(components)`,
+`serveNodeControlPlane`, the component contracts (`NodeComponents`, `NodeAuth`,
+`NodeBlobs`, `NodeRealtime`, `NodeSecrets`, `NodeDatabase`) and the settings type
+`NodeConfig`, and depends on no database driver, blob backend SDK, sandbox
+adapter, email transport or identity provider; it never reads the environment.
+Its assembly lives in `src/modules/`: `node-assembly.ts` owns the lifecycle and scheduler;
 `node-foundation.ts` builds observability, stores, blobs and the legacy
 Session registry; `node-managed.ts` builds the official Session runtime and
 the single managed platform graph; `node-runtime.ts` combines those stages
@@ -237,7 +250,15 @@ separate. A workspace still has one App, one clock, one id generator
 (`src/managed-ids.ts` owns the prefix table) and one set of stores. The
 sandbox provider's namespace (`SANDBOX_PROVIDER`, `E2B_*`, …) remains
 env-shaped as `config.sandbox.environment` because `SandboxFactory`'s public
-contract is; supplying `sandbox` bypasses it.
+contract is; supplying `sandbox` bypasses it. A remote memory store supplies
+its own cross-replica change poller through `blobs.memory.startPoller`.
+
+`apps/main-node` is the OMA default distribution built on that library:
+`loadNodeConfig(env)` parses the environment, and `nodeDefaults(config)` picks
+the adapters (database dialect, local or S3 blobs, sandbox provider, SMTP,
+Better Auth with Google, GitHub and OIDC sign-in, Postgres NOTIFY fanout). A
+deployment that wants a different set depends on the library and the
+adapters it uses, not on main-node.
 
 `apps/main-node/src/index.ts` is the executable entrypoint: `loadNodeConfig(process.env)`
 → `nodeDefaults(config)` → `createNodeControlPlane(components)` → `serveNodeControlPlane(controlPlane, { host, port, signals })`.

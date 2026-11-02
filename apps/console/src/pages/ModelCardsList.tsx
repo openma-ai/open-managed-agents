@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { useScrollFade } from "@/hooks/useScrollFade";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,7 +16,7 @@ import { TextInput, SecretInput } from "../components/Input";
 import { toast } from "sonner";
 import type { ModelCard } from "@open-managed-agents/api-types";
 import { useI18n } from "../i18n";
-import { LocalDebugOnlyWarning } from "../components/LocalDebugOnlyWarning";
+import { EMPTY_PRICING_FORM, pricingFromForm, pricingToForm } from "./model-cards/pricing";
 
 // Common Pi provider presets. The actual provider id is an open string; the
 // text field below also accepts any current/future Pi id or a custom id.
@@ -44,11 +45,13 @@ const INITIAL_FORM = {
   is_default: false,
   pi_config: "",
   custom_headers: [{ key: "", value: "" }] as Array<{ key: string; value: string }>,
+  pricing: { ...EMPTY_PRICING_FORM },
 };
 
 export function ModelCardsList() {
   const { api } = useApi();
   const { t } = useI18n();
+  const suggestFade = useScrollFade<HTMLDivElement>();
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...INITIAL_FORM });
@@ -147,6 +150,13 @@ export function ModelCardsList() {
         }
         payload.pi_config = piConfig;
       }
+      const priced = pricingFromForm(form.pricing);
+      if ("error" in priced) {
+        setError(priced.error === "required" ? t.modelCards.pricingRequired : t.modelCards.pricingInvalid);
+        return;
+      }
+      if (priced.pricing !== null) payload.pricing = priced.pricing;
+      else if (editingId) payload.pricing = null;
       if (editingId) {
         if (!form.api_key) delete payload.api_key;
         await api(`/v1/oma/model_cards/${editingId}`, { method: "POST", body: JSON.stringify(payload) });
@@ -194,6 +204,7 @@ export function ModelCardsList() {
       is_default: card.is_default || false,
       pi_config: card.pi_config ? JSON.stringify(card.pi_config, null, 2) : "",
       custom_headers: hdrs,
+      pricing: pricingToForm((card as { pricing?: unknown }).pricing),
     });
     setEditingId(card.id); setShowCreate(true); setError("");
   };
@@ -394,7 +405,6 @@ export function ModelCardsList() {
           </>
         }>
         <form autoComplete="off" onSubmit={(e) => e.preventDefault()} className="space-y-3">
-          <LocalDebugOnlyWarning />
           {error && <div className="text-sm text-danger bg-danger-subtle border border-danger/30 rounded-lg px-3 py-2">{error}</div>}
           <div>
             <Label htmlFor="modelcard-id" className="text-sm text-fg-muted block mb-1">
@@ -465,7 +475,7 @@ export function ModelCardsList() {
               placeholder={form.model_id || "e.g. claude-sonnet-4-6, deepseek-v4-flash, org/model"}
               autoComplete="off" name="model-field" />
             {showModelSuggestions && availableModels.length > 0 && (
-              <div className="absolute z-10 w-full mt-1 bg-bg border border-border rounded-md shadow-lg py-1 max-h-48 overflow-y-auto">
+              <div ref={suggestFade.ref} className={`console-scroll-fade ${suggestFade.className} absolute z-10 w-full mt-1 bg-bg border border-border rounded-md shadow-lg py-1 max-h-48 overflow-y-auto`}>
                 {availableModels
                   .filter((m) => !form.model || m.id.includes(form.model) || m.name.toLowerCase().includes(form.model.toLowerCase()))
                   .map((m) => (
@@ -487,6 +497,24 @@ export function ModelCardsList() {
             <Input id="modelcard-base-url" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} className={inputCls}
               placeholder="https://your-provider.example/v1" autoComplete="off" />
           </div>
+          <fieldset>
+            <legend className="text-sm text-fg-muted block mb-1">{t.modelCards.pricing} <span className="text-fg-subtle">{t.modelCards.pricingHint}</span></legend>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                ["input", t.modelCards.priceInput],
+                ["output", t.modelCards.priceOutput],
+                ["cache_read", t.modelCards.priceCacheRead],
+                ["cache_write", t.modelCards.priceCacheWrite],
+              ] as const).map(([key, label]) => (
+                <div key={key}>
+                  <Label htmlFor={`modelcard-price-${key}`} className="text-xs text-fg-muted block mb-1">{label}</Label>
+                  <Input id={`modelcard-price-${key}`} value={form.pricing[key]} inputMode="decimal"
+                    onChange={(e) => setForm({ ...form, pricing: { ...form.pricing, [key]: e.target.value } })}
+                    className={inputCls} placeholder="$/1M" autoComplete="off" />
+                </div>
+              ))}
+            </div>
+          </fieldset>
           <div>
             <Label htmlFor="modelcard-pi-config" className="text-sm text-fg-muted block mb-1">Pi Config <span className="text-fg-subtle">(JSON; custom provider requires api)</span></Label>
             <Textarea

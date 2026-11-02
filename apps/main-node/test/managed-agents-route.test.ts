@@ -48,6 +48,51 @@ describe("main-node official Managed Agents route", () => {
     rmSync(dataDirectory, { recursive: true, force: true });
   });
 
+  it.each([
+    [undefined, "repository-guide"],
+    ["", "repository-guide"],
+    [" \t ", "repository-guide"],
+    ["Custom title", "Custom title"],
+  ])("persists the skill title for upload title %j", async (title, expected) => {
+    handle = await startMainNode(dataDirectory);
+    const client = new Anthropic({
+      apiKey: "test-key",
+      baseURL: `http://127.0.0.1:${handle.port}`,
+      maxRetries: 0,
+    });
+    const created = await client.beta.skills.create({
+      ...(title !== undefined && { display_title: title }),
+      files: [
+        new File([SKILL_MARKDOWN], "archive-folder/SKILL.md", {
+          type: "text/markdown",
+        }),
+        new File(["reference"], "archive-folder/reference.txt"),
+      ],
+    });
+    expect(created.display_title).toBe(expected);
+    const retrieved = await client.beta.skills.retrieve(created.id);
+    expect(retrieved.display_title).toBe(expected);
+    const listed = await client.beta.skills.list();
+    expect(listed.data.find((skill) => skill.id === created.id)?.display_title)
+      .toBe(expected);
+    const version = await client.beta.skills.versions.retrieve(
+      created.latest_version!,
+      { skill_id: created.id },
+    );
+    expect(version).toMatchObject({
+      name: "repository-guide",
+      description: "How to work in this repository",
+      directory: "archive-folder",
+    });
+    const content = await client.beta.skills.versions.download(
+      created.latest_version!,
+      { skill_id: created.id },
+    );
+    expect(new TextDecoder().decode(
+      unzipSync(new Uint8Array(await content.arrayBuffer()))["archive-folder/reference.txt"],
+    )).toBe("reference");
+  });
+
   it("serves an official SDK create and retrieve through the scoped application slice", async () => {
     handle = await startMainNode(dataDirectory);
     const client = new Anthropic({

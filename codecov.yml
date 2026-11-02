@@ -1,0 +1,44 @@
+# Harness web HTTP (#281) and related agent wiring — patch gate on PRs.
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: 70..100
+
+  status:
+    project: false
+    patch:
+      default:
+        informational: true
+      harness_web_http:
+        target: 100%
+        threshold: 0%
+        only_pulls: true
+        paths:
+          - apps/agent/src/harness/web-fetch-http.ts
+          - apps/agent/src/harness/tool-http-fetch.ts
+          - apps/agent/src/harness/tools.ts
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: false
+
+flag_management:
+  default_rules:
+    carryforward: false
+
+component_management:
+  individual_components:
+    - component_id: harness_web_http
+      name: harness web HTTP (#281)
+      paths:
+        - apps/agent/src/harness/web-fetch-http.ts
+        - apps/agent/src/harness/tool-http-fetch.ts
+        - apps/agent/src/harness/tools.ts
+      statuses:
+        - type: patch
+          target: 100%
+          threshold: 0%

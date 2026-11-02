@@ -30,6 +30,19 @@ export class SessionMemoryStoreMaxExceededError extends Error {
   }
 }
 
+/**
+ * Agent configuration (snapshot / tools / MCP servers) was updated while the
+ * session was not idle. Callers should fail the attempt and retry once the
+ * session is idle; title and metadata updates are not subject to this error.
+ */
+export class SessionNotIdleError extends Error {
+  readonly code = "session_not_idle";
+  constructor(message = "Session must be idle to update the agent configuration") {
+    super(message);
+    this.name = "SessionNotIdleError";
+  }
+}
+
 /** Mutation attempted against an archived session (sessions.ts:541). */
 export class SessionArchivedError extends Error {
   readonly code = "session_archived";

@@ -7,9 +7,41 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/environments/environments";
 import { z } from "zod";
 
-export type EnvironmentCreateBody = Omit<EnvironmentCreateParams, "betas">;
-export type EnvironmentUpdateBody = Omit<EnvironmentUpdateParams, "betas">;
+/**
+ * OpenMA Environment extension. `sandbox_image` is an alias from the
+ * operator's SANDBOX_IMAGES catalog (GET /v1/oma/sandbox_images); `null`
+ * on update clears it back to the deployment default image.
+ */
+export interface OpenMaEnvironmentExtensionBody {
+  sandbox_image?: string | null;
+}
+export interface OpenMaEnvironmentExtensionResponse {
+  sandbox_image?: string;
+}
+
+export type EnvironmentCreateBody = Omit<EnvironmentCreateParams, "betas"> & {
+  _oma?: OpenMaEnvironmentExtensionBody;
+};
+export type EnvironmentUpdateBody = Omit<EnvironmentUpdateParams, "betas"> & {
+  _oma?: OpenMaEnvironmentExtensionBody;
+};
 export type EnvironmentListQuery = Omit<EnvironmentListParams, "betas">;
+/** CMA environment plus the optional OpenMA extension (omitted when unset). */
+export type OpenMaEnvironmentResponse = BetaEnvironment & {
+  _oma?: OpenMaEnvironmentExtensionResponse;
+};
+
+const openMaEnvironmentExtensionSchema = z
+  .object({
+    sandbox_image: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+
+const openMaEnvironmentExtensionResponseSchema = z
+  .object({
+    sandbox_image: z.string().min(1).optional(),
+  })
+  .strict();
 
 const limitedNetworkInputSchema = z
   .object({
@@ -57,6 +89,7 @@ export const environmentCreateBodySchema: z.ZodType<EnvironmentCreateBody> = z
     description: z.string().nullable().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
     scope: z.enum(["organization", "account"]).nullable().optional(),
+    _oma: openMaEnvironmentExtensionSchema.optional(),
   })
   .strict();
 
@@ -67,6 +100,7 @@ export const environmentUpdateBodySchema: z.ZodType<EnvironmentUpdateBody> = z
     metadata: z.record(z.string(), z.string().nullable()).optional(),
     name: z.string().nullable().optional(),
     scope: z.enum(["organization", "account"]).nullable().optional(),
+    _oma: openMaEnvironmentExtensionSchema.optional(),
   })
   .strict();
 
@@ -116,7 +150,7 @@ const environmentConfigResponseSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("self_hosted") }).strict(),
 ]);
 
-export const environmentResponseSchema: z.ZodType<BetaEnvironment> = z
+export const environmentResponseSchema: z.ZodType<OpenMaEnvironmentResponse> = z
   .object({
     id: z.string().min(1),
     archived_at: z.string().nullable(),
@@ -128,6 +162,7 @@ export const environmentResponseSchema: z.ZodType<BetaEnvironment> = z
     type: z.literal("environment"),
     updated_at: z.string(),
     scope: z.enum(["organization", "account"]).optional(),
+    _oma: openMaEnvironmentExtensionResponseSchema.optional(),
   })
   .strict();
 

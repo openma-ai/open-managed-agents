@@ -26,6 +26,12 @@ export type { ModelCardRoutesDeps } from "./model-cards";
 export { buildEnvironmentRoutes } from "./environments";
 export type { EnvironmentRoutesDeps } from "./environments";
 
+export { buildSandboxImageRoutes } from "./sandbox-images";
+export type {
+  SandboxImageListingSource,
+  SandboxImageListingView,
+} from "./sandbox-images";
+
 export { buildSessionRoutes } from "./sessions";
 export type {
   SessionRoutesDeps,

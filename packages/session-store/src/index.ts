@@ -55,12 +55,6 @@ export interface SessionListPosition {
   direction: "next" | "previous";
 }
 
-/** One metadata entry compared with string equality. */
-export interface SessionMetadataEquality {
-  key: string;
-  value: string;
-}
-
 export interface ListSessionRecords {
   workspaceId: string;
   limit: number;
@@ -74,7 +68,6 @@ export interface ListSessionRecords {
   createdAtOrBefore?: string;
   deploymentId?: string;
   memoryStoreId?: string;
-  metadata?: SessionMetadataEquality;
   statuses?: SessionStatus[];
   position?: SessionListPosition;
 }

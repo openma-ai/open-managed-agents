@@ -15,15 +15,11 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, it, expect } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 import { buildTools } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 
-class NoopHarness implements HarnessInterface {
-  async run(_ctx: HarnessContext): Promise<void> { /* no LLM */ }
-}
-registerHarness("noop", () => new NoopHarness());
+registerTestHarnesses();
 
 const TOOL_EXEC_OPTS = { toolCallId: "tc_test", messages: [], abortSignal: undefined as any };
 

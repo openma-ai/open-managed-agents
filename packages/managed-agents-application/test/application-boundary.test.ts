@@ -15,7 +15,9 @@ describe("Managed Agents application boundary", () => {
         .map((match) => match[1])
         .filter((specifier) => !specifier?.startsWith("."));
       expect(externalImports.every((specifier) =>
-        specifier === "@openma/common/protocol/managed"
+        specifier === "@earendil-works/pi-ai"
+        || specifier.startsWith("@earendil-works/pi-ai/")
+        || specifier === "@openma/common/protocol/managed"
         || specifier === "@open-managed-agents/agent-store"
         || specifier === "@open-managed-agents/credential-store"
         || specifier === "@open-managed-agents/deployment-store"

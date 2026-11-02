@@ -11,109 +11,30 @@
 // SandboxFactoryEnv), and nothing else.
 
 import { nanoid } from "nanoid";
+import { EMPTY_SANDBOX_IMAGE_CATALOG, parseSandboxImageCatalog } from "@open-managed-agents/sandbox";
 
-import { resolveNodeProcessMode, validateNodeProcessEnvironment, type NodeProcessMode } from "./process-mode.js";
-import { resolveRealtimeFanout, type RealtimeFanoutConfig } from "./realtime-fanout.js";
+import {
+  parseAllowHosts,
+  type BlobBackendConfig,
+  type DatabaseConfig,
+  type NodeConfig,
+  type NodeEnvironment,
+  type NodeProcessMode,
+  type RealtimeFanoutConfig,
+} from "@open-managed-agents/control-plane-node";
 
-export type NodeEnvironment = Readonly<Record<string, string | undefined>>;
+import { resolveNodeProcessMode, validateNodeProcessEnvironment } from "./process-mode.js";
+import { resolveRealtimeFanout } from "./realtime-fanout.js";
 
-export type DatabaseConfig =
-  | { kind: "sqlite"; path: string }
-  | { kind: "postgres"; url: string }
-  | { kind: "mysql"; url: string };
-
-export type BlobBackendConfig =
-  | { kind: "localfs"; dir: string }
-  | {
-      kind: "s3";
-      endpoint: string;
-      bucket: string;
-      accessKey: string;
-      secretKey: string;
-      region: string;
-      prefix?: string;
-      forcePathStyle?: boolean;
-      requestChecksumCalculation?: "WHEN_REQUIRED" | "WHEN_SUPPORTED";
-      conditionalCreate?: "if-none-match" | "oss-forbid-overwrite";
-    };
-
-export interface NodeConfig {
-  processMode: NodeProcessMode;
-  database: DatabaseConfig;
-  auth: {
-    disabled: boolean;
-    /** Better Auth's SQLite file; unused for Postgres/MySQL, which share the main database. */
-    databasePath: string;
-    /** Missing means "generate a per-process secret and warn", as before. */
-    secret: string | undefined;
-    cookieDomain: string | undefined;
-    requireEmailVerify: boolean;
-    google: { clientId: string | undefined; clientSecret: string | undefined };
-    github: { clientId: string | undefined; clientSecret: string | undefined };
-  };
-  /** Root key for platform-owned ciphers (model cards, integrations). */
-  platformRootSecret: string | undefined;
-  blobs: {
-    memory: BlobBackendConfig & { pollIntervalMs?: number };
-    files: BlobBackendConfig;
-  };
-  /** MEMORY_QUEUE: "disabled" turns off the SQL-backed memory ingestion queue. */
-  memoryQueue: "auto" | "disabled";
-  realtime: RealtimeFanoutConfig;
-  model: {
-    apiKey: string | undefined;
-    baseUrl: string | undefined;
-    customHeaders: Record<string, string> | undefined;
-  };
-  dreamCurator: "model" | "dedup";
-  execution: { ownerId: string; concurrency: number };
-  workspace: {
-    strategy: "ephemeral" | "checkpoint_restore";
-    /** Target between safe turn checkpoints; no fixed wall-clock RPO. */
-    checkpointIntervalMs: number;
-  };
-  managedWebhooks: {
-    url: string | undefined;
-    signingKey: string | undefined;
-    organizationId: string | undefined;
-  };
-  paths: { sandboxWorkdir: string; sessionOutputs: string };
-  http: {
-    host: string;
-    port: number;
-    publicBaseUrl: string | undefined;
-    gatewayOrigin: string;
-    consoleDir: string | undefined;
-    metricsToken: string | undefined;
-    /** Legacy static API key accepted alongside per-tenant keys. */
-    apiKey: string | undefined;
-  };
-  tunnels: { domainSuffix: string };
-  integrationsInternalToken: string | undefined;
-  email: {
-    host: string;
-    port: number;
-    secure: boolean;
-    user: string | undefined;
-    pass: string | undefined;
-    fromAddress: string | undefined;
-  } | null;
-  feishuWsRunner: boolean;
-  cron: {
-    evalTick: string;
-    memoryRetention: string;
-    webhookEventsRetention: string;
-    linearDispatch: string;
-  };
-  sandbox: {
-    /**
-     * The provider's own configuration namespace (SANDBOX_PROVIDER, E2B_*,
-     * DAYTONA_*, …). Opaque to the control plane: it is handed to the
-     * selected SandboxFactory, whose contract is env-shaped.
-     */
-    environment: NodeEnvironment;
-  };
-}
+// The typed settings contract lives with the control plane; this module only
+// fills it in from the environment.
+export {
+  redactNodeConfig,
+  type BlobBackendConfig,
+  type DatabaseConfig,
+  type NodeConfig,
+  type NodeEnvironment,
+} from "@open-managed-agents/control-plane-node";
 
 export class NodeConfigError extends TypeError {
   constructor(readonly problems: readonly string[]) {
@@ -212,7 +133,24 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
   if (workspaceStrategy === "checkpoint_restore" && files.kind !== "s3") {
     problems.push("FILES_S3_* shared storage is required for checkpoint_restore");
   }
+  let matter: NodeConfig["http"]["matter"];
+  if (env.MATTER_URL) {
+    let url: URL | undefined;
+    try {
+      url = new URL(env.MATTER_URL);
+    } catch {
+      problems.push("MATTER_URL must be an absolute http(s) URL");
+    }
+    if (url !== undefined && url.protocol !== "http:" && url.protocol !== "https:") {
+      problems.push("MATTER_URL must be an absolute http(s) URL");
+    } else if (url !== undefined && !env.MATTER_PROXY_SECRET) {
+      problems.push("MATTER_PROXY_SECRET is required with MATTER_URL");
+    } else if (url !== undefined && env.MATTER_PROXY_SECRET) {
+      matter = { url: url.href.replace(/\/+$/, ""), proxySecret: env.MATTER_PROXY_SECRET };
+    }
+  }
   const checkpointIntervalMs = integer("OMA_WORKSPACE_CHECKPOINT_INTERVAL_SEC", 60, { min: 1 }) * 1000;
+  const sandboxLeaseTtlMs = integer("OMA_SANDBOX_LEASE_TTL_SEC", 1800, { min: 60 }) * 1000;
 
   const memoryQueueRaw = env.MEMORY_QUEUE ?? "auto";
   const memoryQueue: NodeConfig["memoryQueue"] = memoryQueueRaw === "disabled" ? "disabled" : "auto";
@@ -236,6 +174,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     return value && value.trim() ? value : fallback;
   };
 
+  const skillSourceAllowHosts = attempt<string[]>([], () => parseAllowHosts(env.SKILL_SOURCES_ALLOW_HOSTS));
+  const sandboxImages = attempt(EMPTY_SANDBOX_IMAGE_CATALOG, () => parseSandboxImageCatalog(env.SANDBOX_IMAGES));
+
   const config: NodeConfig = {
     processMode,
     database,
@@ -252,11 +193,6 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     blobs: { memory, files },
     memoryQueue,
     realtime,
-    model: {
-      apiKey: env.ANTHROPIC_API_KEY,
-      baseUrl: env.ANTHROPIC_BASE_URL,
-      customHeaders: parseCustomHeaders(env.ANTHROPIC_CUSTOM_HEADERS),
-    },
     dreamCurator: env.DREAM_CURATOR_MODE === "dedup" ? "dedup" : "model",
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
@@ -265,6 +201,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     workspace: {
       strategy: workspaceStrategy === "checkpoint_restore" ? "checkpoint_restore" : "ephemeral",
       checkpointIntervalMs,
+      sandboxLeaseTtlMs,
     },
     managedWebhooks: {
       url: env.OMA_MANAGED_AGENTS_WEBHOOK_URL,
@@ -282,10 +219,13 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       publicBaseUrl: env.PUBLIC_BASE_URL,
       gatewayOrigin: env.GATEWAY_ORIGIN ?? env.PUBLIC_BASE_URL ?? "http://localhost:8787",
       consoleDir: env.CONSOLE_DIR,
+      brandingDir: env.CONSOLE_BRANDING_DIR,
       metricsToken: env.METRICS_BIND_TOKEN,
       apiKey: env.API_KEY,
+      matter,
     },
     tunnels: { domainSuffix: env.TUNNEL_DOMAIN_SUFFIX ?? "tunnels.localhost" },
+    skillSources: { allowHosts: skillSourceAllowHosts },
     integrationsInternalToken: env.INTEGRATIONS_INTERNAL_TOKEN,
     email,
     feishuWsRunner: flag("FEISHU_WS_RUNNER"),
@@ -295,61 +235,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       webhookEventsRetention: cron("WEBHOOK_EVENTS_RETENTION_CRON", "* * * * *"),
       linearDispatch: cron("LINEAR_DISPATCH_CRON", "* * * * *"),
     },
-    sandbox: { environment: env },
+    sandbox: { environment: env, images: sandboxImages },
   };
 
   if (problems.length > 0) throw new NodeConfigError(problems);
   return config;
-}
-
-/**
- * The effective configuration with every secret removed, for startup logs
- * and diagnostics. Credentials inside URLs are masked; the sandbox provider's
- * namespace is dropped entirely because the control plane cannot know which
- * of its keys are secrets.
- */
-export function redactNodeConfig(config: NodeConfig): Record<string, unknown> {
-  const mask = (value: string | undefined): string | undefined => (value === undefined ? undefined : "***");
-  const maskUrl = (url: string): string => {
-    try {
-      const parsed = new URL(url);
-      if (parsed.password) parsed.password = "***";
-      return parsed.toString();
-    } catch {
-      return "***";
-    }
-  };
-  const blob = (backend: BlobBackendConfig & { pollIntervalMs?: number }) =>
-    backend.kind === "localfs"
-      ? backend
-      : { ...backend, accessKey: mask(backend.accessKey), secretKey: mask(backend.secretKey) };
-  const { sandbox: _sandbox, ...rest } = config;
-  return {
-    ...rest,
-    database: config.database.kind === "sqlite" ? config.database : { ...config.database, url: maskUrl(config.database.url) },
-    auth: {
-      ...config.auth,
-      secret: mask(config.auth.secret),
-      google: { ...config.auth.google, clientSecret: mask(config.auth.google.clientSecret) },
-      github: { ...config.auth.github, clientSecret: mask(config.auth.github.clientSecret) },
-    },
-    platformRootSecret: mask(config.platformRootSecret),
-    blobs: { memory: blob(config.blobs.memory), files: blob(config.blobs.files) },
-    model: { ...config.model, apiKey: mask(config.model.apiKey) },
-    managedWebhooks: { ...config.managedWebhooks, signingKey: mask(config.managedWebhooks.signingKey) },
-    http: { ...config.http, metricsToken: mask(config.http.metricsToken), apiKey: mask(config.http.apiKey) },
-    integrationsInternalToken: mask(config.integrationsInternalToken),
-    email: config.email === null ? null : { ...config.email, pass: mask(config.email.pass) },
-  };
-}
-
-function parseCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
-  if (!raw) return undefined;
-  const out: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [name, ...rest] = part.split(":");
-    if (!name || rest.length === 0) continue;
-    out[name.trim()] = rest.join(":").trim();
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

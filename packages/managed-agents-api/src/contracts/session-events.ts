@@ -111,6 +111,7 @@ export const sessionEventSendBodySchema: z.ZodType<SessionEventSendBody> = z
 const sentEventBase = {
   id: z.string().min(1),
   processed_at: z.string().nullable().optional(),
+  held_after_exhausted: z.boolean().optional(),
 };
 
 export const sentEventSchema: z.ZodType<SentWireEvent> = z.discriminatedUnion("type", [
@@ -416,6 +417,17 @@ const historySessionEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       id: z.string().min(1),
+      type: z.literal("session.warning"),
+      session_thread_id: z.string().nullable().optional(),
+      source: z.string(),
+      message: z.string(),
+      processed_at: z.string(),
+      details: z.record(z.string(), z.json()).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
       type: z.literal("session.error"),
       session_thread_id: z.string().nullable().optional(),
       error: sessionExecutionErrorSchema,
@@ -612,7 +624,27 @@ const sessionEventDeltaSchema = z
   })
   .strict();
 
+/** OMA queue-lifecycle extension frames (live stream only). */
+const omaQueueCancelledSchema = z
+  .object({
+    type: z.literal("system.user_message_cancelled"),
+    event_id: z.string().min(1),
+    session_thread_id: z.string().min(1).optional(),
+    cancelled_at: z.string().min(1),
+  })
+  .strict();
+const omaQueueSteeredSchema = z
+  .object({
+    type: z.literal("system.user_message_steered"),
+    event_id: z.string().min(1),
+    session_thread_id: z.string().min(1).optional(),
+    steered_at: z.string().min(1),
+  })
+  .strict();
+
 export const sessionStreamEventResponseSchema = z.union([
+    omaQueueCancelledSchema,
+    omaQueueSteeredSchema,
     sentEventSchema,
     sessionUsageEventSchema,
     historySessionEventSchema,

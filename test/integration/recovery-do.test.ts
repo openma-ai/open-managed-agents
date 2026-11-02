@@ -2,8 +2,8 @@
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { ensureModelCards } from "./_model-cards";
+import { registerTestHarnesses } from "../harnesses";
 import { CfDoStreamRepo, ensureSchema as ensureEventLogSchema } from "@open-managed-agents/event-log/cf-do";
 import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 
@@ -23,10 +23,7 @@ import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 //   4. Trigger any endpoint that calls ensureSchema → recovery fires,
 //   5. Read events back via the DO's own GET /events endpoint.
 
-class NoopHarness implements HarnessInterface {
-  async run(_ctx: HarnessContext): Promise<void> { /* no LLM */ }
-}
-registerHarness("noop", () => new NoopHarness());
+registerTestHarnesses();
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
@@ -36,8 +33,8 @@ function post(path: string, body: unknown) {
   return api(path, { method: "POST", headers: H, body: JSON.stringify(body) });
 }
 
-async function newSession(): Promise<string> {
-  const a = await post("/v1/oma/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", harness: "noop" });
+async function newSession(harness: string = "noop"): Promise<string> {
+  const a = await post("/v1/oma/agents", { name: "RecoveryTest", model: "claude-sonnet-4-6", _oma: { harness } });
   const agent = await a.json();
   const e = await post("/v1/oma/environments", { name: "rec-env", config: { type: "cloud" } });
   const environment = await e.json();
@@ -133,8 +130,49 @@ async function ensureTurnIdColumnsForTest() {
   }
 }
 
+/**
+ * The recovery tests only need D1's `sessions` row, but the mid-turn
+ * isolate-reset regression also needs the execution outbox shape: the
+ * dead turn's outbox row has already settled to `completed`, so no lane
+ * is reclaimable and only stale-turn finalization can end the session.
+ * Some test fixtures skip migration 0020, so create the minimum table.
+ */
+async function ensureExecutionTableForTest() {
+  await env.MAIN_DB.prepare(
+    `CREATE TABLE IF NOT EXISTS managed_session_executions (
+       workspace_id text NOT NULL,
+       session_id text NOT NULL,
+       lane_id text NOT NULL,
+       id text NOT NULL,
+       admitted_at_ms integer NOT NULL,
+       events_json text NOT NULL,
+       events_fingerprint text NOT NULL,
+       state text NOT NULL,
+       attempt_id text,
+       owner_id text,
+       generation integer DEFAULT 0 NOT NULL,
+       attempt_count integer DEFAULT 0 NOT NULL,
+       max_attempts integer DEFAULT 10 NOT NULL,
+       deadline_at_ms integer NOT NULL,
+       claimed_at_ms integer,
+       lease_expires_at_ms integer,
+       interrupt_requested_at_ms integer,
+       settled_at_ms integer,
+       failure text,
+       revision integer DEFAULT 1 NOT NULL,
+       PRIMARY KEY(workspace_id, id)
+     )`,
+  ).run();
+}
+
 describe("SessionDO recovery — DO-level", () => {
-  beforeAll(ensureTurnIdColumnsForTest);
+  beforeAll(async () => {
+    // The alarm-hygiene tests below start real turns, so the session's
+    // model card must resolve exactly as an operator would create it.
+    await ensureModelCards(["claude-sonnet-4-6"]);
+    await ensureTurnIdColumnsForTest();
+    await ensureExecutionTableForTest();
+  });
   it("finalizes streaming row + appends agent.message on next boot", async () => {
     const sessionId = await newSession();
     const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
@@ -816,7 +854,7 @@ describe("SessionDO recovery — DO-level", () => {
         `SELECT type, data FROM events WHERE type='agent.tool_result' OR type='agent.mcp_tool_result'`,
       ).toArray();
     });
-    const aborted = events.find((e) => {
+    const matching = events.filter((e) => {
       try {
         const d = JSON.parse(e.data as string);
         return d.tool_use_id === "tu_orphan_x";
@@ -824,10 +862,977 @@ describe("SessionDO recovery — DO-level", () => {
         return false;
       }
     });
-    expect(aborted).toBeDefined();
-    const data = JSON.parse(aborted!.data as string);
+    // Exactly one aborted result: the cold-start recovery scan and the
+    // stale-turn finalizer both handle unpaired uses, and a duplicate
+    // makes the provider 400 ("each tool_use must have a single result").
+    expect(matching).toHaveLength(1);
+    const data = JSON.parse(matching[0].data as string);
     expect(data.is_error).toBe(true);
     expect(String(data.content)).toMatch(/interrupted/i);
+  });
+
+  it("keeps a durable keep-alive alarm armed while a turn is running", async () => {
+    // Regression for the live 2026 incident: the outbox path never wrote
+    // sessions.turn_id and only a fire-and-forget setAlarm guarded the
+    // turn. An isolate reset right after the first model request dropped
+    // both, so a fresh instance had no alarm to run _finalizeStaleTurns.
+    // The turn now arms a durable alarm BEFORE the model request, while
+    // the harness is still inside run().
+    const sessionId = await newSession("alarm-hold-harness");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const deadline = Date.now() + 8_000;
+    let running = 0;
+    while (Date.now() < deadline) {
+      running = await runInDurableObject(stub, (instance) => {
+        const sql = (instance as { ctx: { storage: { sql: SqlStorage } } })
+          .ctx.storage.sql;
+        const row = sql
+          .exec(`SELECT COUNT(*) AS n FROM events WHERE type='session.status_running'`)
+          .toArray()[0] as { n?: number } | undefined;
+        return row?.n ?? 0;
+      }).catch(() => 0);
+      if (running > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(running, "turn should reach status_running").toBeGreaterThan(0);
+
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm, "durable alarm must be armed while the turn runs").not.toBeNull();
+    const deltaMs = (alarm as number) - Date.now();
+    expect(deltaMs).toBeGreaterThan(0);
+    expect(deltaMs).toBeLessThanOrEqual(60_000);
+  });
+
+  it("fresh-instance alarm finalizes a turn left running by an isolate reset", async () => {
+    // Start a real turn (armed alarm + D1 running marker), then simulate
+    // the isolate being replaced while harness.run() is still in flight:
+    // the in-memory active/drain sets are gone and the turn predates the
+    // new instance. The surviving alarm must run _finalizeStaleTurns,
+    // flip D1 to idle, and abort the unpaired non-parked tool_use.
+    const sessionId = await newSession("alarm-hold-harness");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const deadline = Date.now() + 8_000;
+    let row: { status?: string; turn_id?: string | null } | null = null;
+    while (Date.now() < deadline) {
+      row = await env.AUTH_DB
+        .prepare(`SELECT status, turn_id FROM sessions WHERE id=?`)
+        .bind(sessionId)
+        .first();
+      if (row?.status === "running" && row.turn_id) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(row?.status, "turn should mark D1 running").toBe("running");
+    expect(row?.turn_id, "turn should have a durable turn marker").toBeTruthy();
+
+    const armed = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(armed, "the surviving alarm is what must wake the new instance").not.toBeNull();
+
+    await runInDurableObject(stub, async (instance, state) => {
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      // A model call emitted this just before the reset and never paired it.
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_midturn_reset",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      const anyInstance = instance as {
+        _activeTurnIds: Set<string>;
+        _executionActiveLanes: Set<string>;
+        _draining: Set<string>;
+        _instanceStartedAt: number;
+        _coldStartFlushDone: boolean;
+      };
+      // Fresh isolate: no in-memory knowledge of the dead turn, and the
+      // instance started after the turn did.
+      anyInstance._activeTurnIds.clear();
+      anyInstance._executionActiveLanes.clear();
+      anyInstance._draining.clear();
+      anyInstance._instanceStartedAt = Date.now() + 1;
+      anyInstance._coldStartFlushDone = true;
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    const idle = data.find((e) => e.type === "session.status_idle");
+    expect(idle, "alarm should append a terminal idle").toBeDefined();
+
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_midturn_reset",
+    );
+    expect(aborted, "unpaired tool_use should get exactly one aborted result").toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+    expect(String(aborted[0].data.content)).toMatch(/interrupted/i);
+  });
+
+  it("isolate reset mid-turn: cold-start alarm ends a recent running turn with settled outbox", async () => {
+    // Pressure-harness regression: a DO isolate reset while its turn was
+    // streaming. The sessions row still says status='running' with a
+    // turn_started_at only a few seconds old, and the D1 execution
+    // outbox already settled to state='completed' (delivery happened),
+    // so no lane is reclaimable. Before the fix the age-only 30s grace
+    // period skipped this turn on the first cold-start pass; when that
+    // pass came from fetch() and the keep-alive alarm was lost with the
+    // isolate, nothing re-ran and the session stayed running forever.
+    const sessionId = `midturn_reset_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    // Insert the dead incarnation's row BEFORE the DO is first touched,
+    // so turn_started_at predates this instance exactly like a real reset.
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_died_midstream", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "in flight when the isolate died" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, generation, attempt_count, max_attempts,
+          deadline_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'completed', 1, 1, 10, ?, 1)`,
+    ).bind(sessionId, eventId, now - 5_000, eventsJson, eventsJson, now + 60_000).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    // First access is the cold incarnation. Seed the last live events
+    // (status_running + a custom_tool_use emitted right before death)
+    // and arm a due alarm in the same RPC.
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.custom_tool_use",
+        id: "ctu_dead_midstream",
+        name: "run_tests",
+        input: {},
+      });
+      await state.storage.setAlarm(Date.now() - 1000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const after = await env.AUTH_DB.prepare(
+      `SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`,
+    ).bind(sessionId).first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    // The custom_tool_use emitted right before death is finalized with
+    // exactly one aborted result, and the log gets a terminal idle so
+    // status leaves `running` consistently.
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data: events } = await ev.json();
+    const idle = events.find((e: { type: string }) => e.type === "session.status_idle");
+    expect(idle).toBeDefined();
+    expect(idle.data.stop_reason?.type).toBe("end_turn");
+    const aborted = events.filter((e: { type: string; data: { tool_use_id?: string } }) => {
+      if (e.type !== "agent.tool_result") return false;
+      return e.data.tool_use_id === "ctu_dead_midstream";
+    });
+    expect(aborted).toHaveLength(1);
+    expect((aborted[0].data as { is_error?: boolean }).is_error).toBe(true);
+
+    // The outbox row stays settled — finalization, not a reclaim, is
+    // what ended the turn.
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state FROM managed_session_executions WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string }>();
+    expect(execution?.state).toBe("completed");
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Shared lease policy — CF adapter tests
+  // ─────────────────────────────────────────────────────────────────
+
+  it("enqueue arms the durable alarm before the synchronous drain can be lost", async () => {
+    const sessionId = await newSessionDirect("enqueue_arm");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { ensureSchema(): void }).ensureSchema();
+      // Let the cold-start lease/schedule pass settle before we install the
+      // row this test is about.
+      for (let i = 0; i < 50 && (instance as { _recoveryRun: unknown })._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // This test asserts the durable arm, not the drain: keep the queue row
+      // unprocessed so the assertion below is about the alarm write.
+      (instance as { drainEventQueue(t: string): Promise<void> }).drainEventQueue = async () => {};
+      await state.storage.deleteAlarm();
+      (instance as {
+        enqueueQueueInputIfNew(event: unknown): boolean;
+      }).enqueueQueueInputIfNew({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "arm the alarm" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    let alarm: number | null = null;
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      alarm = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.getAlarm(),
+      );
+      if (alarm !== null) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(alarm, "enqueue must arm a durable alarm").not.toBeNull();
+    expect((alarm as number) - Date.now()).toBeLessThanOrEqual(5_000);
+
+    const queued = await runInDurableObject(stub, (instance) => {
+      const sql = (instance as { ctx: { storage: { sql: SqlStorage } } })
+        .ctx.storage.sql;
+      return sql
+        .exec(
+          `SELECT processed_at FROM events WHERE json_extract(data,'$.id') = ?`,
+          eventId,
+        )
+        .toArray()[0] as { processed_at: number | null } | undefined;
+    });
+    expect(queued, "the event must be an unprocessed queue row").toBeDefined();
+    expect(queued?.processed_at ?? null).toBeNull();
+  });
+
+  it("alarm is not deleted while an unprocessed queue row exists", async () => {
+    const sessionId = await newSessionDirect("queue_keeps_alarm");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    const setAlarmInside: number[] = [];
+    let deleteCallsInside = 0;
+    let spyArmed = false;
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { ensureSchema(): void }).ensureSchema();
+      await new Promise((r) => setTimeout(r, 100));
+      // Leave the row queued: the alarm policy must still keep the wake armed.
+      (instance as { drainEventQueue(threadId: string): Promise<void> })
+        .drainEventQueue = async () => {};
+      (instance as { queue: { enqueueQueueInput(event: unknown): boolean } })
+        .queue.enqueueQueueInput({
+          id: eventId,
+          type: "user.message",
+          content: [{ type: "text", text: "still queued" }],
+          session_thread_id: "sthr_primary",
+        });
+      await state.storage.deleteAlarm();
+      await state.storage.setAlarm(Date.now() - 1_000);
+
+      const ctx = (instance as unknown as { ctx: { storage: {
+        setAlarm: (t: number) => Promise<void>;
+        deleteAlarm: () => Promise<void>;
+      } } }).ctx;
+      const origSet = ctx.storage.setAlarm.bind(ctx.storage);
+      const origDel = ctx.storage.deleteAlarm.bind(ctx.storage);
+      spyArmed = true;
+      ctx.storage.setAlarm = async (t: number) => {
+        if (spyArmed) setAlarmInside.push(t);
+        return origSet(t);
+      };
+      ctx.storage.deleteAlarm = async () => {
+        if (spyArmed) deleteCallsInside++;
+        return origDel();
+      };
+    });
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 50));
+    spyArmed = false;
+
+    expect(setAlarmInside.length, "queued work must re-arm").toBeGreaterThan(0);
+    expect(deleteCallsInside, "queued work must never delete the alarm").toBe(0);
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm).not.toBeNull();
+  });
+
+  it("a drain that makes no progress backs off instead of re-arming every second", async () => {
+    const sessionId = await newSessionDirect("queue_no_progress");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, _state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // The row looks drainable to the policy, but the drain cannot make
+      // progress (no claim/turn): this is the null-processed/migrated-row
+      // shape that used to re-arm every ~1s forever.
+      instance.drainEventQueue = async () => {};
+      // Keep all persisted alarms in the future relative to workerd's real
+      // clock. runDurableObjectAlarm manually deletes then invokes alarm();
+      // a past-due alarm would let the runtime race that manual delivery.
+      const nowMs = Date.now() + 60 * 60 * 1_000;
+      instance.processedClock.nowMs = () => nowMs;
+      instance._queueDrainFailures = 0;
+      instance._queueDrainRetryAtMs = null;
+      instance.queue.enqueueQueueInput({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "not drainable yet" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    const delays: number[] = [];
+    const attempts: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await runInDurableObject(stub, async (_instance, state) => {
+        await state.storage.setAlarm(Date.now() + 60 * 60 * 1_000);
+      });
+      expect(await runDurableObjectAlarm(stub), "manual alarm must be delivered").toBe(true);
+      const snapshot = await runInDurableObject(stub, async (instance, state) => ({
+        alarm: await state.storage.getAlarm(),
+        now: instance.processedClock.nowMs(),
+        failures: instance._queueDrainFailures as number,
+      }));
+      expect(snapshot.alarm, "queued work must keep the alarm armed").not.toBeNull();
+      delays.push((snapshot.alarm as number) - snapshot.now);
+      attempts.push(snapshot.failures);
+    }
+
+    expect(attempts).toEqual([1, 2, 3, 4]);
+    expect(delays[0]).toBeGreaterThan(500);
+    expect(delays[1]).toBeGreaterThan(delays[0] * 1.5);
+    expect(delays[2]).toBeGreaterThan(delays[1] * 1.5);
+    expect(delays[3]).toBeGreaterThan(delays[2] * 1.5);
+    expect(delays[3]).toBeLessThanOrEqual(9_000);
+
+    // New work resets the horizon to near-zero (it may just have unblocked
+    // the held/undrainable row).
+    const reset = await runInDurableObject(stub, async (instance, state) => {
+      instance.enqueueQueueInputIfNew({
+        id: `sevt_${crypto.randomUUID()}`,
+        type: "user.message",
+        content: [{ type: "text", text: "fresh work" }],
+        session_thread_id: "sthr_primary",
+      });
+      await instance._multiplexAlarm({ reason: "test_enqueue", atMs: instance.processedClock.nowMs() + 1 });
+      return {
+        alarm: await state.storage.getAlarm(),
+        now: instance.processedClock.nowMs(),
+        failures: instance._queueDrainFailures as number,
+        retryAt: instance._queueDrainRetryAtMs as number | null,
+      };
+    });
+    expect(reset.failures).toBe(0);
+    expect(reset.retryAt).toBeNull();
+    expect(reset.alarm, "enqueue must arm the alarm").not.toBeNull();
+    expect((reset.alarm as number) - reset.now).toBeLessThanOrEqual(5_000);
+  });
+
+  it("held/blocked queue rows use a long safety net, never a sub-second loop", async () => {
+    const sessionId = await newSessionDirect("blocked_safety_net");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    const eventId = `sevt_${crypto.randomUUID()}`;
+
+    await runInDurableObject(stub, async (instance, _state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance.drainEventQueue = async () => {};
+      // A row admitted while the lane was exhausted is held; it can only
+      // move when a newer admission arrives, not on a 1s timer.
+      instance.setState({
+        ...instance.state,
+        exhausted_at_by_lane: { sthr_primary: Date.now() + 60_000 },
+      });
+      instance.queue.enqueueQueueInput({
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "held after exhausted" }],
+        session_thread_id: "sthr_primary",
+      });
+    });
+
+    const delays: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      await runInDurableObject(stub, async (_instance, state) => {
+        await state.storage.setAlarm(Date.now() - 1_000);
+      });
+      await runDurableObjectAlarm(stub);
+      const snapshot = await runInDurableObject(stub, async (instance, state) => ({
+        alarm: await state.storage.getAlarm(),
+        now: Date.now(),
+        failures: instance._queueDrainFailures as number,
+      }));
+      expect(snapshot.failures, "held rows are not a failed drain").toBe(0);
+      expect(snapshot.alarm, "held rows still keep the slot armed").not.toBeNull();
+      delays.push((snapshot.alarm as number) - snapshot.now);
+    }
+
+    // ~5 min safety net, never the old ~1s re-arm.
+    for (const delay of delays) {
+      expect(delay).toBeGreaterThan(4 * 60_000);
+      expect(delay).toBeLessThanOrEqual(6 * 60_000);
+    }
+  });
+
+  it("isolate reset mid-turn: expired lease is swept as interrupted and session goes idle", async () => {
+    const sessionId = `lease_finalize_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_dead_lease", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "in flight when the isolate died" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 1, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_dead_lease",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure, settled_at_ms FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string; settled_at_ms: number }>();
+    expect(execution?.state).toBe("failed");
+    expect(execution?.failure).toBe("execution attempt limit exhausted");
+    expect(execution?.settled_at_ms).toBeGreaterThan(now);
+
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status, turn_id, turn_started_at FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    expect(after.turn_id).toBeNull();
+    expect(after.turn_started_at).toBeNull();
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    expect(data.find((e) => e.type === "session.status_idle")).toBeDefined();
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_dead_lease",
+    );
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+  });
+
+  it("isolate reset mid-turn: expired lease with budget left is requeued and keeps the alarm", async () => {
+    const sessionId = `lease_requeue_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    await env.AUTH_DB.prepare(
+      `INSERT INTO sessions
+         (id, tenant_id, agent_id, environment_id, title, status, created_at, updated_at,
+          turn_id, turn_started_at)
+       VALUES (?, 'default', 'agent_test', 'env_test', '', 'running', ?, ?, ?, ?)`,
+    ).bind(sessionId, now - 10_000, now - 5_000, "turn_dead_lease", now - 5_000).run();
+
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "retry me" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 2, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as { _state: unknown })._state = {
+        session_id: sessionId,
+        tenant_id: "default",
+        agent_id: "agent_test",
+        environment_id: "env_test",
+      };
+      ensureEventLogSchema(state.storage.sql);
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      // Do not actually run the reclaimed turn in this test; we only assert
+      // the sweep decision and that queued work keeps the alarm armed.
+      (instance as { drainEventQueue(threadId: string): Promise<void> })
+        .drainEventQueue = async () => {};
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, attempt_count, owner_id, lease_expires_at_ms, failure
+         FROM managed_session_executions WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{
+      state: string;
+      attempt_count: number;
+      owner_id: string | null;
+      lease_expires_at_ms: number | null;
+      failure: string;
+    }>();
+    expect(execution?.state).toBe("queued");
+    expect(execution?.attempt_count).toBe(1);
+    expect(execution?.owner_id).toBeNull();
+    expect(execution?.lease_expires_at_ms).toBeNull();
+    expect(execution?.failure).toBe("requeued after owner lease expired");
+
+    // The stale turn was finalized, but the queued execution keeps a wake.
+    const after = await env.AUTH_DB
+      .prepare(`SELECT status FROM sessions WHERE id=?`)
+      .bind(sessionId)
+      .first();
+    expect(after.status).toBe("idle");
+    const alarm = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.getAlarm(),
+    );
+    expect(alarm, "requeued work must keep the alarm armed").not.toBeNull();
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // One alarm-slot multiplexer + one shared recovery hook
+  // ─────────────────────────────────────────────────────────────────
+
+  it("alarm multiplexer keeps the earliest of schedule vs heartbeat and never deletes while work exists", async () => {
+    const sessionId = await newSessionDirect("mux_earliest");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    const heartbeat = await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance._activeTurnIds.add("turn_mux_live");
+      await state.storage.deleteAlarm();
+      let deleted = 0;
+      const storage = instance.ctx.storage;
+      const origDelete = storage.deleteAlarm.bind(storage);
+      storage.deleteAlarm = async () => { deleted++; return origDelete(); };
+      try {
+        await instance._multiplexAlarm({ reason: "mux_heartbeat" });
+      } finally {
+        storage.deleteAlarm = origDelete;
+      }
+      return { alarm: await state.storage.getAlarm(), now: Date.now(), deleted };
+    });
+    expect(heartbeat.deleted, "a running turn must never delete the alarm").toBe(0);
+    expect(heartbeat.alarm).not.toBeNull();
+    const heartbeatDelay = heartbeat.alarm - heartbeat.now;
+    expect(heartbeatDelay).toBeGreaterThan(25_000);
+    expect(heartbeatDelay).toBeLessThanOrEqual(35_000);
+
+    // A far schedule must not push the heartbeat out.
+    const far = await runInDurableObject(stub, async (instance, state) => {
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO cf_agents_schedules (id, callback, payload, type, time, running)
+         VALUES ('sched_far', 'recoverEventQueue', '{}', 'scheduled', ?, 0)`,
+        Math.floor((now + 120_000) / 1000),
+      );
+      await instance._multiplexAlarm({ reason: "mux_far_schedule" });
+      return { alarm: await state.storage.getAlarm(), now: Date.now() };
+    });
+    expect(far.alarm - far.now).toBeLessThanOrEqual(35_000);
+
+    // A near schedule becomes the earliest wake.
+    const near = await runInDurableObject(stub, async (instance, state) => {
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO cf_agents_schedules (id, callback, payload, type, time, running)
+         VALUES ('sched_near', 'recoverEventQueue', '{}', 'scheduled', ?, 0)`,
+        Math.floor((now + 5_000) / 1000),
+      );
+      await instance._multiplexAlarm({ reason: "mux_near_schedule" });
+      return { alarm: await state.storage.getAlarm(), now: Date.now() };
+    });
+    expect(near.alarm - near.now).toBeGreaterThan(0);
+    expect(near.alarm - near.now).toBeLessThanOrEqual(6_000);
+
+    // Queued work alone also keeps the slot armed (never delete).
+    const queued = await runInDurableObject(stub, async (instance, state) => {
+      instance._activeTurnIds.clear();
+      state.storage.sql.exec(`DELETE FROM cf_agents_schedules`);
+      const eventId = `sevt_${crypto.randomUUID()}`;
+      state.storage.sql.exec(
+        `INSERT INTO events (type, data, processed_at, session_thread_id, enqueued_at)
+         VALUES ('user.message', ?, NULL, 'sthr_primary', ?)`,
+        JSON.stringify({
+          id: eventId,
+          type: "user.message",
+          content: [{ type: "text", text: "multiplexer queue" }],
+        }),
+        Date.now(),
+      );
+      let deleted = 0;
+      let sets = 0;
+      const storage = instance.ctx.storage;
+      const origDelete = storage.deleteAlarm.bind(storage);
+      const origSet = storage.setAlarm.bind(storage);
+      storage.deleteAlarm = async () => { deleted++; return origDelete(); };
+      storage.setAlarm = async (t: number) => { sets++; return origSet(t); };
+      try {
+        await instance._multiplexAlarm({ reason: "mux_queue" });
+      } finally {
+        storage.deleteAlarm = origDelete;
+        storage.setAlarm = origSet;
+      }
+      return { alarm: await state.storage.getAlarm(), deleted, sets };
+    });
+    expect(queued.deleted, "queued work must never delete the alarm").toBe(0);
+    expect(queued.sets).toBeGreaterThan(0);
+    expect(queued.alarm).not.toBeNull();
+  });
+
+  it("first request after cold start runs the same recovery hook as the alarm", async () => {
+    const outcomes: Array<{ state: string | null; failure: string | null }> = [];
+    for (const trigger of ["cold", "alarm"] as const) {
+      const sessionId = await newSessionDirect(`shared_recovery_${trigger}`);
+      const now = Date.now();
+      const eventId = `sevt_${crypto.randomUUID()}`;
+      const eventsJson = JSON.stringify([{
+        id: eventId,
+        type: "user.message",
+        content: [{ type: "text", text: "dead owner" }],
+        processedAt: new Date(now - 5_000).toISOString(),
+      }]);
+      await env.MAIN_DB.prepare(
+        `INSERT INTO managed_session_executions
+           (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+            events_fingerprint, state, attempt_id, owner_id, generation,
+            attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+            lease_expires_at_ms, revision)
+         VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+                 'attempt_dead', 'dead_incarnation', 1, 1, 2, ?, ?, ?, 1)`,
+      ).bind(
+        sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+        now + 60_000, now - 5_000, now - 1_000,
+      ).run();
+
+      const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+      const reasons: string[] = [];
+      await runInDurableObject(stub, async (instance, state) => {
+        // The reclaimed turn must not actually run in this test.
+        instance.drainEventQueue = async () => {};
+        const original = instance._runRecovery.bind(instance);
+        instance._runRecovery = (reason: string) => {
+          reasons.push(reason);
+          return original(reason);
+        };
+        if (trigger === "alarm") await state.storage.setAlarm(Date.now() - 1_000);
+      });
+
+      if (trigger === "cold") {
+        // First request after activation: ensureSchema = onStart.
+        await stub.fetch(new Request("http://internal/events"));
+      } else {
+        await runDurableObjectAlarm(stub);
+      }
+
+      let row: { state: string; failure: string | null } | null = null;
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        row = await env.MAIN_DB.prepare(
+          `SELECT state, failure FROM managed_session_executions
+            WHERE workspace_id='default' AND id=?`,
+        ).bind(eventId).first();
+        if (row && row.state !== "running") break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(row).not.toBeNull();
+      expect(reasons, `${trigger} path must call the shared recovery hook`)
+        .toContain(trigger === "cold" ? "cold_start" : "alarm");
+      outcomes.push({ state: row?.state ?? null, failure: row?.failure ?? null });
+    }
+    expect(outcomes[0]).toEqual({
+      state: "queued",
+      failure: "requeued after owner lease expired",
+    });
+    expect(outcomes[1]).toEqual(outcomes[0]);
+  });
+
+  it("applied-but-unfinished turn is interrupted from the canonical stream, not requeued", async () => {
+    const sessionId = await newSessionDirect("stream_applied");
+    const now = Date.now();
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "applied work" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 3, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      instance.drainEventQueue = async () => {};
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_applied_done",
+        name: "bash",
+        input: { command: "true" },
+      });
+      history.append({
+        type: "agent.tool_result",
+        tool_use_id: "tu_applied_done",
+        content: "ok",
+      });
+      history.append({
+        type: "agent.message",
+        message_id: "msg_applied_partial",
+        content: [{ type: "text", text: "partial output reused" }],
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string }>();
+    expect(execution?.state).toBe("failed");
+    expect(execution?.failure).toBe("execution interrupted after applied input");
+
+    // Completed output is reused, never duplicated or re-dispatched.
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    expect(data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_applied_done",
+    )).toHaveLength(1);
+    expect(data.filter(
+      (e) => e.type === "agent.message" && e.data.message_id === "msg_applied_partial",
+    )).toHaveLength(1);
+  });
+
+  it("unpaired tool call from a dead owner is interrupted, never rerun", async () => {
+    const sessionId = await newSessionDirect("stream_unpaired");
+    const now = Date.now();
+    const eventId = `sevt_${crypto.randomUUID()}`;
+    const eventsJson = JSON.stringify([{
+      id: eventId,
+      type: "user.message",
+      content: [{ type: "text", text: "tool in flight" }],
+      processedAt: new Date(now - 5_000).toISOString(),
+    }]);
+    await env.MAIN_DB.prepare(
+      `INSERT INTO managed_session_executions
+         (workspace_id, session_id, lane_id, id, admitted_at_ms, events_json,
+          events_fingerprint, state, attempt_id, owner_id, generation,
+          attempt_count, max_attempts, deadline_at_ms, claimed_at_ms,
+          lease_expires_at_ms, revision)
+       VALUES ('default', ?, 'sthr_primary', ?, ?, ?, ?, 'running',
+               'attempt_dead', 'dead_incarnation', 1, 1, 3, ?, ?, ?, 1)`,
+    ).bind(
+      sessionId, eventId, now - 5_000, eventsJson, eventsJson,
+      now + 60_000, now - 5_000, now - 1_000,
+    ).run();
+
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      instance.drainEventQueue = async () => {};
+      const history = new SqliteHistory(state.storage.sql);
+      history.append({ type: "session.status_running" });
+      history.append({
+        type: "agent.tool_use",
+        id: "tu_unpaired_lost",
+        name: "bash",
+        input: { command: "sleep 60" },
+      });
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const execution = await env.MAIN_DB.prepare(
+      `SELECT state, failure FROM managed_session_executions
+        WHERE workspace_id='default' AND id=?`,
+    ).bind(eventId).first<{ state: string; failure: string }>();
+    expect(execution?.state).toBe("failed");
+    // The cold-start stream scan pairs the tool_use with a synthetic aborted
+    // result before the sweep decides, so the stream says "applied work was
+    // persisted" — either way it is interrupted, never re-dispatched.
+    expect(execution?.failure).toMatch(/^execution interrupted /);
+
+    const ev = await stub.fetch(new Request("http://internal/events"));
+    const { data } = await ev.json() as {
+      data: Array<{ type: string; data: Record<string, unknown> }>;
+    };
+    const aborted = data.filter(
+      (e) => e.type === "agent.tool_result" && e.data.tool_use_id === "tu_unpaired_lost",
+    );
+    expect(aborted).toHaveLength(1);
+    expect(aborted[0].data.is_error).toBe(true);
+  });
+
+  it("failed recovery is retained and retried with capped exponential backoff", async () => {
+    const sessionId = await newSessionDirect("recovery_backoff");
+    const stub = env.SESSION_DO.get(env.SESSION_DO.idFromName(sessionId));
+
+    await runInDurableObject(stub, async (instance, state) => {
+      instance.ensureSchema();
+      for (let i = 0; i < 50 && instance._recoveryRun !== null; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      instance._sweepExpiredLeases = async () => {
+        throw new Error("sweep boom");
+      };
+      instance._recoveryFailures = 0;
+      instance._recoveryRetryAtMs = null;
+      await state.storage.deleteAlarm();
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    await runDurableObjectAlarm(stub);
+    const first = await runInDurableObject(stub, async (instance, state) => ({
+      failures: instance._recoveryFailures as number,
+      retryAt: instance._recoveryRetryAtMs as number | null,
+      alarm: await state.storage.getAlarm(),
+    }));
+    expect(first.failures).toBe(1);
+    expect(first.retryAt).not.toBeNull();
+    const firstDelay = (first.retryAt as number) - Date.now();
+    expect(firstDelay).toBeGreaterThan(0);
+    expect(firstDelay).toBeLessThanOrEqual(2_000);
+    // The single alarm slot is held at the backoff horizon.
+    expect(first.alarm).toBeGreaterThanOrEqual((first.retryAt as number) - 1_000);
+    expect(first.alarm).toBeLessThanOrEqual((first.retryAt as number) + 1_000);
+
+    // A wake before the horizon must not re-run (and re-fail) the hook.
+    const held = await runInDurableObject(stub, async (instance) => {
+      await instance._runRecovery("alarm");
+      return instance._recoveryFailures as number;
+    });
+    expect(held, "backoff must hold retries before the horizon").toBe(1);
+
+    // After the horizon a second failure doubles the delay.
+    const second = await runInDurableObject(stub, async (instance) => {
+      instance._recoveryRetryAtMs = Date.now() - 1;
+      const startedAt = Date.now();
+      await instance._runRecovery("alarm");
+      return {
+        failures: instance._recoveryFailures as number,
+        retryAt: instance._recoveryRetryAtMs as number | null,
+        startedAt,
+      };
+    });
+    expect(second.failures).toBe(2);
+    const secondDelay = (second.retryAt as number) - second.startedAt;
+    expect(secondDelay).toBeGreaterThan(1_500);
+    expect(secondDelay).toBeLessThanOrEqual(4_000);
+
+    // The backoff is capped, not unbounded.
+    const capped = await runInDurableObject(stub, async (instance) => {
+      instance._recoveryFailures = 20;
+      instance._recoveryRetryAtMs = Date.now() - 1;
+      const startedAt = Date.now();
+      await instance._runRecovery("alarm");
+      return {
+        retryAt: instance._recoveryRetryAtMs as number | null,
+        startedAt,
+      };
+    });
+    const cappedDelay = (capped.retryAt as number) - capped.startedAt;
+    expect(cappedDelay).toBeGreaterThan(0);
+    expect(cappedDelay).toBeLessThanOrEqual(61_000);
   });
 
   // ─────────────────────────────────────────────────────────────────
@@ -1012,6 +2017,9 @@ describe("SessionDO recovery — DO-level", () => {
     let calls = 0;
     await runInDurableObject(stub, (instance) => {
       (instance as { _coldStartFlushDone: boolean })._coldStartFlushDone = false;
+      // The shared recovery hook also finalizes; this test isolates the
+      // request-level cold-start flush guard, so keep the hook out of it.
+      (instance as { _runRecovery: () => Promise<void> })._runRecovery = async () => {};
       const orig = (instance as unknown as { _finalizeStaleTurns: () => Promise<void> })._finalizeStaleTurns.bind(instance);
       (instance as unknown as { _finalizeStaleTurns: () => Promise<void> })._finalizeStaleTurns = async () => {
         calls++;
@@ -1245,7 +2253,10 @@ describe("SessionDO recovery — DO-level", () => {
     let firedCount = 0;
     await runInDurableObject(stub, async (instance, state) => {
       (instance as unknown as Record<string, unknown>)._oma_test_cron =
-        async function () { firedCount++; };
+        async function () {
+          const self = this as unknown as { _oma_test_cron_fired?: number };
+          self._oma_test_cron_fired = (self._oma_test_cron_fired ?? 0) + 1;
+        };
       // Cron "* * * * *" → every minute. Backdate `time` so alarm()
       // sees it as due now.
       const past = Math.floor(Date.now() / 1000) - 1;
@@ -1258,7 +2269,13 @@ describe("SessionDO recovery — DO-level", () => {
     });
 
     await runDurableObjectAlarm(stub);
-    await new Promise((r) => setTimeout(r, 50));
+    // Do not sleep here: `_scheduleNextAlarm` may re-arm at now+1ms when the
+    // cron row is still due, and workerd will fire a chained alarm that
+    // invokes the callback again. Read the count from DO state — the test
+    // runner heap is not the same as the isolate that runs alarm().
+    firedCount = await runInDurableObject(stub, (instance) =>
+      (instance as unknown as { _oma_test_cron_fired?: number })._oma_test_cron_fired ?? 0,
+    );
 
     expect(firedCount).toBe(1);
 

@@ -8,10 +8,12 @@
 
 import type {
   CreateSessionInput,
+  ResumeSessionOptions,
   SessionCreator,
   SessionEventInput,
   SessionId,
 } from "@open-managed-agents/integrations-core";
+import { SessionResumeNotIdleError } from "@open-managed-agents/integrations-core";
 
 export interface ServiceBindingSessionCreatorOptions {
   /** Secret shared with apps/main for the /v1/oma/internal/* path family. */
@@ -62,17 +64,25 @@ export class ServiceBindingSessionCreator implements SessionCreator {
     return { sessionId: data.sessionId };
   }
 
-  async resume(userId: string, sessionId: SessionId, event: SessionEventInput): Promise<void> {
+  async resume(
+    userId: string,
+    sessionId: SessionId,
+    event: SessionEventInput,
+    options?: ResumeSessionOptions,
+  ): Promise<void> {
     const res = await this.main.fetch(`http://main${this.path}/${sessionId}/events`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-internal-secret": this.secret,
       },
-      body: JSON.stringify({ userId, event }),
+      body: JSON.stringify({ userId, event, mcpServers: options?.mcpServers }),
     });
     if (!res.ok) {
       const body = await res.text();
+      if (res.status === 409 && body.includes("session_not_idle")) {
+        throw new SessionResumeNotIdleError();
+      }
       throw new Error(`SessionCreator.resume: ${res.status} ${body}`);
     }
   }

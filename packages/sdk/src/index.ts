@@ -2,7 +2,7 @@ import Anthropic, {
   type ClientOptions as AnthropicClientOptions,
 } from "@anthropic-ai/sdk";
 import { OmaResources } from "./oma.js";
-import type {} from "./agents.js";
+import type { OpenMaBeta } from "./agents.js";
 
 export type {
   OpenMaAgentAcp,
@@ -13,6 +13,15 @@ export type {
   OpenMaAgent,
   OpenMaAgentCreateParams,
   OpenMaAgentUpdateParams,
+  OpenMaAgentMultiagentParams,
+  OpenMaAgentMultiagent,
+  OpenMaMultiagent,
+  OpenMaSessionThreadAgent,
+  OpenMaSessionAgent,
+  OpenMaSession,
+  OpenMaAgents,
+  OpenMaSessions,
+  OpenMaBeta,
   OpenMaMcpServer,
   OpenMaMcpServerParams,
   OpenMaStdioMcpServer,
@@ -25,6 +34,10 @@ export type {
 export {
   OmaModelsResource,
   OmaModelCardsResource,
+  OmaHarnessesResource,
+  type OmaHarnessCatalog,
+  type OmaHarnessDescriptor,
+  type OmaHarnessExecutionPlacement,
   OmaResources,
   type OmaModelCard,
   type OmaModelCardCreateParams,
@@ -103,7 +116,7 @@ function mergeDefaultHeaders(
 
 export class OpenMA {
   readonly anthropic: Anthropic;
-  readonly beta: Anthropic["beta"];
+  readonly beta: OpenMaBeta;
   readonly oma: OmaResources;
 
   constructor(options: OpenMAOptions = {}) {
@@ -125,7 +138,9 @@ export class OpenMA {
         ...(userAgent ? { "user-agent": userAgent } : {}),
       }),
     });
-    this.beta = this.anthropic.beta;
+    // OpenMA's wire contract differs from SDK 0.120.0's coordinator types only.
+    // Keep the official resources and transport intact; do not normalize patches.
+    this.beta = this.anthropic.beta as unknown as OpenMaBeta;
     this.oma = new OmaResources(this.anthropic);
   }
 }

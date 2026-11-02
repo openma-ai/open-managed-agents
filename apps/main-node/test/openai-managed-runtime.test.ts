@@ -6,8 +6,8 @@ import type { SessionView } from "@open-managed-agents/managed-agents-applicatio
 import { LocalSubprocessSandbox } from "@open-managed-agents/sandbox/adapters/local-subprocess";
 import { createManagedSessionMapping } from "@open-managed-agents/openai-agents-compat";
 import { resourcesFixture } from "../../../packages/openai-agents-compat/test/helpers/resources";
-import { createNodeOpenAIAgentsRuntime } from "../src/openai-managed-runtime";
-import { createNoEnvironmentSandbox } from "../src/openai-no-environment";
+import { createNodeOpenAIAgentsRuntime } from "../../../packages/control-plane-node/src/openai-managed-runtime";
+import { createNoEnvironmentSandbox } from "../../../packages/control-plane-node/src/openai-no-environment";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
