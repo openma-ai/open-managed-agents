@@ -118,6 +118,65 @@ lost sandbox goes through ADR 0005 recovery.
 - A Session's sandbox mode does not change after create.
 - `self_hosted` / Environment Work keeps its current behaviour.
 
+
+### 6. New sandbox port shape (`packages/sandbox`)
+
+ADR 0014 defines a new runtime-agnostic sandbox port in `packages/sandbox`
+(today `packages/sandbox/src/ports.ts`) — "our port SDK". Callers use only
+this shape.
+
+**Readiness is first-class.** The port exposes a provision step that Session
+create starts (not awaited), and a readiness wait bounded by timeout/signal.
+"Ready" means prepared (resources, skills, env packages, workspace restore),
+not merely container up.
+
+### 7. Persistence capabilities are declared, not probed
+
+Each persisted resource declares its strategy and durability via the existing
+vocabulary, and is backed by the matching narrow primitive port:
+
+- Workspace: `WorkspaceStrategy`
+  (`durable_mount` / `retained_runtime` / `checkpoint_restore` / `ephemeral`)
+- Session outputs: `OutputStrategy`
+- Memory stores: `nativeMemoryStoreMount` when declared
+- Runtime suspend/checkpoint and prepared base: durable / best_effort as
+  declared
+
+Missing capability is reported as unsupported, never faked. Do not detect
+optional methods with `typeof x === "function"` on RPC stubs (always true on
+Workers RPC) — capability comes from declarations only.
+
+### 8. Legacy compatibility wrapper
+
+Existing adapters (E2B, Daytona, OpenSandbox, BoxRun, LiteBox,
+local-subprocess, Cloudflare) keep working through one legacy compatibility
+wrapper that maps current methods onto the new shape:
+
+- backup/restore → `checkpoint_restore`
+- managed lifecycle snapshot; outputs mount durability; native memory mount
+  only when declared; runtime port passthrough; else ephemeral
+- wraps legacy `start` + orchestrator.provision as lazy readiness
+
+Callers only use the new shape. The wrapper is deprecated and removed after
+adapters migrate natively.
+
+### 9. Shared semantics; dual-runtime certification
+
+Shared semantics stay in shared code (barrier, timeout, retry,
+tool-error-not-session.error, post-turn sync only if ready). Cloudflare and
+Node differ only in triggers and storage adapters (standing user lock). One
+shared port-level certification suite (the test list in Consequences) runs
+against both wrapped legacy adapters and native ones.
+
+### 10. Cloudflare is the first native implementation
+
+Dogfood the new port on `@cloudflare/sandbox` 1.0 helpers with our own
+`OmaSandbox` DO (official migrate guide:
+https://developers.cloudflare.com/sandbox/sdk/migrate/). Pin the SDK worker
+package and image shim versions equal and check them in CI. Remaining 0.x-era
+optional methods (`gitCheckout`, `startProcess`, `exec` timeout) get explicit
+semantics in the new port.
+
 ## Consequences
 
 - First text arrives without cold-start latency; the first sandbox tool waits
@@ -166,15 +225,29 @@ lost sandbox goes through ADR 0005 recovery.
    a tool is actually blocked on the wall, or never during a running turn?
 5. **Barrier timeout.** Default bound, and whether the model gets a hint
    ("sandbox still starting, retry") instead of a plain error.
+6. **Port method surface for 0.x leftovers.** Exact signatures and failure
+   modes for `gitCheckout`, `startProcess`, and bounded `exec` on the new
+   port (beyond "explicit semantics").
+7. **Capability declaration home.** Whether persistence capability records
+   live on the adapter factory, the sandbox handle, or both.
 
 ## Rollout
 
-1. Generalize #362's barrier on Node to all harnesses (not only Pi), keeping
-   accept-time start. Verify with the tests listed above.
-2. Cloudflare: make tool definitions config-derived, then replace the
+1. Settle the new port shape in `packages/sandbox` (readiness, declared
+   persistence capabilities, legacy compat wrapper) and dogfood it as the
+   first native implementation on Cloudflare with `@cloudflare/sandbox` 1.0 /
+   `OmaSandbox`. Add the shared port-level certification skeleton (wrapped
+   legacy + typed CF stub). Do not yet move provisioning to Session create or
+   change Node behaviour beyond wrapping.
+2. Generalize #362's barrier on Node to all harnesses (not only Pi), keeping
+   accept-time start, via the new port / wrapper. Verify with the tests listed
+   above.
+3. Cloudflare: make tool definitions config-derived, then replace the
    pre-harness `await warmUpSandbox()` with the barrier.
-3. Remove the synchronous reuse probe from the turn path on Node.
-4. Move the start to Session create on both runtimes, after open questions
+4. Remove the synchronous reuse probe from the turn path on Node.
+5. Move the start to Session create on both runtimes, after open questions
    1–3 are answered.
-5. Document the behaviour in `docs/` and the SDK; fold the research matrices
+6. Migrate remaining adapters onto the native port; deprecate and remove the
+   legacy wrapper.
+7. Document the behaviour in `docs/` and the SDK; fold the research matrices
    from the gist into `docs/` as reference, not into this ADR.
