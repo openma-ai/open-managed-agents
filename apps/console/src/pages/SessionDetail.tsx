@@ -26,6 +26,7 @@ import {
   type ManagedDeltaState,
 } from "../lib/managed-stream";
 import {
+  pendingManagedActions,
   projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
@@ -39,6 +40,7 @@ import { upsertSessionEvent } from "../lib/session-event-upsert";
 import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
 import {
   encodeGuiInterrupt,
+  encodeGuiToolConfirmation,
   encodeGuiUserMessage,
   ingestManagedWireEvent,
 } from "../lib/managed-event-bridge";
@@ -60,7 +62,7 @@ import {
 } from "../components/ai-elements/tool";
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
-import { QueueDock, type QueuedPrompt } from "@openma/common/chat-ui";
+import { QueueDock, ToolConfirmationAsk, type QueuedPrompt } from "@openma/common/chat-ui";
 import { settleOnlySendFailureNotice } from "../lib/send-rejection";
 import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
 import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
@@ -792,6 +794,15 @@ export function SessionDetail() {
   const needsAction = status !== "running" && projectedSessionState === "requires_action";
   const activeTurn = activeTurnId ? canonicalTurns.find((turn) => turn.id === activeTurnId) : undefined;
   const blockedToolNames = needsAction && activeTurn ? awaitedToolNames(activeTurn) : [];
+  const pendingConfirmations = useMemo(
+    () =>
+      needsAction
+        ? pendingManagedActions(events as WireSessionEvent[]).filter(
+            (action) => action.type === "confirmation",
+          )
+        : [],
+    [events, needsAction],
+  );
   /** Stable filtered list for Timeline — avoid reallocating on every
    *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
    *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
@@ -823,6 +834,34 @@ export function SessionDetail() {
       console.error("interrupt failed", e);
     }
     setInterrupting(false);
+  };
+
+  const confirmTool = async (decision: {
+    toolUseId: string;
+    result: "allow" | "deny";
+    denyMessage?: string;
+  }) => {
+    if (!id) return;
+    const encoded = encodeGuiToolConfirmation({
+      sessionId: id,
+      toolUseId: decision.toolUseId,
+      result: decision.result,
+      ...(decision.denyMessage ? { denyMessage: decision.denyMessage } : {}),
+      sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
+    });
+    if (!encoded.ok) {
+      toast.error(encoded.error || "Could not encode tool confirmation");
+      throw new Error(encoded.error || "encode failed");
+    }
+    await managedApi.sessions.events.send(id, {
+      events: [encoded.wire as {
+        type: "user.tool_confirmation";
+        tool_use_id: string;
+        result: "allow" | "deny";
+        deny_message?: string;
+        session_thread_id?: string;
+      }],
+    });
   };
 
   const markQueueBusy = (messageId: string, state: "removing" | "editing" | null) => {
@@ -1236,6 +1275,15 @@ export function SessionDetail() {
           {/* Shared Backchat queue UI. Console has no reorder API, so no
               reorder callback → no drag handle / arrows. Mid-run accept is
               already CMA steer (no explicit Steer button). */}
+          {pendingConfirmations.length > 0 ? (
+            <div className="mb-2 px-1">
+              <ToolConfirmationAsk
+                actions={pendingConfirmations}
+                disabled={sending || interrupting}
+                onSubmit={confirmTool}
+              />
+            </div>
+          ) : null}
           <QueueDock
             blocked={needsAction
               ? {

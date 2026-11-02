@@ -110,9 +110,17 @@ function managedTurnSlots(source: CanonicalChatTurn): AgentUITurnSlots {
       <Markdown>{item.text.slice(prefixSkip)}</Markdown>
     ),
     renderTool: ({ tool }) => (
-      <Tool defaultOpen={tool.status === "in_progress"}>
+      <Tool defaultOpen={tool.status === "in_progress" || tool.status === "pending"}>
         <ToolHeader
-          state={toolState(tool.status)}
+          state={toolState(
+            tool.status,
+            // AgentUI tools use `id` (= wire tool_use id). While the turn is
+            // parked on requires_action, pending/in_progress tools are waits
+            // for Allow/Deny (or a custom result) — never Completed.
+            source.status === "awaiting"
+              && (tool.status === "pending" || tool.status === "in_progress"
+                || (source.awaitingToolCallIds ?? []).includes(tool.id)),
+          )}
           title={tool.title || tool.name || "Tool"}
           toolName={tool.name || tool.title || "tool"}
           type="dynamic-tool"
@@ -195,7 +203,11 @@ function canonicalTurnStatus(status: CanonicalChatTurn["status"]) {
   }
 }
 
-function toolState(status: string | undefined) {
+function toolState(status: string | undefined, awaitingConfirmation = false) {
+  // requires_action / always_ask: never label Completed while parked.
+  if (awaitingConfirmation || status === "approval-requested") {
+    return "approval-requested" as const;
+  }
   switch (status) {
     case "pending": return "input-available" as const;
     case "in_progress": return "input-streaming" as const;

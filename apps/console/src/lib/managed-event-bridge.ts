@@ -188,4 +188,38 @@ export function encodeGuiInterrupt(input: {
   return { ok: true, wire: encoded.event as unknown as Record<string, unknown> };
 }
 
+
+export function encodeGuiToolConfirmation(input: {
+  sessionId: string;
+  toolUseId: string;
+  result: "allow" | "deny";
+  denyMessage?: string;
+  sessionThreadId?: string;
+  eventId?: string;
+}): { ok: true; wire: Record<string, unknown> } | { ok: false; error: string } {
+  const encoded = encodeManagedSessionInput({
+    schema_version: "oma.event.v1",
+    event_id: input.eventId ?? crypto.randomUUID(),
+    type: "user.permission_response",
+    session_id: input.sessionId,
+    ...(input.sessionThreadId ? { session_thread_id: input.sessionThreadId } : {}),
+    source: { kind: "user" },
+    occurred_at: new Date().toISOString(),
+    data: {
+      tool_call_id: input.toolUseId,
+      decision: input.result,
+      ...(input.result === "deny" && input.denyMessage
+        ? { message: input.denyMessage }
+        : {}),
+    },
+  });
+  if (!encoded.event) {
+    return {
+      ok: false,
+      error: encoded.diagnostics.map((d) => d.message).join("; ") || "encode failed",
+    };
+  }
+  return { ok: true, wire: encoded.event as unknown as Record<string, unknown> };
+}
+
 export { isOpenMAQueuedEvent };
