@@ -19,51 +19,12 @@ import "./index.css";
 import { AuthProvider } from "./lib/auth";
 import { I18nProvider } from "./i18n";
 import { Toaster } from "./components/ui/sonner";
-import { AppShell } from "./components/AppShell";
 import { OpenmaStartupLoader } from "./components/OpenmaStartupLoader";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { queryClient } from "./lib/query-client";
 import { loadBranding } from "./lib/branding";
 import { Login } from "./pages/Login";
-import { Dashboard } from "./pages/Dashboard";
-import { AgentsList } from "./pages/AgentsList";
-import { AgentDetail } from "./pages/AgentDetail";
-import { SessionsList } from "./pages/SessionsList";
-import { FilesList } from "./pages/FilesList";
-import { EnvironmentsList } from "./pages/EnvironmentsList";
-import { EnvironmentDetail } from "./pages/EnvironmentDetail";
-import { VaultsList } from "./pages/VaultsList";
-import { VaultDetail } from "./pages/VaultDetail";
-import { SkillsList } from "./pages/SkillsList";
-import { MemoryStoresList } from "./pages/MemoryStoresList";
-import { MemoryStoreDetail } from "./pages/MemoryStoreDetail";
-import { ModelCardsList } from "./pages/ModelCardsList";
-import { Budget } from "./pages/Budget";
-import { WorkspaceMembers, JoinWorkspace } from "./pages/WorkspaceMembers";
-import { ApiKeysList } from "./pages/ApiKeysList";
-import { CliLogin } from "./pages/CliLogin";
-import { RuntimesList } from "./pages/RuntimesList";
-import { ConnectRuntime } from "./pages/ConnectRuntime";
-import { EvalRunsList } from "./pages/EvalRunsList";
-import { EvalRunDetail } from "./pages/EvalRunDetail";
-import {
-  IntegrationsLinearList,
-  IntegrationsLinearWorkspace,
-  IntegrationsLinearPublishPage,
-  IntegrationsLinearPatInstallPage,
-} from "./pages/IntegrationsLinear";
-import {
-  IntegrationsGitHubList,
-  IntegrationsGitHubWorkspace,
-  IntegrationsGitHubBindPage,
-} from "./pages/IntegrationsGitHub";
-import {
-  IntegrationsSlackList,
-  IntegrationsSlackWorkspace,
-  IntegrationsSlackPublishPage,
-} from "./pages/IntegrationsSlack";
-import { LoopEditPage, LoopsPage, LoopTemplatesPage } from "./pages/Loops";
-import { BondDetailPage, BondLinkPage, BondsPage } from "./pages/Bonds";
+import { RouteLoadError, RouteLoading } from "./components/RouteLoading";
 import { consolePlugins } from "./plugins/registry";
 
 /**
@@ -85,7 +46,7 @@ import { consolePlugins } from "./plugins/registry";
  */
 
 const protectedRoutes: RouteObject[] = [
-  { index: true, element: <Dashboard />, handle: { crumb: "Dashboard" } },
+  { index: true, lazy: async () => ({ Component: (await import("./pages/Dashboard")).Dashboard }), handle: { crumb: "Dashboard" } },
   // Nested route groups so detail pages publish a proper hierarchy
   // through `useMatches()` — `/agents/:id` resolves to
   // [agents-parent, agents/:id], so AppBreadcrumb renders
@@ -94,10 +55,10 @@ const protectedRoutes: RouteObject[] = [
     path: "agents",
     handle: { crumb: "Agents" },
     children: [
-      { index: true, element: <AgentsList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/AgentsList")).AgentsList }) },
       {
         path: ":id",
-        element: <AgentDetail />,
+        lazy: async () => ({ Component: (await import("./pages/AgentDetail")).AgentDetail }),
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Agent" },
       },
     ],
@@ -106,7 +67,7 @@ const protectedRoutes: RouteObject[] = [
     path: "sessions",
     handle: { crumb: "Sessions" },
     children: [
-      { index: true, element: <SessionsList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/SessionsList")).SessionsList }) },
       {
         path: ":id",
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Session" },
@@ -121,15 +82,15 @@ const protectedRoutes: RouteObject[] = [
       },
     ],
   },
-  { path: "files", element: <FilesList />, handle: { crumb: "Files" } },
+  { path: "files", lazy: async () => ({ Component: (await import("./pages/FilesList")).FilesList }), handle: { crumb: "Files" } },
   {
     path: "evals",
     handle: { crumb: "Eval Runs" },
     children: [
-      { index: true, element: <EvalRunsList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/EvalRunsList")).EvalRunsList }) },
       {
         path: ":id",
-        element: <EvalRunDetail />,
+        lazy: async () => ({ Component: (await import("./pages/EvalRunDetail")).EvalRunDetail }),
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Eval Run" },
       },
     ],
@@ -138,23 +99,23 @@ const protectedRoutes: RouteObject[] = [
     path: "environments",
     handle: { crumb: "Environments" },
     children: [
-      { index: true, element: <EnvironmentsList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/EnvironmentsList")).EnvironmentsList }) },
       {
         path: ":id",
-        element: <EnvironmentDetail />,
+        lazy: async () => ({ Component: (await import("./pages/EnvironmentDetail")).EnvironmentDetail }),
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Environment" },
       },
     ],
   },
-  { path: "skills", element: <SkillsList />, handle: { crumb: "Skills" } },
+  { path: "skills", lazy: async () => ({ Component: (await import("./pages/SkillsList")).SkillsList }), handle: { crumb: "Skills" } },
   {
     path: "vaults",
     handle: { crumb: "Credential Vaults" },
     children: [
-      { index: true, element: <VaultsList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/VaultsList")).VaultsList }) },
       {
         path: ":id",
-        element: <VaultDetail />,
+        lazy: async () => ({ Component: (await import("./pages/VaultDetail")).VaultDetail }),
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Vault" },
       },
     ],
@@ -163,38 +124,38 @@ const protectedRoutes: RouteObject[] = [
     path: "memory",
     handle: { crumb: "Memory Stores" },
     children: [
-      { index: true, element: <MemoryStoresList /> },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/MemoryStoresList")).MemoryStoresList }) },
       {
         path: ":id",
-        element: <MemoryStoreDetail />,
+        lazy: async () => ({ Component: (await import("./pages/MemoryStoreDetail")).MemoryStoreDetail }),
         handle: { crumb: (m: UIMatch) => (m.params.id as string | undefined) ?? "Memory Store" },
       },
     ],
   },
-  { path: "model-cards", element: <ModelCardsList />, handle: { crumb: "Model Cards" } },
-  { path: "budget", element: <Budget />, handle: { crumb: "Budget" } },
-  { path: "members", element: <WorkspaceMembers />, handle: { crumb: "Members" } },
-  { path: "api-keys", element: <ApiKeysList />, handle: { crumb: "API Keys" } },
-  { path: "runtimes", element: <RuntimesList />, handle: { crumb: "Local Runtimes" } },
+  { path: "model-cards", lazy: async () => ({ Component: (await import("./pages/ModelCardsList")).ModelCardsList }), handle: { crumb: "Model Cards" } },
+  { path: "budget", lazy: async () => ({ Component: (await import("./pages/Budget")).Budget }), handle: { crumb: "Budget" } },
+  { path: "members", lazy: async () => ({ Component: (await import("./pages/WorkspaceMembers")).WorkspaceMembers }), handle: { crumb: "Members" } },
+  { path: "api-keys", lazy: async () => ({ Component: (await import("./pages/ApiKeysList")).ApiKeysList }), handle: { crumb: "API Keys" } },
+  { path: "runtimes", lazy: async () => ({ Component: (await import("./pages/RuntimesList")).RuntimesList }), handle: { crumb: "Local Runtimes" } },
   {
     path: "loops",
     handle: { crumb: "Loops" },
     children: [
-      { index: true, element: <LoopsPage /> },
-      { path: "new", element: <LoopEditPage />, handle: { crumb: "New" } },
-      { path: "templates", element: <LoopTemplatesPage />, handle: { crumb: "Templates" } },
-      { path: ":id", element: <LoopEditPage />, handle: { crumb: "Loop" } },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/Loops")).LoopsPage }) },
+      { path: "new", lazy: async () => ({ Component: (await import("./pages/Loops")).LoopEditPage }), handle: { crumb: "New" } },
+      { path: "templates", lazy: async () => ({ Component: (await import("./pages/Loops")).LoopTemplatesPage }), handle: { crumb: "Templates" } },
+      { path: ":id", lazy: async () => ({ Component: (await import("./pages/Loops")).LoopEditPage }), handle: { crumb: "Loop" } },
     ],
   },
   {
     path: "bonds",
     handle: { crumb: "Bonds" },
     children: [
-      { index: true, element: <BondsPage /> },
-      { path: "new", element: <BondLinkPage />, handle: { crumb: "New" } },
+      { index: true, lazy: async () => ({ Component: (await import("./pages/Bonds")).BondsPage }) },
+      { path: "new", lazy: async () => ({ Component: (await import("./pages/Bonds")).BondLinkPage }), handle: { crumb: "New" } },
       {
         path: ":id",
-        element: <BondDetailPage />,
+        lazy: async () => ({ Component: (await import("./pages/Bonds")).BondDetailPage }),
         handle: {
           crumb: (m: UIMatch) => {
             const id = (m.params.id as string | undefined) ?? "Bond";
@@ -212,20 +173,20 @@ const protectedRoutes: RouteObject[] = [
         path: "linear",
         handle: { crumb: "Linear" },
         children: [
-          { index: true, element: <IntegrationsLinearList /> },
+          { index: true, lazy: async () => ({ Component: (await import("./pages/IntegrationsLinear")).IntegrationsLinearList }) },
           {
             path: "publish",
-            element: <IntegrationsLinearPublishPage />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsLinear")).IntegrationsLinearPublishPage }),
             handle: { crumb: "Publish" },
           },
           {
             path: "install-pat",
-            element: <IntegrationsLinearPatInstallPage />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsLinear")).IntegrationsLinearPatInstallPage }),
             handle: { crumb: "Install PAT" },
           },
           {
             path: "installations/:id",
-            element: <IntegrationsLinearWorkspace />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsLinear")).IntegrationsLinearWorkspace }),
             handle: { crumb: "Workspace" },
           },
         ],
@@ -234,15 +195,15 @@ const protectedRoutes: RouteObject[] = [
         path: "github",
         handle: { crumb: "GitHub" },
         children: [
-          { index: true, element: <IntegrationsGitHubList /> },
+          { index: true, lazy: async () => ({ Component: (await import("./pages/IntegrationsGitHub")).IntegrationsGitHubList }) },
           {
             path: "bind",
-            element: <IntegrationsGitHubBindPage />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsGitHub")).IntegrationsGitHubBindPage }),
             handle: { crumb: "Bind" },
           },
           {
             path: "installations/:id",
-            element: <IntegrationsGitHubWorkspace />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsGitHub")).IntegrationsGitHubWorkspace }),
             handle: { crumb: "Workspace" },
           },
         ],
@@ -251,15 +212,15 @@ const protectedRoutes: RouteObject[] = [
         path: "slack",
         handle: { crumb: "Slack" },
         children: [
-          { index: true, element: <IntegrationsSlackList /> },
+          { index: true, lazy: async () => ({ Component: (await import("./pages/IntegrationsSlack")).IntegrationsSlackList }) },
           {
             path: "publish",
-            element: <IntegrationsSlackPublishPage />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsSlack")).IntegrationsSlackPublishPage }),
             handle: { crumb: "Publish" },
           },
           {
             path: "installations/:id",
-            element: <IntegrationsSlackWorkspace />,
+            lazy: async () => ({ Component: (await import("./pages/IntegrationsSlack")).IntegrationsSlackWorkspace }),
             handle: { crumb: "Workspace" },
           },
         ],
@@ -280,13 +241,15 @@ const protectedRoutes: RouteObject[] = [
 ];
 
 const router = createBrowserRouter([
-  { path: "join", element: <JoinWorkspace /> },
+  { path: "join", lazy: async () => ({ Component: (await import("./pages/WorkspaceMembers")).JoinWorkspace }), ErrorBoundary: RouteLoadError, HydrateFallback: RouteLoading },
   { path: "login", element: <Login /> },
-  { path: "cli/login", element: <CliLogin /> },
-  { path: "connect-runtime", element: <ConnectRuntime /> },
+  { path: "cli/login", lazy: async () => ({ Component: (await import("./pages/CliLogin")).CliLogin }), ErrorBoundary: RouteLoadError, HydrateFallback: RouteLoading },
+  { path: "connect-runtime", lazy: async () => ({ Component: (await import("./pages/ConnectRuntime")).ConnectRuntime }), ErrorBoundary: RouteLoadError, HydrateFallback: RouteLoading },
   {
-    element: <AppShell />,
+    lazy: async () => ({ Component: (await import("./components/AppShell")).AppShell }),
     children: protectedRoutes,
+    ErrorBoundary: RouteLoadError,
+    HydrateFallback: RouteLoading,
   },
 ]);
 
