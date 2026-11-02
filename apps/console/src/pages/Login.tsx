@@ -609,21 +609,10 @@ export function Login() {
             </Field>
           )}
 
-          {isEmailSendMode && turnstileSiteKey && (
-            <div className="hidden" aria-hidden="true">
-              <Turnstile
-                key={turnstileNonce}
-                siteKey={turnstileSiteKey}
-                onToken={handleTurnstileToken}
-                onExpire={resetTurnstile}
-              />
-            </div>
-          )}
-
           <div
             role="group"
             aria-label={mode === "login" ? "Sign in actions" : "Form actions"}
-            className="flex flex-col gap-2 pt-1"
+            className="flex select-none flex-col gap-2 pt-1"
           >
             <Button
               type="submit"
@@ -636,7 +625,7 @@ export function Login() {
                 ((mode === "login" || mode === "signup") && !password) ||
                 (mode === "reset-otp" && !password)
               }
-              className="h-10 w-full"
+              className="h-10 w-full disabled:pointer-events-auto"
             >
               {mode === "login"
                 ? "Sign in"
@@ -650,6 +639,22 @@ export function Login() {
                         ? "Reset password"
                         : "Verify"}
             </Button>
+            {/* OTP entry screens also need a fresh token for Resend. */}
+            {turnstileSiteKey && (
+              <div
+                role="region"
+                aria-label="Security verification"
+                className="flex min-h-[65px] justify-center"
+              >
+                <Turnstile
+                  key={turnstileNonce}
+                  siteKey={turnstileSiteKey}
+                  onToken={handleTurnstileToken}
+                  onExpire={resetTurnstile}
+                  appearance="always"
+                />
+              </div>
+            )}
             {mode === "login" && (
               <Button
                 type="button"
@@ -702,7 +707,7 @@ export function Login() {
         <div
           role="group"
           aria-label="Account options"
-          className="flex min-h-6 items-center justify-center gap-1 text-center text-sm text-fg-muted"
+          className="flex min-h-6 select-none items-center justify-center gap-1 text-center text-sm text-fg-muted"
         >
           {mode === "chooser" && emailEnabled && (
             <>

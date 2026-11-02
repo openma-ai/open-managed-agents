@@ -72,6 +72,8 @@ export function Turnstile({ siteKey, onToken, onExpire, appearance = "interactio
   const ref = useRef<HTMLDivElement>(null);
   const widgetId = useRef<string | null>(null);
   const [error, setError] = useState<string>("");
+  const callbacks = useRef({ onToken, onExpire });
+  callbacks.current = { onToken, onExpire };
 
   useEffect(() => {
     if (!siteKey || !ref.current) return;
@@ -81,8 +83,8 @@ export function Turnstile({ siteKey, onToken, onExpire, appearance = "interactio
         if (cancelled || !window.turnstile || !ref.current) return;
         widgetId.current = window.turnstile.render(ref.current, {
           sitekey: siteKey,
-          callback: onToken,
-          "expired-callback": onExpire,
+          callback: (token) => callbacks.current.onToken(token),
+          "expired-callback": () => callbacks.current.onExpire?.(),
           "error-callback": () => setError("Bot challenge failed to load. Please refresh."),
           appearance,
           theme: "auto",
@@ -96,7 +98,7 @@ export function Turnstile({ siteKey, onToken, onExpire, appearance = "interactio
         widgetId.current = null;
       }
     };
-  }, [siteKey, onToken, onExpire, appearance]);
+  }, [siteKey, appearance]);
 
   if (!siteKey) return null;
 
