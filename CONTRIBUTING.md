@@ -2,7 +2,7 @@
 
 This is the canonical contribution guide for the openma-ai organization. It lives in `open-managed-agents` first. To reuse it in another organization repository or an organization `.github` repository, replace the **This repository** section and update repository-specific links.
 
-The shared rules are conventional-commit titles, squash merges, small PRs, green CI with explained failures, compatibility checks for dependency upgrades and downstream bumps after release, private security reports, and an evidence report on every PR before merge.
+The shared rules are conventional-commit titles, squash merges, small PRs, searching for existing issues/PRs before opening new ones (bots must record the search), green CI with explained failures, compatibility checks for dependency upgrades and downstream bumps after release, private security reports, and an evidence report on every PR before merge.
 
 ## Branches
 
@@ -38,6 +38,23 @@ Change one concern or responsibility at a time. The `main-node` control-plane ex
 
 When lockfiles conflict, related dependency updates may be combined into one PR with one full CI run (#202 included #201–#206). List the included PRs in the description.
 
+## Deduplicate
+
+**Before** opening an issue or PR, search this repository for similar work. This applies to human contributors and bots / agents alike.
+
+1. Search open issues, recently closed issues, and open PRs. Use the symptom, the verbatim error message, and component or file names as keywords; when linking issue numbers, also search for `Fixes #N` / `#N`.
+2. If similar work already exists, attach to the existing issue or keep working on the existing PR branch. Do not open a new one.
+3. Additional requirement for bots / agents: before opening, record the search keywords and results (links or "no matches") in the task log or in the description about to be posted. If the results are non-empty and you still open a new one, explain why the existing issue / PR is insufficient.
+4. In the "Problem / motivation" section of the evidence report, list related issues / PRs, or state explicitly "Searched, no duplicates". The PR template has a matching checkbox.
+
+Example commands (replace `REPO` and the keywords for the current repository):
+
+```bash
+gh issue list --repo openma-ai/REPO --state open --search "<keywords>"
+gh issue list --repo openma-ai/REPO --state closed --search "<keywords>" --limit 20
+gh pr list --repo openma-ai/REPO --state open --search "<keywords>"
+```
+
 ## Evidence report
 
 **Before merge, the PR description or a comment must contain an evidence report for the current head SHA.** Do not merge if sections are missing or the evidence refers to an older SHA. This is not enforced by a status check: the author supplies the report and the maintainer verifies it. Use [the PR template](.github/pull_request_template.md).
@@ -46,7 +63,7 @@ Include all six sections. If a section does not apply, write “Not applicable�
 
 ### Problem / motivation
 
-For a bug, provide a reproduction **against the real product**: commands, versions, and verbatim output. Reasoning alone is not enough. For a new capability, explain who needs it and in what situation.
+For a bug, provide a reproduction **against the real product**: commands, versions, and verbatim output. Reasoning alone is not enough. For a new capability, explain who needs it and in what situation. Also list related issues / PRs, or write "Searched, no duplicates" (see [Deduplicate](#deduplicate)).
 
 ### Root cause
 
