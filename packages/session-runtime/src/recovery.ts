@@ -30,6 +30,7 @@
 // Warnings are returned (not appended to the event log) so the caller
 // can broadcast them to live WS subscribers without polluting history.
 
+import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { StreamRepo, EventLogRepo } from "@open-managed-agents/event-log";
 
@@ -132,7 +133,7 @@ export async function recoverInterruptedState(
   for (const [useId, info] of useTypes) {
     if (resolved.has(useId)) continue;
     if (parkedToolUseIds?.has(useId)) continue;
-    const placeholder = "(interrupted by maintenance restart — retry if needed)";
+    const placeholder = UNKNOWN_TOOL_RESULT_TEXT;
     if (info.type === "agent.tool_use") {
       history.append({
         type: "agent.tool_result",

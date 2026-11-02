@@ -428,3 +428,15 @@ describe("recoverInterruptedState", () => {
     });
   });
 });
+
+// An unknown outcome is not evidence that a side effect did not happen.
+it.each(["agent.tool_use", "agent.mcp_tool_use"] as const)("reports an unknown %s outcome without recommending a blind retry", async (type) => {
+  const f = newFixture();
+  f.log.append({ type, id: "unknown-call", name: "bash", input: {} } as SessionEvent);
+  await recoverInterruptedState(f.streams, f.log);
+  const result = f.log.getEvents().find(e => e.type === (type === "agent.tool_use" ? "agent.tool_result" : "agent.mcp_tool_result"));
+  expect(result).toMatchObject({
+    is_error: true,
+    content: "Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.",
+  });
+});

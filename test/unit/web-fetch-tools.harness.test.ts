@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { buildTools } from "../../apps/agent/src/harness/tools";
+import { buildTools, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import * as toolHttpFetch from "../../apps/agent/src/harness/tool-http-fetch";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import type { AgentConfig } from "@open-managed-agents/shared";
@@ -25,6 +25,19 @@ const TOOL_EXEC_OPTS = {
   abortSignal: undefined as any,
 };
 
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
+
 function mockFetch(body = "<html>ok</html>", init?: Partial<ResponseInit>) {
   vi.stubGlobal(
     "fetch",
@@ -44,9 +57,8 @@ describe("web_fetch egress (rescoped #281)", () => {
         networking: { type: "limited", allowed_hosts: ["example.com"] },
       },
     });
-    const result = await tools.web_fetch.execute(
-      { url: "https://evil.com/page" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://evil.com/page" }, TOOL_EXEC_OPTS),
     );
     expect(result).toMatch(/not allowed/i);
   });
@@ -66,9 +78,8 @@ describe("web_fetch egress (rescoped #281)", () => {
         networking: { type: "limited", allowed_hosts: ["example.com"] },
       },
     });
-    const result = await tools.web_fetch.execute(
-      { url: "https://example.com/redirect" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://example.com/redirect" }, TOOL_EXEC_OPTS),
     );
     expect(result).toMatch(/Error:.*not allowed/i);
   });
@@ -164,9 +175,8 @@ describe("web_fetch egress (rescoped #281)", () => {
       }),
     );
     const tools = await buildTools(makeAgentConfig(), new TestSandbox());
-    const result = await tools.web_fetch.execute(
-      { url: "https://example.com/timeout" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.web_fetch.execute({ url: "https://example.com/timeout" }, TOOL_EXEC_OPTS),
     );
     expect(result).toMatch(/^Error:/i);
     expect(String(result)).toMatch(/timed out/i);
@@ -281,9 +291,11 @@ describe("web_search timeouts and wiring", () => {
       ),
     );
     const tools = await buildTools(makeAgentConfig(), new TestSandbox());
-    const result = await tools.web_search.execute(
-      { query: "test query" },
-      { ...TOOL_EXEC_OPTS, abortSignal: AbortSignal.timeout(80) },
+    const result = await failureText(
+      tools.web_search.execute(
+        { query: "test query" },
+        { ...TOOL_EXEC_OPTS, abortSignal: AbortSignal.timeout(80) },
+      ),
     );
     expect(result).toMatch(/timed out/i);
   });
@@ -311,14 +323,14 @@ describe("web_search timeouts and wiring", () => {
   it("DDG reports missing VQD token", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>no token</html>", { status: 200 })));
     const tools = await buildTools(makeAgentConfig(), new TestSandbox());
-    const result = await tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS));
     expect(result).toContain("failed to get search token");
   });
 
   it("DDG reports HTTP error on token fetch", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("err", { status: 503 })));
     const tools = await buildTools(makeAgentConfig(), new TestSandbox());
-    const result = await tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS));
     expect(result).toContain("DuckDuckGo error: 503");
   });
 
@@ -333,7 +345,7 @@ describe("web_search timeouts and wiring", () => {
       }),
     );
     const tools = await buildTools(makeAgentConfig(), new TestSandbox());
-    const result = await tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.web_search.execute({ query: "x" }, TOOL_EXEC_OPTS));
     expect(result).toContain("rate limited");
   });
 
@@ -380,7 +392,7 @@ describe("web_search timeouts and wiring", () => {
       new TestSandbox(),
       { TAVILY_API_KEY: "tvly-test" },
     );
-    const result = await tools.web_search.execute({ query: "q" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.web_search.execute({ query: "q" }, TOOL_EXEC_OPTS));
     expect(result).toBe("Error: network down");
   });
 
@@ -391,7 +403,7 @@ describe("web_search timeouts and wiring", () => {
       new TestSandbox(),
       { TAVILY_API_KEY: "tvly-test" },
     );
-    const result = await tools.web_search.execute({ query: "q" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.web_search.execute({ query: "q" }, TOOL_EXEC_OPTS));
     expect(result).toBe("Error: plain fail");
   });
 });

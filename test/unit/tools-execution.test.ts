@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
-import { buildTools } from "../../apps/agent/src/harness/tools";
+import { buildTools, ToolFailureError } from "../../apps/agent/src/harness/tools";
 import { TestSandbox } from "../../apps/agent/src/runtime/sandbox";
 import { InMemoryHistory, eventsToMessages } from "../../apps/agent/src/runtime/history";
 import type { AgentConfig } from "@open-managed-agents/shared";
@@ -48,6 +48,19 @@ const TOOL_EXEC_OPTS = {
   abortSignal: undefined as any,
 };
 
+// Tool failures reject with ToolFailureError (#359) instead of resolving
+// to a plain "Error: ..." result string, so harness loops can mark the
+// tool result is_error. The model-facing text is unchanged; this helper
+// unwraps it for the text assertions below.
+async function failureText(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => null,
+    (e) => e,
+  );
+  expect(err).toBeInstanceOf(ToolFailureError);
+  return String(err);
+}
+
 // ============================================================
 // 1. Built-in tool execution
 // ============================================================
@@ -78,9 +91,9 @@ describe("Built-in tool execution", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const tools = await buildTools(makeAgentConfig(), failing);
-      const bash = await tools.bash.execute({ command: "curl x" }, TOOL_EXEC_OPTS);
+      const bash = await failureText(tools.bash.execute({ command: "curl x" }, TOOL_EXEC_OPTS));
       expect(bash).toBe("Error: fetch failed\ncause: connect ECONNREFUSED 10.0.0.1:443");
-      const read = await tools.read.execute({ file_path: "/workspace/a.txt" }, TOOL_EXEC_OPTS);
+      const read = await failureText(tools.read.execute({ file_path: "/workspace/a.txt" }, TOOL_EXEC_OPTS));
       expect(read).toBe("Error: This tool call was interrupted because the environment restarted.");
       for (const result of [bash, read]) expect(result).not.toMatch(/\n\s+at /);
       // Operators still get the full error in the server log.
@@ -299,7 +312,7 @@ describe("Built-in tool execution", () => {
       writeFile: async () => "ok",
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
-    const result = await tools.grep.execute({ pattern: "x", path: "/missing" }, TOOL_EXEC_OPTS);
+    const result = await failureText(tools.grep.execute({ pattern: "x", path: "/missing" }, TOOL_EXEC_OPTS));
     expect(result).toContain("Error");
     expect(result).toContain("code 2");
   });
@@ -365,9 +378,11 @@ describe("Built-in tool execution", () => {
       writeFile: async () => "ok",
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
-    const result = await tools.edit.execute(
-      { file_path: "/workspace/x", old_string: "foo", new_string: "baz" },
-      TOOL_EXEC_OPTS,
+    const result = await failureText(
+      tools.edit.execute(
+        { file_path: "/workspace/x", old_string: "foo", new_string: "baz" },
+        TOOL_EXEC_OPTS,
+      ),
     );
     expect(result).toContain("appears 2 times");
     expect(result).toContain("replace_all=true");
@@ -982,13 +997,15 @@ describe("Edit tool safety", () => {
     };
     const tools = await buildTools(makeAgentConfig(), sandbox);
 
-    const result = await tools.edit.execute(
-      {
-        path: "/test.py",
-        old_string: "nonexistent",
-        new_string: "replacement",
-      },
-      TOOL_EXEC_OPTS
+    const result = await failureText(
+      tools.edit.execute(
+        {
+          path: "/test.py",
+          old_string: "nonexistent",
+          new_string: "replacement",
+        },
+        TOOL_EXEC_OPTS,
+      ),
     );
     expect(result).toContain("not found");
   });

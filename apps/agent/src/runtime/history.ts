@@ -1,3 +1,4 @@
+import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import type { ModelMessage, ToolModelMessage, AssistantModelMessage } from "ai";
 import type { HistoryStore } from "../harness/interface";
 import { CfDoEventLog, ensureSchema as ensureCfDoSchema } from "@open-managed-agents/event-log/cf-do";
@@ -79,7 +80,7 @@ export type FileResolver = (file_id: string) => Promise<ResolvedFile | null>;
  */
 /** Official CMA (session-threads): text of the error result that closes a
  * pending tool call on interrupt. */
-export const INTERRUPTED_TOOL_RESULT_TEXT = "Tool execution was interrupted before completion. Please retry.";
+export const INTERRUPTED_TOOL_RESULT_TEXT = UNKNOWN_TOOL_RESULT_TEXT;
 
 /**
  * Shared core (CF SessionDO + Node runner): events to append when a
