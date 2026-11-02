@@ -26,6 +26,7 @@ import {
   type ManagedDeltaState,
 } from "../lib/managed-stream";
 import {
+  pendingManagedActions,
   projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
@@ -39,6 +40,7 @@ import { upsertSessionEvent } from "../lib/session-event-upsert";
 import { mergeSendResponseIntoOutbox } from "../lib/session-send-outbox";
 import {
   encodeGuiInterrupt,
+  encodeGuiToolConfirmation,
   encodeGuiUserMessage,
   ingestManagedWireEvent,
 } from "../lib/managed-event-bridge";
@@ -60,7 +62,7 @@ import {
 } from "../components/ai-elements/tool";
 import { CodeBlock } from "../components/ai-elements/code-block";
 import { SessionComposer } from "../components/session/SessionComposer";
-import { QueueDock, type QueuedPrompt } from "@openma/common/chat-ui";
+import { QueueDock, ToolConfirmationAsk, type QueuedPrompt } from "@openma/common/chat-ui";
 import { settleOnlySendFailureNotice } from "../lib/send-rejection";
 import { awaitedToolNames } from "../components/session/CanonicalSessionTurn";
 import { CONSOLE_API_BETAS, getActiveTenantId, useApi } from "../lib/api";
@@ -792,6 +794,15 @@ export function SessionDetail() {
   const needsAction = status !== "running" && projectedSessionState === "requires_action";
   const activeTurn = activeTurnId ? canonicalTurns.find((turn) => turn.id === activeTurnId) : undefined;
   const blockedToolNames = needsAction && activeTurn ? awaitedToolNames(activeTurn) : [];
+  const pendingConfirmations = useMemo(
+    () =>
+      needsAction
+        ? pendingManagedActions(events as WireSessionEvent[]).filter(
+            (action) => action.type === "confirmation",
+          )
+        : [],
+    [events, needsAction],
+  );
   /** Stable filtered list for Timeline — avoid reallocating on every
    *  SessionDetail render (SSE stream updates, keystrokes, etc.), which
    *  would otherwise invalidate TimelineView's bucketIntoTurns memo. */
@@ -823,6 +834,34 @@ export function SessionDetail() {
       console.error("interrupt failed", e);
     }
     setInterrupting(false);
+  };
+
+  const confirmTool = async (decision: {
+    toolUseId: string;
+    result: "allow" | "deny";
+    denyMessage?: string;
+  }) => {
+    if (!id) return;
+    const encoded = encodeGuiToolConfirmation({
+      sessionId: id,
+      toolUseId: decision.toolUseId,
+      result: decision.result,
+      ...(decision.denyMessage ? { denyMessage: decision.denyMessage } : {}),
+      sessionThreadId: activeThreadId !== "sthr_primary" ? activeThreadId : undefined,
+    });
+    if (!encoded.ok) {
+      toast.error(encoded.error || "Could not encode tool confirmation");
+      throw new Error(encoded.error || "encode failed");
+    }
+    await managedApi.sessions.events.send(id, {
+      events: [encoded.wire as {
+        type: "user.tool_confirmation";
+        tool_use_id: string;
+        result: "allow" | "deny";
+        deny_message?: string;
+        session_thread_id?: string;
+      }],
+    });
   };
 
   const markQueueBusy = (messageId: string, state: "removing" | "editing" | null) => {
@@ -1233,40 +1272,71 @@ export function SessionDetail() {
         <ManagedSessionConversation
           afterTurns={transientActivity}
           composer={<>
-          {/* Shared Backchat queue UI. Console has no reorder API, so no
-              reorder callback → no drag handle / arrows. Mid-run accept is
-              already CMA steer (no explicit Steer button). */}
-          <QueueDock
-            blocked={needsAction
-              ? {
-                  reason: "requires_action",
-                  toolNames: blockedToolNames,
-                  toolCallIds: activeTurn?.awaitingToolCallIds,
-                  onInterrupt: interrupt,
-                }
-              : undefined}
-            callbacks={{
-              update: updateQueued,
-              remove: async (messageId) => { await cancelQueued(messageId); },
-            }}
-            prompts={queueDockItems}
-          />
-          <SessionComposer
-            interrupting={interrupting}
-            placeholder={composerPlaceholder}
-            notice={composerNotice}
-            restoreDraft={composerRestore}
-            onError={(error) => toast.error(error.message)}
-            onStop={() => void interrupt()}
-            onSubmit={async ({ text, files }) => {
-              const rawFiles = files
-                .map((file) => file.file)
-                .filter((file): file is File => file instanceof File);
-              await send(text, rawFiles);
-            }}
-            running={status === "running"}
-            sending={sending}
-          />
+          {/* Shared queue + Backchat-style parked confirmation.
+              Console has no reorder API, so no reorder callback → no drag
+              handle / arrows. Mid-run accept is already CMA steer.
+              Empty queue must stay hidden (no "0 queued · waiting on tool…").
+              When always_ask parks, ToolConfirmationAsk occupies the composer
+              slot the same way Backchat's ComposerBrokerAsk does. */}
+          {queueDockItems.length > 0 ? (
+            <QueueDock
+              blocked={needsAction
+                ? {
+                    reason: "requires_action",
+                    toolNames: blockedToolNames,
+                    toolCallIds: activeTurn?.awaitingToolCallIds,
+                    onInterrupt: interrupt,
+                  }
+                : undefined}
+              callbacks={{
+                update: updateQueued,
+                remove: async (messageId) => { await cancelQueued(messageId); },
+              }}
+              prompts={queueDockItems}
+            />
+          ) : needsAction && pendingConfirmations.length === 0 ? (
+            <QueueDock
+              blocked={{
+                reason: "requires_action",
+                toolNames: blockedToolNames,
+                toolCallIds: activeTurn?.awaitingToolCallIds,
+                onInterrupt: interrupt,
+              }}
+              callbacks={{
+                update: updateQueued,
+                remove: async (messageId) => { await cancelQueued(messageId); },
+              }}
+              prompts={queueDockItems}
+            />
+          ) : null}
+          {pendingConfirmations.length > 0 ? (
+            // Shared common card — occupies the composer slot like Backchat's
+            // pending ask (no empty QueueDock strip above/below).
+            <div data-composer-ask-slot="true" data-tool-confirmation-host="true">
+              <ToolConfirmationAsk
+                actions={pendingConfirmations}
+                disabled={sending || interrupting}
+                onSubmit={confirmTool}
+              />
+            </div>
+          ) : (
+            <SessionComposer
+              interrupting={interrupting}
+              placeholder={composerPlaceholder}
+              notice={composerNotice}
+              restoreDraft={composerRestore}
+              onError={(error) => toast.error(error.message)}
+              onStop={() => void interrupt()}
+              onSubmit={async ({ text, files }) => {
+                const rawFiles = files
+                  .map((file) => file.file)
+                  .filter((file): file is File => file instanceof File);
+                await send(text, rawFiles);
+              }}
+              running={status === "running"}
+              sending={sending}
+            />
+          )}
           </>}
           empty={hasTransientActivity ? transientActivity : undefined}
           activeTurnId={activeTurnId}
