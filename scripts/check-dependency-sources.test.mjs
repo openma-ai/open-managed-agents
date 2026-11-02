@@ -81,3 +81,10 @@ for (const section of ['dependencies', 'devDependencies', 'optionalDependencies'
     assert.match(result.stderr, new RegExp(section));
   });
 }
+
+test('accepts explicit npm registry tarball URLs, including quoted YAML', () => {
+  for (const url of ['https://registry.npmjs.org/react/-/react-19.0.0.tgz', '"https://registry.npmjs.org/react/-/react-19.0.0.tgz"']) {
+    const result = check({ 'package.json': '{}', 'pnpm-lock.yaml': `packages:\n  react@19.0.0:\n    resolution: {tarball: ${url}}\n` });
+    assert.equal(result.status, 0, result.stderr);
+  }
+});

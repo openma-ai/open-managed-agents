@@ -32,7 +32,8 @@ for (const path of files) {
       const link = /^\s+version:\s+['"]?link:([^'"\s]+)/.exec(line);
       const badLink = link && !manifests.some(m => m.path === posix.join(importer ?? '', link[1], 'package.json'));
       const badSource = /(?:^|[\s'"@{,])(?:file|git\+https?|git\+ssh|github):/.test(line);
-      const badTarball = /tarball:\s*['"]?(?!https:\/\/registry\.npmjs\.org\/)/.test(line);
+      const tarball = /tarball:\s*['"]?([^'"\s,}]+)/.exec(line);
+      const badTarball = tarball && !tarball[1].startsWith('https://registry.npmjs.org/');
       if (badLink || badSource || badTarball) {
         problems.push(`${path}:${index + 1}: non-registry package resolution: ${line.trim()}`);
       }
