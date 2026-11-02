@@ -25,7 +25,7 @@ export interface CfPricing {
   d1: { read: number; write: number; storage_gb: number };
   workers_ai: { neurons: number };
   browser_rendering: { hour: number };
-  containers: { cpu_vcpu_s: number; mem_gib_s: number };
+  containers: { cpu_vcpu_s: number; mem_gib_s: number; disk_gib_s: number };
 }
 
 export interface CfIncluded {
@@ -35,7 +35,7 @@ export interface CfIncluded {
   r2: { class_a: number; class_b: number; storage_gb: number };
   d1: { read: number; write: number; storage_gb: number };
   browser_rendering: { hours: number };
-  containers: { cpu_vcpu_min: number; mem_gib_h: number };
+  containers: { cpu_vcpu_min: number; mem_gib_h: number; disk_gib_h: number };
 }
 
 export const DEFAULT_PRICING: CfPricing = {
@@ -46,7 +46,7 @@ export const DEFAULT_PRICING: CfPricing = {
   d1: { read: 0.001, write: 1.00, storage_gb: 0.75 },
   workers_ai: { neurons: 0.011 },
   browser_rendering: { hour: 0.09 },
-  containers: { cpu_vcpu_s: 0.000020, mem_gib_s: 0.0000025 },
+  containers: { cpu_vcpu_s: 0.000020, mem_gib_s: 0.0000025, disk_gib_s: 0.00000007 },
 };
 
 export const INCLUDED: CfIncluded = {
@@ -56,7 +56,7 @@ export const INCLUDED: CfIncluded = {
   r2: { class_a: 1_000_000, class_b: 10_000_000, storage_gb: 10 },
   d1: { read: 25_000_000_000, write: 50_000_000, storage_gb: 5 },
   browser_rendering: { hours: 10 },
-  containers: { cpu_vcpu_min: 375, mem_gib_h: 25 },
+  containers: { cpu_vcpu_min: 375, mem_gib_h: 25, disk_gib_h: 200 },
 };
 
 function clonePricing(pricing: CfPricing): CfPricing {
@@ -334,22 +334,33 @@ async function queryBrowserRendering(acct: string, token: string, period: CostPe
 async function queryContainers(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const data = await gql<{
-    containersMetricsAdaptiveGroups: Array<{ sum: { allocatedCpu: number; allocatedMemory: number } }>;
-  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { containersMetricsAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { allocatedCpu allocatedMemory } } } } }`, fetcher);
+    containersUsageAdaptiveGroups: Array<{ sum: { cpuTimeSec: number; allocatedMemory: number; allocatedDisk: number } }>;
+  }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { containersUsageAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { cpuTimeSec allocatedMemory allocatedDisk } } } } }`, fetcher);
 
-  const rows = data?.containersMetricsAdaptiveGroups ?? [];
-  const cpuS = rows.reduce((s, r) => s + r.sum.allocatedCpu, 0);
+  const rows = data?.containersUsageAdaptiveGroups ?? [];
+  const cpuS = rows.reduce((s, r) => s + r.sum.cpuTimeSec, 0);
   const memGiBs = rows.reduce((s, r) => s + r.sum.allocatedMemory, 0) / (1024 ** 3);
+  const diskGiBs = rows.reduce((s, r) => s + r.sum.allocatedDisk, 0) / (1024 ** 3);
 
   const inclCpuS = INCLUDED.containers.cpu_vcpu_min * 60;
   const inclMemS = INCLUDED.containers.mem_gib_h * 3600;
+  const inclDiskS = INCLUDED.containers.disk_gib_h * 3600;
 
   return {
-    usage: { cpu_seconds: +cpuS.toFixed(2), memory_gib_seconds: +memGiBs.toFixed(2) },
-    included: { cpu_seconds: inclCpuS, memory_gib_seconds: inclMemS },
+    usage: {
+      cpu_seconds: +cpuS.toFixed(2),
+      memory_gib_seconds: +memGiBs.toFixed(2),
+      disk_gib_seconds: +diskGiBs.toFixed(2),
+    },
+    included: {
+      cpu_seconds: inclCpuS,
+      memory_gib_seconds: inclMemS,
+      disk_gib_seconds: inclDiskS,
+    },
     cost:
       Math.max(0, cpuS - inclCpuS) * pricing.containers.cpu_vcpu_s +
-      Math.max(0, memGiBs - inclMemS) * pricing.containers.mem_gib_s,
+      Math.max(0, memGiBs - inclMemS) * pricing.containers.mem_gib_s +
+      Math.max(0, diskGiBs - inclDiskS) * pricing.containers.disk_gib_s,
   };
 }
 

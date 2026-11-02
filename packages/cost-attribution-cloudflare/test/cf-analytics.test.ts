@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateCostReport } from "./cf-analytics";
+import { generateCostReport } from "../src/cf-analytics";
 
 function accountFor(query: string): Record<string, unknown> {
   if (query.includes("workersInvocationsAdaptive"))
@@ -37,10 +37,16 @@ function accountFor(query: string): Record<string, unknown> {
         { sum: { totalSessionDurationMs: 72_000_000 } },
       ],
     };
-  if (query.includes("containersMetricsAdaptiveGroups"))
+  if (query.includes("containersUsageAdaptiveGroups"))
     return {
-      containersMetricsAdaptiveGroups: [
-        { sum: { allocatedCpu: 30_000, allocatedMemory: 100_000 * 1024 ** 3 } },
+      containersUsageAdaptiveGroups: [
+        {
+          sum: {
+            cpuTimeSec: 30_000,
+            allocatedMemory: 100_000 * 1024 ** 3,
+            allocatedDisk: 0,
+          },
+        },
       ],
     };
   throw new Error(`Unexpected Cloudflare query: ${query}`);
@@ -69,7 +75,7 @@ describe("generateCostReport", () => {
     );
 
     expect(queries.join("\n")).not.toMatch(
-      /objectName|wallTime|sum \{ neurons|modelName|durationMs|cpuTimeUs|memoryGiBSeconds/,
+      /objectName|wallTime|sum \{ neurons|modelName|durationMs|cpuTimeUs|memoryGiBSeconds|containersMetricsAdaptiveGroups|allocatedCpu/,
     );
     expect(report.attribution.data_completeness).toBe("complete");
     expect(report.attribution.warnings).toEqual(["provider_billing_unavailable"]);
