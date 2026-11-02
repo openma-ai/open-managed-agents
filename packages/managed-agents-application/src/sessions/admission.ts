@@ -7,8 +7,8 @@
  *
  * - `admit` keeps the create policy from #428: rate limit -> daily cap ->
  *   usage gate.
- * - `admitSandboxStart` is usage-only so turns and thread starts never burn
- *   the create rate limit or daily create quota.
+ * - `admitSandboxStart` / `admitThreadStart` are usage-only so turns and
+ *   thread starts never burn the create rate limit or daily create quota.
  *
  * Both entry points share the persisted-session policy (self-hosted/local
  * skip, fail-open on meter errors, rejection shapes). Hosts only provide the
@@ -49,10 +49,17 @@ export interface SessionCreateAdmissionPort {
   /** Create-time admission: rate limit -> daily cap -> usage gate. */
   admit(input: SessionAdmissionInput): Promise<SessionCreateAdmissionDecision>;
   /**
-   * Usage-only admission for a new turn or a sub-agent thread start. Never
+   * Usage-only admission for a new turn on an existing Session. Never
    * increments the create quota and never applies the create rate limit.
    */
   admitSandboxStart(input: SessionAdmissionInput): Promise<SessionSandboxStartAdmissionDecision>;
+  /**
+   * Usage-only admission for a sub-agent / session-thread start. Same policy
+   * as `admitSandboxStart` (local skip, fail-open, payment_required). Kept as
+   * a distinct method so call sites can instrument thread starts without
+   * overloading turn admission naming.
+   */
+  admitThreadStart(input: SessionAdmissionInput): Promise<SessionSandboxStartAdmissionDecision>;
 }
 
 /** Short-window rate limiter adapter (e.g. CF Rate Limiting binding). */
@@ -147,6 +154,12 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
     return this.admitUsage(input, "session.turn.usage_gate_failed");
   }
 
+  async admitThreadStart(
+    input: SessionAdmissionInput,
+  ): Promise<SessionSandboxStartAdmissionDecision> {
+    return this.admitUsage(input, "session.thread.usage_gate_failed");
+  }
+
   private async admitUsage(
     input: SessionAdmissionInput,
     op: string,
@@ -186,4 +199,11 @@ export class SessionCreateAdmissionService implements SessionCreateAdmissionPort
 export const admitAllSessionCreates: SessionCreateAdmissionPort = {
   admit: async () => ({ type: "admitted" }),
   admitSandboxStart: async () => ({ type: "admitted" }),
+  admitThreadStart: async () => ({ type: "admitted" }),
+};
+
+/** Alias: thread-start port defaults to admit-all when no meter is wired. */
+export type SessionThreadStartAdmissionPort = Pick<SessionCreateAdmissionPort, "admitThreadStart">;
+export const admitAllThreadStarts: SessionThreadStartAdmissionPort = {
+  admitThreadStart: async () => ({ type: "admitted" }),
 };

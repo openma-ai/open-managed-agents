@@ -150,6 +150,7 @@ import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf"
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
+import { sessionThreadStartAdmissionFromEnv } from "./session-thread-start-admission";
 import {
   loadManagedSessionResources,
   mountResources,
@@ -5657,6 +5658,30 @@ export class SessionDO extends DurableObject<Env> {
     parentThreadId: string = "sthr_primary",
     parentSignal?: AbortSignal,
   ): Promise<string> {
+    // Both inline and predefined children use the immutable Session snapshot.
+    const parentConfig = parentThreadId === "sthr_primary"
+      ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
+    if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
+    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
+
+    // Thread-start admission port only (admit | deny). Default admit-all when
+    // no USAGE_METER. CF adapter owns meter / freeze / cache; SessionDO maps
+    // deny onto the existing BillingError edge path — no thread row or events.
+    const subEnvironment = this.state.environment_id
+      ? await this.getEnvConfig(this.state.environment_id)
+      : null;
+    const threadAdmit = await sessionThreadStartAdmissionFromEnv(this.env).admitThreadStart({
+      workspaceId: this.state.tenant_id,
+      agentId: subAgent.id,
+      environmentId: this.state.environment_id,
+      isLocalRuntime:
+        subAgent.runtime_binding != null ||
+        subEnvironment?.config?.type === "self_hosted",
+    });
+    if (threadAdmit.type !== "admitted") {
+      throw new BillingError(threadAdmit.message);
+    }
+
     // Generate a unique thread ID. Prefix `sthr_` matches AMA spec
     // (BetaManagedAgentsSessionThread.id is `sthr_*`); previous prefix
     // was `thread_*` and pre-existing live sessions may still hold those
@@ -5667,12 +5692,6 @@ export class SessionDO extends DurableObject<Env> {
     // owner; walking this map lets projection writes remain fenced even when
     // the child event carries its own session_thread_id.
     this._executionParentLane.set(threadId, parentThreadId);
-
-    // Both inline and predefined children use the immutable Session snapshot.
-    const parentConfig = parentThreadId === "sthr_primary"
-      ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
-    if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
-    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
 
     // In-memory map (hot path config lookup) + persistent threads row
     // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
@@ -5739,9 +5758,6 @@ export class SessionDO extends DurableObject<Env> {
 
     // Build sub-agent tools and model (platform prepares context for sub-agent too)
     let childSignal: AbortSignal | undefined = abortController.signal;
-    const subEnvironment = this.state.environment_id
-      ? await this.getEnvConfig(this.state.environment_id)
-      : null;
     const subAuxResolved = await this.resolveAuxModel(subAgent);
     // The child runs on its own model card in this session's workspace; its
     // nested delegation tools inherit those credentials, never an env key.

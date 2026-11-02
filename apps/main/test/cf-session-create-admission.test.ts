@@ -5,7 +5,7 @@ import {
   cfUsageMeter,
   clearWorkspaceUsageFrozen,
   USAGE_ADMIT_CACHE_TTL_MS,
-  USAGE_FREEZE_RECHECK_MS,
+  USAGE_FREEZE_TTL_MS,
   USAGE_OVERDRAFT_FLOOR_CENTS,
 } from "../src/lib/cf-session-create-admission";
 
@@ -77,6 +77,19 @@ describe("cfSessionCreateAdmission", () => {
     expect(env.USAGE_METER.canStartSandbox).toHaveBeenCalledWith({ tenantId: "tenant_01", agentId: "agent_01" });
   });
 
+  it("gates thread starts through admitThreadStart with the same meter", async () => {
+    const env = {
+      USAGE_METER: {
+        canStartSandbox: vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 })),
+      },
+    };
+    await expect(cfSessionUsageAdmission(env as never).admitThreadStart(input)).resolves.toEqual({
+      type: "payment_required",
+      message: "Insufficient balance",
+      balanceCents: 0,
+    });
+  });
+
   it("fails open when USAGE_METER throws", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const env = { USAGE_METER: { canStartSandbox: async () => { throw new Error("rpc down"); } } };
@@ -85,16 +98,24 @@ describe("cfSessionCreateAdmission", () => {
   });
 });
 
-describe("cfUsageMeter KV cache + freeze", () => {
+describe("cfUsageMeter KV cache + soft freeze", () => {
   function memKv() {
     const data = new Map<string, string>();
+    const puts: Array<{ key: string; expirationTtl?: number }> = [];
     return {
       data,
+      puts,
       get: async (k: string) => data.get(k) ?? null,
-      put: async (k: string, v: string) => { data.set(k, v); },
+      put: async (k: string, v: string, opts?: { expirationTtl?: number }) => {
+        data.set(k, v);
+        puts.push({ key: k, expirationTtl: opts?.expirationTtl });
+      },
       delete: async (k: string) => { data.delete(k); },
       list: async () => ({ keys: [], list_complete: true }),
-    } as never as { data: Map<string, string> } & import("@open-managed-agents/kv-store").KvStore;
+    } as never as {
+      data: Map<string, string>;
+      puts: Array<{ key: string; expirationTtl?: number }>;
+    } & import("@open-managed-agents/kv-store").KvStore;
   }
 
   it("caches a positive result for 15s per workspace", async () => {
@@ -113,7 +134,7 @@ describe("cfUsageMeter KV cache + freeze", () => {
     expect(USAGE_OVERDRAFT_FLOOR_CENTS).toBe(0);
   });
 
-  it("never positive-caches a denial; writes frozen and hard-stops", async () => {
+  it("never positive-caches a denial; writes frozen with 10m TTL and hard-stops", async () => {
     let t = 5_000_000;
     const canStartSandbox = vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 }));
     const kvStore = memKv();
@@ -121,9 +142,10 @@ describe("cfUsageMeter KV cache + freeze", () => {
     await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
     expect(kvStore.data.has("usage_frozen:ws")).toBe(true);
     expect(kvStore.data.has("usage_admit:ws")).toBe(false);
-    t += 1_000;
+    expect(kvStore.puts.some((p) => p.key === "usage_frozen:ws" && p.expirationTtl === 600)).toBe(true);
+    expect(USAGE_FREEZE_TTL_MS).toBe(600_000);
+    t += 60_000; // still inside 10m soft-freeze window
     await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
-    // Hard-stop: second call within recheck window does not hit the meter.
     expect(canStartSandbox).toHaveBeenCalledTimes(1);
   });
 
@@ -140,7 +162,26 @@ describe("cfUsageMeter KV cache + freeze", () => {
     expect(kvStore.data.has("usage_admit:ws")).toBe(false);
   });
 
-  it("clears freeze on meter admit after recheck window (recharge path)", async () => {
+  it("after 10m fallback TTL, rechecks meter once and rewrites freeze if still empty", async () => {
+    let t = 9_000_000;
+    const canStartSandbox = vi.fn()
+      .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
+      .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
+      .mockResolvedValueOnce({ ok: true, balance_cents: 50 });
+    const kvStore = memKv();
+    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    t += USAGE_FREEZE_TTL_MS;
+    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
+    expect(canStartSandbox).toHaveBeenCalledTimes(2);
+    expect(kvStore.data.has("usage_frozen:ws")).toBe(true);
+    // Still frozen for the new window — no meter until TTL or clear.
+    t += 1_000;
+    await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toMatchObject({ ok: false });
+    expect(canStartSandbox).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears freeze on meter admit after fallback TTL (missed-webhook safety net)", async () => {
     let t = 9_000_000;
     const canStartSandbox = vi.fn()
       .mockResolvedValueOnce({ ok: false, reason: "Insufficient balance", balance_cents: 0 })
@@ -148,7 +189,7 @@ describe("cfUsageMeter KV cache + freeze", () => {
     const kvStore = memKv();
     const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
     await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
-    t += USAGE_FREEZE_RECHECK_MS;
+    t += USAGE_FREEZE_TTL_MS;
     await expect(meter.canStartSandbox({ workspaceId: "ws", agentId: "a" })).resolves.toEqual({
       ok: true,
       balanceCents: 50,
@@ -158,7 +199,7 @@ describe("cfUsageMeter KV cache + freeze", () => {
     expect(kvStore.data.has("usage_admit:ws")).toBe(true);
   });
 
-  it("clearWorkspaceUsageFrozen lets recharge unblock before recheck", async () => {
+  it("clearWorkspaceUsageFrozen lets recharge unblock before fallback TTL", async () => {
     let t = 2_000_000;
     const canStartSandbox = vi.fn()
       .mockResolvedValueOnce({ ok: false, balance_cents: 0 })

@@ -88,6 +88,23 @@ describe("SessionCreateAdmissionService", () => {
     expect(canStartSandbox).toHaveBeenCalledTimes(1);
   });
 
+  it("admitThreadStart is usage-only and refuses with payment_required", async () => {
+    const canStartSandbox = vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balanceCents: 0 }));
+    const exceeded = vi.fn(async () => true);
+    const admission = new SessionCreateAdmissionService({
+      clock,
+      rateLimiter: { exceeded },
+      usageMeter: { canStartSandbox },
+    });
+    await expect(admission.admitThreadStart(input)).resolves.toEqual({
+      type: "payment_required",
+      message: "Insufficient balance",
+      balanceCents: 0,
+    });
+    expect(exceeded).not.toHaveBeenCalled();
+    expect(canStartSandbox).toHaveBeenCalledTimes(1);
+  });
+
   it("fails open and logs when the meter throws", async () => {
     const logger = { warn: vi.fn(), error: vi.fn() };
     const admission = new SessionCreateAdmissionService({
@@ -163,11 +180,16 @@ describe("SessionsApplicationService admission", () => {
 
   it("passes isLocalRuntime for self-hosted environments and runtime-bound agents", async () => {
     const admit = vi.fn(async () => ({ type: "admitted" as const }));
-    await service({ admit }, { environment: { ...cloud, config: { type: "self_hosted" } } })
+    const port = {
+      admit,
+      admitSandboxStart: async () => ({ type: "admitted" as const }),
+      admitThreadStart: async () => ({ type: "admitted" as const }),
+    };
+    await service(port, { environment: { ...cloud, config: { type: "self_hosted" } } })
       .svc.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: cloud.id });
-    await service({ admit }, { agent: { ...agent, openma: { runtimeBinding: { runtimeId: "rt", acpAgentId: "a" } } } })
+    await service(port, { agent: { ...agent, openma: { runtimeBinding: { runtimeId: "rt", acpAgentId: "a" } } } })
       .svc.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: cloud.id });
-    await service({ admit }).svc.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: cloud.id });
+    await service(port).svc.createSession({ agent: { type: "latest", agentId: agent.id }, environmentId: cloud.id });
     expect(admit.mock.calls.map((call) => (call as unknown as [{ isLocalRuntime: boolean }])[0].isLocalRuntime))
       .toEqual([true, true, false]);
   });
