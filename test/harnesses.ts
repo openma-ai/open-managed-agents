@@ -28,10 +28,36 @@ export function registerTestHarnesses(): void {
       ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "found files" }] });
     },
   }));
+  // #398 bug 3: a parked call closed during the run (steer/interrupt/answer)
+  // must not be re-announced as requires_action.
+  registerHarness("stale-pending-partial", () => ({
+    async run(ctx) {
+      ctx.runtime.broadcast({ type: "agent.custom_tool_use", id: "ctu_a", name: "run_tests", input: {} });
+      ctx.runtime.broadcast({ type: "agent.custom_tool_use", id: "ctu_b", name: "run_tests", input: {} });
+      (ctx.runtime.pendingConfirmations ??= []).push("ctu_a", "ctu_b");
+      ctx.runtime.broadcast({ type: "agent.tool_result", tool_use_id: "ctu_a", content: [{ type: "text", text: "closed by steer" }], is_error: true });
+    },
+  }));
+  registerHarness("stale-pending-all", () => ({
+    async run(ctx) {
+      ctx.runtime.broadcast({ type: "agent.custom_tool_use", id: "ctu_a", name: "run_tests", input: {} });
+      (ctx.runtime.pendingConfirmations ??= []).push("ctu_a");
+      ctx.runtime.broadcast({ type: "agent.tool_result", tool_use_id: "ctu_a", content: [{ type: "text", text: "closed by steer" }], is_error: true });
+    },
+  }));
   registerHarness("delayed-harness", () => ({
     async run(ctx) {
       await new Promise((r) => setTimeout(r, 200));
       ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "delayed response" }] });
+    },
+  }));
+  // Long enough for a DO test to observe the live turn (status_running +
+  // durable alarm) and then simulate an isolate reset while it is still
+  // in flight. Keep this short enough that the test doesn't wait on it.
+  registerHarness("alarm-hold-harness", () => ({
+    async run(ctx) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "alarm hold released" }] });
     },
   }));
   registerHarness("partial-crash", () => ({

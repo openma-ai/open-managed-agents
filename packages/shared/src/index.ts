@@ -13,6 +13,7 @@ export * from "./env";
 export * from "./auth-providers";
 export * from "./errors";
 export * from "./id";
+export * from "./monotonic-clock";
 export * from "./format";
 export * from "./log";
 export * from "./metrics";

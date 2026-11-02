@@ -9,7 +9,8 @@
     "./ports": "./src/ports.ts",
     "./adapter": "./src/adapter.ts",
     "./machine": "./src/machine.ts",
-    "./execution-host": "./src/execution-host.ts"
+    "./execution-host": "./src/execution-host.ts",
+    "./settle-batch": "./src/settle-batch.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

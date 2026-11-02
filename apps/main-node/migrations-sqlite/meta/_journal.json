@@ -204,6 +204,20 @@
       "when": 1793279568388,
       "tag": "0028_drop_legacy_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1793515677111,
+      "tag": "0029_model_card_pricing",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1793521172700,
+      "tag": "0030_elite_mother_askani",
+      "breakpoints": true
     }
   ]
 }

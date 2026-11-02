@@ -40,6 +40,13 @@ function waitForPoll(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms); signal.addEventListener("abort",done,{once:true});
   });
 }
+/** Process-local staging for OpenAI Agents deferred steers while
+ *  `requires_action` (live api.openai.com agents=v1: message → 202, actions
+ *  unchanged, steer applied same-turn after tool_result). Not a CMA pending
+ *  inbox — only this compat surface stages until settle. */
+type DeferredSteer = Extract<SendableSessionEvent, { type: "user.message" }>;
+const deferredSteersBySession = new Map<string, { key?: string; steers: DeferredSteer[] }>();
+
 export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAIAgentsProtocolPort {
   async function nativeSession(sessionId: string): Promise<SessionView> {
     const found = await deps.sessions.retrieveSession({sessionId});
@@ -84,45 +91,142 @@ export function createSessionsHandler(deps: SessionSemanticDependencies): OpenAI
       await waitForPoll(deps.pollMs ?? 100,signal);
     }
   }
+  async function commit(sessionId: string, events: SendableSessionEvent[], key: string | undefined, expectedRevision: number | undefined) {
+    if (!events.length) return;
+    const result = await deps.sessionEvents.sendSessionEvents({
+      sessionId,
+      events,
+      ...(key !== undefined && { idempotencyKey: key }),
+      ...(expectedRevision !== undefined && { expectedRevision }),
+    });
+    if (result.type === "not_found") return missing();
+    if (result.type === "invalid_request") return invalid(result.message);
+    if (result.type === "idempotency_conflict" || result.type === "version_conflict") throw new OpenAIAgentsProtocolError(409, result.message);
+  }
   async function send(request: OpenAIAgentsOperationRequest, current: Awaited<ReturnType<typeof snapshot>>) {
     const sessionId = request.params.session_id!;
     const key = request.headers.get("Idempotency-Key") ?? undefined;
-    const submitted = request.body.events as Array<Record<string,any>>;
+    const submitted = request.body.events as Array<Record<string, any>>;
     if (!Array.isArray(submitted) || !submitted.length) return invalid("Input must contain at least one event", "events");
-    const events: SendableSessionEvent[] = [];
+    const settleEvents: SendableSessionEvent[] = [];
+    const forwardMessages: SendableSessionEvent[] = [];
+    const stagedNow: DeferredSteer[] = [];
     const validatedCalls = new Set<string>();
-    const prefix = key ? await sessionInputIdentityPrefix(deps.workspaceId,sessionId,key) : null;
-    const previouslyAccepted = prefix && current.found.events.some(event => event.id.startsWith(prefix));
+    const prefix = key ? await sessionInputIdentityPrefix(deps.workspaceId, sessionId, key) : null;
+    const previouslyAccepted = Boolean(prefix && current.found.events.some(event => event.id.startsWith(prefix)));
     let validatedState = current.state;
     const validationId = crypto.randomUUID();
+    const parked = current.state.status === "requires_action" || current.state.requiredActions.length > 0;
+    let cancelSeen = false;
+    let eventOrdinal = 0;
     for (const body of submitted) {
-    const previousLength = events.length;
-    if (body.type === "agent.session.input.message") {
-      if (!body.input?.length) invalid("Input must contain at least one message", "input");
-      events.push(...body.input.map((message: Record<string,unknown>) => ({type:"user.message" as const,content:inputContent(message.content)})));
-    } else if (body.type === "agent.session.input.cancel") events.push({type:"user.interrupt"});
-    else if (body.type === "agent.session.input.tool_result") {
-      if (validatedCalls.has(body.call_id)) invalid("A function result appears more than once in this batch", "call_id");
-      validatedCalls.add(body.call_id);
-      if (previouslyAccepted && current.state.calls[body.call_id]?.turnId !== body.turn_id) invalid("Function result does not belong to this turn", "turn_id");
-      if (!previouslyAccepted) {
-        try { validateToolResult(validatedState,{turnId:body.turn_id,callId:body.call_id}); }
-        catch { invalid("Function call is not pending in this session and turn", "call_id"); }
+      const justMapped: SendableSessionEvent[] = [];
+      if (body.type === "agent.session.input.message") {
+        if (!body.input?.length) invalid("Input must contain at least one message", "input");
+        const mapped: DeferredSteer[] = body.input.map((message: Record<string, unknown>) => ({
+          type: "user.message" as const,
+          content: inputContent(message.content),
+        }));
+        // Live api.openai.com agents=v1: while requires_action, message → 202
+        // deferred same-turn steer; required_actions unchanged. Do not forward
+        // as CMA user.message (settle-only 400). Staging lives only in this
+        // compat layer until tool_result / confirmation settles the turn.
+        if (previouslyAccepted) {
+          // Idempotent retry: forward to native so payload mismatch → 409.
+          // Do not re-stage even if the session has since parked.
+          forwardMessages.push(...mapped);
+          justMapped.push(...mapped);
+        } else if (parked && !cancelSeen) {
+          stagedNow.push(...mapped);
+          justMapped.push(...mapped);
+        } else if (!cancelSeen) {
+          forwardMessages.push(...mapped);
+          justMapped.push(...mapped);
+        }
+        // Messages paired with cancel in the same parked batch are dropped:
+        // cancel ends the turn; forwarding user.message would still hit the
+        // native settle-only gate while the no-op idle interrupt leaves RA.
+      } else if (body.type === "agent.session.input.cancel") {
+        cancelSeen = true;
+        deferredSteersBySession.delete(sessionId);
+        stagedNow.length = 0;
+        justMapped.push({ type: "user.interrupt" });
+        settleEvents.push({ type: "user.interrupt" });
+      } else if (body.type === "agent.session.input.tool_result") {
+        if (validatedCalls.has(body.call_id)) invalid("A function result appears more than once in this batch", "call_id");
+        validatedCalls.add(body.call_id);
+        if (previouslyAccepted && current.state.calls[body.call_id]?.turnId !== body.turn_id) {
+          invalid("Function result does not belong to this turn", "turn_id");
+        }
+        if (!previouslyAccepted) {
+          try {
+            validateToolResult(validatedState, { turnId: body.turn_id, callId: body.call_id });
+          } catch {
+            const call = current.state.calls[body.call_id];
+            const turn = call ? current.state.turns[call.turnId] : undefined;
+            if (call && turn && ["cancelled", "failed", "completed"].includes(turn.status)) {
+              throw new OpenAIAgentsProtocolError(409, "the server request is no longer pending", "call_id", "conflict_error");
+            }
+            invalid("Function call is not pending in this session and turn", "call_id");
+          }
+        }
+        const mapped: SendableSessionEvent = {
+          type: "user.custom_tool_result",
+          customToolUseId: body.call_id,
+          isError: !body.success,
+          content: inputContent(body.success ? body.output : body.error ?? "Function failed"),
+        };
+        settleEvents.push(mapped);
+        justMapped.push(mapped);
+      } else return invalid("Unknown session input", "type");
+      if (!previouslyAccepted && justMapped.length) {
+        // Simulate only to validate this atomic batch. Canonical state is always
+        // rebuilt from accepted native events, never from these temporary IDs.
+        validatedState = applyManagedEvents(
+          validatedState,
+          justMapped.map((event, index) => ({ ...event, id: `validation_${validationId}_${eventOrdinal}_${index}` })),
+          { observedAt: current.base.last_active_at },
+        ).state;
+        eventOrdinal += justMapped.length;
       }
-      events.push({type:"user.custom_tool_result",customToolUseId:body.call_id,isError:!body.success,content:inputContent(body.success ? body.output : body.error ?? "Function failed")});
-    } else return invalid("Unknown session input", "type");
-    if (!previouslyAccepted) {
-      // Simulate only to validate this atomic batch. Canonical state is always
-      // rebuilt from accepted native events, never from these temporary IDs.
-      validatedState = applyManagedEvents(validatedState, events.slice(previousLength).map((event,index) => ({...event,id:`validation_${validationId}_${events.length}_${index}`})), {observedAt:current.base.last_active_at}).state;
     }
+    if (validatedCalls.size && !previouslyAccepted && current.found.revision === undefined) {
+      throw new OpenAIAgentsProtocolError(409, "This history source cannot bind function validation to a Session revision", undefined, "history_revision_unavailable");
     }
-    if (validatedCalls.size && !previouslyAccepted && current.found.revision === undefined) throw new OpenAIAgentsProtocolError(409,"This history source cannot bind function validation to a Session revision",undefined,"history_revision_unavailable");
-    const result = await deps.sessionEvents.sendSessionEvents({sessionId,events,...(key !== undefined && {idempotencyKey:key}),...(validatedCalls.size && current.found.revision !== undefined && {expectedRevision:current.found.revision})});
-    if (result.type === "not_found") return missing();
-    if (result.type === "invalid_request") return invalid(result.message);
-    if (result.type === "idempotency_conflict" || result.type === "version_conflict") throw new OpenAIAgentsProtocolError(409,result.message);
-    return {status:204};
+    // Message-only while parked: stage in-process and accept. Actions untouched.
+    if (parked && stagedNow.length && !settleEvents.length && !forwardMessages.length) {
+      const prior = deferredSteersBySession.get(sessionId);
+      if (key !== undefined && prior?.key === key) return { status: 202 }; // idempotent retry
+      deferredSteersBySession.set(sessionId, {
+        key,
+        steers: [...(prior?.steers ?? []), ...stagedNow],
+      });
+      return { status: 202 };
+    }
+    const revision = validatedCalls.size && current.found.revision !== undefined ? current.found.revision : undefined;
+    if (settleEvents.length) {
+      await commit(sessionId, settleEvents, key, revision);
+      // After settle (or cancel), flush steers that belong to the unfinished turn.
+      // Skip flush after cancel — the turn is cancelled; steers were cleared.
+      if (!cancelSeen) {
+        const flushed = [
+          ...(deferredSteersBySession.get(sessionId)?.steers ?? []),
+          ...stagedNow,
+          ...forwardMessages,
+        ];
+        deferredSteersBySession.delete(sessionId);
+        if (flushed.length) {
+          await commit(sessionId, flushed, key !== undefined ? `${key}:steer` : undefined, undefined);
+        }
+      } else {
+        deferredSteersBySession.delete(sessionId);
+      }
+      return { status: 202 };
+    }
+    if (forwardMessages.length) {
+      await commit(sessionId, forwardMessages, key, undefined);
+    }
+    return { status: 202 };
   }
   return { async execute(request) {
     const {operation,params,query,body} = request;

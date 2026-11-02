@@ -204,14 +204,16 @@ export interface SessionRouter {
     threadId: string,
   ): Promise<{ status: number; body: string }>;
 
-  // ── Pending events ────────────────────────────────────────────────────
-  /** GET /v1/sessions/:id/pending — AMA-spec pending queue. Lists user.*
-   *  events that have been enqueued but not yet drained by the harness.
-   *  Implementations forward the raw search-string + return whatever the
-   *  underlying store/SessionDO produces. */
-  getPending(
+  // ── Queued inputs ─────────────────────────────────────────────────────
+  // GET /v1/sessions/:id/pending is gone: queued turn inputs are ordinary
+  // events rows with `processed_at` null and are read through the events
+  // list. Cancelling one by event id remains supported for compatibility.
+  /** DELETE /v1/sessions/:id/pending/:event_id — cancel one queued user.*
+   *  event before it runs. 200 with the cancelled row, 409 when it already
+   *  started (or was already removed). */
+  cancelPending(
     sessionId: string,
-    opts?: { rawSearch?: string },
+    eventId: string,
   ): Promise<{ status: number; body: string }>;
 
   // ── LLM call body ─────────────────────────────────────────────────────

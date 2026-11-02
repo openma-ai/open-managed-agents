@@ -11,7 +11,12 @@
 
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type { SqlClient } from "@open-managed-agents/sql-client";
-import type { EventLogRepo, StreamRepo, StreamRow } from "../ports";
+import type {
+  EventLogRepo,
+  QueueInputRow,
+  StreamRepo,
+  StreamRow,
+} from "../ports";
 
 export type SqlDialect = "sqlite" | "postgres" | "mysql";
 
@@ -51,15 +56,11 @@ export class SqlEventLog implements EventLogRepo {
 
   async appendAsync(event: SessionEvent): Promise<void> {
     const ts = Date.now();
-    // Mirror cf-do/index.ts: user.* are pending until drained;
-    // everything else is "ingested" at write time. session_thread_id
-    // defaults to primary; events from sub-agent threads carry their
-    // own session_thread_id on the wire.
-    const isPending =
-      event.type === "user.message" ||
-      event.type === "user.tool_confirmation" ||
-      event.type === "user.custom_tool_result";
-    const processedAt = isPending ? null : ts;
+    // append() is the history write: for Node/self-host the append IS the
+    // processing (there is no separate single-table queue on this adapter —
+    // Node's outbox is the shared execution store). Stamp processed_at now.
+    // The CF DO adapter owns the single-table queue (enqueueQueueInput).
+    const processedAt = ts;
     const threadId =
       (event as unknown as { session_thread_id?: string }).session_thread_id ??
       "sthr_primary";
@@ -167,6 +168,43 @@ export class SqlEventLog implements EventLogRepo {
       }
     }
     return null;
+  }
+
+  // The single-table queue lives on the CF DO adapter (and the in-memory
+  // test adapter). Node/self-host queue authority is the shared execution
+  // outbox, so these sync port methods are intentionally unsupported here.
+  enqueueQueueInput(_event: SessionEvent, _enqueuedAtMs?: number): boolean {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  peekQueueInput(_threadId: string): QueueInputRow | null {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  stampProcessed(_seqOrId: number | string, _processedAtMs: number): void {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  cancelQueueForThread(
+    _threadId: string,
+    _cancelledAtMs: number,
+  ): QueueInputRow[] {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  cancelQueueByEventId(
+    _eventId: string,
+    _cancelledAtMs: number,
+  ): QueueInputRow | null {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  listQueue(_threadId: string, _includeCancelled?: boolean): QueueInputRow[] {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
+  }
+
+  threadsWithQueueInputs(): string[] {
+    throw new Error("SqlEventLog does not own the single-table queue; use the execution outbox");
   }
 }
 

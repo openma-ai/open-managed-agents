@@ -67,6 +67,7 @@ export function sessionsModule(): AppModule {
       sessionEnvironmentSourcePort,
       sessionResourceResolverPort,
       sessionLifecyclePort,
+      managedAgentsPortTokens.sessionEvents,
     ],
     setup({ port }) {
       const workspace = port(workspaceContextPort);
@@ -81,6 +82,12 @@ export function sessionsModule(): AppModule {
         environments: port(sessionEnvironmentSourcePort),
         resources: port(sessionResourceResolverPort),
         lifecycle: port(sessionLifecyclePort),
+        budgetEvents: (() => {
+          const events = port(managedAgentsPortTokens.sessionEvents);
+          return events?.recordBudgetUpdate === undefined
+            ? undefined
+            : { recordBudgetUpdate: (command) => events.recordBudgetUpdate!(command) };
+        })(),
       });
       return {
         ports: [

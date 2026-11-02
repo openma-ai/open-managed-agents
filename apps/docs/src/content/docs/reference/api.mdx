@@ -43,6 +43,17 @@ Create a session. Returns `SessionMeta`.
 ```
 Post the first user turn afterwards via `POST /v1/sessions/:id/messages` (one-shot, streams reply) or `POST /v1/sessions/:id/events` (fire-and-forget; pair with a separate SSE consumer).
 
+### Session budgets
+
+A session may carry the official budget `{"budget": {"type": "limit", "max_list_cost": {"amount": "500", "currency": "USD"}}}` (amount in whole USD cents, as an integer string).
+
+- **Active only when both are configured:** the session has `max_list_cost` **and** its model card has `pricing` (see [Model Cards](#model-cards)). If either is missing the budget is inactive — no `budget_reached`, no error — and the session's `usage.list_cost` is absent (Console shows "unpriced").
+- `list_cost` = Σ per model request (`input_tokens × input_per_mtok + output_tokens × output_per_mtok + cache_read_input_tokens × cache_read_per_mtok + cache_creation_input_tokens × cache_write_per_mtok`) / 1M, rounded to the cent.
+- The gate runs before every model request; the request that crosses the cap completes. At the cap the session emits `session.thread_status_idle` → `session.usage` → `session.status_idle`, each with `stop_reason: {"type": "budget_reached"}` (`requires_action` outranks it).
+- While paused, only settle events are accepted (`user.tool_confirmation`, `user.tool_result`, `user.custom_tool_result`, `user.interrupt`); `user.message` returns 400. An interrupt is accepted and ignored.
+- `PATCH /v1/sessions/:id` with `budget`: the budget is create-only (adding one to a session without a budget → 400); a new `max_list_cost` must be greater than the exact consumed list cost (else 400 `budget.max_list_cost must be greater than the session's consumed list cost`); `budget: null` removes it (one-way). Every budget change emits `session.updated`; one that lifts a `budget_reached` pause resumes the work automatically.
+- Upstream provider 429/quota errors are not budgets: they surface as `session.error` / `retries_exhausted`.
+
 ### `GET /v1/sessions`
 List sessions. Query: `agent_id`, `status`, `limit`, `cursor`.
 
@@ -160,6 +171,24 @@ Download.
 Delete.
 
 ## Model Cards
+
+Model cards may carry list `pricing` (USD per 1M tokens, decimal strings with ≤6 decimals) used to compute a session's `list_cost`:
+
+```json
+{
+  "pricing": {
+    "version": 1,
+    "currency": "USD",
+    "effective_at": "2026-11-01T00:00:00Z",
+    "input_per_mtok": "3",
+    "output_per_mtok": "15",
+    "cache_read_per_mtok": "0.30",
+    "cache_write_per_mtok": "3.75"
+  }
+}
+```
+
+`input_per_mtok` and `output_per_mtok` are required; cache prices default to the input price. `pricing: null` on update clears it. Pricing has no budget — budgets live on sessions, and are enforced only when the card is priced.
 
 Model Cards are the tenant-scoped executable model registry. A card binds a
 stable handle (`model_id`) to a Pi provider, its wire-level model id, endpoint,

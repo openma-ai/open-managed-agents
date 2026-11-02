@@ -786,6 +786,23 @@ describe("SessionsApplicationService", () => {
       });
     });
 
+    it("emits a budget session.updated through the budget events port only on a budget change", async () => {
+      const { store, service, scope } = await setup("idle");
+      const created = (await store.findCurrent(scope))!;
+      await store.replaceCurrent({ ...scope, expectedRevision: created.revision,
+        next: { ...created.session, budget: { amountMinor: "300", currency: "USD" } } });
+      const calls: unknown[] = [];
+      (service as any).dependencies.budgetEvents = {
+        recordBudgetUpdate: async (command: unknown) => { calls.push(command); return { type: "recorded", resumed: false }; },
+      };
+      await service.updateSession({ sessionId: scope.sessionId, title: "x" });
+      await service.updateSession({ sessionId: scope.sessionId, budget: { amountMinor: "300", currency: "USD" } });
+      expect(calls).toHaveLength(0);
+      await service.updateSession({ sessionId: scope.sessionId, budget: { amountMinor: "500", currency: "USD" } });
+      expect(calls).toHaveLength(1);
+      expect((calls[0] as any).previous.budget).toEqual({ amountMinor: "300", currency: "USD" });
+    });
+
     it("does not overwrite a concurrent transition from idle to running", async () => {
       const { store, service, scope } = await setup("idle");
       const before = (await store.findCurrent(scope))!;

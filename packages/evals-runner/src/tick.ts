@@ -438,7 +438,7 @@ async function buildAndStoreTrajectory(
         const batch = body.data || [];
         all.push(...batch);
         if (!body.has_more || batch.length === 0) break;
-        afterSeq = batch[batch.length - 1].seq;
+        afterSeq = batch[batch.length - 1].seq ?? afterSeq;
       }
       return all;
     },

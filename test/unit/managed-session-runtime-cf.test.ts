@@ -309,6 +309,8 @@ describe("CfManagedSessionRuntimeAdapter", () => {
       deltaEventTypes: ["agent.message"],
     })) {
       received.push(event);
+      // Adapter keeps the subscription open across idle; tests must stop.
+      if (event.type === "session.status_idle" || event.type === "session.status_terminated") break;
     }
 
     expect(received).toEqual([
@@ -400,6 +402,8 @@ describe("CfManagedSessionRuntimeAdapter", () => {
       session,
     })) {
       received.push(event);
+      // Adapter keeps the subscription open across idle; tests must stop.
+      if (event.type === "session.status_idle" || event.type === "session.status_terminated") break;
     }
 
     expect(requests.map((request) => request.headers.get("x-oma-replay"))).toEqual([

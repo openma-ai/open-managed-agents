@@ -145,14 +145,44 @@ describe("recoverInterruptedState", () => {
       type: string;
       tool_use_id?: string;
       content?: string;
+      is_error?: boolean;
     }>;
     expect(events).toHaveLength(2);
     expect(events[1].type).toBe("agent.tool_result");
     expect(events[1].tool_use_id).toBe("use_orphan");
     expect(events[1].content).toMatch(/interrupted/i);
+    // A placeholder for a use that never completed is an aborted
+    // result, mirroring the stale-turn finalizer's is_error=true shape.
+    expect(events[1].is_error).toBe(true);
     // Placeholder appears AFTER the use, preserving causal order so the
     // next eventsToMessages projection sees a clean (use, result) pair.
     expect(events[0].type).toBe("agent.tool_use");
+  });
+
+  it("skipToolUseIds → parked always_ask/custom uses are left for the client's real answer", async () => {
+    f.log.append({
+      type: "agent.tool_use",
+      id: "use_parked",
+      name: "bash",
+      input: { command: "rm -rf /tmp/x" },
+    } as unknown as SessionEvent);
+    f.log.append({
+      type: "agent.tool_use",
+      id: "use_dead",
+      name: "bash",
+      input: { command: "ls" },
+    } as unknown as SessionEvent);
+
+    const report = await recoverInterruptedState(f.streams, f.log, {
+      skipToolUseIds: new Set(["use_parked"]),
+    });
+
+    expect(report.injectedToolResults).toEqual(["use_dead"]);
+    const results = f.allEvents().filter(
+      (e) => (e as { type?: string }).type === "agent.tool_result",
+    ) as Array<{ tool_use_id?: string }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].tool_use_id).toBe("use_dead");
   });
 
   it("orphan agent.mcp_tool_use → placeholder agent.mcp_tool_result injected with is_error=true", async () => {

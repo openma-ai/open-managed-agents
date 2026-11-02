@@ -190,7 +190,7 @@ Set permission policies:
 
 ### Custom Tools
 
-Define tools with JSON Schema input validation. Custom tools pause the session with `stop_reason: { type: "requires_action", action_type: "custom_tool_result" }` and wait for the client to provide the result:
+Define tools with JSON Schema input validation. Custom tools pause the session with `stop_reason: { type: "requires_action", event_ids: ["<agent.custom_tool_use id>"] }` (official CMA shape; `event_ids` lists the blocking events). Any `action_type` field is an internal/legacy OMA detail — the public mapper drops it and clients must not rely on it and wait for the client to provide the result:
 
 ```json
 {
