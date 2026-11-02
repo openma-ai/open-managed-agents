@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   encodeGuiInterrupt,
+  encodeGuiToolConfirmation,
   encodeGuiUserMessage,
   ingestManagedWireEvent,
 } from "./managed-event-bridge";
@@ -44,7 +45,7 @@ describe("ingestManagedWireEvent", () => {
   });
 });
 
-describe("encodeGuiUserMessage / encodeGuiInterrupt", () => {
+describe("encodeGuiUserMessage / encodeGuiInterrupt / encodeGuiToolConfirmation", () => {
   it("encodes OpenMA user.message to CMA wire without delivery fields", () => {
     const result = encodeGuiUserMessage({
       sessionId: "sess_1",
@@ -71,6 +72,38 @@ describe("encodeGuiUserMessage / encodeGuiInterrupt", () => {
     expect(result.wire).toMatchObject({
       type: "user.interrupt",
       session_thread_id: "thread-7",
+    });
+  });
+
+  it("encodes tool confirmation allow/deny to user.tool_confirmation", () => {
+    const allow = encodeGuiToolConfirmation({
+      sessionId: "sess_1",
+      toolUseId: "tool_ask",
+      result: "allow",
+      eventId: "local-confirm-1",
+    });
+    expect(allow.ok).toBe(true);
+    if (!allow.ok) return;
+    expect(allow.wire).toEqual({
+      type: "user.tool_confirmation",
+      tool_use_id: "tool_ask",
+      result: "allow",
+    });
+
+    const deny = encodeGuiToolConfirmation({
+      sessionId: "sess_1",
+      toolUseId: "tool_ask",
+      result: "deny",
+      denyMessage: "too risky",
+      eventId: "local-confirm-2",
+    });
+    expect(deny.ok).toBe(true);
+    if (!deny.ok) return;
+    expect(deny.wire).toEqual({
+      type: "user.tool_confirmation",
+      tool_use_id: "tool_ask",
+      result: "deny",
+      deny_message: "too risky",
     });
   });
 });

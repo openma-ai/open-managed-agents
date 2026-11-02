@@ -247,8 +247,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/integrations-core
       '@openma/common':
-        specifier: ^0.13.0
-        version: 0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^0.13.1
+        version: 0.13.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -7042,8 +7042,8 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@0.13.0':
-    resolution: {integrity: sha512-KpDl+GrFTcnSHb1TTdbwyAvzzsmpUuB4TGCrYSKwQAvcdOIda7CZu1uRty3/6E/oP0wS8cfk047m88NNDTn1+w==}
+  '@openma/common@0.13.1':
+    resolution: {integrity: sha512-IRXqlhv+Xj5qpxDsnywAu1s6BAjf6dpvUBrHvmzw8tX+VEzlnwMx0Q4siRMauJAW3XUix7w1KtgnSgHlGnsjlQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@anthropic-ai/sdk': 0.120.x
@@ -17142,7 +17142,7 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
-  '@openma/common@0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@openma/common@0.13.1(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.9.0(zod@4.4.3)
       '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
