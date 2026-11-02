@@ -14,7 +14,7 @@ vi.mock("../lib/useApiQuery", () => ({ useApiQuery: () => ({
 }) }));
 afterEach(() => { delete window.turnstile; });
 
-it("keeps the visible challenge below submit alive while entering an email and waiting to send", async () => {
+it("keeps verification outside the login block while entering an email and waiting to send", async () => {
   const renderWidget = vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1");
   const remove = vi.fn();
   window.turnstile = { render: renderWidget, remove, reset: vi.fn() };
@@ -26,6 +26,9 @@ it("keeps the visible challenge below submit alive while entering an email and w
   const submit = screen.getByRole("button", { name: "Send code" });
   expect(verification).toBeVisible();
   expect(submit.compareDocumentPosition(verification) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(verification.closest("form")).toBeNull();
+  const accountOptions = screen.getByRole("group", { name: "Account options" });
+  expect(accountOptions.compareDocumentPosition(verification) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await waitFor(() => expect(renderWidget).toHaveBeenCalled());
   const countBeforeTyping = renderWidget.mock.calls.length;
   const challenge = renderWidget.mock.calls.at(-1)![1];

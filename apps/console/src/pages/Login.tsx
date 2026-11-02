@@ -374,7 +374,18 @@ export function Login() {
     "relative h-auto min-h-0 px-0 py-0 text-brand after:absolute after:-inset-x-2 after:-inset-y-3 after:content-['']";
 
   return (
-    <ModernLoginShell>
+    <ModernLoginShell below={mode !== "chooser" && turnstileSiteKey ? (
+      <div role="region" aria-label="Security verification">
+        <Turnstile
+          resetKey={turnstileNonce}
+          siteKey={turnstileSiteKey}
+          onToken={handleTurnstileToken}
+          onExpire={clearTurnstileToken}
+          onError={clearTurnstileToken}
+          appearance="always"
+        />
+      </div>
+    ) : null}>
       <div className="flex flex-col gap-8">
         <header className="flex flex-col items-center text-center">
           <Logo size="lg" />
@@ -605,23 +616,6 @@ export function Login() {
                         ? "Reset password"
                         : "Verify"}
             </Button>
-            {/* OTP entry screens also need a fresh token for Resend. */}
-            {turnstileSiteKey && (
-              <div
-                role="region"
-                aria-label="Security verification"
-                className="flex min-h-[65px] justify-center"
-              >
-                <Turnstile
-                  resetKey={turnstileNonce}
-                  siteKey={turnstileSiteKey}
-                  onToken={handleTurnstileToken}
-                  onExpire={clearTurnstileToken}
-                  onError={clearTurnstileToken}
-                  appearance="always"
-                />
-              </div>
-            )}
             {mode === "login" && (
               <Button
                 type="button"

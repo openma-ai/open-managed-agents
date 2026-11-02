@@ -37,7 +37,7 @@ declare global {
           "timeout-callback"?: () => void;
           "unsupported-callback"?: () => void;
           "before-interactive-callback"?: () => void;
-          size?: "flexible" | "compact";
+          size?: "normal" | "compact";
           appearance?: "interaction-only" | "always" | "execute";
           theme?: "light" | "dark" | "auto";
         },
@@ -85,7 +85,7 @@ export function Turnstile({ siteKey, onToken, onExpire, onError, resetKey = 0, a
   const widgetId = useRef<string | null>(null);
   const [error, setError] = useState<string>("");
   const [status, setStatus] = useState("loading");
-  const [size, setSize] = useState<"flexible" | "compact">("flexible");
+  const [size, setSize] = useState<"normal" | "compact">("normal");
   const sizeRef = useRef(size);
   const previousReset = useRef(resetKey);
   const callbacks = useRef({ onToken, onExpire, onError });
@@ -95,7 +95,7 @@ export function Turnstile({ siteKey, onToken, onExpire, onError, resetKey = 0, a
     const host = ref.current;
     if (!host) return;
     const measure = () => {
-      const next = host.clientWidth > 0 && host.clientWidth < 300 ? "compact" : "flexible";
+      const next = host.clientWidth > 0 && host.clientWidth < 300 ? "compact" : "normal";
       if (next !== sizeRef.current) {
         sizeRef.current = next;
         callbacks.current.onExpire?.();
@@ -175,7 +175,7 @@ export function Turnstile({ siteKey, onToken, onExpire, onError, resetKey = 0, a
 
   return (
     <div className="w-full min-w-0 space-y-1" data-turnstile-state={status}>
-      <div ref={ref} />
+      <div ref={ref} className={`flex justify-center ${size === "compact" ? "min-h-[140px]" : "min-h-[65px]"}`} />
       {error && <div role="alert" className="text-xs text-danger">{error}</div>}
     </div>
   );

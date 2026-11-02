@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 
 interface ModernLoginShellProps {
   children: ReactNode;
+  below?: ReactNode;
   className?: string;
 }
 
@@ -12,7 +13,7 @@ interface ModernLoginShellProps {
  * Presentation-only auth shell. The page owns state and provider calls while
  * this component keeps every auth mode on one stable, centered track.
  */
-export function ModernLoginShell({ children, className }: ModernLoginShellProps) {
+export function ModernLoginShell({ children, below, className }: ModernLoginShellProps) {
   return (
     <main
       data-login-layout="centered"
@@ -24,11 +25,16 @@ export function ModernLoginShell({ children, className }: ModernLoginShellProps)
       >
         <Card
           className={cn(
-            "w-full max-w-[360px] gap-0 border-0 bg-transparent shadow-none",
+            "relative w-full max-w-[360px] gap-0 border-0 bg-transparent shadow-none",
             className,
           )}
         >
           <CardContent className="p-0">{children}</CardContent>
+          {below && (
+            <div className="absolute inset-x-0 top-full pb-6 pt-6">
+              {below}
+            </div>
+          )}
         </Card>
       </section>
     </main>
