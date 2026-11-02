@@ -382,6 +382,44 @@ describe("NodeSessionExecutionWorker", () => {
     expect(runs.map((run) => run.executionId)).toEqual(["event_busy"]);
   });
 
+  it("does not run a turn when an interrupt arrives before the runtime accepts it", async () => {
+    let releaseFind: ((value: { session: typeof session; environment: typeof environment; revision: number }) => void) | undefined;
+    const calls: string[] = [];
+    context = {
+      find: async () => {
+        calls.push("find");
+        const found = await new Promise<{ session: typeof session; environment: typeof environment; revision: number }>((resolve) => {
+          releaseFind = resolve;
+        });
+        calls.push("find_done");
+        return found;
+      },
+    };
+    runtime.run = async (input) => {
+      calls.push("run");
+      runs.push(structuredClone(input));
+    };
+    runtime.cancel = async (input) => {
+      calls.push(`cancel:${input.reason}`);
+      cancellations.push(input.reason);
+    };
+    const executor = worker();
+    await executor.sessionEventsAccepted(accepted("event_early_interrupt"));
+    expect(calls).toEqual(["find"]);
+
+    await executor.sessionEventsAccepted(accepted("interrupt_early", "user.interrupt"));
+    expect(calls).toEqual(["find", "cancel:interrupt_requested"]);
+    releaseFind?.({ session, environment, revision: 1 });
+    await executor.waitForIdle();
+
+    expect(calls).toEqual(["find", "cancel:interrupt_requested", "find_done"]);
+    expect(runs).toEqual([]);
+    await expect(coordinator.find({
+      workspaceId: "workspace_01",
+      executionId: "event_early_interrupt",
+    })).resolves.toMatchObject({ state: "cancelled" });
+  });
+
   it("cancels only the thread lane named by an interrupt", async () => {
     const releases: Array<() => void> = [];
     const cancelledExecutions: string[] = [];

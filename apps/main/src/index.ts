@@ -1982,6 +1982,9 @@ export class McpProxyRpc extends WorkerEntrypoint<Env> {
       if (result.type === "recorded") return { type: "recorded" };
       if (result.type === "not_found") return { type: "not_found" };
       if (result.type === "execution_fence_lost") return { type: "version_conflict" };
+      // Shared keep-first semantics: the first recorded body stands and the
+      // replay is a no-op (persistence already logged the collision).
+      if (result.type === "event_id_collision") return { type: "ignored" };
     }
     return { type: "version_conflict" };
   }

@@ -277,7 +277,98 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     await expect(pending).rejects.toThrow("interrupt_requested");
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(starts).toBe(1);
+    expect(events()).toEqual([
+      { type: "session.status_idle", stopReason: { type: "end_turn" } },
+    ]);
+  });
+
+  it("does not emit idle when the first startup attempt is cancelled because the lease was lost", async () => {
+    let markAttempt: (() => void) | undefined;
+    const attemptStarted = new Promise<void>((resolve) => { markAttempt = resolve; });
+    const { accept, events, driver } = startFailureDriver(async (input) => {
+      markAttempt?.();
+      await new Promise<void>((_resolve, reject) => {
+        const fail = () => reject(Object.assign(new Error("lease_lost"), { name: "AbortError" }));
+        if (input.signal?.aborted) { fail(); return; }
+        input.signal?.addEventListener("abort", fail, { once: true });
+      });
+    });
+    const pending = accept();
+    await attemptStarted;
+    driver.cancel({ workspaceId: "workspace_01", sessionId: session.id, reason: "lease_lost" });
+    await expect(pending).rejects.toThrow("lease_lost");
     expect(events()).toEqual([]);
+  });
+
+  it("does not emit idle when the first startup attempt is stopped with the session", async () => {
+    let markAttempt: (() => void) | undefined;
+    const attemptStarted = new Promise<void>((resolve) => { markAttempt = resolve; });
+    const { accept, events, driver } = startFailureDriver(async (input) => {
+      markAttempt?.();
+      await new Promise<void>((_resolve, reject) => {
+        const fail = () => reject(Object.assign(new Error("session_deleted"), { name: "AbortError" }));
+        if (input.signal?.aborted) { fail(); return; }
+        input.signal?.addEventListener("abort", fail, { once: true });
+      });
+    });
+    const pending = accept();
+    await attemptStarted;
+    const stopping = driver.stop({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session,
+      reason: "deleted",
+    });
+    await expect(pending).rejects.toThrow("session_deleted");
+    await stopping;
+    expect(events()).toEqual([]);
+  });
+
+  it("applies an interrupt that arrives before the startup abort controller is registered", async () => {
+    let starts = 0;
+    const accepted: string[] = [];
+    const { accept, events, driver } = startFailureDriver(async () => { starts += 1; }, accepted);
+    driver.cancel({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      reason: "interrupt_requested",
+      attemptId: executionFence.attemptId,
+    });
+    await expect(accept()).rejects.toThrow("interrupt_requested");
+    expect(starts).toBe(0);
+    expect(accepted).toEqual([]);
+    expect(events()).toEqual([
+      { type: "session.status_idle", stopReason: { type: "end_turn" } },
+    ]);
+  });
+
+  it("does not emit idle when a cancel before accept is a lost lease", async () => {
+    let starts = 0;
+    const accepted: string[] = [];
+    const { accept, events, driver } = startFailureDriver(async () => { starts += 1; }, accepted);
+    driver.cancel({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      reason: "lease_lost",
+      attemptId: executionFence.attemptId,
+    });
+    await expect(accept()).rejects.toThrow("lease_lost");
+    expect(starts).toBe(0);
+    expect(accepted).toEqual([]);
+    expect(events()).toEqual([]);
+  });
+
+  it("does not let a cancel for another attempt abort the attempt that accepts", async () => {
+    const accepted: string[] = [];
+    const { accept, driver } = startFailureDriver(async () => {}, accepted);
+    driver.cancel({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      reason: "interrupt_requested",
+      attemptId: "attempt_other",
+    });
+    await accept();
+    expect(accepted).toEqual([session.id]);
   });
 
   it("does not emit idle when a startup retry is cancelled because the lease was lost", async () => {
@@ -620,6 +711,65 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       done: false,
     });
     await iterator.return?.();
+  });
+
+  it("keeps the first projection when a replay collides and does not fail the output", async () => {
+    let emit: ((frame: unknown) => Promise<void>) | undefined;
+    const engine: RuntimeEngine = {
+      start: async (_input, output) => { emit = output; },
+      stop: async () => {},
+      accept: async () => {},
+      archiveThread: async () => {},
+    };
+    let attempts = 0;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine,
+      realtime: new MemorySessionRealtimeHub(),
+      projectionFor: () => ({
+        recordSessionRuntimeEvents: async () => {
+          attempts += 1;
+          return {
+            _tag: "ProjectionEventIdCollision",
+            ok: false,
+            reason: "collision",
+            type: "event_id_collision",
+            kept: "first",
+            eventIds: ["toolu_replay"],
+          } as Awaited<ReturnType<SessionRuntimeProjectionApplicationPort["recordSessionRuntimeEvents"]>>;
+        },
+      }),
+    });
+    await driver.start({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session,
+      environment,
+      initialEvents: [],
+    });
+    const iterator = driver.subscribe({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      session,
+    })[Symbol.asyncIterator]();
+    let delivered = false;
+    const delivery = iterator.next().then((result) => {
+      delivered = true;
+      return result;
+    });
+    const emitted = emit?.({
+      id: "toolu_replay",
+      type: "agent.tool_use",
+      name: "bash",
+      input: { command: "echo hello" },
+      processed_at: "2026-08-26T03:00:01.004Z",
+    });
+
+    await expect(emitted).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(attempts).toBe(1);
+    expect(delivered).toBe(false);
+    await iterator.return?.();
+    await delivery;
   });
 
   it("publishes ephemeral runtime deltas without projecting them", async () => {

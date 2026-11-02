@@ -19,8 +19,55 @@ export interface ProjectSessionRuntimeState extends FindRuntimeProjectionSession
   environmentWorkFence?: EnvironmentWorkExecutionFence;
 }
 
+/**
+ * A runtime projection replay reused an already-recorded event ID with a
+ * different body (for example the same toolCallId with a new processed_at).
+ * Event IDs are immutable facts: the first recorded body is kept and the
+ * replayed batch is not applied. Every host (CF and Node) shares this result.
+ */
+export interface ProjectionEventIdCollision {
+  _tag: "ProjectionEventIdCollision";
+  ok: false;
+  reason: "collision";
+  type: "event_id_collision";
+  kept: "first";
+  eventIds: string[];
+}
+
+export function projectionEventIdCollision(
+  eventIds: string[],
+): ProjectionEventIdCollision {
+  return {
+    _tag: "ProjectionEventIdCollision",
+    ok: false,
+    reason: "collision",
+    type: "event_id_collision",
+    kept: "first",
+    eventIds: [...eventIds],
+  };
+}
+
+/** Structured warning every projection persistence emits on a collision. */
+export function projectionEventIdCollisionWarning(input: {
+  workspaceId: string;
+  sessionId: string;
+  collision: ProjectionEventIdCollision;
+}): ProjectionEventIdCollision & {
+  op: "session_runtime_projection.event_id_collision";
+  workspaceId: string;
+  sessionId: string;
+} {
+  return {
+    ...input.collision,
+    op: "session_runtime_projection.event_id_collision",
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+  };
+}
+
 export type ProjectSessionRuntimeStateResult =
   | { type: "projected"; record: StoredSession }
+  | ProjectionEventIdCollision
   | { type: "not_found" }
   | { type: "execution_fence_lost" }
   | { type: "revision_conflict"; actualRevision: number };

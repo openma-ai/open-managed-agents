@@ -1,5 +1,6 @@
 import type {
   EnvironmentWorkExecutionFence,
+  ProjectionEventIdCollision,
   RuntimeProducedSessionEvent,
   SessionRuntimeProjectionApplicationPort,
 } from "@open-managed-agents/managed-agents-application";
@@ -16,6 +17,7 @@ export type EnvironmentWorkRuntimeIngressResult =
   | { type: "forbidden" }
   | { type: "not_found" }
   | { type: "stale_claim" }
+  | ProjectionEventIdCollision
   | { type: "version_conflict" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -78,6 +80,8 @@ export async function ingestEnvironmentWorkRuntimeEvents(input: {
     if (result.type === "version_conflict") continue;
     if (result.type === "not_found") return { type: "not_found" };
     if (result.type === "execution_fence_lost") return { type: "stale_claim" };
+    // Keep-first: nothing from this batch was applied or should be published.
+    if (result.type === "event_id_collision") return result;
     for (const event of decoded.events) await input.publish(event);
     return { type: "recorded", eventIds: decoded.events.map((event) => event.id) };
   }

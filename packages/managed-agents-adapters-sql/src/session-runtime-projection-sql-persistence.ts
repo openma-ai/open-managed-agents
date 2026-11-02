@@ -7,6 +7,10 @@ import type {
   SessionRuntimeProjectionPersistencePort,
   SessionThread,
 } from "@open-managed-agents/managed-agents-application";
+import {
+  projectionEventIdCollision,
+  projectionEventIdCollisionWarning,
+} from "@open-managed-agents/managed-agents-application";
 import type { StoredSession } from "@open-managed-agents/session-store";
 import { sessionFromSourceRow } from "./session-sql-source";
 
@@ -38,12 +42,19 @@ export class SqlSessionRuntimeProjectionPersistence
   implements SessionRuntimeProjectionPersistencePort
 {
   readonly #now: () => Date;
+  readonly #warn: (entry: ReturnType<typeof projectionEventIdCollisionWarning>) => void;
 
   constructor(
     private readonly client: SqlClient,
-    options: { now?: () => Date } = {},
+    options: {
+      now?: () => Date;
+      warn?: (entry: ReturnType<typeof projectionEventIdCollisionWarning>) => void;
+    } = {},
   ) {
     this.#now = options.now ?? (() => new Date());
+    this.#warn = options.warn ?? ((entry) => {
+      console.warn(JSON.stringify({ level: "warn", ...entry }));
+    });
   }
 
   async findCurrent(
@@ -132,13 +143,23 @@ export class SqlSessionRuntimeProjectionPersistence
       const exactReplay = existingEvents.every((row, index) =>
         row !== null && JSON.stringify(decodeSessionEventDocument(row.document).event) === JSON.stringify(input.events[index])
       );
-      if (!exactReplay) {
-        throw new Error(
-          "Runtime projection event IDs collide with a different or partial batch",
-        );
-      }
       if (!await this.isFenceActive(input, now)) {
         return { type: "execution_fence_lost" };
+      }
+      if (!exactReplay) {
+        // Event IDs are immutable facts: keep the first recorded body and do
+        // not apply any part of the replayed batch.
+        const collision = projectionEventIdCollision(
+          input.events
+            .filter((_event, index) => existingEvents[index] !== null)
+            .map((event) => event.id),
+        );
+        this.#warn(projectionEventIdCollisionWarning({
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          collision,
+        }));
+        return collision;
       }
       const current = await this.findCurrent(input);
       return current === null

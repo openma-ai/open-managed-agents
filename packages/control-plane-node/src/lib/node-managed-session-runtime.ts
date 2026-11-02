@@ -44,6 +44,7 @@ import type {
   SessionRealtimeWriter,
 } from "@open-managed-agents/session-realtime";
 import { randomUUID } from "node:crypto";
+import { idleStopReasonForCancelledTurn } from "@open-managed-agents/session-runtime-contract";
 import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
 import { managedEventThread } from "./node-managed-subagents.js";
@@ -290,7 +291,14 @@ export class DefaultNodeManagedSessionRuntimeDriver
   private readonly outputChains = new ScopedSessionMap<Promise<void>>();
   private readonly starts = new ScopedSessionMap<Promise<void>>();
   private readonly executionFences = new ScopedSessionMap<SessionExecutionFence>();
-  private readonly startAborts = new ScopedSessionMap<AbortController>();
+  private readonly startAborts = new ScopedSessionMap<{
+    controller: AbortController;
+    attemptId?: string;
+  }>();
+  /** Cancels that named an execution attempt before its accept registered an
+   *  abort controller (claim → context lookup → accept race). Consumed by the
+   *  accept for that attempt so the turn never starts. */
+  private readonly pendingCancels = new ScopedSessionMap<Map<string, string>>();
   private readonly realtime: SessionRealtimeHub;
 
   constructor(
@@ -321,11 +329,45 @@ export class DefaultNodeManagedSessionRuntimeDriver
     }
   }
 
-  /** Stops an in-flight startup retry. `lease_lost` stays silent: another
-   * owner re-runs the execution. A user interrupt that already announced
-   * `retrying` returns the session to idle so it does not stay rescheduling. */
-  cancel(input: { workspaceId: string; sessionId: string; reason?: string }): void {
-    this.startAborts.get(input)?.abort(cancellationError(input.reason ?? "cancelled"));
+  /** Stops an in-flight (or not-yet-accepted) startup. What the session
+   * reports afterwards is the shared cancellation semantics
+   * (`idleStopReasonForCancelledTurn`): interrupt → idle end_turn,
+   * lease_lost / session_* → silent. */
+  cancel(input: {
+    workspaceId: string;
+    sessionId: string;
+    reason?: string;
+    attemptId?: string;
+  }): void {
+    const reason = input.reason ?? "cancelled";
+    const active = this.startAborts.get(input);
+    if (
+      active !== undefined &&
+      (input.attemptId === undefined || active.attemptId === undefined ||
+        active.attemptId === input.attemptId)
+    ) {
+      active.controller.abort(cancellationError(reason));
+      return;
+    }
+    if (input.attemptId === undefined) return;
+    const pending = this.pendingCancels.get(input) ?? new Map<string, string>();
+    if (!pending.has(input.attemptId)) pending.set(input.attemptId, reason);
+    // Bounded: an attempt the worker never runs leaves no unbounded residue.
+    while (pending.size > 16) pending.delete(pending.keys().next().value as string);
+    this.pendingCancels.set(input, pending);
+  }
+
+  private takePendingCancel(
+    input: { workspaceId: string; sessionId: string },
+    attemptId: string | undefined,
+  ): string | undefined {
+    if (attemptId === undefined) return undefined;
+    const pending = this.pendingCancels.get(input);
+    const reason = pending?.get(attemptId);
+    if (pending === undefined || reason === undefined) return undefined;
+    pending.delete(attemptId);
+    if (pending.size === 0) this.pendingCancels.delete(input);
+    return reason;
   }
 
   async stop(input: StopNodeManagedSessionRuntime): Promise<void> {
@@ -339,6 +381,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       await this.outputChains.get(input);
     } finally {
       this.starts.delete(input);
+      this.pendingCancels.delete(input);
       this.closeSession(input);
     }
   }
@@ -354,9 +397,19 @@ export class DefaultNodeManagedSessionRuntimeDriver
     }
     if (fence !== undefined) this.executionFences.set(input, fence);
     const abortController = new AbortController();
-    this.startAborts.set(input, abortController);
+    const startAbort = {
+      controller: abortController,
+      ...(fence !== undefined && { attemptId: fence.attemptId }),
+    };
+    this.startAborts.set(input, startAbort);
     const signal = abortController.signal;
+    const earlyCancel = this.takePendingCancel(input, fence?.attemptId);
+    if (earlyCancel !== undefined) abortController.abort(cancellationError(earlyCancel));
     try {
+      if (signal.aborted) {
+        await this.finishCancelledStart(input, signal);
+        throw abortedError(signal);
+      }
       const plan = await this.dependencies.engine.planQueuedInputs?.(input) ??
         { defer: [], release: [] };
       if (plan.reject) {
@@ -382,10 +435,9 @@ export class DefaultNodeManagedSessionRuntimeDriver
         attempts: 3,
         delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)),
       };
-      let announcedRetry = false;
       for (let attempt = 1; ; attempt++) {
         if (signal.aborted) {
-          await this.finishCancelledStart(input, signal, announcedRetry);
+          await this.finishCancelledStart(input, signal);
           throw abortedError(signal);
         }
         try {
@@ -401,7 +453,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
           break;
         } catch (error) {
           if (signal.aborted || isAbortError(error)) {
-            await this.finishCancelledStart(input, signal, announcedRetry);
+            await this.finishCancelledStart(input, signal);
             throw signal.aborted ? abortedError(signal) : error;
           }
           if (attempt >= Math.max(1, retry.attempts) || isNonRetryableStartError(error)) {
@@ -411,20 +463,19 @@ export class DefaultNodeManagedSessionRuntimeDriver
             );
           }
           await this.projectStartFailure(input, error, "retrying");
-          announcedRetry = true;
           if (signal.aborted) {
-            await this.finishCancelledStart(input, signal, announcedRetry);
+            await this.finishCancelledStart(input, signal);
             throw abortedError(signal);
           }
           await abortableDelay(retry.delayMs(attempt), signal);
           if (signal.aborted) {
-            await this.finishCancelledStart(input, signal, announcedRetry);
+            await this.finishCancelledStart(input, signal);
             throw abortedError(signal);
           }
         }
       }
       if (signal.aborted) {
-        await this.finishCancelledStart(input, signal, announcedRetry);
+        await this.finishCancelledStart(input, signal);
         throw abortedError(signal);
       }
       const {
@@ -462,7 +513,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
         await this.outputChains.get(input);
       }
     } finally {
-      if (this.startAborts.get(input) === abortController) {
+      if (this.startAborts.get(input) === startAbort) {
         this.startAborts.delete(input);
       }
       if (fence !== undefined && this.executionFences.get(input) === fence) {
@@ -474,13 +525,13 @@ export class DefaultNodeManagedSessionRuntimeDriver
   private async finishCancelledStart(
     input: ExecuteNodeManagedSessionEvents,
     signal: AbortSignal,
-    announcedRetry: boolean,
   ): Promise<void> {
-    const reason = cancellationReason(signal);
-    // lease_lost: the new owner re-runs the turn. session_*: the session is
-    // going away. Either way a trailing idle from this attempt would race
-    // the owner that still holds the session.
-    if (!announcedRetry || reason === "lease_lost" || reason?.startsWith("session_")) return;
+    // Shared semantics: an interrupt ends the turn with idle end_turn even
+    // before the first start attempt returns (or before accept); lease_lost
+    // and session_* stay silent so this attempt never races the owner that
+    // still holds (or is deleting) the session.
+    const stopReason = idleStopReasonForCancelledTurn(cancellationReason(signal));
+    if (stopReason === null) return;
     const nextEventId = () => this.dependencies.ids?.nextEventId()
       ?? `event_${randomUUID()}`;
     await this.enqueueOutput(
@@ -489,7 +540,7 @@ export class DefaultNodeManagedSessionRuntimeDriver
       {
         id: nextEventId(),
         type: "session.status_idle",
-        stop_reason: { type: "end_turn" },
+        stop_reason: stopReason,
         processed_at: this.nextEventStamp(input),
       },
       input.executionFence,
@@ -620,6 +671,8 @@ export class DefaultNodeManagedSessionRuntimeDriver
         });
         if (projected.type === "recorded") break;
         if (projected.type === "not_found") return;
+        // Keep-first: the original event is already recorded and published.
+        if (projected.type === "event_id_collision") return;
         if (projected.type === "execution_fence_lost") {
           throw new Error(
             `Session ${workspaceId}/${sessionId} execution fence was lost`,

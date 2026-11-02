@@ -211,4 +211,39 @@ describe("SessionRuntimeProjectionApplicationService", () => {
       updatedAt: "2026-08-26T06:01:00.000Z",
     }]);
   });
+
+  it("returns a keep-first collision instead of recording the replayed body", async () => {
+    const service = new SessionRuntimeProjectionApplicationService({
+      workspaceId: "workspace_01",
+      persistence: {
+        findCurrent: async () => ({ session: structuredClone(idleSession), revision: 4 }),
+        project: async () => ({
+          _tag: "ProjectionEventIdCollision",
+          ok: false,
+          reason: "collision",
+          type: "event_id_collision",
+          kept: "first",
+          eventIds: ["toolu_replay"],
+        }),
+      },
+    });
+
+    await expect(service.recordSessionRuntimeEvents({
+      sessionId: "session_01",
+      events: [{
+        id: "toolu_replay",
+        type: "agent.tool_use",
+        name: "bash",
+        input: { command: "echo hello" },
+        processedAt: "2026-08-26T03:00:01.004Z",
+      }],
+    })).resolves.toEqual({
+      _tag: "ProjectionEventIdCollision",
+      ok: false,
+      reason: "collision",
+      type: "event_id_collision",
+      kept: "first",
+      eventIds: ["toolu_replay"],
+    });
+  });
 });
