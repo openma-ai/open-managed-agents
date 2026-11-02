@@ -36,7 +36,7 @@ describe("normalizeInterruptedToolCalls (Codex-style history repair)", () => {
     const syn = out[out.length - 1];
     expect(syn.tool_use_id).toBe("c1");
     expect(syn.is_error).toBe(true);
-    expect(JSON.stringify(syn.content)).toContain("interrupted before completion");
+    expect(JSON.stringify(syn.content)).toContain("Execution outcome is unknown");
     const msgs = eventsToMessages(events as never);
     const calls = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-call").map((p: any) => p.toolCallId);
     const results = msgs.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "tool-result").map((p: any) => p.toolCallId);
@@ -56,7 +56,7 @@ describe("interruptRequiresActionClosure (shared CF/Node core)", () => {
       { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["c1"] } },
     ];
     expect(interruptRequiresActionClosure(ev as never)).toEqual([]);
-    expect(INTERRUPTED_TOOL_RESULT_TEXT).toBe("Tool execution was interrupted before completion. Please retry.");
+    expect(INTERRUPTED_TOOL_RESULT_TEXT).toBe("Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.");
   });
   it("is a no-op when idle end_turn", () => {
     expect(interruptRequiresActionClosure([{ type: "session.status_idle", stop_reason: { type: "end_turn" } }] as never)).toEqual([]);
@@ -82,7 +82,7 @@ describe("normalizeInterruptedToolCalls: no-op idle interrupt (official CMA)", (
     const parts = eventsToMessages(parked as never).flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
     const results = parts.filter((p: any) => p.type === "tool-result");
     expect(results.map((p: any) => p.toolCallId).sort()).toEqual(["c1", "t1"]);
-    expect(JSON.stringify(results)).not.toContain("interrupted before completion");
+    expect(JSON.stringify(results)).not.toContain("Execution outcome is unknown");
   });
   it("partially settled (resume not yet allowed) still synthesizes nothing for the answered id", () => {
     const partial = parked.slice(0, 8);
@@ -159,7 +159,7 @@ describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool
     ]);
     expect(out[3].tool_use_id).toBe("c1");
     expect(out[3].is_error).toBe(true);
-    expect(JSON.stringify(out[3].content)).toContain("interrupted before completion");
+    expect(JSON.stringify(out[3].content)).toContain("Execution outcome is unknown");
     // Model sample: assistant+tools, tool results, user — never user between.
     const msgs = eventsToMessages(events as never) as any[];
     expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
@@ -180,6 +180,6 @@ describe("normalizeInterruptedToolCalls: user.message cannot split tool_use/tool
     const results = parts.filter((p: any) => p.type === "tool-result");
     expect(results).toHaveLength(1);
     expect(JSON.stringify(results[0])).toContain("real");
-    expect(JSON.stringify(results[0])).not.toContain("interrupted before completion");
+    expect(JSON.stringify(results[0])).not.toContain("Execution outcome is unknown");
   });
 });

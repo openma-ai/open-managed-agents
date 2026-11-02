@@ -419,6 +419,9 @@ function validateTtl(ttlMs: number): void {
 }
 
 export interface SqlSessionExecutionStoreOptions {
+  /** A host with local recovery evidence must not sweep other Sessions or
+   * take over expired work before its explicit recovery pass has decided. */
+  recoveryScope?: { workspaceId: string; sessionId: string };
   /** Only checkpoint_restore enables this: all lanes of a Session share /workspace. */
   serializeSessionClaims?: boolean;
   /**
@@ -743,7 +746,7 @@ export class SqlSessionExecutionStore
        WHERE (? IS NULL OR candidate.workspace_id = ?)
          AND (? IS NULL OR candidate.session_id = ?)
          AND (? IS NULL OR candidate.lane_id = ?)
-         AND (candidate.state = 'queued' OR (candidate.state = 'running'
+         AND (candidate.state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND candidate.state = 'running'
            AND candidate.lease_expires_at_ms <= ? AND candidate.owner_id <> ?))
          AND candidate.held_after_exhausted_ms IS NULL
          AND candidate.attempt_count < candidate.max_attempts
@@ -895,7 +898,7 @@ export class SqlSessionExecutionStore
                WHEN ? < deadline_at_ms THEN ? ELSE deadline_at_ms END,
              settled_at_ms = NULL, failure = NULL, revision = revision + 1
        WHERE workspace_id = ? AND id = ? AND revision = ?
-         AND (state = 'queued' OR (state = 'running'
+         AND (state = 'queued' OR (${this.options.recoveryScope ? '0 = 1' : '1 = 1'} AND state = 'running'
            AND lease_expires_at_ms <= ? AND owner_id <> ?))
          AND attempt_count < max_attempts
          AND deadline_at_ms > ?
@@ -1365,12 +1368,18 @@ export class SqlSessionExecutionStore
             SELECT ${columns()}
               FROM managed_session_executions
              WHERE state IN ('queued', 'running')
+               ${this.options.recoveryScope ? 'AND workspace_id = ? AND session_id = ?' : ''}
                AND (deadline_at_ms <= ?
                  OR (state = 'running'
                    AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)))
              ORDER BY admitted_at_ms ASC, id ASC
              LIMIT 100
-          `).bind(now, now).all<ExecutionRow>();
+          `).bind(
+            ...(this.options.recoveryScope
+              ? [this.options.recoveryScope.workspaceId, this.options.recoveryScope.sessionId]
+              : []),
+            now, now,
+          ).all<ExecutionRow>();
           const rows = selected.results ?? [];
           if (rows.length === 0) return;
           let changed = 0;
@@ -1380,6 +1389,9 @@ export class SqlSessionExecutionStore
               ? options.decideForRecord(lease)
               : decideExpiredExecution(lease, now);
             if (decision === null) continue;
+            // Only the explicit, evidence-aware recovery pass may requeue
+            // expired work in a locally recovered Session.
+            if (this.options.recoveryScope && !options.decideForRecord && decision.type === "requeue") continue;
             if (
               decision.type === "requeue" &&
               options.excludeOwnerId !== undefined &&
