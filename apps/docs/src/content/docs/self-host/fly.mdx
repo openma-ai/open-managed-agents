@@ -39,7 +39,9 @@ entrypoints never fall back to a host subprocess.
 
    The setup command does not build this monorepo on Fly. It maps the checkout's
    full Git SHA to `ghcr.io/openma-ai/open-managed-agents:sha-<git-sha>` and
-   deploys that prebuilt server release checkpoint.
+   deploys that prebuilt server release checkpoint. If this commit has no published
+   image (for example, a documentation-only commit), set `OPENMA_FLY_IMAGE` to a
+   published immutable digest, or use `OPENMA_FLY_BUILD_FROM_SOURCE=1` to build it.
 
 2. **Run the setup command.**
 

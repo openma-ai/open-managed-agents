@@ -1,4 +1,4 @@
-export type DeploymentTarget = "cloudflare" | "docker" | "fly" | "vercel";
+export type DeploymentTarget = "cloudflare" | "docker" | "fly" | "vercel" | "render";
 export type ModelSetup = "console" | "environment";
 export type DataMode = "managed" | "sqlite" | "postgres";
 
@@ -70,6 +70,14 @@ export const DEPLOYMENT_TARGETS: Record<DeploymentTarget, DeploymentTargetDefini
     note: "Fly Launch reads the checked-in Machine adapter and provisions its first volume.",
     estimate: "≈ 8 min",
   },
+  render: {
+    name: "Render",
+    eyebrow: "Image",
+    availability: "guided",
+    summary: "Run the official OpenMA image with a persistent disk.",
+    note: "Sign in to Render, choose a region, and deploy with your sandbox credentials.",
+    estimate: "≈ 15 min",
+  },
   vercel: {
     name: "Vercel",
     eyebrow: "Beta",
@@ -104,9 +112,14 @@ function modelSetupLabel(modelSetup: ModelSetup): string {
     : "Set a provider key in the deployment environment";
 }
 
-const TARGET_IDS = new Set<DeploymentTarget>(["cloudflare", "docker", "fly", "vercel"]);
+const TARGET_IDS = new Set<DeploymentTarget>(["cloudflare", "docker", "fly", "vercel", "render"]);
 const MODEL_SETUP_IDS = new Set<ModelSetup>(["console", "environment"]);
 const DATA_MODE_IDS = new Set<DataMode>(["managed", "sqlite", "postgres"]);
+
+export function parseDeploymentTarget(params: URLSearchParams): DeploymentTarget | null {
+  const value = params.get("provider");
+  return value && TARGET_IDS.has(value as DeploymentTarget) ? value as DeploymentTarget : null;
+}
 
 export function serializeBrowserSelection(selection: DeploymentSelection): string {
   return JSON.stringify(selection);
@@ -299,9 +312,36 @@ E2B_API_KEY=... OPENMA_FLY_DATA_MODE=${selection.dataMode === "postgres" ? "post
         "fly.toml initial_size provisions and mounts the first /app/data volume; daily snapshots are retained for 14 days.",
         "The main-fly adapter derives the public origin from FLY_APP_NAME before the portable Node app starts.",
         "The setup script maps the checkout's full Git SHA to an immutable GHCR server image, so Fly pulls a release checkpoint instead of rebuilding the monorepo.",
+        "If this checkout has no published image, use OPENMA_FLY_BUILD_FROM_SOURCE=1 or select a published digest.",
         "Pin OPENMA_FLY_IMAGE to an explicit sha256 digest when promoting an audited release.",
         "The setup script generates application secrets locally, stages them directly in Fly, deploys, and runs health checks.",
         "The subprocess adapter is not available in deployable entrypoints; Fly fails closed until an isolated provider is configured.",
+      ],
+    };
+  }
+
+  if (selection.target === "render") {
+    return {
+      ...common,
+      status: "Image deployment",
+      topology: "One Node service · SQLite · isolated sandboxes",
+      persistence: "Persistent disk mounted at /app/data; keep the service at one instance",
+      command: `# Render Web Service → Existing Image
+# Image: ghcr.io/openma-ai/open-managed-agents:edge
+# Docker Command:
+bash /app/apps/main-node/scripts/start-render.sh`,
+      verificationCommand: "curl https://<your-service>.onrender.com/health",
+      launchUrl: "https://dashboard.render.com/",
+      requirements: [
+        "A Render account with billing enabled for a paid service and persistent disk",
+        "E2B_API_KEY or another supported sandbox credential configured directly in Render",
+        "Review region, service size, and disk capacity before deploying",
+      ],
+      nextSteps: [
+        "In the Render dashboard: New → Web Service → Existing Image (or use the repository render.yaml Blueprint).",
+        "Mount a 10 GB persistent disk at /app/data and set health check path /health.",
+        "Open your service URL, create your account, and add a Model Card in Console.",
+        "Automatic deploys are disabled; deploy updates explicitly and back up the disk.",
       ],
     };
   }
