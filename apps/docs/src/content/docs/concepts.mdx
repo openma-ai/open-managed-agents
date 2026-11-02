@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: A one-page tour of every noun in openma — Agent, Session, Environment, Vault, Memory Store, Skill, Tool, Harness, Integration.
+description: A one-page tour of every noun in openma — Agent, Session, Environment, Vault, Memory Store, Skill, Tool, Harness, Integration — plus a pointer to OpenMatter Super-agent Loops.
 ---
 
 import { Aside, LinkCard } from '@astrojs/starlight/components';
@@ -123,6 +123,15 @@ The sandbox placement is provider-neutral: every ACP process uses the
 Container, LiteBox, or E2B. Stateful ACP sessions retain one child
 across turns, renew the provider lease during a turn, and persist the native
 ACP session id in the workspace so a restored sandbox can resume it.
+
+## OpenMatter (work-side Loops)
+
+openma owns the in-session **Harness**. For Super-agent-style routing across
+Slack/GitHub/Linear — Loop, Bond, AgentDriver, Turn, steer, coordinator/worker
+outside a replaceable harness — see
+[OpenMatter Super-agent](/ecosystem/openmatter-super-agent/). That framework
+lives in [openma-ai/OpenMatter](https://github.com/openma-ai/OpenMatter); it is
+not a second harness inside this repo.
 
 ## Integration
 
