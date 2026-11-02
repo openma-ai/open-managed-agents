@@ -1,11 +1,9 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { registerTestHarnesses } from "../harnesses";
 
-// ---------- Test Harness ----------
-registerHarness("edge-noop", () => ({ async run() {} }));
+registerTestHarnesses();
 
 // ---------- Helpers ----------
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -29,7 +27,7 @@ async function createAgent(overrides?: Record<string, unknown>) {
   const res = await post("/v1/oma/agents", {
     name: "EdgeAgent",
     model: "claude-sonnet-4-6",
-    harness: "edge-noop",
+    _oma: { harness: "edge-noop" },
     ...overrides,
   });
   return (await res.json()) as any;
@@ -57,18 +55,17 @@ async function createSession(agentId: string, envId: string, extra?: Record<stri
 // API validation
 // ============================================================
 describe("API validation", () => {
-  it("agent with extra unknown fields is accepted (201)", async () => {
+  it("agent with extra unknown fields is rejected (400)", async () => {
     const res = await post("/v1/oma/agents", {
       name: "ExtraFields",
       model: "claude-sonnet-4-6",
-      harness: "edge-noop",
+      _oma: { harness: "edge-noop" },
       unknown_field: "should be ignored or stored",
       another_random: 42,
     });
-    expect(res.status).toBe(201);
-    const agent = (await res.json()) as any;
-    expect(agent.id).toMatch(/^agent-/);
-    expect(agent.name).toBe("ExtraFields");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.error.type).toBe("invalid_request_error");
   });
 
   it("session without title is created with no title", async () => {
@@ -122,7 +119,7 @@ describe("Concurrent operations", () => {
     const createRes = await post("/v1/oma/agents", {
       name: "ImmediateGet",
       model: "claude-sonnet-4-6",
-      harness: "edge-noop",
+      _oma: { harness: "edge-noop" },
     });
     const agent = (await createRes.json()) as any;
 
@@ -137,7 +134,7 @@ describe("Concurrent operations", () => {
     const createRes = await post("/v1/oma/agents", {
       name: "ImmediateDel",
       model: "claude-sonnet-4-6",
-      harness: "edge-noop",
+      _oma: { harness: "edge-noop" },
     });
     const agent = (await createRes.json()) as any;
 
@@ -148,7 +145,7 @@ describe("Concurrent operations", () => {
     expect(getRes.status).toBe(404);
   });
 
-  it("two PUT updates to same agent simultaneously both succeed, last wins", async () => {
+  it("two simultaneous PUT updates: one wins, a stale writer gets 409", async () => {
     const agent = await createAgent({ system: "concurrent-v0" });
 
     const [res1, res2] = await Promise.all([
@@ -156,13 +153,19 @@ describe("Concurrent operations", () => {
       put(`/v1/oma/agents/${agent.id}`, { system: "concurrent-v2" }),
     ]);
 
-    expect(res1.status).toBe(200);
-    expect(res2.status).toBe(200);
+    // Version compare-and-swap, no locking: a writer that read a stale
+    // version is rejected with 409 instead of silently overwriting.
+    const statuses = [res1.status, res2.status];
+    expect(statuses).toContain(200);
+    for (const status of statuses) expect([200, 409]).toContain(status);
 
-    // The final state should be one of the two updates
+    const winners = [
+      [res1, "concurrent-v1"],
+      [res2, "concurrent-v2"],
+    ].filter(([res]) => (res as Response).status === 200).map(([, system]) => system);
     const getRes = await get(`/v1/oma/agents/${agent.id}`);
     const final = (await getRes.json()) as any;
-    expect(["concurrent-v1", "concurrent-v2"]).toContain(final.system);
+    expect(winners).toContain(final.system);
   });
 
   it("create session + POST event rapidly, event accepted", async () => {
@@ -209,8 +212,8 @@ describe("Boundary conditions", () => {
 
   it("agent list with very large limit returns all available", async () => {
     // Create a few agents to be sure
-    await post("/v1/oma/agents", { name: "Limit-1", model: "claude-sonnet-4-6", harness: "edge-noop" });
-    await post("/v1/oma/agents", { name: "Limit-2", model: "claude-sonnet-4-6", harness: "edge-noop" });
+    await post("/v1/oma/agents", { name: "Limit-1", model: "claude-sonnet-4-6", _oma: { harness: "edge-noop" } });
+    await post("/v1/oma/agents", { name: "Limit-2", model: "claude-sonnet-4-6", _oma: { harness: "edge-noop" } });
 
     const res = await get("/v1/oma/agents?limit=9999");
     expect(res.status).toBe(200);
@@ -314,11 +317,11 @@ describe("Boundary conditions", () => {
       name: "EmptySystem",
       model: "claude-sonnet-4-6",
       system: "",
-      harness: "edge-noop",
+      _oma: { harness: "edge-noop" },
     });
     expect(res.status).toBe(201);
     const agent = (await res.json()) as any;
-    expect(agent.system).toBeNull();
+    expect(agent.system).toBe("");
   });
 
   it("multiple rapid creates (20 agents) all produce unique IDs", async () => {
@@ -326,7 +329,7 @@ describe("Boundary conditions", () => {
       post("/v1/oma/agents", {
         name: `Rapid-${i}`,
         model: "claude-sonnet-4-6",
-        harness: "edge-noop",
+        _oma: { harness: "edge-noop" },
       }),
     );
     const results = await Promise.all(promises);

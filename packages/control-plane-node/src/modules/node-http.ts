@@ -18,6 +18,7 @@
 import { serveStatic } from "@hono/node-server/serve-static";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../lib/matter-proxy.js";
 import { Hono } from "hono";
+import { getHarnessCatalog } from "@open-managed-agents/agent/harness/registry";
 import { OpenAIAgentsProtocolError } from "@open-managed-agents/openai-agents-api";
 import { createArtifactsHandler, createManagedSessionMapping, createResourcesHandler, createSessionsHandler } from "@open-managed-agents/openai-agents-compat";
 
@@ -36,8 +37,9 @@ import {
 
 import { listAuthProviders } from "@open-managed-agents/shared";
 
-import { buildAgentRoutes as buildLegacyAgentRoutes, buildVaultRoutes as buildLegacyVaultRoutes, buildModelCardRoutes, buildEnvironmentRoutes as buildLegacyEnvironmentRoutes, buildSessionRoutes, buildMemoryRoutes as buildLegacyMemoryRoutes, buildDreamRoutes, buildTenantRoutes, buildMeRoutes, buildApiKeyRoutes, buildEvalRoutes, buildIntegrationsRoutes, buildIntegrationsGatewayRoutes, type InstallProxyForwarder, mintApiKeyOnStorage, sha256Hex } from "@open-managed-agents/http-routes";
+import { buildAgentRoutes as buildLegacyAgentRoutes, buildVaultRoutes as buildLegacyVaultRoutes, buildModelCardRoutes, buildEnvironmentRoutes as buildLegacyEnvironmentRoutes, buildSessionRoutes, buildMemoryRoutes as buildLegacyMemoryRoutes, buildDreamRoutes, buildTenantRoutes, buildMeRoutes, buildApiKeyRoutes, buildEvalRoutes, buildIntegrationsRoutes, buildIntegrationsGatewayRoutes, buildSandboxImageRoutes, type InstallProxyForwarder, mintApiKeyOnStorage, sha256Hex } from "@open-managed-agents/http-routes";
 import { buildAgentRoutes as buildManagedAgentRoutes, buildManagedSessionsApi } from "@open-managed-agents/managed-agents-api";
+import { EMPTY_SANDBOX_IMAGE_CATALOG } from "@open-managed-agents/sandbox";
 import { SessionRuntimeHistoryApplicationService, SessionRuntimeProjectionApplicationService } from "@open-managed-agents/managed-agents-application";
 
 import { managedAgentsPortTokens } from "@open-managed-agents/app/managed-agents";
@@ -50,6 +52,7 @@ import { buildNodeRepos, SqlFeishuInstallationRepo, SqlFeishuPublicationRepo, Sq
 import { NodeInstallBridge, buildNodeProvidersForRequest } from "../lib/node-install-bridge.js";
 import { OmaVaultResolver } from "@open-managed-agents/oma-cap-adapter";
 import { NodeSessionRouter } from "../lib/node-session-router.js";
+import { SqlSessionExecutionStore } from "@open-managed-agents/session-runtime-sql";
 import { configureFeishuAgentTools, sqlSessionMetadataReader } from "../lib/feishu-agent-tools.js";
 import { nodeOutputsAdapter } from "../lib/node-outputs-adapter.js";
 import { createFsSessionOutputSource } from "../lib/fs-session-output-source.js";
@@ -96,7 +99,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,
@@ -114,11 +117,15 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     hub,
     realtimeDescription,
     sessionRegistry,
+    resolveDreamModelCredentials,
     resolveNodeMcpProxyTarget,
     resolveNodeInferenceUpstream,
+    managedAcpCapabilities,
     managedRuntimeRunner,
     managedRuntimeReaders,
     managedSessionRuntimeStream,
+    managedSessionExecutionCoordinator,
+    managedSessionRealtime,
     nodeSessionLifecycleHooks,
     managedSessionsComposition,
     managedEnvironmentWorkSessionTokenCrypto,
@@ -240,7 +247,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     },
     resolveBearerToken: async ({ token, method, path }) => {
       if (managedEnvironmentWorkSessionTokenCrypto === null) return null;
-      const scoped = await authenticateEnvironmentWorkSessionBearer({
+      const scoped = await managedAcpCapabilities.authenticate({ token, method, path })
+        ?? await authenticateEnvironmentWorkSessionBearer({
         token,
         method,
         path,
@@ -336,7 +344,9 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
 
   // Mount route bundles. Same paths CF uses; behavior preserved. Once a tenant
   // has configured model cards, agent model handles must resolve to an active
-  // card; an empty card set keeps the legacy ANTHROPIC_API_KEY fallback usable.
+  // card. A tenant with no cards may still save agents (so onboarding can add
+  // the card afterwards), but every model call fails until a card exists:
+  // there is no platform key fallback.
   v1.route("/agents", buildManagedAgentRoutes((context) =>
     managedPlatform
       .app({
@@ -345,7 +355,14 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       .port(managedAgentsPortTokens.agents),
   ));
   v1.route("/oma/agents", buildLegacyAgentRoutes({
+    application: (context) => managedPlatform.app({
+      workspaceId: (context.var as { tenant_id: string }).tenant_id,
+    }).port(managedAgentsPortTokens.agents),
     services,
+    hasActiveSessionsByAgent: async (tenantId, agentId) =>
+      await sessionsService.hasActiveByAgent({ tenantId, agentId }) ||
+      (await sql.prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND agent_id = ? AND archived_at IS NULL LIMIT 1").bind(tenantId, agentId).first()) !== null,
+    hasActiveEvalsByAgent: (tenantId, agentId) => evalsService.hasActiveByAgent({ tenantId, agentId }),
     validateModel: async (tenantId, model) => {
       const cards = await modelCardsService.list({ tenantId });
       const active = cards.filter((card) => card.archived_at === null);
@@ -394,6 +411,63 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       store: sessionOutputs,
     },
   }));
+  // Console cancel queued (same path as CF managedSessionQueueRoutes).
+  // Managed sessions: shared SQL execution outbox + realtime lifecycle frames.
+  // Legacy harness sessions fall through to buildSessionRoutes → NodeSessionRouter.
+  const managedQueueStore = managedSessionExecutionCoordinator
+    ?? new SqlSessionExecutionStore(sql);
+  v1.delete("/oma/sessions/:sessionId/pending/:eventId", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const eventId = c.req.param("eventId");
+    const workspaceId = c.var.tenant_id;
+    const managed = await sql
+      .prepare("SELECT id FROM managed_sessions WHERE workspace_id = ? AND id = ? LIMIT 1")
+      .bind(workspaceId, sessionId)
+      .first();
+    if (!managed) {
+      // Legacy /v1/oma session — SessionRouter owns the outbox.
+      const result = await sessionRouter.cancelPending(sessionId, eventId);
+      return new Response(result.body, {
+        status: result.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const cancelledAtMs = Date.now();
+    const cancelledAt = new Date(cancelledAtMs).toISOString();
+    const result = await managedQueueStore.cancelQueued({
+      workspaceId,
+      sessionId,
+      executionId: eventId,
+      cancelledAt,
+    });
+    if (result.type !== "cancelled") {
+      return c.json({
+        cancelled: false,
+        reason: result.reason,
+        id: eventId,
+        ...(result.execution?.attempt?.claimedAt
+          ? { processed_at: result.execution.attempt.claimedAt }
+          : result.execution?.settledAt
+            ? { processed_at: result.execution.settledAt }
+            : {}),
+      }, 409);
+    }
+    managedSessionRealtime?.publish({
+      workspaceId,
+      sessionId,
+      frame: {
+        event: {
+          type: "system.user_message_cancelled",
+          event_id: eventId,
+          pending_seq: 0,
+          session_thread_id: result.execution.laneId ?? "sthr_primary",
+          cancelled_at: cancelledAtMs,
+        } as never,
+      },
+    });
+    return c.json({ cancelled: true, id: eventId, cancelled_at: cancelledAt }, 200);
+  });
+
   v1.route("/oma/sessions", buildSessionRoutes({
     services,
     router: sessionRouter,
@@ -437,8 +511,8 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
     services,
     curatorEnv: {
       DREAM_CURATOR_MODE: config.dreamCurator === "dedup" ? "dedup" : undefined,
-      ANTHROPIC_API_KEY: config.model.apiKey,
-      ANTHROPIC_BASE_URL: config.model.baseUrl,
+      resolveCredentials: ({ tenantId, modelId }) =>
+        resolveDreamModelCredentials({ workspaceId: tenantId, modelId }),
     },
   }));
   v1.route("/tunnels", managedTunnelsRoutes);
@@ -482,7 +556,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
   v1.route("/oma/api_keys", buildApiKeyRoutes({ storage: apiKeyStorage }));
   v1.route("/oma/evals", buildEvalRoutes({
     evals: evalsService,
-    agents: agentsService,
+    agents: agentStore,
     environments: environmentsService,
   }));
 
@@ -521,6 +595,9 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       };
     },
   }));
+  v1.get("/oma/harnesses", (c) => c.json(getHarnessCatalog()));
+  // Operator SANDBOX_IMAGES catalog for `_oma.sandbox_image`; aliases only.
+  v1.route("/oma/sandbox_images", buildSandboxImageRoutes(config.sandbox.images ?? EMPTY_SANDBOX_IMAGE_CATALOG));
   v1.get("/oma/runtimes", (c) => c.json({ data: [] }));
   v1.get("/oma/stats", async (c) => {
     const tenantId = c.get("tenant_id");
@@ -635,7 +712,7 @@ export async function mountNodeHttp(runtime: NodeRuntime, disposables: Disposabl
       vaults: vaultService,
       credentials: credentialService,
       sessions: sessionsService,
-      agents: agentsService,
+      agents: agentStore,
       resolveTenantId: async (userId) => {
         const row = await sql
           .prepare(

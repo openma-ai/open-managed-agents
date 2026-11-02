@@ -9,6 +9,7 @@ import {
   type OauthRefreshMetadata,
   type RefreshedTokens,
 } from "@open-managed-agents/vault-forward";
+import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 
 export interface NodeMcpProxyTarget {
   upstreamUrl: string;
@@ -22,6 +23,8 @@ export interface NodeHttpMcpProxyDependencies {
     tenantId: string;
     sessionId: string;
     serverName: string;
+    agentId?: string;
+    agentVersion?: number;
   }): Promise<NodeMcpProxyTarget | null>;
   fetcher?: typeof fetch;
   accessLoss?: AccessLossRuntime;
@@ -45,10 +48,16 @@ export function createNodeMcpProxyBinding(
       if (!tenantId || !sessionId || !serverName) {
         return Response.json({ error: "forbidden" }, { status: 403 });
       }
+      const agentId = request.headers.get("x-oma-agent-id");
+      const version = request.headers.get("x-oma-agent-version");
+      if ((agentId === null) !== (version === null) || (version !== null && (!/^\d+$/.test(version) || Number(version) < 1))) {
+        return Response.json({ error: "forbidden" }, { status: 403 });
+      }
       const target = await dependencies.resolveTarget({
         tenantId,
         sessionId,
         serverName,
+        ...(agentId !== null && version !== null && { agentId, agentVersion: Number(version) }),
       });
       if (target === null) {
         return Response.json({ error: "forbidden" }, { status: 403 });
@@ -64,11 +73,17 @@ export function createNodeMcpProxyBinding(
           requestBody: mcpRequestBodyText(body),
         })
         : undefined;
+      const headers = new Headers(request.headers);
       return forwardWithRefresh({
-        upstreamUrl: target.upstreamUrl,
-        method: request.method,
-        inboundHeaders: new Headers(request.headers),
-        body,
+        send: (accessToken) =>
+          sendMcpUpstream({
+            upstreamUrl: target.upstreamUrl,
+            method: request.method,
+            headers,
+            body,
+            accessToken,
+            fetcher: dependencies.fetcher,
+          }),
         accessToken: target.accessToken,
         refresh: target.refresh,
         onRefreshed: target.onRefreshed,
@@ -112,10 +127,15 @@ export function buildNodeHttpMcpProxyRoutes(
       })
       : undefined;
     return forwardWithRefresh({
-      upstreamUrl: target.upstreamUrl,
-      method: context.req.method,
-      inboundHeaders,
-      body,
+      send: (accessToken) =>
+        sendMcpUpstream({
+          upstreamUrl: target.upstreamUrl,
+          method: context.req.method,
+          headers: inboundHeaders,
+          body,
+          accessToken,
+          fetcher: dependencies.fetcher,
+        }),
       accessToken: target.accessToken,
       refresh: target.refresh,
       onRefreshed: target.onRefreshed,

@@ -288,7 +288,7 @@ export function configToForm(config: Record<string, unknown>): FormState {
     Array.isArray(config.tools) ? (config.tools as unknown[]) : undefined,
   );
   const multiagent = config.multiagent as {
-    agents?: Array<Record<string, unknown>>;
+    subagents?: { type: string; predefined_agents?: Array<Record<string, unknown>> };
   } | undefined;
   const openma =
     config._oma && typeof config._oma === "object"
@@ -337,8 +337,8 @@ export function configToForm(config: Record<string, unknown>): FormState {
           ...(typeof s.version === "string" ? { version: s.version } : {}),
         }))
       : [],
-    callableAgents: Array.isArray(multiagent?.agents)
-      ? multiagent.agents.flatMap((entry): CallableEntry[] =>
+    callableAgents: Array.isArray(multiagent?.subagents?.predefined_agents)
+      ? multiagent.subagents.predefined_agents.flatMap((entry): CallableEntry[] =>
           entry.type === "agent" && typeof entry.id === "string"
             ? [{
                 type: "agent",
@@ -524,8 +524,9 @@ function mergeMultiagent(
     existing && typeof existing === "object" && !Array.isArray(existing)
       ? (existing as Record<string, unknown>)
       : undefined;
-  const priorRoster = Array.isArray(prior?.agents)
-    ? prior.agents.filter(
+  const priorSubagents = prior?.subagents as Record<string, unknown> | undefined;
+  const priorRoster = Array.isArray(priorSubagents?.predefined_agents)
+    ? priorSubagents.predefined_agents.filter(
         (entry): entry is Record<string, unknown> =>
           !!entry && typeof entry === "object" && !Array.isArray(entry),
       )
@@ -557,11 +558,18 @@ function mergeMultiagent(
     if (seen.has(member.id)) continue;
     roster.push({ ...member });
   }
-  if (roster.length === 0) return null;
+  if (roster.length === 0 && !prior) return null;
   return {
     ...(prior ? structuredClone(prior) : {}),
-    type: "coordinator",
-    agents: roster,
+    type: "multiagent_20261001",
+    advisor: prior?.advisor ?? { type: "disabled" },
+    workflows: prior?.workflows ?? { type: "disabled" },
+    subagents: {
+      ...(priorSubagents ? structuredClone(priorSubagents) : {}),
+      type: priorSubagents?.type ?? "enabled",
+      inline_agents: priorSubagents?.inline_agents ?? { type: "enabled" },
+      predefined_agents: roster,
+    },
   };
 }
 

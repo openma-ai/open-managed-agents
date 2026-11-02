@@ -53,8 +53,9 @@ import {
   bindAccessLossHooks,
   type AccessLossRuntime,
 } from "@open-managed-agents/mcp-access-loss";
-import type { Env, AgentConfig, CredentialConfig } from "@open-managed-agents/shared";
+import type { Env, CredentialConfig, RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/shared";
 import { log, logWarn } from "@open-managed-agents/shared";
+import { sendMcpUpstream } from "@open-managed-agents/http-routes/proxy";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import { builtinSpecs, createSpecRegistry } from "@open-managed-agents/cap";
@@ -88,13 +89,18 @@ type McpProxyServer =
       env?: Record<string, string>;
     };
 
+interface McpProxyAgent {
+  id?: string;
+  version?: number;
+  mcpServers: McpProxyServer[];
+  multiagent?: { subagents: { type: "disabled" } | { type: "enabled"; predefinedAgents: Array<{ type: string; id?: string; version?: number; mcpServers?: McpProxyServer[] }> } } | null;
+}
+
 export interface McpProxySessionSource {
   find(input: { workspaceId: string; sessionId: string }): Promise<{
     archivedAt: string | null;
     vaultIds: string[];
-    agent: {
-      mcpServers: McpProxyServer[];
-    };
+    agent: McpProxyAgent;
   } | null>;
 }
 
@@ -268,6 +274,7 @@ export async function resolveProxyTargetByTenant(
   serverName: string,
   sessionSource?: McpProxySessionSource,
   credentialSource?: McpProxyCredentialSource,
+  agentIdentity?: { id: string; version: number },
 ): Promise<ProxyTarget | null> {
   // 1. Session must exist, belong to the same tenant, not archived.
   const managedSessionRecord = sessionSource
@@ -290,13 +297,22 @@ export async function resolveProxyTargetByTenant(
   };
   if (legacySession.archived_at || managedSession.archivedAt) return null;
 
-  // 2. agent_snapshot must declare the requested mcp server.
-  const legacyAgent = legacySession.agent_snapshot;
+  // Select exclusively from the immutable Session roster, never a latest Agent row.
+  const rootLegacy = legacySession.agent_snapshot;
+  const rootManaged = managedSessionRecord?.agent;
+  const legacyAgent = !agentIdentity || (rootLegacy?.id === agentIdentity.id && rootLegacy.version === agentIdentity.version)
+    ? rootLegacy
+    : rootLegacy?.multiagent?.subagents.type === "enabled"
+      ? rootLegacy.multiagent.subagents.predefined_agents.find(member => member.id === agentIdentity.id && member.version === agentIdentity.version)
+      : undefined;
+  const managedAgent = !agentIdentity || (rootManaged?.id === agentIdentity.id && rootManaged.version === agentIdentity.version)
+    ? rootManaged
+    : rootManaged?.multiagent?.subagents.type === "enabled"
+      ? rootManaged.multiagent.subagents.predefinedAgents.find(member => member.type === "agent" && member.id === agentIdentity.id && member.version === agentIdentity.version)
+      : undefined;
   const server = legacyAgent
-    ? (legacyAgent.mcp_servers ?? []).find((candidate) => candidate.name === serverName)
-    : (managedSession.agent?.mcpServers ?? []).find(
-        (candidate) => candidate.name === serverName,
-      );
+    ? (legacyAgent.mcp_servers ?? []).find(candidate => candidate.name === serverName)
+    : (managedAgent?.mcpServers ?? []).find(candidate => candidate.name === serverName);
   if (!server || !("url" in server) || !server.url) return null;
 
   // 3. Resolve credential. agent.mcp_servers[].authorization_token, if set,
@@ -645,10 +661,9 @@ export async function resolveOutboundCredentialByHost(
 }
 
 /**
- * Forward an MCP request to the upstream server, swapping the authorization
- * header for the resolved upstream token. Strips any session-/proxy-specific
- * CF headers so the upstream sees only what it would have if the agent had
- * called it directly with the real credential.
+ * Forward an MCP request to the upstream server with the resolved upstream
+ * token. Header hygiene (hop-by-hop, caller credentials, edge and OpenMA
+ * routing headers) is the shared HTTP hop's, `sendMcpUpstream`.
  *
  * Streams the response back as-is — MCP-over-HTTP clients expect to read
  * the body progressively (SSE / chunked NDJSON). Both the HTTP endpoint
@@ -660,29 +675,13 @@ export async function forwardToUpstream(
   inboundHeaders: Headers,
   body: BodyInit | null,
 ): Promise<Response> {
-  const upstreamHeaders = new Headers(inboundHeaders);
-  upstreamHeaders.set("authorization", `Bearer ${target.upstreamToken}`);
-  upstreamHeaders.delete("host");
-  upstreamHeaders.delete("cf-connecting-ip");
-  upstreamHeaders.delete("cf-ray");
-  upstreamHeaders.delete("x-forwarded-for");
-  upstreamHeaders.delete("x-forwarded-proto");
-  upstreamHeaders.delete("x-real-ip");
-  upstreamHeaders.delete("x-api-key");
-  upstreamHeaders.delete("proxy-authorization");
-  upstreamHeaders.delete("cookie");
-  upstreamHeaders.delete("x-active-tenant");
-
-  const upstreamReq = new Request(target.upstreamUrl, {
+  return sendMcpUpstream({
+    upstreamUrl: target.upstreamUrl,
     method,
-    headers: upstreamHeaders,
-    body: ["GET", "HEAD"].includes(method) ? undefined : body,
-    // A redirect is a new destination and must be re-authorized explicitly;
-    // never let fetch replay a Vault bearer automatically.
-    redirect: "manual",
+    headers: inboundHeaders,
+    body,
+    accessToken: target.upstreamToken,
   });
-
-  return fetch(upstreamReq);
 }
 
 /**

@@ -11,6 +11,7 @@
 // SandboxFactoryEnv), and nothing else.
 
 import { nanoid } from "nanoid";
+import { EMPTY_SANDBOX_IMAGE_CATALOG, parseSandboxImageCatalog } from "@open-managed-agents/sandbox";
 
 import {
   parseAllowHosts,
@@ -174,6 +175,7 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
   };
 
   const skillSourceAllowHosts = attempt<string[]>([], () => parseAllowHosts(env.SKILL_SOURCES_ALLOW_HOSTS));
+  const sandboxImages = attempt(EMPTY_SANDBOX_IMAGE_CATALOG, () => parseSandboxImageCatalog(env.SANDBOX_IMAGES));
 
   const config: NodeConfig = {
     processMode,
@@ -191,11 +193,6 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
     blobs: { memory, files },
     memoryQueue,
     realtime,
-    model: {
-      apiKey: env.ANTHROPIC_API_KEY,
-      baseUrl: env.ANTHROPIC_BASE_URL,
-      customHeaders: parseCustomHeaders(env.ANTHROPIC_CUSTOM_HEADERS),
-    },
     dreamCurator: env.DREAM_CURATOR_MODE === "dedup" ? "dedup" : "model",
     execution: {
       ownerId: env.OMA_SESSION_EXECUTION_OWNER_ID ?? `node:${process.pid}:${nanoid()}`,
@@ -238,20 +235,9 @@ export function loadNodeConfig(env: NodeEnvironment): NodeConfig {
       webhookEventsRetention: cron("WEBHOOK_EVENTS_RETENTION_CRON", "* * * * *"),
       linearDispatch: cron("LINEAR_DISPATCH_CRON", "* * * * *"),
     },
-    sandbox: { environment: env },
+    sandbox: { environment: env, images: sandboxImages },
   };
 
   if (problems.length > 0) throw new NodeConfigError(problems);
   return config;
-}
-
-function parseCustomHeaders(raw: string | undefined): Record<string, string> | undefined {
-  if (!raw) return undefined;
-  const out: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [name, ...rest] = part.split(":");
-    if (!name || rest.length === 0) continue;
-    out[name.trim()] = rest.join(":").trim();
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

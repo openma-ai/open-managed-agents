@@ -46,6 +46,14 @@ describe("Environment packages on the Node runtime", () => {
     );
   });
 
+  it("scopes the setup markers to the Environment's catalog image", async () => {
+    const box = sandbox();
+    await installEnvironmentPackages(box, { ...environment({ pip: ["pyodps"] }), openma: { sandboxImage: "analytics" } });
+    const markers = box.commands.find((c) => c.includes("> /workspace/.oma-setup-restored"));
+    expect(markers).toMatch(/echo "[0-9a-f]{8}:analytics" > \/workspace\/\.oma-setup-restored/);
+    expect(box.commands.find((c) => c.startsWith("(\nset -e"))).toContain("rm -rf /workspace/.venv");
+  });
+
   it("does nothing for an Environment without packages or a self-hosted one", async () => {
     const empty = sandbox();
     await installEnvironmentPackages(empty, environment({}));

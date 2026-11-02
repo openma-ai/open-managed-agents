@@ -3,7 +3,8 @@
  * ACP agents without placing provider API keys in the sandbox address space.
  *
  * Auth: workspace API key or current Work sessions_token via Bearer or x-api-key.
- * Upstream credentials resolve from the session agent's model card on the host.
+ * Upstream credentials resolve only from the session agent's model card on the
+ * host; there is no platform-key fallback.
  */
 
 import { Hono } from "hono";
@@ -11,14 +12,19 @@ import type { AgentConfig, Env } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import {
-  bindStoredModelCardCredentials,
+  ModelCardNotConfiguredError,
+  resolveWorkspaceModelCredentials,
+} from "@open-managed-agents/model-cards-store";
+import {
   extractHostedInferenceProxyToken,
-  forwardHostedInferenceRequest,
   resolveProtocolEndpointsFromModelCard,
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
+import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
+import { withHostedInferenceBudget } from "@open-managed-agents/inference-proxy";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
+import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
 
 import { apiKeyToTenantId } from "./mcp-proxy";
 
@@ -35,7 +41,6 @@ export async function resolveSessionModelUpstream(
   services: Services,
   tenantId: string,
   sessionId: string,
-  env: Env,
   sessionSource?: InferenceProxySessionSource,
 ): Promise<{
   wireModel: string;
@@ -70,40 +75,62 @@ export async function resolveSessionModelUpstream(
         : managedShape.agent?.model?.id;
   if (!handle) return null;
 
-  const fallback = {
-    wireModel: handle,
-    apiKey: env.ANTHROPIC_API_KEY,
-    baseURL: env.ANTHROPIC_BASE_URL,
-  };
+  // No platform key: only the workspace's own model card can pay for a
+  // proxied call. A missing card is a 403, never an operator-funded fallback.
   try {
-    const card = await services.modelCards.findByModelId({ tenantId, modelId: handle });
-    if (card && !card.archived_at) {
-      const key = await services.modelCards.getApiKey({ tenantId, cardId: card.id });
-      if (key) {
-        const bound = bindStoredModelCardCredentials(fallback, card, key);
-        const protocolEndpoints = resolveProtocolEndpointsFromModelCard({
-          providerId: card.provider,
-          baseUrl: card.base_url,
-        });
-        return {
-          wireModel: bound.wireModel,
-          apiKey: bound.apiKey,
-          baseURL: bound.baseURL,
-          provider: bound.provider,
-          providerId: card.provider,
-          protocolEndpoints,
-          customHeaders: bound.customHeaders,
-        };
-      }
+    const bound = await resolveWorkspaceModelCredentials(services.modelCards, tenantId, handle);
+    const protocolEndpoints = resolveProtocolEndpointsFromModelCard({
+      providerId: bound.provider,
+      baseUrl: bound.baseURL ?? null,
+    });
+    return {
+      wireModel: bound.wireModel,
+      apiKey: bound.apiKey,
+      baseURL: bound.baseURL,
+      provider: bound.provider,
+      providerId: bound.provider,
+      protocolEndpoints,
+      customHeaders: bound.customHeaders,
+    };
+  } catch (error) {
+    if (!(error instanceof ModelCardNotConfiguredError)) {
+      console.warn(
+        `[inference-proxy] model card lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  } catch {
-    // fall through to env fallback
+    return null;
   }
-  if (!fallback.apiKey) return null;
+}
+
+/** Session DO HTTP adapter → domain ModelEgress (begin/complete). */
+async function cfSessionModelEgress(
+  env: Env,
+  sessionId: string,
+): Promise<import("@open-managed-agents/inference-proxy").HostedInferenceEgress | null> {
+  const binding = resolveSessionSandboxFetcher(env);
+  if (!binding) return null;
+  const call = async (action: "begin" | "complete", usage?: Record<string, number>) => {
+    const res = await binding.fetch(`https://sandbox/sessions/${sessionId}/model-egress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(usage ? { action, usage } : { action }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as {
+      active?: boolean;
+      allowed?: boolean;
+    };
+  };
   return {
-    wireModel: fallback.wireModel,
-    apiKey: fallback.apiKey,
-    baseURL: fallback.baseURL,
+    begin: async () => {
+      const result = await call("begin");
+      // Binding/DO unavailable or inactive budget → allow (no second counter).
+      if (!result || result.active === false) return true;
+      return result.allowed !== false;
+    },
+    complete: async (usage) => {
+      await call("complete", usage as Record<string, number>);
+    },
   };
 }
 
@@ -120,7 +147,6 @@ export async function forwardHttpInferenceProxyRequest(input: {
     input.services,
     input.tenantId,
     input.sessionId,
-    input.env,
     input.sessionSource,
   );
   if (!upstream) {
@@ -130,13 +156,16 @@ export async function forwardHttpInferenceProxyRequest(input: {
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.arrayBuffer();
-  return forwardHostedInferenceRequest({
-    upstream,
-    method,
-    subPath: input.subPath,
-    inboundHeaders: input.request.headers,
-    body,
-  });
+  const budget = await cfSessionModelEgress(input.env, input.sessionId);
+  return withHostedInferenceBudget(budget, () =>
+    sendHostedInference({
+      upstream,
+      method,
+      subPath: input.subPath,
+      inboundHeaders: input.request.headers,
+      body,
+    }),
+  );
 }
 
 const app = new Hono<{

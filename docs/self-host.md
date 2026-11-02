@@ -268,7 +268,7 @@ fresh DB. Then export from SQLite + import via `psql`:
 
 ```bash
 # SQLite side
-sqlite3 ./data/oma.db ".dump agents agent_versions sessions session_events session_streams memories memory_stores memory_versions vaults credentials session_memory_stores tenant membership" > /tmp/oma-dump.sql
+sqlite3 ./data/oma.db ".dump managed_agents managed_agent_versions sessions session_events session_streams memories memory_stores memory_versions vaults credentials session_memory_stores tenant membership" > /tmp/oma-dump.sql
 # Strip SQLite-specific pragmas (BEGIN/COMMIT survive; PRAGMA / sqlite_sequence don't)
 sed -i '/^PRAGMA\|sqlite_sequence/d' /tmp/oma-dump.sql
 # PG side
@@ -299,9 +299,17 @@ adapter / recovery-logic / SIGKILL bootstrap / CF DO eviction).
 
 ## Feishu (OpenMatter)
 
-The Console's **Integrations → Feishu** page connects an Agent to Feishu by
-scanning a QR code. It talks to the OpenMatter service (`apps/matter`) through
-the control plane, which proxies `/matter/*` to it after signing the user in:
+The Console's **Matter → Loops** page puts Agents to
+work in Feishu and GitLab. A Loop is made from a template (`feishu-agent`,
+`gitlab-mention`, `gitlab-mr-review`) plus its settings; two of them are the
+app it runs on (`bond`, e.g. `feishu:cli_xxx`) and the Agent that answers
+(`agentId`). Apps are linked from the Loop form itself — a QR code for Feishu,
+a bot token for GitLab — or on the **Matter → Bonds** page, which lists the
+linked apps; one app can run several Loops. The form is built
+from each template's config schema; for a Feishu app it also lists missing
+permissions and events with links to fix them. The page talks to the OpenMatter
+service (`apps/matter`) through the control plane, which proxies `/matter/*`
+to it after signing the user in:
 
 ```bash
 # .env of the control plane
@@ -369,30 +377,44 @@ on any replica (the call and its answer meet in the database). A replica picks
 up connections saved by another within `MATTER_RECONCILE_MS`, or at once when
 a GitLab webhook for one arrives.
 
-Connecting an app adds an `openmatter` MCP server (URL `MATTER_MCP_URL`) and
-its `mcp_toolset` to the chosen Agent, with `always_allow`: no one is there to
+Saving a Loop adds an `openmatter` MCP server (URL `MATTER_MCP_URL`) and
+its `mcp_toolset` to the Loop's Agent, with `always_allow`: no one is there to
 approve a tool call made from a chat. Each chat gets a session whose Vault
 holds the bearer for that server; replies go out as the bot.
 
 ### GitLab merge request mentions
 
 The same Matter process answers GitLab merge request comments that mention a
-bot user (the `gitlab-mention` Loop). There is no Console page yet; connect an
-instance through the API (behind the control plane's `/matter/*` proxy):
+bot user (the `gitlab-mention` Loop) and reviews merge requests
+(`gitlab-mr-review`). In the Console, pick one of those templates on the
+Loops page and link the instance from its form. Through the API (behind the
+control plane's `/matter/*` proxy), link the instance, then create the Loop:
 
 ```bash
 curl -X POST "$OMA/matter/connect/gitlab" -H "x-api-key: $KEY" \
   -H 'content-type: application/json' \
-  -d '{"baseUrl":"https://gitlab.example.com","token":"<bot token, api scope>",
-       "agentId":"<agent id>","projectIds":[42]}'
+  -d '{"baseUrl":"https://gitlab.example.com","token":"<bot token, api scope>"}'
 # → {"id":"gitlab-…","username":"<bot>","webhookUrl":"…","webhookSecret":"…"}
+curl -X POST "$OMA/matter/loops" -H "x-api-key: $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"template":"gitlab-mention",
+       "config":{"bond":"gitlab:gitlab-…","agentId":"<agent id>","projects":["project:42"]}}'
 ```
 
+`GET /matter/loop-templates` lists the templates with their config schemas,
+`GET /matter/bonds` the linked apps, and `/matter/loops` (`GET`, `POST`,
+`PATCH /:id`, `DELETE /:id`) the Loops. Connections saved before Loops
+existed, with an Agent on them, become one Loop each on start.
+
 Matter checks the token against `/api/v4/user` (the bot's username decides
-which comments mention it), adds the `openmatter` MCP server to the Agent as
-for Feishu, and returns the webhook URL and secret **once**. In each project,
-add a webhook with that URL, the secret as its token, and **Comments** events.
-`GET /matter/connect/gitlab` lists the connections without secrets.
+which comments mention it) and returns the webhook URL and secret **once**. In each project,
+add a webhook with that URL, the secret as its token, and **Comments** events
+(plus **Merge request events** for `gitlab-mr-review`).
+`GET /matter/connect/gitlab` lists the connections without secrets, and
+`instances`: the GitLab URLs the Console offers when linking, so users do not
+type them again. These are the instances in `MATTER_GITLAB_URLS`
+(comma-separated, for the deployment's own GitLab), then the ones the
+workspace has linked before; users can still enter another address.
 
 Unlike Feishu, GitLab calls in: `POST /webhooks/gitlab/<id>` must be reachable
 from the GitLab instance, directly on the Matter service (not through the
@@ -517,7 +539,44 @@ The same demo works on the Postgres compose unchanged.
 | `BoxRunSandbox` | Remote BoxLite REST endpoint (no KVM on the OMA host) | `SANDBOX_PROVIDER=boxrun`, `BOXRUN_URL=http://host:8100/v1/default`, optional `BOXRUN_TOKEN`. No mount primitive — bake a custom image with s3fs preinstalled if you need `/mnt/memory`. |
 | `CloudflareSandbox` | If you happen to deploy on CF Workers + Containers | Use the regular `apps/agent` worker, not main-node. |
 
-Every provider installs an Environment's `packages` when a sandbox starts: pip into `/workspace/.venv` (with `uv`, installed from pip when the image lacks it), npm into `/workspace/.npm-global`, cargo into `/workspace/.cargo`, go into `/workspace/.go`, apt system-wide. Those directories are put on `PATH` for the agent's commands. A container that already ran the same list, or whose restored `/workspace` carries it, skips the install; a failed install fails the session with the installer's output. Set `SANDBOX_PIP_INDEX_URL` to install pip packages from a mirror when the sandbox network reaches one faster than pypi.org.
+Every provider installs an Environment's `packages` when a sandbox starts: pip into `/workspace/.venv` (with `uv`, installed from pip when the image lacks it; the venv is created with `--system-site-packages`, so packages installed into the image's system Python stay importable), npm into `/workspace/.npm-global`, cargo into `/workspace/.cargo`, go into `/workspace/.go`, apt system-wide. Those directories are put on `PATH` for the agent's commands. A container that already ran the same list, or whose restored `/workspace` carries it, skips the install; a failed install fails the session with the installer's output. Set `SANDBOX_PIP_INDEX_URL` to install pip packages from a mirror when the sandbox network reaches one faster than pypi.org.
+
+### Pre-built images per Environment (`SANDBOX_IMAGES`)
+
+`SANDBOX_IMAGE` is the deployment default. To let users pick a pre-built image per Environment, publish a catalog in `SANDBOX_IMAGES`, a JSON object keyed by alias:
+
+```bash
+SANDBOX_IMAGE=node:22-slim
+SANDBOX_IMAGES='{
+  "analytics": {
+    "reference": "registry.example.com/oma/analytics:2026-10",
+    "label": "Analytics",
+    "description": "Python 3.12, pandas, polars, Claude ACP"
+  },
+  "web": { "reference": "registry.example.com/oma/web:2026-10" }
+}'
+```
+
+- **Aliases** are lowercase (`[a-z0-9][a-z0-9._-]*`, up to 63 characters). `reference` is required and is whatever the provider takes as an image: an OCI image for Daytona, LiteBox and BoxRun, or a template id for E2B. `label` (defaults to the alias) and `description` are optional and shown in the Console. Invalid JSON, an empty `reference` or an unknown key stops the server at startup.
+- **Users choose an alias, never a reference.** An Environment carries the choice as an OpenMA extension next to the CMA fields: `POST /v1/environments` with `{"name": "...", "config": {...}, "_oma": {"sandbox_image": "analytics"}}`. An alias that is not in the catalog is rejected with `400 invalid_request_error`. On update, `"_oma": {"sandbox_image": null}` goes back to the default image, and leaving `_oma` out keeps the current choice. Responses include `_oma` only when an image is selected, so requests and responses without it look exactly like plain CMA. Self-hosted Environments cannot select an image.
+- **`GET /v1/oma/sandbox_images`** lists `alias`, `label` and `description` for the Console's Environment forms. It never returns `reference`, because image references often expose internal registry hosts and users never need them. When the catalog is empty, the Console hides the selector.
+- **At session start** the alias is looked up again. If the operator has since removed it from `SANDBOX_IMAGES`, the session fails with an error naming the alias and the Environment. It never falls back to `SANDBOX_IMAGE`. The resolved image is passed to the sandbox factory as `ctx.image = { alias, reference }`, along with `ctx.environmentId` and `ctx.workspaceId`. The e2b, daytona, litebox and boxrun adapters use it in place of `SANDBOX_IMAGE`. Sprites (a fixed runtime) and the test-only local subprocess reject a selected image instead of ignoring it. A custom factory passed to `nodeDefaults(config, { sandbox })` receives the same `ctx.image` and can map it to its provider's create options.
+
+Recommended setup: bake the heavy, slow-to-install parts (the language runtime, analysis libraries installed into the system Python, `uv`, the ACP agent CLI) into an image. Publish it under an alias, and keep each Environment's `packages` for the few extras on top. Because of `--system-site-packages`, pip packages listed on the Environment install into `/workspace/.venv` without hiding the image's own packages, and a requirement the image already satisfies is normally not installed again. A sandbox whose `/workspace` was restored from a checkpoint reuses its existing venv only if it was set up on the same image: with a catalog image selected, the install markers include the alias, so changing an Environment's image (to another catalog image or back to the default) rebuilds its warm sandbox and, on a restored workspace, removes `/workspace/.venv` and reinstalls the listed pip packages. Packages a user installed into that venv by hand during a session are not kept across such a switch; the venv is platform-managed once a catalog image is in play. Environments that only ever used the default image keep the previous markers, which hash only the package lists, and their venv is never removed.
+
+### Prepared sandbox bases
+
+Opt-in through SDK composition; there is no environment switch, and no built-in factory enables it (many E2B-compatible services cannot snapshot). The control plane prepares bases only when the composed sandbox factory declares `capabilities.preparedBase`. To enable it, pass your own `sandbox` component to `createNodeControlPlane`, wrapped with `withSandboxFactoryCapabilities` from `@open-managed-agents/sandbox`, for example `withSandboxFactoryCapabilities(sandboxFactory, { preparedBase: true })` with the e2b adapter's `sandboxFactory` when your E2B service supports snapshots.
+
+When enabled, the first session with a given setup still starts cold. Once its own sandbox exists, the server builds a separate, clean sandbox in the background, runs only the base setup on it, has the provider snapshot it, and destroys it. Later sessions with the same setup create their sandbox from that snapshot, so the install steps find everything in place and skip it.
+
+- **What the snapshot contains:** the Environment's `packages` (apt system-wide plus pip/npm/cargo/go under `/workspace`) and, for `acp-sandbox` agents with a pinned `registry` agent, Node and the prefetched agent package. The builder sandbox gets no session inputs, files, memory, outputs, Vault credentials or session environment, and the ACP prefetch strips provider secrets, so none of these can end up in the snapshot.
+- **Keyed by content:** the cache key is a hash of the provider, the image (the catalog alias and reference, or `SANDBOX_IMAGE`), the package lists in order, a hash of `SANDBOX_PIP_INDEX_URL`, the pinned ACP package and its Node version, and a setup-script version bumped by OpenMA releases that change the setup. Any change produces a new key and a new base; Environments with no packages and no pinned ACP agent are not cached. Entries live in the database's key-value table, per workspace, and each workspace gets its own provider snapshot name. The provider account (API URL, team) is not part of the key: after switching accounts, the first create from an old base fails, is recorded, and the key is rebuilt after the backoff.
+- **Providers:** only e2b implements capture (via its sandbox snapshots). The other adapters (daytona, litebox, boxrun, sprites) cannot, and a factory given a base it cannot use fails instead of ignoring it. If you declare the capability for an E2B-compatible service that does not implement snapshots, every capture fails with `404` and is recorded and logged like any failed build, costing one builder per setup and hour.
+- **Failures never fail a session.** A failed build, or a failed create from an existing base (for example a snapshot the provider deleted), is recorded with its error and logged as `op: "main-node.prepared_base"` with `path` `build_failed` or `hit_failed`; the session continues on a normal cold sandbox. A failed entry blocks rebuilding that key for an hour, so a broken setup is not rebuilt on every session. A create from a base is recorded as failed for every replica only when the provider says the base is gone (a 404 or a "snapshot/template not found" error); other errors make only that server process skip the base for an hour, and after three such failures in a row the base is treated as gone. A build that has not finished after 30 minutes is failed and its sandbox destroyed. Shutting the server down aborts running builds and destroys their sandboxes; a builder still being created is waited for up to 10 seconds, and one that takes longer lives until the provider's own sandbox timeout. Errors are stored and logged with credentials in URLs masked (a password containing an unencoded `/` is not recognised). An unreadable cache entry is treated as a miss and rebuilt; it is logged once per server process. A build that reaches its deadline while the provider is still taking the snapshot may leave that snapshot behind unrecorded. Hits, misses and successful builds are logged on the same `op` with `durationMs`.
+- **Workspace checkpoints still win.** With `OMA_WORKSPACE_STRATEGY=checkpoint_restore`, a session's restored `/workspace` is unpacked over the base's. The install markers in `/tmp` and `/workspace` must both match before setup is skipped, so a restored workspace from an older package list is brought up to date as before.
+- **Cost:** each build runs one extra sandbox for the duration of the setup, and snapshots are stored, billed and expired by the provider under its own policy. Rebuilding a key appends a new build under the same snapshot name; OpenMA does not delete old snapshots.
+- Each server process builds a given key at most once at a time. Two replicas may occasionally build the same key concurrently; the result is the same and only one extra builder is spent.
 
 Vault credentials of type `environment_variable` are set in the sandbox of every session that attaches the Vault (an earlier Vault wins on a name clash), so the agent's commands can read them. The sandbox holds the real value: there is no egress proxy substituting it, and `networking` / `injection_location` are not enforced, so only store secrets the agent may see.
 
@@ -533,6 +592,8 @@ Vault credentials of type `environment_variable` are set in the sandbox of every
 | `CloudflareSandbox` | ✓ | ✓ | ✓ | ✓ (R2 + FUSE) | ✓ | ✓ (interceptHttps + outboundHandlers) | ✓ (squashfs to R2 backup bucket) |
 
 Read-only memory mounts: Daytona and E2B enforce read-only on their mounted view. LiteBox honors the `readOnly` flag on its volume mount. CloudflareSandbox does not enforce ro at the FS layer — the harness's write tool checks `assertWritable` and refuses writes regardless of provider.
+
+On the Node server these native mounts are opt-in: by default every provider gets Memory Stores through file sync (copied into `/mnt/memory/<name>/` before the turn, written back at the turn barrier), which needs no mount primitive and therefore also works on BoxRun and OpenSandbox. A composed sandbox factory turns native mounts on by declaring `nativeMemoryStoreMount`. See [Memory Stores in a sandbox](./memory-stores.md).
 
 ### Sandbox loss and recovery
 

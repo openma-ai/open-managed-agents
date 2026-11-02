@@ -1,3 +1,4 @@
+import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";
@@ -13,6 +14,21 @@ export interface ManagedNodeCreateSubagent {
   parentToolUseId?: string;
 }
 
+export function resolveManagedSubagentSession(session: Session, request: ManagedNodeCreateSubagent): Session {
+  const policy = session.agent.multiagent?.subagents;
+  if (policy?.type !== "enabled") throw new Error("Subagents are disabled");
+  if (request.agentId !== undefined && request.agentId !== "general") {
+    const member = policy.predefinedAgents.find(item => item.type === "agent" && item.id === request.agentId);
+    if (member?.type !== "agent") throw new Error("Subagent is not in the configured multiagent roster");
+    const { type: _type, ...agent } = structuredClone(member);
+    return { ...session, agent: { ...agent, multiagent: null } };
+  }
+  if (policy.inlineAgents.type !== "enabled") throw new Error("Inline subagents are disabled");
+  return { ...session, agent: { ...structuredClone(session.agent), multiagent: null,
+    name: request.name ?? session.agent.name,
+    system: request.instructions ? `${session.agent.system}\n\n${request.instructions}` : session.agent.system } };
+}
+
 export interface ManagedNodeSubagentState {
   threadId: string;
   status: "idle" | "running" | "completed" | "interrupted" | "closed" | "failed";
@@ -20,6 +36,8 @@ export interface ManagedNodeSubagentState {
 }
 
 export interface ManagedNodeSubagentControl {
+  /** Bind the parent's session egress meter so child usage snapshots report the shared total. */
+  setBudgetGate?(gate: SessionBudgetGate | null): void;
   create(input: ManagedNodeCreateSubagent): Promise<ManagedNodeSubagentState>;
   send(input: { threadId: string; message: string }): Promise<ManagedNodeSubagentState>;
   wait(input: { threadIds: string[]; timeoutMs?: number }): Promise<{ subagents: ManagedNodeSubagentState[]; timedOut: boolean }>;
@@ -95,9 +113,14 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
   private mutations: Promise<void> = Promise.resolve();
   private readonly loads = new Map<string, Promise<Child>>();
   private readonly facts: SessionEventView[];
+  private budgetGate: SessionBudgetGate | null = null;
 
   constructor(private readonly input: SubagentsInput) {
     this.facts = [...input.historyEvents];
+  }
+
+  setBudgetGate(gate: SessionBudgetGate | null): void {
+    this.budgetGate = gate;
   }
 
   private mutate<T>(operation: () => Promise<T>): Promise<T> {
@@ -183,9 +206,12 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
   }
 
   private defaultSession(request: ManagedNodeCreateSubagent): Session {
+    if (this.input.session.agent.multiagent !== null) return resolveManagedSubagentSession(this.input.session, request);
     let agent = structuredClone(this.input.session.agent);
     if (request.agentId !== undefined && request.agentId !== "general") {
-      const configured = agent.multiagent?.agents.find((candidate) => candidate.type === "agent" && candidate.id === request.agentId);
+      const configured = agent.multiagent?.subagents.type === "enabled"
+        ? agent.multiagent.subagents.predefinedAgents.find((candidate) => candidate.type === "agent" && candidate.id === request.agentId)
+        : undefined;
       if (configured?.type !== "agent") throw new Error(`Subagent ${request.agentId} is not in the Session roster`);
       const { type: _type, ...snapshot } = configured;
       agent = { ...snapshot, multiagent: null };
@@ -282,6 +308,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
               ...(typeof type === "string" && type.startsWith("session.thread_status_") && { agent_name: child.session.agent.name }) });
           },
         });
+        if (this.budgetGate !== null) runtime.setBudgetGate(this.budgetGate);
         try { await this.input.run({ session: child.session, runtime, sandbox }); }
         finally { await runtime.drain(); }
         child.state = { threadId: child.thread.id, status: controller.signal.aborted ? "interrupted" : "completed", output: lastOutput(child.events) };

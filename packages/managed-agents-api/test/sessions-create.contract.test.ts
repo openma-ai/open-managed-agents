@@ -146,7 +146,7 @@ describe("Managed Agents API — POST /v1/sessions", () => {
         resources: [
           {
             type: "github_repository",
-            url: "https://github.com/openma/example",
+            authorization_token: "github-secret",
           },
         ],
       }),
@@ -154,6 +154,31 @@ describe("Managed Agents API — POST /v1/sessions", () => {
 
     expect(response.status).toBe(400);
     expect(createCalls).toBe(0);
+  });
+
+  it("accepts a repository without a token, for the workspace's Bond (OMA extension)", async () => {
+    const createCalls: unknown[] = [];
+    const api = buildSessionsTestApi(
+      makeSessionsPort({
+        createSession: async (command) => {
+          createCalls.push(command);
+          return { type: "created", session: sessionView };
+        },
+      }),
+    );
+    const response = await api.request("http://openma.test/v1/sessions", {
+      method: "POST",
+      headers: { "anthropic-beta": "managed-agents-2026-04-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: sessionView.agent.id,
+        environment_id: sessionView.environmentId,
+        resources: [{ type: "github_repository", url: "https://gitlab.example.com/group/app" }],
+      }),
+    });
+    expect(response.status).toBe(201);
+    expect((createCalls[0] as { resources: unknown }).resources).toEqual([
+      { type: "github_repository", url: "https://gitlab.example.com/group/app" },
+    ]);
   });
 
   it("accepts only user.message and user.define_outcome as initial events", async () => {

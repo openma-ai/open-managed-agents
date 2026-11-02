@@ -65,7 +65,6 @@ const cfWorkerOptions = {
   miniflare: {
     bindings: {
       API_KEY: "test-key",
-      ANTHROPIC_API_KEY: "sk-ant-test-key",
       DREAM_CURATOR_MODE: "dedup",
       BETTER_AUTH_SECRET: "test-auth-secret-for-vitest",
       // Required by buildServices for at-rest encryption of credentials.auth
@@ -129,8 +128,6 @@ export default defineConfig({
       { find: "@open-managed-agents/evals-store", replacement: "./packages/evals-store/src/index.ts" },
       { find: "@open-managed-agents/model-cards-store/test-fakes", replacement: "./packages/model-cards-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/model-cards-store", replacement: "./packages/model-cards-store/src/index.ts" },
-      { find: "@open-managed-agents/agents-store/test-fakes", replacement: "./packages/agents-store/src/test-fakes.ts" },
-      { find: "@open-managed-agents/agents-store", replacement: "./packages/agents-store/src/index.ts" },
       { find: "@open-managed-agents/environments-store/test-fakes", replacement: "./packages/environments-store/src/test-fakes.ts" },
       { find: "@open-managed-agents/environments-store", replacement: "./packages/environments-store/src/index.ts" },
       { find: "@open-managed-agents/outbound-snapshots-store/test-fakes", replacement: "./packages/outbound-snapshots-store/src/test-fakes.ts" },
@@ -161,6 +158,9 @@ export default defineConfig({
       { find: "@open-managed-agents/domain/user-profiles", replacement: "./packages/managed-agents-domain/src/user-profiles/index.ts" },
       { find: "@open-managed-agents/domain/vaults", replacement: "./packages/managed-agents-domain/src/vaults/index.ts" },
       { find: "@open-managed-agents/domain", replacement: "./packages/managed-agents-domain/src/index.ts" },
+      { find: "@open-managed-agents/agent-store-sql/legacy-agents-migration", replacement: "./packages/agent-store-sql/src/legacy-agents-migration.ts" },
+      { find: "@open-managed-agents/agent-store-sql", replacement: "./packages/agent-store-sql/src/index.ts" },
+      { find: "@open-managed-agents/agent-store-memory", replacement: "./packages/agent-store-memory/src/index.ts" },
       { find: "@open-managed-agents/agent-store", replacement: "./packages/agent-store/src/index.ts" },
       { find: "@open-managed-agents/credential-store-sql", replacement: "./packages/credential-store-sql/src/index.ts" },
       { find: "@open-managed-agents/credential-store-memory", replacement: "./packages/credential-store-memory/src/index.ts" },
@@ -220,6 +220,7 @@ export default defineConfig({
       { find: "@open-managed-agents/session-runtime-contract/history", replacement: "./packages/session-runtime-contract/src/history.ts" },
       { find: "@open-managed-agents/session-runtime-contract/lifecycle", replacement: "./packages/session-runtime-contract/src/lifecycle.ts" },
       { find: "@open-managed-agents/session-runtime-contract/stream", replacement: "./packages/session-runtime-contract/src/stream.ts" },
+      { find: "@open-managed-agents/session-runtime-contract/settle-events", replacement: "./packages/session-runtime-contract/src/settle-events.ts" },
       { find: "@open-managed-agents/session-runtime-contract", replacement: "./packages/session-runtime-contract/src/index.ts" },
       { find: "@open-managed-agents/session-runtime-sql/context", replacement: "./packages/session-runtime-sql/src/context.ts" },
       { find: "@open-managed-agents/session-runtime-sql/coordination", replacement: "./packages/session-runtime-sql/src/coordination.ts" },
@@ -333,6 +334,7 @@ export default defineConfig({
       { find: "@open-managed-agents/linear", replacement: "./packages/linear/src/index.ts" },
       { find: "@open-managed-agents/github", replacement: "./packages/github/src/index.ts" },
       { find: "@open-managed-agents/schema", replacement: "./packages/schema/src/index.ts" },
+      { find: "@open-managed-agents/http-routes/proxy", replacement: "./packages/http-routes/src/proxy/index.ts" },
       { find: "@open-managed-agents/http-routes", replacement: "./packages/http-routes/src/index.ts" },
       { find: "@open-managed-agents/integrations-core", replacement: "./packages/integrations-core/src/index.ts" },
       { find: "@open-managed-agents/integrations-adapters-cf", replacement: "./packages/integrations-adapters-cf/src/index.ts" },
@@ -342,6 +344,7 @@ export default defineConfig({
       { find: "@open-managed-agents/markdown/adapters/node", replacement: "./packages/markdown/src/adapters/node.ts" },
       { find: "@open-managed-agents/markdown/adapters/cf-workers-ai", replacement: "./packages/markdown/src/adapters/cf-workers-ai.ts" },
       { find: "@open-managed-agents/markdown", replacement: "./packages/markdown/src/index.ts" },
+      { find: "@open-managed-agents/session-runtime/settle-batch", replacement: "./packages/session-runtime/src/settle-batch.ts" },
       { find: "@open-managed-agents/session-runtime/recovery", replacement: "./packages/session-runtime/src/recovery.ts" },
       { find: "@open-managed-agents/session-runtime", replacement: "./packages/session-runtime/src/index.ts" },
       { find: "@open-managed-agents/acp-runtime/cf-sandbox", replacement: "./packages/acp-runtime/src/cf-sandbox.ts" },
@@ -349,6 +352,7 @@ export default defineConfig({
       { find: "@open-managed-agents/acp-runtime/native-state", replacement: "./packages/acp-runtime/src/native-state.ts" },
       { find: "@open-managed-agents/acp-runtime/placement", replacement: "./packages/acp-runtime/src/placement.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-agent", replacement: "./packages/acp-runtime/src/sandbox-agent.ts" },
+      { find: "@open-managed-agents/acp-runtime/registry-pins", replacement: "./packages/acp-runtime/src/acp-registry-pins.ts" },
       { find: "@open-managed-agents/acp-runtime/sandbox-spawner", replacement: "./packages/acp-runtime/src/spawners/sandbox.ts" },
       { find: "@open-managed-agents/acp-runtime/node-spawner", replacement: "./packages/acp-runtime/src/node-spawner.ts" },
       { find: "@open-managed-agents/acp-runtime/registry", replacement: "./packages/acp-runtime/src/registry.ts" },
@@ -433,6 +437,7 @@ export default defineConfig({
       // This is a node:test architecture suite and is run explicitly by
       // test:architecture, not inside workerd/Vitest.
       "scripts/provider-package-boundaries.test.mjs",
+      "scripts/check-dependency-sources.test.mjs",
       "scripts/migration-compatibility.test.mjs",
       "scripts/release-check.test.mjs",
       // Needs full git history and tags. The release-check CI job runs it;
@@ -440,6 +445,8 @@ export default defineConfig({
       "scripts/release-check.history.test.mjs",
       "scripts/setup-cf.test.mjs",
       "scripts/setup-fly.test.mjs",
+      // Self-host bootstrap script; node:test, run by test:self-host.
+      "scripts/bootstrap-model-card.test.mjs",
       // Credential certification orchestrates real Node child processes and
       // is run explicitly by test:certification:runner.
       "scripts/live-certification.test.mjs",
@@ -495,6 +502,8 @@ export default defineConfig({
       "packages/sandbox-adapter-e2b/**",
       "packages/sandbox-adapter-opensandbox/**",
       "packages/sandbox-adapter-litebox/**",
+      // Real Node fetch (undici) behaviour of the shared proxy hop.
+      "packages/http-routes/test/node/**",
       "packages/harness-supervisor/**",
       "packages/harness-runtime-acp/**",
       "packages/runtime-resource-fence-sql/**",

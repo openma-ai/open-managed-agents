@@ -55,7 +55,20 @@ export type StreamSessionEventsResult =
   | { type: "stream"; events: AsyncIterable<StreamSessionEvent> }
   | { type: "not_found" };
 
+export interface RecordBudgetUpdateCommand {
+  sessionId: string;
+  /** The session as it was before the budget update was stored. */
+  previous: import("@open-managed-agents/domain/sessions").Session;
+}
+
+export type RecordBudgetUpdateResult =
+  | { type: "recorded"; resumed: boolean }
+  | { type: "not_found" };
+
 export interface SessionEventsApplicationPort {
+  /** Emit the official `session.updated` for a stored budget change and, when
+   * the change lifts a budget_reached pause, admit a continuation execution. */
+  recordBudgetUpdate?(command: RecordBudgetUpdateCommand): Promise<RecordBudgetUpdateResult>;
   sendSessionEvents(
     command: SendSessionEventsCommand,
   ): Promise<SendSessionEventsResult>;

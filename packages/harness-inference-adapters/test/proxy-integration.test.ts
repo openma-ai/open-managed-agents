@@ -3,9 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyUpstreamCredentialsForProtocol,
   copyInboundHeadersForUpstream,
-  forwardHostedInferenceRequest,
+  planHostedInferenceRequest,
+  type HostedInferenceRequestInput,
 } from "@open-managed-agents/inference-proxy";
 import { resolveProtocolEndpointsFromModelCard } from "@open-managed-agents/inference-proxy";
+
+/** Hand the plan to `fetcher` the way the HTTP route layer sends it. */
+async function sendPlan({ fetcher, ...input }: HostedInferenceRequestInput & { fetcher: typeof fetch }): Promise<Response> {
+  const plan = planHostedInferenceRequest(input);
+  if (plan instanceof Response) return plan;
+  return fetcher(plan.url, { method: plan.method, headers: plan.headers, body: plan.body });
+}
 
 import { wireHostedInferenceForAcpLaunch } from "../src/wire.js";
 
@@ -52,7 +60,7 @@ describe("hosted inference proxy integration", () => {
       providerId: "deepseek",
       protocolEndpoints: patched,
     };
-    await forwardHostedInferenceRequest({
+    await sendPlan({
       upstream,
       method: "POST",
       subPath: "openai/v1/chat/completions",
@@ -60,7 +68,7 @@ describe("hosted inference proxy integration", () => {
       body: new TextEncoder().encode("{}").buffer,
       fetcher,
     });
-    await forwardHostedInferenceRequest({
+    await sendPlan({
       upstream,
       method: "POST",
       subPath: "anthropic/v1/messages",

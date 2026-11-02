@@ -12,6 +12,7 @@ import { loadNodeConfig } from "../src/config";
 import { createNodeControlPlane, type NodeControlPlane } from "../src/control-plane";
 import { nodeDefaults } from "../src/components";
 import { buildMatterProxyRoutes, buildMatterWebhookRoutes, matterTrustedAuth } from "../../../packages/control-plane-node/src/lib/matter-proxy";
+import { matterRepositoryCredentials } from "../../../packages/control-plane-node/src/lib/matter-repository-credentials";
 
 const created: NodeControlPlane[] = [];
 const servers: Server[] = [];
@@ -94,6 +95,55 @@ describe("buildMatterProxyRoutes", () => {
     const res = await down.request("/matter/connect/feishu");
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "matter_unavailable" });
+  });
+});
+
+describe("Matter internal routes", () => {
+  it("are never reachable through the Console proxy, whatever the spelling", async () => {
+    const upstream = vi.fn(async () => new Response('{"token":"leak"}'));
+    const app = signedIn({ tenant_id: "tn_1", user_id: "usr_1" }, upstream as unknown as typeof fetch);
+    for (const path of ["/matter/internal/repository-credential", "/matter/internal", "/matter/INTERNAL/x",
+      "/matter/x/../internal/repository-credential", "/matter/%2e%2e/internal/repository-credential"]) {
+      const res = await app.request(path, { method: "POST", headers: { "x-matter-internal-secret": "s3cret" } });
+      expect(res.status, path).toBe(404);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+    // A caller's own copy of the internal header is dropped on other routes.
+    const seen: Request[] = [];
+    const ok = signedIn({ tenant_id: "tn_1" }, (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(input, init));
+      return new Response("{}");
+    }) as typeof fetch);
+    await ok.request("/matter/loops", { headers: { "x-matter-internal-secret": "guess" } });
+    expect(seen[0]?.headers.has("x-matter-internal-secret")).toBe(false);
+  });
+
+  it("asks Matter for a repository's Bond token with the internal secret and passes errors on", async () => {
+    const seen: Request[] = [];
+    const credentials = matterRepositoryCredentials({
+      url: "http://matter.internal",
+      proxySecret: "s3cret",
+      fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(input, init);
+        seen.push(req);
+        const body = (await req.json()) as { url: string };
+        return body.url.includes("missing")
+          ? Response.json({ error: "No GitLab Bond of this workspace serves gitlab.example.com" }, { status: 404 })
+          : Response.json({ token: "glpat-bond" });
+      }) as typeof fetch,
+    });
+    await expect(credentials.repositoryToken({ workspaceId: "tn_1", url: "https://gitlab.example.com/g/app.git" }))
+      .resolves.toBe("glpat-bond");
+    expect(seen[0]?.url).toBe("http://matter.internal/internal/repository-credential");
+    expect(seen[0]?.method).toBe("POST");
+    expect(seen[0]?.headers.get("x-matter-internal-secret")).toBe("s3cret");
+    expect(seen[0]?.headers.get("x-oma-tenant-id")).toBe("tn_1");
+    expect(seen[0]?.headers.has("x-matter-proxy-secret")).toBe(false);
+    await expect(credentials.repositoryToken({ workspaceId: "tn_1", url: "https://gitlab.example.com/g/missing.git" }))
+      .rejects.toThrow("No Bond credential for repository https://gitlab.example.com/g/missing.git: No GitLab Bond of this workspace serves gitlab.example.com");
+    const down = matterRepositoryCredentials({ url: "http://matter.internal", proxySecret: "s3cret",
+      fetcher: (async () => { throw new Error("ECONNREFUSED"); }) as typeof fetch });
+    await expect(down.repositoryToken({ workspaceId: "tn_1", url: "https://x/y.git" })).rejects.toThrow(/could not be reached/);
   });
 });
 

@@ -12,6 +12,8 @@ import {
 export interface PackagedEnvironment {
   readonly id: string;
   readonly config: { readonly type: string; readonly packages?: EnvironmentPackages };
+  /** Selected catalog image; it scopes the setup markers to that image. */
+  readonly openma?: { readonly sandboxImage?: string };
 }
 
 /**
@@ -32,8 +34,10 @@ export async function installEnvironmentPackages(
 ): Promise<void> {
   const packages = environment.config.type === "cloud" ? environment.config.packages : undefined;
   if (!hasEnvironmentPackages(packages)) return;
+  const sandboxImage = environment.openma?.sandboxImage;
   const result = await ensureEnvironmentPackages(sandbox, packages, undefined, {
     ...(options.pipIndexUrl ? { pipIndexUrl: options.pipIndexUrl } : {}),
+    ...(sandboxImage !== undefined ? { sandboxImage } : {}),
   });
   if (result.error) {
     throw new Error(`Environment ${environment.id} setup failed at ${result.path}: ${result.error}`);

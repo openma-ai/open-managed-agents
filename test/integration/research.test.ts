@@ -1,8 +1,10 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessContext } from "../../apps/agent/src/harness/interface";
+import { ensureModelCards } from "./_model-cards";
+import { registerTestHarnesses } from "../harnesses";
+
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
 function api(path: string, init?: RequestInit) {
@@ -18,30 +20,7 @@ function del(path: string) {
   return api(path, { method: "DELETE", headers: H });
 }
 
-// ============================================================
-// Register test harnesses for outcome tests
-// ============================================================
-registerHarness("outcome-test", () => ({
-  async run(ctx: HarnessContext) {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "Here is the fibonacci script:\n\nfunction fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }" }],
-    });
-  },
-}));
-
-registerHarness("outcome-multi", () => ({
-  async run(ctx: HarnessContext) {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "Step 1: Setting up REST API" }],
-    });
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "Step 2: Added GET /health endpoint returning JSON" }],
-    });
-  },
-}));
+registerTestHarnesses();
 
 // ============================================================
 // Memory Stores CRUD
@@ -452,7 +431,7 @@ describe("Outcomes", () => {
     const agentRes = await post("/v1/oma/agents", {
       name: "OutcomeTestAgent",
       model: "claude-sonnet-4-6",
-      harness: "outcome-test",
+      _oma: { harness: "outcome-test" },
     });
     agentId = ((await agentRes.json()) as any).id;
 

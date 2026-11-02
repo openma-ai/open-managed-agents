@@ -319,6 +319,49 @@ Details:
   any event. On Cloudflare the host uses a Durable Object per project, as
   OpenMatter's Cloudflare host does.
 
+### Matter MCP tool calls
+
+An Agent reaches OpenMatter operations, such as the Feishu reply, through the
+Matter MCP server configured on the Agent. Each call becomes an operation
+call that the kernel checks and runs under the Turn's Bond.
+
+The MCP request itself is the source of the call. It carries the tool name
+and arguments. Its bearer was issued by Matter for one OpenMatter Agent
+Session, so it also identifies the Session. That is all Matter needs:
+
+1. The MCP request registers the call in a call store under an id it
+   generates, then waits.
+2. The replica running that Session's Turn watches the call store while it
+   reads the OpenMA event stream. It takes the Session's new calls and
+   reports each one to the kernel as a `callback.requested` operation call.
+3. The kernel's answer resolves the call, and the MCP request returns it to
+   the Agent.
+
+The call store is a table in the Matter database, so the MCP request may
+reach a different replica than the one running the Turn. A call that no
+running Turn takes within a short pickup bound fails with a clear error:
+the Session has no running Turn on any replica. A running Turn takes calls
+within one poll interval, so the bound only has to cover polling and
+database latency. A taken call waits a longer, separate time for the
+kernel's answer. When a Turn ends, every call it took but did not answer
+fails.
+
+Matter does not read the Agent's event log to find tool calls. An earlier
+design did. It waited for the harness to log the tool-use event and matched
+the MCP request to it by tool name and arguments. That made tool execution
+depend on each harness's event format and timing. Some harnesses name the
+event differently. Some log the tool use only after the call returns, which
+is too late, so every call timed out. Taking calls from the MCP request
+keeps Matter independent of how a managed-agents harness logs tool calls.
+The connector still sends messages to OpenMA, maps OpenMA events to
+OpenMatter events, and detects the end of a Turn from them.
+
+The cost is determinism. Calls are reported in the order they were
+registered in the store, interleaved with OpenMA events in arrival order.
+A callback's position in the Agent event stream follows arrival time, not a
+position in the harness's log, and a replayed Turn does not report callbacks
+again.
+
 ### Loop definitions and instances
 
 A **Loop definition** is code plus a static description. A **Loop instance**

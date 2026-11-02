@@ -10,6 +10,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { APIPromise } from "@anthropic-ai/sdk/api-promise";
+import type { BidirectionalPageCursor, PageCursor, PagePromise } from "@anthropic-ai/sdk/core/pagination";
 
 export type OpenMaJsonValue =
   | string
@@ -53,22 +54,88 @@ export type OpenMaMcpServer =
   | BetaManagedAgentsMCPServerURLDefinition
   | OpenMaStdioMcpServer;
 
-export type OpenMaAgentCreateParams = Omit<AgentCreateParams, "mcp_servers"> & {
+export interface OpenMaAgentMultiagentParams {
+  type: "multiagent_20261001";
+  /** The current runtime supports disabled only. */
+  advisor?: { type: "disabled" } | null;
+  /** Omit to preserve on update; null resets to the official default: subagents and inline agents enabled. */
+  subagents?: { type: "disabled" } | {
+    type: "enabled";
+    inline_agents?: { type: "enabled" } | { type: "disabled" } | null;
+    predefined_agents?: Array<string | { type: "agent"; id: string; version?: number } | { type: "self" }> | null;
+  } | null;
+  /** The current runtime supports disabled only. */
+  workflows?: { type: "disabled" } | null;
+}
+
+export interface OpenMaMultiagent<Agent> {
+  type: "multiagent_20261001";
+  advisor: { type: "disabled" };
+  subagents: { type: "disabled" } | {
+    type: "enabled";
+    inline_agents: { type: "enabled" } | { type: "disabled" };
+    predefined_agents: Agent[];
+  };
+  workflows: { type: "disabled" };
+}
+
+export type OpenMaAgentMultiagent = OpenMaMultiagent<{ type: "agent"; id: string; version: number }>;
+
+export type OpenMaAgentCreateParams = Omit<AgentCreateParams, "mcp_servers" | "multiagent"> & {
   mcp_servers?: OpenMaMcpServerParams[];
+  multiagent?: OpenMaAgentMultiagentParams | null;
 };
 
-export type OpenMaAgentUpdateParams = Omit<AgentUpdateParams, "mcp_servers"> & {
+export type OpenMaAgentUpdateParams = Omit<AgentUpdateParams, "mcp_servers" | "multiagent"> & {
   mcp_servers?: OpenMaMcpServerParams[] | null;
+  multiagent?: OpenMaAgentMultiagentParams | null;
 };
 
-export type OpenMaAgent = Omit<BetaManagedAgentsAgent, "mcp_servers"> & {
+export type OpenMaAgent = Omit<BetaManagedAgentsAgent, "mcp_servers" | "multiagent"> & {
   mcp_servers: OpenMaMcpServer[];
+  multiagent: OpenMaAgentMultiagent | null;
+};
+
+export type OpenMaSessionThreadAgent = Omit<import("@anthropic-ai/sdk/resources/beta/agents/agents").BetaManagedAgentsSessionThreadAgent, "mcp_servers"> & {
+  mcp_servers: OpenMaMcpServer[];
+};
+export type OpenMaSessionAgent = Omit<import("@anthropic-ai/sdk/resources/beta/sessions/sessions").BetaManagedAgentsSessionAgent, "multiagent" | "mcp_servers"> & {
+  mcp_servers: OpenMaMcpServer[];
+  multiagent: OpenMaMultiagent<OpenMaSessionThreadAgent> | null;
+};
+export type OpenMaSession = Omit<import("@anthropic-ai/sdk/resources/beta/sessions/sessions").BetaManagedAgentsSession, "agent"> & {
+  agent: OpenMaSessionAgent;
+};
+
+type OfficialAgents = Anthropic["beta"]["agents"];
+type OfficialSessions = Anthropic["beta"]["sessions"];
+export type OpenMaAgents = Omit<OfficialAgents, "create" | "update" | "retrieve" | "archive" | "list" | "versions"> & {
+  create(params: OpenMaAgentCreateParams, options?: Anthropic.RequestOptions): APIPromise<OpenMaAgent>;
+  update(agentID: string, params: OpenMaAgentUpdateParams, options?: Anthropic.RequestOptions): APIPromise<OpenMaAgent>;
+  retrieve(...args: Parameters<OfficialAgents["retrieve"]>): APIPromise<OpenMaAgent>;
+  archive(...args: Parameters<OfficialAgents["archive"]>): APIPromise<OpenMaAgent>;
+  list(...args: Parameters<OfficialAgents["list"]>): PagePromise<PageCursor<OpenMaAgent>, OpenMaAgent>;
+  versions: Omit<OfficialAgents["versions"], "list"> & {
+    list(...args: Parameters<OfficialAgents["versions"]["list"]>): PagePromise<PageCursor<OpenMaAgent>, OpenMaAgent>;
+  };
+};
+export type OpenMaSessions = Omit<OfficialSessions, "create" | "retrieve" | "update" | "archive" | "list"> & {
+  [Method in "create" | "retrieve" | "update" | "archive"]: (...args: Parameters<OfficialSessions[Method]>) => APIPromise<OpenMaSession>;
+} & {
+  list(...args: Parameters<OfficialSessions["list"]>): PagePromise<BidirectionalPageCursor<OpenMaSession>, OpenMaSession>;
+};
+export type OpenMaBeta = Omit<Anthropic["beta"], "agents" | "sessions"> & {
+  agents: OpenMaAgents;
+  sessions: OpenMaSessions;
 };
 
 export interface OpenMaAgentAcpParams {
   agent: {
     id?: string;
-    command: string;
+    /** Explicit process; exactly one of `command` or `registry` is set. */
+    command?: string;
+    /** Pinned ACP registry reference such as `claude-acp@0.94.0`. */
+    registry?: string;
     args?: string[];
     env?: Record<string, string | null>;
     cwd?: string;
@@ -125,7 +192,10 @@ export interface OpenMaAgentExtensionParams {
 export interface OpenMaAgentAcp {
   agent: {
     id?: string;
-    command: string;
+    /** Explicit process; exactly one of `command` or `registry` is set. */
+    command?: string;
+    /** Pinned ACP registry reference such as `claude-acp@0.94.0`. */
+    registry?: string;
     args?: string[];
     env?: Record<string, string>;
     cwd?: string;

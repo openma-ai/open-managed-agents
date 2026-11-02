@@ -8,7 +8,11 @@ export async function nodeOpenAISubagentPolicy(session: Session, secrets: Resour
   const saved = await readManagedSessionMappingMetadata(session, secrets);
   return saved
     ? { enabled: saved.agent.multi_agent?.enabled === true, maxConcurrentSubagents: saved.agent.multi_agent?.max_concurrent_subagents ?? 6 }
-    : { enabled: (session.agent.multiagent?.agents.length ?? 0) > 0, maxConcurrentSubagents: 6 };
+    : {
+        enabled: session.agent.multiagent?.subagents.type === "enabled" &&
+          (session.agent.multiagent.subagents.inlineAgents.type === "enabled" || session.agent.multiagent.subagents.predefinedAgents.length > 0),
+        maxConcurrentSubagents: 6,
+      };
 }
 
 /** OpenAI children share the environment and configured MCP/search tools. Function

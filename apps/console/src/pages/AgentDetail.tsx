@@ -6,6 +6,7 @@ import { useApiQuery, useQueryClient } from "../lib/useApiQuery";
 import { useManagedApi } from "../lib/useManagedApi";
 import { GitHubIcon, LinearIcon, SlackIcon } from "../components/icons";
 import { Page } from "../components/Page";
+import { OpenmaStartupLoader } from "../components/OpenmaStartupLoader";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "@/components/ui/button";
 import type { ModelCard } from "@open-managed-agents/api-types";
@@ -145,7 +146,7 @@ export function AgentDetail() {
   };
 
   if (error) return <div className="p-10 text-danger">Error: {error}</div>;
-  if (!agent) return <div className="p-10 text-fg-subtle">Loading...</div>;
+  if (!agent) return <div className="flex flex-1 items-center justify-center p-10"><OpenmaStartupLoader /></div>;
 
   const archived = !!agent.archived_at;
 

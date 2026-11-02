@@ -68,7 +68,7 @@
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/agent": "workspace:*",
     "@open-managed-agents/agent-store-memory": "workspace:*",
-    "@open-managed-agents/agents-store": "workspace:*",
+    "@open-managed-agents/agent-store-sql": "workspace:*",
     "@open-managed-agents/auth": "workspace:*",
     "@open-managed-agents/credentials-store": "workspace:*",
     "@open-managed-agents/db-schema": "workspace:*",

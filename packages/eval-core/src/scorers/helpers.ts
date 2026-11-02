@@ -40,7 +40,7 @@ export function getToolUses(trajectory: Trajectory): ToolUseEvent[] {
       const data = parseData(e);
       if (!data) continue;
       result.push({
-        seq: e.seq,
+        seq: e.seq ?? 0,
         id: data.id as string | undefined,
         name: (data.name as string) || "",
         input: (data.input as Record<string, unknown>) || {},
@@ -82,7 +82,7 @@ export function getToolResults(trajectory: Trajectory): ToolResultEvent[] {
         contentStr = JSON.stringify(content ?? "");
       }
       result.push({
-        seq: e.seq,
+        seq: e.seq ?? 0,
         tool_use_id:
           (data.tool_use_id as string) || (data.mcp_tool_use_id as string) || "",
         content: contentStr,

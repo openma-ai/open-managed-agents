@@ -1,6 +1,7 @@
 import type {
   Environment,
   EnvironmentConfig,
+  EnvironmentOpenMaExtensions,
   EnvironmentPackages,
 } from "../domain/environment";
 import type {
@@ -11,6 +12,7 @@ import type {
   DeleteEnvironmentCommand,
   DeleteEnvironmentResult,
   EnvironmentConfigInput,
+  EnvironmentOpenMaInput,
   EnvironmentPackagesInput,
   EnvironmentsApplicationPort,
   ListEnvironmentsQuery,
@@ -105,6 +107,27 @@ function normalizeConfig(
   };
 }
 
+/** Merge an OpenMA extension patch; `null` clears, absent keeps. Returns
+ * `undefined` when nothing remains so stored documents stay CMA-shaped. */
+function patchOpenMa(
+  current: EnvironmentOpenMaExtensions | undefined,
+  patch: EnvironmentOpenMaInput | undefined,
+): EnvironmentOpenMaExtensions | undefined {
+  const next: EnvironmentOpenMaExtensions = { ...current };
+  if (patch?.sandboxImage === null) delete next.sandboxImage;
+  else if (patch?.sandboxImage !== undefined) next.sandboxImage = patch.sandboxImage;
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+function openMaConflict(
+  config: EnvironmentConfig,
+  openma: EnvironmentOpenMaExtensions | undefined,
+): string | null {
+  return config.type === "self_hosted" && openma?.sandboxImage !== undefined
+    ? "_oma.sandbox_image is only supported for cloud environments"
+    : null;
+}
+
 function patchMetadata(
   current: Record<string, string>,
   patch: Record<string, string | null>,
@@ -137,17 +160,22 @@ export class EnvironmentsApplicationService
     if (command.name.trim().length === 0) {
       return { type: "invalid_request", message: "Environment name must not be empty" };
     }
+    const config = normalizeConfig(command.config);
+    const openma = patchOpenMa(undefined, command.openma);
+    const conflict = openMaConflict(config, openma);
+    if (conflict !== null) return { type: "invalid_request", message: conflict };
     const timestamp = this.dependencies.clock.now().toISOString();
     const environment: Environment = {
       id: this.dependencies.ids.nextEnvironmentId(),
       archivedAt: null,
-      config: normalizeConfig(command.config),
+      config,
       createdAt: timestamp,
       description: command.description ?? null,
       metadata: command.metadata ?? {},
       name: command.name,
       updatedAt: timestamp,
       ...(command.scope != null && { scope: command.scope }),
+      ...(openma !== undefined && { openma }),
     };
     const record = await this.dependencies.store.insert({
       workspaceId: this.dependencies.workspaceId,
@@ -199,6 +227,13 @@ export class EnvironmentsApplicationService
       if (command.scope === null) delete next.scope;
       else next.scope = command.scope;
     }
+    if (command.openma !== undefined) {
+      const openma = patchOpenMa(current.environment.openma, command.openma);
+      if (openma === undefined) delete next.openma;
+      else next.openma = openma;
+    }
+    const conflict = openMaConflict(next.config, next.openma);
+    if (conflict !== null) return { type: "invalid_request", message: conflict };
     const replaced = await this.dependencies.store.replace({
       workspaceId: this.dependencies.workspaceId,
       environmentId: command.environmentId,

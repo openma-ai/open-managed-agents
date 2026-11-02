@@ -77,7 +77,11 @@ class PlacementAcpRuntime implements AcpRuntime {
           throw new Error("ACP runtime attempted to spawn more than one child for a session");
         }
         child = await this.spawner.spawn(spec);
-        return child;
+        // The common engine's diagnostic observer assumes exit never rejects.
+        // A transport failure is no exit result: leave that observer pending,
+        // while placement retains the ORIGINAL rejection for liveness and the
+        // disposal barrier below. Never turn lost observation into success.
+        return { ...child, exited: child.exited.catch(() => new Promise<never>(() => {})) };
       },
     });
     const session = await runtime.start(engineOptions);
@@ -149,20 +153,29 @@ async function supervisedDispose(
   cancelGraceMs: number,
   markDead: () => void,
 ): Promise<void> {
-  const coreDisposal = session.dispose();
-  let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
-  const hardKill = new Promise<void>((resolve) => {
-    hardKillTimer = setTimeout(() => {
-      markDead();
-      void child.kill("SIGKILL").catch(() => undefined);
-      resolve();
-    }, cancelGraceMs);
-  });
+  // Protocol close/kill acknowledgement does not prove process exit. Native
+  // state may only be captured or deleted after the child exit signal settles.
+  void session.dispose().catch(() => undefined);
+  if (await finishesWithin(child.exited, cancelGraceMs)) {
+    markDead();
+    return;
+  }
+  markDead();
+  const stopped = Promise.all([child.kill("SIGKILL"), child.exited]);
+  if (!await finishesWithin(stopped, 2_000)) {
+    throw new Error("ACP child exit was not confirmed within 2000ms after SIGKILL; native state must not be captured or deleted");
+  }
+}
+
+async function finishesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([coreDisposal, hardKill]);
+    return await Promise.race([
+      operation.then(() => true, () => false),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
   } finally {
-    if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
-    void coreDisposal.catch(() => undefined);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

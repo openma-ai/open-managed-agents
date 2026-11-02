@@ -79,18 +79,21 @@ type LegacyAgentTool =
     };
 
 interface LegacyMultiagent {
-  type: "coordinator";
-  agents: Array<
-    | { type: "agent"; id: string; version: number }
-    | { type: "advisor"; model: string }
-  >;
+  type: "multiagent_20261001";
+  advisor: { type: "disabled" };
+  subagents: { type: "disabled" } | {
+    type: "enabled";
+    inline_agents: { type: "enabled" } | { type: "disabled" };
+    predefined_agents: Array<LegacyManagedHarnessAgentConfig & { type: "agent" }>;
+  };
+  workflows: { type: "disabled" };
 }
 
 export interface LegacyManagedHarnessAgentConfig
-  extends Omit<AgentConfig, "tools" | "skills" | "callable_agents"> {
+  extends Omit<AgentConfig, "tools" | "skills" | "callable_agents" | "multiagent"> {
   tools: LegacyAgentTool[];
+  mcp_servers: NonNullable<AgentConfig["mcp_servers"]>;
   skills: Array<{ type: "anthropic" | "custom"; skill_id: string; version: string }>;
-  callable_agents?: Array<{ type: "agent"; id: string; version: number }>;
   multiagent?: LegacyMultiagent;
 }
 
@@ -226,12 +229,9 @@ export function toLegacyHarnessAgentConfig(
   session: Session,
 ): LegacyManagedHarnessAgentConfig {
   const { agent } = session;
-  const roster = agent.multiagent?.agents ?? [];
-  const callableAgents = roster.flatMap((member) =>
-    member.type === "agent"
-      ? [{ type: member.type, id: member.id, version: member.version }]
-      : [],
-  );
+  const roster = agent.multiagent?.subagents.type === "enabled"
+    ? agent.multiagent.subagents.predefinedAgents
+    : [];
   return {
     id: agent.id,
     name: agent.name,
@@ -255,15 +255,21 @@ export function toLegacyHarnessAgentConfig(
       skill_id: skill.skillId,
       version: skill.version,
     })),
-    ...(callableAgents.length > 0 && { callable_agents: callableAgents }),
     ...(agent.multiagent !== null && {
       multiagent: {
         type: agent.multiagent.type,
-        agents: roster.map((member) =>
-          member.type === "advisor"
-            ? { type: member.type, model: member.model }
-            : { type: member.type, id: member.id, version: member.version },
-        ),
+        advisor: { type: "disabled" },
+        subagents: agent.multiagent.subagents.type === "disabled"
+          ? { type: "disabled" }
+          : {
+              type: "enabled",
+              inline_agents: agent.multiagent.subagents.inlineAgents,
+              predefined_agents: roster.flatMap((member) => member.type === "agent"
+                ? [{ ...toLegacyHarnessAgentConfig({ ...session, agent: { ...member, multiagent: null } }), type: "agent" as const }]
+                : []),
+            },
+        workflows: { type: "disabled" },
+
       },
     }),
     ...(agent.description !== null && { description: agent.description }),

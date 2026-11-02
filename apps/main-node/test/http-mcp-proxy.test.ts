@@ -54,6 +54,26 @@ describe("Node HTTP MCP proxy", () => {
     });
   });
 
+  it("preserves pinned agent identity when routing a child MCP request", async () => {
+    const binding = createNodeMcpProxyBinding({
+      resolveTarget: async (input) => input.agentId === "child" && input.agentVersion === 7
+        ? { upstreamUrl: "https://child.test/mcp", accessToken: "child-token" } : null,
+      fetcher: async (url, init) => {
+        const request = new Request(url, init);
+        expect(request.url).toBe("https://child.test/mcp");
+        expect(request.headers.has("x-oma-agent-id")).toBe(false);
+        expect(request.headers.has("x-oma-agent-version")).toBe(false);
+        return new Response("child-result");
+      },
+    });
+    const response = await binding.fetch(new Request("https://child.test/mcp", { headers: {
+      "x-oma-tenant": "tenant", "x-oma-session": "session", "x-oma-mcp-server": "same-name",
+      "x-oma-agent-id": "child", "x-oma-agent-version": "7",
+    } }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("child-result");
+  });
+
   it("fails a binding request closed when routing scope is missing", async () => {
     const upstream = vi.fn();
     const binding = createNodeMcpProxyBinding({

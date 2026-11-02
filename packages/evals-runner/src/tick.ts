@@ -24,8 +24,10 @@ import {
   type VerifierContext,
   type SessionRecord,
   type FullStatus,
+  type AgentConfig,
 } from "@open-managed-agents/shared";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
+import { loadRuntimeAgentSnapshot } from "@open-managed-agents/managed-agents-adapters-runtime";
 import type { EnvironmentService } from "@open-managed-agents/environments-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
 import type { EvalRunService } from "@open-managed-agents/evals-store";
@@ -44,7 +46,7 @@ import {
  *  Keeps the package decoupled from packages/services. CF satisfies
  *  this from buildCfServices(); Node from its own bundle. */
 export interface EvalRunnerServices {
-  agents: AgentService;
+  agents: AgentStore;
   environments: EnvironmentService;
   sessions: SessionService;
   evals: EvalRunService;
@@ -139,9 +141,8 @@ async function createTaskSession(
 ): Promise<string> {
   const t = run.tenant_id;
   const services = await ctx.getServicesForTenant(t);
-  const agentRow = await services.agents.get({ tenantId: t, agentId: run.agent_id });
-  if (!agentRow) throw new Error(`agent ${run.agent_id} not found`);
-  const { tenant_id: _atid, ...agentSnapshot } = agentRow;
+  const agentSnapshot = await loadRuntimeAgentSnapshot(services.agents, t, run.agent_id);
+  if (!agentSnapshot) throw new Error(`agent ${run.agent_id} not found`);
   const envRow = await services.environments.get({ tenantId: t, environmentId: run.environment_id });
   const environmentSnapshot = envRow ? toEnvironmentConfig(envRow) : undefined;
 
@@ -153,7 +154,7 @@ async function createTaskSession(
     agentId: run.agent_id,
     environmentId: run.environment_id,
     title: `eval ${run.id} :: ${task.id}`,
-    agentSnapshot,
+    agentSnapshot: agentSnapshot as unknown as AgentConfig,
     environmentSnapshot,
   });
   const sessionId = session.id;
@@ -437,7 +438,7 @@ async function buildAndStoreTrajectory(
         const batch = body.data || [];
         all.push(...batch);
         if (!body.has_more || batch.length === 0) break;
-        afterSeq = batch[batch.length - 1].seq;
+        afterSeq = batch[batch.length - 1].seq ?? afterSeq;
       }
       return all;
     },

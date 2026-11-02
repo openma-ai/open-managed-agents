@@ -31,7 +31,8 @@ function toOpenMaInput(extension: NonNullable<AgentCreateBody["_oma"]>) {
     ? undefined
     : {
         ...(acpAgent.id !== undefined && { id: acpAgent.id }),
-        command: acpAgent.command,
+        ...(acpAgent.command !== undefined && { command: acpAgent.command }),
+        ...(acpAgent.registry !== undefined && { registry: acpAgent.registry }),
         ...(acpAgent.args !== undefined && { args: acpAgent.args }),
         ...(acpAgent.cwd !== undefined && { cwd: acpAgent.cwd }),
       };

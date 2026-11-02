@@ -11,6 +11,8 @@ export interface DreamSessionDescriptor {
 }
 
 export interface CurateDream {
+  /** Workspace that owns the Dream; model credentials resolve against it. */
+  workspaceId: string;
   inputMemories: DreamMemoryDocument[];
   inputSessions: DreamSessionDescriptor[];
   instructions: string | null;

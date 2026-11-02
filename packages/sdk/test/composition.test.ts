@@ -34,7 +34,7 @@ describe("OpenMA SDK composition facade", () => {
 
     expect(client.anthropic).toBeInstanceOf(Anthropic);
     expect(client.beta).toBe(client.anthropic.beta);
-    expectTypeOf(client.beta).toEqualTypeOf<Anthropic["beta"]>();
+    expectTypeOf(client.beta.messages).toEqualTypeOf<Anthropic["beta"]["messages"]>();
 
     const page = await client.beta.agents.list({ limit: 7 });
 
@@ -168,6 +168,88 @@ describe("OpenMA SDK composition facade", () => {
       deepseek: { thinking: { type: "disabled" } },
     });
     expect(agent._oma?.appendable_prompts).toEqual(["prompt_review"]);
+  });
+
+  it("forwards multiagent_20261001 create/update payloads without dropping nulls", async () => {
+    const requests: Request[] = [];
+    const client = new OpenMA({
+      apiKey: "oma_test_key",
+      baseURL: "https://openma.test",
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        const request = input instanceof Request
+          ? new Request(input, init)
+          : new Request(input.toString(), init);
+        requests.push(request);
+        return jsonResponse({
+          id: "agent_multiagent",
+          type: "agent",
+          name: "Multiagent agent",
+          archived_at: null,
+          created_at: "2026-10-22T00:00:00.000Z",
+          description: null,
+          mcp_servers: [],
+          model: { id: "claude-opus-5" },
+          multiagent: {
+            type: "multiagent_20261001",
+            advisor: { type: "disabled" },
+            subagents: {
+              type: "enabled",
+              inline_agents: { type: "disabled" },
+              predefined_agents: [],
+            },
+            workflows: { type: "disabled" },
+          },
+          skills: [],
+          system: null,
+          tools: [],
+          updated_at: "2026-10-22T00:00:00.000Z",
+          version: 1,
+        });
+      },
+    });
+
+    await client.beta.agents.create({
+      name: "Multiagent agent",
+      model: { id: "claude-opus-5" },
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: null,
+        subagents: {
+          type: "enabled",
+          inline_agents: null,
+          predefined_agents: null,
+        },
+        workflows: null,
+      },
+    });
+    await client.beta.agents.update("agent_multiagent", {
+      multiagent: {
+        type: "multiagent_20261001",
+        subagents: null,
+      },
+    });
+
+    expect(await requests[0]!.json()).toEqual({
+      name: "Multiagent agent",
+      model: { id: "claude-opus-5" },
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: null,
+        subagents: {
+          type: "enabled",
+          inline_agents: null,
+          predefined_agents: null,
+        },
+        workflows: null,
+      },
+    });
+    expect(await requests[1]!.json()).toEqual({
+      multiagent: {
+        type: "multiagent_20261001",
+        subagents: null,
+      },
+    });
   });
 
   it("types OpenMA extensions on the Session agent snapshot used by workers", async () => {

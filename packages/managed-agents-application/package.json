@@ -39,6 +39,7 @@
     "@openma/common": "^0.9.1"
   },
   "devDependencies": {
+    "@open-managed-agents/session-store-memory": "workspace:*",
     "vitest": "^4.1.3"
   }
 }

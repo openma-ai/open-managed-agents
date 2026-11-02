@@ -110,6 +110,8 @@ services:
       MATTER_MCP_URL: http://matter:4720/mcp
       # Where GitLab reaches this service for webhooks (optional).
       MATTER_PUBLIC_URL: ${MATTER_PUBLIC_URL:-}
+      # GitLab instances offered when linking a Bond, comma-separated (optional).
+      MATTER_GITLAB_URLS: ${MATTER_GITLAB_URLS:-}
     volumes:
       - ./data:/app/data
     depends_on:

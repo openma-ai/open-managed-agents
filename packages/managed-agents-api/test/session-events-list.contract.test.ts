@@ -9,7 +9,7 @@ describe("Managed Agents API — GET /v1/sessions/:session_id/events", () => {
     const api = buildSessionEventsTestApi(makeSessionEventsPort({
       listSessionEvents: async () => ({
         type: "page",
-        page: { events: [], nextCursor: undefined },
+        page: { events: [], nextCursor: null },
       }),
     }));
     const response = await api.request(

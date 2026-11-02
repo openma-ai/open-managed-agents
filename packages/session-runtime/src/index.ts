@@ -9,6 +9,7 @@
 
 export {
   recoverInterruptedState,
+  type RecoverInterruptedStateOptions,
   type RecoveryReport,
   type RecoveryWarning,
 } from "./recovery";

@@ -25,7 +25,7 @@ import type {
   ModelCardUpdateFields,
   NewModelCardInput,
 } from "../ports";
-import type { ModelCardRow } from "../types";
+import type { ModelCardRow, ModelPricing } from "../types";
 
 
 /**
@@ -44,11 +44,25 @@ import type { ModelCardRow } from "../types";
  */
 export class SqlModelCardRepo implements ModelCardRepo {
   private readonly db: OmaDbBuilder;
-  constructor(db: OmaDb) {
+  private readonly schemaReady: Promise<void>;
+  constructor(db: OmaDb, opts?: { ensureSchema?: () => Promise<void> }) {
     this.db = asBuilder(db);
+    this.schemaReady = (opts?.ensureSchema?.() ?? Promise.resolve()).catch((err) => {
+      // Construction-time ensure must not become an unhandled rejection in
+      // smoke tests that never await a repo method (services-dispatch).
+      console.warn("[model-cards] ensureSchema failed:", err instanceof Error ? err.message : err);
+    });
+  }
+
+  private async ready(): Promise<void> {
+    await this.schemaReady;
   }
 
   async insert(input: NewModelCardInput): Promise<ModelCardRow> {
+    await this.ready();
+    // pricing is optional — omit the column when unpriced so older DBs
+    // without the additive migration still accept create-without-pricing;
+    // when set, the ensureSchema path (or SQL migration) must have added it.
     const insertQ = this.db.insert(model_cards).values({
       id: input.id,
       tenant_id: input.tenantId,
@@ -59,6 +73,9 @@ export class SqlModelCardRepo implements ModelCardRepo {
       custom_headers:
         input.customHeaders !== null ? JSON.stringify(input.customHeaders) : null,
       pi_config: input.piConfig !== null ? JSON.stringify(input.piConfig) : null,
+      ...(input.pricing != null
+        ? { pricing: JSON.stringify(input.pricing) }
+        : {}),
       api_key_cipher: input.apiKeyCipher,
       api_key_preview: input.apiKeyPreview,
       is_default: input.isDefault ? 1 : 0,
@@ -83,6 +100,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async get(tenantId: string, cardId: string): Promise<ModelCardRow | null> {
+    await this.ready();
     const row = await getOne<typeof model_cards.$inferSelect>(
       this.db
         .select()
@@ -95,6 +113,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async list(tenantId: string): Promise<ModelCardRow[]> {
+    await this.ready();
     const rows = await getAll<typeof model_cards.$inferSelect>(
       this.db
         .select()
@@ -116,6 +135,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
       createdBefore?: number;
     },
   ): Promise<{ items: ModelCardRow[]; hasMore: boolean }> {
+    await this.ready();
     const conds = [eq(model_cards.tenant_id, tenantId)];
     if (opts.q) {
       // Match either the user-facing handle (model_id) OR the wire-level
@@ -162,6 +182,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
     tenantId: string,
     modelId: string,
   ): Promise<ModelCardRow | null> {
+    await this.ready();
     const row = await getOne<typeof model_cards.$inferSelect>(
       this.db
         .select()
@@ -179,6 +200,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async getDefault(tenantId: string): Promise<ModelCardRow | null> {
+    await this.ready();
     const row = await getOne<typeof model_cards.$inferSelect>(
       this.db
         .select()
@@ -200,6 +222,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
     cardId: string,
     update: ModelCardUpdateFields,
   ): Promise<ModelCardRow> {
+    await this.ready();
     // Pre-check existence — Drizzle's run() result shape is dialect-specific,
     // so we read first to throw a domain error if the row is missing.
     const existing = await this.get(tenantId, cardId);
@@ -216,6 +239,9 @@ export class SqlModelCardRepo implements ModelCardRepo {
     }
     if (update.piConfig !== undefined) {
       set.pi_config = update.piConfig !== null ? JSON.stringify(update.piConfig) : null;
+    }
+    if (update.pricing !== undefined) {
+      set.pricing = update.pricing !== null ? JSON.stringify(update.pricing) : null;
     }
     if (update.apiKeyCipher !== undefined) set.api_key_cipher = update.apiKeyCipher;
     if (update.apiKeyPreview !== undefined) set.api_key_preview = update.apiKeyPreview;
@@ -247,6 +273,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
   }
 
   async delete(tenantId: string, cardId: string): Promise<void> {
+    await this.ready();
     await runOnce(
       this.db
         .delete(model_cards)
@@ -261,6 +288,7 @@ export class SqlModelCardRepo implements ModelCardRepo {
     cardId: string,
     updatedAt: number,
   ): Promise<ModelCardRow> {
+    await this.ready();
     // Verify the target exists before the batch — otherwise we'd silently
     // clear all defaults and "set" a non-existent row.
     const existing = await this.get(tenantId, cardId);
@@ -344,6 +372,10 @@ function toRow(r: typeof model_cards.$inferSelect): ModelCardRow {
     pi_config:
       r.pi_config !== null
         ? (JSON.parse(r.pi_config) as Record<string, unknown>)
+        : null,
+    pricing:
+      r.pricing !== null && r.pricing !== undefined
+        ? (JSON.parse(r.pricing) as ModelPricing)
         : null,
     api_key_preview: r.api_key_preview,
     // postgres.js returns BIGINT columns as strings by default, even though

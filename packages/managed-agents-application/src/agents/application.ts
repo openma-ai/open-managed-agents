@@ -32,6 +32,7 @@ import {
   resolveAgentSkills,
   resolveAgentTools,
 } from "./definition-resolution";
+import { mergeMultiagent } from "./multiagent-merge";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -342,6 +343,7 @@ function validateMetadata(metadata: Record<string, string>): string | null {
     if (key.length < 1 || key.length > 64) {
       return "Agent metadata keys must contain 1 to 64 characters";
     }
+    if (typeof value !== "string") return "Agent metadata values must be strings";
     if (value.length > 512) {
       return "Agent metadata values may contain at most 512 characters";
     }
@@ -392,74 +394,67 @@ async function resolveMultiagent(
   workspaceId: string,
   input: AgentMultiagentInput | null | undefined,
   self: { agentId: string; version: number },
+  current?: AgentMultiagent,
 ): Promise<ResolveMultiagentResult> {
-  if (input === null || input === undefined) {
-    return { type: "resolved", multiagent: input ?? null };
-  }
-  if (input.agents.length < 1 || input.agents.length > 20) {
+  if (input === null || input === undefined) return { type: "resolved", multiagent: input ?? null };
+  const merged = mergeMultiagent(input, current);
+  if (merged.type === "invalid_request") return merged;
+  if (merged.multiagent.subagents.type === "disabled") {
     return {
-      type: "invalid_request",
-      message: "Multiagent roster must contain 1 to 20 entries",
+      type: "resolved",
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: { type: "disabled" },
+        workflows: { type: "disabled" },
+      },
     };
   }
-  const agents: AgentMultiagent["agents"] = [];
-  const referencedAgentIds = new Set<string>();
-  let selfCount = 0;
-  for (const entry of input.agents) {
-    if (typeof entry !== "string" && entry.type === "advisor") {
-      agents.push({ type: entry.type, model: entry.model });
-      continue;
-    }
-    if (typeof entry !== "string" && entry.type === "self") {
-      selfCount += 1;
-      if (selfCount > 1 || referencedAgentIds.has(self.agentId)) {
-        return {
-          type: "invalid_request",
-          message: "Multiagent roster agents must be distinct and may contain at most one self",
-        };
-      }
-      referencedAgentIds.add(self.agentId);
-      agents.push({ type: "agent", ...self });
-      continue;
-    }
-    const agentId = typeof entry === "string" ? entry : entry.agentId;
-    if (referencedAgentIds.has(agentId)) {
-      return {
-        type: "invalid_request",
-        message: "Multiagent roster agents must be distinct",
-      };
-    }
-    referencedAgentIds.add(agentId);
-    const requestedVersion =
-      typeof entry === "string" ? undefined : entry.version;
-    const current = await store.findCurrent({ workspaceId, agentId });
-    const referenced =
-      requestedVersion === undefined || current?.version === requestedVersion
-        ? current
-        : await store.findVersion({
-            workspaceId,
-            agentId,
-            version: requestedVersion,
-          });
-    if (referenced === null || referenced.archivedAt !== null) {
-      return {
-        type: "invalid_request",
-        message: `Multiagent roster agent ${agentId} was not found`,
-      };
-    }
-    if (referenced.multiagent !== null) {
-      return {
-        type: "invalid_request",
-        message: `Multiagent roster agent ${agentId} cannot be a coordinator`,
-      };
-    }
-    agents.push({
-      type: "agent",
-      agentId: referenced.id,
-      version: referenced.version,
-    });
+  const entries = merged.multiagent.subagents.predefinedAgents;
+  if (entries.length === 0) {
+    return {
+      type: "resolved",
+      multiagent: {
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inlineAgents: merged.multiagent.subagents.inlineAgents,
+          predefinedAgents: [],
+        },
+        workflows: { type: "disabled" },
+      },
+    };
   }
-  return { type: "resolved", multiagent: { type: input.type, agents } };
+  const resolvedEntries: Array<{ type: "agent"; agentId: string; version: number }> = [];
+  const referencedAgentIds = new Set<string>();
+  for (const entry of entries) {
+    const agentId = typeof entry === "string" ? entry : entry.type === "self" ? self.agentId : entry.agentId;
+    if (referencedAgentIds.has(agentId)) return { type: "invalid_request", message: "predefined_agents must be distinct" };
+    referencedAgentIds.add(agentId);
+    if (typeof entry !== "string" && entry.type === "self") {
+      resolvedEntries.push({ type: "agent", ...self });
+      continue;
+    }
+    const requestedVersion = typeof entry === "string" ? undefined : entry.version;
+    const current = await store.findCurrent({ workspaceId, agentId });
+    if (current === null || current.archivedAt !== null) return { type: "invalid_request", message: `predefined agent ${agentId} was not found` };
+    const referenced = requestedVersion === undefined || current.version === requestedVersion ? current : await store.findVersion({ workspaceId, agentId, version: requestedVersion });
+    if (referenced === null || referenced.archivedAt !== null) return { type: "invalid_request", message: `predefined agent ${agentId} was not found` };
+    if (agentId !== self.agentId && referenced.multiagent !== null) return { type: "invalid_request", message: `predefined agent ${agentId} cannot have multiagent enabled` };
+    resolvedEntries.push({ type: "agent", agentId: referenced.id, version: referenced.version });
+  }
+  return {
+    type: "resolved",
+    multiagent: {
+      ...merged.multiagent,
+      subagents: {
+        ...merged.multiagent.subagents,
+        type: "enabled",
+        predefinedAgents: resolvedEntries,
+      },
+    },
+  };
 }
 
 export interface AgentsApplicationServiceDependencies {
@@ -574,7 +569,7 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       command.metadata === undefined
         ? current.metadata
         : patchMetadata(current.metadata, command.metadata);
-    const invalidMetadata = validateMetadata(metadata);
+    const invalidMetadata = command.metadata === undefined ? null : validateMetadata(metadata);
     if (invalidMetadata !== null) {
       return { type: "invalid_request", message: invalidMetadata };
     }
@@ -584,7 +579,8 @@ export class AgentsApplicationService implements AgentsApplicationPort {
         : command.mcpServers ?? [];
     const tools =
       command.tools === undefined ? current.tools : command.tools ?? [];
-    const invalidMcpConfiguration = validateMcpConfiguration(mcpServers, tools);
+    const invalidMcpConfiguration = command.mcpServers === undefined && command.tools === undefined
+      ? null : validateMcpConfiguration(mcpServers, tools);
     if (invalidMcpConfiguration !== null) {
       return { type: "invalid_request", message: invalidMcpConfiguration };
     }
@@ -596,6 +592,7 @@ export class AgentsApplicationService implements AgentsApplicationPort {
             this.dependencies.workspaceId,
             command.multiagent,
             { agentId: current.id, version: current.version + 1 },
+            current.multiagent ?? undefined,
           );
     if (resolvedMultiagent.type === "invalid_request") {
       return resolvedMultiagent;
@@ -653,6 +650,12 @@ export class AgentsApplicationService implements AgentsApplicationPort {
     const invalidModel = validateAgentModelCapacity(next.model);
     if (invalidModel !== null) {
       return { type: "invalid_request", message: invalidModel };
+    }
+
+    // No-op detection (official contract): an update that changes nothing
+    // relative to the current version returns that version unchanged.
+    if (sameAgentDefinition(current, next)) {
+      return { type: "updated", agent: current };
     }
 
     const result = await this.dependencies.store.replaceCurrent({
@@ -764,4 +767,22 @@ export class AgentsApplicationService implements AgentsApplicationPort {
       },
     };
   }
+}
+
+/** Compare two agent definitions ignoring version bookkeeping and key order. */
+function sameAgentDefinition(left: AgentView, right: AgentView): boolean {
+  const definition = ({ version: _version, updatedAt: _updatedAt, ...rest }: AgentView) => rest;
+  return canonicalJson(definition(left)) === canonicalJson(definition(right));
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item !== null && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.entries(item as Record<string, unknown>)
+            .filter(([, entry]) => entry !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : item,
+  );
 }

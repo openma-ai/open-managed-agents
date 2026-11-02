@@ -15,6 +15,11 @@ import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FacetedFilter } from "../components/FacetedFilter";
 import { FilterChip, CreatedFilterChip } from "../components/FilterChip";
 import { useI18n } from "../i18n";
+import {
+  DEFAULT_SANDBOX_IMAGE,
+  SandboxImageSelect,
+  useSandboxImages,
+} from "../components/SandboxImageSelect";
 
 type StatusValue = "any" | "active" | "archived";
 
@@ -29,7 +34,8 @@ export function EnvironmentsList() {
   const nav = useNavigate();
   const { t } = useI18n();
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "" });
+  const [form, setForm] = useState({ name: "", description: "", sandboxImage: DEFAULT_SANDBOX_IMAGE });
+  const sandboxImages = useSandboxImages();
 
   // Server-driven filter state. Each piece flows into envsParams below
   // → useInfiniteApiQuery resets to page 1 on params change → the list
@@ -70,8 +76,14 @@ export function EnvironmentsList() {
       name: form.name,
       config: { type: "cloud" },
       description: form.description || undefined,
+      // Omitted for the default image so the request stays plain CMA.
+      ...(form.sandboxImage !== DEFAULT_SANDBOX_IMAGE && {
+        _oma: { sandbox_image: form.sandboxImage },
+      }),
     });
-    setShowCreate(false); setForm({ name: "", description: "" }); load();
+    setShowCreate(false);
+    setForm({ name: "", description: "", sandboxImage: DEFAULT_SANDBOX_IMAGE });
+    load();
   };
 
   // TanStack column defs. Order, filtering, and search all flow through
@@ -252,6 +264,17 @@ export function EnvironmentsList() {
             </Select>
             <p className="text-xs text-fg-subtle mt-1">This cannot be changed after creation.</p>
           </div>
+          {sandboxImages.length > 0 && (
+            <div>
+              <Label htmlFor="env-create-sandbox-image" className="text-sm text-fg-muted block mb-1">Sandbox image</Label>
+              <SandboxImageSelect
+                id="env-create-sandbox-image"
+                images={sandboxImages}
+                value={form.sandboxImage}
+                onValueChange={(sandboxImage) => setForm({ ...form, sandboxImage })}
+              />
+            </div>
+          )}
           <div>
             <Label htmlFor="env-create-description" className="text-sm text-fg-muted block mb-1">Description <span className="text-fg-subtle">(optional)</span></Label>
             <Textarea

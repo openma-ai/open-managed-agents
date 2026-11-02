@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Full repository tests plus browser, storage and MySQL integration now
     # approach 20 minutes on GitHub runners; allow cleanup to finish.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -32,6 +32,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
+
+      - name: Check dependency sources before install
+        run: |
+          node --test scripts/check-dependency-sources.test.mjs
+          node scripts/check-dependency-sources.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

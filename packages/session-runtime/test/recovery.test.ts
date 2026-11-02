@@ -145,14 +145,44 @@ describe("recoverInterruptedState", () => {
       type: string;
       tool_use_id?: string;
       content?: string;
+      is_error?: boolean;
     }>;
     expect(events).toHaveLength(2);
     expect(events[1].type).toBe("agent.tool_result");
     expect(events[1].tool_use_id).toBe("use_orphan");
     expect(events[1].content).toMatch(/interrupted/i);
+    // A placeholder for a use that never completed is an aborted
+    // result, mirroring the stale-turn finalizer's is_error=true shape.
+    expect(events[1].is_error).toBe(true);
     // Placeholder appears AFTER the use, preserving causal order so the
     // next eventsToMessages projection sees a clean (use, result) pair.
     expect(events[0].type).toBe("agent.tool_use");
+  });
+
+  it("skipToolUseIds → parked always_ask/custom uses are left for the client's real answer", async () => {
+    f.log.append({
+      type: "agent.tool_use",
+      id: "use_parked",
+      name: "bash",
+      input: { command: "rm -rf /tmp/x" },
+    } as unknown as SessionEvent);
+    f.log.append({
+      type: "agent.tool_use",
+      id: "use_dead",
+      name: "bash",
+      input: { command: "ls" },
+    } as unknown as SessionEvent);
+
+    const report = await recoverInterruptedState(f.streams, f.log, {
+      skipToolUseIds: new Set(["use_parked"]),
+    });
+
+    expect(report.injectedToolResults).toEqual(["use_dead"]);
+    const results = f.allEvents().filter(
+      (e) => (e as { type?: string }).type === "agent.tool_result",
+    ) as Array<{ tool_use_id?: string }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].tool_use_id).toBe("use_dead");
   });
 
   it("orphan agent.mcp_tool_use → placeholder agent.mcp_tool_result injected with is_error=true", async () => {
@@ -396,5 +426,17 @@ describe("recoverInterruptedState", () => {
       tool_use_id: "cust_x",
       tool_name: "approve_purchase",
     });
+  });
+});
+
+// An unknown outcome is not evidence that a side effect did not happen.
+it.each(["agent.tool_use", "agent.mcp_tool_use"] as const)("reports an unknown %s outcome without recommending a blind retry", async (type) => {
+  const f = newFixture();
+  f.log.append({ type, id: "unknown-call", name: "bash", input: {} } as SessionEvent);
+  await recoverInterruptedState(f.streams, f.log);
+  const result = f.log.getEvents().find(e => e.type === (type === "agent.tool_use" ? "agent.tool_result" : "agent.mcp_tool_result"));
+  expect(result).toMatchObject({
+    is_error: true,
+    content: "Execution outcome is unknown: execution was interrupted, so completion cannot be confirmed. The operation may have taken effect. Verify the current state before repeating it.",
   });
 });

@@ -24,9 +24,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import net from "node:net";
 
+import { bootstrapModelCards, parseBootstrapConfig } from "./bootstrap-model-card.mjs";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SUPPORTED_PROVIDERS = new Set(["daytona", "litebox", "boxrun"]);
 const SECRET_ENV = /(key|token|secret|password|credential)/i;
+const MODEL_KEY_ENV = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"]);
+export const CHAOS_MODEL_ID = "claude-chaos-local";
+
+/** Workspace model card that routes the lab's agent to the local fixture. */
+export function chaosModelCardConfig(baseUrl, llmBaseUrl) {
+  return parseBootstrapConfig({
+    OMA_BASE_URL: baseUrl,
+    OMA_API_KEY: "openma-chaos-api-key",
+    ANTHROPIC_API_KEY: "openma-chaos-local-key",
+    ANTHROPIC_BASE_URL: llmBaseUrl.replace(/\/$/, ""),
+    OMA_MODEL_CARDS: CHAOS_MODEL_ID,
+  });
+}
 const execFileAsync = promisify(execFile);
 
 /**
@@ -61,12 +76,20 @@ export function parseProviderConfig(env = process.env) {
   };
 }
 
-/** Build the child process environment with isolated durable state. */
+/**
+ * Build the child process environment with isolated durable state. Model
+ * credentials are deliberately absent: OpenMA has no platform model key, so
+ * an inherited ANTHROPIC_* value is stripped and the fixture is installed as
+ * a workspace model card after startup (see chaosModelCardConfig).
+ */
 export function buildClusterEnv(baseEnv, options) {
   const root = resolve(options.root);
   const provider = options.provider.toLowerCase().replace(/^boxlite$/, "litebox");
+  const inherited = Object.fromEntries(
+    Object.entries(baseEnv).filter(([key]) => !MODEL_KEY_ENV.has(key)),
+  );
   return {
-    ...baseEnv,
+    ...inherited,
     HOST: "127.0.0.1",
     PORT: String(options.port),
     AUTH_DISABLED: "1",
@@ -77,8 +100,6 @@ export function buildClusterEnv(baseEnv, options) {
     MEMORY_BLOB_DIR: join(root, "memory-blobs"),
     SESSION_OUTPUTS_DIR: join(root, "session-outputs"),
     FILES_BLOB_DIR: join(root, "files-blobs"),
-    ANTHROPIC_API_KEY: "openma-chaos-local-key",
-    ANTHROPIC_BASE_URL: options.llmBaseUrl.replace(/\/$/, ""),
     DREAM_CURATOR_MODE: "dedup",
     SANDBOX_PROVIDER: provider,
   };
@@ -529,12 +550,13 @@ export async function runProviderChaos(options = {}) {
     report.steps.push({ id: "healthy-turn", status: "running" });
     runtime = spawnMainNode(childEnv);
     await waitForHealth(baseUrl, healthTimeoutMs);
+    await bootstrapModelCards(chaosModelCardConfig(baseUrl, llm.baseUrl));
 
     const agent = await requestJson(baseUrl, "/v1/oma/agents", {
       method: "POST",
       body: JSON.stringify({
         name: `provider-chaos-${config.provider}`,
-        model: "claude-chaos-local",
+        model: CHAOS_MODEL_ID,
         system: "Reply with the exact marker returned by the local fixture.",
         harness: "default",
         tools: [],

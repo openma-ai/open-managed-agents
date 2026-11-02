@@ -5,7 +5,8 @@ import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { MemorySessionThreadStore } from "../../../packages/session-thread-store-memory/src/index";
 import { DefaultNodeManagedSessionRunner, type DefaultNodeManagedSessionRunnerDependencies } from "../../../packages/control-plane-node/src/lib/node-managed-session-runner";
-import type { ManagedNodeSubagentControl } from "../../../packages/control-plane-node/src/lib/node-managed-subagents";
+import { resolveManagedSubagentSession, type ManagedNodeSubagentControl } from "../../../packages/control-plane-node/src/lib/node-managed-subagents";
+import { nodeOpenAISubagentPolicy } from "../../../packages/control-plane-node/src/openai-subagents";
 import type { ManagedNodeHarnessRuntime } from "../../../packages/control-plane-node/src/lib/node-managed-harness-runtime";
 
 const session: Session = {
@@ -29,8 +30,11 @@ type Context = {
 
 function fixture(run: (context: Context) => Promise<void>, store = new MemorySessionThreadStore(), options: {
   maxConcurrentSubagents?: number;
+  native?: boolean;
   output?(frame: Record<string, unknown>): Promise<void>;
 } = {}) {
+  const activeSession = structuredClone(session);
+  if (options.native) activeSession.agent.multiagent = { type: "multiagent_20261001", advisor: { type: "disabled" }, workflows: { type: "disabled" }, subagents: { type: "enabled", inlineAgents: { type: "enabled" }, predefinedAgents: [] } };
   const frames: Record<string, unknown>[] = [];
   const sandbox = { exec: async () => ({ stdout: "shared", stderr: "", exitCode: 0 }) } as unknown as SandboxExecutor;
   let id = 0;
@@ -45,16 +49,17 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
     clock: { now: () => new Date("2026-09-11T00:00:00Z") },
     ids: { nextEventId: () => `event_${++id}` },
     subagentThreads: store,
-    subagentPolicy: () => ({ enabled: true, maxConcurrentSubagents: options.maxConcurrentSubagents ?? 2 }),
+    subagentPolicy: options.native ? ({ session }) => nodeOpenAISubagentPolicy(session, {} as never) : () => ({ enabled: true, maxConcurrentSubagents: options.maxConcurrentSubagents ?? 2 }),
+    ...(options.native && { resolveSubagentSession: async ({ session, request }) => resolveManagedSubagentSession(session, request) }),
   };
   const runner = new DefaultNodeManagedSessionRunner(deps);
   return {
     runner, sandbox, frames, store,
     async run(history: SessionEventView[] = []) {
-      await runner.start({ workspaceId: "workspace", sessionId: session.id, session, environment, initialEvents: [] });
+      await runner.start({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment, initialEvents: [] });
       const message = { id: `input_${++id}`, type: "user.message" as const,
         content: [{ type: "text" as const, text: "Parent task" }], processedAt: session.createdAt };
-      await runner.accept({ workspaceId: "workspace", sessionId: session.id, session, environment,
+      await runner.accept({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment,
         initialEvents: [], historyEvents: [...history, message], events: [message],
         output: async (frame) => { frames.push(frame as Record<string, unknown>); await options.output?.(frame as Record<string, unknown>); } });
     },
@@ -62,6 +67,21 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
 }
 
 describe("Managed Node native subagents", () => {
+  it("executes an inline-only native session through the production policy and resolver", async () => {
+    const f = fixture(async ({ session: active, runtime, subagents, sandbox }) => {
+      if (active.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Inline", message: "Task" });
+        expect((await subagents!.wait({ threadIds: [child.threadId] })).subagents[0]).toMatchObject({ status: "completed", output: "Inline result" });
+      } else {
+        expect(active.agent.system).toBe("Parent instructions");
+        expect(active.agent.multiagent).toBeNull();
+        expect(subagents).toBeUndefined();
+        expect(await sandbox.exec("pwd")).toMatchObject({ stdout: "shared" });
+        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Inline result" }] });
+      }
+    }, undefined, { native: true });
+    await f.run();
+  });
   it("persists child identity and isolates its conversation while sharing the sandbox", async () => {
     let childId = "";
     const f = fixture(async ({ session: active, runtime, sandbox, subagents }) => {

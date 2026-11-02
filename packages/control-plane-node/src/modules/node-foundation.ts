@@ -20,7 +20,7 @@ import { createNodeLogger } from "@open-managed-agents/observability/logger/node
 import { createNodeMetricsRecorder, type NodeMetricsHandle } from "@open-managed-agents/observability/metrics/node";
 import { createNodeTracer, type NodeTracerHandle } from "@open-managed-agents/observability/tracer/node";
 import { setRootLogger, type Logger } from "@open-managed-agents/observability";
-import { createSqliteAgentService } from "@open-managed-agents/agents-store";
+import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
 import { createSqliteMemoryStoreService, SqlMemoryRepo } from "@open-managed-agents/memory-store";
 import { createSqliteDreamService } from "@open-managed-agents/dreams-store";
 import type { BlobStore } from "@open-managed-agents/blob-store";
@@ -30,7 +30,7 @@ import { createSqliteSessionService } from "@open-managed-agents/sessions-store"
 import { createSqliteFileService } from "@open-managed-agents/files-store";
 import { createSqliteEvalRunService } from "@open-managed-agents/evals-store";
 import { createSqliteEnvironmentService } from "@open-managed-agents/environments-store";
-import { createSqliteModelCardService } from "@open-managed-agents/model-cards-store";
+import { createSqliteModelCardService, resolveWorkspaceModelCredentials } from "@open-managed-agents/model-cards-store";
 
 import { SqlEventLog } from "@open-managed-agents/event-log/sql";
 import type { SessionEvent } from "@open-managed-agents/shared";
@@ -38,6 +38,7 @@ import { generateEventId } from "@open-managed-agents/shared";
 import { registerCoreHarnesses } from "@open-managed-agents/agent/harness/builtins";
 import { resolveHarness } from "@open-managed-agents/agent/harness/registry";
 import { buildTools } from "@open-managed-agents/agent/harness/tools";
+import { assertRuntimeAgentSnapshot } from "@open-managed-agents/agent/runtime/multiagent";
 import { createPiModelRuntime, toAiSdkLanguageModel } from "@open-managed-agents/agent/harness/pi-provider";
 import type { PiModelConfig } from "@open-managed-agents/agent/harness/pi-provider";
 
@@ -140,7 +141,7 @@ export async function createNodeFoundation(
 
   // ─── Stores ─────────────────────────────────────────────────────────────
 
-  const agentsService = createSqliteAgentService({ db: drizzleDb });
+  const agentStore = new SqlAgentStore(sql);
   const vaultService = createSqliteVaultService({ db: drizzleDb });
   const credentialService = createSqliteCredentialService({ db: drizzleDb });
   const sessionsService = createSqliteSessionService({ db: drizzleDb });
@@ -266,28 +267,42 @@ export async function createNodeFoundation(
   async function buildSandbox(
     sessionId: string,
     workdir: string,
+    scope: Pick<
+      import("@open-managed-agents/sandbox").SandboxFactoryContext,
+      "environmentId" | "workspaceId" | "image" | "preparedBase"
+    > = {},
   ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
     return components.sandbox(
       {
+        ...scope,
         sessionId,
         workdir,
         memoryRoot: memoryBlobLocalDir ?? "",
-        memoryWorkspace: {
-          getText: (key) => memoryBlobs.getText(key),
-          list: (prefix, cursor) => memoryBlobs.list(prefix, cursor),
-          put: (key, content) => memoryBlobs.put(key, content),
-          delete: (key) => memoryBlobs.delete(key),
-        },
         outputsRoot,
       },
       sandboxEnvironment,
     );
   }
 
+  /** A prepared-base builder: same factory and scope as a Session sandbox,
+   * deliberately without memory, outputs or any Session context, so nothing
+   * Session-owned can end up in the snapshot. */
+  async function buildPreparedBaseSandbox(
+    sessionId: string,
+    workdir: string,
+    scope: Pick<
+      import("@open-managed-agents/sandbox").SandboxFactoryContext,
+      "environmentId" | "workspaceId" | "image"
+    >,
+  ): Promise<import("@open-managed-agents/sandbox").SandboxExecutor> {
+    return components.sandbox({ ...scope, sessionId, workdir }, sandboxEnvironment);
+  }
+
   // ─── Session registry ───────────────────────────────────────────────────
 
-  /** Resolve agent.model (a model_id handle) → wire model + credentials.
-   *  Prefer a matching model card; fall back to ANTHROPIC_* env vars. */
+  /** Resolve agent.model (a model_id handle) → wire model + credentials from
+   *  the workspace's own model card. There is no platform key fallback: a
+   *  workspace without a matching card gets ModelCardNotConfiguredError. */
   async function resolveNodeModelCreds(
     tenantId: string,
     agentModel: string | {
@@ -304,39 +319,34 @@ export async function createNodeFoundation(
     piConfig?: PiModelConfig;
   }> {
     const handle = typeof agentModel === "string" ? agentModel : agentModel.id;
-    try {
-      const card = await modelCardsService.findByModelId({ tenantId, modelId: handle });
-      if (card && !card.archived_at) {
-        const key = await modelCardsService.getApiKey({ tenantId, cardId: card.id });
-        if (key) {
-          return {
-            wireModel: card.model,
-            apiKey: key,
-            baseURL: card.base_url ?? undefined,
-            provider: card.provider,
-            customHeaders: card.custom_headers ?? undefined,
-            piConfig: card.pi_config
-              ? card.pi_config as PiModelConfig
-              : undefined,
-          };
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[model-card] lookup failed, falling back to env: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    const apiKey = config.model.apiKey;
-    if (!apiKey) {
-      throw new Error(
-        "No model card matched and ANTHROPIC_API_KEY is unset — configure a model card or set the env var",
-      );
-    }
+    const creds = await resolveWorkspaceModelCredentials(modelCardsService, tenantId, handle);
     return {
-      wireModel: handle,
-      apiKey,
-      baseURL: config.model.baseUrl,
-      customHeaders: config.model.customHeaders,
+      wireModel: creds.wireModel,
+      apiKey: creds.apiKey,
+      baseURL: creds.baseURL,
+      provider: creds.provider,
+      customHeaders: creds.customHeaders,
+      piConfig: creds.piConfig as PiModelConfig | undefined,
+    };
+  }
+
+  /** Dream curation credentials: the same model-card resolution Sessions
+   *  use, keyed by the Dream's workspace and its requested model. */
+  async function resolveDreamModelCredentials(input: {
+    workspaceId: string;
+    modelId: string;
+  }): Promise<{
+    wireModel: string;
+    apiKey: string;
+    baseUrl?: string;
+    customHeaders?: Record<string, string>;
+  }> {
+    const creds = await resolveNodeModelCreds(input.workspaceId, input.modelId);
+    return {
+      wireModel: creds.wireModel,
+      apiKey: creds.apiKey,
+      ...(creds.baseURL !== undefined && { baseUrl: creds.baseURL }),
+      ...(creds.customHeaders !== undefined && { customHeaders: creds.customHeaders }),
     };
   }
 
@@ -384,7 +394,7 @@ export async function createNodeFoundation(
   const sessionRegistry = new SessionRegistry({
     sql,
     hub,
-    agentsService,
+    agentStore,
     memoryService,
     sandboxOrchestrator,
     newEventLog,
@@ -393,6 +403,7 @@ export async function createNodeFoundation(
     sqlDialect: dialect,
     buildModel: (agent, tenantId) => buildNodeLanguageModel(tenantId, agent.model),
     buildTools: async (agent, sandbox, tenantId, sessionId) => {
+      assertRuntimeAgentSnapshot(agent);
       const creds = await resolveNodeModelCreds(tenantId, agent.model);
       return buildTools(agent, sandbox, {
         ANTHROPIC_API_KEY: creds.apiKey,
@@ -413,6 +424,7 @@ export async function createNodeFoundation(
       };
     },
     buildHarnessContext: async (input) => {
+      assertRuntimeAgentSnapshot(input.agent);
       const creds = await resolveNodeModelCreds(input.tenantId, input.agent.model);
       const pi = createPiModelRuntime({
         model: creds.wireModel,
@@ -491,7 +503,7 @@ export async function createNodeFoundation(
     openAIAgentsSecrets,
     authDisabled,
     auth,
-    agentsService,
+    agentStore,
     vaultService,
     credentialService,
     sessionsService,
@@ -512,7 +524,9 @@ export async function createNodeFoundation(
     hub,
     realtimeDescription,
     buildSandbox,
+    buildPreparedBaseSandbox,
     resolveNodeModelCreds,
+    resolveDreamModelCredentials,
     buildNodeLanguageModel,
     sessionRegistry,
   };

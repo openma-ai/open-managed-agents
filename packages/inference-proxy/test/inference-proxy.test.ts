@@ -5,10 +5,18 @@ import {
   buildHostedInferenceBaseUrl,
   copyInboundHeadersForUpstream,
   extractHostedInferenceProxyToken,
-  forwardHostedInferenceRequest,
+  planHostedInferenceRequest,
+  type HostedInferenceRequestInput,
   INBOUND_CREDENTIAL_HEADER_NAMES,
   resolveUpstreamInferenceUrl,
 } from "../src/index";
+
+/** Hand the plan to `fetcher` the way the HTTP route layer sends it. */
+async function sendPlan({ fetcher, ...input }: HostedInferenceRequestInput & { fetcher: typeof fetch }): Promise<Response> {
+  const plan = planHostedInferenceRequest(input);
+  if (plan instanceof Response) return plan;
+  return fetcher(plan.url, { method: plan.method, headers: plan.headers, body: plan.body });
+}
 
 describe("hosted inference proxy helpers", () => {
   it("builds a session-scoped gateway URL on the OpenMA origin", () => {
@@ -118,7 +126,7 @@ describe("hosted inference proxy helpers", () => {
 
   it("forwards with the resolved model-card bearer and no inbound credentials", async () => {
     const fetcher = vi.fn(async () => new Response("ok", { status: 200 }));
-    const response = await forwardHostedInferenceRequest({
+    const response = await sendPlan({
       upstream: {
         wireModel: "deepseek-chat",
         apiKey: "upstream-key",
@@ -158,7 +166,7 @@ describe("hosted inference proxy helpers", () => {
         upstreamBaseUrl: "https://api.deepseek.com/anthropic",
       },
     ];
-    await forwardHostedInferenceRequest({
+    await sendPlan({
       upstream: {
         wireModel: "deepseek-chat",
         apiKey: "upstream-key",
@@ -171,7 +179,7 @@ describe("hosted inference proxy helpers", () => {
       body: new TextEncoder().encode("{}").buffer,
       fetcher,
     });
-    await forwardHostedInferenceRequest({
+    await sendPlan({
       upstream: {
         wireModel: "deepseek-chat",
         apiKey: "upstream-key",
@@ -193,7 +201,7 @@ describe("hosted inference proxy helpers", () => {
 
   it("uses x-api-key for anthropic upstream providers", async () => {
     const fetcher = vi.fn(async () => new Response("ok", { status: 200 }));
-    await forwardHostedInferenceRequest({
+    await sendPlan({
       upstream: {
         wireModel: "claude-sonnet-4-6",
         apiKey: "upstream-key",

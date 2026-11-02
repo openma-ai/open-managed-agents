@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeAll } from "vitest";
+import { ensureModelCards } from "./_model-cards";
 import { DefaultHarness } from "../../apps/agent/src/harness/default-loop";
 import { registerHarness } from "../../apps/agent/src/harness/registry";
 import { getCfServicesForTenant } from "@open-managed-agents/services";
@@ -12,6 +13,8 @@ import {
   toolCallChunks,
 } from "../fakes/scripted-language-model";
 import { createScriptedMcpServer } from "../fakes/scripted-mcp-server";
+
+beforeAll(() => ensureModelCards(["managed-turn-model"]));
 
 const HEADERS = {
   "x-api-key": "test-key",
@@ -345,14 +348,17 @@ describe("managed turn MCP E2E", () => {
         name: `Managed MCP turn ${crypto.randomUUID()}`,
         model: "managed-turn-model",
         system: "Use the MCP echo tool.",
-        tools: [{ type: "agent_toolset_20260401" }],
-        harness: HARNESS_NAME,
+        tools: [
+          { type: "agent_toolset_20260401" },
+          { type: "mcp_toolset", mcp_server_name: "broken" },
+          { type: "mcp_toolset", mcp_server_name: "fake" },
+        ],
+        _oma: { harness: HARNESS_NAME },
         mcp_servers: [
           {
             name: "broken",
             type: "url",
             url: `${BROKEN_MCP_ORIGIN}/rpc`,
-            authorization_token: "broken-token",
           },
           { name: "fake", type: "url", url: `${MCP_ORIGIN}/rpc` },
         ],

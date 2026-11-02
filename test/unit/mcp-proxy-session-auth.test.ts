@@ -1,12 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { forwardHttpMcpProxyRequest } from "../../apps/main/src/routes/mcp-proxy";
+import { resolveProxyTargetByTenant, forwardHttpMcpProxyRequest } from "../../apps/main/src/routes/mcp-proxy";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("HTTP MCP proxy with a managed Work claim", () => {
+  it("selects a pinned child's same-name server and rejects other versions", async () => {
+    const source = { find: async () => ({ archivedAt: null, vaultIds: [], agent: {
+      id: "parent", version: 1,
+      mcpServers: [{ type: "url" as const, name: "docs", url: "https://parent.test/mcp", authorizationToken: "parent-token" }],
+      multiagent: { subagents: { type: "enabled" as const, predefinedAgents: [{ type: "agent", id: "child", version: 7,
+        mcpServers: [{ type: "url" as const, name: "docs", url: "https://child.test/mcp", authorizationToken: "child-token" }],
+      }] } },
+    } }) };
+    const services = { sessions: { get: async () => null } } as any;
+    expect(await resolveProxyTargetByTenant({} as any, services, "tenant", "session", "docs", source, undefined, { id: "child", version: 7 })).toMatchObject({ upstreamUrl: "https://child.test/mcp", upstreamToken: "child-token" });
+    expect(await resolveProxyTargetByTenant({} as any, services, "tenant", "session", "docs", source, undefined, { id: "child", version: 8 })).toBeNull();
+  });
   it("resolves MCP configuration from the v1 managed Session source", async () => {
     const upstream = vi.fn(async (request: Request) => {
       expect(request.url).toBe("https://linear.example/mcp");

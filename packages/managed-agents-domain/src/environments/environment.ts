@@ -24,6 +24,13 @@ export type EnvironmentConfig =
     }
   | { type: "self_hosted" };
 
+/** OpenMA-only Environment settings, carried on the wire as `_oma`. */
+export interface EnvironmentOpenMaExtensions {
+  /** Alias into the operator's SANDBOX_IMAGES catalog. Absent selects the
+   * deployment default image. Never a raw provider image reference. */
+  sandboxImage?: string;
+}
+
 export interface Environment {
   id: string;
   archivedAt: string | null;
@@ -34,4 +41,5 @@ export interface Environment {
   name: string;
   updatedAt: string;
   scope?: "organization" | "account";
+  openma?: EnvironmentOpenMaExtensions;
 }

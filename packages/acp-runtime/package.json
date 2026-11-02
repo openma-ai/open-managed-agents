@@ -12,6 +12,7 @@
     "./known-agents": "./src/known-agents.ts",
     "./native-state": "./src/native-state.ts",
     "./sandbox-agent": "./src/sandbox-agent.ts",
+    "./registry-pins": "./src/acp-registry-pins.ts",
     "./inference-config": "./src/inference/index.ts"
   },
   "scripts": {

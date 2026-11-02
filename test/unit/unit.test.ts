@@ -2,6 +2,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
 import { registerHarness, resolveHarness } from "../../apps/agent/src/harness/registry";
+import { registerTestHarnesses } from "../harnesses";
 
 // ============================================================
 // 1. Harness registry
@@ -71,7 +72,7 @@ describe("Tool building", () => {
         name: "Tool Test",
         model: "claude-sonnet-4-6",
         tools: toolConfig,
-        harness: harnessName,
+        _oma: { harness: harnessName },
       }),
     });
     return ((await agentRes.json()) as any).tools;
@@ -79,7 +80,8 @@ describe("Tool building", () => {
 
   it("default toolset enables all tools", async () => {
     const tools = await getToolNames([{ type: "agent_toolset_20260401" }]);
-    expect(tools).toEqual([{ type: "agent_toolset_20260401" }]);
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ type: "agent_toolset_20260401", configs: [] });
   });
 
   it("selective config is preserved", async () => {
@@ -98,14 +100,14 @@ describe("Tool building", () => {
     expect(ts.configs[0].name).toBe("bash");
   });
 
-  it("empty tools array defaults to full toolset", async () => {
+  it("omitted tools stay empty (official v1 contract)", async () => {
     const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({ name: "NoTools", model: "claude-sonnet-4-6" }),
     });
     const agent = (await agentRes.json()) as any;
-    expect(agent.tools).toEqual([{ type: "agent_toolset_20260401" }]);
+    expect(agent.tools).toEqual([]);
   });
 });
 
@@ -119,11 +121,11 @@ describe("Edge cases", () => {
   }
 
   async function createSession() {
-    registerHarness("noop", () => ({ async run() {} }));
+    registerTestHarnesses();
     const agentRes = await api("/v1/oma/agents", {
       method: "POST",
       headers: HEADERS,
-      body: JSON.stringify({ name: "Edge", model: "claude-sonnet-4-6", harness: "noop" }),
+      body: JSON.stringify({ name: "Edge", model: "claude-sonnet-4-6", _oma: { harness: "noop" } }),
     });
     const agent = (await agentRes.json()) as any;
     const envRes = await api("/v1/oma/environments", {

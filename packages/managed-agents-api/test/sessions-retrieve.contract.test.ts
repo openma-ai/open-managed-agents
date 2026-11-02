@@ -224,22 +224,27 @@ describe("Managed Agents API — GET /v1/sessions/:session_id", () => {
               ],
               tools: [resolvedTool],
               multiagent: {
-                type: "coordinator",
-                agents: [
-                  { type: "advisor", model: "claude-sonnet-5" },
-                  {
-                    type: "agent",
-                    id: "agent_reviewer",
-                    description: "Reviews changes",
-                    mcpServers: [],
-                    model: { id: "claude-sonnet-5" },
-                    name: "Reviewer",
-                    skills: [],
-                    system: null,
-                    tools: [resolvedTool],
-                    version: 4,
-                  },
-                ],
+                type: "multiagent_20261001",
+                advisor: { type: "disabled" },
+                subagents: {
+                  type: "enabled",
+                  inlineAgents: { type: "disabled" },
+                  predefinedAgents: [
+                    {
+                      type: "agent",
+                      id: "agent_reviewer",
+                      description: "Reviews changes",
+                      mcpServers: [],
+                      model: { id: "claude-sonnet-5" },
+                      name: "Reviewer",
+                      skills: [],
+                      system: null,
+                      tools: [resolvedTool],
+                      version: 4,
+                    },
+                  ],
+                },
+                workflows: { type: "disabled" },
               },
             },
           },
@@ -279,27 +284,32 @@ describe("Managed Agents API — GET /v1/sessions/:session_id", () => {
         },
       ],
       multiagent: {
-        type: "coordinator",
-        agents: [
-          { type: "advisor", model: "claude-sonnet-5" },
-          {
-            type: "agent",
-            id: "agent_reviewer",
-            name: "Reviewer",
-            skills: [],
-            tools: [
-              {
-                type: "agent_toolset_20260401",
-                configs: [],
-                default_config: {
-                  enabled: true,
-                  permission_policy: { type: "always_allow" },
+        type: "multiagent_20261001",
+        advisor: { type: "disabled" },
+        subagents: {
+          type: "enabled",
+          inline_agents: { type: "disabled" },
+          predefined_agents: [
+            {
+              type: "agent",
+              id: "agent_reviewer",
+              name: "Reviewer",
+              skills: [],
+              tools: [
+                {
+                  type: "agent_toolset_20260401",
+                  configs: [],
+                  default_config: {
+                    enabled: true,
+                    permission_policy: { type: "always_allow" },
+                  },
                 },
-              },
-            ],
-            version: 4,
-          },
-        ],
+              ],
+              version: 4,
+            },
+          ],
+        },
+        workflows: { type: "disabled" },
       },
     });
   });

@@ -275,6 +275,26 @@ describe("DaytonaSandbox", () => {
     expect(instance).toBeInstanceOf(DaytonaSandbox);
   });
 
+  it("factory prefers an Environment-selected catalog image over SANDBOX_IMAGE", async () => {
+    const { client } = fixture();
+    const selected = await sandboxFactory(
+      { sessionId: "session-image", workdir: "/w", image: { alias: "analytics", reference: "registry.example/analytics:1" } },
+      { DAYTONA_API_KEY: "key", SANDBOX_IMAGE: "image:2" },
+    );
+    await selected.exec("true");
+    expect(client.create).toHaveBeenCalledWith(expect.objectContaining({ image: "registry.example/analytics:1" }));
+    await selected.destroy();
+  });
+
+  it("factory rejects a prepared sandbox base", async () => {
+    const { client } = fixture();
+    await expect(sandboxFactory(
+      { sessionId: "session-base", workdir: "/w", preparedBase: { provider: "daytona", id: "base_1" } },
+      { DAYTONA_API_KEY: "key" },
+    )).rejects.toThrow("SANDBOX_PROVIDER=daytona cannot create a sandbox from a prepared base");
+    expect(client.create).not.toHaveBeenCalled();
+  });
+
   it("default logger callbacks remain usable", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

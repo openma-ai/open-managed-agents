@@ -1,3 +1,8 @@
+import { processSessionClocks, type SessionClockRegistry } from "@open-managed-agents/shared";
+import {
+  picoToCentsString,
+  type SessionBudgetGate,
+} from "@open-managed-agents/domain/sessions";
 import type { ModelMessage } from "ai";
 import type {
   HarnessRuntime,
@@ -242,6 +247,14 @@ export interface ManagedNodeHarnessRuntimeInput {
   output(frame: unknown): Promise<void>;
   clock: { now(): Date };
   ids: { nextEventId(): string };
+  /** When set, stamps come from the shared per-session clock (#398). */
+  sessionScope?: { workspaceId: string; sessionId: string };
+  sessionClocks?: SessionClockRegistry;
+  /** CMA coherent-turn steering source: mid-run inputs absorbed at the next
+   *  LLM/tool-call boundary (after-call), already stamped at consume. When
+   *  absent the harness does not advertise steering and mid-run inputs fall
+   *  back to drain-after-idle (their queued execution runs next). */
+  takeSteeringInputs?: () => Promise<SessionEventView[]>;
 }
 
 /** History is read back `ORDER BY processed_at` (millisecond precision) and
@@ -268,8 +281,29 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
   /** Number of `agent.*` events (tool calls, messages, thinking) produced so far:
    * a turn that produced none has no side effects and is safe to re-run. */
   agentEventCount = 0;
+  /** Tool calls the harness left for the client (custom tools / `ask`
+   * permission): the turn parks in requires_action on them. */
+  pendingConfirmations: string[] = [];
+  /** Advertised only when a steering source is wired (see input). */
+  readonly takeSteeringInputs?: () => Promise<SessionEvent[]>;
 
   constructor(private readonly input: ManagedNodeHarnessRuntimeInput) {
+    const take = input.takeSteeringInputs;
+    if (take !== undefined) {
+      this.takeSteeringInputs = async () => {
+        const steered = await take();
+        const out: SessionEvent[] = [];
+        for (const event of steered) {
+          const harnessEvent = toHarnessHistoryEvent(event);
+          // Joins this turn's context (and any re-run after a retry) in
+          // consume order; the harness also gets it for agent.steer.
+          this.history.append(harnessEvent);
+          this.applicationHistoryEvents.push(structuredClone(event));
+          out.push(harnessEvent);
+        }
+        return out;
+      };
+    }
     this.history = new ManagedNodeHistoryStore(
       input.initialEvents,
       input.events,
@@ -277,8 +311,32 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     this.sandbox = input.sandbox;
     this.abortSignal = input.abortSignal;
     this.applicationHistoryEvents = structuredClone(input.events);
-    this.nextStamp = createStrictlyIncreasingEventStamp(input.clock);
+    const scope = input.sessionScope;
+    this.nextStamp = scope
+      ? () => (input.sessionClocks ?? processSessionClocks).forSession(scope.workspaceId, scope.sessionId)
+        .stampIso(input.clock.now().getTime())
+      : createStrictlyIncreasingEventStamp(input.clock);
     this.usageLedger = createNodeHarnessUsageLedger();
+  }
+
+  private budgetGate: SessionBudgetGate | null = null;
+
+  /** Bind the execution's budget gate so usage snapshots carry list_cost. */
+  setBudgetGate(gate: SessionBudgetGate | null): void {
+    this.budgetGate = gate;
+  }
+
+  /** Session usage snapshot; `listCost` (whole cents) is present only when
+   * the model card is priced and the session has a budget. The amount is the
+   * session egress meter's total (all threads), not derived from history. */
+  usageSnapshot() {
+    const usage = ledgerToManagedSessionUsage(this.usageLedger);
+    if (this.budgetGate === null) return usage;
+    return {
+      ...usage,
+      listCost: { amountMinor: picoToCentsString(BigInt(this.budgetGate.list_cost_pico)), currency: "USD" as const },
+      list_cost_pico: this.budgetGate.list_cost_pico,
+    };
   }
 
   reportUsage = async (
@@ -288,7 +346,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     creditHarnessUsage(this.usageLedger, { input_tokens, output_tokens });
     this.broadcastProducedEvent({
       type: "session.usage",
-      usage: ledgerToManagedSessionUsage(this.usageLedger),
+      usage: this.usageSnapshot(),
     });
   };
 
@@ -339,7 +397,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     if (cc === 0 && cr === 0) return;
     this.broadcastProducedEvent({
       type: "session.usage",
-      usage: ledgerToManagedSessionUsage(this.usageLedger),
+      usage: this.usageSnapshot(),
     });
   }
 

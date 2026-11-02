@@ -59,6 +59,13 @@ export interface ListAgentVersionRecords {
   limit: number;
 }
 
+export interface CountAgentRecords {
+  workspaceId: string;
+  includeArchived: boolean;
+}
+
+export type DeleteAgentRecordResult = { type: "deleted" } | { type: "not_found" };
+
 export interface AgentStore {
   insert(input: InsertAgentRecord): Promise<AgentRecord>;
   findCurrent(input: FindCurrentAgentRecord): Promise<AgentRecord | null>;
@@ -67,4 +74,7 @@ export interface AgentStore {
   archiveCurrent(input: ArchiveAgentRecord): Promise<ArchiveAgentRecordResult>;
   listCurrent(input: ListAgentRecords): Promise<AgentRecord[]>;
   listVersions(input: ListAgentVersionRecords): Promise<AgentRecord[]>;
+  countCurrent(input: CountAgentRecords): Promise<number>;
+  /** Remove the current record and its whole history. */
+  deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult>;
 }

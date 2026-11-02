@@ -1,7 +1,7 @@
 // CF MAIN_DB schema (SQLite / D1).
 //
 // Holds: tenant, membership, user, session, account, verification,
-// agents, agent_versions, sessions, session_resources,
+// managed_agents, managed_agent_versions, sessions, session_resources,
 // session_memory_stores, memory_stores, memories, memory_versions,
 // memory_blob_poller_lease, vaults, credentials, model_cards,
 // environments, files, workspace_backups, runtimes, runtime_tokens,
@@ -11,7 +11,6 @@
 // emits migrations into apps/main/migrations/.
 
 export * from "./auth";
-export * from "./agents";
 export * from "./managed-agents";
 export * from "./sessions";
 export * from "./memory";

@@ -16,6 +16,7 @@ interface Session {
   agent: string;
   environment_id?: string;
   vault_ids: string[];
+  resources?: unknown[];
   status: string;
   archived_at: string | null;
   events: StoredEvent[];
@@ -102,6 +103,18 @@ export class FakeOma {
     if (parts[0] === "v1" && parts[1] === "environments" && parts.length === 2 && method === "GET") {
       return Response.json({ data: this.environments });
     }
+    if (parts[0] === "v1" && parts[1] === "environments" && parts.length === 3 && method === "GET") {
+      const environment = this.environments.find((e) => e.id === parts[2]);
+      return environment === undefined
+        ? Response.json({ error: "Environment not found" }, { status: 404 })
+        : Response.json(environment);
+    }
+    if (parts[0] === "v1" && parts[1] === "vaults" && parts.length === 3 && method === "GET") {
+      const vault = this.vaults.get(parts[2] ?? "");
+      return vault === undefined
+        ? Response.json({ error: "Vault not found" }, { status: 404 })
+        : Response.json({ id: parts[2], display_name: vault.name });
+    }
     if (parts[0] === "v1" && parts[1] === "vaults" && method === "POST") {
       if (parts.length === 2) {
         const displayName = (body as { display_name?: unknown }).display_name;
@@ -161,6 +174,7 @@ export class FakeOma {
           title: string;
           environment_id?: string;
           vault_ids?: string[];
+          resources?: unknown[];
         };
         if (typeof b.environment_id !== "string" || b.environment_id === "") {
           return Response.json({ error: "environment_id is required" }, { status: 400 });
@@ -169,6 +183,7 @@ export class FakeOma {
         const session = this.sessions.get(sid)!;
         if (b.environment_id !== undefined) session.environment_id = b.environment_id;
         session.vault_ids = b.vault_ids ?? [];
+        if (b.resources !== undefined) session.resources = b.resources;
         return Response.json(this.view(session));
       }
       const agent = url.searchParams.get("agent_id");

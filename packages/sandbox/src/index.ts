@@ -7,11 +7,13 @@ export type {
   SandboxCheckpointKind,
   SandboxCheckpointScope,
   SandboxPort,
+  SandboxPreparedBaseHandle,
+  SandboxFactoryCapabilities,
+  SandboxPreparedBasePort,
   SandboxExecutor,
   SandboxFactory,
   SandboxFactoryContext,
   SandboxFactoryEnv,
-  SandboxMemoryWorkspacePort,
   SandboxProviderPort,
   SandboxRuntimeCapabilities,
   SandboxRuntimeHandle,
@@ -24,6 +26,9 @@ export type {
 export {
   supportsDuplexProcess,
   supportsManagedWorkspaceLifecycle,
+  supportsPreparedBase,
+  withSandboxFactoryCapabilities,
+  rejectPreparedBase,
   supportsSandboxRuntime,
   supportsSessionOutputMount,
   supportsWorkspaceBackup,
@@ -67,12 +72,28 @@ export {
 
 export { createNoEnvironmentSandbox, isNoEnvironmentSandbox } from "./no-environment";
 export {
+  createSandboxImageCatalog,
+  EMPTY_SANDBOX_IMAGE_CATALOG,
+  parseSandboxImageCatalog,
+  rejectSandboxImageSelection,
+  resolveSandboxImage,
+  SandboxImageCatalogError,
+  SandboxImageUnavailableError,
+} from "./sandbox-images";
+export type {
+  ResolvedSandboxImage,
+  SandboxImageCatalog,
+  SandboxImageCatalogEntry,
+  SandboxImageCatalogListing,
+} from "./sandbox-images";
+export {
   buildAptScript,
   buildFullSetupScript,
   ENVIRONMENT_PACKAGE_PATHS,
   ensureEnvironmentPackages,
   hasEnvironmentPackages,
   parseExecResult,
+  UNKNOWN_EXIT_CODE,
 } from "./environment-packages";
 export type {
   EnvironmentPackages,

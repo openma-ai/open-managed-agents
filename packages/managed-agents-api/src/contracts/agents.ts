@@ -5,6 +5,7 @@ import type {
   AgentUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import type { VersionListParams } from "@anthropic-ai/sdk/resources/beta/agents/versions";
+import { acpRegistryRefError } from "@open-managed-agents/acp-runtime/registry-pins";
 import { z } from "zod";
 import {
   agentMcpServerInputSchema,
@@ -67,7 +68,10 @@ export type OpenMaMcpServerBody =
 export interface OpenMaAgentAcpBody {
   agent: {
     id?: string;
-    command: string;
+    /** Explicit process; exactly one of `command` or `registry` is set. */
+    command?: string;
+    /** Pinned ACP registry reference such as `claude-acp@0.94.0`. */
+    registry?: string;
     args?: string[];
     env?: Record<string, string | null>;
     cwd?: string;
@@ -111,14 +115,34 @@ export interface OpenMaAgentExtensionBody {
   enable_general_subagent?: boolean | null;
 }
 
-export type AgentCreateBody = Omit<OfficialAgentCreateBody, "model" | "mcp_servers"> & {
+type OpenMaAgentMultiagentBody = {
+  type: "multiagent_20261001";
+  advisor?: { type: "disabled" } | null;
+  subagents?:
+    | { type: "disabled" }
+    | {
+        type: "enabled";
+        inline_agents?: { type: "enabled" } | { type: "disabled" } | null;
+        predefined_agents?: Array<
+          | string
+          | { type: "agent"; id: string; version?: number }
+          | { type: "self" }
+        > | null;
+      }
+    | null;
+  workflows?: { type: "disabled" } | null;
+};
+
+export type AgentCreateBody = Omit<OfficialAgentCreateBody, "model" | "mcp_servers" | "multiagent"> & {
   model: OpenMaAgentModelBody;
   mcp_servers?: OpenMaMcpServerBody[];
+  multiagent?: OpenMaAgentMultiagentBody | null;
   _oma?: OpenMaAgentExtensionBody;
 };
-export type AgentUpdateBody = Omit<OfficialAgentUpdateBody, "model" | "mcp_servers"> & {
+export type AgentUpdateBody = Omit<OfficialAgentUpdateBody, "model" | "mcp_servers" | "multiagent"> & {
   model?: OpenMaAgentModelBody;
   mcp_servers?: OpenMaMcpServerBody[] | null;
+  multiagent?: OpenMaAgentMultiagentBody | null;
   _oma?: OpenMaAgentExtensionBody;
 };
 
@@ -166,12 +190,21 @@ const agentAcpSchema: z.ZodType<OpenMaAgentAcpBody> = z
     agent: z
       .object({
         id: z.string().min(1).optional(),
-        command: z.string().min(1),
+        command: z.string().min(1).optional(),
+        registry: z.string().min(1).optional(),
         args: z.array(z.string()).optional(),
         env: z.record(z.string(), z.string().nullable()).optional(),
         cwd: z.string().min(1).optional(),
       })
-      .strict(),
+      .strict()
+      .refine((agent) => (agent.command === undefined) !== (agent.registry === undefined), {
+        message: "ACP agent requires exactly one of command or registry",
+      })
+      .superRefine((agent, context) => {
+        // Same pinned catalog the sandbox install resolves; reject at save time.
+        const error = agent.registry === undefined ? undefined : acpRegistryRefError(agent.registry);
+        if (error) context.addIssue({ code: "custom", path: ["registry"], message: error });
+      }),
     restart: z
       .object({
         mode: z.enum(["never", "on-crash", "always"]),

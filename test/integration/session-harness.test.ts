@@ -2,88 +2,12 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import { env, exports } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { registerHarness } from "../../apps/agent/src/harness/registry";
-import type { HarnessInterface, HarnessContext } from "../../apps/agent/src/harness/interface";
+import { ensureModelCards } from "./_model-cards";
+import { registerTestHarnesses } from "../harnesses";
 
-// ---------- Test Harnesses ----------
-registerHarness("multi-msg", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg1" }] });
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg2" }] });
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "msg3" }] });
-  },
-}));
+beforeAll(() => ensureModelCards(["claude-sonnet-4-6"]));
 
-registerHarness("thinking-harness", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({ type: "agent.thinking" });
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "after thinking" }] });
-  },
-}));
-
-registerHarness("tool-harness", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({ type: "agent.tool_use", id: "tc_1", name: "bash", input: { command: "ls" } });
-    ctx.runtime.broadcast({ type: "agent.tool_result", tool_use_id: "tc_1", content: "exit=0\nfile1.txt" });
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "found files" }] });
-  },
-}));
-
-registerHarness("delayed-harness", () => ({
-  async run(ctx) {
-    await new Promise((r) => setTimeout(r, 200));
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "delayed response" }] });
-  },
-}));
-
-registerHarness("partial-crash", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "before crash" }] });
-    throw new Error("partial crash");
-  },
-}));
-
-registerHarness("history-reader", () => ({
-  async run(ctx) {
-    const count = ctx.runtime.history.getMessages().length;
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: `msgs=${count}` }],
-    });
-  },
-}));
-
-registerHarness("config-reader", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: `system=${ctx.agent.system || "none"}` }],
-    });
-  },
-}));
-
-registerHarness("system-prompt-reader", () => ({
-  async run(ctx) {
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: ctx.systemPrompt }],
-    });
-  },
-}));
-
-registerHarness("usage-reporter", () => ({
-  async run(ctx) {
-    if (ctx.runtime.reportUsage) {
-      await ctx.runtime.reportUsage(100, 50);
-    }
-    ctx.runtime.broadcast({
-      type: "agent.message",
-      content: [{ type: "text", text: "usage reported" }],
-    });
-  },
-}));
-
-registerHarness("sh-noop", () => ({ async run() {} }));
+registerTestHarnesses();
 
 // ---------- Helpers ----------
 const H = { "x-api-key": "test-key", "Content-Type": "application/json" };
@@ -133,7 +57,7 @@ async function createSessionWith(harnessName: string, extra?: Record<string, unk
   const a = await post("/v1/oma/agents", {
     name: `H-${harnessName}-${Date.now()}`,
     model: "claude-sonnet-4-6",
-    harness: harnessName,
+    _oma: { harness: harnessName },
     ...extra,
   });
   const e = await post("/v1/oma/environments", {
@@ -209,6 +133,26 @@ describe("Harness execution flow", () => {
     expect(trIdx).toBeLessThan(amIdx);
   });
 
+  // #398 bug 3 (two_clients FOREVER_NULL): pending calls already closed by an
+  // agent.tool_result must not be listed in the requires_action idle.
+  it("requires_action idle lists only calls still open after the run", async () => {
+    const sessionId = await createSessionWith("stale-pending-partial");
+    await postAndWait(sessionId, "go");
+    await waitForIdle(sessionId);
+    const events = await collectReplayedEvents(sessionId);
+    const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
+    expect(idle?.stop_reason).toMatchObject({ type: "requires_action", event_ids: ["ctu_b"] });
+  });
+
+  it("all pending calls closed during the run -> end_turn, not requires_action", async () => {
+    const sessionId = await createSessionWith("stale-pending-all");
+    await postAndWait(sessionId, "go");
+    await waitForIdle(sessionId);
+    const events = await collectReplayedEvents(sessionId);
+    const idle = events.filter((e) => e.type === "session.status_idle").at(-1);
+    expect(idle?.stop_reason?.type).toBe("end_turn");
+  });
+
   it("delayed harness completes and session returns to idle", async () => {
     const sessionId = await createSessionWith("delayed-harness");
     await postAndWait(sessionId, "wait", 500);
@@ -234,18 +178,13 @@ describe("Harness execution flow", () => {
   });
 
   it("crash harness emits error event with message", async () => {
-    registerHarness("crash-sh", () => ({
-      async run() {
-        throw new Error("sh crash");
-      },
-    }));
     const sessionId = await createSessionWith("crash-sh");
     await postAndWait(sessionId, "crash", 600);
     await waitForIdle(sessionId);
     const events = await collectReplayedEvents(sessionId);
     const errorEvent = events.find((e) => e.type === "session.error");
     expect(errorEvent).toBeTruthy();
-    expect(errorEvent.error).toContain("sh crash");
+    expect(errorEvent.error.message).toContain("sh crash");
   });
 
   it("partial crash harness emits message AND error event both in replay", async () => {
@@ -258,7 +197,7 @@ describe("Harness execution flow", () => {
     expect(agentMsg.content[0].text).toBe("before crash");
     const errorEvent = events.find((e) => e.type === "session.error");
     expect(errorEvent).toBeTruthy();
-    expect(errorEvent.error).toContain("partial crash");
+    expect(errorEvent.error.message).toContain("partial crash");
   });
 
   it("session recovers after error and new message works", async () => {
@@ -356,15 +295,6 @@ describe("Harness context access", () => {
   });
 
   it("harness receives userMessage content correctly", async () => {
-    registerHarness("echo-user-input", () => ({
-      async run(ctx) {
-        const text = ctx.userMessage.content[0].text;
-        ctx.runtime.broadcast({
-          type: "agent.message",
-          content: [{ type: "text", text: `echo: ${text}` }],
-        });
-      },
-    }));
     const sessionId = await createSessionWith("echo-user-input");
     await postAndWait(sessionId, "hello world", 600);
     await waitForIdle(sessionId);
@@ -428,7 +358,7 @@ describe("Status transitions", () => {
   });
 
   it("status includes agent_id from init", async () => {
-    const a = await post("/v1/oma/agents", { name: "StatusAgent", model: "claude-sonnet-4-6", harness: "sh-noop" });
+    const a = await post("/v1/oma/agents", { name: "StatusAgent", model: "claude-sonnet-4-6", _oma: { harness: "sh-noop" } });
     const agent = (await a.json()) as any;
     const e = await post("/v1/oma/environments", { name: `status-env-${Date.now()}`, config: { type: "cloud" } });
     const envObj = (await e.json()) as any;
@@ -563,15 +493,6 @@ describe("Harness integration — additional scenarios", () => {
   });
 
   it("session with echo harness returns expected text", async () => {
-    registerHarness("exact-echo-sh", () => ({
-      async run(ctx) {
-        const text = ctx.userMessage.content[0]?.text || "";
-        ctx.runtime.broadcast({
-          type: "agent.message",
-          content: [{ type: "text", text: `echo: ${text}` }],
-        });
-      },
-    }));
     const sessionId = await createSessionWith("exact-echo-sh");
     await postAndWait(sessionId, "hello world", 600);
     await waitForIdle(sessionId);
@@ -582,15 +503,6 @@ describe("Harness integration — additional scenarios", () => {
   });
 
   it("harness can access userMessage content blocks count", async () => {
-    registerHarness("content-reader-sh", () => ({
-      async run(ctx) {
-        const blocks = ctx.userMessage.content.length;
-        ctx.runtime.broadcast({
-          type: "agent.message",
-          content: [{ type: "text", text: `blocks=${blocks}` }],
-        });
-      },
-    }));
     const sessionId = await createSessionWith("content-reader-sh");
     await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{ type: "user.message", content: [
@@ -607,7 +519,7 @@ describe("Harness integration — additional scenarios", () => {
   });
 
   it("session title is preserved through harness execution", async () => {
-    const a = await post("/v1/oma/agents", { name: "TitleKeep", model: "claude-sonnet-4-6", harness: "sh-noop" });
+    const a = await post("/v1/oma/agents", { name: "TitleKeep", model: "claude-sonnet-4-6", _oma: { harness: "sh-noop" } });
     const e = await post("/v1/oma/environments", { name: "titlekeep-env", config: { type: "cloud" } });
     const s = await post("/v1/oma/sessions", {
       agent: ((await a.json()) as any).id,

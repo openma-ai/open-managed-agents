@@ -24,8 +24,9 @@ const session: Session = {
       speed: "fast",
     },
     multiagent: {
-      type: "coordinator",
-      agents: [
+      type: "multiagent_20261001",
+      advisor: { type: "disabled" }, workflows: { type: "disabled" },
+      subagents: { type: "enabled", inlineAgents: { type: "enabled" }, predefinedAgents: [
         {
           type: "agent",
           id: "agent_reviewer",
@@ -38,8 +39,7 @@ const session: Session = {
           tools: [],
           version: 7,
         },
-        { type: "advisor", model: "claude-haiku-4-5" },
-      ],
+      ] },
     },
     name: "Coordinator",
     openma: {
@@ -259,15 +259,11 @@ describe("managed Agent to legacy Node harness codec", () => {
         { type: "url", name: "docs", url: "https://mcp.example.test" },
       ],
       skills: [{ type: "custom", skill_id: "skill_review", version: "3" }],
-      callable_agents: [
-        { type: "agent", id: "agent_reviewer", version: 7 },
-      ],
       multiagent: {
-        type: "coordinator",
-        agents: [
-          { type: "agent", id: "agent_reviewer", version: 7 },
-          { type: "advisor", model: "claude-haiku-4-5" },
-        ],
+        type: "multiagent_20261001", advisor: { type: "disabled" }, workflows: { type: "disabled" },
+        subagents: { type: "enabled", inline_agents: { type: "enabled" }, predefined_agents: [
+          { type: "agent", id: "agent_reviewer", version: 7, created_at: "2026-08-26T00:00:00.000Z", updated_at: "2026-08-26T00:00:01.000Z", name: "Reviewer", model: { id: "claude-sonnet-4-6" }, system: "", tools: [], skills: [], mcp_servers: [] },
+        ] },
       },
       aux_model: {
         id: "deepseek-chat",

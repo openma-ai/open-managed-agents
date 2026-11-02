@@ -17,7 +17,15 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectOption } from "../components/Select";
 import { toast } from "sonner";
 import { Page } from "../components/Page";
+import { OpenmaStartupLoader } from "../components/OpenmaStartupLoader";
 import { Field } from "../components/Field";
+import {
+  DEFAULT_SANDBOX_IMAGE,
+  SandboxImageSelect,
+  sandboxImageWireValue,
+  useSandboxImages,
+} from "../components/SandboxImageSelect";
+import type { OpenMaEnvironment } from "../lib/managed-api";
 
 // =================================================================
 // Types
@@ -40,7 +48,7 @@ interface NetworkingConfig {
   allow_package_managers?: boolean;
 }
 
-type Env = BetaEnvironment;
+type Env = BetaEnvironment & Pick<OpenMaEnvironment, "_oma">;
 
 // Local editor row shapes — packages and metadata both use ordered
 // row arrays so the UI keeps a stable visual position while editing,
@@ -83,6 +91,8 @@ export function EnvironmentDetail() {
   const [allowedHostsText, setAllowedHostsText] = useState("");
   const [packageRows, setPackageRows] = useState<PackageRow[]>([]);
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
+  const [sandboxImage, setSandboxImage] = useState(DEFAULT_SANDBOX_IMAGE);
+  const sandboxImages = useSandboxImages();
   // Initial load via TQ. Re-renders when the cache is populated; the
   // applyEnv side-effect below seeds the editable form state once per
   // fetched payload (id changes between renders → form re-seeds).
@@ -125,6 +135,7 @@ export function EnvironmentDetail() {
     setPackageRows(packagesToRows(cloud?.packages));
 
     setMetadataRows(metadataToRows(e.metadata));
+    setSandboxImage(e._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE);
   }
 
   async function save() {
@@ -140,11 +151,16 @@ export function EnvironmentDetail() {
             }
           : { type: "self_hosted" };
 
-      const body: EnvironmentUpdateParams = {
+      const storedImage = env._oma?.sandbox_image ?? DEFAULT_SANDBOX_IMAGE;
+      const body: EnvironmentUpdateParams & { _oma?: { sandbox_image: string | null } } = {
         name: name.trim(),
         description: description.trim() || null,
         config,
         metadata: rowsToMetadataPatch(env.metadata, metadataRows),
+        // Only sent when changed, so an untouched form stays plain CMA.
+        ...(sandboxImage !== storedImage && {
+          _oma: { sandbox_image: sandboxImageWireValue(sandboxImage) },
+        }),
       };
 
       const updated = await managedApi.environments.update(id, body);
@@ -172,7 +188,7 @@ export function EnvironmentDetail() {
     );
   }
   if (!env) {
-    return <div className="flex-1 p-8 text-fg-muted">Loading...</div>;
+    return <div className="flex flex-1 items-center justify-center p-8"><OpenmaStartupLoader /></div>;
   }
 
   return (
@@ -217,6 +233,28 @@ export function EnvironmentDetail() {
             />
           </div>
         </section>
+
+        {/* Sandbox image — only when the operator publishes a catalog (or the
+            environment still references a since-removed alias). */}
+        {env.config.type === "cloud" &&
+          (sandboxImages.length > 0 || sandboxImage !== DEFAULT_SANDBOX_IMAGE) && (
+          <SectionCard
+            title="Sandbox image"
+            subtitle="Operator-provided image sandboxes start from. Pick one with your tools pre-installed to skip setup at session start."
+          >
+            <Label className="block text-sm font-medium text-fg mb-1.5" htmlFor="env-sandbox-image">
+              Image
+            </Label>
+            <div className="w-full sm:w-72">
+              <SandboxImageSelect
+                id="env-sandbox-image"
+                images={sandboxImages}
+                value={sandboxImage}
+                onValueChange={setSandboxImage}
+              />
+            </div>
+          </SectionCard>
+        )}
 
         {/* Networking */}
         <SectionCard

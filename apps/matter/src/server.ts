@@ -13,6 +13,7 @@
 import { mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
+import { createRepositoryCredentialHandler } from "./repository-credential.js";
 import {
   createFeishuConnectHandler,
   FeishuConnectService,
@@ -24,10 +25,14 @@ import { connectFeishuApp, createFeishuAdapter } from "./feishu-adapter.js";
 import {
   connectGitLab,
   createGitLabAdapter,
+  createGitLabBot,
   createGitLabConnectHandler,
   createGitLabWebhookHandler,
+  parseBaseUrl,
+  replaceGitLabToken,
 } from "./gitlab-adapter.js";
 import { createMatterHost, type MatterHost, type MatterHostOptions } from "./host.js";
+import { createLoopApiHandler, migrateConnectionsToLoops } from "./loops-api.js";
 import { createMatterMcpHandler } from "./mcp-server.js";
 import { createOmaClient, type OmaClient } from "./oma-client.js";
 import {
@@ -69,6 +74,9 @@ export interface MatterConfig {
   /** Where providers that call in (GitLab webhooks) reach this service;
    * unset, "Connect GitLab" returns the webhook path only. */
   readonly publicUrl?: string;
+  /** GitLab instances offered when linking a Bond (`MATTER_GITLAB_URLS`,
+   * comma-separated); users can still enter another address. */
+  readonly gitlabUrls?: readonly string[];
 }
 
 export class MatterConfigError extends Error {
@@ -119,6 +127,15 @@ export const loadMatterConfig = (env: NodeJS.ProcessEnv): MatterConfig => {
   if (!Number.isInteger(reconcileMs) || reconcileMs < 1000) {
     problems.push(`MATTER_RECONCILE_MS must be at least 1000; received ${JSON.stringify(reconcileRaw)}`);
   }
+  const gitlabUrls = (env.MATTER_GITLAB_URLS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "")
+    .map((value) => {
+      const parsed = parseBaseUrl(value);
+      if (parsed === undefined) problems.push(`MATTER_GITLAB_URLS has an invalid URL: ${JSON.stringify(value)}`);
+      return parsed ?? "";
+    });
   const config: MatterConfig = {
     host,
     port,
@@ -133,6 +150,7 @@ export const loadMatterConfig = (env: NodeJS.ProcessEnv): MatterConfig => {
     mcpUrl: url("MATTER_MCP_URL", `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}/mcp`),
     ...(env.OMA_ENVIRONMENT_ID ? { environmentId: env.OMA_ENVIRONMENT_ID } : {}),
     ...(env.MATTER_PUBLIC_URL ? { publicUrl: url("MATTER_PUBLIC_URL") } : {}),
+    ...(gitlabUrls.length > 0 ? { gitlabUrls } : {}),
   };
   if (problems.length > 0) throw new MatterConfigError(problems);
   return config;
@@ -168,7 +186,7 @@ export const openConfiguredDatabase = async (
 /** Everything but the listener, so tests drive it with plain Requests. */
 export const createMatterService = async (
   config: MatterConfig,
-  overrides: Partial<Pick<MatterHostOptions, "onError">> & {
+  overrides: Partial<Pick<MatterHostOptions, "onError" | "onStarted" | "scheduleTimers">> & {
     /** Reaches the providers (Feishu, GitLab); tests pass a fake. */
     readonly fetch?: typeof fetch;
     readonly createWsClient?: FeishuLongConnectionOptions["createClient"];
@@ -179,6 +197,7 @@ export const createMatterService = async (
   } = {},
 ): Promise<MatterService> => {
   const db = overrides.db ?? (await openConfiguredDatabase(config));
+  await migrateConnectionsToLoops(db);
   const omaFetch = overrides.omaFetch === undefined ? {} : { fetch: overrides.omaFetch };
   const accepts = (tenantId: string) => config.omaTenantId === undefined || tenantId === config.omaTenantId;
   const clients = new Map<string, OmaClient>();
@@ -230,6 +249,8 @@ export const createMatterService = async (
       overrides.onError ??
       ((error, key) =>
         console.error(`[matter] ${key}:`, error instanceof Error ? error.message : error)),
+    onStarted: overrides.onStarted ?? ((_key, label) => console.log(`[matter] ${label}: started`)),
+    ...(overrides.scheduleTimers === undefined ? {} : { scheduleTimers: overrides.scheduleTimers }),
   });
   const connectFeishu = connectFeishuApp(host, { db, ...providerFetch });
   const proxied = trustedProxyPrincipal(config.proxySecret);
@@ -246,20 +267,37 @@ export const createMatterService = async (
       return principal !== null && accepts(principal.tenantId) ? principal : null;
     },
   });
-  const connectGitLabHandler = createGitLabConnectHandler({
-    connect: connectGitLab(host, {
-      db,
-      ...providerFetch,
-      ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
-    }),
+  const gitlabLink = {
     db,
+    ...providerFetch,
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+    ...(config.gitlabUrls === undefined ? {} : { presets: config.gitlabUrls }),
+  };
+  const connectGitLabHandler = createGitLabConnectHandler({
+    connect: connectGitLab(host, gitlabLink),
+    createBot: createGitLabBot(host, gitlabLink),
+    replaceToken: replaceGitLabToken(host, gitlabLink),
+    db,
+    ...(config.gitlabUrls === undefined ? {} : { presets: config.gitlabUrls }),
     authorize: async (request) => {
       const principal = await proxied(request);
       return principal !== null && accepts(principal.tenantId) ? principal : null;
     },
   });
+  const loopApi = createLoopApiHandler({
+    db,
+    host,
+    feishuConnect,
+    authorize: async (request) => {
+      const principal = await proxied(request);
+      return principal !== null && accepts(principal.tenantId) ? principal : null;
+    },
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+    ...providerFetch,
+  });
   const gitlabWebhooks = createGitLabWebhookHandler(gitlab, (key) => host.ensure(gitlab.kind, key));
   const mcp = createMatterMcpHandler({ bridge, tokens: db.tokens });
+  const repositoryCredential = createRepositoryCredentialHandler({ db, secret: config.proxySecret, accepts });
 
   const fetchHandler = async (request: Request): Promise<Response> => {
     const path = new URL(request.url).pathname;
@@ -268,8 +306,10 @@ export const createMatterService = async (
     }
     if (path === "/mcp") return mcp(request);
     return (
+      (await repositoryCredential(request)) ??
       (await gitlabWebhooks(request)) ??
       (await connectGitLabHandler(request)) ??
+      (await loopApi(request)) ??
       (await connect(request)) ??
       Response.json({ error: "not found" }, { status: 404 })
     );

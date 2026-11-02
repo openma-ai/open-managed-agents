@@ -3,6 +3,8 @@ import type {
   AgentStore,
   AgentRecord,
   ArchiveAgentRecord,
+  CountAgentRecords,
+  DeleteAgentRecordResult,
   ArchiveAgentRecordResult,
   FindAgentVersionRecord,
   FindCurrentAgentRecord,
@@ -18,7 +20,7 @@ interface AgentRow {
   config: string;
   version: number;
   created_at: number;
-  updated_at: number | null;
+  updated_at: number;
   archived_at: number | null;
 }
 
@@ -41,7 +43,7 @@ function toAgent(row: AgentRow): AgentRecord {
     id: row.id,
     version: Number(row.version),
     createdAt: new Date(Number(row.created_at)).toISOString(),
-    updatedAt: new Date(Number(row.updated_at ?? row.created_at)).toISOString(),
+    updatedAt: new Date(Number(row.updated_at)).toISOString(),
     archivedAt:
       row.archived_at === null
         ? null
@@ -103,7 +105,7 @@ export class SqlAgentStore implements AgentStore {
       )
       .bind(input.workspaceId, input.agentId, input.version)
       .first<AgentVersionRow>();
-    return row === null ? null : (JSON.parse(row.snapshot) as AgentRecord);
+    return row === null ? null : JSON.parse(row.snapshot) as AgentRecord;
   }
 
   async replaceCurrent(
@@ -186,14 +188,16 @@ export class SqlAgentStore implements AgentStore {
   async archiveCurrent(
     input: ArchiveAgentRecord,
   ): Promise<ArchiveAgentRecordResult> {
+    const current = await this.findCurrent(input);
+    if (current === null) return { type: "not_found" };
     const archivedAt = timestamp(input.archivedAt);
     const result = await this.client
       .prepare(
         `UPDATE managed_agents
-            SET archived_at = ?, updated_at = ?
-          WHERE workspace_id = ? AND id = ?`,
+            SET archived_at = ?, updated_at = ?, document = ?
+          WHERE workspace_id = ? AND id = ? AND version = ?`,
       )
-      .bind(archivedAt, archivedAt, input.workspaceId, input.agentId)
+      .bind(archivedAt, archivedAt, JSON.stringify({ ...current, archivedAt: input.archivedAt, updatedAt: input.archivedAt }), input.workspaceId, input.agentId, current.version)
       .run();
     if (result.meta.changes === 0) return { type: "not_found" };
     if (result.meta.changes !== 1) {
@@ -264,5 +268,29 @@ export class SqlAgentStore implements AgentStore {
     return (result.results ?? []).map(
       (row) => JSON.parse(row.snapshot) as AgentRecord,
     );
+  }
+
+  async countCurrent(input: CountAgentRecords): Promise<number> {
+    const row = await this.client
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM managed_agents
+          WHERE workspace_id = ?${input.includeArchived ? "" : " AND archived_at IS NULL"}`,
+      )
+      .bind(input.workspaceId)
+      .first<{ n: number | string }>();
+    return Number(row?.n ?? 0);
+  }
+
+  async deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult> {
+    const results = await this.client.batch([
+      this.client
+        .prepare("DELETE FROM managed_agent_versions WHERE workspace_id = ? AND agent_id = ?")
+        .bind(input.workspaceId, input.agentId),
+      this.client
+        .prepare("DELETE FROM managed_agents WHERE workspace_id = ? AND id = ?")
+        .bind(input.workspaceId, input.agentId),
+    ]);
+    return results[1]?.meta.changes === 1 ? { type: "deleted" } : { type: "not_found" };
   }
 }

@@ -6,6 +6,8 @@ import {
   createOmaClient,
   createOpenMAConnector,
   isOmaSessionUnavailable,
+  memoryCallStore,
+  NoActiveTurnError,
   OmaSessionUnavailableError,
   OperationCallBridge,
   SESSION_TITLE_PREFIX,
@@ -32,15 +34,14 @@ const message = (text: string) => ({
 let oma: FakeOma;
 let bridge: OperationCallBridge;
 
-const makeConnector = (extra: { vaultIds?: readonly string[] } = {}) =>
+const makeConnector = (extra: { vaultIds?: readonly string[]; bridge?: OperationCallBridge } = {}) =>
   createOpenMAConnector({
     client: createOmaClient({
       baseUrl: "https://oma.test/",
       apiKey: oma.apiKey,
       fetch: oma.fetch as typeof fetch,
     }),
-    bridge,
-    mcpServerName: SERVER,
+    bridge: extra.bridge ?? bridge,
     environmentId: "env_1",
     ...(extra.vaultIds === undefined
       ? {}
@@ -73,7 +74,7 @@ const respondOnMessage = (replies: readonly FakeEvent[]) => {
 
 beforeEach(() => {
   oma = new FakeOma();
-  bridge = new OperationCallBridge({ matchTimeoutMs: 2_000 });
+  bridge = new OperationCallBridge({ pickupTimeoutMs: 2_000, pollMs: 5 });
 });
 
 describe("open", () => {
@@ -192,29 +193,71 @@ describe("execute", () => {
     ]);
   });
 
-  it("reports a Matter MCP tool call as an operation call and answers the MCP caller", async () => {
+  /** Play the kernel: read the Turn, answer each operation call with `answer`. */
+  const runAsKernel = async (
+    connector: ReturnType<typeof makeConnector>,
+    handle: { connectorId: string; externalSessionId: string; placement: "managed" },
+    events: AsyncIterable<OpenMAEvent>,
+    answer: (callback: OpenMAEvent) => unknown | undefined,
+  ) => {
+    const out: OpenMAEvent[] = [];
+    for await (const event of events) {
+      out.push(event);
+      if (event.type === "callback.requested") {
+        const result = answer(event);
+        if (result !== undefined) {
+          const callbackId = (event.data as { callback_id: string }).callback_id;
+          await connector.send(handle, { type: "callback.respond", callbackId, result: result as never });
+        }
+      }
+    }
+    return out;
+  };
+
+  /** Like the claude-managed harness: the OpenMA stream stays silent while
+   * the MCP call runs; tool_use and tool_result are logged after it returns. */
+  const claudeManagedHarness = (
+    id: string,
+    mcp: OperationCallBridge,
+    input: Record<string, unknown>,
+  ) => {
+    let mcpResult: Promise<unknown> | undefined;
+    oma.responder = (_id, event) => {
+      if (event.type !== "user.message") return undefined;
+      mcpResult = mcp.call("matter-session-1", "feishu_message_reply", input as never).then(
+        (outcome) => {
+          oma.append(id, {
+            type: "agent.tool_use",
+            id: "toolu_1",
+            name: `mcp__${SERVER}__feishu_message_reply`,
+            input,
+          });
+          oma.append(id, { type: "agent.tool_result", tool_use_id: "toolu_1", content: JSON.stringify(outcome) });
+          oma.append(id, idle);
+          return outcome;
+        },
+        (error: unknown) => {
+          oma.append(id, idle);
+          throw error;
+        },
+      );
+      return [];
+    };
+    return () => mcpResult;
+  };
+
+  it("runs a Matter MCP call while the OpenMA stream is silent (claude-managed ordering)", async () => {
     const id = oma.createSession("t");
-    respondOnMessage([
-      {
-        type: "agent.mcp_tool_use",
-        id: "toolu_1",
-        mcp_server_name: SERVER,
-        name: `mcp__${SERVER}__feishu_message_reply`,
-        input: { markdown: "done" },
-      },
-    ]);
+    const mcpResult = claudeManagedHarness(id, bridge, { markdown: "done" });
     const connector = makeConnector();
     const handle = { connectorId: "openma", externalSessionId: id, placement: "managed" as const };
-    const iterator = connector.execute(handle, turn("turn-1"))[Symbol.asyncIterator]();
-
-    const started = await iterator.next();
-    expect(started.value?.type).toBe("tool.started");
-    const callback = (await iterator.next()).value as OpenMAEvent;
+    const events = await runAsKernel(connector, handle, connector.execute(handle, turn("turn-1")), () => ({
+      status: "succeeded",
+    }));
+    const callback = events.find((e) => e.type === "callback.requested")!;
     expect(callback).toMatchObject({
-      type: "callback.requested",
-      seq: 2,
+      seq: 1,
       data: {
-        callback_id: "toolu_1",
         method: OPERATION_CALL_METHOD,
         category: "extension",
         params: {
@@ -224,75 +267,99 @@ describe("execute", () => {
         },
       },
     });
+    expect((callback.data as { callback_id: string }).callback_id).toMatch(/^mcp_/);
     expect(typeof (callback.data as { fingerprint?: unknown }).fingerprint).toBe("string");
-
-    // The MCP endpoint receives the same call; key order does not matter.
-    const mcpCall = bridge.call("matter-session-1", "feishu_message_reply", { markdown: "done" });
-    await connector.send(handle, {
-      type: "callback.respond",
-      callbackId: "toolu_1",
-      result: { status: "succeeded" },
-    });
-    expect(await mcpCall).toEqual({ ok: true, result: { status: "succeeded" } });
-
-    oma.append(id, { type: "agent.mcp_tool_result", mcp_tool_use_id: "toolu_1", content: "ok" });
-    oma.append(id, idle);
-    const rest: string[] = [];
-    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-      rest.push(next.value.type);
-    }
-    expect(rest).toEqual(["tool.completed", "turn.completed"]);
-  });
-
-  it("reports a deferred call through mcp_invoke the same way", async () => {
-    const id = oma.createSession("t");
-    respondOnMessage([
-      {
-        type: "agent.tool_use",
-        id: "toolu_2",
-        name: "mcp_invoke",
-        input: {
-          tool_name: `mcp__${SERVER}__feishu_message_reply`,
-          arguments: { markdown: "via search" },
-        },
-      },
-      idle,
+    expect(await mcpResult()).toEqual({ ok: true, result: { status: "succeeded" } });
+    // The callback came before the harness logged the call at all.
+    expect(events.map((e) => e.type)).toEqual([
+      "callback.requested",
+      "tool.started",
+      "tool.completed",
+      "turn.completed",
     ]);
-    const events = await collect(
-      makeConnector().execute(
-        { connectorId: "openma", externalSessionId: id, placement: "managed" },
-        turn("turn-1"),
-      ),
+  });
+
+  it("runs a call received by another replica's bridge sharing the store", async () => {
+    const store = memoryCallStore();
+    const mcpReplica = new OperationCallBridge({ store, pickupTimeoutMs: 2_000, pollMs: 5 });
+    const turnReplica = new OperationCallBridge({ store, pickupTimeoutMs: 2_000, pollMs: 5 });
+    const id = oma.createSession("t");
+    const mcpResult = claudeManagedHarness(id, mcpReplica, { markdown: "across" });
+    const connector = makeConnector({ bridge: turnReplica });
+    const handle = { connectorId: "openma", externalSessionId: id, placement: "managed" as const };
+    const events = await runAsKernel(connector, handle, connector.execute(handle, turn("turn-1")), () => ({
+      status: "sent",
+    }));
+    expect(await mcpResult()).toEqual({ ok: true, result: { status: "sent" } });
+    expect(events.at(-1)?.type).toBe("turn.completed");
+    // The MCP side's tool list came from the Turn side through the store.
+    expect((await mcpReplica.tools("matter-session-1")).map((t) => t.name)).toEqual(["feishu.message.reply"]);
+  });
+
+  it("fails a call that arrives when no Turn is running, within the bounded wait", async () => {
+    const quick = new OperationCallBridge({ pickupTimeoutMs: 50, pollMs: 5 });
+    const started = Date.now();
+    await expect(quick.call("matter-session-1", "feishu_message_reply", {})).rejects.toBeInstanceOf(
+      NoActiveTurnError,
     );
-    const callback = events.find((e) => e.type === "callback.requested");
-    expect(callback?.data).toMatchObject({
-      callback_id: "toolu_2",
-      params: { operation: "message.reply", input: { markdown: "via search" } },
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("fails a call the kernel did not answer when the Turn ends", async () => {
+    const id = oma.createSession("t");
+    let mcpResult: Promise<unknown> | undefined;
+    oma.responder = (_id, event) => {
+      if (event.type !== "user.message") return undefined;
+      mcpResult = bridge.call("matter-session-1", "feishu_message_reply", { markdown: "x" });
+      return [];
+    };
+    const connector = makeConnector();
+    const handle = { connectorId: "openma", externalSessionId: id, placement: "managed" as const };
+    const events = await runAsKernel(connector, handle, connector.execute(handle, turn("turn-1")), () => {
+      // The kernel does not answer; the Turn ends (for example, cancelled).
+      setTimeout(() => oma.append(id, idle), 10);
+      return undefined;
+    });
+    expect(events.map((e) => e.type)).toEqual(["callback.requested", "turn.completed"]);
+    expect(await mcpResult).toEqual({
+      ok: false,
+      error: { message: "The Turn ended before this call was answered" },
     });
   });
 
-  it("ignores calls to other MCP servers and tools the Turn does not allow", async () => {
+  it("fails a call to a tool the Turn does not allow without reporting it", async () => {
+    const id = oma.createSession("t");
+    let mcpResult: Promise<unknown> | undefined;
+    oma.responder = (_id, event) => {
+      if (event.type !== "user.message") return undefined;
+      mcpResult = bridge.call("matter-session-1", "feishu_message_send", {}).finally(() => oma.append(id, idle));
+      return [];
+    };
+    const connector = makeConnector();
+    const handle = { connectorId: "openma", externalSessionId: id, placement: "managed" as const };
+    const events = await runAsKernel(connector, handle, connector.execute(handle, turn("turn-1")), () => null);
+    expect(events.some((e) => e.type === "callback.requested")).toBe(false);
+    expect(await mcpResult).toEqual({
+      ok: false,
+      error: { message: "feishu_message_send is not available in this Turn" },
+    });
+  });
+
+  it("does not treat tool-use events in the OpenMA log as Matter calls", async () => {
     const id = oma.createSession("t");
     respondOnMessage([
       {
         type: "agent.mcp_tool_use",
         id: "toolu_a",
-        mcp_server_name: "github",
-        name: "feishu_message_reply",
+        mcp_server_name: SERVER,
+        name: `mcp__${SERVER}__feishu_message_reply`,
         input: {},
       },
       {
         type: "agent.tool_use",
         id: "toolu_c",
         name: "mcp_invoke",
-        input: { tool_name: "mcp__github__feishu_message_reply", arguments: {} },
-      },
-      {
-        type: "agent.mcp_tool_use",
-        id: "toolu_b",
-        mcp_server_name: SERVER,
-        name: `mcp__${SERVER}__feishu_message_send`,
-        input: {},
+        input: { tool_name: `mcp__${SERVER}__feishu_message_reply`, arguments: {} },
       },
       idle,
     ]);

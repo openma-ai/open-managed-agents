@@ -29,9 +29,14 @@ function endpoint(
 export const DEFAULT_INFERENCE_ENDPOINT_CONTRIBUTORS: readonly InferenceEndpointContributor[] = [
   {
     providerIds: ["deepseek"],
-    endpoints: () => [
+    endpoints: ({ baseUrl }) => baseUrl == null ? [
       endpoint("openai-chat", "https://api.deepseek.com"),
       endpoint("anthropic-messages", "https://api.deepseek.com/anthropic"),
+    ] : [
+      // A configured DeepSeek base denotes its OpenAI-compatible endpoint.
+      // Do not infer an Anthropic sibling (or send its key to the public API).
+      // Deployments with both protocols must supply explicit protocolEndpoints.
+      endpoint("openai-chat", baseUrl),
     ],
   },
   {

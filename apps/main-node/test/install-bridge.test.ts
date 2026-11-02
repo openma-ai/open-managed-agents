@@ -10,7 +10,8 @@
 
 import { afterEach, describe, it, expect, beforeAll } from "vitest";
 import { bootstrapTestDb } from "./_helpers/bootstrap-test-db";
-import { createSqliteAgentService } from "@open-managed-agents/agents-store";
+import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
+import { seedAgent } from "./seed-agent";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
 import { createSqliteSessionService } from "@open-managed-agents/sessions-store";
@@ -41,7 +42,7 @@ async function bootstrap() {
     .bind(USER, TENANT, Date.now())
     .run();
 
-  const agents = createSqliteAgentService({ db });
+  const agents = new SqlAgentStore(sql);
   const vaults = createSqliteVaultService({ db });
   const credentials = createSqliteCredentialService({ db });
   const sessions = createSqliteSessionService({ db });
@@ -338,7 +339,7 @@ describe("NodeInstallBridge", () => {
       .bind(USER, TENANT, Date.now())
       .run();
 
-    const agents = createSqliteAgentService({ db });
+    const agents = new SqlAgentStore(sql);
     const vaults = createSqliteVaultService({ db });
     const credentials = createSqliteCredentialService({ db });
     const sessions = createSqliteSessionService({ db });
@@ -361,10 +362,7 @@ describe("NodeInstallBridge", () => {
     const containers = bridge.buildContainers();
 
     // Seed an agent + linear pub + bound session.
-    const agentRow = await agents.create({
-      tenantId: TENANT,
-      input: { name: "Resume Bot", model: "claude-haiku-4-5-20251001", system: "you are smoke" },
-    });
+    const agentRow = await seedAgent(sql, TENANT, { name: "Resume Bot", model: { id: "claude-haiku-4-5-20251001" }, system: "you are smoke" });
     const inst = await containers.linear.installations.insert({
       tenantId: TENANT,
       userId: USER,
@@ -647,17 +645,12 @@ describe("NodeInstallBridge", () => {
   });
 });
 
-async function createTestAgent(sql: SqlClient, agents: ReturnType<typeof createSqliteAgentService>) {
-  void sql;
-  const row = await agents.create({
-    tenantId: TENANT,
-    input: {
-      name: "Smoke Agent",
-      model: "claude-haiku-4-5-20251001",
-      system: "you are smoke",
-    },
+async function createTestAgent(sql: SqlClient, _agents: SqlAgentStore) {
+  return seedAgent(sql, TENANT, {
+    name: "Smoke Agent",
+    model: { id: "claude-haiku-4-5-20251001" },
+    system: "you are smoke",
   });
-  return row;
 }
 
 /** Decode a JWT's payload segment WITHOUT verifying (test-only). */

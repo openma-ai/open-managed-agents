@@ -146,6 +146,43 @@ export interface SandboxSessionOutputMountPort {
   }): Promise<void>;
 }
 
+/** Serializable reference to a provider-owned prepared base: a snapshot of a
+ * sandbox on which the Environment setup has already run. Hosts persist it
+ * opaquely and hand it back as {@link SandboxFactoryContext.preparedBase}. */
+export interface SandboxPreparedBaseHandle {
+  provider: string;
+  id: string;
+}
+
+/** Provider primitive for capturing the current sandbox as a prepared base
+ * that later sandboxes can be created from. Separate from
+ * {@link SandboxRuntimePort.checkpoint}: a prepared base is a reusable
+ * creation source shared across Sessions, not a restore point of one. */
+export interface SandboxPreparedBasePort {
+  capturePreparedBase(input: { name: string }): Promise<SandboxPreparedBaseHandle>;
+}
+
+export function supportsPreparedBase(
+  value: unknown,
+): value is SandboxPreparedBasePort {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<SandboxPreparedBasePort>;
+  return typeof candidate.capturePreparedBase === "function";
+}
+
+/** For adapters that cannot create a sandbox from a prepared base: a
+ * requested base must fail the create, never be ignored. */
+export function rejectPreparedBase(
+  provider: string,
+  preparedBase: SandboxPreparedBaseHandle | undefined,
+): void {
+  if (preparedBase === undefined) return;
+  throw new Error(
+    `SANDBOX_PROVIDER=${provider} cannot create a sandbox from a prepared base ` +
+      `(requested ${preparedBase.provider}:${preparedBase.id})`,
+  );
+}
+
 export function supportsWorkspaceBackup(
   value: unknown,
 ): value is SandboxWorkspaceBackupPort {
@@ -211,20 +248,18 @@ export interface SandboxPort {
    */
   writeFileBytes?(path: string, bytes: Uint8Array): Promise<string>;
   /**
-   * Mount a memory store into the sandbox at /mnt/memory/<storeName>/.
-   * On CF backed by R2 + FUSE; on Node we hydrate by copying. Read-only
-   * mounts reject writes.
+   * Native Memory Store mount at /mnt/memory/<storeName>/ over a blob prefix
+   * (`storeId`): R2 + FUSE on Cloudflare, s3fs or a host bind/symlink on Node
+   * adapters. Read-only mounts reject writes. The Node control plane calls it
+   * only when the composed factory declares
+   * {@link SandboxFactoryCapabilities.nativeMemoryStoreMount}; otherwise it
+   * file-syncs Memory Stores through `exec`/`readFile`/`writeFile`.
    */
   mountMemoryStore?(opts: {
     storeName: string;
     storeId: string;
     readOnly: boolean;
   }): Promise<void>;
-  /** Flush provider-local writable Memory projections back into their
-   * generation-scoped blob prefixes before the host performs canonical CAS
-   * reconciliation. Native shared mounts omit this because writes are already
-   * visible in the backing store. */
-  synchronizeMemoryStores?(): Promise<void>;
   /** Destroy the sandbox — kills processes, unmounts, stops. */
   destroy?(): Promise<void>;
   /**
@@ -270,29 +305,29 @@ export interface SandboxFactoryContext {
   /** Per-session host workdir. LocalSubprocess uses this as the cwd
    *  for child processes; remote / VM adapters can ignore it. */
   workdir: string;
-  /** Memory blob root on the host. Adapters that mount memory stores
-   *  via symlink (LocalSubprocess) read from this; remote adapters
-   *  (Daytona/E2B) typically use s3fs and ignore it. */
+  /** Memory blob root on the host, for native Memory Store mounts only.
+   *  Adapters that mount via symlink/bind (LocalSubprocess, LiteBox) read
+   *  from this; remote adapters (Daytona/E2B) use s3fs and ignore it. */
   memoryRoot?: string;
-  /** Host-side text workspace bridge for remote providers without a native
-   * object-store/POSIX mount. The adapter copies a generation-scoped snapshot
-   * into the sandbox and flushes it through `synchronizeMemoryStores` at the
-   * fenced finalization barrier. */
-  memoryWorkspace?: SandboxMemoryWorkspacePort;
   /** Session-outputs root on the host. LocalSubprocess symlinks
    *  per-(tenant, session) dirs under here when mountSessionOutputs
    *  is called; remote adapters that don't host-mount can ignore it. */
   outputsRoot?: string;
-}
-
-export interface SandboxMemoryWorkspacePort {
-  getText(key: string): Promise<{ text: string } | null>;
-  list(prefix: string, cursor?: string): Promise<{
-    keys: string[];
-    nextCursor: string | null;
-  }>;
-  put(key: string, content: string): Promise<unknown | null>;
-  delete(key: string): Promise<void>;
+  /** Environment that owns the session, when the host knows it. */
+  environmentId?: string;
+  /** Workspace (tenant) that owns the session, when the host knows it. */
+  workspaceId?: string;
+  /** Operator-catalog image selected by the Environment, already resolved
+   * against `SANDBOX_IMAGES`. When present it overrides the provider's
+   * default `SANDBOX_IMAGE`; adapters that cannot honour a per-session image
+   * must throw rather than ignore it. Absent means "provider default". */
+  image?: { alias: string; reference: string };
+  /** Prepared base to create the sandbox from instead of the provider's
+   * template/image. When present the adapter MUST create from it; adapters
+   * that cannot, or that receive a base of another provider, must throw
+   * rather than ignore it (same rule as `image`). A base captured on a
+   * catalog image already contains that image, so `image` may accompany it. */
+  preparedBase?: SandboxPreparedBaseHandle;
 }
 
 /** Read-only view of process env handed to the factory. Whole `process.env`
@@ -300,10 +335,39 @@ export interface SandboxMemoryWorkspacePort {
  *  (e.g. BoxRun reads `BOXRUN_URL`, E2B reads `E2B_API_KEY`). */
 export type SandboxFactoryEnv = Readonly<Record<string, string | undefined>>;
 
-export type SandboxFactory = (
+/** What a factory's sandboxes can do, declared by whoever composes it. The
+ * control plane enables optional features from these declarations instead of
+ * from deployment switches. */
+export interface SandboxFactoryCapabilities {
+  /** Sandboxes implement {@link SandboxPreparedBasePort}, and the factory
+   * creates from {@link SandboxFactoryContext.preparedBase}. */
+  preparedBase?: boolean;
+  /** Sandboxes implement {@link SandboxPort.mountMemoryStore} as a native
+   * mount over the host's memory blobs (for example s3fs with `MEMORY_S3_*`,
+   * or a host bind of a local memory root), and the composer guarantees it
+   * works in this deployment. The Node control plane then mounts Memory
+   * Stores instead of file-syncing them, and a failing mount fails the turn.
+   * Undeclared (the default for every built-in factory): Memory Stores are
+   * file-synced, which works on any sandbox. See docs/memory-stores.md. */
+  nativeMemoryStoreMount?: boolean;
+}
+
+export type SandboxFactory = ((
   ctx: SandboxFactoryContext,
   env: SandboxFactoryEnv,
-) => Promise<SandboxPort>;
+) => Promise<SandboxPort>) & {
+  readonly capabilities?: SandboxFactoryCapabilities;
+};
+
+/** Declare capabilities on a factory, e.g. a custom composition that wraps an
+ * adapter: `withSandboxFactoryCapabilities(factory, { preparedBase: true })`. */
+export function withSandboxFactoryCapabilities(
+  factory: (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => Promise<SandboxPort>,
+  capabilities: SandboxFactoryCapabilities,
+): SandboxFactory {
+  const wrapped = (ctx: SandboxFactoryContext, env: SandboxFactoryEnv) => factory(ctx, env);
+  return Object.assign(wrapped, { capabilities: { ...capabilities } });
+}
 
 /** SDK-style provider composition. `SandboxFactory` remains the v0 create
  * adapter; new runtime hosts use this Port when resources must survive the

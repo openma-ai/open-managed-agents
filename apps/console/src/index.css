@@ -370,8 +370,14 @@ body,
   display: inline-block;
   animation: brand-loader-dot 1200ms var(--ease-soft) infinite;
 }
+.openma-startup-loader-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: brand-loader-dot 1200ms var(--ease-soft) infinite;
+}
 @media (prefers-reduced-motion: reduce) {
-  .brand-loader-dot { animation: none; opacity: 0.6; }
+  .brand-loader-dot,
+  .openma-startup-loader-dot { animation: none; opacity: 0.6; }
 }
 
 /* Modal (Radix Dialog) overlay + content animations.

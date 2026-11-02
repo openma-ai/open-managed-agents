@@ -5,6 +5,8 @@
 // createNodeControlPlane() inside NodeComponents. The control plane never
 // reads the environment itself.
 
+import type { SandboxImageCatalog } from "@open-managed-agents/sandbox";
+
 export type NodeEnvironment = Readonly<Record<string, string | undefined>>;
 
 export type NodeProcessMode = "standalone" | "serverless";
@@ -68,11 +70,7 @@ export interface NodeConfig {
   /** MEMORY_QUEUE: "disabled" turns off the SQL-backed memory ingestion queue. */
   memoryQueue: "auto" | "disabled";
   realtime: RealtimeFanoutConfig;
-  model: {
-    apiKey: string | undefined;
-    baseUrl: string | undefined;
-    customHeaders: Record<string, string> | undefined;
-  };
+  /** "model" curates with the Dream workspace's own model card; "dedup" is offline. */
   dreamCurator: "model" | "dedup";
   execution: { ownerId: string; concurrency: number };
   workspace: {
@@ -136,6 +134,12 @@ export interface NodeConfig {
      * selected SandboxFactory, whose contract is env-shaped.
      */
     environment: NodeEnvironment;
+    /**
+     * SANDBOX_IMAGES: operator-curated images an Environment may select by
+     * alias (`_oma.sandbox_image`). Absent or empty: only the provider
+     * default (`SANDBOX_IMAGE`) exists and any selection is rejected.
+     */
+    images?: SandboxImageCatalog;
   };
 }
 
@@ -172,7 +176,6 @@ export function redactNodeConfig(config: NodeConfig): Record<string, unknown> {
     },
     platformRootSecret: mask(config.platformRootSecret),
     blobs: { memory: blob(config.blobs.memory), files: blob(config.blobs.files) },
-    model: { ...config.model, apiKey: mask(config.model.apiKey) },
     managedWebhooks: { ...config.managedWebhooks, signingKey: mask(config.managedWebhooks.signingKey) },
     http: {
       ...config.http,

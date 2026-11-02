@@ -7,7 +7,7 @@
 // same rows in the same minute" — both succeed harmlessly.
 
 import type { SqlClient } from "@open-managed-agents/sql-client";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
 import type { EnvironmentService } from "@open-managed-agents/environments-store";
 import type { SessionService } from "@open-managed-agents/sessions-store";
 import type { EvalRunService } from "@open-managed-agents/evals-store";
@@ -135,7 +135,7 @@ export function buildNodeScheduler(deps: NodeSchedulerDeps) {
 }
 
 export type {
-  AgentService,
+  AgentStore,
   EnvironmentService,
   SessionService,
   EvalRunService,

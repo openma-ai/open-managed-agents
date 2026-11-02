@@ -83,6 +83,16 @@ function toConfigInput(
   };
 }
 
+function toOpenMaInput(
+  extension: NonNullable<EnvironmentCreateBody["_oma"]>,
+): NonNullable<CreateEnvironmentCommand["openma"]> {
+  return {
+    ...(extension.sandbox_image !== undefined && {
+      sandboxImage: extension.sandbox_image,
+    }),
+  };
+}
+
 export function toCreateEnvironmentCommand(
   body: EnvironmentCreateBody,
 ): CreateEnvironmentCommand {
@@ -94,6 +104,7 @@ export function toCreateEnvironmentCommand(
     ...(body.description !== undefined && { description: body.description }),
     ...(body.metadata !== undefined && { metadata: body.metadata }),
     ...(body.scope !== undefined && { scope: body.scope }),
+    ...(body._oma !== undefined && { openma: toOpenMaInput(body._oma) }),
   };
 }
 
@@ -110,6 +121,7 @@ export function toUpdateEnvironmentCommand(
     ...(body.metadata !== undefined && { metadata: body.metadata }),
     ...(body.name !== undefined && { name: body.name }),
     ...(body.scope !== undefined && { scope: body.scope }),
+    ...(body._oma !== undefined && { openma: toOpenMaInput(body._oma) }),
   };
 }
 
@@ -166,5 +178,9 @@ export function toEnvironmentResponse(environment: EnvironmentView): object {
     type: "environment",
     updated_at: environment.updatedAt,
     ...(environment.scope !== undefined && { scope: environment.scope }),
+    // OpenMA extension: emitted only when set, so CMA clients see no change.
+    ...(environment.openma?.sandboxImage !== undefined && {
+      _oma: { sandbox_image: environment.openma.sandboxImage },
+    }),
   };
 }

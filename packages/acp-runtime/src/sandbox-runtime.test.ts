@@ -175,6 +175,40 @@ describe("sandbox ACP runtime", () => {
     await expect.poll(() => session.isAlive()).toBe(false);
   }, 500);
 
+  it("does not resolve dispose until a delayed SIGKILL actually exits the child", async () => {
+    let child!: Awaited<ReturnType<NodeSpawner["spawn"]>>;
+    let exited = false;
+    const runtime = createAcpRuntime({ type: "local", spawner: { spawn: async spec => {
+      child = await new NodeSpawner().spawn(spec);
+      void child.exited.then(() => { exited = true; });
+      return { ...child, kill: async signal => {
+        if (signal === "SIGKILL") await new Promise(resolve => setTimeout(resolve, 100));
+        await child.kill(signal);
+      } };
+    } } }, { cancelGraceMs: 10 });
+    const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", closeIgnoringAcpAgentSource], cwd: process.cwd() } });
+    try {
+      await session.dispose();
+      expect(exited).toBe(true);
+    } finally {
+      await child.kill("SIGKILL"); await child.exited;
+    }
+  });
+
+  it("rejects dispose when a provider acknowledges kill but never confirms exit", async () => {
+    let child!: Awaited<ReturnType<NodeSpawner["spawn"]>>;
+    const runtime = createAcpRuntime({ type: "local", spawner: { spawn: async spec => {
+      child = await new NodeSpawner().spawn(spec);
+      return { ...child, exited: new Promise<never>(() => {}), kill: async () => {} };
+    } } }, { cancelGraceMs: 10 });
+    const session = await runtime.start({ agent: { command: process.execPath, args: ["-e", closeIgnoringAcpAgentSource], cwd: process.cwd() } });
+    try {
+      await expect(session.dispose()).rejects.toThrow(/exit.*not confirmed/i);
+    } finally {
+      await child.kill("SIGKILL"); await child.exited;
+    }
+  });
+
   it("hard-kills an ACP child that ignores session/close during dispose", async () => {
     const workdir = await mkdtemp(join(tmpdir(), "oma-acp-stuck-close-"));
     temporaryDirectories.push(workdir);

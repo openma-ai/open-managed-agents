@@ -1,7 +1,7 @@
 export type {
   EventLogRepo,
-  PendingQueueRepo,
-  PendingRow,
+  QueueInputRow,
+  QueueInputType,
   StreamRepo,
   StreamRow,
 } from "./ports";

@@ -41,11 +41,30 @@ interface SqliteSnapshot {
   tables: Record<string, SnapshotTable>;
 }
 
+/** Drops the legacy `agents` / `agent_versions` tables. main-node moves
+ *  their rows to `managed_agents` before the schema migrator runs. */
+const dropLegacyAgentsMigration = {
+  fromSnapshot: "725618e8-372f-4f13-98a7-44a94146b663",
+  toSnapshot: "8f90aaab-6f92-4233-95a2-0cdab2dfa28c",
+} as const;
+
 const usageAttributionMigration = {
   fromSnapshot: "f1e9f474-d719-4e31-b69e-dd7ae24f9bd4",
   toSnapshot: "2f8c3bdc-8be5-4f77-bc24-0d50f5ec66b3",
   indexName: "idx_usage_events_attribution",
   columns: ["tenant_id", "created_at", "id"],
+} as const;
+
+/** Optional model-card list pricing (NULL = unpriced). */
+const modelCardPricingMigration = {
+  fromSnapshot: dropLegacyAgentsMigration.toSnapshot,
+  toSnapshot: "a7c2dcc3-b820-49e8-bb5c-28f026d51d97",
+} as const;
+
+/** Session execution hold-after-exhausted marker. */
+const heldAfterExhaustedMigration = {
+  fromSnapshot: modelCardPricingMigration.toSnapshot,
+  toSnapshot: "173fcc90-140f-4d11-92d5-9c8d917213e9",
 } as const;
 
 /**
@@ -103,20 +122,39 @@ export async function migrateNodeMysqlSchema(
       )
       .bind("main-node")
       .first<{ snapshot_id: string }>();
-    if (
-      installed?.snapshot_id === usageAttributionMigration.fromSnapshot &&
-      (snapshot.id === usageAttributionMigration.toSnapshot || snapshot.id === "725618e8-372f-4f13-98a7-44a94146b663")
-    ) {
-      await migrateUsageAttributionIndex(sql);
-      installed = { snapshot_id: usageAttributionMigration.toSnapshot };
-    }
-    // This snapshot only adds tenant_invitation. The regular idempotent table
-    // installer below performs the DDL before recording the new snapshot.
-    if (installed?.snapshot_id === usageAttributionMigration.toSnapshot &&
-        snapshot.id === "725618e8-372f-4f13-98a7-44a94146b663") {
-      installed = { snapshot_id: snapshot.id };
-    }
-    if (installed !== null && installed.snapshot_id !== snapshot.id) {
+    // Walk the known additive chain toward the journal tip. Each step is
+    // idempotent so an interrupted upgrade can resume on the next boot.
+    while (installed !== null && installed.snapshot_id !== snapshot.id) {
+      if (installed.snapshot_id === usageAttributionMigration.fromSnapshot) {
+        await migrateUsageAttributionIndex(sql);
+        installed = { snapshot_id: usageAttributionMigration.toSnapshot };
+        continue;
+      }
+      // tenant_invitation only — idempotent CREATE TABLE IF NOT EXISTS below.
+      if (installed.snapshot_id === usageAttributionMigration.toSnapshot) {
+        installed = { snapshot_id: dropLegacyAgentsMigration.fromSnapshot };
+        continue;
+      }
+      if (installed.snapshot_id === dropLegacyAgentsMigration.fromSnapshot) {
+        await dropLegacyAgentTables(sql);
+        installed = { snapshot_id: dropLegacyAgentsMigration.toSnapshot };
+        continue;
+      }
+      if (installed.snapshot_id === modelCardPricingMigration.fromSnapshot) {
+        await ensureMysqlNullableColumn(sql, "model_cards", "pricing", "TEXT");
+        installed = { snapshot_id: modelCardPricingMigration.toSnapshot };
+        continue;
+      }
+      if (installed.snapshot_id === heldAfterExhaustedMigration.fromSnapshot) {
+        await ensureMysqlNullableColumn(
+          sql,
+          "managed_session_executions",
+          "held_after_exhausted_ms",
+          "BIGINT",
+        );
+        installed = { snapshot_id: heldAfterExhaustedMigration.toSnapshot };
+        continue;
+      }
       throw new Error(
         `MySQL schema ${installed.snapshot_id} cannot be silently promoted to ${snapshot.id}; ` +
           "apply an explicit MySQL migration before starting main-node",
@@ -142,6 +180,44 @@ export async function migrateNodeMysqlSchema(
       .bind("openma:main-node:mysql-schema")
       .first()
       .catch(() => null);
+  }
+}
+
+
+async function ensureMysqlNullableColumn(
+  sql: SqlClient,
+  table: string,
+  column: string,
+  definition: string,
+): Promise<void> {
+  const exists = await sql
+    .prepare(
+      `SELECT 1 AS present
+         FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = ?
+          AND column_name = ?`,
+    )
+    .bind(table, column)
+    .first();
+  if (exists) return;
+  await sql.exec(
+    `ALTER TABLE ${quote(table)} ADD COLUMN ${quote(column)} ${definition}`,
+  );
+}
+
+async function dropLegacyAgentTables(sql: SqlClient): Promise<void> {
+  for (const table of ["agent_versions", "agents"]) {
+    const exists = await sql
+      .prepare("SELECT 1 AS present FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?")
+      .bind(table)
+      .first();
+    if (!exists) continue;
+    const row = await sql.prepare(`SELECT COUNT(*) AS n FROM ${quote(table)}`).first<{ n: number | string }>();
+    if (Number(row?.n ?? 0) > 0) {
+      throw new Error(`${table} still has ${row?.n} row(s); move them to managed_agents before upgrading`);
+    }
+    await sql.exec(`DROP TABLE ${quote(table)}`);
   }
 }
 
