@@ -1,8 +1,7 @@
 import type { SessionBudgetGate } from "@open-managed-agents/domain/sessions";
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
-import type { Environment, Session, SessionEventView, SessionThread, SessionCreateAdmissionPort } from "@open-managed-agents/managed-agents-application";
-import { BillingError } from "@open-managed-agents/shared";
+import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -73,7 +72,6 @@ interface Child {
 interface SubagentsInput {
   workspaceId: string;
   session: Session;
-  environment: Environment;
   parentThreadId: string;
   sandbox: SandboxExecutor;
   abortSignal: AbortSignal;
@@ -81,13 +79,6 @@ interface SubagentsInput {
   historyEvents: SessionEventView[];
   threads: ManagedNodeSubagentThreads;
   policy: ManagedNodeSubagentPolicy;
-  /**
-   * Usage-only admission for sub-agent thread creation / turns. Omitted on
-   * self-hosted Node (admit-all, matching Session create). Cloudflare-style
-   * hosts pass the shared admission port so a $0 balance refuses before any
-   * thread row or event is written.
-   */
-  admission?: SessionCreateAdmissionPort;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
   run(input: { session: Session; runtime: ManagedNodeHarnessRuntime; sandbox: SandboxExecutor }): Promise<void>;
   output(frame: unknown): Promise<void>;
@@ -149,22 +140,6 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     }
   }
 
-  /** Usage gate runs before thread insert / event write / child harness start. */
-  private async admitStart(session: Session): Promise<void> {
-    if (this.input.admission === undefined) return;
-    const decision = await this.input.admission.admitSandboxStart({
-      workspaceId: this.input.workspaceId,
-      agentId: session.agent.id,
-      environmentId: this.input.environment.id,
-      isLocalRuntime:
-        this.input.environment.config.type === "self_hosted" ||
-        session.agent.openma?.runtimeBinding != null,
-    });
-    if (decision.type !== "admitted") {
-      throw new BillingError(decision.message);
-    }
-  }
-
   private snapshot(child: Child): ManagedNodeSubagentState {
     return { ...child.state };
   }
@@ -203,7 +178,6 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
       const session = this.input.resolveSession !== undefined
         ? await this.input.resolveSession(request)
         : this.defaultSession(request);
-      await this.admitStart(session);
       this.assertActive();
       const now = this.input.clock.now().toISOString();
       const { multiagent: _multiagent, ...agent } = session.agent;
@@ -290,7 +264,6 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     const child = await this.child(input.threadId);
     if (child.state.status === "closed") throw new Error(`Subagent ${input.threadId} is closed; resume it before sending input`);
     if (child.running === undefined) this.assertCapacity();
-    await this.admitStart(child.session);
     await this.enqueueMessage(child, input.message);
     if (child.running === undefined) this.startChild(child);
     return this.snapshot(child);
@@ -418,15 +391,11 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     this.assertActive();
     const child = await this.child(input.threadId);
     if (child.running !== undefined) {
-      if (input.message !== undefined) {
-        await this.admitStart(child.session);
-        await this.enqueueMessage(child, input.message);
-      }
+      if (input.message !== undefined) await this.enqueueMessage(child, input.message);
       return this.snapshot(child);
     }
     if (input.message !== undefined || child.pending.length > 0) {
       this.assertCapacity();
-      await this.admitStart(child.session);
       if (input.message !== undefined) await this.enqueueMessage(child, input.message);
       this.startChild(child);
     } else {

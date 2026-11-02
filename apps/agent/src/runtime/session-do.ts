@@ -150,7 +150,6 @@ import { createCfBrowserHarness } from "@open-managed-agents/browser-harness/cf"
 import type { BrowserHarness, BrowserBillingHook, BrowserSession } from "@open-managed-agents/browser-harness";
 import { SqliteHistory, InMemoryHistory, INTERRUPTED_TOOL_RESULT_TEXT } from "./history";
 import { createSandbox } from "./sandbox";
-import { admitCloudSandboxStart } from "./session-usage-admission";
 import {
   loadManagedSessionResources,
   mountResources,
@@ -5663,36 +5662,17 @@ export class SessionDO extends DurableObject<Env> {
     // was `thread_*` and pre-existing live sessions may still hold those
     // in their in-memory Map — both work but new threads land on `sthr_`.
     const threadId = `sthr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    // Both inline and predefined children use the immutable Session snapshot.
-    const parentConfig = parentThreadId === "sthr_primary"
-      ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
-    if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
-    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
-
-    // Usage gate for existing-session work: a $0 balance must stop the
-    // sub-agent before the thread row, thread_created event, or child harness
-    // exists. The shared admission service skips local/self-hosted runtimes
-    // and fails open on meter errors, matching Session create.
-    const subEnvironment = this.state.environment_id
-      ? await this.getEnvConfig(this.state.environment_id)
-      : null;
-    const admission = await admitCloudSandboxStart(this.env, {
-      workspaceId: this.state.tenant_id,
-      agentId: subAgent.id,
-      environmentId: this.state.environment_id,
-      isLocalRuntime:
-        subAgent.runtime_binding != null ||
-        subEnvironment?.config?.type === "self_hosted",
-    });
-    if (admission.type !== "admitted") {
-      throw new BillingError(admission.message);
-    }
-
     // Runtime events emitted by this child must inherit the parent's
     // execution fence. The child is a logical lane, not a second execution
     // owner; walking this map lets projection writes remain fenced even when
     // the child event carries its own session_thread_id.
     this._executionParentLane.set(threadId, parentThreadId);
+
+    // Both inline and predefined children use the immutable Session snapshot.
+    const parentConfig = parentThreadId === "sthr_primary"
+      ? this.state.agent_snapshot : this.threads.get(parentThreadId)?.agentConfig;
+    if (!parentConfig) throw new Error("Pinned parent agent snapshot is unavailable");
+    const subAgent = resolvePinnedSubagent(parentConfig, agentId);
 
     // In-memory map (hot path config lookup) + persistent threads row
     // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
@@ -5759,6 +5739,9 @@ export class SessionDO extends DurableObject<Env> {
 
     // Build sub-agent tools and model (platform prepares context for sub-agent too)
     let childSignal: AbortSignal | undefined = abortController.signal;
+    const subEnvironment = this.state.environment_id
+      ? await this.getEnvConfig(this.state.environment_id)
+      : null;
     const subAuxResolved = await this.resolveAuxModel(subAgent);
     // The child runs on its own model card in this session's workspace; its
     // nested delegation tools inherit those credentials, never an env key.

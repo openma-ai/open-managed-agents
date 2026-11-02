@@ -21,7 +21,8 @@ import {
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
 import { sendHostedInference } from "@open-managed-agents/http-routes/proxy";
-import { withHostedInferenceBudget } from "@open-managed-agents/inference-proxy";
+import { withHostedInferenceBudget, withHostedInferenceWallet } from "@open-managed-agents/inference-proxy";
+import { cfSessionUsageAdmission } from "../lib/cf-session-create-admission";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 import { resolveSessionSandboxFetcher } from "../lib/cf-session-router";
@@ -157,7 +158,18 @@ export async function forwardHttpInferenceProxyRequest(input: {
     ? null
     : await input.request.arrayBuffer();
   const budget = await cfSessionModelEgress(input.env, input.sessionId);
-  return withHostedInferenceBudget(budget, () =>
+  // Edge wallet hook (tenant balance), checked before the per-session
+  // max_list_cost egress gate. Positive results are KV-cached briefly; a
+  // refusal returns 402 { error: "Insufficient balance", balance_cents }.
+  const wallet = input.env.USAGE_METER
+    ? () => cfSessionUsageAdmission(input.env, input.services.kv).admitSandboxStart({
+        workspaceId: input.tenantId,
+        agentId: "",
+        environmentId: "",
+        isLocalRuntime: false,
+      })
+    : null;
+  return withHostedInferenceWallet(wallet, () => withHostedInferenceBudget(budget, () =>
     sendHostedInference({
       upstream,
       method,
@@ -165,7 +177,7 @@ export async function forwardHttpInferenceProxyRequest(input: {
       inboundHeaders: input.request.headers,
       body,
     }),
-  );
+  ));
 }
 
 const app = new Hono<{

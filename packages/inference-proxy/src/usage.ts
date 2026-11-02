@@ -152,3 +152,32 @@ export async function withHostedInferenceBudget(
   const response = await send();
   return observeInferenceResponseUsage(response, (usage) => egress.complete(usage));
 }
+
+/** Tenant wallet decision for one hosted model request. */
+export type HostedInferenceWalletDecision =
+  | { type: "admitted" }
+  | { type: "payment_required"; message: string; balanceCents: number };
+
+export const INSUFFICIENT_BALANCE_MESSAGE = "Insufficient balance";
+
+/**
+ * Edge hook: refuse a hosted model request when the tenant wallet is empty.
+ * Distinct from `budget_reached` (per-session max_list_cost). The 402 body
+ * matches Session create admission: `{ error, balance_cents }`. A missing
+ * hook (Node / self-host) admits all.
+ */
+export async function withHostedInferenceWallet(
+  admit: (() => Promise<HostedInferenceWalletDecision>) | null | undefined,
+  send: () => Promise<Response>,
+): Promise<Response> {
+  if (admit) {
+    const decision = await admit();
+    if (decision.type === "payment_required") {
+      return Response.json(
+        { error: INSUFFICIENT_BALANCE_MESSAGE, balance_cents: decision.balanceCents },
+        { status: 402 },
+      );
+    }
+  }
+  return send();
+}

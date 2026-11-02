@@ -16,7 +16,6 @@ import type {
 import type {
   Environment,
   Session,
-  SessionCreateAdmissionPort,
   SessionEventView,
   SpanModelUsageView,
   ToolResultContentBlock,
@@ -164,9 +163,6 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
   subagentThreads?: ManagedNodeSubagentThreads;
   subagentPolicy?(input: ManagedRunnerContext): ManagedNodeSubagentPolicy | Promise<ManagedNodeSubagentPolicy>;
   resolveSubagentSession?(input: ManagedRunnerContext & { request: ManagedNodeCreateSubagent }): Promise<Session>;
-  /** Usage-only admission for sub-agent thread creation / turns. Omitted on
-   * self-hosted Node (admit-all, matching Session create). */
-  admission?: SessionCreateAdmissionPort;
   confirmedTools: ManagedNodeConfirmedToolExecutionPort;
   outcomes: ManagedNodeOutcomeEvaluationPort;
   sandboxMode?(input: ManagedRunnerContext): SessionSandboxMode | Promise<SessionSandboxMode>;
@@ -776,7 +772,6 @@ export class DefaultNodeManagedSessionRunner
           historyEvents: input.historyEvents,
           threads: this.dependencies.subagentThreads,
           policy,
-          admission: this.dependencies.admission,
           resolveSession: this.dependencies.resolveSubagentSession === undefined ? undefined :
             (request) => this.dependencies.resolveSubagentSession!({ ...context, request }),
           run: async ({ session, runtime: childRuntime, sandbox: childSandbox }) => {

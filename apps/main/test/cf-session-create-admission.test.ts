@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { cfSessionCreateAdmission, cfSessionUsageAdmission } from "../src/lib/cf-session-create-admission";
+import { cfSessionCreateAdmission, cfSessionUsageAdmission, cfUsageMeter, USAGE_ADMIT_CACHE_TTL_MS } from "../src/lib/cf-session-create-admission";
 
 const input = {
   workspaceId: "tenant_01",
@@ -73,5 +73,37 @@ describe("cfSessionCreateAdmission", () => {
     const env = { USAGE_METER: { canStartSandbox: async () => { throw new Error("rpc down"); } } };
     await expect(cfSessionCreateAdmission(env as never, kv()).admit(input)).resolves.toEqual({ type: "admitted" });
     error.mockRestore();
+  });
+});
+
+describe("cfUsageMeter KV cache", () => {
+  function memKv() {
+    const data = new Map<string, string>();
+    return { data, get: async (k: string) => data.get(k) ?? null, put: async (k: string, v: string) => { data.set(k, v); }, delete: async () => {}, list: async () => ({ keys: [], list_complete: true }) } as never as { data: Map<string, string> } & import("@open-managed-agents/kv-store").KvStore;
+  }
+
+  it("caches a positive result for 15s per workspace", async () => {
+    let t = 1_000_000;
+    const canStartSandbox = vi.fn(async () => ({ ok: true }));
+    const kvStore = memKv();
+    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore, () => t)!;
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    t += 14_000;
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    expect(canStartSandbox).toHaveBeenCalledTimes(1);
+    t += 2_000;
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    expect(canStartSandbox).toHaveBeenCalledTimes(2);
+    expect(USAGE_ADMIT_CACHE_TTL_MS).toBe(15_000);
+  });
+
+  it("never caches a denial", async () => {
+    const canStartSandbox = vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 }));
+    const kvStore = memKv();
+    const meter = cfUsageMeter({ USAGE_METER: { canStartSandbox } } as never, kvStore)!;
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    await meter.canStartSandbox({ workspaceId: "ws", agentId: "a" });
+    expect(canStartSandbox).toHaveBeenCalledTimes(2);
+    expect(kvStore.data.size).toBe(0);
   });
 });

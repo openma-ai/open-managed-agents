@@ -377,6 +377,9 @@ export {
   inferenceUsageFromSse,
   observeInferenceResponseUsage,
   withHostedInferenceBudget,
+  withHostedInferenceWallet,
+  INSUFFICIENT_BALANCE_MESSAGE,
   type HostedInferenceEgress,
+  type HostedInferenceWalletDecision,
 } from "./usage.js";
 

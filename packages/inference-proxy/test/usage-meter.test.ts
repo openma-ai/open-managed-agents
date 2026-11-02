@@ -10,6 +10,7 @@ import {
   inferenceUsageFromJson,
   inferenceUsageFromSse,
   withHostedInferenceBudget,
+  withHostedInferenceWallet,
 } from "../src/usage";
 
 const pricing: ListPricing = {
@@ -99,5 +100,29 @@ describe("withHostedInferenceBudget + domain modelEgress", () => {
     await res.text();
     await new Promise((r) => setTimeout(r, 0));
     expect(picoToCentsString(BigInt(gate.list_cost_pico))).toBe("150");
+  });
+});
+
+describe("withHostedInferenceWallet (tenant balance edge hook)", () => {
+  it("refuses with 402 Insufficient balance and never calls upstream", async () => {
+    const send = vi.fn(async () => new Response("ok"));
+    const res = await withHostedInferenceWallet(async () => ({ type: "payment_required", message: "x", balanceCents: 0 }), send);
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: "Insufficient balance", balance_cents: 0 });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("passes through when admitted or when no hook is installed (Node/self-host)", async () => {
+    const send = vi.fn(async () => new Response("ok"));
+    expect((await withHostedInferenceWallet(async () => ({ type: "admitted" }), send)).status).toBe(200);
+    expect((await withHostedInferenceWallet(null, send)).status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps per-session budget_reached distinct from the wallet 402", async () => {
+    const res = await withHostedInferenceWallet(async () => ({ type: "admitted" }), () =>
+      withHostedInferenceBudget({ begin: () => false, complete: () => {} }, async () => new Response("ok")));
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: "budget_reached" });
   });
 });

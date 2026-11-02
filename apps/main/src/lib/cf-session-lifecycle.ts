@@ -42,7 +42,7 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
     // order in the legacy route and by SessionCreateAdmissionService.admit in
     // the official Sessions application.
     preCreateGate: async ({ tenantId, agentId, environmentId, isLocalRuntime }) => {
-      const decision = await cfSessionUsageAdmission(env).admitSandboxStart({
+      const decision = await cfSessionUsageAdmission(env, services.kv).admitSandboxStart({
         workspaceId: tenantId,
         agentId,
         environmentId,
@@ -61,7 +61,7 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
     // official /v1/sessions events route is gated in
     // SessionEventsApplicationService with the same decision shape.
     preTurnGate: async ({ tenantId, agentId, environmentId, isLocalRuntime }) => {
-      const decision = await cfSessionUsageAdmission(env).admitSandboxStart({
+      const decision = await cfSessionUsageAdmission(env, services.kv).admitSandboxStart({
         workspaceId: tenantId,
         agentId,
         environmentId,

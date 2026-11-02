@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
-import { SessionCreateAdmissionService, type Environment, type Session, type SessionCreateAdmissionPort, type SessionEventView } from "@open-managed-agents/managed-agents-application";
+import type { Environment, Session, SessionEventView } from "@open-managed-agents/managed-agents-application";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { MemorySessionThreadStore } from "../../../packages/session-thread-store-memory/src/index";
@@ -20,8 +20,6 @@ const session: Session = {
 const environment: Environment = { id: "env", config: { type: "self_hosted" },
   archivedAt: null, createdAt: session.createdAt, updatedAt: session.updatedAt,
   name: "Shared", description: null, metadata: {} };
-const cloudEnvironment: Environment = { ...environment, id: "env_cloud",
-  config: { type: "cloud" }, name: "Cloud" };
 
 type Context = {
   session: Session;
@@ -33,12 +31,9 @@ type Context = {
 function fixture(run: (context: Context) => Promise<void>, store = new MemorySessionThreadStore(), options: {
   maxConcurrentSubagents?: number;
   native?: boolean;
-  admission?: SessionCreateAdmissionPort;
-  environment?: Environment;
   output?(frame: Record<string, unknown>): Promise<void>;
 } = {}) {
   const activeSession = structuredClone(session);
-  const runEnvironment = options.environment ?? environment;
   if (options.native) activeSession.agent.multiagent = { type: "multiagent_20261001", advisor: { type: "disabled" }, workflows: { type: "disabled" }, subagents: { type: "enabled", inlineAgents: { type: "enabled" }, predefinedAgents: [] } };
   const frames: Record<string, unknown>[] = [];
   const sandbox = { exec: async () => ({ stdout: "shared", stderr: "", exitCode: 0 }) } as unknown as SandboxExecutor;
@@ -54,7 +49,6 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
     clock: { now: () => new Date("2026-09-11T00:00:00Z") },
     ids: { nextEventId: () => `event_${++id}` },
     subagentThreads: store,
-    ...(options.admission !== undefined && { admission: options.admission }),
     subagentPolicy: options.native ? ({ session }) => nodeOpenAISubagentPolicy(session, {} as never) : () => ({ enabled: true, maxConcurrentSubagents: options.maxConcurrentSubagents ?? 2 }),
     ...(options.native && { resolveSubagentSession: async ({ session, request }) => resolveManagedSubagentSession(session, request) }),
   };
@@ -62,10 +56,10 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
   return {
     runner, sandbox, frames, store,
     async run(history: SessionEventView[] = []) {
-      await runner.start({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment: runEnvironment, initialEvents: [] });
+      await runner.start({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment, initialEvents: [] });
       const message = { id: `input_${++id}`, type: "user.message" as const,
         content: [{ type: "text" as const, text: "Parent task" }], processedAt: session.createdAt };
-      await runner.accept({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment: runEnvironment,
+      await runner.accept({ workspaceId: "workspace", sessionId: session.id, session: activeSession, environment,
         initialEvents: [], historyEvents: [...history, message], events: [message],
         output: async (frame) => { frames.push(frame as Record<string, unknown>); await options.output?.(frame as Record<string, unknown>); } });
     },
@@ -384,90 +378,5 @@ describe("Managed Node native subagents", () => {
       },
     });
     await f.run();
-  });
-
-  it("refuses sub-agent creation at $0 before writing a thread or event", async () => {
-    const store = new MemorySessionThreadStore();
-    let childRuns = 0;
-    const admission = new SessionCreateAdmissionService({
-      clock: { now: () => new Date("2026-09-11T00:00:00Z") },
-      usageMeter: {
-        canStartSandbox: async () => ({
-          ok: false,
-          reason: "Insufficient balance",
-          balanceCents: 0,
-        }),
-      },
-      logger: { warn: () => {}, error: () => {} },
-    });
-    const f = fixture(async ({ session: active, subagents }) => {
-      if (active.agent.name === "Parent") {
-        await expect(subagents!.create({ name: "Worker", message: "Work" }))
-          .rejects.toThrow("Insufficient balance");
-      } else {
-        childRuns += 1;
-      }
-    }, store, { admission, environment: cloudEnvironment });
-    await f.run();
-    expect(childRuns).toBe(0);
-    expect(await store.list({ workspaceId: "workspace", sessionId: session.id, limit: 10 }))
-      .toEqual([]);
-    expect(f.frames.some((frame) => String(frame.type).startsWith("session.thread_"))).toBe(false);
-  });
-
-  it("refuses a later sub-agent turn at $0 without writing a message or starting the child", async () => {
-    const store = new MemorySessionThreadStore();
-    let refuse = false;
-    let childRuns = 0;
-    const admission = new SessionCreateAdmissionService({
-      clock: { now: () => new Date("2026-09-11T00:00:00Z") },
-      usageMeter: {
-        canStartSandbox: async () => refuse
-          ? { ok: false, reason: "Insufficient balance", balanceCents: 0 }
-          : { ok: true },
-      },
-      logger: { warn: () => {}, error: () => {} },
-    });
-    const f = fixture(async ({ session: active, runtime, subagents }) => {
-      if (active.agent.name === "Parent") {
-        const child = await subagents!.create({ name: "Worker", message: "First" });
-        await subagents!.wait({ threadIds: [child.threadId] });
-        refuse = true;
-        await expect(subagents!.send({ threadId: child.threadId, message: "More" }))
-          .rejects.toThrow("Insufficient balance");
-        refuse = false;
-      } else {
-        childRuns += 1;
-        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Done" }] });
-      }
-    }, store, { admission, environment: cloudEnvironment });
-    await f.run();
-    expect(childRuns).toBe(1);
-    expect(f.frames.some((frame) => frame.type === "agent.thread_message_sent"
-      && JSON.stringify(frame).includes("More"))).toBe(false);
-  });
-
-  it("admits self-hosted sub-agent creation without consulting the meter", async () => {
-    const store = new MemorySessionThreadStore();
-    const canStartSandbox = vi.fn(async () => ({ ok: false, balanceCents: 0 }));
-    const admission = new SessionCreateAdmissionService({
-      clock: { now: () => new Date("2026-09-11T00:00:00Z") },
-      usageMeter: { canStartSandbox },
-      logger: { warn: () => {}, error: () => {} },
-    });
-    let childStatus: string | undefined;
-    const f = fixture(async ({ session: active, runtime, subagents }) => {
-      if (active.agent.name === "Parent") {
-        const child = await subagents!.create({ name: "Worker", message: "Work" });
-        childStatus = (await subagents!.wait({ threadIds: [child.threadId] })).subagents[0]?.status;
-      } else {
-        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Done" }] });
-      }
-    }, store, { admission });
-    await f.run();
-    expect(childStatus).toBe("completed");
-    expect(canStartSandbox).not.toHaveBeenCalled();
-    expect(await store.list({ workspaceId: "workspace", sessionId: session.id, limit: 10 }))
-      .toHaveLength(1);
   });
 });

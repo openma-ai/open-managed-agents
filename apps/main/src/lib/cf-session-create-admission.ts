@@ -15,21 +15,54 @@ import {
 } from "@open-managed-agents/managed-agents-application";
 import { exceeded } from "../rate-limit";
 
-function cfUsageMeter(env: Env): SessionUsageMeterPort | undefined {
+/** Positive wallet results are cached this long per workspace. Denials are
+ * never cached, so a top-up or a $0 balance takes effect on the next call. */
+export const USAGE_ADMIT_CACHE_TTL_MS = 15_000;
+// Workers KV rejects expirationTtl < 60s; freshness is enforced by the stored
+// timestamp and the entry simply expires from KV later.
+const USAGE_ADMIT_KV_EXPIRATION_S = 60;
+const usageAdmitKey = (workspaceId: string) => `usage_admit:${workspaceId}`;
+
+/**
+ * CF USAGE_METER adapter with a short KV cache of positive results. Shared by
+ * Session create, existing-session turns, and hosted inference egress.
+ */
+export function cfUsageMeter(env: Env, kv?: KvStore, now: () => number = Date.now): SessionUsageMeterPort | undefined {
   const meter = env.USAGE_METER;
   if (!meter) return undefined;
   return {
     canStartSandbox: async ({ workspaceId, agentId }) => {
+      if (kv) {
+        try {
+          const cached = await kv.get(usageAdmitKey(workspaceId));
+          const at = cached === null ? NaN : Number(cached);
+          if (Number.isFinite(at) && now() - at >= 0 && now() - at < USAGE_ADMIT_CACHE_TTL_MS) {
+            return { ok: true };
+          }
+        } catch {
+          // Cache read failures fall through to the meter.
+        }
+      }
+      let gate: Awaited<ReturnType<typeof meter.canStartSandbox>>;
       try {
-        const gate = await meter.canStartSandbox({ tenantId: workspaceId, agentId });
-        return {
-          ok: gate.ok,
-          ...(gate.reason !== undefined && { reason: gate.reason }),
-          ...(gate.balance_cents !== undefined && { balanceCents: gate.balance_cents }),
-        };
+        gate = await meter.canStartSandbox({ tenantId: workspaceId, agentId });
       } catch (err) {
         throw classifyExternalError(err);
       }
+      if (gate.ok && kv) {
+        try {
+          await kv.put(usageAdmitKey(workspaceId), String(now()), {
+            expirationTtl: USAGE_ADMIT_KV_EXPIRATION_S,
+          });
+        } catch {
+          // Best effort.
+        }
+      }
+      return {
+        ok: gate.ok,
+        ...(gate.reason !== undefined && { reason: gate.reason }),
+        ...(gate.balance_cents !== undefined && { balanceCents: gate.balance_cents }),
+      };
     },
   };
 }
@@ -49,8 +82,8 @@ function cfAdmissionLogger() {
  * Used by the legacy /v1/oma turn hook; the official API gates inside the
  * shared SessionEvents application service.
  */
-export function cfSessionUsageAdmission(env: Env): SessionCreateAdmissionPort {
-  const usageMeter = cfUsageMeter(env);
+export function cfSessionUsageAdmission(env: Env, kv?: KvStore): SessionCreateAdmissionPort {
+  const usageMeter = cfUsageMeter(env, kv);
   return new SessionCreateAdmissionService({
     ...(usageMeter !== undefined && { usageMeter }),
     clock: { now: () => new Date() },
@@ -62,7 +95,7 @@ export function cfSessionCreateAdmission(
   env: Env,
   kv: KvStore,
 ): SessionCreateAdmissionPort {
-  const usageMeter = cfUsageMeter(env);
+  const usageMeter = cfUsageMeter(env, kv);
   return new SessionCreateAdmissionService({
     rateLimiter: {
       exceeded: ({ workspaceId }) =>
