@@ -1,0 +1,53 @@
+---
+title: Deploy on Render
+description: Deploy the official OpenMA image or repository Blueprint on Render with persistent storage.
+---
+
+Deploy the public OpenMA image in your own Render workspace, or use the checked-in
+[`render.yaml` Blueprint](https://github.com/openma-ai/open-managed-agents/blob/main/render.yaml).
+
+## Deploy from the dashboard (Existing Image)
+
+1. Open the [Render dashboard](https://dashboard.render.com/).
+2. Choose **New → Web Service → Existing Image**.
+3. Use `ghcr.io/openma-ai/open-managed-agents:edge`, or an audited published digest.
+   `edge` is a development channel. Public image pulls require no GitHub credentials.
+4. Select your region and a paid compute plan; keep **one instance** for SQLite.
+5. Add a **10 GB persistent disk** mounted at `/app/data` and health path `/health`.
+6. Configure the following environment variables directly in Render:
+
+| Key | Value |
+| --- | --- |
+| `OPENMA_PROCESS_MODE` | `standalone` |
+| `HOST` | `0.0.0.0` |
+| `PORT` | `8787` |
+| `DATABASE_PATH` | `/app/data/oma.db` |
+| `AUTH_DATABASE_PATH` | `/app/data/auth.db` |
+| `SANDBOX_WORKDIR` | `/app/data/sandboxes` |
+| `MEMORY_BLOB_DIR` | `/app/data/memory-blobs` |
+| `FILES_BLOB_DIR` | `/app/data/files-blobs` |
+| `SESSION_OUTPUTS_DIR` | `/app/data/session-outputs` |
+| `BETTER_AUTH_SECRET` | Generate a random secret |
+| `PLATFORM_ROOT_SECRET` | Generate another independent random secret |
+| `SANDBOX_PROVIDER` | `e2b`, `daytona`, `boxrun`, or `sprites` |
+
+Also add the selected provider's credential (`E2B_API_KEY`, `DAYTONA_API_KEY`, `BOXRUN_URL`, or `SPRITES_TOKEN`). Set the Docker command to:
+
+```sh
+bash /app/apps/main-node/scripts/start-render.sh
+```
+
+Review costs and deploy. Once `/health` passes, open the service URL, create an
+OpenMA account and add a Model Card. For a custom domain set `PUBLIC_BASE_URL`
+and `GATEWAY_ORIGIN` to its HTTPS origin.
+
+## Deploy from source (`render.yaml` Blueprint)
+
+Developers modifying OpenMA can also use the repository's
+[`render.yaml` Blueprint](https://github.com/openma-ai/open-managed-agents/blob/main/render.yaml),
+which builds `apps/main-node/Dockerfile` from source, attaches a 10 GB persistent
+disk at `/app/data`, generates `BETTER_AUTH_SECRET` and `PLATFORM_ROOT_SECRET`,
+and starts the service via `apps/main-node/scripts/start-render.sh`.
+
+See [Render image deployment](https://render.com/docs/deploying-an-image) and
+[Blueprint Specification](https://render.com/docs/blueprint-spec) for platform requirements.

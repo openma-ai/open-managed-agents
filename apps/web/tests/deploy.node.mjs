@@ -200,3 +200,22 @@ test("site navigation links to the deployment wizard", async () => {
 
   assert.match(homepage, /href="\/deploy\/"[^>]*>Deploy<\/a>/);
 });
+
+test("provider links override saved wizard choices and ignore unknown targets", () => {
+  assert.equal(typeof deployWizard.parseDeploymentTarget, "function");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=docker")), "docker");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=render")), "render");
+  assert.equal(deployWizard.parseDeploymentTarget(new URLSearchParams("provider=unknown")), null);
+});
+
+test("Render offers image deployment and start script without Git repository authorization", () => {
+  const plan = buildDeploymentPlan({ target: "render", modelSetup: "console", dataMode: "managed" });
+  const url = new URL(plan.launchUrl);
+  assert.equal(url.origin, "https://dashboard.render.com");
+  assert.equal(url.pathname, "/");
+  assert.equal(url.searchParams.get("repo"), null);
+  assert.match(plan.command, /start-render\.sh/);
+  assert.match(plan.persistence, /disk/i);
+  assert.ok(plan.requirements.some((value) => /E2B_API_KEY/.test(value)));
+  assert.equal(plan.collectsSecrets, false);
+});
