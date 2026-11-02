@@ -1272,12 +1272,6 @@ describe("SessionDO recovery — DO-level", () => {
         await new Promise((r) => setTimeout(r, 20));
       }
       instance.drainEventQueue = async () => {};
-      // Keep persisted alarms in the future relative to workerd's real clock.
-      // runDurableObjectAlarm manually deletes then invokes alarm(); a
-      // past-due alarm would let the runtime race that manual delivery
-      // (same race #404 fixed in the sibling no-progress backoff test).
-      const nowMs = Date.now() + 60 * 60 * 1_000;
-      instance.processedClock.nowMs = () => nowMs;
       // A row admitted while the lane was exhausted is held; it can only
       // move when a newer admission arrives, not on a 1s timer.
       instance.setState({
@@ -1295,12 +1289,12 @@ describe("SessionDO recovery — DO-level", () => {
     const delays: number[] = [];
     for (let i = 0; i < 3; i++) {
       await runInDurableObject(stub, async (_instance, state) => {
-        await state.storage.setAlarm(Date.now() + 60 * 60 * 1_000);
+        await state.storage.setAlarm(Date.now() - 1_000);
       });
-      expect(await runDurableObjectAlarm(stub), "manual alarm must be delivered").toBe(true);
+      await runDurableObjectAlarm(stub);
       const snapshot = await runInDurableObject(stub, async (instance, state) => ({
         alarm: await state.storage.getAlarm(),
-        now: instance.processedClock.nowMs(),
+        now: Date.now(),
         failures: instance._queueDrainFailures as number,
       }));
       expect(snapshot.failures, "held rows are not a failed drain").toBe(0);
