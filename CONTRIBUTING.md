@@ -1,6 +1,6 @@
 # 贡献指南
 
-**English.** Canonical contribution guide for the openma-ai org. It lives in `open-managed-agents` first; copy it to other org repos or an org `.github` repo and replace only **本仓库**. Shared rules: conventional-commit titles, squash merge, small PRs, green CI with a root cause for failures, a compatibility check on dependency bumps plus a follow-up bump downstream after release, private security reports, an evidence report on every PR before merge, and linking fixed issues with `Closes`/`Fixes` (or the Development sidebar) so they auto-close on merge into `main`.
+**English.** Canonical contribution guide for the openma-ai org. It lives in `open-managed-agents` first; copy it to other org repos or an org `.github` repo and replace only **本仓库**. Shared rules: conventional-commit titles, squash merge, small PRs, search for existing issues/PRs before opening new ones (bots must record the search), green CI with a root cause for failures, a compatibility check on dependency bumps plus a follow-up bump downstream after release, private security reports, an evidence report on every PR before merge, and linking fixed issues with `Closes`/`Fixes` (or the Development sidebar) so they auto-close on merge into `main`.
 
 以下各节是组织约定。「本仓库」只适用于 `open-managed-agents`。复制到别的仓库时换掉「本仓库」一节，并改掉文中指向本仓库文件的链接。
 
@@ -38,6 +38,23 @@
 
 lockfile 冲突时可以把多篇依赖更新合成一篇，跑一次完整 CI（#202 包含 #201–#206）。描述里列出被包含的 PR。
 
+## 去重 / Deduplicate
+
+开 issue 或 PR **之前**，先在本仓库搜一遍有没有同类工作。人工作者和 bot / agent 都适用。
+
+1. 搜 open issue、最近关闭的 issue、以及 open PR。关键词用症状、报错原文、组件或文件名；关联编号时把 `Fixes #N` / `#N` 也搜进去。
+2. 已经有同类的：挂到现有 issue，或在现有 PR 分支上继续改。不要新开。
+3. bot / agent 额外要求：开之前必须在任务记录或即将发出的描述里写出搜过的关键词和查到的结果（链接或「无匹配」）。结果非空却仍要新开时，说明现有 issue / PR 为什么不够用。
+4. 证据报告的「问题 / 动机」里写上相关 issue / PR，或明确写「已搜，无重复」。PR 模板里有对应勾选。
+
+示例命令（把 `REPO` 和关键词换成当前仓库）：
+
+```bash
+gh issue list --repo openma-ai/REPO --state open --search "<关键词>"
+gh issue list --repo openma-ai/REPO --state closed --search "<关键词>" --limit 20
+gh pr list --repo openma-ai/REPO --state open --search "<关键词>"
+```
+
 ## Issue 关联 / Linking issues
 
 **English.** Fixing or implementing an open issue **requires** linking it on the PR before merge. Preferred: put a closing keyword on its own line in the PR description (`Closes #123`, `Fixes #123`, or `Resolves #123`). A branch name that contains the number is **not** enough for auto-close. Linking via the GitHub PR Development / linked issues UI has the same effect when merging to the default branch. Auto-close only runs when the PR merges into the repo default branch (`main`). Do not manually close a linked issue; let merge close it.
@@ -70,7 +87,7 @@ Closes #123
 
 ### 问题 / 动机
 
-缺陷要有**在真实产品上**的复现：命令、版本、原样输出。只写推理不够。新能力写清谁在什么场景下需要它。
+缺陷要有**在真实产品上**的复现：命令、版本、原样输出。只写推理不够。新能力写清谁在什么场景下需要它。同时写相关 issue / PR，或写「已搜，无重复」（见「去重」）。
 
 ### 根因
 
