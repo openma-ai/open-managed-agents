@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import { OverflowText } from "./overflow-text"
 
 function Table({
   className,
@@ -95,16 +96,25 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   )
 }
 
-function TableCell({ className, ...props }: React.ComponentProps<"td">) {
+type TableCellProps = React.ComponentProps<"td"> & {
+  /** Opt in for plain string/number children only; interactive/rich nodes stay untouched. */
+  textOverflow?: "play"
+}
+
+function TableCell({ className, textOverflow, children, ...props }: TableCellProps) {
+  const playText = textOverflow === "play" && (typeof children === "string" || typeof children === "number")
   return (
     <td
       data-slot="table-cell"
       className={cn(
         "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        playText && "overflow-hidden",
         className
       )}
       {...props}
-    />
+    >
+      {playText ? <OverflowText>{children}</OverflowText> : children}
+    </td>
   )
 }
 

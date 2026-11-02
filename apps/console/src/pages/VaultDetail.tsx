@@ -324,7 +324,16 @@ export function VaultDetail() {
                   : "No credentials match the current filter."}
               </div>
             ) : (
-              <Table className="console-detail-table">
+              <Table container={false} className="console-detail-table console-vault-credentials-table">
+                <colgroup>
+                  <col className="console-vault-col-name" />
+                  <col className="console-vault-col-id" />
+                  <col className="console-vault-col-type" />
+                  <col className="console-vault-col-target" />
+                  <col className="console-vault-col-status" />
+                  <col className="console-vault-col-updated" />
+                  <col className="console-vault-col-actions" />
+                </colgroup>
                 <TableHeader variant="wireless">
                   <TableRow variant="wireless">
                     <TableHead>Name</TableHead>
@@ -341,10 +350,10 @@ export function VaultDetail() {
                     const typeView = credentialTypeView(c);
                     return (
                       <TableRow variant="wireless" key={c.id}>
-                        <TableCell className="font-medium text-fg">
+                        <TableCell textOverflow="play" className="font-medium text-fg">
                           {c.display_name || "Untitled credential"}
                         </TableCell>
-                        <TableCell className="font-mono text-xs text-fg-muted">
+                        <TableCell textOverflow="play" className="font-mono text-xs text-fg-muted">
                           {c.id}
                         </TableCell>
                         <TableCell>
@@ -354,7 +363,7 @@ export function VaultDetail() {
                             {typeView.label}
                           </span>
                         </TableCell>
-                        <TableCell className="font-mono text-xs text-fg-muted truncate max-w-[260px]">
+                        <TableCell textOverflow="play" className="font-mono text-xs text-fg-muted">
                           {typeView.target || "—"}
                         </TableCell>
                         <TableCell>
