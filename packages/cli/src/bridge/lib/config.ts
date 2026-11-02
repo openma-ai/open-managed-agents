@@ -37,7 +37,7 @@ import { paths } from "./platform.js";
  * daemons; no new code should construct these.
  */
 export interface CredentialsV1 {
-  /** API root, e.g. "https://app.openma.dev". WS attach swaps https→wss. */
+  /** API root, e.g. "https://app.openma.ai". WS attach swaps https→wss. */
   serverUrl: string;
   /** Runtime row id returned by /agents/runtime/exchange. */
   runtimeId: string;
@@ -59,7 +59,7 @@ export interface CredentialsV1 {
  */
 export interface CredentialsV2 {
   v: 2;
-  /** API root, e.g. "https://app.openma.dev". WS attach swaps https→wss. */
+  /** API root, e.g. "https://app.openma.ai". WS attach swaps https→wss. */
   serverUrl: string;
   /** Runtime row id returned by /agents/runtime/exchange. */
   runtimeId: string;

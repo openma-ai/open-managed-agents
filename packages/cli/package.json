@@ -32,7 +32,7 @@
     "llm"
   ],
   "license": "Apache-2.0",
-  "homepage": "https://openma.dev",
+  "homepage": "https://openma.ai",
   "repository": {
     "type": "git",
     "url": "https://github.com/openma-ai/open-managed-agents",
