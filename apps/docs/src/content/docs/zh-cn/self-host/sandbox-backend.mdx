@@ -301,7 +301,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 
 | 层 | 键 | 谁读取 |
 |---|---|---|
-| 公开 environment | `config.type`、`config.packages`、`config.networking`、`config.dockerfile` | API 校验；仅在 Cloudflare 上，setup-on-warmup 读取 packages |
+| 公开 environment | `config.type`、`config.packages`、`config.networking`、`config.dockerfile` | API 校验；两边控制面都通过 `ensureEnvironmentPackages` 安装 packages |
 | 公开 agent | `harness`、`acp.agent`（`command`、`args`、`env`、`cwd`、可选的注册表 `id`）、`acp.restart`、超时，以及 `acp-proxy` 的 `runtime_binding` | Harness 注册表。`acp-sandbox` 注册在 `apps/agent/src/harness/builtins.ts` |
 | 公开 session | `environment_id`、`vault_ids`、文件/git/memory 资源 | 资源物化器和出站范围。不是后端 id |
 | Node 进程环境 | `SANDBOX_PROVIDER` 加上该 factory 自己的键（`E2B_*`、`DAYTONA_*`、`BOXRUN_URL`、`SANDBOX_IMAGE`、`MEMORY_S3_*`、`FILES_S3_*` 等） | 选中的 `sandboxFactory` 或托管预设。`readS3MemoryBucket` 是共享的 S3 助手 |
@@ -434,7 +434,7 @@ HOSTED_INFERENCE_TOKEN = sessions_token
 | 多个 session 共享一个沙箱 | 不是 port。子 agent 共享父沙箱 |
 | `ManagedSandboxPort.resume` | 不是方法。恢复是一次新的 `acquire`、provider 本地重连，或工具沙箱接缝上的 `SandboxProviderPort.resume` |
 | 进程内存检查点 | Port 存在。没有已发布预设设置 `runtimeCheckpoints` |
-| 从 `config.dockerfile` / `config.packages` 做可移植镜像构建 | 存在 environment 上。构建流水线已移除。包安装只在 Cloudflare setup-on-warmup 中运行 |
+| 从 `config.dockerfile` / `config.packages` 做可移植镜像构建 | 存在 environment 上。构建流水线已移除。运行时装包是两边控制面的 `ensureEnvironmentPackages`，不是可移植镜像构建钩子 |
 | 跨后端的镜像拉取与层缓存 | 没有 port。`openma/sandbox-base` 的缓存是一个 workflow 的 GitHub Actions cache |
 | 非 Cloudflare 后端的 `sandbox_active_seconds` | 不发出 |
 | acquire/terminate 上的计费回调 | 不是方法。成本报表是可选的拉取 port |

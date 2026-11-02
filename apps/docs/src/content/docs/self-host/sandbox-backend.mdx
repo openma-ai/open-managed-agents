@@ -464,7 +464,7 @@ route does not read a provider field).
 
 | Layer | Keys | Who reads them |
 |---|---|---|
-| Public environment | `config.type`, `config.packages`, `config.networking`, `config.dockerfile` | API validation and, on Cloudflare only, setup-on-warmup for packages |
+| Public environment | `config.type`, `config.packages`, `config.networking`, `config.dockerfile` | API validation, plus `ensureEnvironmentPackages` on both control planes for packages |
 | Public agent | `harness`, `acp.agent` (`command`, `args`, `env`, `cwd`, optional registry `id`), `acp.restart`, timeouts, `runtime_binding` for `acp-proxy` | Harness registry. `acp-sandbox` is registered in `apps/agent/src/harness/builtins.ts` |
 | Public session | `environment_id`, `vault_ids`, file/git/memory resources | Resource materializer and egress scope. Not a backend id |
 | Node process env | `SANDBOX_PROVIDER` plus that factory's keys (`E2B_*`, `DAYTONA_*`, `BOXRUN_URL`, `SANDBOX_IMAGE`, `MEMORY_S3_*`, `FILES_S3_*`, …) | The selected `sandboxFactory` or managed preset. `readS3MemoryBucket` is the shared S3 helper |
@@ -657,12 +657,12 @@ silently treated as supported.
 | One sandbox shared by multiple sessions | Not a port. Sub-agents share the parent |
 | `ManagedSandboxPort.resume` | Not a method. Resume is a new `acquire`, a provider-local reconnect, or `SandboxProviderPort.resume` on the tool-sandbox seam |
 | Process-memory checkpoint | Port exists. No shipped preset sets `runtimeCheckpoints` |
-| Portable image build from `config.dockerfile` / `config.packages` | Stored on the environment. Build pipeline removed. Package install runs in Cloudflare setup-on-warmup only |
+| Portable image build from `config.dockerfile` / `config.packages` | Stored on the environment. Build pipeline removed. Runtime package install is `ensureEnvironmentPackages` on both control planes; it is not a portable image-build hook |
 | Cross-backend image pull and layer cache | No port. `openma/sandbox-base` cache is the GitHub Actions cache of one workflow |
 | `sandbox_active_seconds` for non-Cloudflare backends | Not emitted |
 | Billing callback on acquire/terminate | Not a method. Cost reports are optional pull ports |
 | Analytics Engine events from a backend | Helper exists for Workers. No sandbox port calls it |
-| `base_snapshot` image strategy | Column and type remain. Installer was removed |
+| `base_snapshot` image strategy | Column and type remain. The per-environment image build is gone; runtime package install is separate |
 | `SANDBOX_PROVIDER` list vs conformance list | Different sets. Vercel, Modal, Blaxel, Superserve, node-docker, and cloudflare-bridge are managed drivers. They are not keys in `SANDBOX_PROVIDER_PATHS` |
 | Firecracker as an OpenMA provider id | Not present. E2B and LiteBox talk to their own microVM control planes |
 | boat.dev / AgentENV | Not present. They would be new drivers against this contract |
