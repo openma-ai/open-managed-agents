@@ -8,6 +8,8 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 The Managed Runtime Host is the deployment-side layer around a worker or an
 in-sandbox harness. It owns compute lifetime, `/workspace`, final deliverables,
 and split-brain fencing. It does **not** change the Managed Agents API.
+Implementers of a new backend follow the
+[execution backend contract](/self-host/sandbox-backend/).
 
 An official self-hosted Environment remains exactly:
 

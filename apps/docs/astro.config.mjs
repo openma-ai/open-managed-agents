@@ -17,6 +17,13 @@ export default defineConfig({
     starlight({
       title: 'openma',
       description: 'Open-source alternative to Claude Managed Agents — self-host Claude agents on Cloudflare or Docker.',
+      // Root keeps the existing English URLs. `zh-cn` is Starlight's locale
+      // directory; the language picker switches `/…` and `/zh-cn/…`.
+      defaultLocale: 'root',
+      locales: {
+        root: { label: 'English', lang: 'en' },
+        'zh-cn': { label: '简体中文', lang: 'zh-CN' },
+      },
       logo: {
         src: './src/assets/logo.svg',
         replacesTitle: true,
@@ -71,6 +78,7 @@ export default defineConfig({
             { label: 'Quickstart', slug: 'quickstart' },
             { label: 'Concepts', slug: 'concepts' },
             { label: 'Sandboxes', slug: 'sandboxes' },
+            { label: 'CMA compatibility', slug: 'claude-managed-agents-compatibility' },
             {
               label: 'OpenMatter Super-agent',
               slug: 'ecosystem/openmatter-super-agent',
@@ -105,6 +113,11 @@ export default defineConfig({
             { label: 'Deploy on Fly.io', slug: 'self-host/fly' },
             { label: 'Managed Runtime Host', slug: 'self-host/managed-runtime-host' },
             { label: 'Sandbox & persistence', slug: 'self-host/sandbox-persistence' },
+            {
+              label: 'Execution backend contract',
+              translations: { 'zh-CN': '执行后端接入契约' },
+              slug: 'self-host/sandbox-backend',
+            },
             {
               label: 'Sandbox providers',
               collapsed: true,
