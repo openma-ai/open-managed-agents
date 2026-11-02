@@ -2,7 +2,7 @@
 
 This is the canonical contribution guide for the openma-ai organization. It lives in `open-managed-agents` first. To reuse it in another organization repository or an organization `.github` repository, replace the **This repository** section and update repository-specific links.
 
-The shared rules are conventional-commit titles, squash merges, small PRs, searching for existing issues/PRs before opening new ones (bots must record the search), green CI with explained failures, compatibility checks for dependency upgrades and downstream bumps after release, private security reports, and an evidence report on every PR before merge.
+The shared rules are conventional-commit titles, squash merges, small PRs, searching for existing issues/PRs before opening new ones (bots must record the search), green CI with explained failures, compatibility checks for dependency upgrades and downstream bumps after release, private security reports, an evidence report on every PR before merge, and linking fixed issues with `Closes`/`Fixes` (or the Development sidebar) so they auto-close on merge into `main`.
 
 ## Branches
 
@@ -12,7 +12,7 @@ Branch from `main`. Use lowercase names for manually created branches:
 <type>/<kebab-summary>
 ```
 
-Use the same type as the PR title. Examples from merged PRs include `fix/ci-minio-image` (#227), `feat/sql-realtime-fanout` (#222), `refactor/split-node-assembly` (#234), and `docs/discord-community` (#197). Include the issue number when applicable, for example `fix/196-session-update-idle`.
+Use the same type as the PR title. Examples from merged PRs include `fix/ci-minio-image` (#227), `feat/sql-realtime-fanout` (#222), `refactor/split-node-assembly` (#234), and `docs/discord-community` (#197). Include the issue number when applicable, for example `fix/196-session-update-idle`. The number in a branch name helps readers only; auto-close also needs `Closes #N` in the PR description (see [Linking issues](#linking-issues)).
 
 Keep tool-generated prefixes unchanged: `dependabot/…`, `codex/…`, and `cursor/…`. In deepseek-harness-acp, dsh upgrade branches use `codex/bump-dsh-<version>`.
 
@@ -55,11 +55,33 @@ gh issue list --repo openma-ai/REPO --state closed --search "<keywords>" --limit
 gh pr list --repo openma-ai/REPO --state open --search "<keywords>"
 ```
 
+## Linking issues
+
+A PR that fixes or implements an open issue **must** link it before merge. Otherwise the issue stays open after merge (for example, Backchat #66 stayed open after its PR merged).
+
+**Preferred.** Put a closing keyword on its own line in the PR description, not inside a sentence:
+
+```text
+Closes #123
+```
+
+`Fixes #123` and `Resolves #123` also work. For several issues, put each keyword on its own line.
+
+**A branch name is not enough.** A number in the branch name (such as `fix/196-…`) helps readers but does **not** trigger GitHub's auto-close.
+
+**Alternative.** Link the issue in the PR's Development / linked issues sidebar. It has the same effect when the PR merges into the default branch.
+
+**Default branch only.** Auto-close runs only when the PR merges into the repository default branch (`main` in this organization). Merging into any other branch does not close the issue.
+
+**Do not close it by hand.** Once a PR is linked, let the merge close the issue. If an older PR merged without a keyword and its issue is still open, a maintainer may close it as completed and name the PR that landed it.
+
+When the PR has a linked issue, add a "Linked issue" line to the evidence report: `Closes #N` / `Fixes #N`, or a note that it is linked through the Development sidebar.
+
 ## Evidence report
 
 **Before merge, the PR description or a comment must contain an evidence report for the current head SHA.** Do not merge if sections are missing or the evidence refers to an older SHA. This is not enforced by a status check: the author supplies the report and the maintainer verifies it. Use [the PR template](.github/pull_request_template.md).
 
-Include all six sections. If a section does not apply, write “Not applicable” and explain why.
+Include all six sections. If a section does not apply, write “Not applicable” and explain why. If this PR fixes or implements an issue, also put the linked-issue line at the top of the description (see [Linking issues](#linking-issues)); the template reserves a `Closes #` line.
 
 ### Problem / motivation
 
