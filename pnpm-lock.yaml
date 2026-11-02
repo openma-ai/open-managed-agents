@@ -247,8 +247,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/integrations-core
       '@openma/common':
-        specifier: file:./openma-common-0.13.1-dev.4.tgz
-        version: file:apps/console/openma-common-0.13.1-dev.4.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^0.13.0
+        version: 0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@openma/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
@@ -7042,24 +7042,8 @@ packages:
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
 
-  '@openma/common@0.9.1':
-    resolution: {integrity: sha512-1AwTA/RX9ifFW8DDCHpRVR4bT7JCyjMbxlSZ+A/s/nK0sHV1WNsMMXA+JfW27mr1z3viNjNuAqBXagQxQ46fuQ==}
-    engines: {node: '>=20'}
-    peerDependencies:
-      '@anthropic-ai/sdk': 0.120.x
-      react: '>=18'
-      react-dom: '>=18'
-    peerDependenciesMeta:
-      '@anthropic-ai/sdk':
-        optional: true
-      react:
-        optional: true
-      react-dom:
-        optional: true
-
-  '@openma/common@file:apps/console/openma-common-0.13.1-dev.4.tgz':
-    resolution: {integrity: sha512-zVgJYScRWxAqK7hjD6Bj1VVa6RkNWY9lN2Ha7rjC4NCR8E3ryUrpyzT7sWnm+MX0zuTBZ2eJ9eTkXstyAgQ9Aw==, tarball: file:apps/console/openma-common-0.13.1-dev.4.tgz}
-    version: 0.13.1-dev.4
+  '@openma/common@0.13.0':
+    resolution: {integrity: sha512-KpDl+GrFTcnSHb1TTdbwyAvzzsmpUuB4TGCrYSKwQAvcdOIda7CZu1uRty3/6E/oP0wS8cfk047m88NNDTn1+w==}
     engines: {node: '>=20'}
     peerDependencies:
       '@anthropic-ai/sdk': 0.120.x
@@ -7070,6 +7054,21 @@ packages:
       '@anthropic-ai/sdk':
         optional: true
       '@opentelemetry/api':
+        optional: true
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
+  '@openma/common@0.9.1':
+    resolution: {integrity: sha512-1AwTA/RX9ifFW8DDCHpRVR4bT7JCyjMbxlSZ+A/s/nK0sHV1WNsMMXA+JfW27mr1z3viNjNuAqBXagQxQ46fuQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@anthropic-ai/sdk': 0.120.x
+      react: '>=18'
+      react-dom: '>=18'
+    peerDependenciesMeta:
+      '@anthropic-ai/sdk':
         optional: true
       react:
         optional: true
@@ -17107,6 +17106,32 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
+  '@openma/common@0.13.0(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@agentclientprotocol/sdk': 1.9.0(zod@4.4.3)
+      '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-virtual': 3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      clsx: 2.1.1
+      fflate: 0.8.3
+      lucide-react: 1.35.0(react@19.2.8)
+      npm: 11.21.0
+      smol-toml: 1.9.1
+      streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      streaming-markdown: 0.2.15
+      tailwind-merge: 3.6.0
+      tar: 7.5.22
+      use-stick-to-bottom: 1.1.4(react@19.2.8)
+      zod: 4.4.3
+    optionalDependencies:
+      '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
+      '@opentelemetry/api': 1.9.0
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+    transitivePeerDependencies:
+      - '@types/react'
+      - '@types/react-dom'
+      - supports-color
+
   '@openma/common@0.9.1(@anthropic-ai/sdk@0.120.0(zod@3.25.76))(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
@@ -17150,32 +17175,6 @@ snapshots:
       zod: 4.4.3
     optionalDependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
-      react: 19.2.8
-      react-dom: 19.2.8(react@19.2.8)
-    transitivePeerDependencies:
-      - '@types/react'
-      - '@types/react-dom'
-      - supports-color
-
-  '@openma/common@file:apps/console/openma-common-0.13.1-dev.4.tgz(@anthropic-ai/sdk@0.120.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
-    dependencies:
-      '@agentclientprotocol/sdk': 1.9.0(zod@4.4.3)
-      '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@tanstack/react-virtual': 3.14.17(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      clsx: 2.1.1
-      fflate: 0.8.3
-      lucide-react: 1.35.0(react@19.2.8)
-      npm: 11.21.0
-      smol-toml: 1.9.1
-      streamdown: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      streaming-markdown: 0.2.15
-      tailwind-merge: 3.6.0
-      tar: 7.5.22
-      use-stick-to-bottom: 1.1.4(react@19.2.8)
-      zod: 4.4.3
-    optionalDependencies:
-      '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
-      '@opentelemetry/api': 1.9.0
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
