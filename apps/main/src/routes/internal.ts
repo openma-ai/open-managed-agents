@@ -24,10 +24,11 @@ export { injectMcpServersIntoSnapshot, refreshIntegrationMcpServers };
 // Mounted at /v1/oma/internal/* in apps/main/src/index.ts.
 //
 // EXCEPTION: /v1/oma/internal/usage_events/* uses BILLING_INTERNAL_SECRET
-// (separate Bearer header, separate scope) because the caller is the
-// hosted billing worker — a different trust principal than the
-// integrations gateway. Mounted as a sub-app at the bottom of this file
-// before the default export so it bypasses the integrations auth gate.
+// (separate Bearer header, separate scope) for the usage-export
+// reconciler trust principal — different from the integrations gateway.
+// Secret name retained while openma-hosted still authenticates with it.
+// Mounted as a sub-app at the bottom of this file so it bypasses the
+// integrations auth gate.
 
 const app = new Hono<{ Bindings: Env; Variables: { services: Services } }>();
 
@@ -82,10 +83,10 @@ function integrationsOrigin(env: Env): string {
 // instance below with its OWN bearer auth (BILLING_INTERNAL_SECRET) so
 // the two trust principals don't share a secret.
 app.use("*", async (c, next) => {
-  // Skip integrations-secret check for paths owned by the billing sub-app
-  // — they're mounted on the same /v1/oma/internal/* prefix from a different
-  // Hono. Without this short-circuit the integrations gate would 401 the
-  // billing worker before the request ever reached its own auth middleware.
+  // Skip integrations-secret check for paths owned by the usage-export
+  // sub-app — they're mounted on the same /v1/oma/internal/* prefix from
+  // a different Hono. Without this short-circuit the integrations gate
+  // would 401 the reconciler before its own auth middleware.
   if (c.req.path.startsWith("/v1/oma/internal/usage_events")) {
     return next();
   }
@@ -616,31 +617,26 @@ async function fetchVaultCredentials(
 // One less worker hop, no shared INTEGRATIONS_INTERNAL_SECRET on agent.
 
 // ─────────────────────────────────────────────────────────────────────
-// /v1/oma/internal/usage_events/* — billing reconcile API
+// /v1/oma/internal/usage_events/* — usage-export read+ack API
 //
-// Service-to-service: the hosted billing worker
-// (managed-agents-billing) calls these endpoints from a daily cron to
-// pull unbilled raw usage events, apply its rate map, debit
-// credit_ledger, then ack the ids back. OSS knows nothing about money;
-// this is purely the read+ack surface over the per-tenant `usage_events`
-// table.
+// Service-to-service: a downstream reconciler pulls unbilled raw usage
+// events then acks the ids. OSS knows nothing about money; this is
+// purely the read+ack surface over the per-tenant `usage_events` table.
 //
-// Auth: Bearer BILLING_INTERNAL_SECRET (separate from the integrations
-// gateway secret because the trust principal is different — we don't
-// want the integrations gateway able to ack billing rows or vice versa).
-// 503 when secret is unset (self-host / dev with no billing worker).
+// Auth: Bearer BILLING_INTERNAL_SECRET (name retained for hosted compat;
+// separate from the integrations gateway secret). 503 when unset.
 //
 // Cross-shard fan-out: `forEachShardServices` enumerates every shard
 // registered in shard_pool and runs the read against each shard's
 // per-tenant DB. Single shard = no overhead; multi-shard = parallel
 // fan-out with results merged client-side.
 // ─────────────────────────────────────────────────────────────────────
-const billingApp = new Hono<{ Bindings: Env }>();
+const usageExportApp = new Hono<{ Bindings: Env }>();
 
-billingApp.use("/usage_events/*", async (c, next) => {
+usageExportApp.use("/usage_events/*", async (c, next) => {
   const expected = c.env.BILLING_INTERNAL_SECRET;
   if (!expected) {
-    return c.json({ error: "billing internal endpoints not configured" }, 503);
+    return c.json({ error: "usage export endpoints not configured" }, 503);
   }
   const auth = c.req.header("authorization") ?? "";
   const provided = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -669,7 +665,7 @@ billingApp.use("/usage_events/*", async (c, next) => {
  *     count: number
  *   }
  */
-billingApp.get("/usage_events", async (c) => {
+usageExportApp.get("/usage_events", async (c) => {
   const sinceRaw = c.req.query("since");
   const limitRaw = c.req.query("limit");
   const tenantFilter = c.req.query("tenant_id");
@@ -717,7 +713,7 @@ billingApp.get("/usage_events", async (c) => {
  * AUTOINCREMENT but unique per shard — the caller's id set is grouped
  * by shard implicitly by tenant routing on the read side).
  */
-billingApp.post("/usage_events/ack", async (c) => {
+usageExportApp.post("/usage_events/ack", async (c) => {
   const body = await c.req.json<{ ids?: unknown }>().catch(() => ({} as { ids?: unknown }));
   const idsRaw = Array.isArray(body?.ids) ? (body.ids as unknown[]) : [];
   const ids = idsRaw.filter(
@@ -741,12 +737,10 @@ async function listUnbilledTenantsOnShard(
   return services.usage.listUnbilledTenants();
 }
 
-// Mount the billing sub-app onto the same /v1/oma/internal/* base. Because
-// we Hono-mount via `app.route("/", billingApp)`, every billingApp path
-// becomes a sibling under `/v1/oma/internal/*` — and the integrations auth
-// middleware above explicitly skips /v1/oma/internal/usage_events/* paths
-// so this sub-app's own bearer middleware is the only gate.
-app.route("/", billingApp);
+// Mount the usage-export sub-app onto the same /v1/oma/internal/* base.
+// Integrations auth middleware above skips /usage_events/* so this
+// sub-app's own bearer middleware is the only gate.
+app.route("/", usageExportApp);
 
 export default app;
 
