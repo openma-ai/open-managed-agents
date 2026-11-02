@@ -81,3 +81,4 @@ Numbers 0001–0003 and 0012 are not used in this repository.
 | [0010](0010-gitlab-bonds.md) | Self-managed GitLab Bonds, user principal by default | Proposed |
 | [0011](0011-matter-bond-and-loop.md) | Matter, Bond and Loop in OMA, starting with GitLab and Feishu | Proposed |
 | [0013](0013-retire-legacy-oma-resource-stack.md) | Retire the legacy OMA resource stack | Proposed |
+| [0014](0014-session-sandbox-provisioning-and-tool-wall.md) | Provision the Session sandbox at create time; wall tools, not the model | Proposed |
