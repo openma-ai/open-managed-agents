@@ -11,6 +11,26 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("OpenMA SDK composition facade", () => {
+  it("defaults baseURL to the live Console/API host", async () => {
+    const requests: Request[] = [];
+    const client = new OpenMA({
+      apiKey: "oma_test_key",
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        const request = input instanceof Request
+          ? new Request(input, init)
+          : new Request(input.toString(), init);
+        requests.push(request);
+        return jsonResponse({ data: [], next_page: null });
+      },
+    });
+
+    await client.beta.agents.list({ limit: 1 });
+
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).origin).toBe("https://app.openma.ai");
+  });
+
   it("runs the Managed Agents lane through the exact official SDK beta resource", async () => {
     const requests: Request[] = [];
     const fetcher: typeof fetch = async (input, init) => {

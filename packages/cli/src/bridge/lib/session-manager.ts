@@ -111,7 +111,7 @@ interface ActiveSession {
 }
 
 export interface SessionManagerEnv {
-  /** OMA server URL, e.g. https://app.openma.dev. Used to fetch session
+  /** OMA server URL, e.g. https://app.openma.ai. Used to fetch session
    *  bundle and as the base for mcp-proxy URLs we send into mcpServers. */
   apiUrl: string;
   /** Runtime token (`sk_machine_*`) — daemon's bearer for /agents/runtime/*
