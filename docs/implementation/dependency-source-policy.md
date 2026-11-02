@@ -12,22 +12,18 @@ and Git, and CI plus the official server-image verification run it before
 A registry dependency that has not actually been published still fails the frozen
 install; this static guard does not replace registry/install verification.
 
-## Existing common tarball remediation
+## Common tarball remediation
 
-PR #399 introduced `apps/console/openma-common-0.13.1-dev.4.tgz`. The guard
-intentionally rejects that existing violation: no grandfathering or CI bypass.
-Do not merge this policy change alone while that dependency remains.
+PR #399 introduced `apps/console/openma-common-0.13.1-dev.4.tgz`.
+`@openma/common@0.13.0` is now published after common #60 and release #61.
+Console uses `^0.13.0`; the archive and Dockerfile's dedicated COPY are removed,
+and the lockfile is regenerated with pnpm 11.0.8. The guard has no exceptions.
 
-Before enabling this on main:
+The published package additionally includes ACP permission-request input hold
+changes beyond the old development tarball. Downstream Console tests/build and
+server CI must pass before merge; publishing common does not verify a deployed
+OMA browser session.
 
-1. Fix and merge openma-common #60 and publish an approved stable version.
-2. Verify the published package exports the Console's required APIs and includes
-   the relevant QueueDock/ACP fixes (do not assume the development tarball and
-   the PR head are identical).
-3. Replace the Console dependency with the published range, remove the tracked
-   tarball, and remove its dedicated COPY from `apps/main-node/Dockerfile`.
-4. Regenerate `pnpm-lock.yaml` using the repository's pinned pnpm version.
-5. Run the policy tests/check, frozen install, Console tests/build, server image
-   verification and CI. Merge only when they pass.
-
-The npm release, PR merge and deployment remain separate operator decisions.
+For future external changes: publish the upstream package first, then update the
+manifest and lockfile and run the guard, frozen install and consumer tests.
+Never bridge the release gap with a local package archive.
