@@ -1,7 +1,7 @@
 <!--
 合并前写全下面六段。放在本描述或一条评论里均可，但必须对应当前 head SHA。
-不适用的段落写「不适用」并说明原因。填写说明见 CONTRIBUTING.md「证据报告」。
-修复或实现某个 issue 时，还必须关联该 issue（见 CONTRIBUTING.md「Issue 关联」）。
+不适用的段落写「不适用」并说明原因。填写说明见 CONTRIBUTING.md「Evidence report」。
+修复或实现某个 issue 时，还必须关联该 issue（见 CONTRIBUTING.md「Linking issues」）。
 -->
 
 ## 关联 issue / Linked issues
