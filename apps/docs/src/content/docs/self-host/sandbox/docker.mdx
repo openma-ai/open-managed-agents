@@ -1,0 +1,68 @@
+---
+title: Self-host on Docker sandboxes
+description: Run sessions in local Docker containers on the Node host — the node-docker driver with SQL fencing and durable workspace checkpoint/restore (filesystem; no process-memory checkpoint).
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The `node-docker` driver runs each Session in a Docker container on the same
+host as the Node server, driven through a Docker CLI adapter — no external
+sandbox account needed. Workspaces live on the host filesystem and use
+durable workspace checkpoint/restore at the filesystem level — there is no
+process-memory checkpoint and no provider suspend/resume.
+
+## Prerequisites
+
+- Docker installed and reachable by the worker process (a `DockerCommandPort`
+  adapter; a custom `docker` command port can be injected for non-standard
+  setups).
+- An image reference such as `node:22-slim`.
+- The Node self-host's own requirements (`BETTER_AUTH_SECRET`,
+  `PLATFORM_ROOT_SECRET`, a SQL backend). See
+  [Node + Docker (no Cloudflare)](/self-host/node-docker/).
+
+## Configuration
+
+Docker is composed as the preinstalled Node runtime, not via
+`SANDBOX_PROVIDER`. The factories are `createNodeManagedRuntime` /
+`createNodeManagedRuntimeDriver` /
+`createNodeManagedEnvironmentWorker` in
+`@open-managed-agents/managed-runtime-node`:
+
+```ts
+const runtime = await createNodeManagedRuntime({
+  rootDir: "/var/lib/openma",
+  sql,                       // SqlClient — SQLite/Postgres/MySQL
+  initializeFenceSchema: true,
+  ownerId: processId,
+  leaseTtlMs: 90_000,
+  heartbeatIntervalMs: 30_000,
+  image: "node:22-slim",
+});
+```
+
+The full option set: `rootDir`, `sql`, `initializeFenceSchema`, `ownerId`,
+`leaseTtlMs`, `heartbeatIntervalMs`, `checkpointIntervalMs`, `image`,
+`network`, `docker`, `additionalMounts` (source/destination/readOnly),
+`extraHosts`, `scheduler`, `fence`, `runtimeCheckpoint`,
+`credentialEgress`, and `sessionInputs`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | unsupported |
+| Workspace | `checkpoint_restore`, durable (host filesystem) |
+| Outputs | `final_collect`, durable (host filesystem) |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="caution">
+  The default Docker composition ships **no** credential-egress
+  implementation: proxy environment variables alone are not a credential
+  isolation boundary, and the legacy `oma-vault` env proxy on Node/Docker is
+  advisory — the sandbox can bypass it. Declare an enforced/advisory
+  `CredentialEgressPort` via `options.credentialEgress` when Sessions need
+  live credential injection.
+</Aside>
