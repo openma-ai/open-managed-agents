@@ -232,15 +232,21 @@ pnpm test
 
 Before submitting, run `pnpm typecheck` and tests for the packages you changed. Run `pnpm test` for shared-path changes. `pnpm test` does not include the subsequent CI checks for Console agent editor E2E, protocol coverage, storage, or MySQL. E2E requires Playwright; storage and MySQL require Docker. CI also grants the runner access to `/dev/kvm` before MySQL tests, as described below.
 
-The source guide records the following order for workflow `CI` (`.github/workflows/ci.yml`, PRs and `main`, job `verify`, then documented as `ubuntu-latest` with a 30-minute timeout). The workflow file is authoritative for current settings:
+Workflow `CI` (`.github/workflows/ci.yml`, PRs and `main`) is graded by **impact surface** (#417). The `changes` job classifies the diff with `scripts/ci-impact-surfaces.mjs` and only runs the matching `docs` / `web` / `cf` / `node` jobs. `release-check` stays a cheap PR-parallel job. The gate job remains named **`verify`** so skipped surfaces still count as success for branch protection. See the matrix in `.github/workflows/README.md`. The workflow file is authoritative for current settings.
 
-1. `pnpm typecheck`
-2. `pnpm test`
+The `node` job (`runs-on: ubuntu-24.04`, 45-minute timeout) runs for the Node impact surface or shared/lockfile-alone changes. Approximate order:
+
+1. `pnpm typecheck:ci:node`
+2. `pnpm test:ci:node` (does **not** include the root Cloudflare Vitest pool)
 3. Install Playwright Chromium, then run `pnpm test:e2e:agent-editor`.
 4. `pnpm test:coverage:protocol`
-5. `pnpm test:integration:storage` — Testcontainers and MinIO (Chainguard image, #227).
-6. `Enable KVM for Litebox`
-7. `pnpm test:integration:mysql` — Testcontainers `mysql:8.4` (`apps/main-node/vitest.mysql.config.ts`). The suites are `test/persistence.mysql.integration.ts` and `test/main-node.mysql.integration.ts`. On October 2, 2026, after #237 merged, [CI run 36998373962](https://github.com/openma-ai/open-managed-agents/actions/runs/36998373962) (head `0d5c5f00`) recorded **2 files / 16 tests** (6 + 10). #239 did not change `ci.yml` or those files. This is a historical result, not an automatically updated latest-run pointer.
+5. `pnpm test:coverage:harness-web-http` (Codecov)
+6. `pnpm test:integration:storage` — Testcontainers and MinIO (Chainguard image, #227).
+7. `Enable KVM for Litebox`
+8. `pnpm test:integration:mysql` — Testcontainers `mysql:8.4` (`apps/main-node/vitest.mysql.config.ts`). The suites are `test/persistence.mysql.integration.ts` and `test/main-node.mysql.integration.ts`. On October 2, 2026, after #237 merged, [CI run 36998373962](https://github.com/openma-ai/open-managed-agents/actions/runs/36998373962) (head `0d5c5f00`) recorded **2 files / 16 tests** (6 + 10). #239 did not change `ci.yml` or those files. This is a historical result, not an automatically updated latest-run pointer.
+9. `pnpm --filter @open-managed-agents/main-node test:integration:postgres`
+
+The `cf` job runs `typecheck:ci:cf` + `test:ci:cf` (root Cloudflare Vitest pool + CF package tests) and does **not** run KVM / MySQL / Postgres / Console E2E. Docs-only changes run docs typecheck + `pnpm build:docs` only.
 
 **KVM.** The step's comments explain that ubuntu-24.04 runners have `/dev/kvm`, owned by `root:kvm` with mode `0660`, while the runner user is not in the `kvm` group. `Enable KVM for Litebox` runs before MySQL. If the device is missing, the job fails and MySQL does not run. The step writes a udev rule and runs `chmod 666 /dev/kvm`. It also fails if `chmod` fails or the current user does not end up with both read and write access.
 
