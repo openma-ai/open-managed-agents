@@ -38,6 +38,10 @@ Change one concern or responsibility at a time. The `main-node` control-plane ex
 
 When lockfiles conflict, related dependency updates may be combined into one PR with one full CI run (#202 included #201–#206). List the included PRs in the description.
 
+## Design decisions (ADR)
+
+Changes to cross-package or runtime contracts, observable `/v1` / SDK behaviour, or decisions that are expensive to reverse need an ADR in [`docs/adr/`](docs/adr/README.md) before or with the first implementation PR. A large topic gets one tracking issue for delivery; research stays in issues or `docs/`, and discussion of the decision happens on the ADR PR. See [`docs/adr/README.md`](docs/adr/README.md) for the lifecycle and template.
+
 ## Deduplicate
 
 **Before** opening an issue or PR, search this repository for similar work. This applies to human contributors and bots / agents alike.
