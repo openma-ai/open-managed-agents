@@ -36,6 +36,10 @@ export class SandboxS3MountError extends Error {}
 export class SandboxBackupError extends Error {}
 export class SandboxProtocolError extends Error {}
 
+// Empty DO class for wrangler.test.jsonc SANDBOX binding. Vitest/miniflare
+// has no containers; production uses OmaSandbox from apps/agent.
+export class Sandbox {}
+
 // Legacy test override still used by older helpers; CloudflareSandbox now
 // uses setCloudflareSandboxForTest from runtime/sandbox.ts.
 let sandboxOverride;

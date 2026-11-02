@@ -13,8 +13,11 @@ registerCoreHarnesses();
 registerTestHarnesses();
 
 export { SessionDO } from "../apps/agent/src/runtime/session-do";
-export { OmaSandbox as Sandbox, OmaOutbound } from "../apps/agent/src/oma-sandbox";
-export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";
+// Resolve via vitest alias to test/sandbox-stub.ts (empty DO). Do NOT export
+// OmaSandbox here — it requires ctx.container, which miniflare does not provide,
+// and causes session warmup loops ("No container is configured") that leave
+// sessions stuck in running across the integration suite.
+export { Sandbox } from "@cloudflare/sandbox";
 export { RuntimeRoom } from "../apps/main/src/runtime-room";
 export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 
