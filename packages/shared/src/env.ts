@@ -238,11 +238,22 @@ export interface Env {
       workspaceId: string;
       sessionId: string;
       event: string;
+      executionFence?: unknown;
     }): Promise<
       | { type: "recorded" }
       | { type: "ignored" }
       | { type: "not_found" }
       | { type: "version_conflict" }
+    >;
+    /** Stamp queued accepted inputs once processing finishes; same ids. */
+    managedSessionEventsMarkProcessed(opts: {
+      workspaceId: string;
+      sessionId: string;
+      eventIds: string[];
+      processedAt: string;
+    }): Promise<
+      | { type: "marked"; events: unknown[] }
+      | { type: "not_found" }
     >;
     mcpForward(opts: {
       tenantId: string;

@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Full repository tests plus browser, storage and MySQL integration now
     # approach 20 minutes on GitHub runners; allow cleanup to finish.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7

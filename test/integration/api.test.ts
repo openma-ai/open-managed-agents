@@ -483,11 +483,10 @@ describe("DO resilience", () => {
     const events = await collectReplayedEvents(session.id);
 
     expect(events.length).toBeGreaterThanOrEqual(2);
-    // Post-dual-table refactor: user.message events live in
-    // pending_events until drain promotes them. The WS replay reads
-    // from events (history.getEvents); concurrent broadcast surfaces
-    // each pending message via system.user_message_pending. Look at
-    // either to find both inputs.
+    // Single-table queue: user.message rows live in events with
+    // processed_at NULL until drain promotes them in place. WS replay
+    // reads from events (history.getEvents) and concurrent broadcast
+    // surfaces each queued message via system.user_message_pending.
     const texts = events
       .flatMap((e: any) => {
         if (e.type === "user.message" && e.content?.[0]?.text) {
@@ -803,9 +802,9 @@ describe("SSE endpoint matrix", () => {
   });
 
   // Helper: wait until the JSON history endpoint reports `n` user.message
-  // rows (drained from pending_events). Workerd test runtime varies a few
-  // hundred ms in drain latency, so polling is more reliable than a fixed
-  // sleep. Returns when the threshold is met or after `maxWaitMs`.
+  // rows (promoted in place from the null-processed queue). Workerd test
+  // runtime varies a few hundred ms in drain latency, so polling is more
+  // reliable than a fixed sleep. Returns when the threshold is met or after `maxWaitMs`.
   async function waitForUserMessages(sessionId: string, n: number, maxWaitMs = 5000): Promise<any[]> {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
@@ -827,8 +826,8 @@ describe("SSE endpoint matrix", () => {
     const { session } = await createFullSession();
     await postMessage(session.id, "turn one");
     await postMessage(session.id, "turn two");
-    // Wait for both user.message rows to land in the events table — drain
-    // promotes from pending_events asynchronously after the harness runs.
+    // Wait for both user.message rows to be promoted in the events table —
+    // drain stamps processed_at asynchronously after the harness runs.
     await waitForUserMessages(session.id, 2);
 
     const streamRes = await api(

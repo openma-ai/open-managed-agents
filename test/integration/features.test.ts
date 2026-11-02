@@ -1,5 +1,7 @@
 // @ts-nocheck
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { SqliteHistory } from "../../apps/agent/src/runtime/history";
 import { describe, it, expect, beforeAll } from "vitest";
 import { ensureModelCards } from "./_model-cards";
 import { registerTestHarnesses } from "../harnesses";
@@ -422,6 +424,20 @@ describe("New event types", () => {
   });
 
   it("accepts user.custom_tool_result", async () => {
+    // Official CMA: custom_tool_result must reference an existing tool use.
+    const stub = env.SESSION_DO!.get(env.SESSION_DO!.idFromName(sessionId));
+    await runInDurableObject(stub, async (instance, state) => {
+      const room = instance as any;
+      room._ensureCfAgentsSchema?.(); room.ensureSchema?.(); room._coldStartFlushDone = true;
+      const history = new SqliteHistory(state.storage.sql, null);
+      history.append({
+        type: "agent.custom_tool_use",
+        id: "toolu_custom1",
+        name: "weather",
+        input: {},
+        processed_at: new Date().toISOString(),
+      } as never);
+    });
     const res = await post(`/v1/oma/sessions/${sessionId}/events`, {
       events: [{
         type: "user.custom_tool_result",
@@ -649,6 +665,9 @@ describe("Harness crash recovery", () => {
 
     const error = events.find((e) => e.type === "session.error");
     expect(error).toBeTruthy();
-    expect(error.error).toContain("boom v2");
+    const errText = typeof error.error === "string"
+      ? error.error
+      : (error.error?.message ?? JSON.stringify(error.error));
+    expect(errText).toContain("boom v2");
   });
 });

@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@open-managed-agents/managed-agents-api": "workspace:*",
-    "@open-managed-agents/agents-store": "workspace:*",
+    "@open-managed-agents/agent-store": "workspace:*",
+    "@open-managed-agents/managed-agents-adapters-runtime": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/blob-store": "workspace:*",
     "@open-managed-agents/browser-harness": "workspace:*",

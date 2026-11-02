@@ -2,9 +2,11 @@
 // deployment factories live here behind a single SqlModelCardRepo class.
 
 export { SqlModelCardRepo } from "./sql-model-card-repo";
+export { ensureModelCardsPricingColumn } from "./ensure-pricing-column";
 
 import { drizzle } from "drizzle-orm/d1";
 import { SqlModelCardRepo } from "./sql-model-card-repo";
+import { ensureModelCardsPricingColumn } from "./ensure-pricing-column";
 import type { OmaDb } from "@open-managed-agents/db-schema";
 import type { Crypto, Logger } from "../ports";
 import { ModelCardService } from "../service";
@@ -15,7 +17,9 @@ export function createCfModelCardService(
 ): ModelCardService {
   const drz = drizzle(deps.db);
   return new ModelCardService({
-    repo: new SqlModelCardRepo(drz),
+    repo: new SqlModelCardRepo(drz, {
+      ensureSchema: () => ensureModelCardsPricingColumn(deps.db),
+    }),
     logger: opts?.logger,
     crypto: opts?.crypto,
   });

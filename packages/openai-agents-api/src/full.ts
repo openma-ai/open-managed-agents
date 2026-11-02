@@ -118,7 +118,7 @@ export function buildOpenAIAgentsProtocolApi(source: OpenAIAgentsProtocolPortSou
         });
       }
       cleanup();
-      if (definition.mode === "void") return new Response(null, { status: 204, headers: response.headers });
+      if (definition.mode === "void") return new Response(null, { status: response.status ?? 204, headers: response.headers });
       if (definition.mode === "binary") {
         if (response.binary === undefined) return invalidResponse();
         return new Response(response.binary, { status: response.status ?? 200, headers: { "content-type": "application/octet-stream", ...response.headers } });

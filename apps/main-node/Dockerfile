@@ -40,6 +40,8 @@ COPY apps/main/package.json apps/main/
 COPY apps/agent/package.json apps/agent/
 COPY apps/integrations/package.json apps/integrations/
 COPY apps/console/package.json apps/console/
+# file: tarball dep in console package.json must exist before pnpm install
+COPY apps/console/openma-common-*.tgz apps/console/
 COPY apps/docs/package.json apps/docs/
 COPY packages packages
 

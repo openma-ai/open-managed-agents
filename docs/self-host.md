@@ -268,7 +268,7 @@ fresh DB. Then export from SQLite + import via `psql`:
 
 ```bash
 # SQLite side
-sqlite3 ./data/oma.db ".dump agents agent_versions sessions session_events session_streams memories memory_stores memory_versions vaults credentials session_memory_stores tenant membership" > /tmp/oma-dump.sql
+sqlite3 ./data/oma.db ".dump managed_agents managed_agent_versions sessions session_events session_streams memories memory_stores memory_versions vaults credentials session_memory_stores tenant membership" > /tmp/oma-dump.sql
 # Strip SQLite-specific pragmas (BEGIN/COMMIT survive; PRAGMA / sqlite_sequence don't)
 sed -i '/^PRAGMA\|sqlite_sequence/d' /tmp/oma-dump.sql
 # PG side

@@ -8,7 +8,7 @@
 // (CF — services are per-request because of multi-tenant DB resolution).
 
 import type { Context } from "hono";
-import type { AgentService } from "@open-managed-agents/agents-store";
+import type { AgentStore } from "@open-managed-agents/agent-store";
 import type { VaultService } from "@open-managed-agents/vaults-store";
 import type { CredentialService } from "@open-managed-agents/credentials-store";
 import type { MemoryStoreService } from "@open-managed-agents/memory-store";
@@ -57,7 +57,7 @@ export interface SessionRegistryLike {
  */
 export interface RouteServices {
   sql: SqlClient;
-  agents: AgentService;
+  agents: AgentStore;
   vaults: VaultService;
   credentials: CredentialService;
   memory: MemoryStoreService;

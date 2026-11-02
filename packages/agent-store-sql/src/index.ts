@@ -1,9 +1,10 @@
-import { decodeAgent, encodeAgent } from "./codec";
 import type { SqlClient } from "@open-managed-agents/sql-client";
 import type {
   AgentStore,
   AgentRecord,
   ArchiveAgentRecord,
+  CountAgentRecords,
+  DeleteAgentRecordResult,
   ArchiveAgentRecordResult,
   FindAgentVersionRecord,
   FindCurrentAgentRecord,
@@ -19,7 +20,7 @@ interface AgentRow {
   config: string;
   version: number;
   created_at: number;
-  updated_at: number | null;
+  updated_at: number;
   archived_at: number | null;
 }
 
@@ -36,13 +37,13 @@ function timestamp(value: string): number {
 }
 
 function toAgent(row: AgentRow): AgentRecord {
-  const stored = decodeAgent(row.config);
+  const stored = JSON.parse(row.config) as AgentRecord;
   return {
     ...stored,
     id: row.id,
     version: Number(row.version),
     createdAt: new Date(Number(row.created_at)).toISOString(),
-    updatedAt: new Date(Number(row.updated_at ?? row.created_at)).toISOString(),
+    updatedAt: new Date(Number(row.updated_at)).toISOString(),
     archivedAt:
       row.archived_at === null
         ? null
@@ -56,14 +57,14 @@ export class SqlAgentStore implements AgentStore {
   async insert(input: InsertAgentRecord): Promise<AgentRecord> {
     const result = await this.client
       .prepare(
-        `INSERT INTO agents
-          (id, tenant_id, config, version, created_at, updated_at, archived_at)
+        `INSERT INTO managed_agents
+          (id, workspace_id, document, version, created_at, updated_at, archived_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         input.agent.id,
         input.workspaceId,
-        encodeAgent(input.agent),
+        JSON.stringify(input.agent),
         input.agent.version,
         timestamp(input.agent.createdAt),
         timestamp(input.agent.updatedAt),
@@ -86,9 +87,9 @@ export class SqlAgentStore implements AgentStore {
   async findCurrent(input: FindCurrentAgentRecord): Promise<AgentRecord | null> {
     const row = await this.client
       .prepare(
-        `SELECT id, config AS config, version, created_at, updated_at, archived_at
-           FROM agents
-          WHERE tenant_id = ? AND id = ?`,
+        `SELECT id, document AS config, version, created_at, updated_at, archived_at
+           FROM managed_agents
+          WHERE workspace_id = ? AND id = ?`,
       )
       .bind(input.workspaceId, input.agentId)
       .first<AgentRow>();
@@ -98,13 +99,13 @@ export class SqlAgentStore implements AgentStore {
   async findVersion(input: FindAgentVersionRecord): Promise<AgentRecord | null> {
     const row = await this.client
       .prepare(
-        `SELECT snapshot
-           FROM agent_versions
-          WHERE tenant_id = ? AND agent_id = ? AND version = ?`,
+        `SELECT document AS snapshot
+           FROM managed_agent_versions
+          WHERE workspace_id = ? AND agent_id = ? AND version = ?`,
       )
       .bind(input.workspaceId, input.agentId, input.version)
       .first<AgentVersionRow>();
-    return row === null ? null : decodeAgent(row.snapshot);
+    return row === null ? null : JSON.parse(row.snapshot) as AgentRecord;
   }
 
   async replaceCurrent(
@@ -119,21 +120,21 @@ export class SqlAgentStore implements AgentStore {
 
     const snapshot = this.client
       .prepare(
-        `INSERT INTO agent_versions
-          (agent_id, tenant_id, version, snapshot, created_at)
-         SELECT id, tenant_id, version, config, COALESCE(updated_at, created_at)
-           FROM agents
-          WHERE tenant_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
+        `INSERT INTO managed_agent_versions
+          (agent_id, workspace_id, version, document, created_at)
+         SELECT id, workspace_id, version, document, updated_at
+           FROM managed_agents
+          WHERE workspace_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
       )
       .bind(input.workspaceId, input.agentId, input.expectedVersion);
     const update = this.client
       .prepare(
-        `UPDATE agents
-            SET config = ?, version = ?, updated_at = ?, archived_at = ?
-          WHERE tenant_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
+        `UPDATE managed_agents
+            SET document = ?, version = ?, updated_at = ?, archived_at = ?
+          WHERE workspace_id = ? AND id = ? AND version = ? AND archived_at IS NULL`,
       )
       .bind(
-        encodeAgent(input.next),
+        JSON.stringify(input.next),
         input.next.version,
         timestamp(input.next.updatedAt),
         input.next.archivedAt === null
@@ -192,11 +193,11 @@ export class SqlAgentStore implements AgentStore {
     const archivedAt = timestamp(input.archivedAt);
     const result = await this.client
       .prepare(
-        `UPDATE agents
-            SET archived_at = ?, updated_at = ?, config = ?
-          WHERE tenant_id = ? AND id = ? AND version = ?`,
+        `UPDATE managed_agents
+            SET archived_at = ?, updated_at = ?, document = ?
+          WHERE workspace_id = ? AND id = ? AND version = ?`,
       )
-      .bind(archivedAt, archivedAt, encodeAgent({ ...current, archivedAt: input.archivedAt, updatedAt: input.archivedAt }), input.workspaceId, input.agentId, current.version)
+      .bind(archivedAt, archivedAt, JSON.stringify({ ...current, archivedAt: input.archivedAt, updatedAt: input.archivedAt }), input.workspaceId, input.agentId, current.version)
       .run();
     if (result.meta.changes === 0) return { type: "not_found" };
     if (result.meta.changes !== 1) {
@@ -214,7 +215,7 @@ export class SqlAgentStore implements AgentStore {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Agent list limit must be a positive integer");
     }
-    const conditions = ["tenant_id = ?"];
+    const conditions = ["workspace_id = ?"];
     const parameters: Array<string | number> = [input.workspaceId];
     if (!input.includeArchived) conditions.push("archived_at IS NULL");
     if (input.createdAtOrAfter !== undefined) {
@@ -234,8 +235,8 @@ export class SqlAgentStore implements AgentStore {
 
     const result = await this.client
       .prepare(
-        `SELECT id, config AS config, version, created_at, updated_at, archived_at
-           FROM agents
+        `SELECT id, document AS config, version, created_at, updated_at, archived_at
+           FROM managed_agents
           WHERE ${conditions.join(" AND ")}
           ORDER BY created_at DESC, id DESC
           LIMIT ?`,
@@ -251,9 +252,9 @@ export class SqlAgentStore implements AgentStore {
     }
     const result = await this.client
       .prepare(
-        `SELECT snapshot
-           FROM agent_versions
-          WHERE tenant_id = ? AND agent_id = ? AND version < ?
+        `SELECT document AS snapshot
+           FROM managed_agent_versions
+          WHERE workspace_id = ? AND agent_id = ? AND version < ?
           ORDER BY version DESC
           LIMIT ?`,
       )
@@ -265,7 +266,31 @@ export class SqlAgentStore implements AgentStore {
       )
       .all<AgentVersionRow>();
     return (result.results ?? []).map(
-      (row) => decodeAgent(row.snapshot),
+      (row) => JSON.parse(row.snapshot) as AgentRecord,
     );
+  }
+
+  async countCurrent(input: CountAgentRecords): Promise<number> {
+    const row = await this.client
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM managed_agents
+          WHERE workspace_id = ?${input.includeArchived ? "" : " AND archived_at IS NULL"}`,
+      )
+      .bind(input.workspaceId)
+      .first<{ n: number | string }>();
+    return Number(row?.n ?? 0);
+  }
+
+  async deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult> {
+    const results = await this.client.batch([
+      this.client
+        .prepare("DELETE FROM managed_agent_versions WHERE workspace_id = ? AND agent_id = ?")
+        .bind(input.workspaceId, input.agentId),
+      this.client
+        .prepare("DELETE FROM managed_agents WHERE workspace_id = ? AND id = ?")
+        .bind(input.workspaceId, input.agentId),
+    ]);
+    return results[1]?.meta.changes === 1 ? { type: "deleted" } : { type: "not_found" };
   }
 }

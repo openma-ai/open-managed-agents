@@ -1,3 +1,4 @@
+import { budgetExhausted } from "./budget";
 import { streamText, stepCountIs, wrapLanguageModel } from "ai";
 import type { ContentPart, ModelMessage, LanguageModel, SystemModelMessage } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
@@ -298,6 +299,12 @@ export class DefaultHarness implements HarnessInterface {
   async run(ctx: HarnessContext): Promise<void> {
     const { agent, userMessage, runtime, tools, model, systemPrompt } = ctx;
     warnAiSdkHarnessDeprecatedOnce(ctx.session_id ?? "unknown", (event) => { runtime.broadcast(event); });
+    // Pre-request budget gate (turn entry only; the deprecated AI SDK loop
+    // runs its multi-step tool loop inside one streamText call).
+    if (budgetExhausted(ctx.budget, runtime.history.getEvents())) {
+      ctx.budget!.reached = true;
+      return;
+    }
     const providerOptions =
       typeof agent.model === "object"
         ? agent.model.provider_options as SharedV3ProviderOptions | undefined
@@ -437,6 +444,8 @@ export class DefaultHarness implements HarnessInterface {
       // NoOutputGeneratedError. Keep the real error so the turn fails with it.
       let streamError: unknown;
       let stepSawFirstChunk = false;
+      const steerInsertions: Array<{ at: number; messages: ModelMessage[] }> = [];
+      let steerInsertedCount = 0;
 
       const streamStartedAt = Date.now();
       console.log(`[stream] streamText START model=${modelId} messages=${finalMessages.length} tools=${Object.keys(cached.tools ?? {}).length}`);
@@ -481,8 +490,51 @@ export class DefaultHarness implements HarnessInterface {
       messages: finalMessages,
       tools: cached.tools,
       providerOptions,
-      stopWhen: stepCountIs(100),
+      stopWhen: [
+        stepCountIs(100),
+        // Client-parked tools (always_ask / custom with execute stripped) must
+        // end the streamText loop. Continuing samples again with the unpaired
+        // tool_use still in context and emits agent.message text that lands
+        // BETWEEN tool_use and tool_result in the event log. DeepSeek's
+        // Anthropic-compat then 400s ("tool_use ids were found without
+        // tool_result blocks immediately after") even after settle — and
+        // concurrent two_clients traffic makes that interleaving routine.
+        ({ steps }: { steps: Array<{ toolCalls?: Array<{ toolCallId: string }>; toolResults?: Array<{ toolCallId: string }> }> }) => {
+          const last = steps.at(-1);
+          if (!last) return false;
+          const resulted = new Set((last.toolResults ?? []).map((r) => r.toolCallId));
+          return (last.toolCalls ?? []).some((c) => !resulted.has(c.toolCallId));
+        },
+      ],
       abortSignal: runtime.abortSignal,
+      // CMA coherent-turn steering: at each step boundary absorb mid-turn
+      // queued user.message into this turn (not next-turn outbox). AI SDK
+      // rebuilds step input from the initial messages plus response
+      // messages, so remember where each steer landed and splice it back
+      // in on every later step.
+      ...(runtime.takeSteeringInputs
+        ? {
+            prepareStep: async ({ messages, stepNumber }: { messages: ModelMessage[]; stepNumber: number }) => {
+              if (stepNumber > 0) {
+                const steered = await runtime.takeSteeringInputs!();
+                if (steered.length > 0) {
+                  const converted = await eventsToMessagesAsync(steered, ctx.fileFetcher);
+                  steerInsertions.push({ at: messages.length - steerInsertedCount, messages: converted });
+                  steerInsertedCount += converted.length;
+                }
+              }
+              if (steerInsertions.length === 0) return undefined;
+              const out: ModelMessage[] = [];
+              let cursor = 0;
+              for (const ins of steerInsertions) {
+                out.push(...messages.slice(cursor, ins.at), ...ins.messages);
+                cursor = ins.at;
+              }
+              out.push(...messages.slice(cursor));
+              return { messages: out };
+            },
+          }
+        : {}),
 
       onChunk: ({ chunk }) => {
         // First chunk of this step → emit span.model_first_token. Pair via

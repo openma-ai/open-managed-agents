@@ -1,3 +1,4 @@
+import { createSessionClockRegistry } from "@open-managed-agents/shared";
 import { describe, expect, it } from "vitest";
 import type {
   Environment,
@@ -15,7 +16,6 @@ import { MemorySessionRealtimeHub } from "@open-managed-agents/session-realtime-
 import {
   parseSandboxImageCatalog,
   resolveSandboxImage,
-  SandboxImageUnavailableError,
 } from "@open-managed-agents/sandbox";
 import * as runtimeModule from "../../../packages/control-plane-node/src/lib/node-managed-session-runtime.js";
 
@@ -121,6 +121,7 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       clock: { now: () => new Date("2026-08-26T00:30:00.000Z") },
       ids: { nextEventId: options.nextEventId ?? (() => `event_start_failure_0${++id}`) },
       startRetry: { attempts: 3, delayMs: options.delayMs ?? (() => 0) },
+      sessionClocks: createSessionClockRegistry(),
     });
     const accept = () => driver.accept({
       workspaceId: "workspace_01", sessionId: session.id, session, environment,
@@ -157,7 +158,14 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
       resolveSandboxImage(parseSandboxImageCatalog("{}"), "retired", "env_01");
     });
     const message = 'Sandbox image "retired" selected by environment env_01 is not in this deployment\'s SANDBOX_IMAGES catalog. Ask the operator to restore it, or update the environment to another image or the default image.';
-    await expect(accept()).rejects.toBeInstanceOf(SandboxImageUnavailableError);
+    // Non-retryable catalog miss still projects exhausted + retries_exhausted
+    // (session stays usable); accept rejects with SessionRetriesExhaustedError
+    // so the host can holdQueuedOnLane (owner lock).
+    await expect(accept()).rejects.toMatchObject({
+      name: "SessionRetriesExhaustedError",
+      holdQueuedOnLane: true,
+      message,
+    });
     expect(starts).toBe(1);
     expect(events()).toEqual([
       { type: "session.error", error: { type: "unknown_error", message, retryStatus: "exhausted" } },
@@ -857,6 +865,179 @@ describe("DefaultNodeManagedSessionRuntimeDriver", () => {
     releaseProjection?.();
     await Promise.all([output, stopping]);
     expect(stopped).toBe(true);
+  });
+
+  it("stamps a late user.tool_confirmation processed_at and re-emits it with the same id even when the runner returns early as no-effect (#398)", async () => {
+    const marked: Array<{ eventIds: string[]; processedAt: string }> = [];
+    const published: Array<{ id: string; type: string; processedAt: string | null }> = [];
+    const realtime = new MemorySessionRealtimeHub();
+    const publish = realtime.publish.bind(realtime);
+    realtime.publish = ((input: { frame: { event?: { id: string; type: string; processedAt: string | null } } }) => {
+      if (input.frame.event) published.push(input.frame.event);
+      return publish(input as never);
+    }) as typeof realtime.publish;
+    let engineAccepted = 0;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async () => {},
+        stop: async () => {},
+        // runner no-effect path: the call was already closed, nothing runs
+        accept: async () => { engineAccepted += 1; },
+        archiveThread: async () => {},
+      },
+      realtime,
+      projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      sessionClocks: createSessionClockRegistry(),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (command: { eventIds: string[]; processedAt: string }) => {
+            marked.push({ eventIds: [...command.eventIds], processedAt: command.processedAt });
+            return command.eventIds.map((id) => ({
+              id, type: "user.tool_confirmation", toolUseId: "sevt_closed", result: "allow",
+              processedAt: command.processedAt,
+            }));
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+    await driver.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [{ id: "sevt_late_confirm", type: "user.tool_confirmation", toolUseId: "sevt_closed",
+        result: "allow", processedAt: null } as never],
+    });
+    expect(engineAccepted).toBe(1);
+    expect(marked).toEqual([{ eventIds: ["sevt_late_confirm"], processedAt: "2026-08-26T05:00:00.000Z" }]);
+    expect(published.filter((e) => e.id === "sevt_late_confirm"))
+      .toEqual([expect.objectContaining({ id: "sevt_late_confirm", processedAt: "2026-08-26T05:00:00.000Z" })]);
+  });
+
+  it("holds mid-run inputs during startup retrying and stamps them only at the after-call consume boundary", async () => {
+    const marked: string[][] = [];
+    let starts = 0;
+    let rawTakes = 0;
+    let takesBeforeAccept = -1;
+    let engineTake: (() => Promise<unknown[]>) | undefined;
+    const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+      engine: {
+        start: async () => { if (++starts === 1) throw new Error("transient start failure"); },
+        stop: async () => {},
+        accept: async (input: { takeSteeringInputs?: () => Promise<unknown[]> }) => {
+          takesBeforeAccept = rawTakes;
+          engineTake = input.takeSteeringInputs;
+          // Harness reaches its next LLM/tool-call boundary inside this turn.
+          await engineTake?.();
+        },
+        archiveThread: async () => {},
+      },
+      realtime: new MemorySessionRealtimeHub(),
+      projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+      clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+      startRetry: { attempts: 3, delayMs: () => 0 },
+      sessionClocks: createSessionClockRegistry(),
+      eventProcessing: {
+        storeFor: () => ({
+          markProcessed: async (command: { eventIds: string[] }) => {
+            marked.push([...command.eventIds]);
+            return [];
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+    await driver.accept({
+      workspaceId: "workspace_01", sessionId: session.id, session, environment,
+      events: [{ id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: null } as never],
+      takeSteeringInputs: async () => {
+        rawTakes += 1;
+        return [{ id: "u_mid", type: "user.message", content: [{ type: "text", text: "also" }], processedAt: null } as never];
+      },
+    });
+    expect(starts).toBe(2);
+    // Nothing was taken (or stamped) while retrying/rescheduled.
+    expect(takesBeforeAccept).toBe(0);
+    expect(rawTakes).toBe(1);
+    expect(marked).toEqual([["u1"], ["u_mid"]]);
+  });
+
+  describe("user.message while parked in requires_action is rejected (CMA settle-only, #399)", () => {
+    const parked = () => [
+      { id: "u1", type: "user.message", content: [{ type: "text", text: "go" }], processedAt: "2026-08-26T04:00:00.000Z" },
+      { id: "c1", type: "agent.custom_tool_use", name: "t", input: {}, processedAt: "2026-08-26T04:00:01.000Z" },
+      { id: "c2", type: "agent.custom_tool_use", name: "t", input: {}, processedAt: "2026-08-26T04:00:01.001Z" },
+      { id: "i1", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c1", "c2"] }, processedAt: "2026-08-26T04:00:02.000Z" },
+    ] as Array<Record<string, unknown>>;
+    const harness = (history: Array<Record<string, unknown>>) => {
+      const marked: string[][] = [];
+      const accepted: string[][] = [];
+      const driver = new runtimeModule.DefaultNodeManagedSessionRuntimeDriver({
+        engine: {
+          start: async () => {},
+          stop: async () => {},
+          accept: async (input: { events: Array<{ id: string }> }) => { accepted.push(input.events.map((e) => e.id)); },
+          archiveThread: async () => {},
+          planQueuedInputs: async (input: { events: never[] }) =>
+            runtimeModule.planRequiresActionQueue(history, input.events),
+        },
+        realtime: new MemorySessionRealtimeHub(),
+        projectionFor: () => ({ recordSessionRuntimeEvents: async () => ({ type: "recorded", session }) }),
+        clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
+        sessionClocks: createSessionClockRegistry(),
+        eventProcessing: {
+          storeFor: () => ({
+            markProcessed: async (command: { eventIds: string[]; processedAt: string }) => {
+              marked.push([...command.eventIds]);
+              for (const e of history) if (command.eventIds.includes(e.id as string)) e.processedAt = command.processedAt;
+              return [];
+            },
+          }),
+        },
+      } as unknown as ConstructorParameters<typeof runtimeModule.DefaultNodeManagedSessionRuntimeDriver>[0]);
+      const send = async (event: Record<string, unknown>) => {
+        history.push({ ...event, processedAt: null });
+        await driver.accept({ workspaceId: "workspace_01", sessionId: session.id, session, environment,
+          events: [{ ...event, processedAt: null } as never] });
+      };
+      return { send, marked, accepted, history };
+    };
+    const message = { id: "u2", type: "user.message", content: [{ type: "text", text: "also" }] };
+    const answer = (id: string, call: string) => ({ id, type: "user.custom_tool_result", customToolUseId: call, content: [{ type: "text", text: "42" }] });
+
+    it("rejects user.message with RequiresActionSettleOnlyError (400) while parked", async () => {
+      const h = harness(parked());
+      await expect(h.send(message)).rejects.toMatchObject({
+        name: "RequiresActionSettleOnlyError",
+        status: 400,
+      });
+      expect(h.accepted).toEqual([]);
+      expect(h.marked).toEqual([]);
+    });
+
+    it("accepts settle answers while parked and resumes after the last outstanding id", async () => {
+      const h = harness(parked());
+      await h.send(answer("r1", "c1"));
+      expect(h.accepted).toEqual([["r1"]]);
+      h.history.push({ id: "i2", type: "session.status_idle", stopReason: { type: "requires_action", eventIds: ["c2"] }, processedAt: "2026-08-26T05:00:00.500Z" });
+      await h.send(answer("r2", "c2"));
+      expect(h.accepted).toEqual([["r1"], ["r2"]]);
+    });
+
+    it("interrupt while parked is accepted as a settle no-op (pending stays)", async () => {
+      // Official CMA: already-idle interrupt is a no-op; still 202/accepted,
+      // but the session remains on requires_action with outstanding ids.
+      const h = harness(parked());
+      await h.send({ id: "x1", type: "user.interrupt" });
+      expect(h.accepted).toEqual([["x1"]]);
+      expect(h.history.filter((e: any) => e.type === "agent.tool_result")).toEqual([]);
+      expect(h.history.at(-1)).toMatchObject({ type: "user.interrupt", id: "x1" });
+      const lastIdle = [...h.history].reverse().find((e: any) => e.type === "session.status_idle");
+      expect(lastIdle).toMatchObject({ stopReason: { type: "requires_action", eventIds: ["c1", "c2"] } });
+    });
+
+    it("a message to an unparked session runs normally", async () => {
+      const h = harness([{ id: "i0", type: "session.status_idle", stopReason: { type: "end_turn" }, processedAt: "2026-08-26T04:00:00.000Z" }]);
+      await h.send(message);
+      expect(h.accepted).toEqual([["u2"]]);
+    });
   });
 
   it("lazy-starts a fresh engine from accepted event context", async () => {

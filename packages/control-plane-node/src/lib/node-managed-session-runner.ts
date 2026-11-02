@@ -8,6 +8,7 @@ import {
   type SandboxLiveness,
 } from "@open-managed-agents/sandbox";
 import { randomUUID } from "node:crypto";
+import { SessionRetriesExhaustedError } from "@open-managed-agents/session-runtime-contract/coordination";
 import type {
   HarnessContext,
   HarnessInterface,
@@ -32,6 +33,18 @@ import {
 } from "./node-managed-session-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
+import { interruptRequiresActionClosure } from "@open-managed-agents/agent/runtime/history";
+import { encodeRuntimeHistoryEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
+import type { SessionEvent } from "@open-managed-agents/api-types";
+import {
+  createSessionBudgetGate,
+  type SessionBudgetGate,
+} from "@open-managed-agents/domain/sessions";
+import {
+  clearNodeSessionBudgetGate,
+  registerNodeSessionBudgetGate,
+} from "./node-session-budget-gates.js";
+import type { ModelPricing } from "@open-managed-agents/api-types";
 import type { WorkspaceBinding, WorkspacePersistencePort, RuntimeResourceScope } from "@open-managed-agents/runtime-resource-contract";
 import type { NodeManagedWorkspaceCheckpoints } from "./node-managed-workspace-checkpoints.js";
 import { ScopedSessionMap } from "./scoped-session-map.js";
@@ -86,6 +99,9 @@ export type ManagedNodeConfirmableToolUse = Extract<
   { type: "agent.tool_use" | "agent.mcp_tool_use" }
 >;
 
+import { processSessionClocks, type SessionClockRegistry } from "./session-clocks.js";
+import { answeredToolCallIds, asWireEvents,
+  outstandingRequiresAction, stillPending } from "./requires-action.js";
 export interface ExecuteManagedNodeConfirmedTool {
   workspaceId: string;
   session: Session;
@@ -135,6 +151,8 @@ export interface ManagedNodeOutcomeEvaluationPort {
 }
 
 export interface DefaultNodeManagedSessionRunnerDependencies {
+  /** Shared per-session processed_at clocks (#398); defaults to process-wide. */
+  sessionClocks?: SessionClockRegistry;
   /**
    * In-place retry of a harness failure while the turn has produced no
    * `agent.*` event (e.g. the model call failed before producing output). Each
@@ -184,6 +202,9 @@ export interface DefaultNodeManagedSessionRunnerDependencies {
     executionFence: SessionExecutionFence;
   }): Promise<void>;
   buildModel(input: ManagedRunnerContext): Promise<HarnessContext["model"]>;
+  /** List prices of the session's model card; null = unpriced. Session
+   * budgets are enforced only when this AND `session.budget` are set. */
+  resolveModelPricing?(input: ManagedRunnerContext): Promise<ModelPricing | null>;
   buildTools(
     input: ManagedRunnerContext & ManagedRunnerSubagentContext & { sandbox: SandboxExecutor },
   ): Promise<HarnessContext["tools"]>;
@@ -467,7 +488,23 @@ export class DefaultNodeManagedSessionRunner
 
   async accept(input: NodeManagedSessionRunnerAcceptInput): Promise<void> {
     if (input.events.some((event) => event.type === "user.interrupt")) {
-      this.abortControllers.get(input)?.abort();
+      const active = this.abortControllers.get(input);
+      active?.abort();
+      if (active === undefined) {
+        // Official CMA: interrupt against an already-idle session is a no-op
+        // (including idle requires_action). interruptRequiresActionClosure
+        // returns no frames; pending event_ids stay outstanding.
+        const wire = input.historyEvents.map((event) => encodeRuntimeHistoryEvent(event) as SessionEvent);
+        for (const frame of interruptRequiresActionClosure(wire)) {
+          await input.output({
+            ...frame,
+            id: this.dependencies.ids.nextEventId(),
+            processed_at: (this.dependencies.sessionClocks ?? processSessionClocks)
+              .forSession(input.workspaceId, input.sessionId)
+              .stampIso(this.dependencies.clock.now().getTime()),
+          });
+        }
+      }
       return;
     }
     const event = findLastMatching(
@@ -482,11 +519,39 @@ export class DefaultNodeManagedSessionRunner
       event.type !== "user.custom_tool_result" &&
       event.type !== "user.tool_result" &&
       event.type !== "user.tool_confirmation" &&
-      event.type !== "user.define_outcome"
+      event.type !== "user.define_outcome" &&
+      // A budget update that lifted a budget_reached pause: continue the
+      // harness from history with no new user input.
+      !(event.type === "session.updated" && event.resume === true)
     ) {
       throw new Error(
         `Managed Node runner does not yet support ${event.type}`,
       );
+    }
+    // requires_action answers (CMA): only answers to the parked idle's
+    // outstanding calls have effect. A late answer to a closed call is a
+    // no-effect (already stamped processed_at on accept); a partial batch
+    // re-announces the remaining ids without sampling.
+    let remainingAfterAnswers: string[] | null = null;
+    const actionable = input.events.filter((candidate) => candidate.type !== "system.message");
+    if (actionable.length > 0 && actionable.every((candidate) =>
+      candidate.type === "user.custom_tool_result" || candidate.type === "user.tool_confirmation")) {
+      const batchIds = new Set(input.events.map((candidate) => candidate.id));
+      const priorWire = asWireEvents(input.historyEvents
+        .filter((candidate) => !batchIds.has(candidate.id))
+        .map((candidate) => encodeRuntimeHistoryEvent(candidate)));
+      const before = outstandingRequiresAction(priorWire);
+      const closedBefore = answeredToolCallIds(priorWire);
+      const answeredNow = new Set(actionable.map((candidate) =>
+        candidate.type === "user.custom_tool_result" ? candidate.customToolUseId
+          : candidate.type === "user.tool_confirmation" ? candidate.toolUseId : ""));
+      // Every call in the batch was already closed (interrupt/steer/earlier
+      // answer): no effect, nothing resumes.
+      if ([...answeredNow].every((id) => closedBefore.has(id))) return;
+      if (before !== null) {
+        if (![...answeredNow].some((id) => before.includes(id))) return;
+        remainingAfterAnswers = before.filter((id) => !answeredNow.has(id));
+      }
     }
     const rawSandbox = this.sandboxes.get(input);
     if (rawSandbox === undefined) {
@@ -559,12 +624,22 @@ export class DefaultNodeManagedSessionRunner
       output: input.output,
       clock: this.dependencies.clock,
       ids: this.dependencies.ids,
+      sessionScope: { workspaceId: input.workspaceId, sessionId: input.sessionId },
+      sessionClocks: this.dependencies.sessionClocks,
+      ...(input.takeSteeringInputs !== undefined && { takeSteeringInputs: input.takeSteeringInputs }),
     });
-    runtime.broadcastProducedEvent({ type: "session.status_running" });
+    const parkedStill = (remainingAfterAnswers?.length ?? 0) > 0;
+    if (!parkedStill) runtime.broadcastProducedEvent({ type: "session.status_running" });
+    let budgetGate: SessionBudgetGate | null = null as SessionBudgetGate | null;
     let turnTools: HarnessContext["tools"] | undefined;
     let runFailed = false;
     try {
-      if (event.type === "user.tool_confirmation") {
+      for (const event of input.events) {
+        if (event.type !== "user.tool_confirmation") continue;
+        if (remainingAfterAnswers !== null && answeredToolCallIds(asWireEvents(input.historyEvents
+          .filter((candidate) => candidate.id !== event.id)
+          .map((candidate) => encodeRuntimeHistoryEvent(candidate))))
+          .has(event.toolUseId)) continue;
         const toolUse = findLastMatching(
           input.historyEvents,
           (candidate): candidate is ManagedNodeConfirmableToolUse =>
@@ -637,6 +712,10 @@ export class DefaultNodeManagedSessionRunner
                 ...childContext, acceptedEvents: [], sandbox: childSandbox,
                 runtime: childRuntime, model, tools: childTools,
               });
+              // One session egress meter: child model calls are gated and
+              // recorded by the same gate instance as the parent's.
+              harnessContext.budget = budgetGate;
+              childRuntime.setBudgetGate(budgetGate);
               await this.dependencies.buildHarness().run(harnessContext);
             } finally {
               if (childTools !== undefined) await this.dependencies.disposeTools?.(childTools);
@@ -678,6 +757,37 @@ export class DefaultNodeManagedSessionRunner
           model,
           tools,
         });
+        if (harnessContext.budget === undefined) {
+          const sessionBudget = input.session.budget ?? null;
+          const pricing = sessionBudget === null
+            ? null
+            : await this.dependencies.resolveModelPricing?.(context) ?? null;
+          // Domain gate; Node ListCostPicoStore persists session.usage.list_cost_pico.
+          const store = {
+            load: (): string | null => input.session.usage?.list_cost_pico ?? null,
+            save: (list_cost_pico: string): void => {
+              const usage = { ...runtime.usageSnapshot(), list_cost_pico };
+              if (input.session.usage) {
+                input.session.usage.list_cost_pico = list_cost_pico;
+              } else {
+                input.session.usage = { list_cost_pico };
+              }
+              runtime.broadcastProducedEvent({ type: "session.usage", usage });
+            },
+          };
+          harnessContext.budget = createSessionBudgetGate(
+            sessionBudget === null
+              ? null
+              : { amount: sessionBudget.amountMinor, currency: sessionBudget.currency },
+            pricing,
+            store,
+          );
+        }
+        budgetGate = harnessContext.budget ?? null;
+        runtime.setBudgetGate(budgetGate);
+        subagentContext.subagents?.setBudgetGate?.(budgetGate);
+        // Harness-in-sandbox inference-proxy meters via the same gate.
+        registerNodeSessionBudgetGate(input.session.id, budgetGate);
         const retry = this.dependencies.harnessRetry ??
           { attempts: 3, delayMs: (attempt: number) => Math.min(30_000, 2_000 * 2 ** (attempt - 1)) };
         for (let attempt = 1; ; attempt += 1) {
@@ -710,7 +820,7 @@ export class DefaultNodeManagedSessionRunner
           }
         }
       };
-      await runHarness();
+      if (!parkedStill) await runHarness();
       if (event.type === "user.define_outcome") {
         const maxIterations = Math.min(
           20,
@@ -804,7 +914,9 @@ export class DefaultNodeManagedSessionRunner
           retryStatus: "exhausted",
         },
       });
-      throw error;
+      throw new SessionRetriesExhaustedError(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       let finalizationError: Error | undefined;
       const subagents = this.subagentExecutions.get(input);
@@ -888,10 +1000,37 @@ export class DefaultNodeManagedSessionRunner
           },
         });
       }
-      if (!leaseLost) {
+      if (
+        !leaseLost && !runFailed && finalizationError === undefined
+        && budgetGate?.reached === true
+      ) {
+        // Official budget stop: thread idle → usage → session idle (budget_reached).
+        // requires_action parking is skipped: budget_reached outranks end_turn but
+        // requires_action already short-circuits earlier when tools are pending.
+        const stopReason = { type: "budget_reached" as const };
+        runtime.broadcastProducedEvent({
+          type: "session.thread_status_idle",
+          agentName: input.session.agent.name,
+          sessionThreadId: "sthr_primary",
+          stopReason,
+        });
+        runtime.broadcastProducedEvent({
+          type: "session.usage",
+          usage: runtime.usageSnapshot(),
+          budget: { amountMinor: budgetGate.maxListCost.amount, currency: "USD" },
+        });
+        runtime.broadcastProducedEvent({ type: "session.status_idle", stopReason });
+      } else if (!leaseLost) {
+        const failed = runFailed || finalizationError !== undefined;
+        const parkIds = failed ? [] : parkedStill ? remainingAfterAnswers! : stillPending(
+          runtime.pendingConfirmations,
+          asWireEvents(runtime.history.getEvents()),
+        );
         runtime.broadcastProducedEvent({
           type: "session.status_idle",
-          stopReason: { type: runFailed || finalizationError !== undefined ? "retries_exhausted" : "end_turn" },
+          stopReason: failed ? { type: "retries_exhausted" }
+            : parkIds.length > 0 ? { type: "requires_action", eventIds: parkIds }
+            : { type: "end_turn" },
         });
       }
       try {
@@ -907,6 +1046,7 @@ export class DefaultNodeManagedSessionRunner
           });
         }
       } finally {
+        clearNodeSessionBudgetGate(input.session.id);
         // ADR 0005: keep the sandbox lease through drain, checkpoint and
         // output publication, not only while the harness runs.
         await stopHeartbeat();

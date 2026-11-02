@@ -1,3 +1,4 @@
+import type { SessionBudgetGate } from "./budget";
 import type { ModelMessage, LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
@@ -113,6 +114,17 @@ export interface HarnessInterface {
 
 export interface HarnessRuntime {
   history: HistoryStore;
+
+  /**
+   * Steering (optional). Called by the loop at each model-step boundary.
+   * Returns queued user.message events the platform just absorbed into this
+   * turn (already appended to history, stamped and re-emitted) — CMA
+   * coherent-turn semantics. Undefined when the agent does not advertise
+   * steering: mid-turn messages stay as mid-state (`processed_at` null) and
+   * the host falls back to drain-after-idle (capability gap, not the CMA
+   * contract). See docs/implementation/cma-steer-coherent-turn.md.
+   */
+  takeSteeringInputs?: () => Promise<SessionEvent[]>;
   sandbox: SandboxPort;
   /**
    * Append an event to history AND broadcast to WS subscribers. The single
@@ -199,6 +211,13 @@ export interface HarnessRuntime {
 
 export interface HarnessContext {
   agent: AgentConfig;
+  /**
+   * Session list-cost budget gate. Present only when the session has
+   * `budget.max_list_cost` AND its model card has pricing. The harness checks
+   * it before every model request; at the cap it makes no request and sets
+   * `budget.reached`, and the host emits the budget_reached idle sequence.
+   */
+  budget?: SessionBudgetGate | null;
   userMessage: UserMessageEvent;
   /** Host-scoped canonical history for ACP recovery, excluding this execution's
    * accepted inputs and future queued inputs. Undefined retains legacy hosts. */

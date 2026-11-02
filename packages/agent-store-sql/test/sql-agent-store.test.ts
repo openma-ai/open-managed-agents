@@ -8,20 +8,20 @@ import {
 import { SqlAgentStore } from "../src";
 
 const SCHEMA = `
-CREATE TABLE agents (
+CREATE TABLE managed_agents (
   id text PRIMARY KEY NOT NULL,
-  tenant_id text NOT NULL,
-  config text NOT NULL,
+  workspace_id text NOT NULL,
+  document text NOT NULL,
   version integer NOT NULL,
   created_at integer NOT NULL,
   updated_at integer NOT NULL,
   archived_at integer
 );
-CREATE TABLE agent_versions (
+CREATE TABLE managed_agent_versions (
   agent_id text NOT NULL,
-  tenant_id text NOT NULL,
+  workspace_id text NOT NULL,
   version integer NOT NULL,
-  snapshot text NOT NULL,
+  document text NOT NULL,
   created_at integer NOT NULL,
   PRIMARY KEY (agent_id, version)
 );`;
@@ -115,5 +115,28 @@ describe("SqlAgentStore", () => {
       name: "Agent One",
       version: 1,
     });
+  });
+
+  it("counts and deletes current agents with their history", async () => {
+    const store = new SqlAgentStore(client);
+    const base = {
+      id: "agent-2", name: "Two", description: null, model: { id: "m" }, system: null,
+      tools: [], skills: [], mcpServers: [], metadata: {}, multiagent: null,
+      createdAt: "2026-08-26T00:00:00.000Z", updatedAt: "2026-08-26T00:00:00.000Z",
+      archivedAt: null, version: 1,
+    } as never;
+    await store.insert({ workspaceId: "w", agent: base });
+    await store.replaceCurrent({ workspaceId: "w", agentId: "agent-2", expectedVersion: 1, next: { ...(base as object), version: 2, updatedAt: "2026-08-26T00:01:00.000Z" } as never });
+    await store.insert({ workspaceId: "w", agent: { ...(base as object), id: "agent-3", archivedAt: "2026-08-26T00:02:00.000Z" } as never });
+    await store.insert({ workspaceId: "other", agent: { ...(base as object), id: "agent-4" } as never });
+
+    await expect(store.countCurrent({ workspaceId: "w", includeArchived: false })).resolves.toBe(1);
+    await expect(store.countCurrent({ workspaceId: "w", includeArchived: true })).resolves.toBe(2);
+    await expect(store.deleteCurrent({ workspaceId: "other", agentId: "agent-2" })).resolves.toEqual({ type: "not_found" });
+    await expect(store.deleteCurrent({ workspaceId: "w", agentId: "agent-2" })).resolves.toEqual({ type: "deleted" });
+    await expect(store.findCurrent({ workspaceId: "w", agentId: "agent-2" })).resolves.toBeNull();
+    await expect(store.findVersion({ workspaceId: "w", agentId: "agent-2", version: 1 })).resolves.toBeNull();
+    const rows = await client.prepare("SELECT document FROM managed_agents WHERE id = 'agent-3'").first<{ document: string }>();
+    expect(JSON.parse(rows!.document)).toMatchObject({ mcpServers: [], archivedAt: "2026-08-26T00:02:00.000Z" });
   });
 });

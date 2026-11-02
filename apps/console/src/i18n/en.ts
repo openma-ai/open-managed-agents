@@ -40,6 +40,7 @@ export const en: Messages = {
   },
 
   nav: {
+    budget: "Budget",
     overview: "Overview",
     managedAgents: "Managed Agents",
     dashboard: "Dashboard",
@@ -59,6 +60,15 @@ export const en: Messages = {
     integrations: "Matter",
     loops: "Loops",
     bonds: "Bonds",
+  },
+
+  budget: {
+    title: "Budget",
+    subtitle: "Spend recorded at model egress (list price), and per-session spend caps.",
+    byModel: "Spend by model",
+    bySession: "Sessions",
+    noSpend: "No priced spend yet.",
+    loadMore: "Load more",
   },
 
   login: {
@@ -170,6 +180,17 @@ export const en: Messages = {
     noMatchingSessions: "No matching sessions",
     noSessionsYet: "No sessions yet",
     editTitle: "Edit title",
+    tokensInput: "Input tokens",
+    tokensOutput: "Output tokens",
+    tokensCacheRead: "Cache read",
+    tokensCacheWrite: "Cache write",
+    budgetCost: "Cost",
+    budgetCap: "Budget",
+    budgetUnpriced: "unpriced",
+    budgetNone: "No budget",
+    budgetEdit: "Edit budget",
+    budgetRemove: "Remove budget",
+    budgetInvalid: "Enter a dollar amount greater than $0",
     untitledSession: "Untitled session",
     sessionTitle: "Session title",
   },
@@ -211,6 +232,14 @@ export const en: Messages = {
   },
 
   modelCards: {
+    pricing: "List pricing",
+    pricingHint: "(USD per 1M tokens; empty = unpriced, budgets inactive)",
+    priceInput: "Input",
+    priceOutput: "Output",
+    priceCacheRead: "Cache read",
+    priceCacheWrite: "Cache write",
+    pricingRequired: "Input and output prices are required when pricing is set.",
+    pricingInvalid: "Prices must be USD amounts with at most 6 decimals.",
     newModelCard: "+ New model card",
     searchModelCards: "Search model cards…",
     noMatchingModelCards: "No matching model cards",

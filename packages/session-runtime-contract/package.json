@@ -10,7 +10,8 @@
     "./dispatch": "./src/dispatch.ts",
     "./history": "./src/history.ts",
     "./lifecycle": "./src/lifecycle.ts",
-    "./stream": "./src/stream.ts"
+    "./stream": "./src/stream.ts",
+    "./settle-events": "./src/settle-events.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

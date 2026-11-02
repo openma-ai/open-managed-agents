@@ -7,7 +7,8 @@
 // still accepts the event.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { createSqliteAgentService } from "@open-managed-agents/agents-store";
+import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
+import { seedAgent } from "./seed-agent";
 import { createSqliteCredentialService } from "@open-managed-agents/credentials-store";
 import { createSqliteSessionService } from "@open-managed-agents/sessions-store";
 import { createSqliteVaultService } from "@open-managed-agents/vaults-store";
@@ -36,7 +37,7 @@ async function setup() {
     .prepare(`INSERT INTO membership (user_id, tenant_id, role, created_at) VALUES (?, ?, 'owner', ?)`)
     .bind(USER, TENANT, Date.now())
     .run();
-  const agents = createSqliteAgentService({ db });
+  const agents = new SqlAgentStore(sql);
   const sessions = createSqliteSessionService({ db });
   const appended: string[] = [];
   const bridge = new NodeInstallBridge({
@@ -53,17 +54,16 @@ async function setup() {
       appended.push(sessionId);
     },
   });
-  const agent = await agents.create({
-    tenantId: TENANT,
-    input: {
-      name: "Published agent",
-      model: "claude-sonnet-4-6",
-      system: "frozen system prompt",
-      tools: [
-        { type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] },
-      ],
-      mcp_servers: [{ name: "notion", type: "url", url: "https://notion.example/mcp" }],
-    },
+  const agent = await seedAgent(sql, TENANT, {
+    name: "Published agent",
+    model: { id: "claude-sonnet-4-6" },
+    system: "frozen system prompt",
+    tools: [{
+      type: "agent_toolset_20260401",
+      configs: [{ name: "bash", enabled: false, permissionPolicy: { type: "always_allow" } }],
+      defaultConfig: { enabled: true, permissionPolicy: { type: "always_allow" } },
+    }],
+    mcpServers: [{ name: "notion", type: "url", url: "https://notion.example/mcp" }],
   });
   return { agents, sessions, bridge, agent, appended };
 }

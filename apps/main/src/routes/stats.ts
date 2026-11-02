@@ -43,7 +43,7 @@ app.get("/", async (c) => {
     modelCards,
     apiKeyIndex,
   ] = await Promise.all([
-    services.agents.count({ tenantId }),
+    services.agents.countCurrent({ workspaceId: tenantId, includeArchived: false }),
     services.sessions.count({ tenantId }),
     services.environments.count({ tenantId }),
     services.vaults.count({ tenantId }),

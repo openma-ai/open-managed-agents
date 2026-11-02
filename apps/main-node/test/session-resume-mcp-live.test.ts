@@ -12,6 +12,7 @@ import { registerHarness } from "@open-managed-agents/agent/harness/registry";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
 import type { UserMessageEvent } from "@open-managed-agents/shared";
 import { createScriptedMcpServer } from "../../../test/fakes/scripted-mcp-server";
+import { seedAgent } from "./seed-agent";
 import { loadNodeConfig } from "../src/config";
 import { nodeDefaults } from "../src/components";
 import { Disposables } from "../../../packages/control-plane-node/src/lifecycle";
@@ -150,15 +151,16 @@ describe("Node service resume applies published MCP tools", () => {
       apiKey: "test-key-not-used",
     });
 
-    const agent = await runtime.agentsService.create({
-      tenantId: TENANT,
-      input: {
-        name: "Live resume",
-        model: "claude-sonnet-4-6",
-        system: "frozen system prompt",
-        harness: "resume-mcp-probe",
-        tools: [{ type: "agent_toolset_20260401", configs: [{ name: "bash", enabled: false }] }],
-      },
+    const agent = await seedAgent(runtime.sql, TENANT, {
+      name: "Live resume",
+      model: { id: "claude-sonnet-4-6" },
+      system: "frozen system prompt",
+      openma: { harness: "resume-mcp-probe" },
+      tools: [{
+        type: "agent_toolset_20260401",
+        configs: [{ name: "bash", enabled: false, permissionPolicy: { type: "always_allow" } }],
+        defaultConfig: { enabled: true, permissionPolicy: { type: "always_allow" } },
+      }],
     });
     const vault = await runtime.vaultService.create({ tenantId: TENANT, name: "slack" });
     await runtime.credentialService.create({
@@ -180,7 +182,7 @@ describe("Node service resume applies published MCP tools", () => {
       vaults: runtime.vaultService,
       credentials: runtime.credentialService,
       sessions: runtime.sessionsService,
-      agents: runtime.agentsService,
+      agents: runtime.agentStore,
       resolveTenantId: async (userId) => (userId === USER ? TENANT : null),
       appendUserEvent: async (sessionId, tenantId, agentId, event) => {
         const entry = await runtime.sessionRegistry.getOrCreate(sessionId, tenantId);

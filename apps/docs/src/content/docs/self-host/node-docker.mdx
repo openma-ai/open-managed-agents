@@ -341,7 +341,7 @@ Archive URLs in a v2 index must stay on the index's origin.
 
 ```bash
 # Export
-sqlite3 ./data/oma.db ".dump agents agent_versions sessions session_events session_streams \
+sqlite3 ./data/oma.db ".dump managed_agents managed_agent_versions sessions session_events session_streams \
   memories memory_stores memory_versions vaults credentials session_memory_stores \
   tenant membership" > /tmp/oma-dump.sql
 

@@ -34,6 +34,7 @@ function execution(): SessionExecution {
     deadlineAt: "2026-09-04T01:00:00.000Z",
     interruptRequestedAt: null,
     settledAt: null,
+    heldAfterExhaustedAt: null,
     failure: null,
     revision: 2,
   };
@@ -67,6 +68,9 @@ function store(overrides: Partial<SessionExecutionStorePort> = {}) {
       execution: { ...current, state: input.outcome },
     })),
     requestInterrupt: vi.fn(),
+    cancelQueued: vi.fn(),
+    steerQueued: vi.fn(),
+    listQueued: vi.fn(async () => []),
     cancelSession: vi.fn(),
     find: vi.fn(),
     ...overrides,
@@ -262,4 +266,45 @@ describe("SessionExecutionHost", () => {
     await expect(running).resolves.toMatchObject({ type: "completed" });
     expect(callbackFence).toBeDefined();
   });
+
+  it("settles with holdQueuedOnLane when the run returns the exhausted flag", async () => {
+    const persistence = store();
+    const host = new SessionExecutionHost({
+      store: persistence,
+      scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01",
+      clock: { now: () => new Date(now) },
+      ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    await expect(host.runOne(async () => ({ holdQueuedOnLane: true }))).resolves.toMatchObject({ type: "completed" });
+    expect(persistence.settle).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "completed",
+      holdQueuedOnLane: true,
+    }));
+  });
+
+  it("settles with holdQueuedOnLane when the run throws SessionRetriesExhaustedError", async () => {
+    const { SessionRetriesExhaustedError } = await import(
+      "@open-managed-agents/session-runtime-contract/coordination"
+    );
+    const persistence = store();
+    const host = new SessionExecutionHost({
+      store: persistence,
+      scope: { workspaceId: "workspace_01", sessionId: "session_01" },
+      ownerId: "owner_01",
+      clock: { now: () => new Date(now) },
+      ids: { nextAttemptId: () => "attempt_01" },
+      timers: manualTimers().timers,
+    });
+    await expect(host.runOne(async () => {
+      throw new SessionRetriesExhaustedError("done");
+    })).resolves.toMatchObject({ type: "failed" });
+    expect(persistence.settle).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "failed",
+      holdQueuedOnLane: true,
+      failure: "done",
+    }));
+  });
+
 });

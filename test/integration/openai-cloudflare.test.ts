@@ -68,7 +68,8 @@ describe("Cloudflare OpenAI Agents mount", () => {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: "Continue" }] }] }] }),
       });
-      expect(sent.status).toBe(204);
+      // openai-agents-compat accept returns 202 (live agents=v1 parity).
+      expect(sent.status).toBe(202);
       await expect.poll(async () => JSON.stringify(await (await request(`/agents/sessions/${session.id}/items`)).json()), { timeout: 15000 }).toContain("No sandbox reply 2");
       expect(turns).toBe(2);
       const history = await (await request(`/agents/sessions/${session.id}/items`)).json() as { data: Array<{ id: string; role?: string }> };

@@ -12,6 +12,8 @@ import type {
   ListAgentVersionRecords,
   ReplaceAgentRecord,
   ReplaceAgentRecordResult,
+  CountAgentRecords,
+  DeleteAgentRecordResult,
 } from "@open-managed-agents/agent-store";
 
 class MemoryAgentStore implements AgentStore {
@@ -109,6 +111,18 @@ class MemoryAgentStore implements AgentStore {
       .sort((left, right) => right.version - left.version)
       .slice(0, input.limit)
       .map((record) => structuredClone(record));
+  }
+
+  async countCurrent(input: CountAgentRecords): Promise<number> {
+    return Array.from(this.records.entries()).filter(([key, record]) =>
+      key.startsWith(`${input.workspaceId}:`) && (input.includeArchived || record.archivedAt === null)).length;
+  }
+
+  async deleteCurrent(input: FindCurrentAgentRecord): Promise<DeleteAgentRecordResult> {
+    const key = `${input.workspaceId}:${input.agentId}`;
+    if (!this.records.delete(key)) return { type: "not_found" };
+    for (const versionKey of this.versions.keys()) if (versionKey.startsWith(`${key}:`)) this.versions.delete(versionKey);
+    return { type: "deleted" };
   }
 }
 

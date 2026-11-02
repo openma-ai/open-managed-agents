@@ -9,6 +9,7 @@
     "./harness/default-loop": "./src/harness/default-loop.ts",
     "./harness/builtins": "./src/harness/builtins.ts",
     "./harness/interface": "./src/harness/interface.ts",
+    "./harness/budget": "./src/harness/budget.ts",
     "./harness/tools": "./src/harness/tools.ts",
     "./harness/registry": "./src/harness/registry.ts",
     "./harness/provider": "./src/harness/provider.ts",
@@ -35,7 +36,6 @@
     "@cloudflare/sandbox": "0.12.10",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
-    "@open-managed-agents/agents-store": "workspace:*",
     "@open-managed-agents/api-types": "workspace:*",
     "@open-managed-agents/acp-runtime": "workspace:*",
     "@open-managed-agents/harness-inference-adapters": "workspace:*",
@@ -71,6 +71,7 @@
     "fflate": "^0.8.2",
     "hono": "^4.7.0",
     "nanoid": "^5.1.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@open-managed-agents/domain": "workspace:*"
   }
 }
