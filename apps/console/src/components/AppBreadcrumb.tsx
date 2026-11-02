@@ -59,21 +59,21 @@ export function AppBreadcrumb() {
   if (crumbs.length === 0) return null;
 
   return (
-    <ShadcnBreadcrumb>
-      <BreadcrumbList>
+    <ShadcnBreadcrumb className="min-w-0 flex-1">
+      <BreadcrumbList className="min-w-0 flex-nowrap overflow-hidden">
         {crumbs.map((c, i) => {
           const isLast = i === crumbs.length - 1;
           return (
             <Fragment key={`${c.to}-${i}`}>
               {i > 0 && (
-                <BreadcrumbSeparator>
+                <BreadcrumbSeparator className="shrink-0">
                   <ChevronRightIcon className="size-3.5" />
                 </BreadcrumbSeparator>
               )}
-              <BreadcrumbItem>
+              <BreadcrumbItem className={isLast ? "min-w-0 flex-1" : "min-w-0 max-w-[40%]"}>
                 {isLast ? (
                   <BreadcrumbPage
-                    className="truncate max-w-[200px] sm:max-w-[280px]"
+                    className="block min-w-0 truncate max-w-[200px] sm:max-w-[280px]"
                     title={c.label}
                   >
                     {c.label}
@@ -85,7 +85,7 @@ export function AppBreadcrumb() {
                   // full browser reload — losing all in-memory state
                   // (TQ cache, route state, dialogs).
                   <BreadcrumbLink asChild>
-                    <Link to={c.to}>{c.label}</Link>
+                    <Link to={c.to} className="truncate" title={c.label}>{c.label}</Link>
                   </BreadcrumbLink>
                 )}
               </BreadcrumbItem>

@@ -40,6 +40,15 @@ vi.mock("../lib/useApiQuery", () => {
 });
 
 describe("EnvironmentDetail focus treatment", () => {
+  it("names the networking combobox from its visible Type label", async () => {
+    render(<MemoryRouter initialEntries={["/environments/env-1"]}>
+      <Routes><Route path="/environments/:id" element={<I18nProvider><EnvironmentDetail /></I18nProvider>} /></Routes>
+    </MemoryRouter>);
+    const control = await screen.findByRole("combobox", { name: "Type" });
+    expect(screen.getByLabelText("Type")).toBe(control);
+    expect(control.tagName).toBe("BUTTON");
+  });
+
   it("does not override the shared one-pixel focus treatment on switches", async () => {
     render(
       <MemoryRouter initialEntries={["/environments/env-1"]}>
