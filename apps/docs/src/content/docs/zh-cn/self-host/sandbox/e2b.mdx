@@ -1,0 +1,67 @@
+---
+title: 在 E2B 沙箱上自托管
+description: 通过 SANDBOX_PROVIDER=e2b 或托管运行时驱动，在托管的 E2B Firecracker 微虚机上运行 Session——支持内存快照挂起/恢复和持久化输出收集。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+E2B 把每个 Session 放进一个托管的 Firecracker 微虚机里运行。它是 Node 自托管最简单的托管后端：一个 API key 即可，无需自建基础设施，并且提供提供商侧的内存快照用于挂起/恢复。
+
+## 前置条件
+
+```bash
+E2B_API_KEY=          # 必需
+SANDBOX_IMAGE=        # 用作 Environment 镜像的 E2B 模板引用
+```
+
+对于 E2B 兼容端点，连接信息同样留在环境变量映射中：
+
+```bash
+E2B_API_URL=          # 或 E2B_SANDBOX_URL / E2B_DOMAIN，视部署而定
+OMA_E2B_TEMPLATE=     # 显式模板覆盖
+```
+
+<Aside type="note">
+  托管运行时的默认解析器要求 Environment 模板——没有 `SANDBOX_IMAGE`/`OMA_E2B_TEMPLATE` 引用时它会直接抛错，而不是回退到 SDK 基础镜像。要持久化 Session 输出，需设置 `FILES_S3_ENDPOINT`、`FILES_S3_BUCKET`、`FILES_S3_ACCESS_KEY` 和 `FILES_S3_SECRET_KEY`，运行时会据此挂上 S3 输出存储。
+</Aside>
+
+## 配置
+
+在独立的 Node 服务器上，直接选择该适配器：
+
+```bash
+SANDBOX_PROVIDER=e2b
+E2B_API_KEY=...
+SANDBOX_IMAGE=...
+```
+
+若要改为把驱动嵌入运行时宿主（Runtime Host）组合，使用
+`@open-managed-agents/managed-runtime-e2b` 提供的
+`createE2BManagedRuntime` / `createE2BManagedRuntimeDriver`：
+
+```ts
+const driver = createE2BManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  environment: {
+    E2B_API_KEY: process.env.E2B_API_KEY!,
+    SANDBOX_IMAGE: process.env.SANDBOX_IMAGE!,
+  },
+});
+```
+
+工厂还接受按作用域求值的 `environment` 函数、显式 `outputStore`（`null` 关闭 S3 默认）、`credentialEgress`、`sessionInputs`、`runtimeEnvironment`、`context`，以及测试用的 `provider` 接缝。
+
+## 能力
+
+| | |
+|---|---|
+| Harness 通道 | `ama_worker`、`openma_supervised` |
+| suspendResume | 支持（提供商内存快照） |
+| 工作区 | `retained_runtime` + `checkpoint_restore`，持久 |
+| 输出 | `final_collect`，持久（配置后为 S3 存储） |
+| 进程检查点 | 无 |
+| 凭证出口 | 默认 `unsupported`/`snapshot` |
+
+<Aside type="caution">
+  与所有非 Cloudflare 驱动一样，除非运维方通过 `options.credentialEgress` 注入经过认证的实现，E2B 组合的凭证出口声明为 `{enforcement: "unsupported", credentialMode: "snapshot", interceptedProtocols: []}`。驱动不假设提供商侧出口策略：默认不提供网络注入点。
+</Aside>

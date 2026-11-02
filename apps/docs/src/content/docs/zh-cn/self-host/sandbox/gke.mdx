@@ -1,0 +1,50 @@
+---
+title: 在 GKE 沙箱上自托管
+description: 把 Session 分派到 GKE Agent Sandbox Pod——poll_unacked_then_dispatch 策略，SandboxClaim 原子 get-or-create、暖池绑定和 Pod 内 Work 所有权。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+GKE 后端把 Session Work 分派到 Google Kubernetes Engine 集群上的 Agent Sandbox Pod。它使用 `poll_unacked_then_dispatch` 策略：分派器先保留 Work 但不 ACK，回收过期的 SandboxClaim，通过原子 get-or-create 认领绑定一个暖 Pod，只发送 Session/Work id。随后 Pod 内的 `ant beta:worker run` 接管 Work 的 ACK、心跳和停止。
+
+## 前置条件
+
+- 装有 Agent Sandbox CRD、认领模板和暖池的 GKE 集群。
+- 一个 `GkeSandboxClaimControlPlanePort` 实现——Kubernetes SDK 适配器或 OpenMA 自有的集群内驱动服务。
+- 一个 `GkeManagedWorkControlPort`，使分派器能强制停止超过 `maxRedispatch` 的 Work。
+
+## 配置
+
+GKE 通过 `createManagedEnvironmentWorkerInstallation` 的 `provider_dispatch` 模式接入，或直接使用
+`@open-managed-agents/environment-dispatch-gke` 的
+`createManagedEnvironmentWorkDispatchPort`：
+
+```ts
+const dispatch = createManagedEnvironmentWorkDispatchPort({
+  controlPlane,   // SandboxClaim list/delete/create/postSession
+  workControl,    // Work stop
+  namespace: "openma",
+  template: "openma-sandbox-template",
+  warmPool: "openma-warm-pool",
+  readyTimeoutMs: 120_000,  // 默认值
+  maxRedispatch: 3,         // 默认值
+});
+```
+
+`namespace`、`template`、`warmPool` 是必需的非空字符串；`warmPool` 指定每个认领绑定的 Kubernetes Agent Sandbox 暖池。该端口上报 provider `gke-agent-sandbox`、策略 `poll_unacked_then_dispatch`。
+
+认领带有标签 `openma.environment-id`、`openma.session-id`、`openma.work-id`、`openma.dispatch-count`。每次分派会列出该 Session 的既有认领、删除属于其他 Work id 的过期认领，并以幂等键 `<workId>:<dispatchCount>` 创建下一个认领。当 `dispatchCount` 将超过 `maxRedispatch` 时，端口会停止该 Work，而不是无限循环。
+
+## 能力
+
+| | |
+|---|---|
+| Provider | `gke-agent-sandbox` |
+| 策略 | `poll_unacked_then_dispatch` |
+| Work 所有者 | Pod 内 `ant beta:worker run`（ACK、心跳、停止） |
+| 过期认领 | 每次分派时回收 |
+| 重分派 | 受 `maxRedispatch` 约束（默认 3） |
+
+<Aside type="note">
+  这里的 `warmPool` 字段是真实绑定到模板所配置的 Kubernetes Agent Sandbox 暖池——它不是 OpenMA 层面的计算暖池特性。Session 沙箱的具体能力（挂起/恢复、工作区持久化、出口控制）取决于部署的 Pod 模板和 worker 镜像；OpenMA 自身仍是 Work 与栅栏权威。
+</Aside>

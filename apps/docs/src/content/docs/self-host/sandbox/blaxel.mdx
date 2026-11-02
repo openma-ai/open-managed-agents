@@ -1,0 +1,63 @@
+---
+title: Self-host on Blaxel sandboxes
+description: Run sessions on Blaxel sandbox compute — stable Session identity, archive/unarchive retained filesystem, named processes, and native network/secret injection.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Blaxel runs each Session on its sandbox compute platform using the official
+`@blaxel/core` SDK (dynamically imported). The driver follows Blaxel's own
+lifecycle: pre-claim readiness, stable Session identity via external ID and
+ownership labels, archive/unarchive of the retained filesystem, named
+processes, native proxy/firewall, and janitor cleanup.
+
+## Prerequisites
+
+```bash
+BL_API_KEY=           # required — read by the Blaxel SDK
+```
+
+## Configuration
+
+Blaxel is wired through the Runtime Host composition, not
+`SANDBOX_PROVIDER`. Use `createBlaxelProvider`,
+`createBlaxelManagedRuntime`, or `createBlaxelManagedRuntimeDriver` from
+`@open-managed-agents/managed-runtime-blaxel`:
+
+```ts
+const driver = createBlaxelManagedRuntimeDriver({
+  leaseTtlMs: 90_000,
+  image: "node:22-slim",
+  memory: 2048,       // MiB
+  region: "us-pdx-1",
+  ttl: "24h",
+});
+```
+
+Base options: `image` (required), `memory`, `region`, `ttl`, and `lifecycle`
+(`expirationPolicies` with `ttl-idle`/`ttl-max-age`/`date` actions, plus
+`terminatedRetention`). Per-allocation extras go through
+`allocationOptions`: `envs`, `volumes` (persistent or ephemeral),
+`network`, and `snapshotEnabled`. The factory also accepts `client`,
+`runtimeEnvironment`, `outputStore`, `outputKeyPrefix`, `credentialEgress`,
+`sessionInputs`, and `readiness`.
+
+## Capabilities
+
+| | |
+|---|---|
+| Harness lanes | `ama_worker`, `openma_supervised` |
+| suspendResume | supported (archive/unarchive retained filesystem) |
+| Workspace | `retained_runtime`, **best_effort** durability |
+| Outputs | `final_collect`, durable |
+| Process checkpoints | none |
+| Credential egress | `unsupported`/`snapshot` by default |
+
+<Aside type="caution">
+  Blaxel workspace durability is rated **best_effort** in the conformance
+  profile: retained storage is provider-local and is not advertised as a
+  portable checkpoint. A durable `outputStore` still applies to final
+  deliverables. OpenMA remains the Work/fence authority; the provider's
+  native secret injection is a Blaxel feature, not an OpenMA credential-
+  egress declaration.
+</Aside>
