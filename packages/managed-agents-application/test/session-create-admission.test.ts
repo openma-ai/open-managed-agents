@@ -70,6 +70,24 @@ describe("SessionCreateAdmissionService", () => {
     expect(canStartSandbox).not.toHaveBeenCalled();
   });
 
+  it("runs only the usage meter for existing-session starts (no create quota)", async () => {
+    const canStartSandbox = vi.fn(async () => ({ ok: true }));
+    const exceeded = vi.fn(async () => true);
+    const get = vi.fn(async () => 99);
+    const increment = vi.fn(async () => {});
+    const admission = new SessionCreateAdmissionService({
+      clock,
+      rateLimiter: { exceeded },
+      dailyCounter: { cap: () => 5, get, increment },
+      usageMeter: { canStartSandbox },
+    });
+    await expect(admission.admitSandboxStart(input)).resolves.toEqual({ type: "admitted" });
+    expect(exceeded).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(increment).not.toHaveBeenCalled();
+    expect(canStartSandbox).toHaveBeenCalledTimes(1);
+  });
+
   it("fails open and logs when the meter throws", async () => {
     const logger = { warn: vi.fn(), error: vi.fn() };
     const admission = new SessionCreateAdmissionService({

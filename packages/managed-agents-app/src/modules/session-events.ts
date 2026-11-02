@@ -25,6 +25,7 @@ import {
   type AppModule,
 } from "../index";
 import { managedAgentsPortTokens } from "../managed-agents";
+import { sessionCreateAdmissionPort } from "./sessions";
 
 export const sessionEventStorePort = createPortToken<SessionEventLogStore>(
   "managed-agents.store.session-events",
@@ -61,6 +62,7 @@ export function sessionEventsModule(): AppModule {
       sessionEventExecutionContextSourcePort,
       sessionEventStreamPort,
       sessionEventDispatchPort,
+      sessionCreateAdmissionPort,
     ],
     setup({ port }) {
       const workspace = port(workspaceContextPort);
@@ -76,6 +78,7 @@ export function sessionEventsModule(): AppModule {
             execution: port(sessionEventExecutionContextSourcePort),
             stream: port(sessionEventStreamPort),
             dispatch: port(sessionEventDispatchPort),
+            admission: port(sessionCreateAdmissionPort),
             clock,
             ids: {
               nextEventId: () => ids.next("session-event"),

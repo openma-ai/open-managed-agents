@@ -119,6 +119,27 @@ describe("Managed Agents API — POST /v1/sessions/:session_id/events", () => {
     });
   });
 
+
+  it("maps payment_required on an existing session to HTTP 402 with balance_cents", async () => {
+    const api = buildSessionEventsTestApi(makeSessionEventsPort({
+      sendSessionEvents: async () => ({
+        type: "payment_required",
+        message: "Insufficient balance",
+        balanceCents: 0,
+      }),
+    }));
+    const response = await api.fetch(new Request(`http://openma.test/v1/sessions/${sessionWire.id}/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-beta": "managed-agents-2026-04-01" },
+      body: JSON.stringify({ events: [{ type: "user.message", content: [{ type: "text", text: "continue" }] }] }),
+    }));
+    expect(response.status).toBe(402);
+    await expect(response.json()).resolves.toEqual({
+      error: "Insufficient balance",
+      balance_cents: 0,
+    });
+  });
+
   it.each([
     {
       name: "a system.message that is not final",

@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { SessionEventsApplicationService } from "../src/session-events/application";
+import { admitAllSessionCreates } from "../src/sessions/admission";
 
 describe("durable Session input idempotency", () => {
   function fixture() {
     const log = new Map<string, any>();
     const dispatched: unknown[] = [];
     let revision = 1, sequence = 0;
-    const session: any = { id: "session", updatedAt: "2026-09-11T00:00:00.000Z", outcomeEvaluations: [] };
+    const session: any = { id: "session", agent: { id: "agent" }, updatedAt: "2026-09-11T00:00:00.000Z", outcomeEvaluations: [] };
     const dependencies: any = {
       workspaceId: "workspace", clock: { now: () => new Date(1800000000000 + sequence++) },
       ids: { nextEventId: () => `random-${sequence++}`, nextOutcomeId: () => `outcome-${sequence++}` },
-      execution: { find: async () => ({session, environment: {}, revision}) },
+      execution: { find: async () => ({session, environment: { id: "env" }, revision}) },
       sessions: { find: async () => session }, stream: { subscribe: () => (async function*(){})() },
       store: {
         async list(input: any) { return [...log.values()].filter(event => !input.eventIds || input.eventIds.includes(event.id)).slice(0, input.limit); },
@@ -22,6 +23,7 @@ describe("durable Session input idempotency", () => {
         },
       },
       dispatch: { sessionEventsAccepted: async (input: any) => { dispatched.push(input); } },
+      admission: admitAllSessionCreates,
     };
     return { log, dispatched, dependencies, service: () => new SessionEventsApplicationService(dependencies) };
   }

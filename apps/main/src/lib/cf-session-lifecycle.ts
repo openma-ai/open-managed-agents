@@ -17,13 +17,13 @@ import {
   logWarn,
   recordEvent,
   errFields,
-  classifyExternalError,
 } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import type { SessionLifecycleHooks } from "@open-managed-agents/http-routes";
 import { toFileRecord } from "@open-managed-agents/files-store";
 import { rateLimitSessionCreate } from "../rate-limit";
 import { checkDailySessionCap } from "../quotas";
+import { cfSessionUsageAdmission } from "./cf-session-create-admission";
 
 /** Build the per-request lifecycle hooks bundle. */
 export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
@@ -37,37 +37,44 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
       if (daily) return { status: daily.status, body: await daily.json() };
       return null;
     },
-    preCreateGate: async ({ tenantId, agentId, isLocalRuntime }) => {
-      // USAGE_METER.canStartSandbox — fail open when the meter is unbound or
-      // returns an exception (matches legacy behavior, sessions still start).
-      type UsageMeterRpc = {
-        canStartSandbox(o: { tenantId: string; agentId?: string }): Promise<{
-          ok: boolean;
-          reason?: string;
-          balance_cents?: number;
-        }>;
+    // Create gate: shared usage-gate semantics (local skip + fail-open). The
+    // order rate limit -> daily cap -> usage is enforced by the hook call
+    // order in the legacy route and by SessionCreateAdmissionService.admit in
+    // the official Sessions application.
+    preCreateGate: async ({ tenantId, agentId, environmentId, isLocalRuntime }) => {
+      const decision = await cfSessionUsageAdmission(env).admitSandboxStart({
+        workspaceId: tenantId,
+        agentId,
+        environmentId,
+        isLocalRuntime,
+      });
+      if (decision.type !== "payment_required") return null;
+      return {
+        status: 402,
+        body: {
+          error: decision.message,
+          balance_cents: decision.balanceCents,
+        },
       };
-      const meter = (env as unknown as { USAGE_METER?: UsageMeterRpc }).USAGE_METER;
-      if (!meter || isLocalRuntime) return null;
-      try {
-        const gate = await meter.canStartSandbox({ tenantId, agentId });
-        if (!gate.ok) {
-          return {
-            status: 402,
-            body: {
-              error: gate.reason ?? "Sandbox launch refused by usage meter",
-              balance_cents: gate.balance_cents ?? 0,
-            },
-          };
-        }
-      } catch (err) {
-        const classified = classifyExternalError(err);
-        const e = classified instanceof Error ? classified : err;
-        console.error(
-          `[sessions] USAGE_METER.canStartSandbox failed [${(e as Error)?.name ?? "unknown"}]: ${(e as Error)?.message ?? e}`,
-        );
-      }
-      return null;
+    },
+    // Existing-session turn gate for the legacy /v1/oma events route. The
+    // official /v1/sessions events route is gated in
+    // SessionEventsApplicationService with the same decision shape.
+    preTurnGate: async ({ tenantId, agentId, environmentId, isLocalRuntime }) => {
+      const decision = await cfSessionUsageAdmission(env).admitSandboxStart({
+        workspaceId: tenantId,
+        agentId,
+        environmentId,
+        isLocalRuntime,
+      });
+      if (decision.type !== "payment_required") return null;
+      return {
+        status: 402,
+        body: {
+          error: decision.message,
+          balance_cents: decision.balanceCents,
+        },
+      };
     },
     refreshSessionCredentials: async ({ tenantId, agentId, vaultIds }) => {
       return refreshProviderCredentialsForSession(

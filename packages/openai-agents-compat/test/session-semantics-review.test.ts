@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import OpenAI from "openai";
 import { buildOpenAIAgentsProtocolApi } from "@open-managed-agents/openai-agents-api";
-import { SessionEventsApplicationService } from "@open-managed-agents/managed-agents-application";
+import { admitAllSessionCreates, SessionEventsApplicationService } from "@open-managed-agents/managed-agents-application";
 import { createSessionsHandler, type SessionSemanticDependencies } from "../src/sessions";
 import { normalizeAgentConfig } from "../src/resources";
 
@@ -19,6 +19,7 @@ function fixture() {
     sessions: { find: async () => native },
     execution: { find: async () => ({ session: native, environment: {} as any, revision }) },
     stream: { subscribe: () => (async function* () {})() },
+    admission: admitAllSessionCreates,
     store: {
       list: async (input: any) => facts.filter(event => !input.eventIds || input.eventIds.includes(event.id)).slice(0, input.limit),
       append: async (input: any) => {

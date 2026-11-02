@@ -3,6 +3,7 @@ import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type { MarkSessionEventsProcessed } from "@open-managed-agents/session-event-store";
 import type { SentSessionEvent } from "../src/ports/session-events";
 import {
+  admitAllSessionCreates,
   isQueuedSessionEventType,
   markSessionEventsProcessed,
   SessionEventsApplicationService,
@@ -31,6 +32,7 @@ function serviceFor(config: { type: "cloud" } | { type: "self_hosted" }) {
     },
     stream: { subscribe: () => (async function* () {})() },
     dispatch: { sessionEventsAccepted: async () => {} },
+    admission: admitAllSessionCreates,
     clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
     ids: { nextEventId: (() => { let n = 0; return () => `event_0${++n}`; })(), nextOutcomeId: () => "outcome_01" },
   });

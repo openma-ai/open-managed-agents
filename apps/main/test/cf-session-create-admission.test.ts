@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { cfSessionCreateAdmission } from "../src/lib/cf-session-create-admission";
+import { cfSessionCreateAdmission, cfSessionUsageAdmission } from "../src/lib/cf-session-create-admission";
 
 const input = {
   workspaceId: "tenant_01",
@@ -50,6 +50,22 @@ describe("cfSessionCreateAdmission", () => {
     expect([...store.data.entries()]).toEqual([
       [`quota:sessions:tenant_01:${new Date().toISOString().slice(0, 10)}`, "1"],
     ]);
+  });
+
+  it("uses a usage-only gate for existing-session work", async () => {
+    const env = {
+      RL_SESSIONS_TENANT: { limit: async () => ({ success: false }) },
+      SESSION_DAILY_CAP_PER_TENANT: "0",
+      USAGE_METER: {
+        canStartSandbox: vi.fn(async () => ({ ok: false, reason: "Insufficient balance", balance_cents: 0 })),
+      },
+    };
+    await expect(cfSessionUsageAdmission(env as never).admitSandboxStart(input)).resolves.toEqual({
+      type: "payment_required",
+      message: "Insufficient balance",
+      balanceCents: 0,
+    });
+    expect(env.USAGE_METER.canStartSandbox).toHaveBeenCalledWith({ tenantId: "tenant_01", agentId: "agent_01" });
   });
 
   it("fails open when USAGE_METER throws", async () => {

@@ -148,7 +148,11 @@
       ],
       "services": [
         { "binding": "INTEGRATIONS", "service": "managed-agents-integrations" },
-        { "binding": "MAIN_MCP", "service": "managed-agents", "entrypoint": "McpProxyRpc" }
+        { "binding": "MAIN_MCP", "service": "managed-agents", "entrypoint": "McpProxyRpc" },
+        // Usage gate for sub-agent thread starts inside an existing turn.
+        // Staging intentionally omits it (billing worker is not deployed
+        // there); the gate fails open when unbound.
+        { "binding": "USAGE_METER", "service": "managed-agents-billing", "entrypoint": "UsageMeter" }
       ],
       "ai": { "binding": "AI" },
       "vars": {

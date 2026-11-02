@@ -1,7 +1,9 @@
-// CF adapters for the shared session-create admission policy
+// CF adapters for the shared Session admission policy
 // (`SessionCreateAdmissionService` in @open-managed-agents/managed-agents-application).
 // Only bindings/storage live here; ordering, local-runtime skip, fail-open and
-// rejection shapes are shared with Node.
+// rejection shapes are shared with Node. Create gates pass the rate limit and
+// daily counter; existing-session turns / thread starts use the usage-only
+// helper so the create quota is never consumed.
 
 import type { Env } from "@open-managed-agents/shared";
 import { classifyExternalError, logError, logWarn } from "@open-managed-agents/shared";
@@ -13,35 +15,54 @@ import {
 } from "@open-managed-agents/managed-agents-application";
 import { exceeded } from "../rate-limit";
 
-type UsageMeterRpc = {
-  canStartSandbox(o: { tenantId: string; agentId?: string }): Promise<{
-    ok: boolean;
-    reason?: string;
-    balance_cents?: number;
-  }>;
-};
+function cfUsageMeter(env: Env): SessionUsageMeterPort | undefined {
+  const meter = env.USAGE_METER;
+  if (!meter) return undefined;
+  return {
+    canStartSandbox: async ({ workspaceId, agentId }) => {
+      try {
+        const gate = await meter.canStartSandbox({ tenantId: workspaceId, agentId });
+        return {
+          ok: gate.ok,
+          ...(gate.reason !== undefined && { reason: gate.reason }),
+          ...(gate.balance_cents !== undefined && { balanceCents: gate.balance_cents }),
+        };
+      } catch (err) {
+        throw classifyExternalError(err);
+      }
+    },
+  };
+}
+
+function cfAdmissionLogger() {
+  return {
+    warn: (message: string, fields: Record<string, unknown>) =>
+      logWarn(fields as never, message),
+    error: (message: string, fields: Record<string, unknown>) =>
+      logError(fields as never, message),
+  };
+}
+
+/**
+ * Usage-only admission for work on an existing Session (new turns, thread
+ * starts). Does not touch the create rate limit or daily create counter.
+ * Used by the legacy /v1/oma turn hook; the official API gates inside the
+ * shared SessionEvents application service.
+ */
+export function cfSessionUsageAdmission(env: Env): SessionCreateAdmissionPort {
+  const usageMeter = cfUsageMeter(env);
+  return new SessionCreateAdmissionService({
+    ...(usageMeter !== undefined && { usageMeter }),
+    clock: { now: () => new Date() },
+    logger: cfAdmissionLogger(),
+  });
+}
 
 export function cfSessionCreateAdmission(
   env: Env,
   kv: KvStore,
 ): SessionCreateAdmissionPort {
-  const meter = (env as unknown as { USAGE_METER?: UsageMeterRpc }).USAGE_METER;
-  const usageMeter: SessionUsageMeterPort | undefined = meter
-    ? {
-        canStartSandbox: async ({ workspaceId, agentId }) => {
-          try {
-            const gate = await meter.canStartSandbox({ tenantId: workspaceId, agentId });
-            return {
-              ok: gate.ok,
-              ...(gate.reason !== undefined && { reason: gate.reason }),
-              ...(gate.balance_cents !== undefined && { balanceCents: gate.balance_cents }),
-            };
-          } catch (err) {
-            throw classifyExternalError(err);
-          }
-        },
-      }
-    : undefined;
+  const usageMeter = cfUsageMeter(env);
   return new SessionCreateAdmissionService({
     rateLimiter: {
       exceeded: ({ workspaceId }) =>
@@ -60,11 +81,8 @@ export function cfSessionCreateAdmission(
         });
       },
     },
-    ...(usageMeter && { usageMeter }),
+    ...(usageMeter !== undefined && { usageMeter }),
     clock: { now: () => new Date() },
-    logger: {
-      warn: (message, fields) => logWarn(fields as never, message),
-      error: (message, fields) => logError(fields as never, message),
-    },
+    logger: cfAdmissionLogger(),
   });
 }

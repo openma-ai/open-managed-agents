@@ -7,7 +7,7 @@ import type {
 import type { SessionEventView } from "@open-managed-agents/domain/sessions";
 import type { Session } from "../src/domain/session";
 import type { Environment } from "../src/domain/environment";
-import { SessionEventsApplicationService } from "../src/index";
+import { admitAllSessionCreates, SessionEventsApplicationService } from "../src/index";
 
 class MemorySessionEventStore implements SessionEventLogStore {
   private readonly events: Array<SentSessionEvent | SessionEventView> = [];
@@ -144,6 +144,7 @@ describe("SessionEventsApplicationService", () => {
           dispatchSignals.push(input);
         },
       },
+      admission: admitAllSessionCreates,
       clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
       ids: {
         nextEventId: () => `event_0${++nextEvent}`,
@@ -234,6 +235,7 @@ describe("SessionEventsApplicationService", () => {
       },
       stream: emptySessionEventStream,
       dispatch: silentEventDispatch,
+      admission: admitAllSessionCreates,
       clock: { now: () => now },
       ids: {
         nextEventId: () => `event_0${++nextEvent}`,
@@ -470,6 +472,7 @@ describe("SessionEventsApplicationService", () => {
       },
       stream: emptySessionEventStream,
       dispatch: silentEventDispatch,
+      admission: admitAllSessionCreates,
       clock: { now: () => new Date("2026-08-26T05:00:00.000Z") },
       ids: {
         nextEventId: () => "event_ctr",

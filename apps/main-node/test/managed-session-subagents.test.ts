@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessContext } from "@open-managed-agents/agent/harness/interface";
-import type { Environment, Session, SessionEventView } from "@open-managed-agents/managed-agents-application";
+import type { Environment, Session, SessionCreateAdmissionPort, SessionEventView } from "@open-managed-agents/managed-agents-application";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { MemorySessionThreadStore } from "../../../packages/session-thread-store-memory/src/index";
@@ -31,6 +31,7 @@ type Context = {
 function fixture(run: (context: Context) => Promise<void>, store = new MemorySessionThreadStore(), options: {
   maxConcurrentSubagents?: number;
   native?: boolean;
+  admission?: SessionCreateAdmissionPort;
   output?(frame: Record<string, unknown>): Promise<void>;
 } = {}) {
   const activeSession = structuredClone(session);
@@ -49,6 +50,7 @@ function fixture(run: (context: Context) => Promise<void>, store = new MemorySes
     clock: { now: () => new Date("2026-09-11T00:00:00Z") },
     ids: { nextEventId: () => `event_${++id}` },
     subagentThreads: store,
+    ...(options.admission !== undefined && { admission: options.admission }),
     subagentPolicy: options.native ? ({ session }) => nodeOpenAISubagentPolicy(session, {} as never) : () => ({ enabled: true, maxConcurrentSubagents: options.maxConcurrentSubagents ?? 2 }),
     ...(options.native && { resolveSubagentSession: async ({ session, request }) => resolveManagedSubagentSession(session, request) }),
   };
@@ -378,5 +380,60 @@ describe("Managed Node native subagents", () => {
       },
     });
     await f.run();
+  });
+
+  it("refuses sub-agent creation at $0 before writing a thread or event", async () => {
+    const store = new MemorySessionThreadStore();
+    let childRuns = 0;
+    const admission: SessionCreateAdmissionPort = {
+      admit: async () => ({ type: "admitted" }),
+      admitSandboxStart: async () => ({
+        type: "payment_required",
+        message: "Insufficient balance",
+        balanceCents: 0,
+      }),
+    };
+    const f = fixture(async ({ session: active, subagents }) => {
+      if (active.agent.name === "Parent") {
+        await expect(subagents!.create({ name: "Worker", message: "Work" }))
+          .rejects.toThrow("Insufficient balance");
+      } else {
+        childRuns += 1;
+      }
+    }, store, { admission });
+    await f.run();
+    expect(childRuns).toBe(0);
+    expect(await store.list({ workspaceId: "workspace", sessionId: session.id, limit: 10 }))
+      .toEqual([]);
+    expect(f.frames.some((frame) => String(frame.type).startsWith("session.thread_"))).toBe(false);
+  });
+
+  it("refuses a later sub-agent turn at $0 without writing a message or starting the child", async () => {
+    const store = new MemorySessionThreadStore();
+    let refuse = false;
+    let childRuns = 0;
+    const admission: SessionCreateAdmissionPort = {
+      admit: async () => ({ type: "admitted" }),
+      admitSandboxStart: async () => refuse
+        ? { type: "payment_required", message: "Insufficient balance", balanceCents: 0 }
+        : { type: "admitted" },
+    };
+    const f = fixture(async ({ session: active, runtime, subagents }) => {
+      if (active.agent.name === "Parent") {
+        const child = await subagents!.create({ name: "Worker", message: "First" });
+        await subagents!.wait({ threadIds: [child.threadId] });
+        refuse = true;
+        await expect(subagents!.send({ threadId: child.threadId, message: "More" }))
+          .rejects.toThrow("Insufficient balance");
+        refuse = false;
+      } else {
+        childRuns += 1;
+        runtime.broadcast({ type: "agent.message", content: [{ type: "text", text: "Done" }] });
+      }
+    }, store, { admission });
+    await f.run();
+    expect(childRuns).toBe(1);
+    expect(f.frames.some((frame) => frame.type === "agent.thread_message_sent"
+      && JSON.stringify(frame).includes("More"))).toBe(false);
   });
 });

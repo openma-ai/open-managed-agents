@@ -44,6 +44,7 @@ export type SendSessionEventsResult =
   | { type: "idempotency_conflict"; message: string }
   | { type: "version_conflict"; message: string }
   | { type: "invalid_request"; message: string }
+  | { type: "payment_required"; message: string; balanceCents: number }
   | { type: "not_found" };
 
 export type ListSessionEventsResult =
