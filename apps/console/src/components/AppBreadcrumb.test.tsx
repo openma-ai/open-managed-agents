@@ -17,7 +17,7 @@ it("keeps the full long ID available and the parent breadcrumb usable", async ()
   const current = screen.getByText(id);
   expect(current).toHaveAttribute("title", id);
   expect(current).toHaveAttribute("aria-current", "page");
-  await userEvent.click(screen.getByRole("link", { name: "Environments", exact: true }));
+  await userEvent.click(screen.getByRole("link", { name: "Environments" }));
   expect(await screen.findByRole("heading", { name: "Environment list" })).toBeVisible();
   router.dispose();
 });
