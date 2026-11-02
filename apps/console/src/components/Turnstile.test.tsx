@@ -5,7 +5,7 @@ import { Turnstile } from "./Turnstile";
 afterEach(() => { delete window.turnstile; });
 
 describe("Turnstile lifecycle", () => {
-  it.each([[360, "normal"], [272, "compact"]] as const)("uses the official unstretched size at %spx", async (width, size) => {
+  it.each([[360, "flexible"], [272, "compact"]] as const)("uses the official container-fitting size at %spx", async (width, size) => {
     const measure = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(width);
     const api = { render: vi.fn<NonNullable<Window["turnstile"]>["render"]>(() => "widget-1"), reset: vi.fn(), remove: vi.fn() };
     window.turnstile = api;
