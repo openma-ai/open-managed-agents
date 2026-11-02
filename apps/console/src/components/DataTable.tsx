@@ -274,7 +274,11 @@ export function DataTable<T>({
                           )}
                           data-context-menu={actions.length > 0 || undefined}
                           tabIndex={onRowClick || actions.length > 0 ? 0 : undefined}
-                          onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                          onClick={onRowClick ? (event) => {
+                            // Native Enter on a nested control also emits a click.
+                            if ((event.target as Element).closest("a, button, input, select, textarea, [contenteditable=true], [role=button], [role=checkbox], [role=switch], [role=combobox]")) return;
+                            onRowClick(row.original);
+                          } : undefined}
                           onKeyDown={onRowClick ? (event) => {
                             // Nested inputs/links keep their own keyboard behaviour.
                             if (event.target !== event.currentTarget || event.defaultPrevented || event.repeat) return;

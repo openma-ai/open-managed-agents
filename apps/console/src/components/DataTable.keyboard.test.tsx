@@ -36,4 +36,12 @@ describe("DataTable keyboard activation", () => {
     fireEvent.keyDown(row, { key: "ArrowDown" });
     expect(open).not.toHaveBeenCalled();
   });
+
+  it("keeps a child button's native Enter click from opening the row", async () => {
+    const { open, nestedAction } = setup();
+    screen.getByRole("button", { name: "Inspect" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(nestedAction).toHaveBeenCalledOnce();
+    expect(open).not.toHaveBeenCalled();
+  });
 });
