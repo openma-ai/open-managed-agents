@@ -1199,6 +1199,11 @@ describe("SessionDO recovery — DO-level", () => {
       // progress (no claim/turn): this is the null-processed/migrated-row
       // shape that used to re-arm every ~1s forever.
       instance.drainEventQueue = async () => {};
+      // Keep all persisted alarms in the future relative to workerd's real
+      // clock. runDurableObjectAlarm manually deletes then invokes alarm();
+      // a past-due alarm would let the runtime race that manual delivery.
+      const nowMs = Date.now() + 60 * 60 * 1_000;
+      instance.processedClock.nowMs = () => nowMs;
       instance._queueDrainFailures = 0;
       instance._queueDrainRetryAtMs = null;
       instance.queue.enqueueQueueInput({
@@ -1213,12 +1218,12 @@ describe("SessionDO recovery — DO-level", () => {
     const attempts: number[] = [];
     for (let i = 0; i < 4; i++) {
       await runInDurableObject(stub, async (_instance, state) => {
-        await state.storage.setAlarm(Date.now() - 1_000);
+        await state.storage.setAlarm(Date.now() + 60 * 60 * 1_000);
       });
-      await runDurableObjectAlarm(stub);
+      expect(await runDurableObjectAlarm(stub), "manual alarm must be delivered").toBe(true);
       const snapshot = await runInDurableObject(stub, async (instance, state) => ({
         alarm: await state.storage.getAlarm(),
-        now: Date.now(),
+        now: instance.processedClock.nowMs(),
         failures: instance._queueDrainFailures as number,
       }));
       expect(snapshot.alarm, "queued work must keep the alarm armed").not.toBeNull();
@@ -1242,10 +1247,10 @@ describe("SessionDO recovery — DO-level", () => {
         content: [{ type: "text", text: "fresh work" }],
         session_thread_id: "sthr_primary",
       });
-      await instance._multiplexAlarm({ reason: "test_enqueue", atMs: Date.now() + 1 });
+      await instance._multiplexAlarm({ reason: "test_enqueue", atMs: instance.processedClock.nowMs() + 1 });
       return {
         alarm: await state.storage.getAlarm(),
-        now: Date.now(),
+        now: instance.processedClock.nowMs(),
         failures: instance._queueDrainFailures as number,
         retryAt: instance._queueDrainRetryAtMs as number | null,
       };
