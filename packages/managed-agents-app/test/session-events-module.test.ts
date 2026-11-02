@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Session } from "@open-managed-agents/domain/sessions";
 import { MemorySessionStore } from "@open-managed-agents/session-store-memory";
 import { MemorySessionEventStore } from "@open-managed-agents/session-event-store-memory";
+import { admitAllSessionWork } from "@open-managed-agents/managed-agents-application";
 
 import { createApp, providePort } from "../src/index";
 import {
@@ -17,6 +18,7 @@ import {
   sessionEventStorePort,
   sessionEventStreamPort,
   sessionEventsModule,
+  sessionWorkAdmissionPort,
 } from "../src/modules/session-events";
 
 const session: Session = {
@@ -96,6 +98,7 @@ describe("Session Events application module", () => {
         providePort(sessionEventDispatchPort, {
           sessionEventsAccepted: async (input) => { dispatched.push(input); },
         }),
+        providePort(sessionWorkAdmissionPort, admitAllSessionWork),
         sessionEventsModule(),
       ],
     });

@@ -16,6 +16,7 @@ import { sessionEventSortTime } from "@open-managed-agents/session-event-store";
 import type { SessionSourcePort } from "./session-source";
 import type { SessionEventStreamPort } from "./stream";
 import type { SessionEventDispatchPort } from "../session-execution/events";
+import { admitAllSessionWork, type SessionWorkAdmissionPort } from "../sessions/work-admission";
 import type {
   SessionExecutionContextSourcePort,
 } from "@open-managed-agents/session-runtime-contract/context";
@@ -108,8 +109,23 @@ export interface SessionEventsApplicationServiceDependencies {
   execution: SessionExecutionContextSourcePort;
   stream: SessionEventStreamPort;
   dispatch: SessionEventDispatchPort;
+  /**
+   * Generic host hook for work on an existing Session (new turns). Optional;
+   * defaults to admit-all. Deny status/body come from the host.
+   */
+  workAdmission?: SessionWorkAdmissionPort;
   clock: { now(): Date };
   ids: { nextEventId(): string; nextOutcomeId(): string };
+}
+
+/**
+ * Inputs that only stop an in-flight turn do not start runtime work.
+ * Everything else (user.message, system.message, tool confirmations/results,
+ * custom tool results, define_outcome) can wake the runtime or continue a
+ * model/sandbox turn, so the turn admission hook applies to it.
+ */
+function startsRuntimeWork(events: readonly { type: string }[]): boolean {
+  return events.some((event) => event.type !== "user.interrupt");
 }
 
 /**
@@ -281,6 +297,29 @@ export class SessionEventsApplicationService
             acceptedEvents = events.filter((event) => event.type !== "user.interrupt");
             if (acceptedEvents.length === 0) return { type: "accepted", events: [] };
           }
+        }
+      }
+      // Host admission hook for existing-Session work. Runs after the
+      // settle-only window (so an invalid user.message still returns 400) and
+      // before any append, execution dispatch or sandbox start.
+      const workAdmission = this.dependencies.workAdmission;
+      if (workAdmission !== undefined && workAdmission !== admitAllSessionWork && startsRuntimeWork(acceptedEvents)) {
+        const admission = await workAdmission.admit({
+          kind: "turn",
+          workspaceId: this.dependencies.workspaceId,
+          sessionId: command.sessionId,
+          agentId: execution.session?.agent?.id,
+          environmentId: execution.environment?.id,
+          isLocalRuntime:
+            execution.environment?.config?.type === "self_hosted" ||
+            execution.session?.agent?.openma?.runtimeBinding != null,
+        });
+        if (admission.type === "denied") {
+          return {
+            type: "admission_denied",
+            status: admission.status,
+            body: admission.body !== null && typeof admission.body === "object" ? admission.body : { error: admission.body ?? null },
+          };
         }
       }
       if (command.expectedRevision !== undefined && command.expectedRevision !== execution.revision) {
