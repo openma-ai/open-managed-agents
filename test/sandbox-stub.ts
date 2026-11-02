@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { DurableObject } from "cloudflare:workers";
 // Stub for @cloudflare/sandbox in vitest (SDK 1.0 helpers).
 // The real module depends on workerd-native APIs.
 
@@ -36,9 +37,31 @@ export class SandboxS3MountError extends Error {}
 export class SandboxBackupError extends Error {}
 export class SandboxProtocolError extends Error {}
 
-// Empty DO class for wrangler.test.jsonc SANDBOX binding. Vitest/miniflare
-// has no containers; production uses OmaSandbox from apps/agent.
-export class Sandbox {}
+// DO stub for wrangler.test.jsonc SANDBOX binding. Newer workerd/vitest-pool
+// requires a DurableObject subclass for RPC; miniflare has no containers so
+// production OmaSandbox must not be exported from test-worker.
+export class Sandbox extends DurableObject {
+  async exec(_command, _opts) {
+    return { stdout: "", stderr: "", exitCode: 0, success: true };
+  }
+  async renewActivityTimeout() {}
+  async destroy() {}
+  async startProcess(_command, _opts) {
+    return {
+      id: "stub-proc",
+      pid: 1,
+      kill: async () => {},
+      getLogs: async () => ({ stdout: "", stderr: "" }),
+      getStatus: async () => "exited",
+    };
+  }
+  async readFile() { return { content: "" }; }
+  async writeFile() {}
+  async mkdir() {}
+  async setOutboundHandler() {}
+  async setOutboundByHost() {}
+  async clearOutbound() {}
+}
 
 // Legacy test override still used by older helpers; CloudflareSandbox now
 // uses setCloudflareSandboxForTest from runtime/sandbox.ts.
