@@ -70,6 +70,10 @@ export default defineConfig({
             { label: 'Welcome', link: '/' },
             { label: 'Quickstart', slug: 'quickstart' },
             { label: 'Concepts', slug: 'concepts' },
+            {
+              label: 'OpenMatter Super-agent',
+              slug: 'ecosystem/openmatter-super-agent',
+            },
           ],
         },
         {
