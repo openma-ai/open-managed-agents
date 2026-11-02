@@ -210,15 +210,21 @@ pnpm test
 
 提交前跑 `pnpm typecheck`，以及改过的包的测试。动到公共路径就跑 `pnpm test`。`pnpm test` 不包含 CI 里随后的 Console agent editor E2E、protocol coverage、storage、MySQL。E2E 需要 Playwright；storage 和 MySQL 需要 Docker。MySQL 之前还有一步把 `/dev/kvm` 交给 runner 用户，见下。
 
-Workflow `CI`（`.github/workflows/ci.yml`，PR 与 `main`，job `verify`，`runs-on: ubuntu-latest`，超时 30 分钟）的顺序：
+Workflow `CI`（`.github/workflows/ci.yml`，PR 与 `main`）按**影响面**分级（#417）：`changes` 用 `scripts/ci-impact-surfaces.mjs` 分类 diff；只跑命中的 `docs` / `web` / `cf` / `node`；`release-check` 仍是廉价的 PR 并行 job；名为 `verify` 的 gate 在未命中的 surface 被 skip 时仍算通过（branch protection 的 required check 仍是 `verify`）。矩阵见 `.github/workflows/README.md`。
 
-1. `pnpm typecheck`
-2. `pnpm test`
+`node` job（`runs-on: ubuntu-24.04`，超时 45 分钟）在 Node 影响面或 shared/lockfile-alone 时运行，顺序大致为：
+
+1. `pnpm typecheck:ci:node`
+2. `pnpm test:ci:node`（不含根目录 Cloudflare Vitest pool）
 3. 安装 Playwright Chromium，然后 `pnpm test:e2e:agent-editor`
 4. `pnpm test:coverage:protocol`
-5. `pnpm test:integration:storage` — Testcontainers + MinIO（Chainguard 镜像，#227）
-6. `Enable KVM for Litebox`
-7. `pnpm test:integration:mysql` — Testcontainers `mysql:8.4`（`apps/main-node/vitest.mysql.config.ts`）。套件是 `test/persistence.mysql.integration.ts` 和 `test/main-node.mysql.integration.ts`。2026-10-02，#237 合并后的 [CI run 36998373962](https://github.com/openma-ai/open-managed-agents/actions/runs/36998373962)（head `0d5c5f00`）测得 **2 files / 16 tests**（6 + 10）。#239 没有改 `ci.yml` 或这两个文件。这不是一条会自动更新的「最新 run」指针。
+5. `pnpm test:coverage:harness-web-http`（Codecov）
+6. `pnpm test:integration:storage` — Testcontainers + MinIO（Chainguard 镜像，#227）
+7. `Enable KVM for Litebox`
+8. `pnpm test:integration:mysql` — Testcontainers `mysql:8.4`（`apps/main-node/vitest.mysql.config.ts`）
+9. `pnpm --filter @open-managed-agents/main-node test:integration:postgres`
+
+`cf` job 跑 `typecheck:ci:cf` + `test:ci:cf`（根 Cloudflare Vitest pool + CF 包测试），**不**跑 KVM / MySQL / Postgres / Console E2E。docs-only 只跑文档 typecheck + build。
 
 **KVM。** 步骤注释写明：ubuntu-24.04 runner 上有 `/dev/kvm`，属主 `root:kvm`，模式 `0660`，runner 用户不在 `kvm` 组。`Enable KVM for Litebox` 在 MySQL 之前执行。设备不存在就报错并让 job 失败，MySQL 不会跑。它写入 udev 规则，再 `chmod 666 /dev/kvm`。`chmod` 失败，或当前用户最终不是既可读又可写，同样失败。
 
