@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Merge Queue: required check context remains `verify`.
+  merge_group:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -45,6 +47,13 @@ jobs:
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             git fetch origin "${{ github.base_ref }}" --depth=1
             BASE="origin/${{ github.base_ref }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # Merge Queue temporary ref: classify against the queue base SHA.
+            BASE="${{ github.event.merge_group.base_sha }}"
+            if [[ -z "$BASE" ]]; then
+              echo "merge_group.base_sha missing" >&2
+              exit 1
+            fi
           else
             # Push to main: classify against the previous commit on this ref.
             BASE="${{ github.event.before }}"
