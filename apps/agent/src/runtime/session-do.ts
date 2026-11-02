@@ -1,3 +1,4 @@
+import { UNKNOWN_TOOL_RESULT_TEXT } from "@open-managed-agents/session-runtime-contract/history";
 import { DurableObject } from "cloudflare:workers";
 import { assertRuntimeAgentSnapshot, resolvePinnedSubagent, resolveThreadAgentSnapshot, resolveSubagentSkillReminders, resolveRuntimeSkillFiles } from "./multiagent";
 import type { RuntimeAgentConfig as AgentConfig } from "@open-managed-agents/api-types";
@@ -1741,7 +1742,9 @@ export class SessionDO extends DurableObject<Env> {
     if (!this.env.MAIN_DB || !this.state.tenant_id || !this.state.session_id) return null;
     if (this._executionStore === null) {
       const db = await buildCfTenantDbProvider(this.env).resolve(this.state.tenant_id);
-      this._executionStore = new SqlSessionExecutionStore(new CfD1SqlClient(db));
+      this._executionStore = new SqlSessionExecutionStore(new CfD1SqlClient(db), {
+        recoveryScope: { workspaceId: this.state.tenant_id, sessionId: this.state.session_id },
+      });
       this._executionStoreReady = ensureSessionExecutionCoordinatorSchema(
         new CfD1SqlClient(db),
       );
@@ -8210,13 +8213,13 @@ export class SessionDO extends DurableObject<Env> {
         ? {
             type: "agent.mcp_tool_result" as const,
             mcp_tool_use_id: id,
-            content: "Tool call interrupted (DO eviction or restart). Re-send your message to retry.",
+            content: UNKNOWN_TOOL_RESULT_TEXT,
             is_error: true,
           }
         : {
             type: "agent.tool_result" as const,
             tool_use_id: id,
-            content: "Tool call interrupted (DO eviction or restart). Re-send your message to retry.",
+            content: UNKNOWN_TOOL_RESULT_TEXT,
             is_error: true,
           };
       const tagged = (meta.thread
