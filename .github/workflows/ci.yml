@@ -33,6 +33,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Check dependency sources before install
+        run: |
+          node --test scripts/check-dependency-sources.test.mjs
+          node scripts/check-dependency-sources.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
