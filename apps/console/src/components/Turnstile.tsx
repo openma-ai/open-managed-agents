@@ -18,8 +18,8 @@ interface TurnstileProps {
   onError?: (code: string) => void;
   /** Reset the existing official widget after consuming a single-use token. */
   resetKey?: number;
-  /** Per CF: "interaction-only" (default) shows the widget only when CF
-   *  decides interaction is needed; "always" forces visible; "execute"
+  /** Per CF: "interaction-only" shows the widget only when CF
+   *  decides interaction is needed; "always" (default) keeps it visible; "execute"
    *  is for invisible widgets that the page calls programmatically. */
   appearance?: "interaction-only" | "always" | "execute";
 }

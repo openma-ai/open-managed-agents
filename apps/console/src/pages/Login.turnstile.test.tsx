@@ -85,7 +85,7 @@ it("requires a new token for verification email after sign-in consumes its token
   await waitFor(() => expect(renderWidget).toHaveBeenCalled());
   const options = renderWidget.mock.calls.at(-1)![1];
   await act(async () => options.callback("sign-in-token"));
-  await user.click(screen.getByRole("button", { name: "Sign in", exact: true }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
   expect(await screen.findByRole("heading", { name: "Verify your email" })).toBeVisible();
   expect(sendCode).not.toHaveBeenCalled();
   const resend = screen.getByRole("button", { name: "Resend" });
