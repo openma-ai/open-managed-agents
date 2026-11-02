@@ -1272,49 +1272,71 @@ export function SessionDetail() {
         <ManagedSessionConversation
           afterTurns={transientActivity}
           composer={<>
-          {/* Shared Backchat queue UI. Console has no reorder API, so no
-              reorder callback → no drag handle / arrows. Mid-run accept is
-              already CMA steer (no explicit Steer button). */}
+          {/* Shared queue + Backchat-style parked confirmation.
+              Console has no reorder API, so no reorder callback → no drag
+              handle / arrows. Mid-run accept is already CMA steer.
+              Empty queue must stay hidden (no "0 queued · waiting on tool…").
+              When always_ask parks, ToolConfirmationAsk occupies the composer
+              slot the same way Backchat's ComposerBrokerAsk does. */}
+          {queueDockItems.length > 0 ? (
+            <QueueDock
+              blocked={needsAction
+                ? {
+                    reason: "requires_action",
+                    toolNames: blockedToolNames,
+                    toolCallIds: activeTurn?.awaitingToolCallIds,
+                    onInterrupt: interrupt,
+                  }
+                : undefined}
+              callbacks={{
+                update: updateQueued,
+                remove: async (messageId) => { await cancelQueued(messageId); },
+              }}
+              prompts={queueDockItems}
+            />
+          ) : needsAction && pendingConfirmations.length === 0 ? (
+            <QueueDock
+              blocked={{
+                reason: "requires_action",
+                toolNames: blockedToolNames,
+                toolCallIds: activeTurn?.awaitingToolCallIds,
+                onInterrupt: interrupt,
+              }}
+              callbacks={{
+                update: updateQueued,
+                remove: async (messageId) => { await cancelQueued(messageId); },
+              }}
+              prompts={queueDockItems}
+            />
+          ) : null}
           {pendingConfirmations.length > 0 ? (
-            <div className="mb-2 px-1">
+            // Shared common card — occupies the composer slot like Backchat's
+            // pending ask (no empty QueueDock strip above/below).
+            <div data-composer-ask-slot="true" data-tool-confirmation-host="true">
               <ToolConfirmationAsk
                 actions={pendingConfirmations}
                 disabled={sending || interrupting}
                 onSubmit={confirmTool}
               />
             </div>
-          ) : null}
-          <QueueDock
-            blocked={needsAction
-              ? {
-                  reason: "requires_action",
-                  toolNames: blockedToolNames,
-                  toolCallIds: activeTurn?.awaitingToolCallIds,
-                  onInterrupt: interrupt,
-                }
-              : undefined}
-            callbacks={{
-              update: updateQueued,
-              remove: async (messageId) => { await cancelQueued(messageId); },
-            }}
-            prompts={queueDockItems}
-          />
-          <SessionComposer
-            interrupting={interrupting}
-            placeholder={composerPlaceholder}
-            notice={composerNotice}
-            restoreDraft={composerRestore}
-            onError={(error) => toast.error(error.message)}
-            onStop={() => void interrupt()}
-            onSubmit={async ({ text, files }) => {
-              const rawFiles = files
-                .map((file) => file.file)
-                .filter((file): file is File => file instanceof File);
-              await send(text, rawFiles);
-            }}
-            running={status === "running"}
-            sending={sending}
-          />
+          ) : (
+            <SessionComposer
+              interrupting={interrupting}
+              placeholder={composerPlaceholder}
+              notice={composerNotice}
+              restoreDraft={composerRestore}
+              onError={(error) => toast.error(error.message)}
+              onStop={() => void interrupt()}
+              onSubmit={async ({ text, files }) => {
+                const rawFiles = files
+                  .map((file) => file.file)
+                  .filter((file): file is File => file instanceof File);
+                await send(text, rawFiles);
+              }}
+              running={status === "running"}
+              sending={sending}
+            />
+          )}
           </>}
           empty={hasTransientActivity ? transientActivity : undefined}
           activeTurnId={activeTurnId}

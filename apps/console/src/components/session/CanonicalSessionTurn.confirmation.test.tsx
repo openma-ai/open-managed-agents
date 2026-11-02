@@ -5,7 +5,7 @@ import {
   projectCanonicalChat,
   type WireSessionEvent,
 } from "@openma/common/session-events/managed";
-import { ToolConfirmationAsk } from "@openma/common/chat-ui";
+import { QueueDock, ToolConfirmationAsk } from "@openma/common/chat-ui";
 import {
   CanonicalSessionTurn,
   projectCanonicalSessionTurn,
@@ -81,6 +81,36 @@ describe("always_ask tool confirmation (#355)", () => {
     expect(html).toContain('data-tool-confirmation-allow="true"');
     expect(html).toContain('data-tool-confirmation-deny="true"');
     expect(html).toContain("bash");
+  });
+
+  it("SessionDetail composer contract: empty queue stays hidden under parked ask", () => {
+    // Mirrors SessionDetail wiring: ToolConfirmationAsk occupies the composer
+    // slot; QueueDock only mounts when prompts.length > 0.
+    const actions = pendingManagedActions(askEvents()).filter(
+      (a) => a.type === "confirmation",
+    );
+    const queuePrompts: { id: string; text: string }[] = [];
+    const html = renderToStaticMarkup(
+      <>
+        {queuePrompts.length > 0 ? (
+          <QueueDock
+            blocked={{
+              reason: "requires_action",
+              toolNames: ["bash"],
+              toolCallIds: ["tool_ask"],
+            }}
+            prompts={queuePrompts}
+          />
+        ) : null}
+        <ToolConfirmationAsk actions={actions} onSubmit={() => undefined} />
+      </>,
+    );
+    expect(html).toContain('data-tool-confirmation="true"');
+    expect(html).toContain('data-tool-confirmation-allow="true"');
+    expect(html).not.toContain("data-composer-queue");
+    expect(html).not.toContain("data-queue-blocked");
+    expect(html).not.toContain("0 queued");
+    expect(html).not.toContain("waiting on tool");
   });
 
   it("encodeGuiToolConfirmation payload matches CMA user.tool_confirmation", () => {
