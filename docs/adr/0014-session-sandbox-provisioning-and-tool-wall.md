@@ -1,7 +1,7 @@
 # ADR 0014: Provision the Session sandbox at create time; wall tools, not the model
 
 **Status**: Proposed (2026-11-02)
-**Owner**: TBD
+**Owner**: @hrhrng
 **Tracking**: [#390](https://github.com/openma-ai/open-managed-agents/issues/390)
 **Supersedes**: None
 **Related**: [`0005-self-hosted-worker-runtime-resources.md`](0005-self-hosted-worker-runtime-resources.md),
