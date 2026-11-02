@@ -205,6 +205,10 @@ export function buildSessionEventRoutes(
         404,
       );
     }
+    // Host admission hook denial: status and body come from the hook.
+    if (result.type === "admission_denied") {
+      return c.json(result.body, result.status as 400);
+    }
 
     let response: object;
     try {

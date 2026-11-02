@@ -20,6 +20,8 @@ import {
   classifyExternalError,
   AuthError,
   BillingError,
+  admitViaSessionAdmissionHook,
+  SessionAdmissionDeniedError,
   ConfigError,
   ModelError,
   TransientInfraError,
@@ -4516,6 +4518,7 @@ export class SessionDO extends DurableObject<Env> {
     parentThreadId: string = "sthr_primary",
     parentSignal?: AbortSignal,
   ): Promise<string> {
+
     // Generate a unique thread ID. Prefix `sthr_` matches AMA spec
     // (BetaManagedAgentsSessionThread.id is `sthr_*`); previous prefix
     // was `thread_*` and pre-existing live sessions may still hold those
@@ -4589,6 +4592,25 @@ export class SessionDO extends DurableObject<Env> {
       }
     }
 
+    // Optional generic host hook for session-thread starts (unbound → admit).
+    // A denial fails the spawn before any thread row or event is written.
+    const subEnvironment = this.state.environment_id
+      ? await this.getEnvConfig(this.state.environment_id)
+      : null;
+    const threadAdmit = await admitViaSessionAdmissionHook(this.env.SESSION_ADMISSION, {
+      kind: "thread_start",
+      workspaceId: this.state.tenant_id,
+      sessionId: this.state.session_id,
+      agentId: subAgent.id,
+      environmentId: this.state.environment_id,
+      isLocalRuntime:
+        (subAgent as { runtime_binding?: unknown }).runtime_binding != null ||
+        subEnvironment?.config?.type === "self_hosted",
+    });
+    if (threadAdmit.type === "denied") {
+      throw new SessionAdmissionDeniedError(threadAdmit.status, threadAdmit.body);
+    }
+
     // In-memory map (hot path config lookup) + persistent threads row
     // (Phase 1 — survives DO eviction, lets HTTP CRUD see this thread).
     // INSERT OR IGNORE for safety against rare ID collision.
@@ -4654,9 +4676,6 @@ export class SessionDO extends DurableObject<Env> {
 
     // Build sub-agent tools and model (platform prepares context for sub-agent too)
     let childSignal: AbortSignal | undefined = abortController.signal;
-    const subEnvironment = this.state.environment_id
-      ? await this.getEnvConfig(this.state.environment_id)
-      : null;
     const subAuxResolved = await this.resolveAuxModel(subAgent);
     const subTools = await buildTools(subAgent, childSandbox, {
       ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,

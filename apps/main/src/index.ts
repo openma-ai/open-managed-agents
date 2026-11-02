@@ -171,6 +171,7 @@ import {
   fetchVaultCredentials,
 } from "./lib/cf-session-lifecycle";
 import { cfSessionCreateAdmission } from "./lib/cf-session-create-admission";
+import { cfSessionWorkAdmission } from "./lib/cf-session-work-admission";
 import type { KvStore } from "@open-managed-agents/kv-store";
 import { validateAgentLimits } from "./lib/limits";
 import { listMemberships, hasMembership } from "./auth-config";
@@ -774,6 +775,8 @@ function managedSessionsCompositionFor(ctx: AppCtx): SqlManagedSessionsCompositi
     // Rate limit + daily cap + USAGE_METER gate, evaluated by the shared
     // Sessions application before any Session row or work is persisted.
     admission: cfSessionCreateAdmission(ctx.env, services.kv),
+    // Optional generic host hook for new turns on existing Sessions.
+    workAdmission: cfSessionWorkAdmission(ctx.env),
     // Event acceptance and runtime work admission must share one D1 batch.
     // SessionDO is only an execution host; a failed service-binding wakeup
     // therefore cannot erase already accepted work.

@@ -66,6 +66,7 @@ export * from "./memories/versions-application";
 export * from "./models/application";
 export * from "./models/catalog-source";
 export * from "./sessions/admission";
+export * from "./sessions/work-admission";
 export * from "./sessions/agent-source";
 export * from "./sessions/application";
 export * from "./sessions/environment-source";

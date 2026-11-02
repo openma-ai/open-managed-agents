@@ -83,6 +83,18 @@ export interface SessionLifecycleHooks {
   preCreateGate?: (input: {
     tenantId: string;
     agentId: string;
+    environmentId: string;
+    isLocalRuntime: boolean;
+  }) => Promise<{ status: number; body: unknown } | null>;
+  /** Optional generic pre-turn admission hook for the legacy /v1/oma events
+   *  route. Returns null to proceed; { status, body } to short-circuit with
+   *  the hook's own response. The official /v1/sessions events route uses
+   *  the SessionEventsApplicationService work-admission port instead. */
+  preTurnGate?: (input: {
+    tenantId: string;
+    sessionId: string;
+    agentId: string;
+    environmentId: string;
     isLocalRuntime: boolean;
   }) => Promise<{ status: number; body: unknown } | null>;
   /** Refresh provider-tagged credentials for the given vault set + return
@@ -358,21 +370,23 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
 
     const agentIsLocalRuntime = !!agentRow.runtime_binding;
 
+    let envId = body.environment_id ?? wrappedEnv;
+    if (!envId && agentIsLocalRuntime) {
+      envId = deps.localRuntimeEnvId ?? "env_local_runtime";
+    }
+
     if (deps.lifecycle?.preCreateGate) {
       const gate = await deps.lifecycle.preCreateGate({
         tenantId: t,
         agentId,
+        environmentId: envId ?? "",
         isLocalRuntime: agentIsLocalRuntime,
       });
       if (gate) return c.json(gate.body as object, gate.status as 402);
     }
 
-    let envId = body.environment_id ?? wrappedEnv;
     if (!envId) {
-      if (!agentIsLocalRuntime) {
-        return c.json({ error: "environment_id is required for cloud agents" }, 400);
-      }
-      envId = deps.localRuntimeEnvId ?? "env_local_runtime";
+      return c.json({ error: "environment_id is required for cloud agents" }, 400);
     }
 
     const { tenant_id: _atid, ...agentSnapshot } = agentRow;
@@ -685,6 +699,31 @@ export function buildSessionRoutes(deps: SessionRoutesDeps) {
       if (!ALLOWED_EVENT_TYPES.has(ev.type)) {
         return c.json({ error: `Unsupported event type: ${ev.type}` }, 400);
       }
+    }
+
+    // Optional host admission hook for existing-session turns on the legacy
+    // /v1/oma route. Anything but a pure interrupt can wake or continue
+    // runtime work. Official /v1/sessions events use the SessionEvents
+    // application work-admission port.
+    if (deps.lifecycle?.preTurnGate && body.events.some((ev) => ev.type !== "user.interrupt")) {
+      const sessionRow = sess as unknown as {
+        agent_id?: string;
+        environment_id?: string;
+        agent_snapshot?: { runtime_binding?: unknown };
+      };
+      const environment = deps.loadEnvironment && sessionRow.environment_id
+        ? await deps.loadEnvironment({ tenantId: t, environmentId: sessionRow.environment_id })
+        : null;
+      const gate = await deps.lifecycle.preTurnGate({
+        tenantId: t,
+        sessionId: id,
+        agentId: sessionRow.agent_id ?? "",
+        environmentId: sessionRow.environment_id ?? "",
+        isLocalRuntime:
+          sessionRow.agent_snapshot?.runtime_binding != null ||
+          environment?.config?.type === "self_hosted",
+      });
+      if (gate) return c.json(gate.body as object, gate.status as 400);
     }
 
     for (const ev of body.events) {

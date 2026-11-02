@@ -18,6 +18,7 @@ import {
   recordEvent,
   errFields,
   classifyExternalError,
+  admitViaSessionAdmissionHook,
 } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
 import type { SessionLifecycleHooks } from "@open-managed-agents/http-routes";
@@ -68,6 +69,19 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
         );
       }
       return null;
+    },
+    // Existing-session turn gate for the legacy /v1/oma events route: the
+    // optional generic SESSION_ADMISSION hook owns the deny status/body.
+    preTurnGate: async ({ tenantId, sessionId, agentId, environmentId, isLocalRuntime }) => {
+      const decision = await admitViaSessionAdmissionHook(env.SESSION_ADMISSION, {
+        kind: "turn",
+        workspaceId: tenantId,
+        sessionId,
+        agentId,
+        environmentId,
+        isLocalRuntime,
+      });
+      return decision.type === "denied" ? { status: decision.status, body: decision.body } : null;
     },
     refreshSessionCredentials: async ({ tenantId, agentId, vaultIds }) => {
       return refreshProviderCredentialsForSession(

@@ -17,6 +17,7 @@ import {
   resolveProtocolEndpointsFromModelCard,
   type InferenceProtocolEndpoint,
 } from "@open-managed-agents/inference-proxy";
+import { admitViaSessionAdmissionHook } from "@open-managed-agents/shared";
 import { SqlSessionSource } from "@open-managed-agents/managed-agents-adapters-sql";
 import { CfD1SqlClient } from "@open-managed-agents/sql-client/adapters/cf-d1";
 
@@ -130,6 +131,18 @@ export async function forwardHttpInferenceProxyRequest(input: {
   const body = ["GET", "HEAD"].includes(method)
     ? null
     : await input.request.arrayBuffer();
+  // Optional generic host admission hook. The hook owns the deny status and body.
+  if (input.env.SESSION_ADMISSION) {
+    const decision = await admitViaSessionAdmissionHook(input.env.SESSION_ADMISSION, {
+      kind: "model_request",
+      workspaceId: input.tenantId,
+      sessionId: input.sessionId,
+      isLocalRuntime: false,
+    });
+    if (decision.type === "denied") {
+      return Response.json(decision.body ?? null, { status: decision.status });
+    }
+  }
   return forwardHostedInferenceRequest({
     upstream,
     method,

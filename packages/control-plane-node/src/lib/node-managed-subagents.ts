@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { withSandboxExecutionGuard, type SandboxExecutor } from "@open-managed-agents/sandbox";
-import type { Session, SessionEventView, SessionThread } from "@open-managed-agents/managed-agents-application";
+import type {
+  Environment,
+  Session,
+  SessionEventView,
+  SessionThread,
+  SessionWorkAdmissionPort,
+} from "@open-managed-agents/managed-agents-application";
+import { SessionAdmissionDeniedError } from "@open-managed-agents/shared";
 import { decodeRuntimeProducedSessionEvent } from "@open-managed-agents/managed-agents-adapters-runtime";
 import { ManagedNodeHarnessRuntime } from "./node-managed-harness-runtime.js";
 import type { SessionExecutionFence } from "@open-managed-agents/session-runtime-contract/coordination";
@@ -54,6 +61,7 @@ interface Child {
 interface SubagentsInput {
   workspaceId: string;
   session: Session;
+  environment: Environment;
   parentThreadId: string;
   sandbox: SandboxExecutor;
   abortSignal: AbortSignal;
@@ -61,6 +69,11 @@ interface SubagentsInput {
   historyEvents: SessionEventView[];
   threads: ManagedNodeSubagentThreads;
   policy: ManagedNodeSubagentPolicy;
+  /**
+   * Optional generic host admission hook for session-thread starts.
+   * Omitted → admit-all. A denial fails the spawn with the hook's status/body.
+   */
+  threadStartAdmission?: SessionWorkAdmissionPort;
   resolveSession?(request: ManagedNodeCreateSubagent): Promise<Session>;
   run(input: { session: Session; runtime: ManagedNodeHarnessRuntime; sandbox: SandboxExecutor }): Promise<void>;
   output(frame: unknown): Promise<void>;
@@ -117,6 +130,24 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
     }
   }
 
+  /** Generic thread-start hook; no-op when admission is omitted. */
+  private async admitThreadStart(session: Session): Promise<void> {
+    if (this.input.threadStartAdmission === undefined) return;
+    const decision = await this.input.threadStartAdmission.admit({
+      kind: "thread_start",
+      workspaceId: this.input.workspaceId,
+      sessionId: this.input.session.id,
+      agentId: session.agent.id,
+      environmentId: this.input.environment.id,
+      isLocalRuntime:
+        this.input.environment.config.type === "self_hosted" ||
+        session.agent.openma?.runtimeBinding != null,
+    });
+    if (decision.type === "denied") {
+      throw new SessionAdmissionDeniedError(decision.status, decision.body);
+    }
+  }
+
   private snapshot(child: Child): ManagedNodeSubagentState {
     return { ...child.state };
   }
@@ -155,6 +186,7 @@ export class ManagedNodeSubagents implements ManagedNodeSubagentControl {
       const session = this.input.resolveSession !== undefined
         ? await this.input.resolveSession(request)
         : this.defaultSession(request);
+      await this.admitThreadStart(session);
       this.assertActive();
       const now = this.input.clock.now().toISOString();
       const { multiagent: _multiagent, ...agent } = session.agent;
