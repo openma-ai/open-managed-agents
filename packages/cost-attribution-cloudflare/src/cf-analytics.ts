@@ -94,6 +94,10 @@ export function mergeCfPricing(
   return merged;
 }
 
+function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function overage(used: number, included: number): number {
   return Math.max(0, used - included);
 }
@@ -156,17 +160,17 @@ async function queryWorkers(acct: string, token: string, period: CostPeriod, pri
   }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { workersInvocationsAdaptive(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { requests errors subrequests } quantiles { cpuTimeP50 cpuTimeP99 } dimensions { scriptName } } } } }`, fetcher);
 
   const rows = data?.workersInvocationsAdaptive ?? [];
-  const requests = rows.reduce((s, r) => s + r.sum.requests, 0);
-  const errors = rows.reduce((s, r) => s + r.sum.errors, 0);
+  const requests = rows.reduce((s, r) => s + finiteOrZero(r.sum?.requests), 0);
+  const errors = rows.reduce((s, r) => s + finiteOrZero(r.sum?.errors), 0);
 
   const byScript = new Map<string, { requests: number; errors: number; cpuP50: number; cpuP99: number }>();
   for (const r of rows) {
     const key = r.dimensions.scriptName;
     const prev = byScript.get(key) ?? { requests: 0, errors: 0, cpuP50: 0, cpuP99: 0 };
-    prev.requests += r.sum.requests;
-    prev.errors += r.sum.errors;
-    prev.cpuP50 = Math.max(prev.cpuP50, r.quantiles.cpuTimeP50);
-    prev.cpuP99 = Math.max(prev.cpuP99, r.quantiles.cpuTimeP99);
+    prev.requests += finiteOrZero(r.sum?.requests);
+    prev.errors += finiteOrZero(r.sum?.errors);
+    prev.cpuP50 = Math.max(prev.cpuP50, finiteOrZero(r.quantiles?.cpuTimeP50));
+    prev.cpuP99 = Math.max(prev.cpuP99, finiteOrZero(r.quantiles?.cpuTimeP99));
     byScript.set(key, prev);
   }
 
@@ -193,12 +197,12 @@ async function queryDurableObjects(acct: string, token: string, period: CostPeri
       acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { durableObjectsSqlStorageGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { max { storedBytes } } } } }`, fetcher),
   ]);
 
-  const requests = inv?.durableObjectsInvocationsAdaptiveGroups?.reduce((s, r) => s + r.sum.requests, 0) ?? 0;
-  const durationGBSeconds = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.duration, 0) ?? 0;
-  const sqlReads = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.rowsRead, 0) ?? 0;
-  const sqlWrites = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + r.sum.rowsWritten, 0) ?? 0;
-  const storageBytes = Math.max(...(storage?.durableObjectsStorageGroups?.map(r => r.max.storedBytes) ?? [0]), 0);
-  const sqlSizeBytes = Math.max(...(sql?.durableObjectsSqlStorageGroups?.map(r => r.max.storedBytes) ?? [0]), 0);
+  const requests = inv?.durableObjectsInvocationsAdaptiveGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.requests), 0) ?? 0;
+  const durationGBSeconds = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.duration), 0) ?? 0;
+  const sqlReads = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.rowsRead), 0) ?? 0;
+  const sqlWrites = periodic?.durableObjectsPeriodicGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.rowsWritten), 0) ?? 0;
+  const storageBytes = Math.max(...(storage?.durableObjectsStorageGroups?.map(r => finiteOrZero(r.max?.storedBytes)) ?? [0]), 0);
+  const sqlSizeBytes = Math.max(...(sql?.durableObjectsSqlStorageGroups?.map(r => finiteOrZero(r.max?.storedBytes)) ?? [0]), 0);
   const storedGB = (storageBytes + sqlSizeBytes) / (1024 ** 3);
 
   const cost =
@@ -226,10 +230,10 @@ async function queryKV(acct: string, token: string, period: CostPeriod, pricing:
 
   let reads = 0, writes = 0;
   for (const r of ops?.kvOperationsAdaptiveGroups ?? []) {
-    if (r.dimensions.actionType === "read") reads += r.sum.requests;
-    else writes += r.sum.requests;
+    if (r.dimensions.actionType === "read") reads += finiteOrZero(r.sum?.requests);
+    else writes += finiteOrZero(r.sum?.requests);
   }
-  const storageGB = Math.max(...(store?.kvStorageAdaptiveGroups?.map(r => r.max.byteCount) ?? [0]), 0) / (1024 ** 3);
+  const storageGB = Math.max(...(store?.kvStorageAdaptiveGroups?.map(r => finiteOrZero(r.max?.byteCount)) ?? [0]), 0) / (1024 ** 3);
 
   return {
     usage: { reads, writes, storage_gb: +storageGB.toFixed(4) },
@@ -254,11 +258,11 @@ async function queryR2(acct: string, token: string, period: CostPeriod, pricing:
   const bucketOps = new Map<string, number>();
   for (const r of ops?.r2OperationsAdaptiveGroups ?? []) {
     const a = r.dimensions.actionType.toLowerCase();
-    if (/put|post|copy|create|complete|abort/i.test(a)) classA += r.sum.requests;
-    else classB += r.sum.requests;
-    bucketOps.set(r.dimensions.bucketName, (bucketOps.get(r.dimensions.bucketName) ?? 0) + r.sum.requests);
+    if (/put|post|copy|create|complete|abort/i.test(a)) classA += finiteOrZero(r.sum?.requests);
+    else classB += finiteOrZero(r.sum?.requests);
+    bucketOps.set(r.dimensions.bucketName, (bucketOps.get(r.dimensions.bucketName) ?? 0) + finiteOrZero(r.sum?.requests));
   }
-  const storageGB = (store?.r2StorageAdaptiveGroups ?? []).reduce((s, r) => s + r.max.payloadSize, 0) / (1024 ** 3);
+  const storageGB = (store?.r2StorageAdaptiveGroups ?? []).reduce((s, r) => s + finiteOrZero(r.max?.payloadSize), 0) / (1024 ** 3);
 
   return {
     usage: { class_a_ops: classA, class_b_ops: classB, storage_gb: +storageGB.toFixed(4) },
@@ -280,9 +284,9 @@ async function queryD1(acct: string, token: string, period: CostPeriod, pricing:
       acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { d1StorageAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:100) { max { databaseSizeBytes } } } } }`, fetcher),
   ]);
 
-  const rowsRead = analytics?.d1AnalyticsAdaptiveGroups?.reduce((s, r) => s + r.sum.rowsRead, 0) ?? 0;
-  const rowsWritten = analytics?.d1AnalyticsAdaptiveGroups?.reduce((s, r) => s + r.sum.rowsWritten, 0) ?? 0;
-  const storageGB = Math.max(...(store?.d1StorageAdaptiveGroups?.map(r => r.max.databaseSizeBytes) ?? [0]), 0) / (1024 ** 3);
+  const rowsRead = analytics?.d1AnalyticsAdaptiveGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.rowsRead), 0) ?? 0;
+  const rowsWritten = analytics?.d1AnalyticsAdaptiveGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.rowsWritten), 0) ?? 0;
+  const storageGB = Math.max(...(store?.d1StorageAdaptiveGroups?.map(r => finiteOrZero(r.max?.databaseSizeBytes)) ?? [0]), 0) / (1024 ** 3);
 
   return {
     usage: { rows_read: rowsRead, rows_written: rowsWritten, storage_gb: +storageGB.toFixed(4) },
@@ -301,10 +305,10 @@ async function queryAI(acct: string, token: string, period: CostPeriod, pricing:
   }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { aiInferenceAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { totalNeurons } dimensions { modelId } } } } }`, fetcher);
 
   const rows = data?.aiInferenceAdaptiveGroups ?? [];
-  const neurons = rows.reduce((s, r) => s + r.sum.totalNeurons, 0);
+  const neurons = rows.reduce((s, r) => s + finiteOrZero(r.sum?.totalNeurons), 0);
 
   const byModel = new Map<string, number>();
-  for (const r of rows) byModel.set(r.dimensions.modelId, (byModel.get(r.dimensions.modelId) ?? 0) + r.sum.totalNeurons);
+  for (const r of rows) byModel.set(r.dimensions.modelId, (byModel.get(r.dimensions.modelId) ?? 0) + finiteOrZero(r.sum?.totalNeurons));
 
   return {
     usage: { neurons },
@@ -321,8 +325,8 @@ async function queryBrowserRendering(acct: string, token: string, period: CostPe
     browserRenderingBrowserTimeUsageAdaptiveGroups: Array<{ sum: { totalSessionDurationMs: number } }>;
   }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { browserRenderingApiAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { count } browserRenderingBrowserTimeUsageAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { totalSessionDurationMs } } } } }`, fetcher);
 
-  const requests = data?.browserRenderingApiAdaptiveGroups?.reduce((s, r) => s + r.count, 0) ?? 0;
-  const hours = (data?.browserRenderingBrowserTimeUsageAdaptiveGroups?.reduce((s, r) => s + r.sum.totalSessionDurationMs, 0) ?? 0) / 3_600_000;
+  const requests = data?.browserRenderingApiAdaptiveGroups?.reduce((s, r) => s + finiteOrZero(r.count), 0) ?? 0;
+  const hours = (data?.browserRenderingBrowserTimeUsageAdaptiveGroups?.reduce((s, r) => s + finiteOrZero(r.sum?.totalSessionDurationMs), 0) ?? 0) / 3_600_000;
 
   return {
     usage: { requests, hours: +hours.toFixed(2) },
@@ -334,13 +338,13 @@ async function queryBrowserRendering(acct: string, token: string, period: CostPe
 async function queryContainers(acct: string, token: string, period: CostPeriod, pricing: CfPricing, fetcher: typeof fetch): Promise<ServiceCost> {
   const { start, end } = period;
   const data = await gql<{
-    containersUsageAdaptiveGroups: Array<{ sum: { cpuTimeSec: number; allocatedMemory: number; allocatedDisk: number } }>;
+    containersUsageAdaptiveGroups: Array<{ sum?: { cpuTimeSec?: number | null; allocatedMemory?: number | null; allocatedDisk?: number | null } | null }>;
   }>(acct, token, `{ viewer { accounts(filter:{accountTag:"${acct}"}) { containersUsageAdaptiveGroups(filter:{date_geq:"${start}",date_leq:"${end}"},limit:10000) { sum { cpuTimeSec allocatedMemory allocatedDisk } } } } }`, fetcher);
 
   const rows = data?.containersUsageAdaptiveGroups ?? [];
-  const cpuS = rows.reduce((s, r) => s + r.sum.cpuTimeSec, 0);
-  const memGiBs = rows.reduce((s, r) => s + r.sum.allocatedMemory, 0) / (1024 ** 3);
-  const diskGiBs = rows.reduce((s, r) => s + r.sum.allocatedDisk, 0) / (1024 ** 3);
+  const cpuS = rows.reduce((s, r) => s + finiteOrZero(r.sum?.cpuTimeSec), 0);
+  const memGiBs = rows.reduce((s, r) => s + finiteOrZero(r.sum?.allocatedMemory), 0) / (1024 ** 3);
+  const diskGiBs = rows.reduce((s, r) => s + finiteOrZero(r.sum?.allocatedDisk), 0) / (1024 ** 3);
 
   const inclCpuS = INCLUDED.containers.cpu_vcpu_min * 60;
   const inclMemS = INCLUDED.containers.mem_gib_h * 3600;
