@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -268,18 +267,24 @@ test("Cloudflare sandbox SDK, container runtime, and deployment image stay lock-
     sdkVersion,
     "main and agent must use the same Sandbox SDK version",
   );
+
+  // Sandbox SDK 1.0: custom images are Debian/Node bases that COPY sandbox-shim
+  // from cloudflare/sandbox:<sdkVersion> (not FROM that image).
+  const shimCopy = new RegExp(
+    `^COPY --from=docker\\.io/cloudflare/sandbox:${sdkVersion}\\s+/usr/local/bin/sandbox-shim\\s+/usr/local/bin/sandbox-shim$`,
+    "m",
+  );
   assert.match(
     imageDockerfile,
-    new RegExp(`^FROM docker\\.io/cloudflare/sandbox:${sdkVersion}$`, "m"),
-    "custom container must extend the matching Cloudflare runtime",
+    shimCopy,
+    "custom container must copy sandbox-shim from the matching Cloudflare runtime",
   );
-
-  const contentHash = createHash("sha256").update(imageDockerfile).digest("hex");
   assert.match(
     deploymentDockerfile,
-    new RegExp(`^FROM docker\\.io/openma/sandbox-base:${contentHash}$`, "m"),
-    "deployment must pin the custom image by Dockerfile content hash",
+    shimCopy,
+    "wrangler Dockerfile.sandbox must copy sandbox-shim from the matching Cloudflare runtime",
   );
+
   assert.match(
     imageWorkflow,
     /CONTENT_HASH=\$\(sha256sum apps\/agent\/Dockerfile/,
