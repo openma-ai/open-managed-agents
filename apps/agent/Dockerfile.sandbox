@@ -1,1 +1,19 @@
-FROM docker.io/openma/sandbox-base:6d339f4be00850a6d55d6b67f82f70d4c17ce94daa6c1734f1c5653a9dce4c70
+# Sandbox SDK 1.0 container image for the agent worker.
+# Must stay in lock-step with @cloudflare/sandbox (shim tag = package version).
+# Richer toolchain lives in ./Dockerfile (publish as a base image if needed).
+
+FROM docker.io/node:24-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git jq \
+    fuse3 s3fs \
+    squashfs-tools \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=docker.io/cloudflare/sandbox:1.0.3 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

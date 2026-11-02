@@ -13,7 +13,8 @@ registerCoreHarnesses();
 registerTestHarnesses();
 
 export { SessionDO } from "../apps/agent/src/runtime/session-do";
-export { Sandbox } from "@cloudflare/sandbox";
+export { OmaSandbox as Sandbox, OmaOutbound } from "../apps/agent/src/oma-sandbox";
+export { DirectoryBackupGateway, S3Gateway } from "@cloudflare/sandbox";
 export { RuntimeRoom } from "../apps/main/src/runtime-room";
 export { outbound, outboundByHost } from "../apps/agent/src/outbound";
 

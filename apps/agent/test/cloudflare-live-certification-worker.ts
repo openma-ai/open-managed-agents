@@ -1,9 +1,15 @@
 import { CloudflareSandbox } from "../src/runtime/sandbox";
-import { getSandbox, type Sandbox as CloudflareSandboxClass } from "@cloudflare/sandbox";
-import { ContainerProxy } from "@cloudflare/containers";
-import { OmaSandbox } from "../src/oma-sandbox";
+import {
+  DirectoryBackupGateway,
+  S3Gateway,
+} from "@cloudflare/sandbox";
+import {
+  OmaSandbox,
+  OmaOutbound,
+  registerOmaOutboundHandler,
+} from "../src/oma-sandbox";
 
-export { ContainerProxy };
+export { DirectoryBackupGateway, S3Gateway, OmaOutbound };
 
 interface CertificationProxyParams {
   fence: string;
@@ -24,19 +30,11 @@ const certificationDeny = async (): Promise<Response> => new Response("revoked",
 
 export class Sandbox extends OmaSandbox {}
 
-const inheritedHandlers = (OmaSandbox as unknown as {
-  outboundHandlers: Record<string, typeof certificationEgress>;
-}).outboundHandlers;
-(Sandbox as unknown as {
-  outboundHandlers: Record<string, typeof certificationEgress>;
-}).outboundHandlers = {
-  ...inheritedHandlers,
-  certification_egress: certificationEgress,
-  certification_deny: certificationDeny,
-};
+registerOmaOutboundHandler("certification_egress", certificationEgress as never);
+registerOmaOutboundHandler("certification_deny", certificationDeny as never);
 
 interface CertificationEnv {
-  SANDBOX: DurableObjectNamespace<CloudflareSandboxClass>;
+  SANDBOX: DurableObjectNamespace<OmaSandbox>;
   CERTIFICATION_NONCE: string;
   CERTIFICATION_PROXY_SECRET: string;
   BACKUP_BUCKET?: R2Bucket;
@@ -131,7 +129,7 @@ export default {
         });
       }
       if (body.action === "attach_proxy") {
-        const native = getSandbox(env.SANDBOX, body.sandbox_id);
+        const native = env.SANDBOX.getByName(body.sandbox_id);
         await native.setOutboundByHost(
           "certification.openma.internal",
           "certification_egress",
@@ -154,7 +152,7 @@ export default {
           generation: 1,
           reason: "lease_lost",
         });
-        const native = getSandbox(env.SANDBOX, body.sandbox_id);
+        const native = env.SANDBOX.getByName(body.sandbox_id);
         await native.setOutboundByHost(
           "certification.openma.internal",
           "certification_deny",
