@@ -1,12 +1,17 @@
 // CF session-lifecycle hooks — wraps the CF-only helpers
-// (USAGE_METER gate, GitHub binding fast-path,
-// refreshProviderCredentialsForSession, R2 file copy + outputs cascade)
-// behind the runtime-agnostic `SessionLifecycleHooks` shape that
+// (GitHub binding fast-path, refreshProviderCredentialsForSession,
+// R2 file copy + outputs cascade) behind the runtime-agnostic
+// `SessionLifecycleHooks` shape that
 // `@open-managed-agents/http-routes`'s sessions package consumes.
 //
-// All hooks are best-effort: a failure in any of them (USAGE_METER outage,
-// integrations gateway 5xx, etc.) returns a fail-open value matching the
-// legacy inline behavior — see the comments on each hook.
+// All hooks are best-effort: a failure in any of them (integrations
+// gateway 5xx, etc.) returns a fail-open value matching the legacy
+// inline behavior — see the comments on each hook.
+//
+// Session-create usage/charging gates are NOT wired here. Create admission
+// (rate limit, daily cap, optional usage meter port) lives in
+// cf-session-create-admission.ts via SessionCreateAdmissionService.
+// Turn admission for the legacy events route uses SESSION_ADMISSION below.
 
 import type { Env, ContentBlock, SessionEvent, CredentialConfig } from "@open-managed-agents/shared";
 import type { Context } from "hono";
@@ -17,7 +22,6 @@ import {
   logWarn,
   recordEvent,
   errFields,
-  classifyExternalError,
   admitViaSessionAdmissionHook,
 } from "@open-managed-agents/shared";
 import type { Services } from "@open-managed-agents/services";
@@ -38,40 +42,10 @@ export function cfSessionLifecycle(c: Context): SessionLifecycleHooks {
       if (daily) return { status: daily.status, body: await daily.json() };
       return null;
     },
-    preCreateGate: async ({ tenantId, agentId, isLocalRuntime }) => {
-      // USAGE_METER.canStartSandbox — fail open when the meter is unbound or
-      // returns an exception (matches legacy behavior, sessions still start).
-      type UsageMeterRpc = {
-        canStartSandbox(o: { tenantId: string; agentId?: string }): Promise<{
-          ok: boolean;
-          reason?: string;
-          balance_cents?: number;
-        }>;
-      };
-      const meter = (env as unknown as { USAGE_METER?: UsageMeterRpc }).USAGE_METER;
-      if (!meter || isLocalRuntime) return null;
-      try {
-        const gate = await meter.canStartSandbox({ tenantId, agentId });
-        if (!gate.ok) {
-          return {
-            status: 402,
-            body: {
-              error: gate.reason ?? "Sandbox launch refused by usage meter",
-              balance_cents: gate.balance_cents ?? 0,
-            },
-          };
-        }
-      } catch (err) {
-        const classified = classifyExternalError(err);
-        const e = classified instanceof Error ? classified : err;
-        console.error(
-          `[sessions] USAGE_METER.canStartSandbox failed [${(e as Error)?.name ?? "unknown"}]: ${(e as Error)?.message ?? e}`,
-        );
-      }
-      return null;
-    },
     // Existing-session turn gate for the legacy /v1/oma events route: the
     // optional generic SESSION_ADMISSION hook owns the deny status/body.
+    // Create-time USAGE_METER/wallet gating lives in cf-session-create-admission
+    // (not duplicated here).
     preTurnGate: async ({ tenantId, sessionId, agentId, environmentId, isLocalRuntime }) => {
       const decision = await admitViaSessionAdmissionHook(env.SESSION_ADMISSION, {
         kind: "turn",

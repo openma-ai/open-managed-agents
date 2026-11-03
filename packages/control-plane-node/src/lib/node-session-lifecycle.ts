@@ -4,8 +4,8 @@
 // (close the 500 from POST /v1/sessions/:id/files), and `cascadeDeleteFiles`
 // (delete file rows + blobs on session DELETE).
 //
-// CF-specific hooks (USAGE_METER gate, GitHub binding fast-path, vault
-// credential refresh) stay undefined here — Node has no equivalent today.
+// CF-specific hooks (GitHub binding fast-path, vault credential refresh)
+// stay undefined here — Node has no equivalent today.
 // The package degrades gracefully: routes that look up `lifecycle?.foo`
 // just skip the hook.
 
