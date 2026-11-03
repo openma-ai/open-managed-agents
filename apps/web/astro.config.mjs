@@ -20,6 +20,8 @@ export default defineConfig({
           item.priority = 1.0;
           item.changefreq = "weekly";
         } else if (
+          url.pathname === "/claude-managed-agents-alternative/" ||
+          url.pathname === "/ai-agent-platform/" ||
           url.pathname === "/claude-tag-alternative/" ||
           url.pathname === "/claude-tag-open-source/" ||
           url.pathname === "/self-hosted-claude-tag/"

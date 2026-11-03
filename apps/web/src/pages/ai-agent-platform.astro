@@ -1,0 +1,265 @@
+---
+import Base from "../layouts/Base.astro";
+import ComparisonTable from "../components/ComparisonTable.astro";
+import FaqSection from "../components/FaqSection.astro";
+import RelatedGuides from "../components/RelatedGuides.astro";
+import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
+
+const primitives = [
+  {
+    id: "sessions",
+    name: "Tasks and sessions",
+    body: "The unit of work. A session binds an agent version to an environment and owns an append-only event log, so work can run asynchronously, pause for input or approval, and resume after a crash or a deploy.",
+  },
+  {
+    id: "sandbox",
+    name: "Sandbox",
+    body: "Where tools execute: shell, files, browsers, package installs. A platform isolates it from the API process, applies network policy, and lets you choose the provider (containers, microVMs, or a sandbox service).",
+  },
+  {
+    id: "gateway",
+    name: "Gateway and model routing",
+    body: "The platform holds provider credentials, routes each agent to its configured model, and can add tool credentials to outbound requests so the sandbox does not hold them. In OpenMA, how strictly that is enforced depends on the sandbox provider and runtime profile.",
+  },
+  {
+    id: "durability",
+    name: "Durability",
+    body: "Every input, output, and tool call is persisted before it is broadcast. A session runs in one place at a time, and if a harness crashes, a fresh one rebuilds context from the log and continues.",
+  },
+];
+
+const layerRows = [
+  ["AI agent platform / runtime", "Runs agents as a service: sessions, sandboxes, model routing, durability, API", "Engineers integrating agents into products and workflows", "You still write prompts, tools, and policies"],
+  ["Agent SDK / framework", "A library for the agent loop inside your process", "Developers building one agent or a custom stack", "Operations: persistence, isolation, scaling"],
+  ["No-code / visual builder", "A canvas to author agent workflows", "Builders who prefer flows over code", "A production runtime with real permissions and isolation"],
+  ["Chatbot UI", "A conversation front end", "End users", "Agent execution, which a runtime behind the UI provides"],
+];
+
+const snapshotRows = [
+  ["OpenMA", "Open-source managed runtime", "Any configured provider", "Yes", "Replaceable drivers"],
+  ["Claude Managed Agents", "Vendor-managed runtime", "Claude", "No (self-hosted sandbox only)", "Cloud or self-hosted sandbox"],
+  ["OpenAI Agents API", "Vendor-managed runtime", "OpenAI", "No (self-hosted sandbox only)", "Hosted or self-hosted sandbox"],
+  ["AX (Agent Executor)", "Open orchestration runtime on Kubernetes", "Model manifest", "Yes, on Kubernetes with Agent Substrate", "Sandboxed tasks on Agent Substrate"],
+  
+];
+
+const faqItems = [
+  {
+    question: "What is an AI agent platform?",
+    answer:
+      "Software that runs AI agents as a service. It manages sessions, sandboxes for tool execution, model and credential routing, and durable state, and exposes an API your applications call. It is the layer between the model and your product.",
+  },
+  {
+    question: "What is AI agent orchestration?",
+    answer:
+      "Coordinating agent work: scheduling sessions, running tools in sandboxes, routing to models, delegating to sub-agents, and recovering from failures. Multi-agent orchestration adds delegation between agents that share or isolate context.",
+  },
+  {
+    question: "Is an AI agent platform the same as a no-code agent builder?",
+    answer:
+      "No. A builder is an authoring surface. A platform is the runtime underneath. Some products bundle both. Production agents still need the runtime pieces: permissions, isolation, credentials, and durability.",
+  },
+  {
+    question: "Is OpenMA a no-code platform?",
+    answer:
+      "No. OpenMA is configured through the Console, CLI, or API, and tools, policies, and custom harnesses are code. It is an orchestration runtime for engineering teams.",
+  },
+  {
+    question: "What makes an AI agent platform enterprise-ready?",
+    answer:
+      "Tenant isolation, credentials kept out of the sandbox, an auditable event log, a choice of deployment region or self-hosting, and the ability to change model vendors without rewriting the platform.",
+  },
+];
+
+const relatedLinks = [
+  { href: "/what-is-claude-managed-agents/", anchor: "What Claude Managed Agents is", note: "The hosted runtime this platform category is often compared with." },
+  { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Decision table for buyers evaluating Anthropic's hosted runtime." },
+  { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run the platform on your own infrastructure." },
+  { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "Open platforms, harnesses, frameworks, and coding agents." },
+  { href: "/blog/claude-agent-sdk-vs-managed-agents/", anchor: "Claude Agent SDK", note: "When an SDK is enough and when you need a runtime." },
+  { href: "/blog/openai-agents-api-vs-openma/", anchor: "OpenAI Agents API / SDK", note: "Agents API vs Agents SDK vs AgentKit." },
+];
+
+const schemas = [
+  breadcrumbSchema([
+    { name: "Home", path: "/" },
+    { name: "AI Agent Platform", path: "/ai-agent-platform/" },
+  ]),
+  articleSchema({
+    headline: "AI Agent Platform & Orchestration Runtime",
+    description:
+      "What an AI agent platform is: sessions, sandboxes, model routing, and durability, compared with SDKs, builders, and coding agents.",
+    url: "https://openma.ai/ai-agent-platform/",
+    datePublished: "2026-11-03",
+    dateModified: "2026-11-03",
+  }),
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "AI Agent Platform & Orchestration Runtime",
+    url: "https://openma.ai/ai-agent-platform/",
+    description:
+      "What an AI agent platform is — sessions, sandboxes, model routing, durability — compared with SDKs, builders, and coding agents.",
+    about: [
+      { "@type": "Thing", name: "AI agent platform" },
+      { "@type": "Thing", name: "AI agent orchestration" },
+      { "@type": "Thing", name: "Multi-agent orchestration" },
+      { "@type": "Thing", name: "Open Managed Agents" },
+    ],
+  },
+  faqPageSchema(faqItems),
+];
+---
+
+<Base
+  title="AI Agent Platform & Orchestration Runtime | OpenMA"
+  description="What an AI agent platform is: orchestration, sessions, sandboxes, model routing, and durability — compared with SDKs, builders, and coding agents today."
+  canonical="/ai-agent-platform/"
+  keywords="ai agent platform, ai agent orchestration, multi agent orchestration, ai agent orchestration platform, open-source ai agent platform, enterprise ai agent platform"
+  schemas={schemas}
+>
+  <section class="border-b border-[var(--color-border)]">
+    <div class="site-container py-16 md:py-24">
+      <p class="text-sm font-mono uppercase tracking-wider text-[var(--color-fg-subtle)] mb-4">
+        AI agent platform
+      </p>
+      <div class="grid lg:grid-cols-[1.15fr_0.85fr] gap-10 items-start">
+        <div>
+          <h1 class="font-display text-4xl sm:text-5xl font-bold tracking-tight mb-6">
+            AI Agent Platform &amp; Orchestration Runtime
+          </h1>
+          <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
+            An AI agent platform is the runtime that turns a model into
+            dependable work: it schedules sessions, runs tools in sandboxes,
+            routes to models, keeps credentials out of reach, and recovers
+            when something fails. Those four primitives are the basis for
+            comparing platforms.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="https://docs.openma.ai/concepts/" class="site-button site-button-primary">OpenMA concepts</a>
+            <a href="#primitives" class="site-button">Core primitives</a>
+          </div>
+        </div>
+        <div class="border border-[var(--color-border)] rounded-lg bg-[var(--color-bg-surface)] p-5">
+          <h2 class="font-display text-xl font-semibold mb-4">Evaluate by primitives</h2>
+          <ul class="space-y-3 text-sm text-[var(--color-fg-muted)]">
+            {primitives.map((p) => (
+              <li><a href={`#${p.id}`}><strong>{p.name}</strong></a></li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="site-container py-16" id="orchestration" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">What an AI agent platform is</h2>
+    <div class="grid md:grid-cols-2 gap-8 max-w-5xl">
+      <div>
+        <h3 class="font-semibold text-xl mb-2">A managed runtime for agent orchestration</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          The platform sits between models and your products. You declare an
+          agent (model, instructions, tools) and give it work. The platform
+          orchestrates the rest: provisioning a sandbox, running the loop,
+          persisting every step, delegating to other agents, and streaming
+          progress. Open orchestration runtimes such as Google's AX and OpenMA,
+          and vendor runtimes such as Claude Managed Agents and the OpenAI
+          Agents API, all share this shape.
+        </p>
+      </div>
+      <div>
+        <h3 class="font-semibold text-xl mb-2">Many surfaces, one runtime</h3>
+        <p class="text-[var(--color-fg-muted)] leading-relaxed">
+          A chat window is one surface on top of a platform. The same agent
+          might be called from Slack, a GitHub issue, a scheduled job, or your
+          own app. Multi-agent orchestration, where a lead agent delegates to
+          specialists that share or isolate files, happens in the platform.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" id="primitives" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-8">Core primitives</h2>
+      <div class="grid md:grid-cols-2 gap-8 max-w-5xl">
+        {primitives.map((p) => (
+          <div id={p.id}>
+            <h3 class="font-semibold text-xl mb-2">{p.name}</h3>
+            <p class="text-[var(--color-fg-muted)] leading-relaxed">{p.body}</p>
+          </div>
+        ))}
+      </div>
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mt-8 max-w-3xl">
+        Anthropic calls this split decoupling the brain from the hands, explained
+        in <a href="/what-is-claude-managed-agents/">what Claude Managed Agents is</a>.
+      </p>
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Platform vs SDK vs no-code builder</h2>
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+      Each layer does a different job and leaves different work to you.
+    </p>
+    <ComparisonTable columns={["Layer", "What it does", "Who it's for", "What it leaves to you"]} rows={layerRows} caption="AI agent platform vs SDK vs builder" />
+    <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
+      SDKs are covered in <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK</a> vs
+      managed agents and the <a href="/blog/openai-agents-api-vs-openma/">OpenAI Agents API / SDK</a> naming map.
+      Coding agents such as Claude Code or OpenHands are a fourth category:
+      tools developers drive, which can run inside a platform's sandbox.
+    </p>
+  </section>
+
+  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16">
+      <h2 class="font-display text-3xl font-bold mb-4">How a few runtimes compare</h2>
+      
+      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
+        Compared on the primitives above, from each vendor's documentation as
+        of November 2026.
+      </p>
+      <ComparisonTable columns={["Runtime", "Type", "Models", "Self-host control plane", "Sandbox"]} rows={snapshotRows} caption="AI agent platforms compared by runtime criteria" />
+    </div>
+  </section>
+
+  <section class="site-container py-16" data-reveal>
+    <h2 class="font-display text-3xl font-bold mb-4">Where OpenMA fits</h2>
+    <div class="max-w-3xl space-y-4 text-[var(--color-fg-muted)] leading-relaxed">
+      <p>
+        OpenMA is an open-source AI agent platform: a meta-harness that
+        manages sessions, sandboxes, tools, credentials, and recovery around
+        the harness and model you choose. It exposes a Claude Managed
+        Agents-compatible API and an OpenAI Agents API adapter over the same
+        sessions, and delegates work to callable agents with their own
+        histories.
+      </p>
+      <p>
+        You configure it through the Console, CLI, or API, and tools,
+        policies, and custom harnesses are code. It is built for engineering
+        teams running agents in production.
+        It runs on <a href="/self-hosted-ai-agents/">your own infrastructure</a>
+        or hosted, and the source is open alongside other
+        <a href="/open-source-ai-agents/">open-source AI agents</a>.
+      </p>
+    </div>
+    <div class="mt-8 flex flex-wrap gap-3">
+      <a href="https://docs.openma.ai/" class="site-button site-button-primary">Evaluate the runtime primitives in the docs</a>
+      <a href="https://github.com/openma-ai/open-managed-agents" target="_blank" rel="noopener noreferrer" class="site-button">View on GitHub</a>
+    </div>
+  </section>
+
+  <section class="border-t border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <div class="site-container py-16 max-w-4xl">
+      <h2 class="font-display text-3xl font-bold mb-4">Comparing against Claude Managed Agents</h2>
+      
+      <p class="text-[var(--color-fg-muted)] leading-relaxed">
+        The <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a> guide
+        compares it with open and cloud options in one decision table.
+      </p>
+    </div>
+  </section>
+
+  <FaqSection items={faqItems} />
+  <RelatedGuides links={relatedLinks} />
+</Base>

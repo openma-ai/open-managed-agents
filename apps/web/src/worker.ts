@@ -56,8 +56,12 @@ const LEGACY_MARKETING_REDIRECTS: Record<string, string> = {
     "/blog/claude-tag-open-source-alternative/",
   "/blog/self-host-claude-tag-style-slack-ai-agent/":
     "/blog/self-hosted-claude-tag-open-source/",
+  // The 2026 OSS-alternatives post was absorbed into the CMA alternative
+  // pillar; both historical slugs point straight at it (no redirect chain).
   "/blog/open-source-alternatives-to-anthropic-managed-agents-2026/":
-    "/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+    "/claude-managed-agents-alternative/",
+  "/blog/open-source-alternatives-to-claude-managed-agents-2026/":
+    "/claude-managed-agents-alternative/",
   "/blog/migrate-from-anthropic-managed-agents/":
     "/blog/migrate-from-claude-managed-agents/",
   "/blog/anthropic-managed-agents-vs-open-managed-agents/":
@@ -76,6 +80,12 @@ const EXTERNAL_REDIRECTS: Record<string, string> = {
 };
 
 const MARKETING_PATHS = new Set([
+  "/claude-managed-agents-alternative",
+  "/what-is-claude-managed-agents",
+  "/self-hosted-ai-agents",
+  "/open-source-ai-agents",
+  "/open-source-managed-agents",
+  "/ai-agent-platform",
   "/claude-tag-alternative",
   "/claude-tag-open-source",
   "/self-hosted-claude-tag",

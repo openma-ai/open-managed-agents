@@ -1,0 +1,223 @@
+{
+  "fetched_at_utc": "2026-11-03T11:45:00Z",
+  "property": "sc-domain:openma.ai",
+  "window": {
+    "start": "2026-10-07",
+    "end": "2026-11-03"
+  },
+  "queries_filtered_count": 24,
+  "queries": {
+    "open managed agents": {
+      "impressions": 102,
+      "clicks": 16,
+      "ctr": 0.1569,
+      "position": 2.9,
+      "brand": true
+    },
+    "claude tag open source alternative": {
+      "impressions": 2,
+      "clicks": 1,
+      "ctr": 0.5,
+      "position": 10.0
+    },
+    "claude tag opensource": {
+      "impressions": 5,
+      "clicks": 1,
+      "ctr": 0.2,
+      "position": 6.2
+    },
+    "open source claude tag": {
+      "impressions": 30,
+      "clicks": 1,
+      "ctr": 0.0333,
+      "position": 10.3
+    },
+    "anthropic claude managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 69.0
+    },
+    "claude managed agents": {
+      "impressions": 18,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 67.4
+    },
+    "claude managed agents alternative": {
+      "impressions": 13,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 18.5
+    },
+    "claude managed agents sandbox": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 23.0
+    },
+    "claude managed agents self-hosted sandboxes": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 75.0
+    },
+    "claude tag alternative": {
+      "impressions": 17,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 10.7
+    },
+    "claude tag open source": {
+      "impressions": 23,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 6.6
+    },
+    "claude tag self hosted": {
+      "impressions": 7,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 4.0
+    },
+    "claude tag vs self-hosted agent platforms": {
+      "impressions": 17,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 6.6
+    },
+    "managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 98.0
+    },
+    "managed agents open source": {
+      "impressions": 5,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 10.6
+    },
+    "open claude tag": {
+      "impressions": 13,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 7.3
+    },
+    "open source alternative to claude tag": {
+      "impressions": 18,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 6.6
+    },
+    "open source managed agents": {
+      "impressions": 5,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 9.8
+    },
+    "opensource claude tag alternative": {
+      "impressions": 33,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 7.5
+    },
+    "self hosted claude managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 23.0
+    },
+    "self-hosted sandboxes claude managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 82.0
+    },
+    "what are claude managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 73.0
+    },
+    "what is claude managed agents": {
+      "impressions": 7,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 67.9
+    },
+    "calude managed agents": {
+      "impressions": 1,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 91.0
+    }
+  },
+  "pages": {
+    "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/": {
+      "impressions": 102,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 29.3
+    },
+    "https://openma.ai/claude-tag-alternative/": {
+      "impressions": 72,
+      "clicks": 2,
+      "ctr": 0.0278,
+      "position": 7.9
+    },
+    "https://openma.ai/claude-tag-open-source/": {
+      "impressions": 62,
+      "clicks": 3,
+      "ctr": 0.0484,
+      "position": 7.4
+    },
+    "https://openma.ai/self-hosted-claude-tag/": {
+      "impressions": 92,
+      "clicks": 6,
+      "ctr": 0.0652,
+      "position": 5.7
+    },
+    "https://openma.ai/blog/self-hosted-claude-tag-open-source/": {
+      "impressions": 81,
+      "clicks": 4,
+      "ctr": 0.0494,
+      "position": 8.1
+    },
+    "https://openma.ai/blog/claude-tag-open-source-alternative/": {
+      "impressions": 62,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 7.4
+    },
+    "https://openma.ai/blog/open-source-alternatives-to-claude-managed-agents-2026/": {
+      "impressions": 4,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 6.8
+    },
+    "https://openma.ai/blog/migrate-from-claude-managed-agents/": {
+      "impressions": 3,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 7.0
+    },
+    "https://openma.ai/blog/openai-agents-api-self-hosted/": {
+      "impressions": null,
+      "clicks": null,
+      "note": "not in top-46 page rows this window"
+    },
+    "https://docs.openma.ai/": {
+      "impressions": 168,
+      "clicks": 0,
+      "ctr": 0.0,
+      "position": 4.8
+    },
+    "https://openma.ai/": {
+      "impressions": 703,
+      "clicks": 69,
+      "ctr": 0.0982,
+      "position": 4.2
+    }
+  }
+}

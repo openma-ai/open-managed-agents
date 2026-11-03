@@ -238,4 +238,9 @@ there is now another way to run it: with OpenMA managing durable execution
 on the hosted service or on infrastructure you control.
 
 For deployment choices and prerequisites, see the
-[OpenMA deployment guide](/deploy/).
+[OpenMA deployment guide](/deploy/). To see how the Agents API, Agents
+SDK, and AgentKit differ — and how they compare with Claude Managed
+Agents — read [OpenAI Agents API & SDK vs open managed agent
+platforms](/blog/openai-agents-api-vs-openma/), or the broader
+[Claude Managed Agents alternative](/claude-managed-agents-alternative/)
+guide.

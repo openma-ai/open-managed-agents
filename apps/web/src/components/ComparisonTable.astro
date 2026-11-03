@@ -1,0 +1,40 @@
+---
+/**
+ * Bordered comparison table used on marketing landings. Mirrors the
+ * inline table markup on /claude-tag-alternative/ so every comparison
+ * page renders the same way. The first column is a row header.
+ */
+export interface Props {
+  /** Header cells, including the row-header column. */
+  columns: string[];
+  /** Each row: row header followed by one cell per remaining column. */
+  rows: string[][];
+  caption?: string;
+}
+
+const { columns, rows, caption } = Astro.props;
+const lastRow = rows.length - 1;
+---
+
+<div class="overflow-x-auto">
+  <table class="w-full text-sm border border-[var(--color-border)] rounded-lg">
+    {caption && <caption class="sr-only">{caption}</caption>}
+    <thead>
+      <tr class="bg-[var(--color-bg-surface)] text-left">
+        {columns.map((column) => (
+          <th scope="col" class="px-4 py-3 font-semibold border-b border-[var(--color-border)]">{column}</th>
+        ))}
+      </tr>
+    </thead>
+    <tbody>
+      {rows.map(([label, ...cells], index) => (
+        <tr>
+          <th scope="row" class={`px-4 py-3 font-medium align-top ${index < lastRow ? "border-b border-[var(--color-border)]" : ""}`}>{label}</th>
+          {cells.map((cell) => (
+            <td class={`px-4 py-3 text-[var(--color-fg-muted)] align-top ${index < lastRow ? "border-b border-[var(--color-border)]" : ""}`}>{cell}</td>
+          ))}
+        </tr>
+      ))}
+    </tbody>
+  </table>
+</div>

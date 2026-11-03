@@ -1,0 +1,1265 @@
+{
+  "version": "2.2.5",
+  "methodology": "AgriciDaniel/claude-seo seo-cluster (SERP-overlap hub-spoke)",
+  "methodology_url": "https://github.com/AgriciDaniel/claude-seo/blob/main/skills/seo-cluster/SKILL.md",
+  "seed_keyword": "claude managed agents alternative",
+  "site": "https://openma.ai",
+  "created_at": "2026-11-03T10:41:23Z",
+  "assumptions": [
+    "WebSearch returns synthesized top results, not a full top-10 dump; serp_matrix scores are partial/lower-bound.",
+    "No DataForSEO volume API \u2014 volume fields use GSC 28d impressions when known, else null.",
+    "Brand/nav queries excluded from clustering (listed in excluded_navigational).",
+    "Same-head longtails with shared intent assumed same-cluster without full pairwise; ~20% spot-checked via WebSearch.",
+    "Claude Tag and Claude Managed Agents are separate SERP families (overlap 0-1) \u2192 separate clusters under one commercial pillar."
+  ],
+  "excluded_navigational": [
+    "openma",
+    "open managed agents",
+    "open ma",
+    "open-managed-agents",
+    "site:openma.dev",
+    "ma-open",
+    "ma open",
+    "openmai",
+    "openmao"
+  ],
+  "keyword_expansion": {
+    "target_range": "30-50",
+    "unique_count": 48,
+    "variants": [
+      "agent harness open source",
+      "best claude managed agents alternative",
+      "best claude managed agents alternatives",
+      "best open source managed agents platform 2026",
+      "byok managed agents platform",
+      "claude managed agents",
+      "claude managed agents alternative",
+      "claude managed agents alternatives",
+      "claude managed agents api",
+      "claude managed agents cost",
+      "claude managed agents overview",
+      "claude managed agents pricing",
+      "claude managed agents sandbox",
+      "claude managed agents self-hosted sandboxes",
+      "claude managed agents vs omnara",
+      "claude managed agents vs openai agents api",
+      "claude tag alternative",
+      "claude tag alternatives",
+      "claude tag open source",
+      "claude tag opensource",
+      "claude tag self hosted",
+      "claude tag vs self-hosted agent platforms",
+      "how to self host claude managed agents",
+      "how to self host claude tag style agent",
+      "how to self host managed agents platform",
+      "managed agent platform open source",
+      "managed agents open source",
+      "open claude tag",
+      "open source alternative to claude managed agents",
+      "open source alternative to claude tag",
+      "open source claude managed agents",
+      "open source claude tag",
+      "open source managed agent platform",
+      "open source managed agents",
+      "open source openai agents api",
+      "openai agents api alternative",
+      "opensource claude tag alternative",
+      "self host managed agents docker",
+      "self hosted claude managed agents",
+      "self hosted claude tag open source",
+      "self hosted managed agents",
+      "self hosted open source managed agent platform",
+      "self-hosted claude managed agents",
+      "self-hosted claude tag",
+      "self-hosted sandboxes claude managed agents",
+      "what are claude managed agents",
+      "what is claude managed agents",
+      "what is claude tag"
+    ],
+    "sources": [
+      "seed",
+      "GSC 28d openma.ai",
+      "related searches",
+      "PAA/question mining",
+      "commercial modifiers",
+      "long-tail modifiers"
+    ]
+  },
+  "merged_keywords": {
+    "claude managed agents alternative": [
+      "claude managed agents alternatives",
+      "best claude managed agents alternative",
+      "best claude managed agents alternatives",
+      "open source alternative to claude managed agents",
+      "open source claude managed agents",
+      "self hosted claude managed agents"
+    ],
+    "open source managed agents": [
+      "managed agents open source",
+      "self hosted open source managed agent platform",
+      "open source managed agent platform"
+    ],
+    "claude tag alternative": [
+      "opensource claude tag alternative",
+      "open source alternative to claude tag",
+      "claude tag alternatives"
+    ],
+    "open source claude tag": [
+      "claude tag open source",
+      "open claude tag",
+      "claude tag opensource"
+    ],
+    "self-hosted claude tag": [
+      "claude tag self hosted",
+      "self hosted claude tag open source"
+    ],
+    "what is claude managed agents": [
+      "what are claude managed agents",
+      "claude managed agents",
+      "claude managed agents overview",
+      "claude managed agents api"
+    ],
+    "claude managed agents sandbox": [
+      "claude managed agents self-hosted sandboxes",
+      "self-hosted sandboxes claude managed agents"
+    ],
+    "how to self host managed agents platform": [
+      "how to self host claude managed agents",
+      "self host managed agents docker"
+    ]
+  },
+  "gsc_overlay": {
+    "property": "sc-domain:openma.ai",
+    "date_range": {
+      "start": "2026-10-07",
+      "end": "2026-11-03",
+      "days": 28
+    },
+    "timezone_note": "GSC dates are Google Search Console calendar dates; report times to user in America/Detroit",
+    "queries_nonbrand_priority": [
+      {
+        "query": "opensource claude tag alternative",
+        "impressions": 33,
+        "clicks": 0,
+        "position": 7.5,
+        "ctr": 0.0
+      },
+      {
+        "query": "open source claude tag",
+        "impressions": 30,
+        "clicks": 1,
+        "position": 10.3,
+        "ctr": 0.0333
+      },
+      {
+        "query": "claude tag open source",
+        "impressions": 23,
+        "clicks": 0,
+        "position": 6.6,
+        "ctr": 0.0
+      },
+      {
+        "query": "open source alternative to claude tag",
+        "impressions": 18,
+        "clicks": 0,
+        "position": 6.6,
+        "ctr": 0.0
+      },
+      {
+        "query": "claude managed agents",
+        "impressions": 18,
+        "clicks": 0,
+        "position": 67.4,
+        "ctr": 0.0
+      },
+      {
+        "query": "claude tag alternative",
+        "impressions": 17,
+        "clicks": 0,
+        "position": 10.7,
+        "ctr": 0.0
+      },
+      {
+        "query": "claude tag vs self-hosted agent platforms",
+        "impressions": 17,
+        "clicks": 0,
+        "position": 6.6,
+        "ctr": 0.0
+      },
+      {
+        "query": "claude managed agents alternative",
+        "impressions": 13,
+        "clicks": 0,
+        "position": 18.5,
+        "ctr": 0.0
+      },
+      {
+        "query": "open claude tag",
+        "impressions": 13,
+        "clicks": 0,
+        "position": 7.3,
+        "ctr": 0.0
+      },
+      {
+        "query": "claude tag self hosted",
+        "impressions": 7,
+        "clicks": 0,
+        "position": 4.0,
+        "ctr": 0.0
+      },
+      {
+        "query": "what is claude managed agents",
+        "impressions": 7,
+        "clicks": 0,
+        "position": 67.9,
+        "ctr": 0.0
+      },
+      {
+        "query": "open source managed agents",
+        "impressions": 5,
+        "clicks": 0,
+        "position": 9.8,
+        "ctr": 0.0
+      },
+      {
+        "query": "managed agents open source",
+        "impressions": 5,
+        "clicks": 0,
+        "position": 10.6,
+        "ctr": 0.0
+      }
+    ],
+    "pages_high_impr_zero_or_low_ctr": [
+      {
+        "url": "https://docs.openma.ai/",
+        "impressions": 168,
+        "clicks": 0,
+        "ctr": 0.0,
+        "position": 4.8,
+        "action": "optimize",
+        "note": "Docs hub CTR problem \u2014 title/meta/snippet only; not a new content spoke. Mostly brand query 'openma'."
+      },
+      {
+        "url": "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/",
+        "impressions": 102,
+        "clicks": 0,
+        "ctr": 0.0,
+        "position": 29.3,
+        "action": "optimize",
+        "note": "Ranks for seed 'claude managed agents alternative' at ~18.5 and head term at ~67 \u2014 rewrite title/H1/meta; deepen comparison; candidate to reinforce pillar."
+      },
+      {
+        "url": "https://openma.ai/claude-tag-alternative/",
+        "impressions": 72,
+        "clicks": 2,
+        "ctr": 0.0278,
+        "position": 7.9,
+        "action": "optimize",
+        "note": "Primary Tag commercial URL \u2014 improve CTR at positions 7-11 for opensource/open-source Tag alternative queries."
+      },
+      {
+        "url": "https://openma.ai/blog/claude-tag-open-source-alternative/",
+        "impressions": 62,
+        "clicks": 0,
+        "ctr": 0.0,
+        "position": 7.4,
+        "action": "optimize",
+        "note": "Cannibalization risk vs /claude-tag-alternative/ and /claude-tag-open-source/ \u2014 consolidate or differentiate; title/meta first."
+      },
+      {
+        "url": "https://openma.ai/",
+        "impressions": 703,
+        "clicks": 69,
+        "ctr": 0.0982,
+        "position": 4.2,
+        "action": "brand_hub_only",
+        "note": "Homepage is brand/nav \u2014 not a spoke. Do not target commercial cluster keywords here."
+      }
+    ],
+    "existing_content_inventory": [
+      {
+        "url": "https://openma.ai/self-hosted-claude-tag/",
+        "impressions": 92,
+        "clicks": 6,
+        "status": "existing"
+      },
+      {
+        "url": "https://openma.ai/blog/self-hosted-claude-tag-open-source/",
+        "impressions": 81,
+        "clicks": 4,
+        "status": "existing"
+      },
+      {
+        "url": "https://openma.ai/claude-tag-alternative/",
+        "impressions": 72,
+        "clicks": 2,
+        "status": "existing"
+      },
+      {
+        "url": "https://openma.ai/claude-tag-open-source/",
+        "impressions": 62,
+        "clicks": 3,
+        "status": "existing"
+      },
+      {
+        "url": "https://openma.ai/blog/claude-tag-open-source-alternative/",
+        "impressions": 62,
+        "clicks": 0,
+        "status": "existing_optimize"
+      },
+      {
+        "url": "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/",
+        "impressions": 102,
+        "clicks": 0,
+        "status": "existing_optimize"
+      },
+      {
+        "url": "https://openma.ai/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+        "impressions": 4,
+        "clicks": 0,
+        "status": "existing_weak"
+      },
+      {
+        "url": "https://openma.ai/blog/openai-agents-api-self-hosted/",
+        "impressions": null,
+        "clicks": null,
+        "status": "existing_discovered"
+      },
+      {
+        "url": "https://openma.ai/blog/migrate-from-claude-managed-agents/",
+        "impressions": 3,
+        "clicks": 0,
+        "status": "existing_discovered"
+      },
+      {
+        "url": "https://docs.openma.ai/",
+        "impressions": 168,
+        "clicks": 0,
+        "status": "optimize_note_only"
+      }
+    ]
+  },
+  "pillar": {
+    "id": "pillar",
+    "title": "Claude Managed Agents Alternatives: Open-Source & Self-Hosted Options",
+    "keyword": "claude managed agents alternative",
+    "secondary_keywords": [
+      "claude managed agents alternatives",
+      "best claude managed agents alternative",
+      "best claude managed agents alternatives",
+      "open source alternative to claude managed agents",
+      "open source claude managed agents",
+      "self hosted claude managed agents"
+    ],
+    "intent": "commercial",
+    "volume": 13,
+    "volume_source": "gsc_impressions_28d",
+    "template": "ultimate-guide",
+    "wordCount": 3200,
+    "url": "https://openma.ai/claude-managed-agents-alternative/",
+    "status": "gap",
+    "rationale": "Seed + broadest commercial SERP for OpenMA positioning; GSC 13 impr / pos 18.5 / 0 clicks currently lands on weak comparison blog. New pillar URL consolidates alternative/open-source/self-hosted CMA queries (7+ same-post merges).",
+    "related_existing": [
+      "https://openma.ai/blog/open-source-alternatives-to-claude-managed-agents-2026/",
+      "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/"
+    ]
+  },
+  "clusters": [
+    {
+      "id": "cluster-0",
+      "name": "CMA Alternatives & Comparisons",
+      "color": "#2563EB",
+      "intent_focus": "commercial",
+      "posts": [
+        {
+          "id": "cluster-0-post-0",
+          "title": "OpenMA vs Claude Managed Agents",
+          "keyword": "openma vs claude managed agents",
+          "secondary_keywords": [
+            "claude managed agents vs open managed agents",
+            "claude managed agents comparison"
+          ],
+          "intent": "commercial",
+          "volume": 102,
+          "volume_source": "gsc_page_impressions_proxy_28d",
+          "volume_note": "Page impressions on existing comparison URL (query-level volume for exact KW unknown)",
+          "template": "comparison",
+          "wordCount": 1600,
+          "url": "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/",
+          "status": "optimize",
+          "gsc": {
+            "impressions": 102,
+            "clicks": 0,
+            "ctr": 0.0,
+            "position": 29.3
+          }
+        },
+        {
+          "id": "cluster-0-post-1",
+          "title": "OpenAI Agents API Alternative: Self-Hosted Options",
+          "keyword": "openai agents api alternative",
+          "secondary_keywords": [
+            "open source openai agents api",
+            "openai agents api self hosted"
+          ],
+          "intent": "commercial",
+          "volume": null,
+          "volume_source": "unknown",
+          "template": "comparison",
+          "wordCount": 1500,
+          "url": "https://openma.ai/blog/openai-agents-api-self-hosted/",
+          "status": "existing",
+          "gsc": {
+            "impressions": null,
+            "clicks": null
+          }
+        },
+        {
+          "id": "cluster-0-post-2",
+          "title": "Claude Managed Agents Pricing Explained",
+          "keyword": "claude managed agents pricing",
+          "secondary_keywords": [
+            "claude managed agents cost",
+            "claude managed agents session hour"
+          ],
+          "intent": "commercial",
+          "volume": null,
+          "volume_source": "unknown",
+          "template": "review",
+          "wordCount": 1400,
+          "url": "https://openma.ai/blog/claude-managed-agents-pricing/",
+          "status": "gap"
+        }
+      ]
+    },
+    {
+      "id": "cluster-1",
+      "name": "Self-Host & Open-Source Managed Agents",
+      "color": "#059669",
+      "intent_focus": "commercial+informational",
+      "posts": [
+        {
+          "id": "cluster-1-post-0",
+          "title": "Open Source Managed Agents Platforms",
+          "keyword": "open source managed agents",
+          "secondary_keywords": [
+            "managed agents open source",
+            "self hosted open source managed agent platform",
+            "open source managed agent platform"
+          ],
+          "intent": "commercial",
+          "volume": 5,
+          "volume_source": "gsc_impressions_28d",
+          "template": "best-of",
+          "wordCount": 1700,
+          "url": "https://openma.ai/open-source-managed-agents/",
+          "status": "gap",
+          "gsc": {
+            "impressions": 5,
+            "clicks": 0,
+            "position": 9.8
+          }
+        },
+        {
+          "id": "cluster-1-post-1",
+          "title": "How to Self-Host a Managed Agents Platform",
+          "keyword": "how to self host managed agents platform",
+          "secondary_keywords": [
+            "how to self host claude managed agents",
+            "self host managed agents docker"
+          ],
+          "intent": "informational",
+          "volume": 1,
+          "volume_source": "gsc_impressions_28d_related",
+          "volume_note": "Related GSC: self hosted claude managed agents = 1 impr",
+          "template": "how-to",
+          "wordCount": 1800,
+          "url": "https://openma.ai/blog/self-host-managed-agents-platform/",
+          "status": "gap"
+        }
+      ]
+    },
+    {
+      "id": "cluster-2",
+      "name": "What Is Claude Managed Agents",
+      "color": "#7C3AED",
+      "intent_focus": "informational",
+      "posts": [
+        {
+          "id": "cluster-2-post-0",
+          "title": "What Is Claude Managed Agents?",
+          "keyword": "what is claude managed agents",
+          "secondary_keywords": [
+            "what are claude managed agents",
+            "claude managed agents",
+            "claude managed agents overview",
+            "claude managed agents api"
+          ],
+          "intent": "informational",
+          "volume": 7,
+          "volume_source": "gsc_impressions_28d",
+          "template": "explainer",
+          "wordCount": 1600,
+          "url": "https://openma.ai/what-is-claude-managed-agents/",
+          "status": "gap",
+          "gsc": {
+            "impressions": 7,
+            "clicks": 0,
+            "position": 67.9
+          },
+          "note": "Head term 'claude managed agents' has 18 impr at pos 67 \u2014 explainer is the climb vehicle; do not target on homepage."
+        },
+        {
+          "id": "cluster-2-post-1",
+          "title": "Claude Managed Agents Sandboxes Explained",
+          "keyword": "claude managed agents sandbox",
+          "secondary_keywords": [
+            "claude managed agents self-hosted sandboxes",
+            "self-hosted sandboxes claude managed agents"
+          ],
+          "intent": "informational",
+          "volume": 1,
+          "volume_source": "gsc_impressions_28d",
+          "template": "explainer",
+          "wordCount": 1400,
+          "url": "https://openma.ai/blog/claude-managed-agents-sandbox/",
+          "status": "gap",
+          "note": "SERP dominated by Anthropic docs \u2014 differentiate with Anthropic sandbox vs full self-hosted platform contrast; interlink to cluster-1 how-to."
+        }
+      ]
+    },
+    {
+      "id": "cluster-3",
+      "name": "Claude Tag Alternatives (Open / Self-Hosted)",
+      "color": "#DC2626",
+      "intent_focus": "commercial",
+      "serp_note": "SERP family distinct from CMA (overlap 0-1). Highest current GSC non-brand impressions. Existing pages map here \u2014 optimize before new Tag URLs.",
+      "posts": [
+        {
+          "id": "cluster-3-post-0",
+          "title": "Claude Tag Alternative: Open-Source Options",
+          "keyword": "claude tag alternative",
+          "secondary_keywords": [
+            "opensource claude tag alternative",
+            "open source alternative to claude tag",
+            "claude tag alternatives"
+          ],
+          "intent": "commercial",
+          "volume": 33,
+          "volume_source": "gsc_impressions_28d_primary_variant",
+          "volume_note": "Primary KW 17 impr; strongest variant 'opensource claude tag alternative' 33 impr \u2014 merged same-post",
+          "template": "best-of",
+          "wordCount": 1700,
+          "url": "https://openma.ai/claude-tag-alternative/",
+          "status": "optimize",
+          "gsc": {
+            "impressions": 72,
+            "clicks": 2,
+            "ctr": 0.0278,
+            "position": 7.9
+          }
+        },
+        {
+          "id": "cluster-3-post-1",
+          "title": "Open-Source Claude Tag",
+          "keyword": "open source claude tag",
+          "secondary_keywords": [
+            "claude tag open source",
+            "open claude tag",
+            "claude tag opensource"
+          ],
+          "intent": "commercial",
+          "volume": 30,
+          "volume_source": "gsc_impressions_28d",
+          "template": "explainer",
+          "wordCount": 1500,
+          "url": "https://openma.ai/claude-tag-open-source/",
+          "status": "existing",
+          "gsc": {
+            "impressions": 62,
+            "clicks": 3,
+            "ctr": 0.0484,
+            "position": 7.4
+          }
+        },
+        {
+          "id": "cluster-3-post-2",
+          "title": "Self-Hosted Claude Tag Runtime",
+          "keyword": "self-hosted claude tag",
+          "secondary_keywords": [
+            "claude tag self hosted",
+            "self hosted claude tag open source"
+          ],
+          "intent": "commercial",
+          "volume": 7,
+          "volume_source": "gsc_impressions_28d",
+          "template": "how-to",
+          "wordCount": 1600,
+          "url": "https://openma.ai/self-hosted-claude-tag/",
+          "status": "existing",
+          "gsc": {
+            "impressions": 92,
+            "clicks": 6,
+            "ctr": 0.0652,
+            "position": 5.7
+          }
+        },
+        {
+          "id": "cluster-3-post-3",
+          "title": "Claude Tag vs Self-Hosted Agent Platforms",
+          "keyword": "claude tag vs self-hosted agent platforms",
+          "secondary_keywords": [
+            "claude tag vs open source agents"
+          ],
+          "intent": "commercial",
+          "volume": 17,
+          "volume_source": "gsc_impressions_28d",
+          "template": "comparison",
+          "wordCount": 1500,
+          "url": "https://openma.ai/blog/self-hosted-claude-tag-open-source/",
+          "status": "existing",
+          "gsc": {
+            "impressions": 81,
+            "clicks": 4,
+            "ctr": 0.0494,
+            "position": 8.1
+          },
+          "note": "Maps existing how-to blog as comparison/how-to hybrid; avoid new URL. Reinforce vs-angle in H1/title for the 17-impr query."
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "from": "pillar",
+      "to": "cluster-0-post-0",
+      "type": "mandatory",
+      "anchor": "openma vs claude managed agents"
+    },
+    {
+      "from": "cluster-0-post-0",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-0-post-1",
+      "type": "mandatory",
+      "anchor": "openai agents api alternative"
+    },
+    {
+      "from": "cluster-0-post-1",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-0-post-2",
+      "type": "mandatory",
+      "anchor": "claude managed agents pricing"
+    },
+    {
+      "from": "cluster-0-post-2",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-1-post-0",
+      "type": "mandatory",
+      "anchor": "open source managed agents"
+    },
+    {
+      "from": "cluster-1-post-0",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-1-post-1",
+      "type": "mandatory",
+      "anchor": "how to self host managed agents platform"
+    },
+    {
+      "from": "cluster-1-post-1",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-2-post-0",
+      "type": "mandatory",
+      "anchor": "what is claude managed agents"
+    },
+    {
+      "from": "cluster-2-post-0",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-2-post-1",
+      "type": "mandatory",
+      "anchor": "claude managed agents sandbox"
+    },
+    {
+      "from": "cluster-2-post-1",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-3-post-0",
+      "type": "mandatory",
+      "anchor": "claude tag alternative"
+    },
+    {
+      "from": "cluster-3-post-0",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-3-post-1",
+      "type": "mandatory",
+      "anchor": "open source claude tag"
+    },
+    {
+      "from": "cluster-3-post-1",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-3-post-2",
+      "type": "mandatory",
+      "anchor": "self-hosted claude tag"
+    },
+    {
+      "from": "cluster-3-post-2",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "pillar",
+      "to": "cluster-3-post-3",
+      "type": "mandatory",
+      "anchor": "claude tag vs self-hosted agent platforms"
+    },
+    {
+      "from": "cluster-3-post-3",
+      "to": "pillar",
+      "type": "mandatory",
+      "anchor": "claude managed agents alternative"
+    },
+    {
+      "from": "cluster-0-post-0",
+      "to": "cluster-0-post-1",
+      "type": "recommended",
+      "anchor": "openai agents api alternative"
+    },
+    {
+      "from": "cluster-0-post-0",
+      "to": "cluster-0-post-2",
+      "type": "recommended",
+      "anchor": "claude managed agents pricing"
+    },
+    {
+      "from": "cluster-0-post-1",
+      "to": "cluster-0-post-2",
+      "type": "recommended",
+      "anchor": "claude managed agents pricing"
+    },
+    {
+      "from": "cluster-0-post-1",
+      "to": "cluster-0-post-0",
+      "type": "recommended",
+      "anchor": "openma vs claude managed agents"
+    },
+    {
+      "from": "cluster-0-post-2",
+      "to": "cluster-0-post-0",
+      "type": "recommended",
+      "anchor": "openma vs claude managed agents"
+    },
+    {
+      "from": "cluster-1-post-0",
+      "to": "cluster-1-post-1",
+      "type": "recommended",
+      "anchor": "how to self host managed agents platform"
+    },
+    {
+      "from": "cluster-1-post-1",
+      "to": "cluster-1-post-0",
+      "type": "recommended",
+      "anchor": "open source managed agents"
+    },
+    {
+      "from": "cluster-2-post-0",
+      "to": "cluster-2-post-1",
+      "type": "recommended",
+      "anchor": "claude managed agents sandbox"
+    },
+    {
+      "from": "cluster-2-post-1",
+      "to": "cluster-2-post-0",
+      "type": "recommended",
+      "anchor": "what is claude managed agents"
+    },
+    {
+      "from": "cluster-3-post-0",
+      "to": "cluster-3-post-1",
+      "type": "recommended",
+      "anchor": "open source claude tag"
+    },
+    {
+      "from": "cluster-3-post-0",
+      "to": "cluster-3-post-2",
+      "type": "recommended",
+      "anchor": "self-hosted claude tag"
+    },
+    {
+      "from": "cluster-3-post-1",
+      "to": "cluster-3-post-2",
+      "type": "recommended",
+      "anchor": "self-hosted claude tag"
+    },
+    {
+      "from": "cluster-3-post-1",
+      "to": "cluster-3-post-3",
+      "type": "recommended",
+      "anchor": "claude tag vs self-hosted agent platforms"
+    },
+    {
+      "from": "cluster-3-post-2",
+      "to": "cluster-3-post-3",
+      "type": "recommended",
+      "anchor": "claude tag vs self-hosted agent platforms"
+    },
+    {
+      "from": "cluster-3-post-2",
+      "to": "cluster-3-post-0",
+      "type": "recommended",
+      "anchor": "claude tag alternative"
+    },
+    {
+      "from": "cluster-3-post-3",
+      "to": "cluster-3-post-0",
+      "type": "recommended",
+      "anchor": "claude tag alternative"
+    },
+    {
+      "from": "cluster-3-post-3",
+      "to": "cluster-3-post-1",
+      "type": "recommended",
+      "anchor": "open source claude tag"
+    },
+    {
+      "from": "cluster-0-post-0",
+      "to": "cluster-2-post-0",
+      "type": "optional",
+      "anchor": "what is claude managed agents"
+    },
+    {
+      "from": "cluster-1-post-1",
+      "to": "cluster-2-post-1",
+      "type": "optional",
+      "anchor": "claude managed agents sandbox"
+    },
+    {
+      "from": "cluster-3-post-0",
+      "to": "cluster-0-post-0",
+      "type": "optional",
+      "anchor": "openma vs claude managed agents"
+    },
+    {
+      "from": "cluster-1-post-0",
+      "to": "cluster-0-post-1",
+      "type": "optional",
+      "anchor": "openai agents api alternative"
+    },
+    {
+      "from": "cluster-2-post-0",
+      "to": "cluster-0-post-2",
+      "type": "optional",
+      "anchor": "claude managed agents pricing"
+    },
+    {
+      "from": "cluster-3-post-2",
+      "to": "cluster-1-post-1",
+      "type": "optional",
+      "anchor": "how to self host managed agents platform"
+    },
+    {
+      "from": "cluster-3-post-3",
+      "to": "cluster-1-post-0",
+      "type": "optional",
+      "anchor": "open source managed agents"
+    },
+    {
+      "from": "cluster-0-post-2",
+      "to": "cluster-1-post-0",
+      "type": "optional",
+      "anchor": "open source managed agents"
+    }
+  ],
+  "serp_matrix": {
+    "keywords": [
+      "claude managed agents alternative",
+      "openma vs claude managed agents",
+      "openai agents api alternative",
+      "claude managed agents pricing",
+      "open source managed agents",
+      "how to self host managed agents platform",
+      "what is claude managed agents",
+      "claude managed agents sandbox",
+      "claude tag alternative",
+      "open source claude tag",
+      "self-hosted claude tag",
+      "claude tag vs self-hosted agent platforms"
+    ],
+    "scores": [
+      [
+        10,
+        5,
+        5,
+        3,
+        5,
+        4,
+        2,
+        2,
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        5,
+        10,
+        4,
+        3,
+        4,
+        3,
+        3,
+        2,
+        1,
+        0,
+        0,
+        2
+      ],
+      [
+        5,
+        4,
+        10,
+        2,
+        5,
+        4,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        3,
+        3,
+        2,
+        10,
+        2,
+        1,
+        4,
+        3,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        5,
+        4,
+        5,
+        2,
+        10,
+        6,
+        1,
+        2,
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        4,
+        3,
+        4,
+        1,
+        6,
+        10,
+        1,
+        3,
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        2,
+        3,
+        1,
+        4,
+        1,
+        1,
+        10,
+        6,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        2,
+        2,
+        1,
+        3,
+        2,
+        3,
+        6,
+        10,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        10,
+        7,
+        5,
+        5
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        7,
+        10,
+        6,
+        5
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        6,
+        10,
+        4
+      ],
+      [
+        1,
+        2,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        5,
+        5,
+        4,
+        10
+      ]
+    ],
+    "scoring_notes": "Partial/lower-bound from WebSearch organic URL synthesis. Spot-checked boundary pairs across intent groups. Tag\u2194CMA pairs confirmed ~0-1 (separate)."
+  },
+  "serp_matrix_summary": {
+    "same_post_pairs_7_plus": [
+      [
+        "claude tag alternative",
+        "open source claude tag",
+        7
+      ]
+    ],
+    "same_cluster_pairs_4_to_6": [
+      [
+        "claude managed agents alternative",
+        "openma vs claude managed agents",
+        5
+      ],
+      [
+        "claude managed agents alternative",
+        "openai agents api alternative",
+        5
+      ],
+      [
+        "claude managed agents alternative",
+        "open source managed agents",
+        5
+      ],
+      [
+        "open source managed agents",
+        "how to self host managed agents platform",
+        6
+      ],
+      [
+        "what is claude managed agents",
+        "claude managed agents sandbox",
+        6
+      ],
+      [
+        "claude tag alternative",
+        "self-hosted claude tag",
+        5
+      ],
+      [
+        "open source claude tag",
+        "self-hosted claude tag",
+        6
+      ]
+    ],
+    "interlink_pairs_2_to_3": [
+      [
+        "claude managed agents alternative",
+        "what is claude managed agents",
+        2
+      ],
+      [
+        "claude managed agents pricing",
+        "what is claude managed agents",
+        4
+      ],
+      [
+        "openma vs claude managed agents",
+        "claude tag vs self-hosted agent platforms",
+        2
+      ]
+    ],
+    "separate_families_0_to_1": [
+      "Claude Managed Agents commercial/info SERPs vs Claude Tag SERPs (AgentConnect/OpenTag/Ankole vs Omnara/OAO/TrueForge)"
+    ]
+  },
+  "cannibalization": {
+    "conflicts_resolved": [
+      {
+        "keywords": [
+          "claude managed agents alternative",
+          "open source alternative to claude managed agents",
+          "best claude managed agents alternative"
+        ],
+        "action": "merge_into_pillar",
+        "primary": "claude managed agents alternative"
+      },
+      {
+        "keywords": [
+          "claude tag alternative",
+          "opensource claude tag alternative",
+          "open source alternative to claude tag"
+        ],
+        "action": "merge_into_spoke",
+        "primary": "claude tag alternative",
+        "url": "https://openma.ai/claude-tag-alternative/"
+      },
+      {
+        "keywords": [
+          "open source claude tag",
+          "claude tag open source",
+          "open claude tag"
+        ],
+        "action": "merge_into_spoke",
+        "primary": "open source claude tag",
+        "url": "https://openma.ai/claude-tag-open-source/"
+      },
+      {
+        "risk": "https://openma.ai/blog/claude-tag-open-source-alternative/ vs Tag landing trio",
+        "action": "optimize_then_consolidate",
+        "note": "62 impr / 0 clicks \u2014 differentiate or 301 into /claude-tag-alternative/ after title test"
+      },
+      {
+        "risk": "https://openma.ai/blog/open-source-alternatives-to-claude-managed-agents-2026/ vs new pillar",
+        "action": "absorb_into_pillar",
+        "note": "Weak 4 impr page \u2014 migrate strongest sections into pillar; redirect or relabel as supporting post"
+      }
+    ],
+    "duplicate_primary_keywords": 0
+  },
+  "scorecard": {
+    "coverage": 0.0,
+    "linkDensity": 0.0,
+    "orphanPages": 0,
+    "cannibalization": 0,
+    "contentGaps": 5,
+    "plannedPosts": 12,
+    "existingOrOptimize": 7,
+    "gaps": 5,
+    "note": "Pre-execution plan scorecard; coverage rises after /seo cluster execute"
+  },
+  "next_actions": [
+    {
+      "priority": 1,
+      "type": "optimize",
+      "target": "https://openma.ai/blog/claude-managed-agents-vs-open-managed-agents/",
+      "why": "102 impr / 0 clicks / pos 29; already receives seed query impressions \u2014 highest leverage title/meta/H1 + depth rewrite before new CMA pages."
+    },
+    {
+      "priority": 2,
+      "type": "optimize",
+      "target": "https://openma.ai/claude-tag-alternative/",
+      "why": "72 page impr; owns top GSC non-brand variants (33+18+17) at pos ~7-11 with CTR 2.8% \u2014 title/meta + competitor table refresh."
+    },
+    {
+      "priority": 3,
+      "type": "new_page",
+      "target": "https://openma.ai/claude-managed-agents-alternative/",
+      "why": "Pillar gap for seed; consolidates alternative/open-source merges; seed currently underserved at pos 18.5."
+    },
+    {
+      "priority": 4,
+      "type": "optimize",
+      "target": "https://docs.openma.ai/",
+      "why": "168 impr / 0 clicks \u2014 snippet/title only; not a content spoke."
+    },
+    {
+      "priority": 5,
+      "type": "new_page",
+      "target": "https://openma.ai/what-is-claude-managed-agents/",
+      "why": "Head-term climb (18 impr @67) + explainer intent; feeds pillar commercially."
+    }
+  ],
+  "meta": {
+    "totalPosts": 12,
+    "totalClusters": 4,
+    "totalLinks": 47,
+    "estimatedWords": 20500,
+    "mandatoryLinks": 22,
+    "recommendedLinks": 17,
+    "optionalLinks": 8
+  }
+}

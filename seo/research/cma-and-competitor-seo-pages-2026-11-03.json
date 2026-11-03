@@ -1,0 +1,1393 @@
+{
+  "meta": {
+    "generated": "2026-11-03",
+    "timezone_label": "America/Detroit (UTC-5)",
+    "sources": [
+      "WebSearch",
+      "WebFetch",
+      "platform.claude.com/docs/llms.txt"
+    ],
+    "rules": [
+      "No invented keyword volumes",
+      "Planted keywords from observed H1/H2/meta/on-page copy only",
+      "Brand terms ≠ category demand",
+      "openma.dev deprecated — exclude as target",
+      "GitHub generally out of scope except explicit google/ax inclusion"
+    ]
+  },
+  "A_cma_seo_pages": [
+    {
+      "url": "https://claude.com/platform/claude-managed-agents",
+      "title": "Claude Managed Agents | Claude by Anthropic",
+      "h1": "Claude Managed Agents",
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "long-running, secure agents",
+        "without managing infrastructure",
+        "secure infrastructure",
+        "agent observability",
+        "session tracing",
+        "optimized for Claude",
+        "cloud-hosted agents",
+        "Anthropic-managed harness",
+        "self-hosted sandboxes",
+        "session-hour",
+        "$0.08",
+        "Agent SDK"
+      ],
+      "page_type": "product_marketing",
+      "path": "/platform/claude-managed-agents",
+      "notes": "Primary product SEO landing; FAQ plants CMA vs Agent SDK, pricing, HIPAA, AWS."
+    },
+    {
+      "url": "https://claude.com/resources/articles/claude-managed-agents",
+      "title": "Claude Managed Agents: get to production 10x faster | Claude by Anthropic",
+      "h1": "Claude Managed Agents: get to production 10x faster",
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "get to production 10x faster",
+        "composable APIs",
+        "cloud-hosted agents at scale",
+        "agent harness",
+        "production infrastructure",
+        "secure sandboxing",
+        "long-running sessions",
+        "multi-agent coordination",
+        "public beta",
+        "Claude Platform",
+        "$0.08 per session-hour"
+      ],
+      "page_type": "announcement_article",
+      "path": "/resources/articles/claude-managed-agents",
+      "notes": "Launch/announcement content; SERP AI Overview citation."
+    },
+    {
+      "url": "https://www.anthropic.com/research/managed-agents",
+      "title": "Scaling Managed Agents with stable interfaces \\ Anthropic",
+      "h1": "Scaling Managed Agents: Decoupling the brain from the hands",
+      "planted_keywords": [
+        "Managed Agents",
+        "Claude Managed Agents",
+        "decoupling the brain from the hands",
+        "harness",
+        "session",
+        "sandbox",
+        "meta-harness",
+        "Claude Developer Platform",
+        "context engineering",
+        "tool use"
+      ],
+      "page_type": "research_engineering",
+      "path": "/research/managed-agents",
+      "notes": "Engineering narrative SEO; published Apr 8, 2026."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/overview",
+      "title": "Claude Managed Agents overview",
+      "h1": "Claude Managed Agents overview",
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "Messages API",
+        "agent harness",
+        "managed infrastructure",
+        "long-running tasks",
+        "asynchronous work",
+        "Agent",
+        "Environment",
+        "Session",
+        "Events",
+        "self-hosted sandbox",
+        "scheduled deployments",
+        "managed-agents-2026-04-01",
+        "Zero Data Retention",
+        "HIPAA"
+      ],
+      "page_type": "docs_hub",
+      "path": "/docs/en/managed-agents/overview",
+      "notes": "Canonical docs hub; contrast table vs Messages API."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/quickstart",
+      "title": "Get started with Claude Managed Agents",
+      "h1": "Get started with Claude Managed Agents",
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "quickstart",
+        "agent",
+        "environment",
+        "session",
+        "streaming"
+      ],
+      "page_type": "docs_quickstart",
+      "path": "/docs/en/managed-agents/quickstart",
+      "notes": null
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/agent-setup",
+      "title": "Define your agent",
+      "h1": "Define your agent",
+      "planted_keywords": [
+        "agent",
+        "system prompt",
+        "tools",
+        "MCP servers",
+        "skills",
+        "multiagent",
+        "Managed Agents"
+      ],
+      "page_type": "docs_howto",
+      "path": "/docs/en/managed-agents/agent-setup",
+      "notes": null
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/sessions",
+      "title": "Start a session",
+      "h1": "Start a session",
+      "planted_keywords": [
+        "session",
+        "agent",
+        "environment",
+        "initial_events",
+        "user.message"
+      ],
+      "page_type": "docs_howto",
+      "path": "/docs/en/managed-agents/sessions",
+      "notes": null
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/events-and-streaming",
+      "title": "Session event stream",
+      "h1": "Session event stream",
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "event stream",
+        "SSE",
+        "session.status_idle",
+        "budget_reached"
+      ],
+      "page_type": "docs_howto",
+      "path": "/docs/en/managed-agents/events-and-streaming",
+      "notes": null
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/session-operations",
+      "title": "Session operations",
+      "h1": "Session operations",
+      "planted_keywords": [
+        "session statuses",
+        "idle",
+        "running",
+        "rescheduling",
+        "terminated"
+      ],
+      "page_type": "docs_howto",
+      "path": "/docs/en/managed-agents/session-operations",
+      "notes": null
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "title": "Pricing",
+      "h1": "Pricing",
+      "planted_keywords": [
+        "Claude Managed Agents pricing",
+        "tokens",
+        "session runtime",
+        "$0.08 USD per session-hour",
+        "running status",
+        "prompt caching",
+        "web search",
+        "Batch API discount"
+      ],
+      "page_type": "pricing_docs",
+      "path": "/docs/en/about-claude/pricing",
+      "notes": "Dedicated CMA pricing section; primary commercial SEO asset."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/github",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "github"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/github",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/files",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "files"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/files",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/vaults",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "vaults"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/vaults",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/onboarding",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "onboarding"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/onboarding",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/choosing-an-environment",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "choosing an environment"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/choosing-an-environment",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/environments",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "environments"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/environments",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/cloud-sandboxes-reference",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "cloud sandboxes reference"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/cloud-sandboxes-reference",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-custom-tools",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes custom tools"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-custom-tools",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/define-outcomes",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "define outcomes"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/define-outcomes",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-workers",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes workers"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-workers",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/dreams",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "dreams"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/dreams",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/session-observability",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "session observability"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/session-observability",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/mcp-connector",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "mcp connector"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/mcp-connector",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-memory",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes memory"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-memory",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/migration",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "migration"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/migration",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-operations",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes operations"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-operations",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "multiagent orchestration"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/multiagent-orchestration",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/permission-policies",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "permission policies"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/permission-policies",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/event-deltas",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "event deltas"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/event-deltas",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/reference",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "reference"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/reference",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/tools-web-restrictions",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "tools web restrictions"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/tools-web-restrictions",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/secure-deployment-monitoring",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "secure deployment monitoring"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/secure-deployment-monitoring",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/scheduled-deployments",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "scheduled deployments"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/scheduled-deployments",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/secure-deployment",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "secure deployment"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/secure-deployment",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-security",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes security"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-security",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/secure-deployment-risks",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "secure deployment risks"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/secure-deployment-risks",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-reference",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "self hosted sandboxes reference"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/self-hosted-sandboxes-reference",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/budgets",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "budgets"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/budgets",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/session-threads",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "session threads"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/session-threads",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/skills",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "skills"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/skills",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/webhooks",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "webhooks"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/webhooks",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/tools",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "tools"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/tools",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/memory",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "memory"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/memory",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/managed-agents/workflow-runs",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "workflow runs"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/managed-agents/workflow-runs",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/cli-sdks-libraries/cli/sessions-connect",
+      "title": null,
+      "h1": null,
+      "planted_keywords": [
+        "Claude Managed Agents",
+        "sessions connect"
+      ],
+      "page_type": "docs_spoke",
+      "path": "/docs/en/cli-sdks-libraries/cli/sessions-connect",
+      "notes": "Listed in platform.claude.com/docs/llms.txt Managed Agents section; title not re-fetched individually."
+    }
+  ],
+  "A_cma_docs_path_index": [
+    "/docs/en/managed-agents/overview",
+    "/docs/en/managed-agents/quickstart",
+    "/docs/en/managed-agents/github",
+    "/docs/en/managed-agents/files",
+    "/docs/en/managed-agents/vaults",
+    "/docs/en/managed-agents/onboarding",
+    "/docs/en/managed-agents/choosing-an-environment",
+    "/docs/en/managed-agents/environments",
+    "/docs/en/managed-agents/cloud-sandboxes-reference",
+    "/docs/en/managed-agents/self-hosted-sandboxes-custom-tools",
+    "/docs/en/managed-agents/define-outcomes",
+    "/docs/en/managed-agents/agent-setup",
+    "/docs/en/managed-agents/self-hosted-sandboxes-workers",
+    "/docs/en/managed-agents/dreams",
+    "/docs/en/managed-agents/session-observability",
+    "/docs/en/managed-agents/mcp-connector",
+    "/docs/en/managed-agents/self-hosted-sandboxes-memory",
+    "/docs/en/managed-agents/migration",
+    "/docs/en/managed-agents/self-hosted-sandboxes-operations",
+    "/docs/en/managed-agents/multiagent-orchestration",
+    "/docs/en/managed-agents/permission-policies",
+    "/docs/en/managed-agents/event-deltas",
+    "/docs/en/managed-agents/reference",
+    "/docs/en/managed-agents/tools-web-restrictions",
+    "/docs/en/managed-agents/secure-deployment-monitoring",
+    "/docs/en/managed-agents/scheduled-deployments",
+    "/docs/en/managed-agents/secure-deployment",
+    "/docs/en/managed-agents/self-hosted-sandboxes-security",
+    "/docs/en/managed-agents/secure-deployment-risks",
+    "/docs/en/managed-agents/self-hosted-sandboxes",
+    "/docs/en/managed-agents/self-hosted-sandboxes-reference",
+    "/docs/en/managed-agents/budgets",
+    "/docs/en/managed-agents/events-and-streaming",
+    "/docs/en/managed-agents/session-operations",
+    "/docs/en/managed-agents/session-threads",
+    "/docs/en/managed-agents/skills",
+    "/docs/en/managed-agents/sessions",
+    "/docs/en/managed-agents/webhooks",
+    "/docs/en/managed-agents/tools",
+    "/docs/en/managed-agents/memory",
+    "/docs/en/managed-agents/workflow-runs",
+    "/docs/en/cli-sdks-libraries/cli/sessions-connect"
+  ],
+  "B_competitor_transparency_pages": [
+    {
+      "url": "https://docs.langchain.com/langsmith/fleet/comparison",
+      "title": "Agent platform comparison - Docs by LangChain",
+      "h1": "Agent platform comparison",
+      "planted_keywords": [
+        "LangSmith Fleet",
+        "agent platform comparison",
+        "Claude Cowork",
+        "Amazon Quick",
+        "Google Workspace Studio",
+        "Microsoft Copilot",
+        "model-agnostic",
+        "self-hosted",
+        "code export",
+        "Deep Agents",
+        "no-code agent builder"
+      ],
+      "who_compared": [
+        "LangSmith Fleet",
+        "Claude Cowork",
+        "Amazon Quick",
+        "Google Workspace Studio",
+        "Microsoft Copilot"
+      ],
+      "publisher": "LangChain",
+      "page_type": "transparency_comparison",
+      "notes": "Enterprise agent platform comparison; does not name CMA product directly—compares Claude Cowork."
+    },
+    {
+      "url": "https://docs.langchain.com/oss/python/deepagents/comparison",
+      "title": "Comparison with Claude Agent SDK - Docs by LangChain",
+      "h1": "Comparison with Claude Agent SDK",
+      "planted_keywords": [
+        "Deep Agents",
+        "Claude Agent SDK",
+        "Managed Deep Agents",
+        "Claude managed agents",
+        "model-agnostic",
+        "multi-tenancy",
+        "sandbox",
+        "self-host",
+        "LangSmith Fleet"
+      ],
+      "who_compared": [
+        "Deep Agents / Managed Deep Agents",
+        "Claude Agent SDK",
+        "Claude managed agents (mentioned as separate product)"
+      ],
+      "publisher": "LangChain",
+      "page_type": "transparency_comparison",
+      "notes": "Direct Claude Agent SDK vs Deep Agents; explicitly notes CMA as separate hosted product."
+    },
+    {
+      "url": "https://docs.langchain.com/oss/javascript/deepagents/comparison",
+      "title": "Comparison with Claude Agent SDK - Docs by LangChain",
+      "h1": "Comparison with Claude Agent SDK",
+      "planted_keywords": [
+        "Deep Agents",
+        "Claude Agent SDK",
+        "Managed Deep Agents",
+        "Claude managed agents"
+      ],
+      "who_compared": [
+        "Deep Agents",
+        "Claude Agent SDK",
+        "Claude managed agents"
+      ],
+      "publisher": "LangChain",
+      "page_type": "transparency_comparison",
+      "notes": "JS twin of Python comparison page."
+    },
+    {
+      "url": "https://www.truefoundry.com/blog/engineering/trueforge-vs-claude-managed-agents-benchmark/",
+      "title": "TrueForge vs Claude Managed Agents: Up to 75% Cheaper",
+      "h1": "TrueForge: An Open-Source Alternative to Claude Managed Agents, Up to 75% Cheaper",
+      "planted_keywords": [
+        "TrueForge",
+        "open-source alternative to Claude Managed Agents",
+        "up to 75% cheaper",
+        "vendor-neutral agent harness",
+        "deepagents",
+        "Opus 4.8",
+        "GLM-5.2",
+        "cost per run",
+        "Enterprise-Bench"
+      ],
+      "who_compared": [
+        "TrueForge",
+        "Claude Managed Agents",
+        "deepagents (LangGraph)"
+      ],
+      "publisher": "TrueFoundry",
+      "page_type": "benchmark_comparison",
+      "notes": "Primary CMA-named competitive SEO page."
+    },
+    {
+      "url": "https://www.truefoundry.com/blog/claude-managed-agents-pricing",
+      "title": "Claude Managed Agents Pricing: A Complete Breakdown for 2026",
+      "h1": "Claude Managed Agents Pricing: A Complete Breakdown for 2026",
+      "planted_keywords": [
+        "Claude Managed Agents pricing",
+        "$0.08 per active session-hour",
+        "token rates",
+        "TrueForge",
+        "open-source alternative"
+      ],
+      "who_compared": [
+        "Claude Managed Agents",
+        "TrueForge"
+      ],
+      "publisher": "TrueFoundry",
+      "page_type": "pricing_intercept",
+      "notes": "Captures 'claude managed agents pricing' SERP; ends with TrueForge CTA."
+    },
+    {
+      "url": "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+      "title": "Claude Managed Agents Alternatives: Top 5 Options for 2026",
+      "h1": "Claude Managed Agents Alternatives: Top 5 Agent Harnesses to Consider in 2026",
+      "planted_keywords": [
+        "Claude Managed Agents alternatives",
+        "agent harness",
+        "TrueForge",
+        "Microsoft Agent Framework",
+        "Foundry Hosted Agents",
+        "deepagents",
+        "OpenHands",
+        "Pi",
+        "model neutrality",
+        "self-host"
+      ],
+      "who_compared": [
+        "TrueForge",
+        "Claude Managed Agents",
+        "Microsoft Agent Framework + Foundry",
+        "deepagents",
+        "OpenHands",
+        "Pi"
+      ],
+      "publisher": "TrueFoundry",
+      "page_type": "alternatives_listicle",
+      "notes": "Strong category + brand intercept SEO."
+    },
+    {
+      "url": "https://trueforge.dev/benchmarking",
+      "title": "Benchmarking - TrueForge",
+      "h1": null,
+      "planted_keywords": [
+        "TrueForge",
+        "Claude Managed Agents",
+        "deepagents",
+        "30% cheaper",
+        "75% cheaper"
+      ],
+      "who_compared": [
+        "TrueForge",
+        "Claude Managed Agents",
+        "deepagents"
+      ],
+      "publisher": "TrueFoundry / TrueForge",
+      "page_type": "benchmark_docs",
+      "notes": null
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/guides/agents",
+      "title": "Agents",
+      "h1": "Agents",
+      "planted_keywords": [
+        "Agents API",
+        "Agents SDK",
+        "Responses API",
+        "ChatKit",
+        "Codex harness",
+        "managed",
+        "compare agent runtime options"
+      ],
+      "who_compared": [
+        "Agents API",
+        "Agents SDK",
+        "Responses API"
+      ],
+      "publisher": "OpenAI",
+      "page_type": "product_chooser",
+      "notes": "Internal runtime comparison (managed API vs SDK vs Responses)—not CMA-named."
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/guides/agents-api/overview",
+      "title": "Agents API",
+      "h1": "Agents API",
+      "planted_keywords": [
+        "Agents API",
+        "Codex harness",
+        "OpenAI-managed API",
+        "sessions",
+        "orchestration",
+        "hosted sandbox",
+        "self-hosted sandbox",
+        "Bedrock Managed Agents"
+      ],
+      "who_compared": [
+        "Agents API (managed)",
+        "Agents SDK (self-run)",
+        "Bedrock Managed Agents (cross-link)"
+      ],
+      "publisher": "OpenAI",
+      "page_type": "product_docs",
+      "notes": "Closest OpenAI peer to CMA (hosted harness)."
+    },
+    {
+      "url": "https://developers.openai.com/cookbook/examples/agents_sdk/migrate-from-claude-agent-sdk/readme",
+      "title": "Migrate from the Claude Agent SDK to the OpenAI Agents SDK",
+      "h1": "Migrate from the Claude Agent SDK to the OpenAI Agents SDK",
+      "planted_keywords": [
+        "Claude Agent SDK",
+        "OpenAI Agents SDK",
+        "migrate",
+        "harness",
+        "sandbox as a tool",
+        "skills",
+        "approvals"
+      ],
+      "who_compared": [
+        "Claude Agent SDK",
+        "OpenAI Agents SDK"
+      ],
+      "publisher": "OpenAI",
+      "page_type": "migration_comparison",
+      "notes": "Targets Claude Agent SDK (local), not CMA hosted product—but plants Claude competitive keywords."
+    },
+    {
+      "url": "https://openai.com/index/the-next-evolution-of-the-agents-sdk/",
+      "title": "The next evolution of the Agents SDK | OpenAI",
+      "h1": null,
+      "planted_keywords": [
+        "Agents SDK",
+        "OpenAI"
+      ],
+      "who_compared": [],
+      "publisher": "OpenAI",
+      "page_type": "announcement",
+      "notes": "Announcement URL discovered via search; not fully re-fetched for H1."
+    },
+    {
+      "url": "https://temporal.io/blog/announcing-openai-agents-sdk-integration",
+      "title": "Production-ready agents with the OpenAI Agents SDK + Temporal | Temporal",
+      "h1": "Production-ready agents with the OpenAI Agents SDK + Temporal",
+      "planted_keywords": [
+        "OpenAI Agents SDK",
+        "Temporal",
+        "Durable Execution",
+        "production-ready agents",
+        "crash-proof",
+        "Workflows",
+        "Activities"
+      ],
+      "who_compared": [
+        "OpenAI Agents SDK alone",
+        "OpenAI Agents SDK + Temporal"
+      ],
+      "publisher": "Temporal",
+      "page_type": "integration_announcement",
+      "notes": "Durable agents positioning vs fragile SDK-only runs; not CMA-named."
+    },
+    {
+      "url": "https://docs.temporal.io/develop/python/integrations/openai-agents",
+      "title": "OpenAI Agents SDK integration",
+      "h1": null,
+      "planted_keywords": [
+        "OpenAI Agents SDK",
+        "Temporal Workflows",
+        "Activities",
+        "durable"
+      ],
+      "who_compared": [
+        "OpenAI Agents SDK",
+        "Temporal"
+      ],
+      "publisher": "Temporal",
+      "page_type": "docs_integration",
+      "notes": null
+    },
+    {
+      "url": "https://developers.cloudflare.com/agents/",
+      "title": "Agents · Cloudflare Agents docs",
+      "h1": "Build Agents on Cloudflare",
+      "planted_keywords": [
+        "Cloudflare Agents",
+        "Durable Object",
+        "Agents SDK",
+        "harness",
+        "Pi",
+        "OpenCode",
+        "Think",
+        "workspace",
+        "sandbox",
+        "MCP",
+        "no infrastructure to manage"
+      ],
+      "who_compared": [],
+      "publisher": "Cloudflare",
+      "page_type": "product_docs_hub",
+      "notes": "Positions durable Workers agents; no direct CMA comparison page found."
+    },
+    {
+      "url": "https://docs.crewai.com/v1.15.33/en/guides/migration/migrating-from-langgraph",
+      "title": "Moving from LangGraph to CrewAI: A Practical Guide for Engineers",
+      "h1": "Moving from LangGraph to CrewAI: A Practical Guide for Engineers",
+      "planted_keywords": [
+        "LangGraph",
+        "CrewAI Flows",
+        "migration",
+        "multi-agent",
+        "StateGraph",
+        "production"
+      ],
+      "who_compared": [
+        "LangGraph",
+        "CrewAI Flows"
+      ],
+      "publisher": "CrewAI",
+      "page_type": "migration_comparison",
+      "notes": "Official transparency-style migration SEO; not CMA-named."
+    },
+    {
+      "url": "https://qoder.com/cloud-agents",
+      "title": "Cloud Agents - Fully Managed AI Agent Runtime Platform | Qoder",
+      "h1": "Cloud Infrastructure for the Qoder Ecosystem Equip your software with a brain that keeps evolving",
+      "planted_keywords": [
+        "Cloud Agents",
+        "Fully Managed AI Agent Runtime Platform",
+        "Agent as a Service",
+        "Agent Runtime",
+        "Agent Environment",
+        "sandbox per session",
+        "long-running agents",
+        "Skills",
+        "MCP",
+        "CLOUD AGENTS vs BUILD IT YOURSELF",
+        "qca-sdk",
+        "SSE",
+        "Templates",
+        "Identities",
+        "Batches"
+      ],
+      "who_compared": [
+        "Qoder Cloud Agents",
+        "Build it yourself (DIY)"
+      ],
+      "publisher": "Qoder",
+      "page_type": "product_marketing",
+      "positioning_vs_cma_openai": {
+        "vs_CMA": "Mirrors CMA shape: Agent / Environment / Session / Events, managed sandbox, SSE streaming, vault/credentials, long-running resumable sessions. Positions as fully managed runtime + Agent-as-a-Service for embedding into apps—not Claude-locked; Qoder family models/runtime.",
+        "vs_OpenAI_Agents_API": "Same managed-harness category as OpenAI Agents API (hosted loop + sandbox). Marketing leans harder on AaaS, IM channel embeds (DingTalk/Lark/WeChat/Slack), Templates/Identities, and Chinese enterprise surfaces."
+      },
+      "notes": "EN marketing sibling."
+    },
+    {
+      "url": "https://qoder.com/zh/cloud-agents",
+      "title": "Cloud Agents - 全托管 AI Agent 运行平台 | Qoder",
+      "h1": "Qoder 家族云端基础设施 给软件装上持续进化的大脑",
+      "planted_keywords": [
+        "Cloud Agents",
+        "全托管 AI Agent 运行平台",
+        "Agent as a Service",
+        "Agent Runtime",
+        "Agent Environment",
+        "Sandbox",
+        "长程执行",
+        "多 Agent",
+        "Skills",
+        "MCP",
+        "CLOUD AGENTS vs 自行搭建",
+        "分钟级接入",
+        "断点恢复",
+        "凭证与权限治理"
+      ],
+      "who_compared": [
+        "Qoder Cloud Agents",
+        "自行搭建"
+      ],
+      "publisher": "Qoder",
+      "page_type": "product_marketing",
+      "positioning_vs_cma_openai": {
+        "vs_CMA": "ZH twin of EN page; same managed Agent/Environment/Session story and DIY comparison table. Category peer to CMA (hosted harness) rather than local Agent SDK.",
+        "vs_OpenAI_Agents_API": "Same; localizes for CN IM/enterprise (钉钉/飞书/微信) vs OpenAI US-centric Agents API docs."
+      },
+      "notes": "ZH marketing page explicitly requested."
+    },
+    {
+      "url": "https://docs.qoder.com/cloud-agents/overview",
+      "title": "Overview - Qoder",
+      "h1": "Overview",
+      "planted_keywords": [
+        "Qoder Cloud Agents",
+        "fully managed cloud sandboxes",
+        "fully managed runtime",
+        "Agent",
+        "Environment",
+        "Session",
+        "Event",
+        "SSE"
+      ],
+      "who_compared": [],
+      "publisher": "Qoder",
+      "page_type": "docs_hub",
+      "positioning_vs_cma_openai": {
+        "vs_CMA": "Concept table nearly isomorphic to CMA docs (Agent/Environment/Session/Event).",
+        "vs_OpenAI_Agents_API": "Same four-concept managed API model."
+      },
+      "notes": null
+    },
+    {
+      "url": "https://www.openhands.dev/",
+      "title": "OpenHands",
+      "h1": "OpenHands",
+      "planted_keywords": [
+        "OpenHands",
+        "open source platform for software engineering agents",
+        "GUI",
+        "CLI",
+        "SDK",
+        "enterprise control plane",
+        "coding agents"
+      ],
+      "who_compared": [],
+      "publisher": "OpenHands",
+      "page_type": "product_home",
+      "positioning": "Open-source software-engineering agent platform (GUI/CLI/SDK/enterprise)—coding-agent category, not general managed-agent SaaS like CMA. Brand 'OpenHands' ≠ category demand ('AI coding agents', 'Claude Code alternatives').",
+      "notes": "Homepage thin; SEO depth lives in blog comparisons."
+    },
+    {
+      "url": "https://www.openhands.dev/blog/claude-code-alternatives",
+      "title": "The 10 Best Claude Code Alternatives in 2026, Compared",
+      "h1": null,
+      "planted_keywords": [
+        "Claude Code alternatives",
+        "OpenHands",
+        "OpenAI Codex CLI",
+        "Gemini CLI",
+        "model flexibility",
+        "MIT",
+        "Agent Canvas"
+      ],
+      "who_compared": [
+        "OpenHands",
+        "OpenAI Codex CLI",
+        "Gemini CLI/Antigravity",
+        "OpenCode",
+        "Aider",
+        "Cursor",
+        "Cline",
+        "Windsurf/Devin Desktop",
+        "Devin",
+        "Factory"
+      ],
+      "publisher": "OpenHands",
+      "page_type": "alternatives_listicle",
+      "notes": "Targets Claude Code (local/coding), not CMA—still plants Claude competitive demand."
+    },
+    {
+      "url": "https://www.openhands.dev/blog/claude-code-vs-cursor",
+      "title": "Claude Code vs Cursor: Which AI Coding Tool to Use in 2026",
+      "h1": null,
+      "planted_keywords": [
+        "Claude Code",
+        "Cursor",
+        "AI coding"
+      ],
+      "who_compared": [
+        "Claude Code",
+        "Cursor"
+      ],
+      "publisher": "OpenHands",
+      "page_type": "comparison_blog",
+      "notes": null
+    },
+    {
+      "url": "https://www.openhands.dev/blog/best-ai-for-coding",
+      "title": "The Best AI Coding Tools for Engineering Teams (2026)",
+      "h1": null,
+      "planted_keywords": [
+        "best AI coding tools",
+        "Claude Code",
+        "Codex CLI",
+        "model lock-in"
+      ],
+      "who_compared": [
+        "OpenHands (implied)",
+        "Claude Code",
+        "Codex CLI",
+        "others"
+      ],
+      "publisher": "OpenHands",
+      "page_type": "roundup_blog",
+      "notes": null
+    },
+    {
+      "url": "https://docs.openhands.dev/openhands/usage/agent-canvas/backend-setup/digitalocean",
+      "title": "DigitalOcean Managed Agents - OpenHands Docs",
+      "h1": null,
+      "planted_keywords": [
+        "DigitalOcean Managed Agents",
+        "Agent Canvas",
+        "isolated cloud sandboxes"
+      ],
+      "who_compared": [
+        "OpenHands Agent Canvas",
+        "DigitalOcean Managed Agents backend"
+      ],
+      "publisher": "OpenHands",
+      "page_type": "docs_integration",
+      "notes": "Uses 'Managed Agents' phrase via DigitalOcean backend—category adjacency to CMA naming."
+    },
+    {
+      "url": "https://agentexecutor.io/",
+      "title": "AX",
+      "h1": "Declare an agentic task. AX runs it at scale.",
+      "planted_keywords": [
+        "AX",
+        "Agent Executor",
+        "agentic task",
+        "sandbox",
+        "workspace",
+        "network policies",
+        "Gateway",
+        "Model",
+        "billions of tasks",
+        "Agent Substrate",
+        "sub-second resumption",
+        "generative workspaces",
+        "declarative",
+        "Kubernetes-like"
+      ],
+      "who_compared": [],
+      "publisher": "Google AX / Agent Executor",
+      "page_type": "product_marketing",
+      "positioning": "Self-hosted declarative orchestration runtime for sandboxed agent Tasks—not a hosted model-vendor managed agent (≠ CMA/OpenAI Agents API). Category: agent workload orchestrator / compute control plane. Brand 'AX'/'Agent Executor' ≠ category demand ('agent sandbox orchestration', 'durable agent runtime', 'suspend resume agents').",
+      "notes": "Primary marketing site for google/ax."
+    },
+    {
+      "url": "https://agentexecutor.io/docs/concepts/",
+      "title": "Concepts · AX",
+      "h1": null,
+      "planted_keywords": [
+        "Task",
+        "Workspace",
+        "Gateway",
+        "Model",
+        "MCP",
+        "skills",
+        "suspend",
+        "resume",
+        "atespace"
+      ],
+      "who_compared": [],
+      "publisher": "Google AX",
+      "page_type": "docs_concepts",
+      "notes": null
+    },
+    {
+      "url": "https://agentexecutor.io/docs/architecture/",
+      "title": "Architecture · AX",
+      "h1": null,
+      "planted_keywords": [
+        "ax-server",
+        "ax-controller",
+        "Agent Substrate",
+        "Redis",
+        "SuspendTask",
+        "ResumeTask"
+      ],
+      "who_compared": [],
+      "publisher": "Google AX",
+      "page_type": "docs_architecture",
+      "notes": null
+    },
+    {
+      "url": "https://github.com/google/ax",
+      "title": "google/ax — Agent Executor (AX) is Google's open agentic orchestration runtime",
+      "h1": null,
+      "planted_keywords": [
+        "Agent Executor (AX)",
+        "Google's open agentic orchestration runtime",
+        "declarative orchestrator",
+        "millions of autonomous agent workloads",
+        "Agent Substrate",
+        "Task",
+        "Workspace",
+        "Model",
+        "ax suspend",
+        "ax resume"
+      ],
+      "who_compared": [],
+      "publisher": "Google",
+      "page_type": "oss_repo_readme",
+      "positioning": "Repo README mirrors agentexecutor.io; open agentic orchestration runtime. Included by explicit parent request despite general No-GitHub rule for this catalog task.",
+      "notes": "Stars/forks on fetch showed 0 (likely index lag); treat as nascent OSS."
+    }
+  ],
+  "B_third_party_intercept_pages": [
+    {
+      "url": "https://www.omnara.com/guides/claude-managed-agents-alternatives",
+      "title": "Claude Managed Agents Alternatives: 7 Options for 2026",
+      "page_type": "third_party_alternatives",
+      "publisher": "Omnara",
+      "planted_keywords": [
+        "Claude Managed Agents Alternatives"
+      ]
+    },
+    {
+      "url": "https://harnessrouter.ai/blog/managed-agents",
+      "title": "Managed Agents Compared: Claude vs Google vs AWS vs Multi-Harness",
+      "page_type": "third_party_comparison",
+      "publisher": "HarnessRouter",
+      "planted_keywords": [
+        "Managed Agents Compared",
+        "Claude",
+        "Google",
+        "AWS"
+      ]
+    },
+    {
+      "url": "https://menuagentic.com/blogs/langgraph-vs-crewai-vs-claude-managed-agents-vs-openai-agents-sdk/",
+      "title": "LangGraph vs CrewAI vs Claude Managed Agents vs OpenAI Agents SDK",
+      "page_type": "third_party_comparison",
+      "publisher": "MenuAgentic",
+      "planted_keywords": [
+        "LangGraph",
+        "CrewAI",
+        "Claude Managed Agents",
+        "OpenAI Agents SDK"
+      ]
+    }
+  ],
+  "top_urls": {
+    "cma_official": [
+      "https://claude.com/platform/claude-managed-agents",
+      "https://claude.com/resources/articles/claude-managed-agents",
+      "https://platform.claude.com/docs/en/managed-agents/overview",
+      "https://platform.claude.com/docs/en/about-claude/pricing",
+      "https://www.anthropic.com/research/managed-agents"
+    ],
+    "competitor_transparency": [
+      "https://docs.langchain.com/langsmith/fleet/comparison",
+      "https://docs.langchain.com/oss/python/deepagents/comparison",
+      "https://www.truefoundry.com/blog/engineering/trueforge-vs-claude-managed-agents-benchmark/",
+      "https://www.truefoundry.com/blog/claude-managed-agents-alternatives",
+      "https://www.truefoundry.com/blog/claude-managed-agents-pricing",
+      "https://developers.openai.com/api/docs/guides/agents",
+      "https://developers.openai.com/api/docs/guides/agents-api/overview",
+      "https://developers.openai.com/cookbook/examples/agents_sdk/migrate-from-claude-agent-sdk/readme",
+      "https://temporal.io/blog/announcing-openai-agents-sdk-integration",
+      "https://developers.cloudflare.com/agents/",
+      "https://docs.crewai.com/v1.15.33/en/guides/migration/migrating-from-langgraph",
+      "https://qoder.com/cloud-agents",
+      "https://qoder.com/zh/cloud-agents",
+      "https://docs.qoder.com/cloud-agents/overview",
+      "https://www.openhands.dev/",
+      "https://www.openhands.dev/blog/claude-code-alternatives",
+      "https://agentexecutor.io/",
+      "https://github.com/google/ax"
+    ]
+  },
+  "keyword_phrases": {
+    "cma_planted": [
+      "Claude Managed Agents",
+      "cloud-hosted agents",
+      "agent harness",
+      "managed infrastructure",
+      "long-running sessions",
+      "session runtime / $0.08 per session-hour",
+      "self-hosted sandboxes",
+      "Agent / Environment / Session / Events",
+      "get to production 10x faster",
+      "decoupling the brain from the hands",
+      "Claude Managed Agents vs Agent SDK"
+    ],
+    "competitor_planted": [
+      "agent platform comparison",
+      "Comparison with Claude Agent SDK",
+      "open-source alternative to Claude Managed Agents",
+      "Claude Managed Agents pricing",
+      "Claude Managed Agents alternatives",
+      "Agents API vs Agents SDK",
+      "Migrate from the Claude Agent SDK",
+      "Durable Execution / production-ready agents",
+      "Fully Managed AI Agent Runtime Platform / Cloud Agents",
+      "全托管 AI Agent 运行平台",
+      "Claude Code alternatives",
+      "open source platform for software engineering agents",
+      "Declare an agentic task / Agent Executor (AX)",
+      "agentic orchestration runtime"
+    ],
+    "caveat": "Brand terms (OpenHands, AX, Qoder, TrueForge, openma) ≠ category demand. Prefer category phrases (managed agents, agent harness, Claude Managed Agents alternative, durable agents). openma.dev is deprecated—do not target."
+  },
+  "path_clusters": {
+    "cma_docs": "/docs/en/managed-agents/*",
+    "cma_product": "/platform/claude-managed-agents",
+    "cma_article": "/resources/articles/claude-managed-agents",
+    "cma_research": "/research/managed-agents",
+    "cma_pricing": "/docs/en/about-claude/pricing#claude-managed-agents-pricing",
+    "langchain_fleet_comparison": "/langsmith/fleet/comparison",
+    "langchain_deepagents_comparison": "/oss/{python|javascript}/deepagents/comparison",
+    "qoder_cloud_agents": "/cloud-agents and /zh/cloud-agents",
+    "qoder_docs": "/cloud-agents/overview",
+    "openhands_home": "/",
+    "openhands_blog_comparisons": "/blog/claude-code-alternatives etc.",
+    "ax_marketing": "https://agentexecutor.io/",
+    "ax_docs": "https://agentexecutor.io/docs/*",
+    "ax_repo": "https://github.com/google/ax"
+  }
+}

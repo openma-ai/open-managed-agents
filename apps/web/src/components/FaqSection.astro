@@ -1,0 +1,26 @@
+---
+/**
+ * Visible FAQ block. Pass the same items to faqPageSchema() so the
+ * FAQPage JSON-LD always matches the rendered questions.
+ */
+export interface Props {
+  items: Array<{ question: string; answer: string }>;
+  heading?: string;
+}
+
+const { items, heading = "FAQ" } = Astro.props;
+---
+
+<section class="border-t border-[var(--color-border)]" data-reveal>
+  <div class="site-container py-16">
+    <h2 class="font-display text-3xl font-bold mb-8">{heading}</h2>
+    <div class="grid md:grid-cols-2 gap-8">
+      {items.map((item) => (
+        <article>
+          <h3 class="font-semibold text-lg mb-2">{item.question}</h3>
+          <p class="text-[var(--color-fg-muted)] leading-relaxed">{item.answer}</p>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>
