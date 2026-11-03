@@ -1,5 +1,3 @@
-import { SqlAgentStore } from "@open-managed-agents/agent-store-sql";
-import type { AgentStore } from "@open-managed-agents/agent-store";
 import { createApp, providePort, type App, type AppModule } from "@open-managed-agents/app";
 import {
   managedAgentsFeatureModules,
@@ -43,42 +41,16 @@ import {
   type WorkspaceScope,
   type WorkspaceValue,
 } from "@open-managed-agents/platform";
-import { SqlSessionEventStore } from "@open-managed-agents/session-event-store-sql";
-import type { SessionEventStore } from "@open-managed-agents/session-event-store";
-import { SqlSessionStore, type SessionResourceSecretSealer } from "@open-managed-agents/session-store-sql";
-import type { SessionStore } from "@open-managed-agents/session-store";
-import type { SessionResourceStore } from "@open-managed-agents/session-resource-store";
-import { SqlSessionResourceStore } from "@open-managed-agents/session-resource-store-sql";
-import type { SessionThreadStore } from "@open-managed-agents/session-thread-store";
-import { SqlSessionThreadStore } from "@open-managed-agents/session-thread-store-sql";
-import type { SqlClient } from "@open-managed-agents/sql-client";
-import type { EnvironmentStore } from "@open-managed-agents/environment-store";
-import { SqlEnvironmentStore } from "@open-managed-agents/environment-store-sql";
-import type { EnvironmentWorkStore } from "@open-managed-agents/environment-work-store";
-import { SqlEnvironmentWorkStore, type EnvironmentWorkSecretCipher } from "@open-managed-agents/environment-work-store-sql";
-import type { FileStore } from "@open-managed-agents/file-store";
-import { SqlFileStore } from "@open-managed-agents/file-store-sql";
-import type { FileContentStore } from "@open-managed-agents/file-content-store";
-import type { CredentialStore } from "@open-managed-agents/credential-store";
-import { SqlCredentialStore, type CredentialDocumentCipher } from "@open-managed-agents/credential-store-sql";
-import type { DeploymentStore } from "@open-managed-agents/deployment-store";
-import { SqlDeploymentStore, type DeploymentResourceSecretCipher } from "@open-managed-agents/deployment-store-sql";
-import type { DeploymentRunStore } from "@open-managed-agents/deployment-run-store";
-import { SqlDeploymentRunStore } from "@open-managed-agents/deployment-run-store-sql";
-import type { DreamStore } from "@open-managed-agents/dream-store";
-import { SqlDreamStore } from "@open-managed-agents/dream-store-sql";
-import type { VaultStore } from "@open-managed-agents/vault-store";
-import { SqlVaultStore } from "@open-managed-agents/vault-store-sql";
-import type { MemoryStoreStore } from "@open-managed-agents/memory-store-store";
-import { SqlMemoryStoreStore } from "@open-managed-agents/memory-store-store-sql";
-import type { MemoryDocumentStore } from "@open-managed-agents/memory-document-store";
-import { SqlMemoryDocumentStore } from "@open-managed-agents/memory-document-store-sql";
-import type { SkillStore } from "@open-managed-agents/skill-store";
-import { SqlSkillStore } from "@open-managed-agents/skill-store-sql";
-import type { TunnelStore } from "@open-managed-agents/tunnel-store";
-import { SqlTunnelStore } from "@open-managed-agents/tunnel-store-sql";
-import type { UserProfileStore } from "@open-managed-agents/user-profile-store";
-import { SqlUserProfileStore } from "@open-managed-agents/user-profile-store-sql";
+import type { ControlPlaneStores } from "@openma/core/storage";
+import type { FileContentStore } from "@openma/core/storage/file-content";
+import {
+  sqlStores,
+  type CredentialDocumentCipher,
+  type DeploymentResourceSecretCipher,
+  type EnvironmentWorkSecretCipher,
+  type SessionResourceSecretSealer,
+  type SqlClient,
+} from "@openma/stores-sql";
 import type {
   CredentialValidationProbePort,
   CredentialVaultSourcePort,
@@ -101,26 +73,8 @@ export interface CreateSqlPlatformOptions {
   modules?(scope: WorkspaceScope): readonly AppModule[];
 }
 
-export interface SqlPlatformStores {
-  agents: AgentStore;
-  credentials: CredentialStore;
-  deployments: DeploymentStore;
-  deploymentRuns: DeploymentRunStore;
-  dreams: DreamStore;
-  environments: EnvironmentStore;
-  environmentWork: EnvironmentWorkStore;
-  files: FileStore;
-  memoryStores: MemoryStoreStore;
-  memories: MemoryDocumentStore;
-  skills: SkillStore;
-  tunnels: TunnelStore;
-  userProfiles: UserProfileStore;
-  sessions: SessionStore;
-  sessionResources: SessionResourceStore;
-  sessionEvents: SessionEventStore;
-  sessionThreads: SessionThreadStore;
-  vaults: VaultStore;
-}
+/** Alias of `ControlPlaneStores` from `@openma/core/storage`. */
+export type SqlPlatformStores = ControlPlaneStores;
 
 export interface SqlWorkspaceScope extends WorkspaceScope {
   sql?: SqlClient;
@@ -147,11 +101,6 @@ export function createSqlPlatform(options: CreateSqlPlatformOptions = {}): SqlPl
   const http = options.http ?? {
     fetch: (input: string | Request, init?: RequestInit) => globalThis.fetch(input, init),
   };
-  const sessionSecrets = options.sessionSecrets ?? {
-    seal: async (): Promise<string> => {
-      throw new Error("SQL Session persistence requires a sessionSecrets sealer");
-    },
-  };
   const apps = new WorkspaceAppRegistry<App, SqlWorkspaceScope>({
     createApp(scope) {
       const sql = scope.sql ?? (options.sql === undefined
@@ -163,37 +112,23 @@ export function createSqlPlatform(options: CreateSqlPlatformOptions = {}): SqlPl
       const overrides = options.stores === undefined ? {} : resolveWorkspaceValue(options.stores, scope);
       const credentialCipher = scope.credentialCipher
         ?? (options.credentialCipher === undefined
-          ? unavailableCredentialCipher
+          ? undefined
           : resolveWorkspaceValue(options.credentialCipher, scope));
       const deploymentCipher = scope.deploymentCipher
         ?? (options.deploymentCipher === undefined
-          ? unavailableDeploymentCipher
+          ? undefined
           : resolveWorkspaceValue(options.deploymentCipher, scope));
       const environmentWorkCipher = scope.environmentWorkCipher
         ?? (options.environmentWorkCipher === undefined
-          ? unavailableEnvironmentWorkCipher
+          ? undefined
           : resolveWorkspaceValue(options.environmentWorkCipher, scope));
-      const sessions = overrides.sessions ?? new SqlSessionStore(sql, sessionSecrets);
-      const stores: SqlPlatformStores = {
-        agents: overrides.agents ?? new SqlAgentStore(sql),
-        credentials: overrides.credentials ?? new SqlCredentialStore(sql, credentialCipher),
-        deployments: overrides.deployments ?? new SqlDeploymentStore(sql, deploymentCipher),
-        deploymentRuns: overrides.deploymentRuns ?? new SqlDeploymentRunStore(sql),
-        dreams: overrides.dreams ?? new SqlDreamStore(sql),
-        environments: overrides.environments ?? new SqlEnvironmentStore(sql),
-        environmentWork: overrides.environmentWork ?? new SqlEnvironmentWorkStore(sql, environmentWorkCipher),
-        files: overrides.files ?? new SqlFileStore(sql),
-        memoryStores: overrides.memoryStores ?? new SqlMemoryStoreStore(sql),
-        memories: overrides.memories ?? new SqlMemoryDocumentStore(sql),
-        skills: overrides.skills ?? new SqlSkillStore(sql),
-        tunnels: overrides.tunnels ?? new SqlTunnelStore(sql),
-        userProfiles: overrides.userProfiles ?? new SqlUserProfileStore(sql),
-        sessions,
-        sessionResources: overrides.sessionResources ?? new SqlSessionResourceStore(sql, sessionSecrets),
-        sessionEvents: overrides.sessionEvents ?? new SqlSessionEventStore(sql),
-        sessionThreads: overrides.sessionThreads ?? new SqlSessionThreadStore(sql),
-        vaults: overrides.vaults ?? new SqlVaultStore(sql),
-      };
+      const stores = sqlStores(sql, {
+        credentialCipher,
+        deploymentCipher,
+        environmentWorkCipher,
+        sessionSecrets: options.sessionSecrets,
+        overrides,
+      });
       const fileContent = scope.fileContent ?? (options.fileContent === undefined
         ? undefined
         : resolveWorkspaceValue(options.fileContent, scope));
@@ -257,21 +192,6 @@ export function createSqlManagedAgentsApp(
 ): App {
   return createSqlPlatform(options).app(scope);
 }
-
-const unavailableCredentialCipher: CredentialDocumentCipher = {
-  seal: async () => { throw new Error("SQL Credential persistence requires a credentialCipher"); },
-  open: async () => { throw new Error("SQL Credential persistence requires a credentialCipher"); },
-};
-
-const unavailableDeploymentCipher: DeploymentResourceSecretCipher = {
-  seal: async () => { throw new Error("SQL Deployment persistence requires a deploymentCipher"); },
-  open: async () => { throw new Error("SQL Deployment persistence requires a deploymentCipher"); },
-};
-
-const unavailableEnvironmentWorkCipher: EnvironmentWorkSecretCipher = {
-  seal: async () => { throw new Error("SQL Environment Work persistence requires an environmentWorkCipher"); },
-  open: async () => { throw new Error("SQL Environment Work persistence requires an environmentWorkCipher"); },
-};
 
 function randomUuid(): string {
   const cryptoApi = (globalThis as typeof globalThis & { crypto?: { randomUUID(): string } }).crypto;

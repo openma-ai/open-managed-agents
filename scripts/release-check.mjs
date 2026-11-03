@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Release gate for the Changesets packages `@openma/cli` and `@openma/sdk`.
+ * Release gate for the public Changesets packages (`@openma/cli`, `@openma/sdk`
+ * and the ADR 0015 packages `@openma/core`, `@openma/stores-*`, `@openma/server`).
  *
  * Pull requests:
  * - Print a non-blocking `::notice::` for each pull request merged to the base

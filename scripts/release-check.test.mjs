@@ -33,11 +33,14 @@ test.after(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("this repo publishes cli, sdk and core and ignores the private harness package", () => {
+test("this repo publishes cli, sdk and the ADR 0015 packages and ignores the private harness package", () => {
   assert.deepEqual(loadPublishedPackages(repoRoot).map((pkg) => pkg.name), [
     "@openma/cli",
     "@openma/core",
     "@openma/sdk",
+    "@openma/server",
+    "@openma/stores-memory",
+    "@openma/stores-sql",
   ]);
 });
 

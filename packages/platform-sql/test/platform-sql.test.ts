@@ -1,5 +1,5 @@
 import { workspaceContextPort } from "@open-managed-agents/app/capabilities";
-import type { SqlClient } from "@open-managed-agents/sql-client";
+import type { SqlClient } from "@openma/stores-sql";
 import { describe, expect, it } from "vitest";
 
 import { createSqlManagedAgentsApp, createSqlPlatform } from "../src/index";

@@ -3,7 +3,6 @@
 export type * from "@openma/core";
 export * from "./credentials/mcp-oauth-cli";
 export * from "./agents/application";
-export * from "./agents/pi-model-catalog";
 export * from "./agents/definition-resolution";
 export * from "./files/application";
 export * from "./environments/application";

@@ -1,5 +1,12 @@
-import type { AgentStore } from "@open-managed-agents/agent-store";
-import { MemoryAgentStore } from "@open-managed-agents/agent-store-memory";
+import type { ControlPlaneStores } from "@openma/core/storage";
+import type { FileContentStore } from "@openma/core/storage/file-content";
+import type {
+  SessionCreateAdmissionHookPort,
+  SessionCreateDailyCounterPort,
+  SessionCreateRateLimiterPort,
+  SessionWorkAdmissionPort,
+} from "@openma/core";
+import { memoryStores } from "@openma/stores-memory";
 import {
   createApp,
   providePort,
@@ -39,89 +46,136 @@ import { memoryDocumentStorePort } from "@open-managed-agents/app/modules/memori
 import { skillStorePort } from "@open-managed-agents/app/modules/skills";
 import { tunnelStorePort } from "@open-managed-agents/app/modules/tunnels";
 import { userProfileStorePort } from "@open-managed-agents/app/modules/user-profiles";
-import { sessionEventStorePort } from "@open-managed-agents/app/modules/session-events";
+import {
+  sessionEventStorePort,
+  sessionWorkAdmissionPort,
+} from "@open-managed-agents/app/modules/session-events";
 import { sessionResourceStorePort } from "@open-managed-agents/app/modules/session-resources";
 import { sessionThreadEventStorePort } from "@open-managed-agents/app/modules/session-thread-events";
 import { sessionThreadStorePort } from "@open-managed-agents/app/modules/session-threads";
-import { sessionStorePort } from "@open-managed-agents/app/modules/sessions";
+import {
+  sessionCreateAdmissionPort,
+  sessionStorePort,
+} from "@open-managed-agents/app/modules/sessions";
 import {
   credentialVaultSourceFromVaultStore,
   vaultStorePort,
 } from "@open-managed-agents/app/modules/vaults";
+import {
+  admitAllSessionWork,
+  SessionCreateAdmissionService,
+  type CredentialValidationProbePort,
+  type CredentialVaultSourcePort,
+} from "@open-managed-agents/managed-agents-application";
 import {
   resolveWorkspaceValue,
   WorkspaceAppRegistry,
   type WorkspaceScope,
   type WorkspaceValue,
 } from "@open-managed-agents/platform";
-import type { SessionEventStore } from "@open-managed-agents/session-event-store";
-import { MemorySessionEventStore } from "@open-managed-agents/session-event-store-memory";
-import type { SessionStore } from "@open-managed-agents/session-store";
-import { MemorySessionStore } from "@open-managed-agents/session-store-memory";
-import type { SessionResourceStore } from "@open-managed-agents/session-resource-store";
-import { MemorySessionResourceStore } from "@open-managed-agents/session-resource-store-memory";
-import type { SessionThreadStore } from "@open-managed-agents/session-thread-store";
-import { MemorySessionThreadStore } from "@open-managed-agents/session-thread-store-memory";
-import type { EnvironmentStore } from "@open-managed-agents/environment-store";
-import { MemoryEnvironmentStore } from "@open-managed-agents/environment-store-memory";
-import type { EnvironmentWorkStore } from "@open-managed-agents/environment-work-store";
-import { MemoryEnvironmentWorkStore } from "@open-managed-agents/environment-work-store-memory";
-import type { FileStore } from "@open-managed-agents/file-store";
-import { MemoryFileStore } from "@open-managed-agents/file-store-memory";
-import type { FileContentStore } from "@open-managed-agents/file-content-store";
-import type { CredentialStore } from "@open-managed-agents/credential-store";
-import { MemoryCredentialStore } from "@open-managed-agents/credential-store-memory";
-import type { DeploymentStore } from "@open-managed-agents/deployment-store";
-import { MemoryDeploymentStore } from "@open-managed-agents/deployment-store-memory";
-import type { DeploymentRunStore } from "@open-managed-agents/deployment-run-store";
-import { MemoryDeploymentRunStore } from "@open-managed-agents/deployment-run-store-memory";
-import type { DreamStore } from "@open-managed-agents/dream-store";
-import { MemoryDreamStore } from "@open-managed-agents/dream-store-memory";
-import type { VaultStore } from "@open-managed-agents/vault-store";
-import { MemoryVaultStore } from "@open-managed-agents/vault-store-memory";
-import type { MemoryStoreStore } from "@open-managed-agents/memory-store-store";
-import { InMemoryMemoryStoreStore } from "@open-managed-agents/memory-store-store-memory";
-import type { MemoryDocumentStore } from "@open-managed-agents/memory-document-store";
-import { InMemoryMemoryDocumentStore } from "@open-managed-agents/memory-document-store-memory";
-import type { SkillStore } from "@open-managed-agents/skill-store";
-import { MemorySkillStore } from "@open-managed-agents/skill-store-memory";
-import type { TunnelStore } from "@open-managed-agents/tunnel-store";
-import { MemoryTunnelStore } from "@open-managed-agents/tunnel-store-memory";
-import type { UserProfileStore } from "@open-managed-agents/user-profile-store";
-import { MemoryUserProfileStore } from "@open-managed-agents/user-profile-store-memory";
-import type {
-  CredentialValidationProbePort,
-  CredentialVaultSourcePort,
-} from "@open-managed-agents/managed-agents-application";
 
-export interface NodePlatformStores {
-  agents: AgentStore;
-  credentials: CredentialStore;
-  deployments: DeploymentStore;
-  deploymentRuns: DeploymentRunStore;
-  dreams: DreamStore;
-  environments: EnvironmentStore;
-  environmentWork: EnvironmentWorkStore;
-  files: FileStore;
-  memoryStores: MemoryStoreStore;
-  memories: MemoryDocumentStore;
-  skills: SkillStore;
-  tunnels: TunnelStore;
-  userProfiles: UserProfileStore;
-  sessions: SessionStore;
-  sessionResources: SessionResourceStore;
-  sessionEvents: SessionEventStore;
-  sessionThreads: SessionThreadStore;
-  vaults: VaultStore;
+/** Alias of `ControlPlaneStores` from `@openma/core/storage`. */
+export type NodePlatformStores = ControlPlaneStores;
+
+/**
+ * Admission hooks. Every hook is optional; without one the control plane
+ * admits the work. Denials carry their own HTTP status and body.
+ */
+export interface NodeAdmissionHooks {
+  /** Consulted on Session create, after the rate limiter and daily counter. */
+  sessionCreate?: SessionCreateAdmissionHookPort;
+  sessionCreateRateLimiter?: SessionCreateRateLimiterPort;
+  sessionCreateDailyCounter?: SessionCreateDailyCounterPort;
+  /** Consulted before a new turn, thread start or hosted model request. */
+  sessionWork?: SessionWorkAdmissionPort;
+}
+
+export interface NodeDefaultsOptions {
+  workspaceId: string;
+  /** Official application modules. Default: the `core` preset. */
+  features?: ManagedAgentsFeatures | false;
+  /** Stores to use; every store left out is an in-memory one. */
+  stores?: Partial<ControlPlaneStores>;
+  credentialVaults?: CredentialVaultSourcePort;
+  credentialValidation?: CredentialValidationProbePort;
+  fileContent?: FileContentStore;
+  hooks?: NodeAdmissionHooks;
+  clock?: ClockPort;
+  ids?: IdGeneratorPort;
+  http?: HttpClientPort;
+  /** Extra modules, e.g. outbound Ports a non-default feature requires. */
+  modules?: readonly AppModule[];
+}
+
+/**
+ * The module list of one workspace's Node control plane: platform
+ * capabilities, a store for every storage Port, admit-all admission hooks and
+ * the official feature modules. Any value passed in replaces its default.
+ *
+ *   const app = createApp({ modules: nodeDefaults({ workspaceId, stores: { agents } }) });
+ */
+export function nodeDefaults(options: NodeDefaultsOptions): AppModule[] {
+  const stores = memoryStores(options.stores);
+  const clock = options.clock ?? systemClock;
+  const hooks = options.hooks ?? {};
+  return [
+    providePort(workspaceContextPort, { workspaceId: options.workspaceId }),
+    providePort(clockPort, clock),
+    providePort(idGeneratorPort, options.ids ?? randomIds),
+    providePort(httpClientPort, options.http ?? globalFetch),
+    providePort(agentStorePort, stores.agents),
+    providePort(credentialStorePort, stores.credentials),
+    providePort(deploymentStorePort, stores.deployments),
+    providePort(deploymentRunStorePort, stores.deploymentRuns),
+    providePort(dreamStorePort, stores.dreams),
+    providePort(
+      credentialVaultSourcePort,
+      options.credentialVaults ?? credentialVaultSourceFromVaultStore(stores.vaults),
+    ),
+    ...(options.credentialValidation === undefined
+      ? []
+      : [providePort(credentialValidationProbePort, options.credentialValidation)]),
+    providePort(environmentStorePort, stores.environments),
+    providePort(environmentWorkStorePort, stores.environmentWork),
+    providePort(fileStorePort, stores.files),
+    ...(options.fileContent === undefined
+      ? []
+      : [providePort(fileContentStorePort, options.fileContent)]),
+    providePort(memoryStoreStorePort, stores.memoryStores),
+    providePort(memoryDocumentStorePort, stores.memories),
+    providePort(skillStorePort, stores.skills),
+    providePort(tunnelStorePort, stores.tunnels),
+    providePort(userProfileStorePort, stores.userProfiles),
+    providePort(sessionStorePort, stores.sessions),
+    providePort(sessionResourceStorePort, stores.sessionResources),
+    providePort(sessionEventStorePort, stores.sessionEvents),
+    providePort(sessionThreadStorePort, stores.sessionThreads),
+    providePort(sessionThreadEventStorePort, stores.sessionEvents),
+    providePort(vaultStorePort, stores.vaults),
+    providePort(sessionCreateAdmissionPort, new SessionCreateAdmissionService({
+      clock,
+      ...(hooks.sessionCreate === undefined ? {} : { hook: hooks.sessionCreate }),
+      ...(hooks.sessionCreateRateLimiter === undefined
+        ? {}
+        : { rateLimiter: hooks.sessionCreateRateLimiter }),
+      ...(hooks.sessionCreateDailyCounter === undefined
+        ? {}
+        : { dailyCounter: hooks.sessionCreateDailyCounter }),
+    })),
+    providePort(sessionWorkAdmissionPort, hooks.sessionWork ?? admitAllSessionWork),
+    ...(options.modules ?? []),
+    ...managedAgentsFeatureModules(options.features),
+  ];
 }
 
 export interface CreateNodePlatformOptions {
   /** Official application modules preinstalled for every workspace app. */
   features?: ManagedAgentsFeatures | false;
-  stores?: WorkspaceValue<Partial<NodePlatformStores>>;
+  stores?: WorkspaceValue<Partial<ControlPlaneStores>>;
   credentialVaults?: WorkspaceValue<CredentialVaultSourcePort>;
   credentialValidation?: WorkspaceValue<CredentialValidationProbePort>;
   fileContent?: WorkspaceValue<FileContentStore>;
+  hooks?: WorkspaceValue<NodeAdmissionHooks>;
   clock?: ClockPort;
   ids?: IdGeneratorPort;
   http?: HttpClientPort;
@@ -137,73 +191,38 @@ export interface NodePlatform {
   stopAll(): Promise<void>;
 }
 
+/** One `nodeDefaults()` app graph per workspace, created on first use. */
 export function createNodePlatform(
   options: CreateNodePlatformOptions = {},
 ): NodePlatform {
+  // Stores given as a value (not per workspace) are shared by every workspace
+  // app; they scope rows by workspaceId themselves.
   const sharedStores = options.stores === undefined
     || typeof options.stores !== "function"
-    ? nodeStores(options.stores ?? {})
+    ? memoryStores(options.stores ?? {})
     : undefined;
-  const clock = options.clock ?? { now: () => new Date() };
-  const ids = options.ids ?? {
-    next: (namespace: string) => `${namespace}_${randomUuid()}`,
-  };
-  const http = options.http ?? {
-    fetch: (input: string | Request, init?: RequestInit) =>
-      globalThis.fetch(input, init),
-  };
+  const optional = <Value>(
+    value: WorkspaceValue<Value> | undefined,
+    scope: WorkspaceScope,
+  ): Value | undefined => value === undefined
+    ? undefined
+    : resolveWorkspaceValue(value, scope);
   const apps = new WorkspaceAppRegistry<App>({
     createApp(scope) {
-      const stores = sharedStores ?? nodeStores(
-        resolveWorkspaceValue(options.stores!, scope),
-      );
-      const fileContent = options.fileContent === undefined
-        ? undefined
-        : resolveWorkspaceValue(options.fileContent, scope);
-      const credentialVaults = options.credentialVaults === undefined
-        ? credentialVaultSourceFromVaultStore(stores.vaults)
-        : resolveWorkspaceValue(options.credentialVaults, scope);
-      const credentialValidation = options.credentialValidation === undefined
-        ? undefined
-        : resolveWorkspaceValue(options.credentialValidation, scope);
       return createApp({
-        modules: [
-          providePort(workspaceContextPort, { workspaceId: scope.workspaceId }),
-          providePort(clockPort, clock),
-          providePort(idGeneratorPort, ids),
-          providePort(httpClientPort, http),
-          providePort(agentStorePort, stores.agents),
-          providePort(credentialStorePort, stores.credentials),
-          providePort(deploymentStorePort, stores.deployments),
-          providePort(deploymentRunStorePort, stores.deploymentRuns),
-          providePort(dreamStorePort, stores.dreams),
-          providePort(credentialVaultSourcePort, credentialVaults),
-          ...(credentialValidation === undefined
-            ? []
-            : [providePort(
-                credentialValidationProbePort,
-                credentialValidation,
-              )]),
-          providePort(environmentStorePort, stores.environments),
-          providePort(environmentWorkStorePort, stores.environmentWork),
-          providePort(fileStorePort, stores.files),
-          ...(fileContent === undefined
-            ? []
-            : [providePort(fileContentStorePort, fileContent)]),
-          providePort(memoryStoreStorePort, stores.memoryStores),
-          providePort(memoryDocumentStorePort, stores.memories),
-          providePort(skillStorePort, stores.skills),
-          providePort(tunnelStorePort, stores.tunnels),
-          providePort(userProfileStorePort, stores.userProfiles),
-          providePort(sessionStorePort, stores.sessions),
-          providePort(sessionResourceStorePort, stores.sessionResources),
-          providePort(sessionEventStorePort, stores.sessionEvents),
-          providePort(sessionThreadStorePort, stores.sessionThreads),
-          providePort(sessionThreadEventStorePort, stores.sessionEvents),
-          providePort(vaultStorePort, stores.vaults),
-          ...(options.modules?.(scope) ?? []),
-          ...managedAgentsFeatureModules(options.features),
-        ],
+        modules: nodeDefaults({
+          workspaceId: scope.workspaceId,
+          features: options.features,
+          stores: sharedStores ?? resolveWorkspaceValue(options.stores!, scope),
+          credentialVaults: optional(options.credentialVaults, scope),
+          credentialValidation: optional(options.credentialValidation, scope),
+          fileContent: optional(options.fileContent, scope),
+          hooks: optional(options.hooks, scope),
+          clock: options.clock,
+          ids: options.ids,
+          http: options.http,
+          modules: options.modules?.(scope),
+        }),
       });
     },
   });
@@ -223,33 +242,16 @@ export function createNodeManagedAgentsApp(
   return createNodePlatform(platformOptions).app({ workspaceId });
 }
 
-function nodeStores(overrides: Partial<NodePlatformStores>): NodePlatformStores {
-  const sessions = overrides.sessions ?? new MemorySessionStore();
-  const deployments = overrides.deployments ?? new MemoryDeploymentStore();
-  return {
-    agents: overrides.agents ?? new MemoryAgentStore(),
-    credentials: overrides.credentials ?? new MemoryCredentialStore(),
-    deployments,
-    deploymentRuns: overrides.deploymentRuns
-      ?? new MemoryDeploymentRunStore(deployments),
-    dreams: overrides.dreams ?? new MemoryDreamStore(),
-    environments: overrides.environments ?? new MemoryEnvironmentStore(),
-    environmentWork: overrides.environmentWork ?? new MemoryEnvironmentWorkStore(),
-    files: overrides.files ?? new MemoryFileStore(),
-    memoryStores: overrides.memoryStores ?? new InMemoryMemoryStoreStore(),
-    memories: overrides.memories ?? new InMemoryMemoryDocumentStore(),
-    skills: overrides.skills ?? new MemorySkillStore(),
-    tunnels: overrides.tunnels ?? new MemoryTunnelStore(),
-    userProfiles: overrides.userProfiles ?? new MemoryUserProfileStore(),
-    sessions,
-    sessionResources: overrides.sessionResources
-      ?? new MemorySessionResourceStore(sessions),
-    sessionEvents: overrides.sessionEvents
-      ?? new MemorySessionEventStore(sessions),
-    sessionThreads: overrides.sessionThreads ?? new MemorySessionThreadStore(),
-    vaults: overrides.vaults ?? new MemoryVaultStore(),
-  };
-}
+const systemClock: ClockPort = { now: () => new Date() };
+
+const randomIds: IdGeneratorPort = {
+  next: (namespace: string) => `${namespace}_${randomUuid()}`,
+};
+
+const globalFetch: HttpClientPort = {
+  fetch: (input: string | Request, init?: RequestInit) =>
+    globalThis.fetch(input, init),
+};
 
 function randomUuid(): string {
   const cryptoApi = (globalThis as typeof globalThis & {

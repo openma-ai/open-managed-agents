@@ -33,9 +33,14 @@ import { sessionThreadEventStorePort } from "@open-managed-agents/app/modules/se
 import { sessionThreadStorePort } from "@open-managed-agents/app/modules/session-threads";
 import { sessionStorePort } from "@open-managed-agents/app/modules/sessions";
 import { vaultStorePort } from "@open-managed-agents/app/modules/vaults";
+import { sessionWorkAdmissionPort } from "@open-managed-agents/app/modules/session-events";
+import { sessionCreateAdmissionPort } from "@open-managed-agents/app/modules/sessions";
+import { createApp } from "@open-managed-agents/app";
+import { MemoryAgentStore } from "@openma/stores-memory";
 import {
   createNodeManagedAgentsApp,
   createNodePlatform,
+  nodeDefaults,
 } from "../src/index";
 
 const identityPort = createPortToken<{ workspaceId: string }>("test.identity");
@@ -213,5 +218,81 @@ describe("createNodePlatform", () => {
       workspaceId: "workspace_vaults",
       vaultId: "vlt_01",
     })).resolves.toEqual(vault);
+  });
+});
+
+describe("nodeDefaults", () => {
+  const admissionInput = {
+    workspaceId: "workspace_hooks",
+    agentId: "agent_1",
+    environmentId: "env_1",
+    isLocalRuntime: false,
+  };
+
+  it("binds every store and admits all work by default", async () => {
+    const app = createApp({ modules: nodeDefaults({ workspaceId: "workspace_hooks" }) });
+
+    expect(app.port(agentStorePort)).toBeInstanceOf(MemoryAgentStore);
+    expect(app.port(sessionThreadEventStorePort)).toBe(app.port(sessionEventStorePort));
+    await expect(app.port(sessionCreateAdmissionPort).admit(admissionInput))
+      .resolves.toEqual({ type: "admitted" });
+    await expect(app.port(sessionWorkAdmissionPort).admit({
+      kind: "turn",
+      workspaceId: "workspace_hooks",
+      isLocalRuntime: false,
+    })).resolves.toEqual({ type: "allowed" });
+  });
+
+  it("uses a store or hook passed by value instead of the default", async () => {
+    const agents = new MemoryAgentStore();
+    const denied = { type: "denied" as const, status: 429, body: { error: "quota" } };
+    const app = createApp({
+      modules: nodeDefaults({
+        workspaceId: "workspace_hooks",
+        stores: { agents },
+        hooks: {
+          sessionCreate: { admit: async () => denied },
+          sessionWork: { admit: async () => denied },
+        },
+      }),
+    });
+
+    expect(app.port(agentStorePort)).toBe(agents);
+    await expect(app.port(managedAgentsPortTokens.agents).createAgent({
+      name: "Stored by override",
+      model: "claude-opus-5",
+    })).resolves.toMatchObject({ type: "created" });
+    await expect(agents.countCurrent({
+      workspaceId: "workspace_hooks",
+      includeArchived: false,
+    })).resolves.toBe(1);
+    await expect(app.port(sessionCreateAdmissionPort).admit(admissionInput))
+      .resolves.toEqual(denied);
+    await expect(app.port(sessionWorkAdmissionPort).admit({
+      kind: "turn",
+      workspaceId: "workspace_hooks",
+      isLocalRuntime: false,
+    })).resolves.toEqual(denied);
+  });
+
+  it("passes per-workspace hooks through createNodePlatform", async () => {
+    const platform = createNodePlatform({
+      hooks: ({ workspaceId }) => ({
+        sessionCreate: {
+          admit: async () => workspaceId === "workspace_blocked"
+            ? { type: "denied", status: 403, body: { error: "blocked" } }
+            : { type: "admitted" },
+        },
+      }),
+    });
+
+    await expect(platform.app({ workspaceId: "workspace_blocked" })
+      .port(sessionCreateAdmissionPort)
+      .admit({ ...admissionInput, workspaceId: "workspace_blocked" }))
+      .resolves.toEqual({ type: "denied", status: 403, body: { error: "blocked" } });
+    await expect(platform.app({ workspaceId: "workspace_open" })
+      .port(sessionCreateAdmissionPort)
+      .admit({ ...admissionInput, workspaceId: "workspace_open" }))
+      .resolves.toEqual({ type: "admitted" });
   });
 });

@@ -1,0 +1,71 @@
+{
+  "name": "@openma/server",
+  "version": "0.0.0",
+  "description": "OpenMA control-plane composition: createApp, the module/Port binding API and nodeDefaults() for a Node control plane with replaceable stores and admission hooks.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./modules": "./src/modules.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-public-package.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "prepublishOnly": "node ../../scripts/build-public-package.mjs --assert-pnpm-publish"
+  },
+  "publishConfig": {
+    "access": "public",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./modules": {
+        "types": "./dist/modules.d.ts",
+        "default": "./dist/modules.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "keywords": [
+    "openma",
+    "managed-agents",
+    "agents",
+    "control-plane",
+    "server"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://openma.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openma-ai/open-managed-agents",
+    "directory": "packages/server"
+  },
+  "bugs": {
+    "url": "https://github.com/openma-ai/open-managed-agents/issues"
+  },
+  "dependencies": {
+    "@openma/common": "^0.9.1",
+    "@openma/core": "workspace:^",
+    "@openma/stores-memory": "workspace:^"
+  },
+  "devDependencies": {
+    "@open-managed-agents/app": "workspace:*",
+    "@open-managed-agents/managed-agents-application": "workspace:*",
+    "@open-managed-agents/platform": "workspace:*",
+    "@open-managed-agents/platform-node": "workspace:*",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.3"
+  }
+}
