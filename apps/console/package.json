@@ -76,7 +76,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
-    "@vitest/coverage-v8": "4.1.4",
+    "@vitest/coverage-v8": "5.0.5",
     "autoprefixer": "^10.4.21",
     "jsdom": "^29.1.1",
     "msw": "^2.14.5",

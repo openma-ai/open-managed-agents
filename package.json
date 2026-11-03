@@ -133,7 +133,7 @@
     "@testcontainers/minio": "^12.1.0",
     "@testcontainers/postgresql": "^12.1.0",
     "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "4.1.4",
+    "@vitest/coverage-v8": "5.0.5",
     "bash-parser": "^0.5.0",
     "drizzle-kit": "^0.31.5",
     "esbuild": "^0.28.2",
