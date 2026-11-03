@@ -53,7 +53,7 @@ deployment under your control.
 | BYOK | Yes — Anthropic, OpenAI, OpenRouter, custom OpenAI-compatible |
 | Custom harness | Yes — write your own loop |
 | Integrations | Linear, Slack, GitHub, Lark |
-| Hosted option | openma.dev (subscription, BYOK) |
+| Hosted option | openma.ai (subscription, BYOK) |
 | Self-host | `docker compose up`, or `wrangler deploy` |
 
 What it's good at: feature parity with the closed product on the

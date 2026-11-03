@@ -1,23 +1,34 @@
 name: Release
 
-# Changesets-driven release flow, split into two jobs so only the publish
-# half requires the production environment approval:
+# Changesets-driven release flow with a frozen `release` cut so soak /
+# Version Packages stay stable while main keeps merging:
 #
-#   1. version-pr (no environment, runs every push):
-#      - Pending .changeset/*.md files → open / update "Version Packages" PR.
-#      - No pending changesets → noop here, hand off to publish job.
+#   1. cut-release (schedule ~every 2 days, or workflow_dispatch):
+#      - Fast-forward `release` to current `main` (skip if no pending
+#        changesets, or if a Version Packages PR is already open unless
+#        `force_cut` is set).
+#      - Main merges after the cut do NOT move `release` and do NOT
+#        re-roll Version Packages mid-soak.
 #
-#   2. publish (environment: production, only runs when version-pr says
-#      "no pending changesets" — which is the moment right after a Version
-#      Packages PR was merged):
-#      - Builds + runs `pnpm release` which publishes the bumped packages.
-#      - Tag is auto-derived from the version: `0.x.y` → latest,
-#        `0.x.y-beta.N` → beta. No NPM_TOKEN; uses OIDC trusted publisher.
+#   2. version-pr (after a successful cut; no environment):
+#      - Heavy tests on the frozen `release` tip.
+#      - Pending .changeset/*.md → open / update "Version Packages" PR
+#        targeting `release` (head: changeset-release/release).
 #
-# Net effect: opening a Version Packages PR is friction-free (no approval),
-# only actually pushing bits to npm needs you to acknowledge the
-# production deploy. This is the right friction split — the PR is a
-# review opportunity, the npm publish is the irreversible action.
+#   3. publish (push to `release` only, environment: production):
+#      - Runs when the Version Packages PR was just merged (no pending
+#        changesets on `release`). Skips cut pushes that still have
+#        pending changesets.
+#      - Builds + `pnpm release` (OIDC trusted publisher; dist-tag from
+#        version: 0.x.y → latest, 0.x.y-beta.N → beta).
+#      - Opens / updates a sync PR `release` → `main` so consumed
+#        changesets and bumped versions land on main before the next cut.
+#
+# Hotfix: land changeset (+ fix) on main, then workflow_dispatch this
+# workflow (force_cut if an old Version Packages PR is in the way), then
+# user 「发」 to merge Version Packages. Or cherry-pick the fix onto the
+# existing `release` branch and re-run version-pr via dispatch after
+# moving `release` carefully — see docs/release-process.md.
 #
 # Trusted publisher config on npmjs.com must list this workflow filename
 # (`release.yml`) for each public package — see docs/release-process.md.
@@ -31,30 +42,125 @@ name: Release
 # and the next Version Packages PR will roll up to the stable version.
 
 on:
-  push:
-    branches: [main]
-  # Manual escape hatch when changesets is in a weird state and you need to
-  # re-trigger the release machinery without a real push (e.g. you fixed a
-  # trusted-publisher misconfig and want to re-run publish for an already-
-  # bumped version sitting on main).
+  schedule:
+    # ~every 2 calendar days at 15:00 UTC (10:00 America/Detroit in EST).
+    # Day-of-month */2 can skip/compress at month boundaries; that is fine.
+    - cron: '0 15 */2 * *'
   workflow_dispatch:
+    inputs:
+      force_cut:
+        description: >-
+          Reset `release` to `main` even when a Version Packages PR is
+          already open (abandons the previous soak cut).
+        type: boolean
+        default: false
+  push:
+    branches: [release]
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  version-pr:
+  cut-release:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # push bump commits to changeset-release/main branch
-      pull-requests: write  # open / update the Version Packages PR
+      contents: write
+      pull-requests: read
     outputs:
-      hasChangesets: ${{ steps.changesets.outputs['has-changesets'] }}
+      should_version: ${{ steps.cut.outputs.should_version }}
+      release_sha: ${{ steps.cut.outputs.release_sha }}
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v7
         with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Cut or fast-forward release from main
+        id: cut
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_CUT: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cut || false }}
+        run: |
+          set -euo pipefail
+
+          pending=0
+          for f in .changeset/*.md; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            if [ "$base" = "README.md" ]; then
+              continue
+            fi
+            pending=$((pending + 1))
+          done
+
+          if [ "$pending" -eq 0 ]; then
+            echo "No pending changesets on main; skipping cut."
+            echo "should_version=false" >> "$GITHUB_OUTPUT"
+            echo "release_sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          open_vp=$(gh pr list --base release --state open \
+            --search 'in:title "chore: version packages"' \
+            --json number,title --jq 'length' || echo 0)
+          if [ "${open_vp:-0}" -gt 0 ] && [ "$FORCE_CUT" != "true" ]; then
+            echo "Version Packages PR already open targeting release; skipping cut."
+            echo "Use workflow_dispatch with force_cut to abandon the soak and re-cut."
+            echo "should_version=false" >> "$GITHUB_OUTPUT"
+            echo "release_sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${open_vp:-0}" -gt 0 ] && [ "$FORCE_CUT" = "true" ]; then
+            echo "force_cut=true: closing open Version Packages PR(s) targeting release."
+            gh pr list --base release --state open \
+              --search 'in:title "chore: version packages"' \
+              --json number --jq '.[].number' | while read -r n; do
+                [ -n "$n" ] || continue
+                gh pr close "$n" --comment "Closed by Release force_cut; new freeze cut from main."
+              done
+            # Drop the previous version head so changesets/action starts clean.
+            git push origin --delete changeset-release/release 2>/dev/null || true
+          fi
+
+          main_sha=$(git rev-parse HEAD)
+          git fetch origin release:release 2>/dev/null || true
+          git checkout -B release "$main_sha"
+
+          # Prefer fast-forward when release is an ancestor of main (normal
+          # path after release→main sync). Otherwise reset to main so the
+          # cut is a real freeze of current main (force_cut / first cut /
+          # abandoned soak).
+          if git rev-parse --verify origin/release >/dev/null 2>&1; then
+            if git merge-base --is-ancestor origin/release "$main_sha"; then
+              git push origin "HEAD:release"
+            else
+              echo "release is not an ancestor of main; resetting release to main."
+              git push --force-with-lease=release:origin/release origin "HEAD:release"
+            fi
+          else
+            git push -u origin "HEAD:release"
+          fi
+
+          echo "Cut release at $main_sha ($pending pending changeset file(s))."
+          echo "should_version=true" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$main_sha" >> "$GITHUB_OUTPUT"
+
+  version-pr:
+    needs: cut-release
+    if: needs.cut-release.outputs.should_version == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # push bump commits to changeset-release/release
+      pull-requests: write  # open / update the Version Packages PR
+    steps:
+      - name: Checkout release cut
+        uses: actions/checkout@v7
+        with:
+          ref: release
           fetch-depth: 0  # full history so changelog diffs work
 
       - name: Setup pnpm
@@ -89,32 +195,68 @@ jobs:
         run: pnpm test:integration:mysql
 
       - name: Create / update Version Packages PR
-        # No `publish-script` input → action only opens the Version PR. Publishing
-        # is in the next job, gated on environment approval.
+        # No `publish-script` input → action only opens the Version PR.
+        # PR targets the frozen `release` branch — later main merges do
+        # not update it mid-soak.
         id: changesets
         uses: changesets/action@v2
         with:
           version-script: pnpm changeset version
           commit-message: "chore: version packages"
           pr-title: "chore: version packages"
+          pr-base-branch: release
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-  publish:
-    needs: version-pr
-    # Only fire when version-pr reports there are no pending changesets,
-    # i.e. the Version Packages PR was just merged and main has the bumped
-    # versions ready to publish. On a regular push that introduced a new
-    # changeset, hasChangesets='true' and we skip publishing.
-    if: needs.version-pr.outputs.hasChangesets == 'false'
+  prepare-publish:
+    # Separate workflow run from the cut: fires on every push to release
+    # (cut tip or Version Packages merge). Decide whether publish should
+    # run before requesting production environment approval.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
-    environment: production  # ← the one approval gate, only for the publish
-    permissions:
-      contents: write   # to push the git tag (@openma/cli@x.y.z) after publish
-      id-token: write   # required for npm OIDC publish
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: release
+          fetch-depth: 1
+
+      - name: Decide whether to publish
+        id: decide
+        run: |
+          set -euo pipefail
+          pending=0
+          for f in .changeset/*.md; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            if [ "$base" = "README.md" ]; then
+              continue
+            fi
+            pending=$((pending + 1))
+          done
+          if [ "$pending" -gt 0 ]; then
+            echo "Pending changesets on release (likely a fresh cut); skip publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No pending changesets on release; publish path may run."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: prepare-publish
+    if: needs.prepare-publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    environment: production  # ← the one approval gate, only for the publish
+    permissions:
+      contents: write        # git tag (@openma/cli@x.y.z) after publish
+      id-token: write        # npm OIDC publish
+      pull-requests: write   # open / update release → main sync PR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: release
           fetch-depth: 0
           fetch-tags: true
 
@@ -150,7 +292,45 @@ jobs:
         with:
           publish-script: pnpm release
           create-github-releases: true
+          # Publish ran on `release`; keep PR base aligned if action opens anything.
+          pr-base-branch: release
           github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
           # Clear setup-node's placeholder so npm publish falls back to OIDC.
           NODE_AUTH_TOKEN: ''
+
+      - name: Sync release back to main
+        # Version bumps + consumed changesets live on `release` until this
+        # lands on main. Next scheduled cut fast-forwards from main only
+        # after this sync; otherwise the next cut would re-freeze stale
+        # changesets and fight the published versions.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --base main --head release --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Sync PR already open: #$existing"
+            gh pr view "$existing" --json url --jq .url
+            exit 0
+          fi
+          # No-op when main already contains release (e.g. re-run).
+          git fetch origin main
+          if git merge-base --is-ancestor HEAD origin/main; then
+            echo "release is already contained in main; no sync PR needed."
+            exit 0
+          fi
+          body=$(printf '%s\n' \
+            '## Sync frozen release → main' \
+            '' \
+            'Auto-opened after a successful npm publish from the `release` branch.' \
+            '' \
+            'Brings version bumps, CHANGELOG updates, and consumed changesets' \
+            'back onto `main` so the next scheduled cut can fast-forward cleanly.' \
+            '' \
+            'Safe to squash or merge as-is; do not rewrite version numbers.')
+          url=$(gh pr create --base main --head release \
+            --title "chore: sync release to main" \
+            --body "$body")
+          echo "Opened sync PR: $url"

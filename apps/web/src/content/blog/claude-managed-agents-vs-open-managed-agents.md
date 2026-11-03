@@ -39,7 +39,7 @@ Agents, switching to Open Managed Agents is a base-URL swap.**
 
 ```diff
 - const client = new Anthropic({ baseURL: "https://api.anthropic.com" });
-+ const client = new Anthropic({ baseURL: "https://openma.dev" });
++ const client = new Anthropic({ baseURL: "https://openma.ai" });
 ```
 
 Or, self-hosted:

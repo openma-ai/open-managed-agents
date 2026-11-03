@@ -198,7 +198,7 @@ const initialPlan = buildDeploymentPlan({
               <span>Verify after deploy</span>
               <code data-verification-output>{initialPlan.verificationCommand}</code>
             </div>
-            <a data-platform-guide href="https://docs.openma.dev/self-host/overview/" target="_blank" rel="noopener noreferrer">
+            <a data-platform-guide href="https://docs.openma.ai/self-host/overview/" target="_blank" rel="noopener noreferrer">
               Full guide
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"></path></svg>
             </a>
@@ -360,7 +360,7 @@ const initialPlan = buildDeploymentPlan({
         }
 
         const guide = get<HTMLAnchorElement>("[data-platform-guide]");
-        if (guide) guide.href = `https://docs.openma.dev/self-host/${target === "docker" ? "node-docker" : target === "cloudflare" ? "deploy" : target === "vercel" ? "overview" : target}/`;
+        if (guide) guide.href = `https://docs.openma.ai/self-host/${target === "docker" ? "node-docker" : target === "cloudflare" ? "deploy" : target === "vercel" ? "overview" : target}/`;
         const commandLabel = get<HTMLElement>("[data-command-label]");
         if (commandLabel) commandLabel.textContent = target === "vercel" ? "CLI fallback" : target === "render" ? "Container command" : "Terminal";
 

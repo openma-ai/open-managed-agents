@@ -31,49 +31,67 @@ test("legacy Anthropic article URLs permanently redirect to the live Claude URLs
       "/blog/anthropic-managed-agents-vs-open-managed-agents/",
       "/blog/claude-managed-agents-vs-open-managed-agents/",
     ],
+    ["/blog/why-agent-as-a-service/", "/blog/"],
+    ["/sitemap.xml", "/sitemap-index.xml"],
   ]);
 
   for (const [from, to] of redirects) {
-    const response = await fetchFromWorker(`https://openma.dev${from}?ref=old-link`);
+    const response = await fetchFromWorker(`https://openma.ai${from}?ref=old-link`);
 
     assert.equal(response.status, 301, from);
     assert.equal(
       response.headers.get("location"),
-      `https://openma.dev${to}?ref=old-link`,
+      `https://openma.ai${to}?ref=old-link`,
       from,
     );
   }
 });
 
+
+test("apex /docs permanently redirects to the docs subdomain", async () => {
+  const response = await fetchFromWorker("https://openma.ai/docs");
+  assert.equal(response.status, 301);
+  assert.equal(response.headers.get("location"), "https://docs.openma.ai/");
+});
+
+test("extensionless /pricing permanently redirects to trailing-slash canonical", async () => {
+  const response = await fetchFromWorker("https://openma.ai/pricing?ref=nav");
+  assert.equal(response.status, 301);
+  assert.equal(
+    response.headers.get("location"),
+    "https://openma.ai/pricing/?ref=nav",
+  );
+});
+
 test("extensionless marketing URLs permanently redirect to their trailing-slash canonical", async () => {
   const response = await fetchFromWorker(
-    "https://openma.dev/blog/architecture-durable-objects-r2-brain-sandbox-split?source=gsc",
+    "https://openma.ai/blog/architecture-durable-objects-r2-brain-sandbox-split?source=gsc",
   );
 
   assert.equal(response.status, 301);
   assert.equal(
     response.headers.get("location"),
-    "https://openma.dev/blog/architecture-durable-objects-r2-brain-sandbox-split/?source=gsc",
+    "https://openma.ai/blog/architecture-durable-objects-r2-brain-sandbox-split/?source=gsc",
   );
 });
 
 test("static assets bypass trailing-slash redirects", async () => {
-  const response = await fetchFromWorker("https://openma.dev/robots.txt");
+  const response = await fetchFromWorker("https://openma.ai/robots.txt");
 
   assert.equal(response.status, 200);
   assert.equal(
     response.headers.get("x-asset-url"),
-    "https://openma.dev/robots.txt",
+    "https://openma.ai/robots.txt",
   );
 });
 
 test("API-shaped paths bypass marketing trailing-slash redirects", async () => {
-  const response = await fetchFromWorker("https://openma.dev/v1/agents");
+  const response = await fetchFromWorker("https://openma.ai/v1/agents");
 
   assert.equal(response.status, 200);
   assert.equal(
     response.headers.get("x-asset-url"),
-    "https://openma.dev/v1/agents",
+    "https://openma.ai/v1/agents",
   );
 });
 
@@ -117,7 +135,7 @@ test("high-impression landing pages emit concise, user-facing search snippets", 
   );
   assert.match(
     alternative,
-    /href="https:\/\/docs\.openma\.dev\/build\/vault-and-mcp\/"/,
+    /href="https:\/\/docs\.openma\.ai\/build\/vault-and-mcp\/"/,
   );
   assert.doesNotMatch(alternative, /Search intent match/i);
 });

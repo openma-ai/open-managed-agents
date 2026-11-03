@@ -53,8 +53,8 @@ described below.
 
 ## Start with the SDK you already use
 
-Use the [hosted Console](https://app.openma.dev), or start a
-[Node + Docker deployment](https://docs.openma.dev/self-host/node-docker/).
+Use the [hosted Console](https://app.openma.ai), or start a
+[Node + Docker deployment](https://docs.openma.ai/self-host/node-docker/).
 Create an OpenMA API key and add a Model Card with your provider credentials.
 Then install the pinned SDK in your application:
 
@@ -67,7 +67,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.OPENMA_API_KEY,
-  baseURL: "https://app.openma.dev/openai/v1", // Hosted on Cloudflare
+  baseURL: "https://app.openma.ai/openai/v1", // Hosted on Cloudflare
 });
 
 const events = await client.beta.agents.sessions.create({
@@ -223,8 +223,8 @@ has the detailed list.
 
 ## Try it hosted or on your own server
 
-Use the [hosted Console](https://app.openma.dev) and the SDK example above,
-or follow the [Node deployment guide](https://docs.openma.dev/self-host/node-docker/)
+Use the [hosted Console](https://app.openma.ai) and the SDK example above,
+or follow the [Node deployment guide](https://docs.openma.ai/self-host/node-docker/)
 for a self-hosted installation. The
 [OpenAI Agents API guide](https://github.com/openma-ai/open-managed-agents/blob/main/packages/openai-agents-compat/README.md)
 covers the client setup.

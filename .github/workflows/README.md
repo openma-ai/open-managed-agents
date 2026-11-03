@@ -6,7 +6,7 @@ image. **It does NOT deploy any worker to a Cloudflare account.**
 | Workflow | Purpose |
 |---|---|
 | `ci.yml` | Graded impact-surface CI (#417). `changes` classifies the diff; `docs` / `web` / `cf` / `node` run only when needed; `release-check` stays a cheap PR job; `verify` is the branch-protection gate (skipped surfaces count as success) |
-| `release.yml` | changeset-driven npm publish for the SDK / CLI packages. `publish` runs `scripts/release-check.mjs --publish` before `pnpm release` |
+| `release.yml` | Frozen `release` cut (~every 2 days / `workflow_dispatch`) → Version Packages targets `release`; `publish` on Version Packages merge to `release` (`scripts/release-check.mjs --publish` then `pnpm release`), then sync PR `release` → `main` |
 | `build-sandbox-image.yml` | builds the agent sandbox base image for OSS users to pull |
 | `build-server-image.yml` | verifies and publishes the Node/Console server image to GHCR under an immutable full-Git-SHA tag; release tags add a human version alias |
 

@@ -24,32 +24,66 @@ pnpm changeset
 # changelog. Commits a .changeset/<random>.md file. Push it with the PR.
 ```
 
-That's it. Once the PR is merged, the release bot does the rest.
+That's it for the feature PR. Releases no longer open or update
+Version Packages on every `main` push — see below.
 
 ## How a release happens
+
+Releases use a **frozen `release` branch** so heavy tests and the Version
+Packages PR stay stable while `main` keeps merging. Later changesets on
+`main` do **not** re-roll Version Packages mid-soak.
 
 1. **You open a PR with code + a changeset.** `pnpm changeset` walks you
    through which package changed, what kind of bump (patch / minor /
    major), and a one-line summary. The summary lands in the changelog
    verbatim, so write it for users, not for reviewers.
 
-2. **Reviewer merges the PR.** Code is on `main`. The release workflow
-   (`.github/workflows/release.yml`) sees a pending changeset and opens
-   (or updates) a "Version Packages" PR with:
+2. **Reviewer merges the PR to `main`.** Pending `.changeset/*.md` files
+   accumulate on `main`. Nothing opens a Version Packages PR yet.
+
+3. **~Every 2 days (or `workflow_dispatch`), Release cuts `release`.**
+   The workflow fast-forwards the `release` branch to current `main`,
+   runs typecheck / unit / storage / MySQL tests on that tip, then opens
+   (or updates) a **Version Packages** PR that **targets `release`**
+   (not `main`) with:
    - Bumped versions in the affected `package.json`s
    - Updated `CHANGELOG.md`s containing every changeset summary since the
      last release, grouped by package
-   - The `.changeset/*.md` files removed (consumed)
+   - The `.changeset/*.md` files removed on the version branch (consumed)
 
-3. **You review the Version Packages PR.** Sanity-check the version bumps
-   and changelog. Merge when ready.
+   If a Version Packages PR is already open against `release`, the
+   scheduled cut is skipped so an in-flight soak is not rewritten. Use
+   `workflow_dispatch` with **force_cut** to abandon that soak and cut
+   again from `main`.
 
-4. **Merging triggers publish.** The release workflow runs again, sees no
-   pending changesets, and publishes the bumped packages to npm via OIDC
-   trusted publisher (no NPM_TOKEN). dist-tag is auto-derived from the
-   version: `0.x.y` → `latest`, `0.x.y-beta.N` → `beta`.
+4. **You review the Version Packages PR (user 「发」).** Sanity-check the
+   version bumps and changelog. Merge into `release` when ready. Do not
+   merge Version Packages into `main` directly.
 
-5. **GitHub Release** is created automatically with the changelog body.
+5. **Merging Version Packages into `release` triggers publish.** The
+   workflow sees no pending changesets on `release` and publishes the
+   bumped packages to npm via OIDC trusted publisher (no NPM_TOKEN).
+   dist-tag is auto-derived from the version: `0.x.y` → `latest`,
+   `0.x.y-beta.N` → `beta`. A **GitHub Release** is created automatically
+   with the changelog body.
+
+6. **Sync `release` → `main`.** After a successful publish the workflow
+   opens (or reuses) a `chore: sync release to main` PR so bumped
+   versions and consumed changesets land on `main` before the next cut.
+   Merge that sync PR when green.
+
+### Hotfix (do not wait for the schedule)
+
+1. Land the fix **and** its changeset on `main`.
+2. Run **Actions → Release → Run workflow** (`workflow_dispatch`). Set
+   **force_cut** only if an old Version Packages PR must be abandoned.
+3. Wait for Version Packages to open/update against `release`.
+4. User 「发」 — merge Version Packages into `release`; publish + sync
+   proceed as above.
+
+Alternatively, cherry-pick the fix onto the existing `release` branch
+(keep the freeze), then re-run the version path carefully — prefer a
+fresh cut via dispatch unless you know you need the same soak tip.
 
 ## Bump types
 
@@ -97,9 +131,10 @@ publish time and gitignored, so those openma-common checks are not repeated.
 The tag changesets will create is `@openma/<name>@<version>`.
 
 The `publish` job in `release.yml` runs `node scripts/release-check.mjs
---publish` before `pnpm release`. On a push that is not publishing a new
-version it only prints the unreleased notices and exits 0. `version-pr` is
-unchanged.
+--publish` before `pnpm release` on the `release` branch. On a push that
+is not publishing a new version it only prints the unreleased notices and
+exits 0. `version-pr` runs only after a scheduled/manual cut, not on every
+`main` push.
 
 `node scripts/release-check.mjs --audit` prints the same checks against
 existing tags and lists CHANGELOG versions that have no git tag. It exits 0.
@@ -161,29 +196,38 @@ If the trusted publisher isn't configured, publish step 401s with
 **One workflow per package limit.** npm's trusted publisher only allows
 one workflow per package, so we can't keep the old `publish-cli.yml` /
 `publish-sdk.yml` as standalone escape hatches — they'd 401. The
-`workflow_dispatch` trigger on `release.yml` itself is the escape hatch:
-manually triggering it re-runs the same logic as a push, useful when you
-want to re-attempt a publish after fixing a config issue without making
-a no-op commit.
+`workflow_dispatch` trigger on `release.yml` cuts/fast-forwards `release`
+from `main` and runs Version Packages (hotfix path). To re-attempt
+**publish** only after a config fix, push an empty commit to `release`
+(or re-run the failed `publish` job) while that branch has no pending
+changesets and already carries the bumped versions.
 
 ## Troubleshooting
 
 **My changeset PR didn't open a Version Packages PR.**
-Check `.changeset/` on main — if there's a `*.md` file there, the
-workflow should have run. Look at the latest "Release" workflow run for
-errors. Most common: trusted publisher config drift on npm.
+That is expected on merge to `main`. Version Packages only opens after
+the scheduled cut (~every 2 days) or a manual **Release**
+`workflow_dispatch`. Check `.changeset/` on `main` for pending `*.md`
+files (other than `README.md`), then look at the latest "Release"
+workflow run. If a Version Packages PR is already open, the schedule
+skips until you merge it or `force_cut`.
 
 **The Version Packages PR shows the wrong bump.**
-Edit the `.changeset/*.md` file directly on the source PR (or on main
-via a follow-up PR), then the bot re-rolls the Version Packages PR.
+Edit the `.changeset/*.md` file on `main` (via the source PR or a
+follow-up), then `workflow_dispatch` Release with **force_cut** so a new
+freeze picks up the fix. Do not expect mid-soak re-rolls from `main`
+pushes — that is intentional.
 
-**I want to publish out-of-band right now without going through
-changesets.**
-You still need a changeset — the publish step only fires when changesets
-sees a real version bump in `package.json`. Open a tiny PR that adds a
-changeset for the hotfix, merge it, then merge the auto-generated
-Version Packages PR. Total flow is 3 PR merges; with practice it's a
-few minutes.
+**Version Packages keeps targeting `main` / updates on every merge.**
+You are on the old flow. After this workflow change it must target
+`release` only. Close any stale `changeset-release/main` PR.
+
+**I want to publish out-of-band right now.**
+Land a changeset (+ fix) on `main`, run **Release** via
+`workflow_dispatch`, merge Version Packages into `release` (user 「发」),
+then merge the sync PR `release` → `main`. You still need a changeset —
+publish only fires when `release` has bumped `package.json` versions and
+no pending changesets.
 
 **I accidentally bumped to a version I shouldn't have.**
 npm doesn't let you republish or downgrade. Bump again to a higher
