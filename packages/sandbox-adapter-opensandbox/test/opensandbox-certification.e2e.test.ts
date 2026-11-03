@@ -11,6 +11,7 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("runs the SDK-backe
   let attached: OpenSandbox | undefined;
   try {
     original = await sandboxProvider.create(ctx, process.env);
+    if (process.env.OPENSANDBOX_RUNTIME === "fast") expect(original.id).toMatch(/^fsb-/);
     expect(await original.status()).toBe("running");
     expect(await original.exec(`printf '%s' '${marker}'`)).toBe(marker);
     expect(await original.exec("printf out; printf err >&2; exit 7")).toBe("out\nerr\n[exit 7]");
@@ -45,8 +46,10 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("runs the SDK-backe
       disableMetrics: true,
     } });
     try {
-      try { expect(["terminated", "deleted"]).toContain((await manager.getSandboxInfo(id)).status.state.toLowerCase()); }
-      catch (error) { expect(error).toMatchObject({ statusCode: 404 }); }
+      await expect.poll(async () => {
+        try { return (await manager.getSandboxInfo(id)).status.state.toLowerCase(); }
+        catch (error) { expect(error).toMatchObject({ statusCode: 404 }); return "deleted"; }
+      }, { timeout: Number(process.env.OPENSANDBOX_READY_TIMEOUT_MS ?? 120_000), interval: 500 }).toMatch(/^(terminated|deleted)$/);
     }
     finally { await manager.close(); }
   } finally {
@@ -72,7 +75,7 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("pauses, resumes, s
   const owned: OpenSandbox[] = [];
   const snapshots: string[] = [];
   try {
-    // Process survival is a Docker container-freeze property; declare it.
+    // Docker freeze and Fast Sandbox guest checkpoints retain processes.
     const original = await sandboxProvider.create(ctx, { ...process.env, OPENSANDBOX_RUNTIME: process.env.OPENSANDBOX_RUNTIME ?? "docker" });
     owned.push(original);
     await original.writeFile("/workspace/state.txt", marker);
@@ -119,11 +122,16 @@ it.skipIf(process.env.OMA_OPENSANDBOX_CERTIFICATION !== "1")("pauses, resumes, s
     expect(await restored.readFile("/workspace/state.txt")).toBe(marker);
     expect(await restored.readFileBytes("/workspace/state.bin")).toEqual(binary);
     expect(await restored.exec("printf restored-ok")).toBe("restored-ok");
-    // Filesystem snapshot only: the loop process does not survive restore
-    // (PIDs may be reused in the new container, so observe the counter).
+    // Fast Sandbox snapshots restore the VM, including running processes;
+    // container filesystem snapshots restore files without the process.
     const frozenCounter = await restored.readFile("/workspace/counter");
     await new Promise(resolve => setTimeout(resolve, 1_000));
-    expect(await restored.readFile("/workspace/counter")).toBe(frozenCounter);
+    if (process.env.OPENSANDBOX_RUNTIME === "fast") {
+      expect(await restored.exec(`kill -0 ${pid} && echo alive`)).toBe("alive");
+      expect(Number(await restored.readFile("/workspace/counter"))).toBeGreaterThan(Number(frozenCounter));
+    } else {
+      expect(await restored.readFile("/workspace/counter")).toBe(frozenCounter);
+    }
   } finally {
     for (const sandbox of owned.reverse()) await sandbox.destroy().catch(() => undefined);
     for (const id of snapshots) await manager.deleteSnapshot(id).catch(() => undefined);

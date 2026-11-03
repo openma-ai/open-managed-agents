@@ -93,7 +93,7 @@ describe("OpenSandbox official SDK adapter", () => {
     const own = { provider: "opensandbox", checkpointId: "sb-1", sourceRuntimeId: "sb-1", kind: "memory", scope: "runtime" } as const;
     await expect(sandbox.resume({ ...own, checkpointId: "other" })).rejects.toThrow("own runtime-scoped");
     await expect(sandbox.resume({ ...own, scope: "portable" })).rejects.toThrow("own runtime-scoped");
-    await expect(sandbox.checkpoint({ kind: "memory" })).rejects.toThrow("filesystem state only");
+    await expect(sandbox.checkpoint({ kind: "memory" })).rejects.toThrow("require kind filesystem");
     await sandbox.resume(own);
     expect(server.calls.some(call => call.url.pathname.endsWith("/resume"))).toBe(false);
     server.state = "Failed";
@@ -145,6 +145,90 @@ describe("OpenSandbox official SDK adapter", () => {
     expect(await sandbox.status()).toBe("running");
   });
 
+  it("creates fast sandboxes from a template without container workload overrides", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node", SANDBOX_IMAGE: "ignored", OPENSANDBOX_MEMORY: "99Gi" });
+    expect(sandbox.runtimeCapabilities().suspend).toEqual(["filesystem", "memory"]);
+    const creation = server.calls.find(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes")!;
+    expect(creation.body).toMatchObject({ templateId: "tpl-node", timeout: 1800, metadata: { "oma-session-id": ctx.sessionId } });
+    for (const field of ["image", "snapshotId", "entrypoint", "resourceLimits", "volumes", "env"]) expect(creation.body).not.toHaveProperty(field);
+  });
+
+  it.each(["same-object", "handle"])("renews fast runtimes before %s resume and readiness", async mode => {
+    const server = mockSdkServer();
+    const fastEnv = { ...env, OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node" };
+    const sandbox = await create(fastEnv);
+    const checkpoint = await sandbox.suspend({ kind: "memory" });
+    server.calls.length = 0;
+    if (mode === "same-object") await sandbox.resume(checkpoint);
+    else allocations.push(await sandboxProvider.resume(sandbox.runtimeHandle(), ctx, fastEnv));
+    const renewAt = server.calls.findIndex(call => call.url.pathname.endsWith("/renew-expiration"));
+    const resumeAt = server.calls.findIndex(call => call.url.pathname.endsWith("/resume"));
+    const readyAt = server.calls.findIndex(call => call.url.pathname.endsWith("/ping"));
+    expect(renewAt).toBeGreaterThanOrEqual(0);
+    expect(resumeAt).toBeGreaterThan(renewAt);
+    expect(readyAt).toBeGreaterThan(resumeAt);
+    expect(server.calls.filter(call => call.url.pathname.endsWith("/renew-expiration"))).toHaveLength(1);
+  });
+
+  it.each(["same-object", "handle"])("does not %s resume a fast runtime when renewal fails", async mode => {
+    const server = mockSdkServer();
+    const fastEnv = { ...env, OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node" };
+    const sandbox = await create(fastEnv);
+    const checkpoint = await sandbox.suspend({ kind: "memory" });
+    server.calls.length = 0;
+    server.override = call => call.url.pathname.endsWith("/renew-expiration") ? new Response("provider-secret", { status: 409 }) : undefined;
+    await expect(mode === "same-object" ? sandbox.resume(checkpoint) : sandboxProvider.resume(sandbox.runtimeHandle(), ctx, fastEnv)).rejects.toThrow("HTTP 409");
+    expect(server.calls.some(call => call.url.pathname.endsWith("/resume"))).toBe(false);
+    expect(server.state).toBe("Paused");
+  });
+
+  it("fails before allocation for missing fast templates, mixed backends or fast volumes", async () => {
+    const server = mockSdkServer();
+    await expect(create({ OPENSANDBOX_RUNTIME: "fast" })).rejects.toThrow("requires OPENSANDBOX_TEMPLATE_ID");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_TEMPLATE_ID: "tpl-node" })).toThrow("requires OPENSANDBOX_RUNTIME=fast");
+    expect(() => optionsFromEnvironment({ OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: " " })).toThrow("must not be empty");
+    await expect(create({ OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node", OPENSANDBOX_VOLUMES: '[{"name":"ws","pvc":{"claimName":"ws"},"mountPath":"/workspace"}]' })).rejects.toThrow("does not support OPENSANDBOX_VOLUMES");
+    expect(server.calls).toHaveLength(0);
+  });
+
+  it("restores fast snapshots without requiring a template or overriding the pool resources", async () => {
+    const server = mockSdkServer();
+    const restored = await sandboxProvider.restore({ provider: "opensandbox", checkpointId: "snap-fast", sourceRuntimeId: "fsb-old", kind: "filesystem", scope: "portable" }, ctx, { ...env, OPENSANDBOX_RUNTIME: "fast" });
+    allocations.push(restored);
+    const creation = server.calls.find(call => call.method === "POST" && call.url.pathname === "/v1/sandboxes")!;
+    expect(creation.body).toMatchObject({ snapshotId: "snap-fast", resourceLimits: {} });
+    expect(creation.body).not.toHaveProperty("templateId");
+    expect(creation.body).not.toHaveProperty("image");
+  });
+
+  it("waits through asynchronous Pausing before returning a resumable handle", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_RUNTIME: "docker" });
+    let polls = 0;
+    server.override = call => {
+      if (call.url.pathname.endsWith("/pause")) { server.state = "Pausing"; return Response.json({}, { status: 202 }); }
+      if (call.method === "GET" && call.url.pathname.endsWith("/sb-1")) server.state = ++polls < 2 ? "Pausing" : "Paused";
+      return undefined;
+    };
+    const handle = await sandbox.suspend({ kind: "memory" });
+    expect(polls).toBe(2);
+    expect(await sandbox.status()).toBe("suspended");
+    server.override = undefined;
+    await sandbox.resume(handle);
+    expect(await sandbox.status()).toBe("running");
+  });
+
+  it.each(["Pausing", "Failed"])("does not return a pause handle when the server stays %s", async state => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_READY_TIMEOUT_MS: "10" });
+    server.override = call => {
+      if (call.url.pathname.endsWith("/pause")) { server.state = state; return Response.json({}, { status: 202 }); }
+      return undefined;
+    };
+    await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(state === "Pausing" ? "pause did not complete in time" : "pause failed (state failed)");
+  });
+
   it("creates a filesystem snapshot, waits until ready, and restores from it", async () => {
     const server = mockSdkServer();
     const sandbox = await create({ OPENSANDBOX_SNAPSHOT_POLL_MS: "1" });
@@ -183,6 +267,19 @@ describe("OpenSandbox official SDK adapter", () => {
     server.override = call => call.url.pathname.endsWith("/renew-expiration") ? new Response("provider-secret", { status: 409 }) : undefined;
     await expect(sandbox.suspend({ kind: "filesystem" })).rejects.toThrow(/^OpenSandbox request failed \(HTTP 409\)$/);
     expect(server.calls.some(call => call.url.pathname.endsWith("/pause"))).toBe(false);
+  });
+
+  it("waits for the fast source data plane after a snapshot becomes Ready", async () => {
+    const server = mockSdkServer();
+    const sandbox = await create({ OPENSANDBOX_RUNTIME: "fast", OPENSANDBOX_TEMPLATE_ID: "tpl-node" });
+    let pings = 0;
+    server.override = call => {
+      if (call.url.pathname.endsWith("/snapshots")) return Response.json({ id: "snap-fast", sandboxId: "sb-1", status: { state: "Ready" }, createdAt: "2026-10-26T08:00:00Z" });
+      if (call.url.pathname.endsWith("/ping") && ++pings === 1) return new Response(null, { status: 503 });
+      return undefined;
+    };
+    expect(await sandbox.checkpoint({ kind: "filesystem" })).toMatchObject({ checkpointId: "snap-fast", scope: "portable" });
+    expect(pings).toBe(2);
   });
 
   it("refuses memory suspend unless the operator declares a memory-retaining backend", async () => {

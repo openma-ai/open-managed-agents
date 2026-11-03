@@ -15,6 +15,8 @@ export interface OpenSandboxOptions {
   protocol: "http" | "https";
   apiKey?: string;
   image: string;
+  runtime?: string;
+  templateId?: string;
   timeoutSeconds: number;
   readyTimeoutMs: number;
   cpu: string;
@@ -115,18 +117,30 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenSandboxOptio
   if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
     throw new Error("OPENSANDBOX_DOMAIN must be a server host[:port] without credentials, path, query or fragment");
   }
+  const suspendKind = suspendKindFrom(env);
+  const templateId = env.OPENSANDBOX_TEMPLATE_ID?.trim();
+  if (templateId !== undefined && !templateId) throw new Error("OPENSANDBOX_TEMPLATE_ID must not be empty");
+  if (templateId !== undefined && env.OPENSANDBOX_RUNTIME !== "fast") {
+    throw new Error("OPENSANDBOX_TEMPLATE_ID requires OPENSANDBOX_RUNTIME=fast");
+  }
+  const volumes = volumesFromEnvironment(env);
+  if (env.OPENSANDBOX_RUNTIME === "fast" && volumes.length) {
+    throw new Error("Fast Sandbox does not support OPENSANDBOX_VOLUMES");
+  }
   return {
     domain, protocol,
     apiKey: env.OPENSANDBOX_API_KEY ?? env.OPEN_SANDBOX_API_KEY,
     image: env.SANDBOX_IMAGE ?? "node:22-slim",
+    runtime: env.OPENSANDBOX_RUNTIME,
+    templateId,
     timeoutSeconds: positive(env.OPENSANDBOX_TIMEOUT_SECONDS, 1800, "OPENSANDBOX_TIMEOUT_SECONDS", 60),
     readyTimeoutMs: positive(env.OPENSANDBOX_READY_TIMEOUT_MS, 120_000, "OPENSANDBOX_READY_TIMEOUT_MS"),
     cpu: env.OPENSANDBOX_CPU ?? "1",
     memory: env.OPENSANDBOX_MEMORY ?? "1Gi",
     snapshotTimeoutMs: positive(env.OPENSANDBOX_SNAPSHOT_TIMEOUT_MS, 600_000, "OPENSANDBOX_SNAPSHOT_TIMEOUT_MS"),
     snapshotPollMs: positive(env.OPENSANDBOX_SNAPSHOT_POLL_MS, 1_000, "OPENSANDBOX_SNAPSHOT_POLL_MS"),
-    suspendKind: suspendKindFrom(env),
-    volumes: volumesFromEnvironment(env),
+    suspendKind,
+    volumes,
   };
 }
 
@@ -186,8 +200,8 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
   runtimeHandle(): SandboxRuntimeHandle { return { provider: "opensandbox", runtimeId: this.id }; }
   // Pause semantics differ by backend: Docker freezes the container (memory and
   // processes kept), Kubernetes commits rootfs only. Memory is advertised only
-  // when the operator declares a backend that retains it. Snapshots are
-  // filesystem images restored into a new runtime.
+  // when the operator declares a backend that retains it. Portable snapshots
+  // preserve files; Fast Sandbox also restores guest memory and processes.
   runtimeCapabilities() {
     const suspend = this.options.suspendKind === "memory" ? ["filesystem", "memory"] as const : ["filesystem"] as const;
     return { lease: true, suspend, checkpoint: ["filesystem"] as const };
@@ -223,6 +237,15 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     // never leaves a doomed pause. Long-lived state belongs in volumes or snapshots.
     await this.call(() => this.client.renew(this.options.timeoutSeconds));
     await this.call(() => this.client.pause());
+    const deadline = Date.now() + this.options.readyTimeoutMs;
+    while (true) {
+      const state = (await this.call(() => this.client.getInfo())).status.state.toLowerCase();
+      if (state === "paused") break;
+      if (["terminated", "failed", "deleted", "error"].includes(state)) throw new Error(`OpenSandbox pause failed (state ${state})`);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("OpenSandbox pause did not complete in time");
+      await new Promise(resolve => setTimeout(resolve, Math.min(500, remaining)));
+    }
     return { provider: "opensandbox", checkpointId: this.id, sourceRuntimeId: this.id, kind, scope: "runtime" };
   }
   async resume(checkpoint: SandboxCheckpointHandle): Promise<void> {
@@ -234,13 +257,16 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
     if (state === "running") return;
     if (state !== "suspended") throw new Error(`OpenSandbox runtime cannot be resumed from state ${state}`);
     const previous = this.client;
+    // Fast Sandbox renewal changes the CR generation and can briefly revoke
+    // route readiness. Renew first so SDK resume waits after both mutations.
+    if (this.options.runtime === "fast") await this.call(() => previous.renew(this.options.timeoutSeconds));
     const resumed = await this.call(() => previous.resume({ readyTimeoutSeconds: this.options.readyTimeoutMs / 1000 }));
     this.client = resumed;
     await previous.close().catch(() => undefined);
-    await this.call(() => resumed.renew(this.options.timeoutSeconds));
+    if (this.options.runtime !== "fast") await this.call(() => resumed.renew(this.options.timeoutSeconds));
   }
   async checkpoint({ kind, name }: { kind: SandboxCheckpointKind; name?: string }): Promise<SandboxCheckpointHandle> {
-    if (kind !== "filesystem") throw new Error("OpenSandbox snapshots capture filesystem state only");
+    if (kind !== "filesystem") throw new Error("OpenSandbox portable checkpoints require kind filesystem");
     if (this.destroyed) throw new Error("OpenSandbox has been destroyed");
     const sdk = await loadSdk();
     const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, this.options) });
@@ -254,6 +280,10 @@ export class OpenSandbox implements SandboxPort, SandboxRuntimePort, SandboxDupl
         await new Promise(resolve => setTimeout(resolve, this.options.snapshotPollMs));
         snapshot = await manager.getSnapshot(snapshot.id)
           .catch((error: unknown) => { throw providerError("snapshot", error); });
+      }
+      if (this.options.runtime === "fast") {
+        // The artifact can become Ready before the source route has recovered.
+        await this.call(() => this.client.waitUntilReady({ readyTimeoutSeconds: this.options.readyTimeoutMs / 1000, pollingIntervalMillis: 500 }));
       }
       return {
         provider: "opensandbox", checkpointId: snapshot.id, sourceRuntimeId: this.id,
@@ -329,21 +359,32 @@ async function allocate(
   ctx: Parameters<SandboxProviderPort["create"]>[0], env: SandboxFactoryEnv, snapshotId?: string,
 ): Promise<OpenSandbox> {
   const options = optionsFromEnvironment(env);
+  if (options.runtime === "fast" && snapshotId === undefined && !options.templateId) {
+    throw new Error("OPENSANDBOX_RUNTIME=fast requires OPENSANDBOX_TEMPLATE_ID for creation");
+  }
   const sdk = await loadSdk();
   const operation = snapshotId === undefined ? "create" : "restore";
   let client: SdkSandbox;
   try {
-    client = await sdk.Sandbox.create({
+    const common = {
       connectionConfig: configuration(sdk, options),
-      // The server treats image and snapshotId as mutually exclusive.
-      ...(snapshotId === undefined ? { image: options.image } : { snapshotId }),
       timeoutSeconds: options.timeoutSeconds,
-      resource: { cpu: options.cpu, memory: options.memory },
-      ...(options.volumes.length ? { volumes: options.volumes } : {}),
-      entrypoint: ["tail", "-f", "/dev/null"], metadata: { "oma-session-id": ctx.sessionId },
+      metadata: { "oma-session-id": ctx.sessionId },
       readyTimeoutSeconds: options.readyTimeoutMs / 1000,
       signal: AbortSignal.timeout(options.readyTimeoutMs),
-    });
+    };
+    client = options.runtime === "fast" && snapshotId === undefined
+      ? await sdk.Sandbox.createFromTemplate({ ...common, templateId: options.templateId! })
+      : await sdk.Sandbox.create({
+        ...common,
+        // The server treats image and snapshotId as mutually exclusive.
+        ...(snapshotId === undefined ? { image: options.image } : { snapshotId }),
+        // An empty resource map prevents the SDK's container defaults from
+        // overriding the fixed Fast Sandbox pool profile during restore.
+        resource: options.runtime === "fast" ? {} : { cpu: options.cpu, memory: options.memory },
+        ...(options.volumes.length ? { volumes: options.volumes } : {}),
+        entrypoint: ["tail", "-f", "/dev/null"],
+      });
   } catch (error) { throw providerError(operation, error); }
   const sandbox = new OpenSandbox(client, options);
   try {
@@ -363,7 +404,10 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
     const sdk = await loadSdk();
     const manager = sdk.SandboxManager.create({ connectionConfig: configuration(sdk, options) });
     let state: string;
-    try { state = (await manager.getSandboxInfo(handle.runtimeId)).status.state.toLowerCase(); }
+    try {
+      state = (await manager.getSandboxInfo(handle.runtimeId)).status.state.toLowerCase();
+      if (state === "paused" && options.runtime === "fast") await manager.renewSandbox(handle.runtimeId, options.timeoutSeconds);
+    }
     catch (error) { throw providerError("resume", error); }
     finally { await manager.close(); }
     if (["terminated", "failed", "deleted", "error"].includes(state)) throw new Error("OpenSandbox runtime is stopped; cannot attach");
@@ -375,7 +419,7 @@ export const sandboxProvider: SandboxProviderPort<OpenSandbox> = {
       };
       // A retained runtime suspended by this adapter is resumed in place.
       client = state === "paused" ? await sdk.Sandbox.resume(connect) : await sdk.Sandbox.connect(connect);
-      if (state === "paused") await client.renew(options.timeoutSeconds);
+      if (state === "paused" && options.runtime !== "fast") await client.renew(options.timeoutSeconds);
       await client.files.createDirectories([{ path: "/workspace", mode: 755 }]);
     } catch (error) {
       await client?.close();
