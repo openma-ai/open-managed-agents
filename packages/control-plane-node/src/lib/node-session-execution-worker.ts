@@ -361,7 +361,11 @@ export class NodeSessionExecutionWorker implements SessionEventDispatchPort {
       if (context === null) {
         throw new Error(`Session ${active.execution.sessionId} execution context was not found`);
       }
-      await this.dependencies.runtime.run({
+      // An interrupt (or lease loss) that landed while the context was being
+      // loaded already reached the runtime's cancel; never start the turn.
+      if (active.cancelled || active.leaseLost) {
+        outcome = "cancelled";
+      } else await this.dependencies.runtime.run({
         executionId: active.execution.id,
         workspaceId: active.execution.workspaceId,
         sessionId: active.execution.sessionId,

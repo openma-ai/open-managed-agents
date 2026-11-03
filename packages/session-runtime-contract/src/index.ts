@@ -14,3 +14,12 @@ export {
   settleOnlyRejectMessage,
 } from "./settle-events";
 export type { SettleOnlyReason } from "./settle-events";
+export {
+  idleStopReasonForCancelledTurn,
+  interruptedTurnStopReason,
+  isSilentTurnCancel,
+} from "./cancellation";
+export type {
+  InterruptedTurnStopReason,
+  SessionTurnCancelReason,
+} from "./cancellation";

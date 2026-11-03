@@ -124,4 +124,24 @@ describe("Environment Work runtime event ingress", () => {
     })).resolves.toEqual({ type: "stale_claim" });
     expect(published).toBe(false);
   });
+
+  it("returns the shared keep-first collision without publishing the replay", async () => {
+    let published = false;
+    const collision = {
+      _tag: "ProjectionEventIdCollision",
+      ok: false,
+      reason: "collision",
+      type: "event_id_collision",
+      kept: "first",
+      eventIds: ["event_01"],
+    } as const;
+    await expect(ingestEnvironmentWorkRuntimeEvents({
+      claim,
+      sessionId: claim.sessionId,
+      body: { events: [event] },
+      projection: projection(async () => ({ ...collision, eventIds: [...collision.eventIds] })),
+      publish: async () => { published = true; },
+    })).resolves.toEqual(collision);
+    expect(published).toBe(false);
+  });
 });

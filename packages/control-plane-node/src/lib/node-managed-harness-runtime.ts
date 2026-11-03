@@ -14,6 +14,7 @@ import {
   type FileResolver,
 } from "@open-managed-agents/agent/runtime/history";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
+import { getLogger } from "@open-managed-agents/observability";
 import type { ContentBlock, SessionEvent } from "@open-managed-agents/shared";
 import type {
   SessionBootstrapEvent,
@@ -369,7 +370,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     if (applicationEvent !== null) {
       this.applicationHistoryEvents.push(applicationEvent);
     }
-    void this.enqueue(frame);
+    this.enqueueDetached(frame);
     this.publishSessionUsageIfCacheChanged(event);
   };
 
@@ -383,7 +384,7 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
     if (stamped.type.startsWith("agent.")) this.agentEventCount += 1;
     this.history.append(frame);
     this.applicationHistoryEvents.push(stamped);
-    void this.enqueue(frame);
+    this.enqueueDetached(frame);
     return stamped.id;
   }
 
@@ -512,6 +513,18 @@ export class ManagedNodeHarnessRuntime implements HarnessRuntime {
 
   async drain(): Promise<void> {
     await this.outputChain;
+  }
+
+  /** Fire-and-forget output (broadcast paths): a rejected output — e.g. a
+   * projection failure — is logged, never left as an unhandled rejection. */
+  private enqueueDetached(frame: unknown): void {
+    this.enqueue(frame).catch((error: unknown) => {
+      getLogger("main-node.harness").error({
+        op: "main-node.harness.output_failed",
+        _tag: "HarnessOutputFailed",
+        err: error,
+      }, "Harness output failed");
+    });
   }
 
   private enqueue(frame: unknown): Promise<void> {

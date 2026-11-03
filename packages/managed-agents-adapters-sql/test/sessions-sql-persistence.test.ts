@@ -566,6 +566,171 @@ describe("SqlSessionPersistence", () => {
       .resolves.toEqual({ count: 1 });
   });
 
+  it("keeps the first projection when a replay uses the same tool call id and a new processed_at", async () => {
+    const sessions = new SqlSessionPersistence(client, testSealer);
+    await sessions.insert({
+      workspaceId: "workspace_01",
+      session,
+      initialEvents: [],
+      resourceSecrets: [],
+    });
+    const warnings: object[] = [];
+    const projection = new SqlSessionRuntimeProjectionPersistence(client, {
+      warn: (entry) => { warnings.push(entry); },
+    });
+    const toolCallId = "toolu_replay_01";
+    const first = {
+      id: toolCallId,
+      type: "agent.tool_use" as const,
+      name: "bash",
+      input: { command: "echo hello" },
+      processedAt: "2026-08-26T03:00:00.000Z",
+    };
+    const replay = { ...first, processedAt: "2026-08-26T03:00:01.004Z" };
+    const kept = { ...session, updatedAt: first.processedAt };
+    await expect(projection.project({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      expectedRevision: 1,
+      events: [first],
+      next: kept,
+    })).resolves.toMatchObject({ type: "projected", record: { revision: 2 } });
+
+    await expect(projection.project({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      expectedRevision: 2,
+      events: [replay],
+      next: { ...session, title: "must-not-apply", status: "idle", updatedAt: replay.processedAt },
+    })).resolves.toEqual({
+      _tag: "ProjectionEventIdCollision",
+      ok: false,
+      reason: "collision",
+      type: "event_id_collision",
+      kept: "first",
+      eventIds: [toolCallId],
+    });
+    await expect(client.prepare(
+      `SELECT document FROM managed_session_events
+        WHERE workspace_id = ? AND session_id = ? AND id = ?`,
+    ).bind("workspace_01", session.id, toolCallId).first<{ document: string }>())
+      .resolves.toMatchObject({
+        document: expect.stringContaining("\"processedAt\":\"2026-08-26T03:00:00.000Z\""),
+      });
+    await expect(sessions.findCurrent({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+    })).resolves.toEqual({ session: kept, revision: 2 });
+    expect(warnings).toEqual([{
+      _tag: "ProjectionEventIdCollision",
+      ok: false,
+      reason: "collision",
+      type: "event_id_collision",
+      kept: "first",
+      op: "session_runtime_projection.event_id_collision",
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      eventIds: [toolCallId],
+    }]);
+
+    const partialId = "event_partial_new";
+    await expect(projection.project({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      expectedRevision: 2,
+      events: [replay, {
+        id: partialId,
+        type: "session.status_idle",
+        processedAt: "2026-08-26T03:00:02.000Z",
+        stopReason: { type: "end_turn" },
+      }],
+      next: { ...session, status: "idle", updatedAt: "2026-08-26T03:00:02.000Z" },
+    })).resolves.toMatchObject({ type: "event_id_collision", kept: "first", eventIds: [toolCallId] });
+    await expect(client.prepare(
+      "SELECT id FROM managed_session_events WHERE id = ?",
+    ).bind(partialId).first()).resolves.toBeNull();
+  });
+
+  it("reports a lost fence instead of throwing when a stale owner replays a different processed_at", async () => {
+    await ensureSessionExecutionCoordinatorSchema(client);
+    const sessions = new SqlSessionPersistence(client, testSealer);
+    await sessions.insert({
+      workspaceId: "workspace_01",
+      session,
+      initialEvents: [],
+      resourceSecrets: [],
+    });
+    const coordinator = new SqlSessionExecutionCoordinator(client);
+    await coordinator.admit({
+      execution: {
+        id: "execution_replay",
+        workspaceId: "workspace_01",
+        sessionId: session.id,
+        admittedAt: "2026-08-26T02:00:00.000Z",
+        events: [{
+          id: "input_replay",
+          type: "user.message",
+          content: [{ type: "text", text: "Run" }],
+          processedAt: "2026-08-26T02:00:00.000Z",
+        }],
+      },
+    });
+    const old = await coordinator.claim({
+      ownerId: "node_old",
+      attemptId: "attempt_old",
+      claimedAt: "2026-08-26T02:00:01.000Z",
+      leaseTtlMs: 1_000,
+    });
+    expect(old.type).toBe("claimed");
+    if (old.type !== "claimed") return;
+    const warnings: object[] = [];
+    const projection = new SqlSessionRuntimeProjectionPersistence(client, {
+      now: () => new Date("2026-08-26T02:00:01.500Z"),
+      warn: (entry) => { warnings.push(entry); },
+    });
+    const toolCallId = "toolu_fenced_replay";
+    const first = {
+      id: toolCallId,
+      type: "agent.tool_use" as const,
+      name: "bash",
+      input: { command: "echo hello" },
+      processedAt: "2026-08-26T02:00:01.100Z",
+    };
+    await expect(projection.project({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      expectedRevision: 1,
+      executionFence: old.fence,
+      events: [first],
+      next: { ...session, updatedAt: first.processedAt },
+    })).resolves.toMatchObject({ type: "projected" });
+    await coordinator.claim({
+      ownerId: "node_new",
+      attemptId: "attempt_new",
+      claimedAt: "2026-08-26T02:00:03.000Z",
+      leaseTtlMs: 30_000,
+    });
+    const stale = new SqlSessionRuntimeProjectionPersistence(client, {
+      now: () => new Date("2026-08-26T02:00:04.000Z"),
+      warn: (entry) => { warnings.push(entry); },
+    });
+    await expect(stale.project({
+      workspaceId: "workspace_01",
+      sessionId: session.id,
+      expectedRevision: 2,
+      executionFence: old.fence,
+      events: [{ ...first, processedAt: "2026-08-26T02:00:04.000Z" }],
+      next: { ...session, updatedAt: "2026-08-26T02:00:04.000Z" },
+    })).resolves.toEqual({ type: "execution_fence_lost" });
+    await expect(client.prepare(
+      `SELECT document FROM managed_session_events WHERE id = ?`,
+    ).bind(toolCallId).first<{ document: string }>())
+      .resolves.toMatchObject({
+        document: expect.stringContaining("\"processedAt\":\"2026-08-26T02:00:01.100Z\""),
+      });
+    expect(warnings).toEqual([]);
+  });
+
   it("atomically fences an in-sandbox runtime projection against a reclaimed Environment Work", async () => {
     const sessions = new SqlSessionPersistence(client, testSealer);
     await sessions.insert({

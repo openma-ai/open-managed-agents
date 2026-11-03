@@ -48,6 +48,7 @@ import {
 } from "@open-managed-agents/session-runtime";
 import { SessionExecutionHost, SessionSandboxRuntime } from "@open-managed-agents/session-runtime";
 import { applyCapCliPlaceholderEnvironment } from "./cap-placeholder-env";
+import { interruptedTurnStopReason } from "@open-managed-agents/session-runtime-contract";
 import {
   ensureSessionExecutionCoordinatorSchema,
   SqlSessionExecutionStore,
@@ -3092,7 +3093,7 @@ export class SessionDO extends DurableObject<Env> {
           // user.interrupt event in the log carries the actual cause.
           const idleEvent: SessionEvent = {
             type: "session.status_idle",
-            stop_reason: { type: "end_turn" },
+            stop_reason: interruptedTurnStopReason(),
             ...(targetThread !== "sthr_primary" ? { session_thread_id: targetThread } : {}),
           };
           history.append(idleEvent);

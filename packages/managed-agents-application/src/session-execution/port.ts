@@ -4,6 +4,7 @@ import type {
 } from "../domain/session-event";
 import type { Session } from "../domain/session";
 import type { SessionBootstrapEvent } from "../domain/session-bootstrap";
+import type { ProjectionEventIdCollision } from "./projection-persistence";
 
 /**
  * Application-owned projection proof. It is deliberately structural so the
@@ -50,7 +51,8 @@ export type RecordSessionRuntimeEventsResult =
   | { type: "recorded"; session: Session }
   | { type: "not_found" }
   | { type: "execution_fence_lost" }
-  | { type: "version_conflict"; message: string };
+  | { type: "version_conflict"; message: string }
+  | ProjectionEventIdCollision;
 
 export interface SessionRuntimeProjectionApplicationPort {
   recordSessionRuntimeEvents(

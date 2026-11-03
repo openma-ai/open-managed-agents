@@ -803,7 +803,12 @@ export async function createManagedNodeRuntime(
         });
       },
       cancel: async (input) => {
-        managedRuntimeDriver.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });
+        managedRuntimeDriver.cancel({
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          reason: input.reason,
+          attemptId: input.fence.attemptId,
+        });
         managedRuntimeRunner.cancel({ workspaceId: input.workspaceId, sessionId: input.sessionId, reason: input.reason });
       },
     },

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { NoopLogger, setRootLogger } from "@open-managed-agents/observability";
+import type { LogBindings, Logger } from "@open-managed-agents/observability";
 import type { SandboxExecutor } from "@open-managed-agents/sandbox";
 import type { SessionEvent } from "@open-managed-agents/shared";
 import type {
@@ -206,6 +208,48 @@ describe("ManagedNodeHarnessRuntime", () => {
       ["agent.tool_use", "2026-08-26T01:00:00.000Z"],
       ["agent.tool_result", "2026-08-26T01:00:00.001Z"],
     ]);
+  });
+
+  it("logs a rejected harness output instead of leaving an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown) => { unhandled.push(error); };
+    const logged: Array<{ bindings: LogBindings; message?: string }> = [];
+    const capturing = {
+      error(bindings: LogBindings, message?: string) { logged.push({ bindings, message }); },
+      child() { return capturing; },
+      trace() {}, debug() {}, info() {}, warn() {}, fatal() {},
+    } as Logger;
+    setRootLogger(capturing);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { ManagedNodeHarnessRuntime } = await import("../../../packages/control-plane-node/src/lib/node-managed-harness-runtime.ts") as unknown as
+        { ManagedNodeHarnessRuntime: ManagedHarnessRuntimeConstructor };
+      const runtime = new ManagedNodeHarnessRuntime({
+        initialEvents: [], events: [], sandbox: {} as SandboxExecutor,
+        output: async () => { throw new Error("Runtime projection event IDs collide"); },
+        clock: { now: () => new Date("2026-08-26T01:00:00.000Z") },
+        ids: { nextEventId: () => "event_tool_replay" },
+      });
+      runtime.broadcast({
+        type: "agent.tool_use",
+        id: "toolu_replay",
+        name: "bash",
+        input: { command: "echo hello" },
+      } as SessionEvent);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+      expect(logged).toEqual([{
+        bindings: expect.objectContaining({
+          op: "main-node.harness.output_failed",
+          _tag: "HarnessOutputFailed",
+          err: expect.objectContaining({ message: "Runtime projection event IDs collide" }),
+        }),
+        message: "Harness output failed",
+      }]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      setRootLogger(new NoopLogger());
+    }
   });
 
   it("keeps a final system.message as mid-conversation system context", async () => {

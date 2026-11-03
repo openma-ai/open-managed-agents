@@ -119,6 +119,7 @@ export class SessionRuntimeProjectionApplicationService
     if (projected.type === "execution_fence_lost") {
       return { type: "execution_fence_lost" };
     }
+    if (projected.type === "event_id_collision") return projected;
     if (projected.type === "revision_conflict") {
       return {
         type: "version_conflict",
