@@ -15,21 +15,21 @@ const decisionRows = [
     "Apache 2.0",
     "Teams that want the CMA resource shape without Claude-only, Anthropic-hosted lock-in",
   ],
-  [
+    [
     "TrueForge (TrueFoundry)",
-    "Vendor-neutral agent harness",
-    "Multi-model",
-    "Yes, per vendor docs",
-    "Yes",
-    "Teams already on TrueFoundry, or optimizing cost per run",
+    "Open-source agent harness with sessions, HTTP API, approvals, and a chat UI",
+    "OpenAI, Anthropic, Gemini, or any OpenAI-compatible endpoint",
+    "Yes: local SQLite, or Postgres + Redis via Docker Compose, Helm, or Railway",
+    "MIT",
+    "Teams that want a CMA-style harness with a bundled chat UI",
   ],
   [
     "Omnara",
-    "Managed agent platform",
-    "Multi-model, per vendor",
-    "Self-host option, per vendor",
-    "Positions itself as open source",
-    "Teams comparing hosted agent platforms with a self-host exit",
+    "Open-source managed agent platform with a REST API and durable state",
+    "Any compatible model",
+    "Yes: Docker Compose with Postgres, Redis, and S3-compatible storage",
+    "Apache 2.0",
+    "Teams that want agents on their own machines or third-party sandboxes",
   ],
   [
     "OpenAI Agents API",
@@ -68,8 +68,8 @@ const decisionRows = [
 const criteriaRows = [
   ["Durable sessions", "Conversation and progress survive process crashes and can be resumed later", "Library frameworks leave persistence to you"],
   ["Isolated sandbox", "Tools run in a container or microVM, not in the API process", "In-process SDKs run tools next to your app"],
-  ["Event log + streaming", "Every step is recorded and streamable (SSE) for UIs and audit", "Ad hoc logging is not an event log"],
-  ["Credential isolation", "Secrets are injected outside the sandbox, not handed to the model", "Env vars inside the sandbox leak to tools"],
+  ["Event log + streaming", "Every step is recorded and streamable (SSE) for UIs and audit", "Ad hoc application logs that cannot replay a session"],
+  ["Credential isolation", "Secrets stay in a vault and are added to outbound requests, so tools in the sandbox do not hold them", "Env vars inside the sandbox are readable by every tool"],
   ["Model choice", "Swap model per agent without rewriting the runtime", "Claude-only or OpenAI-only services"],
   ["Deployment control", "Run the control plane where your data must live", "Hosted-only services"],
 ];
@@ -83,18 +83,14 @@ const faqItems = [
   {
     question: "Is there a free or open-source alternative to Claude Managed Agents?",
     answer:
-      "Yes. OpenMA is Apache 2.0 and free to self-host; you pay your own infrastructure and model provider. Frameworks such as LangGraph, CrewAI, and AutoGen are also open source, but they are libraries — you still build the sessions, sandboxes, and recovery layer.",
+      "Yes. OpenMA is Apache 2.0 and free to self-host. You pay for your own infrastructure and model provider. Frameworks such as LangGraph, CrewAI, and AutoGen are also open source, but they are libraries, so you still build the sessions, sandboxes, and recovery layer.",
   },
   {
     question: "Is there a GitHub alternative to Claude Managed Agents?",
     answer:
       "OpenMA's source is at github.com/openma-ai/open-managed-agents. It ships the agents, environments, sessions, vaults, memory stores, and an event stream, with Docker and Cloudflare deployment paths.",
   },
-  {
-    question: "What do Reddit and Hacker News threads about CMA alternatives usually miss?",
-    answer:
-      "Most threads compare model quality or list frameworks. The harder questions are operational: where session state lives, how a crashed run resumes, how credentials stay out of the sandbox, and whether you can change models without rewriting the runtime.",
-  },
+  
   {
     question: "Can I keep using Claude with an alternative?",
     answer:
@@ -103,7 +99,7 @@ const faqItems = [
   {
     question: "Is OpenMA a drop-in replacement?",
     answer:
-      "OpenMA keeps the Claude Managed Agents resource shape, so most clients switch by changing the base URL. Coverage is tracked per endpoint in the compatibility matrix in the docs; check the surfaces you rely on before migrating.",
+      "OpenMA keeps the Claude Managed Agents resource shape, so most clients switch by changing the base URL. Coverage is tracked per endpoint in the compatibility matrix in the docs. Check the surfaces you rely on before migrating.",
   },
 ];
 
@@ -113,7 +109,7 @@ const relatedLinks = [
   { href: "/blog/claude-managed-agents-vs-open-managed-agents/", anchor: "Claude Managed Agents vs OpenMA", note: "Feature matrix and when each one wins." },
   { href: "/open-source-managed-agents/", anchor: "Open-source managed agents", note: "Shortlist of open runtimes with the managed-agent shape." },
   { href: "/self-hosted-ai-agents/", anchor: "Self-hosted AI agents", note: "Run agents on your own infrastructure." },
-  { href: "/blog/openai-agents-api-vs-openma/", anchor: "OpenAI Agents API alternative", note: "Agents API vs Agents SDK vs an open multi-model runtime." },
+  { href: "/blog/openai-agents-api-vs-openma/", anchor: "OpenAI Agents API vs OpenMA", note: "Agents API vs Agents SDK vs an open multi-model runtime." },
   { href: "/blog/claude-agent-sdk-vs-managed-agents/", anchor: "Claude Agent SDK vs managed agents", note: "In-process SDK vs hosted harness, and when to migrate." },
   { href: "/ai-agent-platform/", anchor: "AI agent platform & orchestration", note: "The runtime primitives every agent platform needs." },
   { href: "/blog/migrate-from-claude-managed-agents/", anchor: "Migrating from Claude Managed Agents", note: "Step-by-step move of clients, sessions, and vaults." },
@@ -171,9 +167,9 @@ const schemas = [
             Claude Managed Agents gives you a hosted agent harness, sandboxes,
             and long-running sessions, on Claude models, on Anthropic's
             cloud. If you need a different model, a different deployment
-            boundary, or a different cost shape, this guide compares the real
-            alternatives by the criteria that matter for a managed agent
-            runtime, not by marketing category.
+            boundary, or a different cost shape, the options below are
+            compared on the criteria that matter for a managed agent runtime:
+            sessions, sandboxing, credentials, model choice, and deployment.
           </p>
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="https://docs.openma.ai/" class="site-button site-button-primary">Read the OpenMA docs</a>
@@ -194,7 +190,7 @@ const schemas = [
   </section>
 
   <section class="site-container py-16" data-reveal>
-    <h2 class="font-display text-3xl font-bold mb-4">What Claude Managed Agents is (and isn't)</h2>
+    <h2 class="font-display text-3xl font-bold mb-4">What Claude Managed Agents is</h2>
     <div class="max-w-3xl">
       <h3 class="font-semibold text-xl mt-6 mb-2">Agent, Environment, Session, Events</h3>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
@@ -216,8 +212,8 @@ const schemas = [
         <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK vs managed agents</a>.
       </p>
       <p class="text-[var(--color-fg-muted)] leading-relaxed">
-        What it isn't: a coding IDE, a chatbot builder, or a model. It is an
-        orchestration runtime. Alternatives should be judged as runtimes.
+        CMA is an orchestration runtime, so the alternatives below are judged
+        as runtimes.
       </p>
     </div>
   </section>
@@ -234,8 +230,12 @@ const schemas = [
         </li>
         <li>
           <strong class="text-[var(--color-fg)]">Data residency and infra control.</strong>
-          The harness and session history live in Anthropic's cloud. Even
-          with a self-hosted sandbox, the control plane is not yours, which
+          The harness and session history run on Anthropic-operated
+          infrastructure, including when you use CMA through Claude Platform on
+          AWS or Google Cloud. A self-hosted sandbox moves tool execution, but
+          Anthropic still operates the control plane. Sessions are stored
+          server-side, so CMA is not eligible for Zero Data Retention or HIPAA
+          BAA coverage (<a href="https://platform.claude.com/docs/en/managed-agents/overview">CMA overview</a>). That
           matters when audit, residency, or customer contracts dictate where
           conversation data and tool outputs are stored.
         </li>
@@ -252,9 +252,9 @@ const schemas = [
   <section class="site-container py-16" id="decision-table" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Decision table: alternatives compared</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-      Rows are listed by shape, not ranked. Third-party details reflect each
-      vendor's public positioning at the time of writing — verify current
-      licensing and hosting terms on their sites before you commit.
+      Rows are grouped by product shape in no particular order. Third-party
+      details come from each vendor's documentation or repository as of
+      November 2026.
     </p>
     <ComparisonTable columns={decisionColumns} rows={decisionRows} caption="Claude Managed Agents alternatives compared" />
 
@@ -262,8 +262,8 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-xl mb-2">OpenMA (open orchestration / managed runtime)</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          OpenMA mirrors the Claude Managed Agents resource model — agents,
-          environments, sessions, events, vaults, memory stores — and adds an
+          OpenMA mirrors the Claude Managed Agents resource model (agents,
+          environments, sessions, events, vaults, memory stores) and adds an
           OpenAI Agents API adapter over the same sessions. Models,
           harnesses, sandboxes, databases, and queues are all replaceable
           adapters. See the feature-by-feature
@@ -273,20 +273,23 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-xl mb-2">TrueForge, Omnara, and other open runtimes</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          TrueForge is TrueFoundry's vendor-neutral harness, marketed on cost
-          per run. Omnara positions itself as an open-source managed agent
-          platform. Both are worth evaluating against the same runtime
-          criteria below; the <a href="/open-source-managed-agents/">open-source managed agents</a>
-          shortlist goes deeper.
+          <a href="https://github.com/truefoundry/trueforge">TrueForge</a> is
+          TrueFoundry's MIT-licensed agent harness. TrueFoundry markets it as a
+          Claude Managed Agents alternative and publishes a cost benchmark
+          against CMA. <a href="https://github.com/omnara-ai/omnara">Omnara</a>
+          is an Apache-2.0 managed agent platform with a REST API, durable
+          state in Postgres, and a daemon that lets agents use your own
+          machines. The <a href="/open-source-managed-agents/">open-source managed agents</a>
+          shortlist compares them on the criteria below.
         </p>
       </div>
       <div>
         <h3 class="font-semibold text-xl mb-2">OpenAI Agents API</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           The closest vendor peer: an OpenAI-managed harness with sessions and
-          hosted or self-hosted sandboxes, on OpenAI models. If you are
-          switching vendors rather than escaping hosted lock-in, read the
-          <a href="/blog/openai-agents-api-vs-openma/">OpenAI Agents API alternative</a> comparison.
+          hosted or self-hosted sandboxes, on OpenAI models. If you want to
+          switch vendors and stay on a vendor-hosted runtime, read the
+          <a href="/blog/openai-agents-api-vs-openma/">OpenAI Agents API vs OpenMA</a> comparison.
         </p>
       </div>
       <div>
@@ -303,35 +306,14 @@ const schemas = [
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-4">Platform vs coding agent vs framework</h2>
+      <h2 class="font-display text-3xl font-bold mb-4">What a like-for-like replacement needs</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-        Search results for "Claude Managed Agents alternative" mix three
-        categories. Only one is a like-for-like replacement.
+        A replacement for Claude Managed Agents has to cover the same runtime
+        work. Frameworks and coding agents solve other problems, covered in the
+        <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a> guide.
       </p>
-      <h3 class="font-semibold text-xl mb-4">The managed-runtime bar</h3>
+      
       <ComparisonTable columns={["Criterion", "What a managed runtime provides", "Common gap"]} rows={criteriaRows} caption="Managed agent runtime criteria" />
-      <div class="grid md:grid-cols-2 gap-8 mt-10 max-w-5xl">
-        <div>
-          <h3 class="font-semibold text-xl mb-2">Frameworks are not platforms</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            LangGraph, CrewAI, and AutoGen are good libraries for expressing
-            agent logic as graphs or multi-agent conversations. They do not,
-            by themselves, give you a hosted API, sandbox isolation, vaults,
-            or an operator console. Hosted runtimes for some of them exist as
-            separate (often paid) products. If you pick a framework, budget
-            for building the platform around it.
-          </p>
-        </div>
-        <div>
-          <h3 class="font-semibold text-xl mb-2">What not to confuse with: coding agents</h3>
-          <p class="text-[var(--color-fg-muted)] leading-relaxed">
-            Claude Code, OpenHands, and similar tools are coding agents a
-            developer drives. They can run <em>inside</em> a managed runtime
-            — OpenMA runs Claude Code and Codex through ACP adapters — but a
-            list of "Claude Code alternatives" answers a different question.
-          </p>
-        </div>
-      </div>
     </div>
   </section>
 
@@ -350,10 +332,10 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-xl mb-2">Deploying on your infra</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          OpenMA runs on Node.js or Docker with SQLite, PostgreSQL, or MySQL;
-          on Fly.io; on Vercel (beta); or on Cloudflare with Durable Objects
-          and R2. Why and how teams do this is covered in
-          <a href="/self-hosted-ai-agents/">self-hosted AI agents</a>; the
+          OpenMA runs on Node.js or Docker with SQLite, PostgreSQL, or MySQL.
+          It also deploys to Fly.io, to Vercel (beta), and to Cloudflare with
+          Durable Objects and R2. Why and how teams do this is covered in
+          <a href="/self-hosted-ai-agents/">self-hosted AI agents</a>, and the
           <a href="https://docs.openma.ai/self-host/overview/">self-host docs</a> have the setup.
         </p>
       </div>
@@ -363,26 +345,24 @@ const schemas = [
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16 grid md:grid-cols-2 gap-10 max-w-5xl">
       <div>
-        <h2 class="font-display text-2xl font-bold mb-4">Pricing pointer</h2>
-        <h3 class="font-semibold text-lg mb-2">How CMA public pricing is shaped</h3>
+        <h2 class="font-display text-2xl font-bold mb-4">What CMA costs</h2>
+        
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           Anthropic bills Claude Managed Agents as standard token usage plus a
           session-runtime fee measured while a session is running. Self-hosting
           replaces the runtime fee with your own infrastructure and operations
-          cost; it is not automatically cheaper. Model the numbers with the
+          cost, so whether it is cheaper depends on your usage and team. Model the numbers with the
           <a href="/blog/claude-managed-agents-pricing/">worked monthly pricing example</a>.
         </p>
       </div>
       <div>
-        <h2 class="font-display text-2xl font-bold mb-4">Decoupling the brain from the hands</h2>
+        <h2 class="font-display text-2xl font-bold mb-4">Choosing the model and the sandbox</h2>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          Anthropic's own engineering write-up on Managed Agents frames the
-          design as decoupling the <strong>brain</strong> (the model and
-          harness) from the <strong>hands</strong> (sandboxes and tools).
-          The same idea is the strongest argument for an open runtime: once
-          the brain and hands are separate interfaces, there is no technical
-          reason the brain must be one vendor's model or the hands one
-          vendor's cloud. OpenMA treats both as replaceable.
+          Anthropic's engineering write-up describes Managed Agents as
+          separating the brain (model and harness) from the hands (sandboxes
+          and tools), explained in <a href="/what-is-claude-managed-agents/">what Claude Managed Agents is</a>.
+          OpenMA applies the same split and lets you pick the model, the
+          harness, and the sandbox provider.
         </p>
       </div>
     </div>
@@ -402,7 +382,7 @@ const schemas = [
       and staying on it is a reasonable choice.
     </p>
     <div class="mt-8 flex flex-wrap gap-3">
-      <a href="https://docs.openma.ai/" class="site-button site-button-primary">Run a multi-model managed agent runtime you control</a>
+      <a href="https://docs.openma.ai/" class="site-button site-button-primary">Read the OpenMA docs</a>
       <a href="/blog/claude-managed-agents-pricing/" class="site-button">See the pricing math</a>
     </div>
   </section>

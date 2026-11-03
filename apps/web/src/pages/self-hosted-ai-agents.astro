@@ -14,15 +14,9 @@ const hostingRows = [
   ["Operations", "None for you", "None for you", "Your team"],
 ];
 
-const categoryRows = [
-  ["Managed agent runtime", "Sessions, sandboxes, event log, recovery, credentials, API", "OpenMA, Claude Managed Agents, OpenAI Agents API", "Production agents your apps and teams call"],
-  ["Coding agent", "An agent a developer drives to change code", "Claude Code, Codex, OpenHands", "Developer productivity; can run inside a runtime"],
-  ["Agent / chatbot framework", "Library for agent logic; you host everything else", "LangGraph, CrewAI, AutoGen", "Custom logic, if you will build the platform"],
-];
-
 const deploySteps = [
   "Pick a target: Node.js or Docker on your servers, Fly.io, Vercel (beta), or Cloudflare.",
-  "Choose storage: SQLite for one host, PostgreSQL or MySQL for replicas, or Cloudflare D1 / Durable Objects; S3-compatible storage or R2 for blobs.",
+  "Choose storage: SQLite for one host, PostgreSQL or MySQL for replicas, or Cloudflare D1 / Durable Objects. Use S3-compatible storage or R2 for blobs.",
   "Choose a sandbox driver: Docker, BoxLite, E2B, Daytona, Modal, Sprites, Cloudflare, and others.",
   "Add model credentials as Model Cards: Anthropic, OpenAI, DeepSeek, OpenRouter, or a custom endpoint.",
   "Create an agent and a session through the Console, CLI, or API, and point your SDK at your deployment.",
@@ -32,7 +26,7 @@ const faqItems = [
   {
     question: "What is a self-hosted AI agent?",
     answer:
-      "An AI agent whose runtime (the agent loop, session history, tool execution, and credentials) runs on infrastructure you control rather than a vendor's cloud. The model can still be a hosted API you call with your own key.",
+      "An AI agent whose runtime (the agent loop, session history, tool execution, and credentials) runs on infrastructure you control. The model can still be a hosted API you call with your own key.",
   },
   {
     question: "Do I need to self-host the model too?",
@@ -47,7 +41,7 @@ const faqItems = [
   {
     question: "What does it take to run OpenMA myself?",
     answer:
-      "For a single host, Docker Compose with SQLite. For production, a Node deployment with PostgreSQL or MySQL, object storage, and a sandbox provider — or the Cloudflare setup wizard. The self-host docs cover each path.",
+      "For a single host, Docker Compose with SQLite. For production, a Node deployment with PostgreSQL or MySQL, object storage, and a sandbox provider, or the Cloudflare setup wizard. The self-host docs cover each path.",
   },
 ];
 
@@ -55,7 +49,7 @@ const relatedLinks = [
   { href: "/claude-managed-agents-alternative/", anchor: "Claude Managed Agents alternative", note: "Compare hosted CMA with open, self-hosted runtimes." },
   { href: "/open-source-ai-agents/", anchor: "Open-source AI agents", note: "Agent platforms vs frameworks vs coding agents." },
   { href: "/open-source-managed-agents/", anchor: "Open-source managed agents", note: "Shortlist of open runtimes with the managed-agent shape." },
-  { href: "/ai-agent-platform/", anchor: "AI agent orchestration", note: "Sessions, sandboxes, model routing, and durability." },
+  { href: "/ai-agent-platform/", anchor: "AI agent platform & orchestration", note: "Sessions, sandboxes, model routing, and durability." },
   { href: "/blog/self-host-agent-platform-cloudflare-workers/", anchor: "How to self-host an agent platform on Cloudflare", note: "End-to-end Workers, Durable Objects, and R2 guide." },
 ];
 
@@ -108,9 +102,8 @@ const schemas = [
             Self-hosting an AI agent means running the part that matters for
             control: the agent loop, session history, tool sandbox, and
             credentials, on infrastructure you own, while still calling
-            whichever model API you choose. This guide covers when that is
-            worth it, what kind of software you actually need, and a
-            deployment path with an open managed runtime.
+            whichever model API you choose. An open managed runtime such as
+            OpenMA provides those pieces as one deployable service.
           </p>
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="https://docs.openma.ai/self-host/overview/" class="site-button site-button-primary">Self-host docs</a>
@@ -132,9 +125,8 @@ const schemas = [
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Self-host vs vendor-managed</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-      Model vendors now sell managed agent runtimes. They are the fastest
-      way to production — and the reference point for what a self-hosted
-      runtime has to match.
+      The table compares the two vendor-managed agent runtimes with a
+      self-hosted one on who runs each part and where data lives.
     </p>
     <ComparisonTable
       columns={["", "Claude Managed Agents", "OpenAI Agents API (managed harness)", "Self-hosted runtime"]}
@@ -145,34 +137,30 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-xl mb-2">Claude Managed Agents</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          Anthropic hosts the harness and sessions; self-hosted sandboxes move
-          only tool execution. Read <a href="/what-is-claude-managed-agents/">what Claude Managed Agents is</a>,
+          Anthropic hosts the harness and sessions. Self-hosted sandboxes move
+          only tool execution to your infrastructure. Read <a href="/what-is-claude-managed-agents/">what Claude Managed Agents is</a>,
           or compare <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternatives</a>.
         </p>
       </div>
       <div>
         <h3 class="font-semibold text-xl mb-2">OpenAI Agents API (managed harness)</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          OpenAI runs the Codex-based harness and session state; a
-          self-hosted sandbox changes where code runs, not who runs the API.
+          OpenAI runs the Codex-based harness, session state, and API. A
+          self-hosted sandbox moves code execution to your infrastructure.
           See the <a href="/blog/openai-agents-api-vs-openma/">OpenAI Agents API comparison</a>.
         </p>
       </div>
     </div>
   </section>
 
-  <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
+    <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-4">Runtime vs coding agent vs chatbot framework</h2>
-      <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-        "Self-hosted AI agent" covers three different kinds of software. Know
-        which one you are shopping for.
+      <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
+        This page is about self-hosting a managed agent runtime. Coding agents
+        and agent frameworks can also be self-hosted, and the
+        <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a> guide
+        explains how those categories differ.
       </p>
-      <ComparisonTable
-        columns={["Category", "What it is", "Examples", "Use it for"]}
-        rows={categoryRows}
-        caption="Kinds of self-hostable agent software"
-      />
     </div>
   </section>
 
@@ -208,8 +196,8 @@ const schemas = [
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
     <div class="site-container py-16">
-      <h2 class="font-display text-3xl font-bold mb-4">Deployment path (sketch)</h2>
-      <h3 class="font-semibold text-xl mb-4">Docker, Node, or Cloudflare outline</h3>
+      <h2 class="font-display text-3xl font-bold mb-4">Deploying OpenMA</h2>
+      
       <ol class="space-y-3 text-[var(--color-fg-muted)] leading-relaxed list-decimal pl-5 max-w-3xl">
         {deploySteps.map((step) => <li>{step}</li>)}
       </ol>
@@ -230,21 +218,20 @@ docker compose up -d</code></pre>
 
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Where OpenMA fits</h2>
-    <h3 class="font-semibold text-xl mb-4">An orchestration runtime, not an IDE</h3>
+    <h3 class="font-semibold text-xl mb-4">Coding agents inside the runtime</h3>
     <div class="max-w-3xl space-y-4 text-[var(--color-fg-muted)] leading-relaxed">
       <p>
         OpenMA is an open-source managed agent runtime. It provides the same
-        building blocks as vendor-managed services — agents, environments,
-        sessions, events, vaults, memory stores — with a Claude Managed
+        building blocks as vendor-managed services (agents, environments,
+        sessions, events, vaults, memory stores) with a Claude Managed
         Agents-compatible API at <code>/v1</code> and an OpenAI Agents API
         adapter at <code>/openai/v1</code>.
       </p>
       <p>
-        It is not a coding assistant and not a no-code bot builder. Coding
-        agents such as Claude Code and Codex can run inside it through ACP
-        adapters; your applications, integrations, and teams call it to run
-        agents of any kind. For the category view, see
-        <a href="/ai-agent-platform/">AI agent orchestration</a>.
+        Your applications, integrations, and teams call it to run agents of
+        any kind. Coding agents such as Claude Code and Codex can run inside
+        it through ACP adapters. For the category view, see
+        <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a>.
       </p>
     </div>
     <div class="mt-8 flex flex-wrap gap-3">
@@ -257,8 +244,6 @@ docker compose up -d</code></pre>
     <div class="site-container py-16 max-w-4xl">
       <h2 class="font-display text-3xl font-bold mb-4">Related open-source paths</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed">
-        Self-hosting and open source usually go together, but not always:
-        some "open" projects gate the production runtime behind a license.
         Compare <a href="/open-source-ai-agents/">open-source AI agents</a> by
         category, or go straight to the
         <a href="/open-source-managed-agents/">open-source managed agents</a> shortlist.

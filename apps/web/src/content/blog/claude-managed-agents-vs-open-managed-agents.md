@@ -7,21 +7,20 @@ author: openma
 tags: ["comparison", "claude", "managed-agents", "self-hosted", "architecture"]
 ---
 
-If you are evaluating a managed agent runtime — something that owns
-sessions, sandboxes, tool dispatch, and crash recovery so your team does
-not have to — two options share almost the same outer shape:
+A managed agent runtime owns sessions, sandboxes, tool dispatch, and
+crash recovery so your team does not have to. Two options share almost the same outer shape:
 **Claude Managed Agents** (CMA), Anthropic's hosted service, and
 **OpenMA** (Open Managed Agents), an Apache-2.0 runtime you can self-host
 or use hosted. Both expose agents, environments, sessions, and an event
 stream. What differs is who runs the control plane, which models you can
 use, and how the bill is shaped.
 
-This page is the 1:1 side-by-side. For a wider view beyond these two
-products, the [Claude Managed Agents alternative](/claude-managed-agents-alternative/)
-guide covers the rest of the market. If you need a primer on the hosted
-product first, read [what is Claude Managed Agents](/what-is-claude-managed-agents/).
+Other options are compared in
+[Claude Managed Agents alternative](/claude-managed-agents-alternative/).
+For a primer on the hosted product, read
+[what is Claude Managed Agents](/what-is-claude-managed-agents/).
 
-## Snapshot: two managed-runtime shapes
+## The two products at a glance
 
 | | Claude Managed Agents | OpenMA |
 |---|---|---|
@@ -31,8 +30,7 @@ product first, read [what is Claude Managed Agents](/what-is-claude-managed-agen
 | License | Proprietary | Apache 2.0 |
 | API | `/v1/agents`, `/v1/environments`, `/v1/sessions`, events | Same resource shape at `/v1`, plus an OpenAI Agents API adapter at `/openai/v1` |
 
-Both are **orchestration runtimes**, not chat UIs and not coding IDEs.
-The comparison below stays at that layer.
+
 
 ## Feature matrix
 
@@ -44,20 +42,20 @@ is your standard and you want Anthropic to tune the harness for it.
 **OpenMA** separates the model from the runtime. Each agent references a
 model (or a Model Card for a custom provider or gateway), so one agent can
 run on Claude and another on an OpenAI or OpenRouter model. Provider keys
-are encrypted at rest in Model Cards. This is the "decoupling the brain
-from the hands" idea applied to vendors: the model is the brain, the
-runtime, tools, and sandbox are the hands, and you can swap either side.
+are encrypted at rest in Model Cards. The "brain and hands" split also
+lets you swap the model vendor without touching the runtime.
 
 ### Hosting: Anthropic cloud vs self-host
 
 **Claude Managed Agents** runs the harness and session state on
-Anthropic's infrastructure. Its docs also describe self-hosted sandbox
-options for tool execution, but the agent loop and control plane remain
-Anthropic-operated.
+Anthropic-operated infrastructure, also when you use it through Claude
+Platform on AWS or Google Cloud. Its docs describe self-hosted sandboxes
+for tool execution, and the agent loop and control plane stay with
+Anthropic ([CMA overview](https://platform.claude.com/docs/en/managed-agents/overview)).
 
 **OpenMA** runs wherever you deploy it: Node.js or Docker, Fly.io,
-Vercel (beta), or Cloudflare. Session history lives in your database —
-SQLite, PostgreSQL, MySQL, or Cloudflare D1 / Durable Object SQL — and
+Vercel (beta), or Cloudflare. Session history lives in your database
+(SQLite, PostgreSQL, MySQL, or Cloudflare D1 / Durable Object SQL), and
 workspace blobs in S3-compatible storage or R2. See
 [self-hosted AI agents](/self-hosted-ai-agents/) for why teams choose that
 path.
@@ -66,14 +64,14 @@ path.
 
 | Area | Claude Managed Agents | OpenMA |
 |---|---|---|
-| Session model | Hosted, long-running sessions with an event stream | Durable, event-sourced sessions; stateless harness rebuilds from the log |
+| Session model | Hosted, long-running sessions with an event stream | Durable sessions stored as an event log, so a crashed run resumes where it stopped |
 | Event stream | SSE (`agent.message`, `agent.tool_use`, `session.status_idle`, …) | Same event families over SSE or JSON polling |
 | Harness | Anthropic's harness, not modifiable | Built-in Pi harness, ACP adapters for Claude Code / Codex, or your own |
 | Sandbox | Anthropic cloud sandboxes; self-hosted sandbox option | Replaceable drivers: Docker, E2B, Daytona, Modal, Sprites, Vercel, Blaxel, BoxLite, Cloudflare, and more |
-| Credentials | Vaults managed by Anthropic | Vaults + outbound proxy injection; enforcement depends on runtime profile |
-| Observability | Anthropic Console session tracing | Your event log and database; OpenMA Console |
+| Credentials | Vaults managed by Anthropic | Vaults with injection at an outbound proxy. Enforcement depends on the sandbox provider and runtime profile |
+| Observability | Event history persisted server-side and fetchable through the API | Event log in your own database, viewable in the OpenMA Console |
 | Multi-tenancy | Scoped to your Anthropic organization | Tenants in your own deployment |
-| Workplace integrations | MCP connectors | MCP plus GitHub, Linear, Slack, and Feishu integrations |
+| Workplace integrations | MCP servers | MCP plus GitHub, Linear, Slack, and Feishu integrations |
 
 **API compatibility.** OpenMA keeps the Claude Managed Agents resource
 shape on purpose, so most client code moves by changing the base URL:
@@ -85,7 +83,7 @@ shape on purpose, so most client code moves by changing the base URL:
 
 Coverage is tracked surface by surface in the
 [Claude Managed Agents compatibility matrix](https://docs.openma.ai/claude-managed-agents-compatibility/).
-Check it for the endpoints you depend on rather than assuming parity.
+Check it for each endpoint you depend on.
 
 **Who owns the loop.** In CMA, decisions about context engineering,
 caching, compaction, and tool retries happen inside a harness you cannot
@@ -109,14 +107,14 @@ Every input and output is appended to a per-session event log before it
 is broadcast. When a harness crashes, the next one replays the log and
 continues. That property is also what makes the harness swappable.
 
-**Sandbox swaps.** OpenMA picks the sandbox per deployment through
-`SANDBOX_PROVIDER` and keeps the Session API identical across drivers.
+**Sandbox swaps.** OpenMA picks the sandbox provider per deployment in
+configuration, and the Session API stays the same across providers.
 The [sandbox guide](https://docs.openma.ai/sandboxes/) maps each driver's
 isolation and suspend/resume behavior.
 
 ## When Claude Managed Agents wins
 
-Be honest about this — CMA is a strong product:
+
 
 - You are standardized on Claude and want Anthropic to own harness tuning.
 - You want zero infrastructure decisions and no on-call for the runtime.
@@ -130,39 +128,32 @@ Be honest about this — CMA is a strong product:
   different models by task or cost.
 - **Data residency** or audit rules require session history, credentials,
   and outputs to stay on infrastructure you control.
-- You want to **read, fork, or replace the harness** — custom context
+- You want to **read, fork, or replace the harness** for custom context
   engineering, caching breakpoints, or bringing Claude Code / Codex into
   a managed sandbox via ACP.
 - You want to choose the sandbox provider and backend services.
 - You want an OpenAI Agents API endpoint and a Claude Managed Agents
   endpoint over the same sessions.
 
-## Not a coding-IDE comparison
 
-Searches for "Claude Managed Agents" sometimes surface coding agents
-such as Claude Code or OpenHands. Those are tools a developer drives to
-write software. CMA and OpenMA are runtimes your application calls to
-run agents — coding agents can run *inside* them, but they are a
-different category. If you are comparing coding assistants, this page is
-the wrong one.
 
 ## Cost shape
 
-The structures differ more than the headline numbers:
+The two bills are structured differently:
 
 | | Claude Managed Agents | OpenMA self-hosted | OpenMA hosted |
 |---|---|---|---|
 | Runtime | Session-hour fee while a session is running | Your infrastructure cost | Wallet-based cloud sandbox compute |
 | Model tokens | Anthropic token rates | Paid directly to your provider (BYOK) | Paid directly to your provider (BYOK) |
-| Platform fee | Included in session runtime | None | See [hosted pricing](/pricing/) |
+| Platform fee | Included in session runtime | None | None. You pay for sandbox compute ([pricing](/pricing/)) |
 
-For the detailed math — billable components, easy-to-miss spend, and a
-worked monthly example — see
+For the billable components, easy-to-miss spend, and a worked monthly
+example, see
 [Claude Managed Agents pricing](/blog/claude-managed-agents-pricing/).
-Self-hosting is not automatically cheaper; it moves cost from a vendor
-line item to infrastructure and operations you own.
+Self-hosting moves cost from a vendor line item to infrastructure and
+operations you own, and whether that is cheaper depends on your usage.
 
-## Next steps
+## Trying OpenMA with an existing CMA client
 
 1. Confirm the endpoints you rely on in the
    [compatibility matrix](https://docs.openma.ai/claude-managed-agents-compatibility/).
@@ -179,8 +170,4 @@ line item to infrastructure and operations you own.
    [migrating from Claude Managed Agents](/blog/migrate-from-claude-managed-agents/)
    for vaults, sessions, and integrations.
 
-Compare the features, then try OpenMA on your own infrastructure with the
-[OpenMA documentation](https://docs.openma.ai/). This page stays a strict
-1:1 comparison of Claude Managed Agents and OpenMA; for other options, see
-the [Claude Managed Agents alternative](/claude-managed-agents-alternative/)
-guide.
+

@@ -11,14 +11,14 @@ const criteriaRows = [
   ["Durable sessions", "Long-running, resumable, recover after crashes"],
   ["Event stream", "Append-only event log streamed over SSE"],
   ["Isolated execution", "Tools in a sandbox, not in the API process"],
-  ["Vaults", "Credentials injected outside the sandbox"],
+  ["Vaults", "Credentials kept in a vault and added to outbound requests, so the sandbox does not hold them"],
   ["Self-hostable control plane", "The whole runtime runs on your infrastructure"],
 ];
 
 const shortlistRows = [
-  ["OpenMA", "Yes — Claude Managed Agents-compatible /v1 plus OpenAI Agents API adapter", "Yes — Node/Docker, Fly.io, Vercel (beta), Cloudflare", "Claude, OpenAI, DeepSeek, OpenRouter, custom", "Apache 2.0"],
-  ["TrueForge", "Harness-centric", "Yes, per vendor", "Multi-model", "Open source"],
-  ["Omnara", "Managed platform, per vendor", "Self-host option, per vendor", "Multi-model, per vendor", "Positions itself as open source"],
+  ["OpenMA", "Yes: Claude Managed Agents-compatible /v1 plus OpenAI Agents API adapter", "Yes: Node/Docker, Fly.io, Vercel (beta), Cloudflare", "Claude, OpenAI, DeepSeek, OpenRouter, custom", "Apache 2.0"],
+  ["TrueForge", "Own HTTP API and TypeScript SDK", "Yes: local SQLite, or Postgres + Redis", "OpenAI, Anthropic, Gemini, OpenAI-compatible", "MIT"],
+  ["Omnara", "Own REST API", "Yes: Docker Compose with Postgres, Redis, S3", "Any compatible model", "Apache 2.0"],
   ["Claude Managed Agents (reference)", "Defines the shape", "No — self-hosted sandbox only", "Claude", "Proprietary"],
 ];
 
@@ -95,9 +95,9 @@ const schemas = [
       </h1>
       <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
         A managed agent runtime owns agents, sessions, sandboxes, and crash
-        recovery behind an API. This comparison covers the open-source
-        runtimes that implement that shape, the criteria that separate them
-        from frameworks, and where each option fits.
+        recovery behind an API. OpenMA, TrueForge, and Omnara are open-source
+        runtimes with that shape, and Claude Managed Agents is the hosted
+        reference.
       </p>
     </div>
   </section>
@@ -105,8 +105,7 @@ const schemas = [
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">The managed runtime shape</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed max-w-3xl">
-      A managed agent runtime is not a framework. It exposes an HTTP API:
-      you create an agent and an environment, open a session, send a
+      A managed agent runtime is a service with an HTTP API. You create an agent and an environment, open a session, send a
       message, and stream events back while the runtime runs the loop,
       executes tools in a sandbox, persists every step, and recovers from
       failures. Open-sourcing that layer means you can audit how credentials
@@ -125,8 +124,8 @@ const schemas = [
       <h2 class="font-display text-3xl font-bold mb-4">Criteria for the managed-runtime shape</h2>
       <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
         Use these as a checklist when comparing runtimes. A project missing
-        several of them is a framework or harness, which may still be the
-        right tool — just not a managed runtime.
+        several of them is a framework or harness, which can still be the
+        right tool for your use case.
       </p>
       <ComparisonTable columns={["Capability", "What to check"]} rows={criteriaRows} caption="Managed agent runtime checklist" />
     </div>
@@ -136,12 +135,13 @@ const schemas = [
     <h2 class="font-display text-3xl font-bold mb-4">Open-source managed agent runtimes compared</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
       Claude Managed Agents is included as the reference shape. Third-party
-      details reflect public positioning; verify them on each project's site.
+      details come from each project's repository
+      (<a href="https://github.com/truefoundry/trueforge">TrueForge</a>,
+      <a href="https://github.com/omnara-ai/omnara">Omnara</a>) as of November 2026.
     </p>
     <ComparisonTable columns={["Runtime", "Managed-agents API", "Self-host control plane", "Models", "License"]} rows={shortlistRows} caption="Open-source managed agent runtimes shortlist" />
     <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
-      This page compares runtimes only. For the wider field of frameworks,
-      harnesses, and coding agents, see <a href="/open-source-ai-agents/">open-source AI agents</a>.
+      For the wider field of frameworks, harnesses, and coding agents, see <a href="/open-source-ai-agents/">open-source AI agents</a>.
     </p>
   </section>
 
@@ -152,7 +152,7 @@ const schemas = [
         <p class="text-[var(--color-fg-muted)] leading-relaxed mb-4">
           Start OpenMA locally with Docker Compose, then move to a Node
           deployment with PostgreSQL or MySQL, or provision it on Cloudflare.
-          The <a href="https://docs.openma.ai/self-host/overview/">self-host overview</a> lists every path;
+          The <a href="https://docs.openma.ai/self-host/overview/">self-host overview</a> lists every path, and
           <a href="/self-hosted-ai-agents/">self-hosted AI agents</a> explains the trade-offs.
         </p>
       </div>

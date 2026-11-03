@@ -21,7 +21,7 @@ const buildingBlocks = [
   {
     name: "Session",
     href: `${DOCS}/sessions`,
-    body: "One running conversation between your application and an agent in an environment. Sessions are long-running: they can work for a long time, go idle, and be resumed later.",
+    body: "One running conversation between your application and an agent in an environment. Sessions are long-running: they can work for a long time, go idle, and be resumed later. You can send more user events to steer a running session or interrupt it.",
   },
   {
     name: "Events",
@@ -43,7 +43,7 @@ const faqItems = [
   {
     question: "What is Claude Managed Agents in simple terms?",
     answer:
-      "It is Anthropic's hosted service for running AI agents. You describe the agent and its sandbox; Anthropic runs the agent loop, executes tools in a sandbox, keeps the session state, and streams results back to your application.",
+      "It is Anthropic's hosted service for running AI agents. You describe the agent and its sandbox. Anthropic runs the agent loop, executes tools in a sandbox, keeps the session state, and streams results back to your application.",
   },
   {
     question: "Are Claude Managed Agents and Anthropic Managed Agents the same thing?",
@@ -53,7 +53,7 @@ const faqItems = [
   {
     question: "Is Claude Managed Agents the same as Claude Code?",
     answer:
-      "No. Claude Code is a coding agent a developer uses directly. Claude Managed Agents is an API platform your application calls to run agents of any kind, billed by usage rather than by seat.",
+      "No. Claude Code is a coding agent a developer uses directly. Claude Managed Agents is an API platform your application calls to run agents of any kind, and it is billed by usage.",
   },
   {
     question: "How much does Claude Managed Agents cost?",
@@ -120,9 +120,9 @@ const schemas = [
         What Is Claude Managed Agents?
       </h1>
       <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
-        A plain-English guide to Anthropic's hosted agent runtime: what it
-        does, the four building blocks you work with, how it differs from the
-        Claude Agent SDK, and the trade-offs to weigh before you build on it.
+        Claude Managed Agents is Anthropic's hosted agent runtime: you define
+        an agent and a sandbox, and Anthropic runs the agent loop, executes
+        tools, and keeps session state for your application.
       </p>
     </div>
   </section>
@@ -133,10 +133,9 @@ const schemas = [
       <p>
         <strong class="text-[var(--color-fg)]">Claude Managed Agents</strong> (sometimes
         searched as Anthropic Managed Agents) is a service on the Claude
-        Developer Platform that runs AI agents for you. Instead of writing
-        and operating the loop that calls Claude, executes tools, stores
-        progress, and recovers from failures, you describe the agent and
-        Anthropic runs it on its infrastructure.
+        Developer Platform that runs AI agents for you. You describe the
+        agent, and Anthropic runs the loop that calls Claude, executes tools,
+        stores progress, and recovers from failures on its infrastructure.
       </p>
       <p>
         Your application creates a session, sends a task, and listens to an
@@ -147,8 +146,11 @@ const schemas = [
       </p>
       <p>
         Anthropic's <a href={`${DOCS}/overview`}>Managed Agents overview</a> is the
-        canonical reference; this page is a shorter map plus the limits the
-        launch material does not dwell on.
+        canonical reference. CMA is in beta behind the
+        <code>managed-agents-2026-04-01</code> header, and it is also offered on
+        Claude Platform on AWS and Claude Models on Google Cloud (Anthropic
+        managed). Recurring runs on a cron schedule are available through
+        scheduled deployments.
       </p>
     </div>
   </section>
@@ -222,33 +224,36 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-xl mb-2">Claude-only model path</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          Agents run Claude models. That is ideal if Claude is your standard;
-          it is a constraint if you route tasks across vendors, need an
-          open-weight model for some workloads, or want a fallback provider.
+          Agents run Claude models. This becomes a constraint if you route
+          tasks across vendors, need an open-weight model for some workloads,
+          or want a fallback provider.
         </p>
       </div>
       <div>
-        <h3 class="font-semibold text-xl mb-2">Anthropic-hosted cloud default</h3>
+        <h3 class="font-semibold text-xl mb-2">Where data lives</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          The harness, session state, and event history live in Anthropic's
-          cloud. Self-hosted sandboxes move tool execution to your
-          infrastructure, but not the control plane. You also cannot read or
-          change the harness itself.
+          Anthropic operates the harness and stores session state, sandbox
+          state, and event history server-side, also when you reach CMA through
+          AWS or Google Cloud. Self-hosted sandboxes move tool execution to your
+          infrastructure, and Anthropic keeps running the control plane. Because
+          sessions persist, CMA is not eligible for Zero Data Retention or HIPAA
+          BAA coverage, including with self-hosted sandboxes. You can read and
+          configure the agent, but the harness code itself is closed.
         </p>
       </div>
       <div>
         <h3 class="font-semibold text-xl mb-2">Usage-based runtime cost</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           You pay tokens plus session runtime. For long-running or always-on
-          agents the runtime line grows; see
+          agents the runtime line grows. See
           <a href="/blog/claude-managed-agents-pricing/">Claude Managed Agents pricing</a>.
         </p>
       </div>
       <div>
         <h3 class="font-semibold text-xl mb-2">What it is good at</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          Fast time to production, no runtime to operate, and a harness tuned
-          by the people who train the model. For many teams those benefits
+          Fast time to production, no runtime to operate, and a harness with
+          prompt caching and compaction built in by Anthropic. For many teams those benefits
           outweigh the limits.
         </p>
       </div>
@@ -267,13 +272,13 @@ const schemas = [
         model, harness, sandbox, and deployment.
       </p>
       <p class="text-[var(--color-fg-muted)] leading-relaxed">
-        Need multi-model or self-hosting? Compare the
-        <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a> options,
+        Multi-model and self-hosted options are compared in
+        <a href="/claude-managed-agents-alternative/">Claude Managed Agents alternative</a>,
         or go straight to <a href="/blog/claude-managed-agents-vs-open-managed-agents/">Claude Managed Agents vs OpenMA</a>.
       </p>
       <p class="text-[var(--color-fg-muted)] leading-relaxed">
         If deployment control is the constraint, read
-        <a href="/self-hosted-ai-agents/">self-hosted AI agents</a>; if licensing and model
+        <a href="/self-hosted-ai-agents/">self-hosted AI agents</a>. If licensing and model
         choice are, compare <a href="/open-source-ai-agents/">open-source AI agents</a>.
       </p>
       <div class="mt-8 flex flex-wrap gap-3">

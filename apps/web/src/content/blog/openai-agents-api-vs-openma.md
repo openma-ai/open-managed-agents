@@ -8,11 +8,8 @@ tags: ["openai", "agents-api", "agents-sdk", "comparison", "self-hosted", "byok"
 
 "OpenAI agents" now names at least four different things: the
 **Agents API**, the **Agents SDK**, **AgentKit**, and its visual
-**Agent Builder**. They solve different problems, and most confusion
-in reviews and tutorials comes from treating them as one. This post
-maps the names, explains where durability fits, and compares the
-OpenAI stack with Claude Managed Agents and with open, multi-model
-managed runtimes such as OpenMA.
+**Agent Builder**. Only the Agents API is a managed runtime. The SDK is
+a library, and AgentKit and Agent Builder are authoring tools.
 
 If you specifically want to self-host an OpenAI Agents API-compatible
 endpoint, the hands-on guide is
@@ -30,11 +27,11 @@ endpoint, the hands-on guide is
 ### Agents API
 
 The [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview)
-is OpenAI's managed runtime — the closest OpenAI equivalent to Claude
+is OpenAI's managed runtime and the closest OpenAI equivalent to Claude
 Managed Agents. OpenAI runs the Codex-based harness, stores sessions and
 progress, and executes code in a hosted sandbox or a self-hosted sandbox
-you connect. A self-hosted sandbox changes where code runs, not who
-operates the API control plane.
+you connect. With a self-hosted sandbox, code runs on your
+infrastructure and OpenAI still operates the API control plane.
 
 ### Agents SDK
 
@@ -42,62 +39,61 @@ The [Agents SDK](https://developers.openai.com/api/docs/guides/agents/sdk)
 is an open-source library. Agents, tools, handoffs, guardrails, and
 tracing run inside your process. It is the OpenAI counterpart to the
 [Claude Agent SDK](/blog/claude-agent-sdk-vs-managed-agents/): full
-control of the loop, and everything operational — persistence,
-sandboxing, recovery, scaling — is yours.
+control of the loop, and everything operational (persistence,
+sandboxing, recovery, scaling) is yours.
 
 ### AgentKit / Agent Builder
 
 AgentKit bundles a visual Agent Builder, the embeddable ChatKit UI,
 evaluation tooling, and a connector registry. It is aimed at getting a
-workflow designed and in front of users quickly. A visual builder is a
-good authoring surface, but it is not the same thing as a runtime you
-operate: production agents still need tools with real permissions,
+workflow designed and in front of users quickly. A visual builder is an
+authoring surface. Production agents also need a runtime with tools with real permissions,
 credentials, sandboxes, and policies. For the category view of
 platforms vs SDKs vs builders, see the
 [AI agent platform](/ai-agent-platform/) guide.
 
-## Durable execution note
+## Where durability comes from
 
-### Why Temporal appears on SDK SERPs
-
-Search for the Agents SDK and you will find Temporal's integration
-near the top. That is a signal about the SDK's scope: on its own, an
+Temporal publishes an integration for the OpenAI Agents SDK, which
+says something about the SDK's scope: on its own, an
 in-process SDK run lives and dies with the process. Temporal adds
-durable execution — workflows and activities that survive crashes and
-retries — around SDK agents.
+durable execution (workflows and activities that survive crashes and
+retries) around SDK agents.
 
 A managed runtime provides the same property differently: every input,
 output, and tool call is written to a durable session log, and a new
-harness resumes from it. Whether you choose the SDK plus a workflow
-engine or a managed runtime depends on whether you want to operate the
+harness resumes from it. The choice between the SDK plus a workflow engine and a managed runtime comes down to whether you want to operate the
 durability layer yourself.
 
-## Themes from reviews
+## Migration, cost, and data control
 
 ### Migration
 
-A recurring point in Agents API reviews: it provides a managed Codex
-harness, not a replacement for your business permissions or access
-controls — those, and your data stores, stay your responsibility when
-you migrate onto it. OpenAI also
+OpenAI's overview describes the split: OpenAI manages sessions,
+orchestration, context compaction, and recovery, while your application
+provides tools and chooses the execution environment. Business
+permissions and your data stores stay with you. OpenAI also
 publishes a cookbook guide for moving from the Claude Agent SDK to the
-OpenAI Agents SDK — a vendor switch at the SDK layer, not a move to a
-managed runtime.
+OpenAI Agents SDK. That guide covers a vendor switch at the SDK layer,
+and you still operate the runtime yourself.
 
 ### Cost
 
-The managed API is billed separately from model tokens, and its runtime
-and sandbox components should be checked against
-[OpenAI's current pricing](https://openai.com/api/pricing/) rather than
-assumed. The SDK adds your own compute and operations. Compare cost per
-completed task, not per request — agents loop, retry, and call tools.
+OpenAI bills Agents API usage at the selected model's API rates, OpenAI
+tools at their standard rates, and OpenAI-hosted sandboxes at standard
+container rates
+([Agents API pricing](https://developers.openai.com/api/docs/guides/agents-api/overview#pricing)).
+There is no separate session-hour fee like the one Claude Managed Agents
+charges. The SDK adds your own compute and operations. Agents loop,
+retry, and call tools, so compare cost per completed task.
 
 ### Data control
 
-With the Agents API, sessions and progress live with OpenAI. With the
-SDK, they live wherever your application stores them. Regulated teams
-usually care less about the label "open source" than about where
-session history, tool output, and credentials are stored.
+With the Agents API, OpenAI retains session state. The API currently
+supports data residency only in the United States and does not support
+Zero Data Retention, and choosing a self-hosted sandbox does not change
+that ([Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)).
+With the SDK, sessions live wherever your application stores them.
 
 ## Compare to Claude Managed Agents
 
@@ -108,10 +104,10 @@ session history, tool output, and credentials are stored.
 | Sessions | Hosted, durable | Hosted, durable |
 | Sandbox | Hosted or self-hosted sandbox | Cloud sandbox or self-hosted sandbox |
 | Control plane | OpenAI | Anthropic |
-| Pricing shape | Tokens + runtime and sandbox usage (see [OpenAI pricing](https://openai.com/api/pricing/)) | Tokens + $0.08 per running session-hour |
+| Pricing shape | Model tokens, tool usage, and hosted-container rates | Tokens + $0.08 per running session-hour |
 
-The two are close peers. Each is the fastest path to production on its
-vendor's models, and each ties the control plane to that vendor. See
+Both run their vendor's models and keep the control plane with the
+vendor. See
 [what is Claude Managed Agents](/what-is-claude-managed-agents/) and
 [Claude Managed Agents pricing](/blog/claude-managed-agents-pricing/) for
 the Anthropic side.
@@ -129,7 +125,7 @@ over the same native sessions:
 |---|---|---|---|
 | Who runs the loop | OpenAI | Your process | OpenMA (self-hosted or hosted) |
 | Models | OpenAI | OpenAI-first | Any configured provider, per agent |
-| Durable sessions | Yes | Add your own (e.g. a workflow engine) | Yes — event-sourced |
+| Durable sessions | Yes | Add your own (e.g. a workflow engine) | Yes, event-sourced |
 | Sandbox | Hosted or self-hosted | Yours | Replaceable drivers (Docker, E2B, Daytona, Modal, Cloudflare, …) |
 | Self-host control plane | No | N/A (library) | Yes |
 | Source | Proprietary service | Open source | Apache 2.0 |
@@ -137,7 +133,7 @@ over the same native sessions:
 OpenMA's OpenAI adapter does not reproduce every behavior of OpenAI's
 service, and coverage differs between Node and Cloudflare runtimes. The
 [compatibility report](https://github.com/openma-ai/open-managed-agents/blob/main/docs/openai-agents-compatibility-status.md)
-lists what is supported; the
+lists what is supported, and the
 [self-hosting guide](/blog/openai-agents-api-self-hosted/) walks through
 a working setup.
 
@@ -160,8 +156,7 @@ a working setup.
 - You want to choose the sandbox provider and read or replace the
   harness.
 
-Need OpenAI-only? Stay on the API or SDK. Need multi-model and a
-self-hosted managed runtime? Start with the
+For a multi-model, self-hosted managed runtime, see the
 [OpenMA docs](https://docs.openma.ai/), read about
 [self-hosted AI agents](/self-hosted-ai-agents/), or compare the wider
 field in the [Claude Managed Agents alternative](/claude-managed-agents-alternative/)

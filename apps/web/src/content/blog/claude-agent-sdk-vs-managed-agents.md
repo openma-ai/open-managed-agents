@@ -8,31 +8,29 @@ tags: ["claude", "agent-sdk", "managed-agents", "comparison", "migration"]
 
 The **Claude Agent SDK** and **Claude Managed Agents** both give Claude
 an agent loop with tools. The SDK runs that loop inside your own
-process; Managed Agents runs it for you on Anthropic's infrastructure.
-That one difference decides who owns state, sandboxing, recovery, and
-scaling — and it is usually the reason teams move from one to the other.
+process. Managed Agents runs it for you on Anthropic's infrastructure.
+That difference decides who owns state, sandboxing, recovery, and
+scaling.
 
-This post compares the two, lays out the migration paths you will see
-discussed (including the move toward a model-agnostic runtime), and ends
-with a checklist. For a primer on the hosted product, read
+For a primer on the hosted product, read
 [what is Claude Managed Agents](/what-is-claude-managed-agents/).
 
 ## Scope of the Claude Agent SDK
 
-### Tools, skills, sandbox-in-process
+### What the SDK includes
 
 The Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` for TypeScript,
 `claude-agent-sdk` for Python) packages the harness behind Claude Code
 as a library. You get:
 
-- **The agent loop** — context building, model calls, tool dispatch,
+- **The agent loop:** context building, model calls, tool dispatch,
   compaction.
 - **Built-in tools** for files, shell, and search, plus custom tools and
   MCP servers.
 - **Skills, subagents, hooks, and permission modes** to shape behavior.
 
 What you do not get is anything outside your process. The harness and
-its tools run wherever you run the SDK — a laptop, a container, a CI
+its tools run wherever you run the SDK: a laptop, a container, a CI
 job. If you want isolation, you put the whole process inside a sandbox.
 OpenAI's cookbook guide on migrating from the Claude Agent SDK describes
 exactly this pattern: the sandbox *contains* the harness.
@@ -43,7 +41,7 @@ sessions, resumable state, or multi-tenant isolation.
 
 ## Claude Agent SDK vs Claude Managed Agents
 
-### In-process harness vs hosted managed runtime
+
 
 | | Claude Agent SDK | Claude Managed Agents |
 |---|---|---|
@@ -55,14 +53,14 @@ sessions, resumable state, or multi-tenant isolation.
 | Event stream for UIs | Yours to expose | SSE event stream |
 | Billing | Tokens + your compute | Tokens + $0.08 per running session-hour |
 | Models | Claude | Claude |
-| Control of the loop | Full — it's a library | None — hosted harness |
+| Control of the loop | Full (it's a library) | None (hosted harness) |
 
-The short version: the SDK gives you **control and zero platform fee**;
-Managed Agents gives you **operations you don't have to build**. Neither
-gives you a second model vendor. For the cost side, see
+Both run Claude only. The SDK has no platform fee and leaves operations
+to you. Managed Agents runs the operations for a session-hour fee. For
+the cost side, see
 [Claude Managed Agents pricing](/blog/claude-managed-agents-pricing/).
 
-## Migration narratives you'll see
+## Where teams move from the SDK
 
 ### Toward OpenAI Agents SDK (cookbook pattern)
 
@@ -78,18 +76,15 @@ for how the OpenAI pieces fit together.
 ### Toward a managed multi-model runtime
 
 The other path keeps the managed-runtime benefits of Claude Managed
-Agents but drops the single-vendor constraint. A managed runtime
-handles sessions, sandboxes, recovery, and credentials, and treats the
-model and harness as configuration. That is the gap open runtimes are
-built to fill.
+Agents but drops the single-vendor constraint. A multi-model managed
+runtime handles sessions, sandboxes, recovery, and credentials, and
+treats the model and harness as configuration.
 
-## Gap: multi-model + self-host managed runtime
+## A managed runtime you can self-host with any model
 
-Look at the comparison table again. One row is the same in both
-columns: **Claude**. And the SDK column is "yours to build" for every
-operational row, while the Managed Agents column is "Anthropic's cloud."
-
-Teams end up wanting a third column:
+In the comparison table, both columns list **Claude** as the only model.
+The SDK leaves every operational row to you, and Managed Agents runs
+them on Anthropic's cloud. A third option combines the following:
 
 | | Needed |
 |---|---|
@@ -100,32 +95,25 @@ Teams end up wanting a third column:
 | Deployment | Your infrastructure, or hosted |
 
 [OpenMA](/claude-managed-agents-alternative/) is an open-source runtime
-built to that column. It keeps the Claude Managed Agents API shape —
-agents, environments, sessions, events — and runs agents on Claude,
+with these properties. It keeps the Claude Managed Agents API shape
+(agents, environments, sessions, events) and runs agents on Claude,
 OpenAI, DeepSeek, OpenRouter, or a custom endpoint. You can use its
 built-in harness, write your own, or bring Claude Code or Codex into a
 managed sandbox through ACP adapters.
 
-## Brain vs hands
+## Where the SDK sits
 
-### Model/SDK ≠ orchestration substrate
+In the brain-and-hands split Anthropic describes for Managed Agents (see
+[what is Claude Managed Agents](/what-is-claude-managed-agents/)), the
+Claude Agent SDK is the brain side: a harness for Claude. Scheduling
+sessions, durable state, and sandbox management come from the runtime
+around it. For the category view, see
+[AI agent platform & orchestration](/ai-agent-platform/).
 
-Anthropic's engineering write-up on Managed Agents describes
-"decoupling the brain from the hands": the model and harness on one
-side, sandboxes and tools on the other, joined by stable interfaces.
+## Moving from the SDK to a managed runtime
 
-That framing is useful for this decision. The Claude Agent SDK is a
-**brain-side** component — a very good harness for Claude. It is not an
-orchestration substrate: it does not schedule sessions, own durable
-state, or manage sandboxes. Managed Agents bundles both sides, with
-both owned by Anthropic. An open runtime keeps the two sides separate so
-you can choose each independently. For the category view, see
-[AI agent orchestration](/ai-agent-platform/).
-
-## Migrate checklist
-
-Moving off the in-process SDK to a managed runtime — Anthropic's or an
-open one — goes smoother with this list:
+Moving off the in-process SDK to a managed runtime, Anthropic's or an
+open one, goes smoother with this list:
 
 1. **Inventory tools.** Separate built-in file/shell tools (provided by
    the runtime) from custom tools and MCP servers you need to register.
@@ -133,14 +121,14 @@ open one — goes smoother with this list:
    notes, and skills become agent configuration and mounted skills.
 3. **Define the environment.** Packages, networking rules, and the
    sandbox your tools need.
-4. **Move secrets out of the process.** Put API tokens in a vault so they
-   are injected by the runtime rather than exposed to the sandbox.
+4. **Move secrets out of the process.** Put API tokens in a vault so the
+   runtime injects them into outbound requests and the sandbox never holds them.
 5. **Replace your loop with sessions.** Create a session per task or
    conversation, send `user.message` events, and stream events back.
 6. **Map approvals.** Permission prompts become tool permission
    policies and `user.tool_confirmation` events.
 7. **Handle custom tools.** Client-executed tools pause the session
-   with `requires_action`; reply with `user.custom_tool_result`.
+   with `requires_action`. Reply with `user.custom_tool_result`.
 8. **Decide on models.** If you are moving to an open runtime, decide
    which agents stay on Claude and which move to other providers.
 9. **Measure cost per completed task** before and after.

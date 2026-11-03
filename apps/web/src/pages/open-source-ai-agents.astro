@@ -5,28 +5,21 @@ import FaqSection from "../components/FaqSection.astro";
 import RelatedGuides from "../components/RelatedGuides.astro";
 import { articleSchema, breadcrumbSchema, faqPageSchema } from "../lib/seo";
 
-const layerRows = [
-  ["Agent platform / managed runtime", "Runs agents as a service: API, durable sessions, sandboxes, event log, credentials, recovery", "You call it; it operates the agents"],
-  ["Agent harness", "The loop around a model: context, tool calls, compaction", "Embedded in a runtime or your app"],
-  ["Framework / library", "Primitives to express agent logic (graphs, roles, conversations)", "You build and host the platform around it"],
-  ["Coding agent", "An agent a developer drives to change software", "Developer tool; can run inside a runtime"],
-];
-
 const comparisonRows = [
-  ["OpenMA", "Orchestration / managed runtime", "Yes — agents, environments, sessions, events, vaults, memory stores", "Apache 2.0; multi-model; Claude Managed Agents and OpenAI Agents API compatible endpoints"],
-  ["TrueForge", "Agent harness", "Partial — harness-centric", "TrueFoundry's vendor-neutral harness, positioned as a CMA alternative"],
-  ["AX (Agent Executor)", "Orchestration runtime", "Task / workspace / gateway primitives", "Google's open agentic orchestration runtime for large agent workloads"],
-  ["Omnara", "Managed agent platform", "Yes, per vendor", "Positions itself as an open-source managed agent platform"],
-  ["OpenHands", "Coding agent (labeled)", "No — software-engineering agent", "Open-source coding agent; compare with Claude Code, not with runtimes"],
-  ["LangGraph / CrewAI / AutoGen", "Frameworks", "No — you assemble it", "Mature libraries for graphs, roles, and multi-agent conversations"],
+  ["OpenMA", "Orchestration / managed runtime", "Yes: agents, environments, sessions, events, vaults, memory stores", "Apache 2.0, multi-model, with Claude Managed Agents and OpenAI Agents API compatible endpoints"],
+  ["TrueForge", "Agent harness", "Yes: sessions, HTTP API and TypeScript SDK, approvals, Daytona sandboxes", "MIT. TrueFoundry markets it as a CMA alternative"],
+  ["AX (Agent Executor)", "Orchestration runtime on Kubernetes", "Task, Workspace, and Model manifests (ax.io/v1alpha1)", "Apache 2.0. Google's declarative orchestrator, runs on Agent Substrate, pre-1.0"],
+  ["Omnara", "Managed agent platform", "Yes: REST API, durable state, schedules, sandboxes", "Apache 2.0, self-hostable with Docker Compose"],
+  ["OpenHands", "Coding agent (labeled)", "No, software-engineering agent", "Open-source coding agent, comparable to Claude Code and Codex"],
+  ["LangGraph / CrewAI / AutoGen", "Frameworks", "No, you assemble it", "Mature libraries for graphs, roles, and multi-agent conversations"],
 ];
 
 const criteriaRows = [
   ["Sessions", "Durable, resumable, survive process crashes"],
-  ["Sandboxes", "Tools run isolated from the API process; provider is replaceable"],
-  ["Multi-model", "Model is per-agent configuration, not a fork of the runtime"],
+  ["Sandboxes", "Tools run isolated from the API process, and the provider is replaceable"],
+  ["Multi-model", "Each agent sets its model in configuration, with no runtime changes"],
   ["Self-host", "The whole control plane runs on your infrastructure without a license gate"],
-  ["Credentials", "Secrets are injected outside the sandbox"],
+  ["Credentials", "Secrets stay in a vault and are added to outbound requests, so the sandbox does not hold them"],
   ["API", "A stable HTTP API with streaming, so any language can be a client"],
 ];
 
@@ -34,12 +27,12 @@ const faqItems = [
   {
     question: "What are open-source AI agents?",
     answer:
-      "Agent software whose source is published under an open license. The term spans complete agent platforms, harnesses, frameworks, and coding agents — so compare projects within the same category.",
+      "Agent software whose source is published under an open license. The term spans complete agent platforms, harnesses, frameworks, and coding agents, so compare projects within the same category.",
   },
   {
     question: "What is the best open-source AI agent platform?",
     answer:
-      "The one that meets the runtime criteria you need: durable sessions, isolated sandboxes, multi-model support, credential isolation, and self-hosting without a license gate. OpenMA is built to that bar; frameworks such as LangGraph or CrewAI are libraries you would build a platform around.",
+      "The one that meets the runtime criteria you need: durable sessions, isolated sandboxes, multi-model support, credential isolation, and self-hosting without a license gate. OpenMA covers the criteria in the table above. Frameworks such as LangGraph or CrewAI are libraries you would build a platform around.",
   },
   {
     question: "Is LangGraph an agent platform?",
@@ -109,22 +102,21 @@ const schemas = [
       <p class="text-lg text-[var(--color-fg-muted)] leading-relaxed">
         "Open-source AI agents" lumps together very different projects:
         complete agent platforms, harnesses, frameworks, and coding agents.
-        This guide sorts them by what they actually do, compares notable
-        projects within each category, and gives you the criteria for
-        choosing a platform you can run in production.
+        Only the platforms run agents behind an API with sessions, sandboxes,
+        and credentials, which is what production use requires.
       </p>
     </div>
   </section>
 
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">What "open-source AI agent platform" means</h2>
-    <h3 class="font-semibold text-xl mb-4">Platforms and managed runtimes vs libraries</h3>
+    
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
       A platform runs agents for you behind an API. A library helps you write
-      agent logic and leaves the running to you. Both are useful; they are
-      not interchangeable.
+      agent logic and leaves the running to you. The
+      <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a> guide
+      compares platforms, SDKs, builders, and coding agents in one table.
     </p>
-    <ComparisonTable columns={["Layer", "What it does", "How you use it"]} rows={layerRows} caption="Layers of open-source agent software" />
   </section>
 
   <section class="border-y border-[var(--color-border)] bg-[var(--color-bg-surface)]" data-reveal>
@@ -133,7 +125,7 @@ const schemas = [
       <h3 class="font-semibold text-xl mb-4">Sessions, sandboxes, multi-model, self-host</h3>
       <ComparisonTable columns={["Criterion", "What good looks like"]} rows={criteriaRows} caption="Criteria for an open-source agent platform" />
       <p class="text-[var(--color-fg-muted)] leading-relaxed mt-6 max-w-3xl">
-        If you are building on a model SDK rather than a platform, the
+        If you are building directly on a model SDK, the
         <a href="/blog/claude-agent-sdk-vs-managed-agents/">Claude Agent SDK</a> comparison shows
         which of these you would need to add yourself. For the category view, see
         <a href="/ai-agent-platform/">AI agent platform &amp; orchestration</a>.
@@ -144,9 +136,8 @@ const schemas = [
   <section class="site-container py-16" data-reveal>
     <h2 class="font-display text-3xl font-bold mb-4">Comparison table</h2>
     <p class="text-[var(--color-fg-muted)] leading-relaxed mb-8 max-w-3xl">
-      Projects are grouped by category, not ranked. Third-party details
-      reflect each project's public positioning; check licenses and hosting
-      terms on their sites.
+      Projects are grouped by category in no particular order. Third-party details
+      come from each project's repository as of November 2026.
     </p>
     <ComparisonTable columns={["Project", "Category", "Managed-runtime shape", "Notes"]} rows={comparisonRows} caption="Open-source AI agent projects compared" />
     <div class="grid md:grid-cols-3 gap-6 mt-10 text-sm">
@@ -161,17 +152,21 @@ const schemas = [
       <div>
         <h3 class="font-semibold text-lg mb-2">TrueForge, AX, Omnara</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          Each approaches the runtime layer differently — a vendor-neutral
-          harness, a declarative orchestration runtime for large workloads,
-          and a managed agent platform. Evaluate them with the criteria above.
+          TrueForge is an MIT harness with its own API and chat UI. AX is
+          Google's Kubernetes orchestrator that runs agent tasks as sandboxed
+          actors on Agent Substrate, with an API marked v1alpha1. Omnara is an
+          Apache-2.0 managed platform that can run agents on your own machines
+          or on third-party sandboxes. Sources:
+          <a href="https://github.com/truefoundry/trueforge">TrueForge</a>,
+          <a href="https://github.com/google/ax">AX</a>,
+          <a href="https://github.com/omnara-ai/omnara">Omnara</a>.
         </p>
       </div>
       <div>
         <h3 class="font-semibold text-lg mb-2">OpenHands (coding agent)</h3>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
-          A strong open-source software-engineering agent. It belongs in a
-          comparison with Claude Code and Codex, not with agent runtimes —
-          though a coding agent can run inside one.
+          A strong open-source software-engineering agent. Its peers are Claude
+          Code and Codex. Like them, it can run inside an agent runtime.
         </p>
       </div>
     </div>
@@ -183,7 +178,7 @@ const schemas = [
         <h2 class="font-display text-2xl font-bold mb-4">Open-source managed agents path</h2>
         <p class="text-[var(--color-fg-muted)] leading-relaxed">
           If you want the "managed agents" shape popularized by Claude Managed
-          Agents and the OpenAI Agents API — but open and self-hostable — read
+          Agents and the OpenAI Agents API in an open, self-hostable form, read
           the <a href="/open-source-managed-agents/">open-source managed agents</a> shortlist, then
           <a href="/self-hosted-ai-agents/">self-hosted AI agents</a> for deployment.
         </p>
