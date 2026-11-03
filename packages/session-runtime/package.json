@@ -23,7 +23,7 @@
     "@open-managed-agents/session-runtime-contract": "workspace:*",
     "@open-managed-agents/shared": "workspace:*",
     "@open-managed-agents/sql-client": "workspace:*",
-    "ai": "^7.0.157",
+    "ai": "^7.0.159",
     "nanoid": "^5.1.0"
   },
   "devDependencies": {
