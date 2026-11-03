@@ -135,7 +135,7 @@ test("high-impression landing pages emit concise, user-facing search snippets", 
   );
   assert.match(
     alternative,
-    /href="https:\/\/docs\.openma\.dev\/build\/vault-and-mcp\/"/,
+    /href="https:\/\/docs\.openma\.ai\/build\/vault-and-mcp\/"/,
   );
   assert.doesNotMatch(alternative, /Search intent match/i);
 });
