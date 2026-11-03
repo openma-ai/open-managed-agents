@@ -272,14 +272,14 @@ prepared, without touching `process.env`.
 `apps/main/src/index.ts` mounts agents / vaults / sessions / api-keys /
 me / tenants from `@open-managed-agents/http-routes`. The legacy
 `apps/main/src/routes/{agents,vaults,sessions,api-keys,me,tenants}.ts`
-files are deleted; CF-only callbacks (USAGE_METER gate, GitHub fast-path
-token mint, `refreshProviderCredentialsForSession`, R2 outputs cascade,
-shard assignment, AUTH_DB membership reads) are passed in as `lifecycle`
+files are deleted; CF-only callbacks (GitHub fast-path token mint,
+`refreshProviderCredentialsForSession`, R2 outputs cascade, shard
+assignment, AUTH_DB membership reads) are passed in as `lifecycle`
 hooks + `services` callbacks so the package stays runtime-agnostic. The
 remaining CF-specific routes (`/v1/internal`, `/v1/integrations`,
-`/billing-api/*`, `/agents/runtime/_attach`, cron + queue handlers) stay
-in CF apps regardless — they depend on Durable Objects / service
-bindings / R2 Event Notifications that have no Node analog yet.
+`/agents/runtime/_attach`, cron + queue handlers) stay in CF apps
+regardless — they depend on Durable Objects / service bindings / R2
+Event Notifications that have no Node analog yet.
 
 ## References
 

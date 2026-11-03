@@ -2,7 +2,7 @@
 // error classification (see commit 30e162b's TRANSIENT/FATAL allowlists).
 //
 // Boundary wrappers around external SDK calls (CF Containers, model
-// providers, billing meters) should re-throw native errors as instances
+// providers) should re-throw native errors as instances
 // of these classes via `classifyExternalError` (or by direct construction
 // when the boundary has typed knowledge of the failure mode). The
 // processUserMessage retry switch then operates on `instanceof` checks
@@ -51,8 +51,9 @@ export class ModelError extends OmaError {}
 /** Agent / environment / vault not found, mis-shaped config, missing field. */
 export class ConfigError extends OmaError {}
 
-/** Insufficient balance, plan limit hit, 402 from the billing meter. */
-export class BillingError extends OmaError {}
+/** Upstream HTTP 402 / payment-required / hard quota exhaustion.
+ *  Generic (provider spend caps, operator budgets). */
+export class PaymentRequiredError extends OmaError {}
 
 /** 401 / 403 from a model provider or downstream auth gate. */
 export class AuthError extends OmaError {}
@@ -99,9 +100,9 @@ export function classifyExternalError(err: unknown): OmaError | unknown {
     return new AuthError(msg, { cause: err });
   }
 
-  // Billing — wallet empty, plan exhausted.
+  // Payment / hard quota — upstream 402 or explicit payment-required.
   if (/insufficient balance|payment required|402/i.test(msg)) {
-    return new BillingError(msg, { cause: err });
+    return new PaymentRequiredError(msg, { cause: err });
   }
 
   // Config — missing entity in the system catalog. Match phrasing the

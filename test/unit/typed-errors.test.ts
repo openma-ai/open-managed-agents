@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import {
   AuthError,
-  BillingError,
+  PaymentRequiredError,
   ConfigError,
   NetworkError,
   OmaError,
@@ -35,10 +35,10 @@ describe("classifyExternalError", () => {
     expect(out).toBeInstanceOf(RateLimitedError);
   });
 
-  it("maps 'Insufficient balance' to BillingError", () => {
-    const native = new Error("Insufficient balance: top up at /billing");
+  it("maps payment-required / 402 to PaymentRequiredError", () => {
+    const native = new Error("Payment required: provider spend cap hit");
     const out = classifyExternalError(native);
-    expect(out).toBeInstanceOf(BillingError);
+    expect(out).toBeInstanceOf(PaymentRequiredError);
   });
 
   it("returns unclassified errors unchanged", () => {
@@ -57,7 +57,7 @@ describe("classifyExternalError", () => {
   });
 
   it("is idempotent — already-typed OmaError passes through unchanged", () => {
-    const typed = new BillingError("wallet empty");
+    const typed = new PaymentRequiredError("payment required");
     const out = classifyExternalError(typed);
     expect(out).toBe(typed);
   });
@@ -103,7 +103,7 @@ describe("classifyExternalError", () => {
 describe("OmaError hierarchy", () => {
   it("constructor.name is the subclass name (not 'Error')", () => {
     expect(new TransientInfraError("x").name).toBe("TransientInfraError");
-    expect(new BillingError("x").name).toBe("BillingError");
+    expect(new PaymentRequiredError("x").name).toBe("PaymentRequiredError");
     expect(new ConfigError("x").name).toBe("ConfigError");
   });
 

@@ -892,7 +892,7 @@ export class DefaultHarness implements HarnessInterface {
         // SDK errors (Anthropic 401/429/5xx, the `silent_stop` Error we
         // throw above, network failures during streamText's underlying
         // fetch) are remapped to typed OmaErrors here so
-        // processUserMessage's catch dispatches by class (BillingError /
+        // processUserMessage's catch dispatches by class (PaymentRequiredError /
         // AuthError → fatal; everything else → retry-by-default) instead
         // of substring matching the message.
         // TODO: extend wrapper coverage to other boundaries as new
