@@ -8,16 +8,18 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { FeishuIcon, GitLabIcon } from "../../components/icons";
+import { FeishuIcon, GitLabIcon, SlackIcon } from "../../components/icons";
 import { useI18n } from "../../i18n";
 import { matter, MatterError, type SetupReport } from "../../lib/matter";
 
 /** Shared pieces of the Matter pages (Loops and Bonds). */
 
-export type Provider = "feishu" | "gitlab";
+export type Provider = "feishu" | "gitlab" | "slack";
 
 export function ProviderIcon({ provider, className = "size-4" }: { provider: string; className?: string }) {
-  return provider === "gitlab" ? <GitLabIcon className={className} /> : <FeishuIcon className={className} />;
+  if (provider === "gitlab") return <GitLabIcon className={className} />;
+  if (provider === "slack") return <SlackIcon className={className} />;
+  return <FeishuIcon className={className} />;
 }
 
 export type Tone = "success" | "warning" | "danger" | "muted";
@@ -657,3 +659,134 @@ export function MatterNotice({ children, tone = "muted" }: { children: ReactNode
 /** Route-safe id of a Bond (`feishu:cli_x`), and back. */
 export const bondPath = (id: string) => `/bonds/${encodeURIComponent(id)}`;
 export const loopPath = (id: string) => `/loops/${encodeURIComponent(id)}`;
+
+
+/** Link a Slack app installation: bot token plus Events API and/or Socket Mode. */
+export function SlackLinker({ onLinked }: { onLinked: (bondId: string) => void }) {
+  const { t } = useI18n();
+  const b = t.matter.bonds;
+  const [botToken, setBotToken] = useState("");
+  const [signingSecret, setSigningSecret] = useState("");
+  const [appToken, setAppToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [linked, setLinked] = useState<{ id: string; requestUrl: string; events: boolean; socketMode: boolean } | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setFailure(null);
+    try {
+      const result = await matter<{ id: string; requestUrl: string; events: boolean; socketMode: boolean }>("/connect/slack", {
+        method: "POST",
+        body: JSON.stringify({
+          botToken: botToken.trim(),
+          ...(signingSecret.trim() === "" ? {} : { signingSecret: signingSecret.trim() }),
+          ...(appToken.trim() === "" ? {} : { appToken: appToken.trim() }),
+        }),
+      });
+      setLinked(result);
+      setBusy(false);
+    } catch (err) {
+      setFailure(err instanceof MatterError ? err.message : b.linkFailed);
+      setBusy(false);
+    }
+  }
+
+  if (linked) {
+    return (
+      <div className="space-y-3 text-sm">
+        <p className="text-success">{b.slackLinked}</p>
+        {linked.events && (
+          <div className="space-y-1">
+            <p className="text-fg-muted">{b.slackRequestUrlHint}</p>
+            <code className="block break-all rounded bg-bg-subtle px-2 py-1 font-mono text-xs">{linked.requestUrl}</code>
+          </div>
+        )}
+        {linked.socketMode && <p className="text-fg-muted">{b.slackSocketOn}</p>}
+        <Button size="sm" onClick={() => onLinked(`slack:${linked.id}`)}>
+          {b.done}
+        </Button>
+      </div>
+    );
+  }
+
+  const ready = botToken.trim() !== "" && (signingSecret.trim() !== "" || appToken.trim() !== "");
+  return (
+    <div className="space-y-4 text-sm">
+      <p className="text-fg-muted">{b.slackHint}</p>
+      <Field label={b.slackBotToken}>
+        <Input id="slack-bot-token" type="password" autoComplete="off" value={botToken} onChange={(e) => setBotToken(e.target.value)} placeholder="xoxb-…" />
+      </Field>
+      <Field label={b.slackSigningSecret}>
+        <Input id="slack-signing-secret" type="password" autoComplete="off" value={signingSecret} onChange={(e) => setSigningSecret(e.target.value)} />
+      </Field>
+      <Field label={b.slackAppToken}>
+        <Input id="slack-app-token" type="password" autoComplete="off" value={appToken} onChange={(e) => setAppToken(e.target.value)} placeholder="xapp-…" />
+      </Field>
+      <p className="text-xs text-fg-muted">{b.slackIngressHint}</p>
+      {failure && (
+        <p role="alert" className="text-danger">
+          {failure}
+        </p>
+      )}
+      <Button disabled={!ready || busy} onClick={() => void submit()}>
+        {b.link}
+      </Button>
+    </div>
+  );
+}
+
+/** Rotate credentials on an existing Slack Bond. */
+export function SlackCredentialReplacer({
+  connectionId,
+  onReplaced,
+}: {
+  connectionId: string;
+  onReplaced: () => void;
+}) {
+  const { t } = useI18n();
+  const b = t.matter.bonds;
+  const [botToken, setBotToken] = useState("");
+  const [signingSecret, setSigningSecret] = useState("");
+  const [appToken, setAppToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setFailure(null);
+    try {
+      const body: Record<string, string> = {};
+      if (botToken.trim() !== "") body.botToken = botToken.trim();
+      if (signingSecret.trim() !== "") body.signingSecret = signingSecret.trim();
+      if (appToken.trim() !== "") body.appToken = appToken.trim();
+      await matter(`/connect/slack/${encodeURIComponent(connectionId)}`, { method: "PUT", body: JSON.stringify(body) });
+      onReplaced();
+    } catch (err) {
+      setFailure(err instanceof MatterError ? err.message : b.linkFailed);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 text-sm">
+      <Field label={b.slackBotToken}>
+        <Input id="slack-replace-bot" type="password" autoComplete="off" value={botToken} onChange={(e) => setBotToken(e.target.value)} placeholder="xoxb-…" />
+      </Field>
+      <Field label={b.slackSigningSecret}>
+        <Input id="slack-replace-signing" type="password" autoComplete="off" value={signingSecret} onChange={(e) => setSigningSecret(e.target.value)} />
+      </Field>
+      <Field label={b.slackAppToken}>
+        <Input id="slack-replace-app" type="password" autoComplete="off" value={appToken} onChange={(e) => setAppToken(e.target.value)} placeholder="xapp-…" />
+      </Field>
+      {failure && (
+        <p role="alert" className="text-danger">
+          {failure}
+        </p>
+      )}
+      <Button size="sm" disabled={busy || (botToken === "" && signingSecret === "" && appToken === "")} onClick={() => void submit()}>
+        {b.replace}
+      </Button>
+    </div>
+  );
+}

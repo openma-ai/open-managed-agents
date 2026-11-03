@@ -313,7 +313,7 @@ export interface Messages {
     disabled: string;
     lastError: string;
     back: string;
-    providers: { feishu: string; gitlab: string };
+    providers: { feishu: string; gitlab: string; slack: string };
     loops: {
       newLoop: string;
       empty: string;
@@ -358,6 +358,7 @@ export interface Messages {
       linkApp: string;
       linkFeishu: string;
       linkGitLab: string;
+      linkSlack: string;
       empty: string;
       emptyBody: string;
       app: string;
@@ -404,6 +405,14 @@ export interface Messages {
       gitlabPresetComment: string;
       gitlabExpires: string;
       gitlabUserToken: string;
+      slackLinked: string;
+      slackSocketOn: string;
+      slackRequestUrlHint: string;
+      slackIngressHint: string;
+      slackAppToken: string;
+      slackSigningSecret: string;
+      slackBotToken: string;
+      slackHint: string;
       createBot: string;
       replaceToken: string;
       replace: string;
@@ -426,6 +435,10 @@ export interface Messages {
         webhookUrl: string;
         tokenScopes: string;
         tokenExpiresAt: string;
+        teamId: string;
+        botUserId: string;
+        requestUrl: string;
+        socketMode: string;
       };
     };
     /** Template names and descriptions, by template id. */

@@ -54,7 +54,7 @@ export interface LoopTemplate {
   /** Display name a deployment gave its own template. */
   name?: string;
   version: string;
-  provider: "feishu" | "gitlab";
+  provider: "feishu" | "gitlab" | "slack";
   description: string;
   configSchema: {
     properties: Record<string, FieldSchema>;
@@ -81,7 +81,7 @@ export interface FieldSchema {
 export interface Loop {
   id: string;
   template: string;
-  provider?: "feishu" | "gitlab";
+  provider?: "feishu" | "gitlab" | "slack";
   config: Record<string, unknown> & { bond: string };
   enabled: boolean;
   createdAt: string;
@@ -97,7 +97,7 @@ export interface SetupReport {
 
 export interface Bond {
   id: string;
-  provider: "feishu" | "gitlab";
+  provider: "feishu" | "gitlab" | "slack";
   label: string;
   connectedAt: string;
   running: boolean;

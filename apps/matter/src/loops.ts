@@ -11,6 +11,7 @@
 
 import { feishuTemplates } from "@openma/matter-feishu/bond";
 import { gitlabTemplates } from "@openma/matter-gitlab/bond";
+import { slackTemplates } from "@openma/matter-slack/bond";
 import type { MatterApplication } from "./adapter.js";
 import type { LoopRecord } from "./persistence.js";
 import type { LoopIssue } from "./issues.js";
@@ -20,9 +21,15 @@ import { feishuScheduledReport } from "./templates/feishu-report.js";
 /** A Loop written with `defineLoop` from `@openma/matter-loop`. */
 export type LoopTemplate = (typeof feishuTemplates)[number];
 
+/** The Bond providers Loops run on. */
+export const LOOP_PROVIDERS = ["feishu", "gitlab", "slack"] as const;
+export type LoopProvider = (typeof LOOP_PROVIDERS)[number];
+
+const PROVIDER_NAMES: Readonly<Record<LoopProvider, string>> = { feishu: "Feishu", gitlab: "GitLab", slack: "Slack" };
+
 /** One template as a host lists it, with the Bond provider it runs on. */
 export interface LoopTemplateEntry {
-  readonly provider: "feishu" | "gitlab";
+  readonly provider: LoopProvider;
   readonly loop: LoopTemplate;
   /** Display name in the Console; defaults to the definition id. */
   readonly name?: string;
@@ -32,6 +39,7 @@ const BUILT_IN: readonly LoopTemplateEntry[] = [
   ...feishuTemplates.map((loop) => ({ provider: "feishu" as const, loop })),
   { provider: "feishu", loop: feishuScheduledReport },
   ...gitlabTemplates.map((loop) => ({ provider: "gitlab" as const, loop })),
+  ...slackTemplates.map((loop) => ({ provider: "slack" as const, loop })),
 ];
 
 let registered: readonly LoopTemplateEntry[] = [];
@@ -56,8 +64,8 @@ export const registerLoopTemplates = (entries: readonly LoopTemplateEntry[]): vo
       problems.push("each entry needs a Loop made with defineLoop");
       continue;
     }
-    if (entry.provider !== "feishu" && entry.provider !== "gitlab") {
-      problems.push(`${id}: provider must be feishu or gitlab`);
+    if (!(LOOP_PROVIDERS as readonly string[]).includes(entry.provider)) {
+      problems.push(`${id}: provider must be one of ${LOOP_PROVIDERS.join(", ")}`);
     }
     if (ids.has(id)) problems.push(`${id}: a template with this id already exists`);
     const properties = Object.keys(
@@ -164,6 +172,7 @@ export const splitLoopConfig = (
 const HOST_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   // The "GET" (了解) reaction on a message the bot took.
   "feishu-agent": { acknowledge: "Get" },
+  "slack-agent": { acknowledge: "eyes" },
 };
 
 export class LoopConfigError extends Error {
@@ -287,7 +296,7 @@ export const installLoops = (
   for (const loop of loops) {
     const template = loopTemplate(loop.template);
     if (template?.provider !== provider) {
-      throw new Error(`Loop ${loop.id}: ${loop.template} does not run on ${provider === "feishu" ? "Feishu" : "GitLab"}`);
+      throw new Error(`Loop ${loop.id}: ${loop.template} does not run on ${PROVIDER_NAMES[provider]}`);
     }
     const definition = isScheduled(template.loop) ? scheduledLoop(template.loop, loop.id) : template.loop;
     application.loop(definition, loop.config as Parameters<typeof application.loop>[1]);

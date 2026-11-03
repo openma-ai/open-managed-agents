@@ -1,7 +1,8 @@
 /**
  * The Matter service process: configuration from the environment, one HTTP
- * listener for the MCP endpoint, the "Connect Feishu" and "Connect GitLab"
- * APIs and GitLab webhooks, and the host
+ * listener for the MCP endpoint, the "Connect Feishu", "Connect GitLab" and
+ * "Connect Slack" APIs, GitLab webhooks and Slack Events API requests, and
+ * the host
  * that runs every connection (see `adapter.ts`).
  *
  * With `MATTER_DATABASE_URL` (MySQL) the process keeps no state of its own:
@@ -31,6 +32,14 @@ import {
   parseBaseUrl,
   replaceGitLabToken,
 } from "./gitlab-adapter.js";
+import {
+  connectSlack,
+  createSlackAdapter,
+  createSlackConnectHandler,
+  createSlackWebhookHandler,
+  updateSlack,
+  type SlackAdapterOptions,
+} from "./slack-adapter.js";
 import { createMatterHost, type MatterHost, type MatterHostOptions } from "./host.js";
 import { createLoopApiHandler, migrateConnectionsToLoops } from "./loops-api.js";
 import { createMatterMcpHandler } from "./mcp-server.js";
@@ -71,8 +80,9 @@ export interface MatterConfig {
   /** The OpenMA environment new sessions run in; unset, each workspace's
    * newest environment. */
   readonly environmentId?: string;
-  /** Where providers that call in (GitLab webhooks) reach this service;
-   * unset, "Connect GitLab" returns the webhook path only. */
+  /** Where providers that call in (GitLab webhooks, the Slack Events API)
+   * reach this service; unset, "Connect GitLab" and "Connect Slack" return
+   * the path only. */
   readonly publicUrl?: string;
   /** GitLab instances offered when linking a Bond (`MATTER_GITLAB_URLS`,
    * comma-separated); users can still enter another address. */
@@ -190,6 +200,8 @@ export const createMatterService = async (
     /** Reaches the providers (Feishu, GitLab); tests pass a fake. */
     readonly fetch?: typeof fetch;
     readonly createWsClient?: FeishuLongConnectionOptions["createClient"];
+    /** Builds Slack Socket Mode clients; tests pass a fake. */
+    readonly createSlackSocketClient?: SlackAdapterOptions["createSocketClient"];
     readonly omaFetch?: typeof fetch;
     readonly feishuConnectFetch?: typeof fetch;
     /** An open database instead of the configured one (tests). */
@@ -231,6 +243,11 @@ export const createMatterService = async (
   const bridge = new OperationCallBridge({ store: db.calls });
   const providerFetch = overrides.fetch === undefined ? {} : { fetch: overrides.fetch };
   const gitlab = createGitLabAdapter({ db, ...providerFetch });
+  const slack = createSlackAdapter({
+    db,
+    ...providerFetch,
+    ...(overrides.createSlackSocketClient === undefined ? {} : { createSocketClient: overrides.createSlackSocketClient }),
+  });
   const host = createMatterHost({
     db,
     bridge,
@@ -244,6 +261,7 @@ export const createMatterService = async (
         ...(overrides.createWsClient === undefined ? {} : { createWsClient: overrides.createWsClient }),
       }),
       gitlab,
+      slack,
     ],
     onError:
       overrides.onError ??
@@ -296,6 +314,22 @@ export const createMatterService = async (
     ...providerFetch,
   });
   const gitlabWebhooks = createGitLabWebhookHandler(gitlab, (key) => host.ensure(gitlab.kind, key));
+  const slackLink = {
+    db,
+    ...providerFetch,
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+  };
+  const connectSlackHandler = createSlackConnectHandler({
+    connect: connectSlack(host, slackLink),
+    update: updateSlack(host, slackLink),
+    db,
+    ...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
+    authorize: async (request) => {
+      const principal = await proxied(request);
+      return principal !== null && accepts(principal.tenantId) ? principal : null;
+    },
+  });
+  const slackWebhooks = createSlackWebhookHandler(slack, (key) => host.ensure(slack.kind, key));
   const mcp = createMatterMcpHandler({ bridge, tokens: db.tokens });
   const repositoryCredential = createRepositoryCredentialHandler({ db, secret: config.proxySecret, accepts });
 
@@ -308,7 +342,9 @@ export const createMatterService = async (
     return (
       (await repositoryCredential(request)) ??
       (await gitlabWebhooks(request)) ??
+      (await slackWebhooks(request)) ??
       (await connectGitLabHandler(request)) ??
+      (await connectSlackHandler(request)) ??
       (await loopApi(request)) ??
       (await connect(request)) ??
       Response.json({ error: "not found" }, { status: 404 })
