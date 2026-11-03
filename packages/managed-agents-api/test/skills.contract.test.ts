@@ -11,6 +11,7 @@ function makeClient(port: SkillsApplicationPort): Anthropic {
     apiKey: "test-key",
     baseURL: "http://openma.test",
     maxRetries: 0,
+    defaultHeaders: { "anthropic-beta": "skills-2025-10-02" },
     fetch: withAnthropicFormDataSupport(async (input, init) => {
       const request =
         input instanceof Request
@@ -49,7 +50,7 @@ describe("Skills API — /v1/skills", () => {
           type: "text/plain",
         }),
       ],
-      display_title: "Repository guide",
+      display_name: "Repository guide",
     });
 
     expect(calls).toEqual([
@@ -72,9 +73,9 @@ describe("Skills API — /v1/skills", () => {
     expect(skill).toEqual({
       id: "skill_01",
       created_at: "2026-08-26T13:00:00.000Z",
-      display_title: "Repository guide",
-      latest_version: "1759178010641129",
-      source: "custom",
+      display_name: "Repository guide",
+      latest_version_id: "1759178010641129",
+      source: { type: "custom" },
       type: "skill",
       updated_at: "2026-08-26T13:00:00.000Z",
     });

@@ -135,11 +135,17 @@ describe("Managed Agents API semantic cursor errors", () => {
     );
 
     await expectInvalidCursor(
-      client.beta.skills.list({ page: "malformed" }),
+      client.beta.skills.list({
+        page: "malformed",
+        betas: ["skills-2025-10-02"],
+      }),
       "Invalid skill page cursor",
     );
     await expectInvalidCursor(
-      client.beta.skills.versions.list("skill_01", { page: "malformed" }),
+      client.beta.skills.versions.list("skill_01", {
+        page: "malformed",
+        betas: ["skills-2025-10-02"],
+      }),
       "Invalid skill version page cursor",
     );
   });

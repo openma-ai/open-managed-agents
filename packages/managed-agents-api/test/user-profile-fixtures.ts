@@ -15,7 +15,6 @@ export const userProfileView: UserProfileView = {
   accessType: "application",
   externalId: "customer_01",
   name: "Example Customer",
-  relationship: "external",
 };
 
 export function makeUserProfilesPort(

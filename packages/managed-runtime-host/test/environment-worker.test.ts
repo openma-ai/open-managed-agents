@@ -44,6 +44,7 @@ const sessionSnapshot = {
   agent: {
     id: "agent_01",
     description: null,
+    execution_identity: { type: "service_account" },
     mcp_servers: [],
     model: { id: "claude-sonnet-4-6", speed: "standard" },
     multiagent: null,

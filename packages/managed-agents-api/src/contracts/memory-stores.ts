@@ -47,13 +47,13 @@ export const memoryStoreResponseSchema: z.ZodType<BetaManagedAgentsMemoryStore> 
   z
     .object({
       id: z.string().min(1),
+      archived_at: z.string().nullable(),
       created_at: z.string(),
+      description: z.string(),
+      metadata: z.record(z.string(), z.string()),
       name: z.string().min(1),
       type: z.literal("memory_store"),
       updated_at: z.string(),
-      archived_at: z.string().nullable().optional(),
-      description: z.string().optional(),
-      metadata: z.record(z.string(), z.string()).optional(),
     })
     .strict();
 

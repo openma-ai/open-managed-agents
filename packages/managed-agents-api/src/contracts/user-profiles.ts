@@ -17,7 +17,6 @@ export const userProfileCreateBodySchema: z.ZodType<UserProfileCreateBody> = z
     external_id: z.string().max(255).nullable().optional(),
     metadata: z.record(z.string(), z.string().min(1)).optional(),
     name: z.string().max(255).nullable().optional(),
-    relationship: z.enum(["external", "resold", "internal"]).optional(),
   })
   .strict();
 
@@ -30,10 +29,6 @@ export const userProfileUpdateBodySchema: z.ZodType<UserProfileUpdateBody> = z
     external_id: z.string().max(255).nullable().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
     name: z.string().max(255).nullable().optional(),
-    relationship: z
-      .enum(["external", "resold", "internal"])
-      .nullable()
-      .optional(),
   })
   .strict();
 
@@ -60,8 +55,7 @@ export const userProfileResponseSchema: z.ZodType<BetaUserProfile> = z
     updated_at: z.string(),
     access_type: z.enum(["application", "passthrough"]).optional(),
     external_id: z.string().nullable().optional(),
-    name: z.string().nullable().optional(),
-    relationship: z.enum(["external", "resold", "internal"]).optional(),
+    name: z.string().nullable(),
   })
   .strict();
 

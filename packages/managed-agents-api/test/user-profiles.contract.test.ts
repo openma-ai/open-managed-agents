@@ -40,7 +40,6 @@ describe("User Profiles API", () => {
       external_id: "customer_01",
       metadata: { tenant: "tenant_01" },
       name: "Example Customer",
-      relationship: "external",
     });
 
     expect(calls).toEqual([
@@ -49,7 +48,6 @@ describe("User Profiles API", () => {
         externalId: "customer_01",
         metadata: { tenant: "tenant_01" },
         name: "Example Customer",
-        relationship: "external",
       },
     ]);
     expect(profile).toEqual({
@@ -65,7 +63,6 @@ describe("User Profiles API", () => {
       access_type: "application",
       external_id: "customer_01",
       name: "Example Customer",
-      relationship: "external",
     });
   });
 
@@ -101,7 +98,6 @@ describe("User Profiles API", () => {
       external_id: null,
       metadata: { obsolete: "" },
       name: null,
-      relationship: null,
     });
 
     expect(calls).toEqual([
@@ -111,7 +107,6 @@ describe("User Profiles API", () => {
         externalId: null,
         metadata: { obsolete: "" },
         name: null,
-        relationship: null,
       },
     ]);
   });

@@ -48,7 +48,7 @@ describe("OpenMA SDK dreams resource", () => {
     expect(dream.id).toBe("drm-1");
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("POST");
-    expect(calls[0].url).toBe("https://api.example/v1/dreams?beta=true");
+    expect(calls[0].url).toBe("https://api.example/v1/dreams");
     expect(calls[0].headers.get("anthropic-beta")).toBe(
       "dreaming-2026-04-21",
     );

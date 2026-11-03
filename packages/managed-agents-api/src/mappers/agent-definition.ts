@@ -9,10 +9,18 @@ import type {
   AgentToolDefaultConfigInput,
   AgentToolInput,
   AgentModel,
+  AgentWebFetchURLSourceToolFilter,
+  AgentWebFetchURLSourceUserInput,
+  AgentWebFetchURLSources,
   SessionThreadAgent,
   JsonObject,
   JsonValue,
 } from "@open-managed-agents/managed-agents-application";
+import type {
+  BetaManagedAgentsWebFetchURLSourceToolFilterParams,
+  BetaManagedAgentsWebFetchURLSourceUserInputParams,
+  BetaManagedAgentsWebFetchURLSourcesParams,
+} from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import type { AgentCreateBody } from "../contracts/agents";
 import { fromOpenMaAgentExtension } from "./openma-agent-extension";
 
@@ -56,15 +64,69 @@ function toJsonObject(value: object): JsonObject {
 }
 
 function toPermissionPolicy(
-  policy: { type: "always_allow" | "always_ask" },
+  policy: { type: "always_allow" | "always_ask" | "auto" },
 ): AgentPermissionPolicy {
   return { type: policy.type };
+}
+
+function toWebFetchURLSources(
+  sources: BetaManagedAgentsWebFetchURLSourcesParams | null,
+): AgentWebFetchURLSources | null {
+  if (sources === null) return null;
+  return {
+    ...(sources.client_tool_results !== undefined && {
+      client_tool_results: toWebFetchURLSourceToolFilter(
+        sources.client_tool_results,
+      ),
+    }),
+    ...(sources.server_tool_results !== undefined && {
+      server_tool_results: toWebFetchURLSourceToolFilter(
+        sources.server_tool_results,
+      ),
+    }),
+    ...(sources.user_input !== undefined && {
+      user_input: toWebFetchURLSourceUserInput(sources.user_input),
+    }),
+  };
+}
+
+function toWebFetchURLSourceToolFilter(
+  filter: BetaManagedAgentsWebFetchURLSourceToolFilterParams | null,
+): AgentWebFetchURLSourceToolFilter | null {
+  if (filter === null) return null;
+  if (typeof filter === "string") return { type: filter };
+  return filter;
+}
+
+function toWebFetchURLSourceUserInput(
+  source: BetaManagedAgentsWebFetchURLSourceUserInputParams | null,
+): AgentWebFetchURLSourceUserInput | null {
+  if (source === null) return null;
+  if (typeof source === "string") return { type: source };
+  return source;
+}
+
+function fromWebFetchURLSources(
+  sources: AgentWebFetchURLSources | null,
+): object {
+  if (sources === null) {
+    return {
+      client_tool_results: null,
+      server_tool_results: null,
+      user_input: null,
+    };
+  }
+  return {
+    client_tool_results: sources.client_tool_results ?? null,
+    server_tool_results: sources.server_tool_results ?? null,
+    user_input: sources.user_input ?? null,
+  };
 }
 
 function toDefaultConfig(
   config: {
     enabled?: boolean | null;
-    permission_policy?: { type: "always_allow" | "always_ask" } | null;
+    permission_policy?: { type: "always_allow" | "always_ask" | "auto" } | null;
   },
 ): AgentToolDefaultConfigInput {
   return {
@@ -102,6 +164,9 @@ function toToolConfig(config: WireToolConfig): AgentToolConfigInput {
         }),
         ...(config.max_content_tokens !== undefined && {
           maxContentTokens: config.max_content_tokens,
+        }),
+        ...(config.url_sources !== undefined && {
+          urlSources: toWebFetchURLSources(config.url_sources),
         }),
       };
     case "web_search":
@@ -346,6 +411,10 @@ function fromResolvedToolConfig(config: AgentToolConfigInput): object {
         ...(config.maxContentTokens !== undefined && {
           max_content_tokens: config.maxContentTokens,
         }),
+        url_sources:
+          config.urlSources === undefined
+            ? null
+            : fromWebFetchURLSources(config.urlSources),
       };
     case "web_search":
       return {
@@ -500,6 +569,7 @@ export function fromSessionThreadAgent(agent: SessionThreadAgent): object {
   return {
     id: agent.id,
     description: agent.description,
+    execution_identity: { type: "service_account" },
     mcp_servers: agent.mcpServers.map(fromAgentMcpServerInput),
     model: fromAgentModel(agent.model),
     name: agent.name,

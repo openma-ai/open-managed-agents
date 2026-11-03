@@ -52,7 +52,7 @@ function toDeploymentResource(
     case "github_repository":
       return {
         kind: "github_repository",
-        authorizationToken: resource.authorization_token,
+        authorizationToken: resource.authorization_token ?? "",
         url: resource.url,
         ...(resource.checkout !== undefined && { checkout: resource.checkout }),
         ...(resource.mount_path !== undefined && {

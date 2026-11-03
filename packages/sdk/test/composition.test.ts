@@ -65,7 +65,7 @@ describe("OpenMA SDK composition facade", () => {
     expect(new URL(requests[0]!.url)).toMatchObject({
       origin: "https://openma.test",
       pathname: "/v1/agents",
-      search: "?beta=true&limit=7",
+      search: "?limit=7",
     });
     expect(requests[0]!.headers.get("x-api-key")).toBe("oma_test_key");
     expect(requests[0]!.headers.get("x-active-tenant")).toBe("tn_facade");
@@ -91,6 +91,7 @@ describe("OpenMA SDK composition facade", () => {
           archived_at: null,
           created_at: "2026-09-12T00:00:00.000Z",
           description: null,
+          execution_identity: { type: "service_account" },
           mcp_servers: [{
             name: "workspace",
             type: "stdio",
@@ -208,6 +209,7 @@ describe("OpenMA SDK composition facade", () => {
           archived_at: null,
           created_at: "2026-10-22T00:00:00.000Z",
           description: null,
+          execution_identity: { type: "service_account" },
           mcp_servers: [],
           model: { id: "claude-opus-5" },
           multiagent: {
@@ -285,6 +287,7 @@ describe("OpenMA SDK composition facade", () => {
           type: "agent",
           name: "Extended agent",
           description: null,
+          execution_identity: { type: "service_account" },
           mcp_servers: [],
           model: { id: "claude-opus-5" },
           multiagent: null,

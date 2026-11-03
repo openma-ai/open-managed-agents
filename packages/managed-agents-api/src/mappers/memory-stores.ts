@@ -74,12 +74,12 @@ export function toArchiveMemoryStoreCommand(
 export function toMemoryStoreResponse(store: MemoryStoreView): object {
   return {
     id: store.id,
+    archived_at: store.archivedAt ?? null,
     created_at: store.createdAt,
+    description: store.description ?? "",
+    metadata: store.metadata ?? {},
     name: store.name,
     type: "memory_store",
     updated_at: store.updatedAt,
-    ...(store.archivedAt !== undefined && { archived_at: store.archivedAt }),
-    ...(store.description !== undefined && { description: store.description }),
-    ...(store.metadata !== undefined && { metadata: store.metadata }),
   };
 }

@@ -1,9 +1,7 @@
 import type {
-  VersionCreateResponse,
-  VersionDeleteResponse,
+  BetaDeletedSkillVersion,
+  BetaSkillVersion,
   VersionListParams,
-  VersionListResponse,
-  VersionRetrieveResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/versions";
 import { z } from "zod";
 
@@ -16,18 +14,14 @@ export const skillVersionListQuerySchema = z
   })
   .strict();
 
-export const skillVersionResponseSchema: z.ZodType<
-  VersionCreateResponse | VersionRetrieveResponse | VersionListResponse
-> = z
+export const skillVersionResponseSchema: z.ZodType<BetaSkillVersion> = z
   .object({
     id: z.string().min(1),
     created_at: z.string(),
     description: z.string(),
-    directory: z.string(),
     name: z.string(),
     skill_id: z.string().min(1),
     type: z.literal("skill_version"),
-    version: z.string().min(1),
   })
   .strict();
 
@@ -38,7 +32,7 @@ export const skillVersionPageResponseSchema = z
   })
   .strict();
 
-export const deletedSkillVersionResponseSchema: z.ZodType<VersionDeleteResponse> =
+export const deletedSkillVersionResponseSchema: z.ZodType<BetaDeletedSkillVersion> =
   z
     .object({
       id: z.string().min(1),

@@ -273,7 +273,7 @@ describe("/v1/oma/skill-sources", () => {
 
     // Stored through the managed Skills API, one top-level folder per skill.
     const list = await call("GET", "/v1/skills");
-    expect(list.body.data.map((s: { display_title: string }) => s.display_title).sort()).toEqual(["code-review", "release-notes"]);
+    expect(list.body.data.map((s: { display_name: string }) => s.display_name).sort()).toEqual(["code-review", "release-notes"]);
     expect(await versionFiles(cp, review.skill_id, review.version)).toEqual({
       "code-review/SKILL.md": new TextDecoder().decode(skillMd("code-review", "review rules 1")),
       "code-review/checklists/style.md": "style 1",
@@ -316,7 +316,7 @@ describe("/v1/oma/skill-sources", () => {
     const newVersion = updated.body.data[0].version;
     expect(newVersion).not.toBe(review.version);
     const retrieved = await call("GET", `/v1/skills/${review.skill_id}`);
-    expect(retrieved.body.latest_version).toBe(newVersion);
+    expect(retrieved.body.latest_version_id).toBe(newVersion);
     expect((await versionFiles(cp, review.skill_id, newVersion))["code-review/checklists/style.md"]).toBe("style 2");
 
     check = await call("POST", "/v1/oma/skill-sources/check-updates", { skill_ids: [review.skill_id] });

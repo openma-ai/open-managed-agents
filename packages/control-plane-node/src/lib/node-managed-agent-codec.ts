@@ -28,7 +28,7 @@ export async function resolveNodeManagedAuxiliaryToolModel<Model>(
 import type { AgentConfig } from "@open-managed-agents/shared";
 
 interface LegacyPermissionPolicy {
-  type: "always_allow" | "always_ask";
+  type: "always_allow" | "always_ask" | "auto";
 }
 
 interface LegacyToolDefaultConfig {

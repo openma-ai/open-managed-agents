@@ -1,4 +1,4 @@
-import type { Model } from "../domain/model";
+import type { Model, ModelLifecycle } from "../domain/model";
 
 export interface FindCatalogModel {
   workspaceId: string;
@@ -10,6 +10,11 @@ export interface ListCatalogModels {
   limit: number;
   afterId?: string;
   beforeId?: string;
+  /**
+   * Lifecycle stages to include. When omitted the catalogue lists the active
+   * and deprecated models; retired models appear only when asked for.
+   */
+  lifecycle?: ModelLifecycle[];
 }
 
 export type ListCatalogModelsResult =

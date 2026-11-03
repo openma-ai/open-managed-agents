@@ -5,6 +5,8 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import { z } from "zod";
 
+import { webFetchURLSourcesParamsSchema } from "./agent-web-fetch-url-sources";
+
 type AgentToolInput = NonNullable<AgentCreateParams["tools"]>[number];
 type AgentMultiagentInput = Exclude<
   AgentCreateParams["multiagent"],
@@ -14,6 +16,7 @@ type AgentMultiagentInput = Exclude<
 const permissionPolicyInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("always_allow") }).strict(),
   z.object({ type: z.literal("always_ask") }).strict(),
+  z.object({ type: z.literal("auto") }).strict(),
 ]);
 
 const simpleToolConfigInputSchema = <
@@ -56,6 +59,7 @@ const agentToolConfigInputSchema = z.discriminatedUnion("name", [
       max_content_tokens: z.number().int().nullable().optional(),
       permission_policy: permissionPolicyInputSchema.nullable().optional(),
       type: z.literal("web_fetch").optional(),
+      url_sources: webFetchURLSourcesParamsSchema.nullable().optional(),
     })
     .strict(),
   z

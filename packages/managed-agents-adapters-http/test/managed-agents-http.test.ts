@@ -51,6 +51,10 @@ describe("Managed Agents HTTP adapter module", () => {
       capabilities: null,
       createdAt: "2026-08-20T00:00:00.000Z",
       displayName: "Claude Opus 5",
+      deprecatedAt: null,
+      lifecycle: "active" as const,
+      line: null,
+      retiresAt: null,
       maxInputTokens: null,
       maxTokens: null,
     };

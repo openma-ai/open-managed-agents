@@ -10,9 +10,12 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import { z } from "zod";
 
+import { webFetchURLSourcesSchema } from "./agent-web-fetch-url-sources";
+
 const permissionPolicySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("always_allow") }).strict(),
   z.object({ type: z.literal("always_ask") }).strict(),
+  z.object({ type: z.literal("auto") }).strict(),
 ]);
 
 const resolvedSimpleToolSchema = <
@@ -55,6 +58,7 @@ const resolvedAgentToolConfigSchema = z.discriminatedUnion("type", [
       allowed_domains: z.array(z.string()).optional(),
       blocked_domains: z.array(z.string()).optional(),
       max_content_tokens: z.number().int().nullable().optional(),
+      url_sources: webFetchURLSourcesSchema.nullable(),
     })
     .strict(),
   z
@@ -296,10 +300,21 @@ export const agentMultiagentResponseSchema = z
   })
   .strict();
 
+export const executionIdentityResponseSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("service_account") }).strict(),
+  z
+    .object({
+      type: z.literal("aws_role"),
+      role_arn: z.string().min(1),
+    })
+    .strict(),
+]);
+
 export const sessionThreadAgentResponseSchema = z
   .object({
     id: z.string(),
     description: z.string().nullable(),
+    execution_identity: executionIdentityResponseSchema,
     mcp_servers: z.array(agentMcpServerResponseSchema),
     model: agentModelResponseSchema,
     name: z.string(),
@@ -334,6 +349,7 @@ export const sessionAgentResponseSchema = z
     .object({
       id: z.string().min(1),
       description: z.string().nullable(),
+      execution_identity: executionIdentityResponseSchema,
       mcp_servers: z.array(agentMcpServerResponseSchema),
       model: agentModelResponseSchema,
       multiagent: sessionAgentMultiagentResponseSchema.nullable(),

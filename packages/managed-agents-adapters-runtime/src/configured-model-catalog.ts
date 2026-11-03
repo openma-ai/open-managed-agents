@@ -6,6 +6,8 @@ import type {
   ModelCatalogSourcePort,
 } from "@open-managed-agents/managed-agents-application";
 
+import { filterModelsByLifecycle } from "./model-lifecycle";
+
 export class ConfiguredModelCatalogSource implements ModelCatalogSourcePort {
   private readonly models: Model[];
 
@@ -38,17 +40,18 @@ export class ConfiguredModelCatalogSource implements ModelCatalogSourcePort {
     if (!Number.isInteger(input.limit) || input.limit < 1) {
       throw new Error("Configured Model page limit must be a positive integer");
     }
+    const models = filterModelsByLifecycle(this.models, input.lifecycle);
     const positionId = input.afterId ?? input.beforeId;
     const position = positionId === undefined
       ? undefined
-      : this.models.findIndex((model) => model.id === positionId);
+      : models.findIndex((model) => model.id === positionId);
     if (position === -1) return { type: "invalid_position" };
 
     if (input.beforeId !== undefined && position !== undefined) {
       const start = Math.max(0, position - input.limit);
       return {
         type: "page",
-        models: structuredClone(this.models.slice(start, position)),
+        models: structuredClone(models.slice(start, position)),
         hasMore: start > 0,
       };
     }
@@ -57,8 +60,8 @@ export class ConfiguredModelCatalogSource implements ModelCatalogSourcePort {
     const end = start + input.limit;
     return {
       type: "page",
-      models: structuredClone(this.models.slice(start, end)),
-      hasMore: end < this.models.length,
+      models: structuredClone(models.slice(start, end)),
+      hasMore: end < models.length,
     };
   }
 }

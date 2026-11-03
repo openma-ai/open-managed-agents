@@ -130,21 +130,17 @@ import type {
   FileUploadParams,
 } from "@anthropic-ai/sdk/resources/beta/files";
 import type {
+  BetaDeletedSkill,
+  BetaSkill,
   SkillCreateParams,
-  SkillCreateResponse,
-  SkillDeleteResponse,
   SkillListParams,
-  SkillListResponse,
-  SkillRetrieveResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/skills";
 import type {
+  BetaDeletedSkillVersion,
+  BetaSkillVersion,
   VersionCreateParams,
-  VersionCreateResponse,
-  VersionDeleteResponse,
   VersionDownloadParams,
   VersionListParams,
-  VersionListResponse,
-  VersionRetrieveResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/versions";
 import type {
   BetaModelInfo,
@@ -215,6 +211,16 @@ export interface ManagedApiTransport {
 }
 
 type WithoutBetas<T> = Omit<T, "betas">;
+
+/** OpenMA Files pagination extension. The official SDK 1.x `FileListParams`
+ *  only exposes the `page` cursor, but the OpenMA server still accepts the
+ *  legacy `before_id`/`after_id` cursors and the console's Files feed
+ *  (`useFilesInfiniteApiQuery`) paginates with `before_id`. Keep that wire
+ *  behavior available on the managed client. */
+export type OpenMaFileListParams = WithoutBetas<FileListParams> & {
+  before_id?: string;
+  after_id?: string;
+};
 
 /** OpenMA Environment extension: an alias from GET /v1/oma/sandbox_images.
  * `null` on update returns the Environment to the deployment default. */
@@ -956,7 +962,7 @@ export function createManagedApiClient(
       },
     },
     files: {
-      list: (params: WithoutBetas<FileListParams> = {}) =>
+      list: (params: OpenMaFileListParams = {}) =>
         request<FilesPage<BetaFileMetadata>>(
           buildManagedApiUrl("/v1/files", params as Record<string, QueryValue>),
         ),
@@ -978,21 +984,21 @@ export function createManagedApiClient(
     },
     skills: {
       list: (params: WithoutBetas<SkillListParams> = {}) =>
-        request<ManagedPage<SkillListResponse>>(
+        request<ManagedPage<BetaSkill>>(
           buildManagedApiUrl(
             "/v1/skills",
             params as Record<string, QueryValue>,
           ),
         ),
       retrieve: (skillId: string) =>
-        request<SkillRetrieveResponse>(`/v1/skills/${id(skillId)}`),
+        request<BetaSkill>(`/v1/skills/${id(skillId)}`),
       create: (params: WithoutBetas<SkillCreateParams>) =>
-        request<SkillCreateResponse>(
+        request<BetaSkill>(
           "/v1/skills",
-          multipart(params.files, { display_title: params.display_title }),
+          multipart(params.files, { display_name: params.display_name }),
         ),
       delete: (skillId: string) =>
-        request<SkillDeleteResponse>(`/v1/skills/${id(skillId)}`, {
+        request<BetaDeletedSkill>(`/v1/skills/${id(skillId)}`, {
           method: "DELETE",
         }),
       versions: {
@@ -1000,26 +1006,26 @@ export function createManagedApiClient(
           skillId: string,
           params: WithoutBetas<VersionListParams> = {},
         ) =>
-          request<ManagedPage<VersionListResponse>>(
+          request<ManagedPage<BetaSkillVersion>>(
             buildManagedApiUrl(
               `/v1/skills/${id(skillId)}/versions`,
               params as Record<string, QueryValue>,
             ),
           ),
         retrieve: (version: string, params: { skill_id: string }) =>
-          request<VersionRetrieveResponse>(
+          request<BetaSkillVersion>(
             `/v1/skills/${id(params.skill_id)}/versions/${id(version)}`,
           ),
         create: (
           skillId: string,
           params: WithoutBetas<VersionCreateParams>,
         ) =>
-          request<VersionCreateResponse>(
+          request<BetaSkillVersion>(
             `/v1/skills/${id(skillId)}/versions`,
             multipart(params.files),
           ),
         delete: (version: string, params: { skill_id: string }) =>
-          request<VersionDeleteResponse>(
+          request<BetaDeletedSkillVersion>(
             `/v1/skills/${id(params.skill_id)}/versions/${id(version)}`,
             { method: "DELETE" },
           ),

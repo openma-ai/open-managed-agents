@@ -102,7 +102,7 @@ export function AgentsList() {
           setCustomSkills(
             (sk.data ?? []).map((skill) => ({
               id: skill.id,
-              name: skill.display_title || skill.id,
+              name: skill.display_name || skill.id,
               description: "",
             })),
           );

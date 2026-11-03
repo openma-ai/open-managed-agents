@@ -13,6 +13,7 @@ export const modelListQuerySchema = z
     after_id: z.string().min(1).optional(),
     before_id: z.string().min(1).optional(),
     limit: z.coerce.number().int().min(1).optional(),
+    lifecycle: z.array(z.enum(["active", "deprecated", "retired"])).optional(),
   })
   .strict();
 
@@ -25,6 +26,13 @@ export const modelResponseSchema: z.ZodType<BetaModelInfo> = z
         batch: supportSchema,
         citations: supportSchema,
         code_execution: supportSchema,
+        compaction: z
+          .object({
+            summarize: supportSchema,
+            supported: z.boolean(),
+          })
+          .strict()
+          .nullable(),
         context_management: z
           .object({
             clear_thinking_20251015: supportSchema.nullable(),
@@ -45,6 +53,13 @@ export const modelResponseSchema: z.ZodType<BetaModelInfo> = z
           .strict(),
         image_input: supportSchema,
         pdf_input: supportSchema,
+        server_tools: z
+          .object({
+            code_execution: supportSchema,
+            supported: z.boolean(),
+            web_search: supportSchema,
+          })
+          .strict(),
         structured_outputs: supportSchema,
         thinking: z
           .object({
@@ -52,6 +67,8 @@ export const modelResponseSchema: z.ZodType<BetaModelInfo> = z
             types: z
               .object({
                 adaptive: supportSchema,
+                between_tools: supportSchema,
+                disabled: supportSchema,
                 enabled: supportSchema,
               })
               .strict(),
@@ -61,9 +78,13 @@ export const modelResponseSchema: z.ZodType<BetaModelInfo> = z
       .strict()
       .nullable(),
     created_at: z.string(),
+    deprecated_at: z.string().nullable(),
     display_name: z.string(),
+    lifecycle: z.enum(["active", "deprecated", "retired"]),
+    line: z.enum(["haiku", "sonnet", "opus", "fable", "mythos"]).nullable(),
     max_input_tokens: z.number().int().nullable(),
     max_tokens: z.number().int().nullable(),
+    retires_at: z.string().nullable(),
     type: z.literal("model"),
   })
   .strict();

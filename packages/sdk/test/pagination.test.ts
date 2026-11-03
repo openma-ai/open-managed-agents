@@ -4,7 +4,7 @@ import { OpenMA, type OpenMaAgent, type OpenMaSession } from "../src/index.js";
 
 const agent: OpenMaAgent = {
   id: "agent_parent", type: "agent", name: "Parent", version: 1,
-  description: null, model: { id: "claude-opus-5" }, mcp_servers: [],
+  description: null, execution_identity: { type: "service_account" }, model: { id: "claude-opus-5" }, mcp_servers: [],
   skills: [], system: null, tools: [], metadata: {}, archived_at: null,
   created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
   multiagent: { type: "multiagent_20261001", advisor: { type: "disabled" }, subagents: { type: "disabled" }, workflows: { type: "disabled" } },

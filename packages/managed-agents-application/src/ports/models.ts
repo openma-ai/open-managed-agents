@@ -1,5 +1,5 @@
-import type { Model } from "../domain/model";
-export type { Model } from "../domain/model";
+import type { Model, ModelLifecycle } from "../domain/model";
+export type { Model, ModelLifecycle } from "../domain/model";
 
 export interface RetrieveModelQuery {
   modelId: string;
@@ -9,6 +9,11 @@ export interface ListModelsQuery {
   afterId?: string;
   beforeId?: string;
   pageSize?: number;
+  /**
+   * Lifecycle stages to include. When omitted the catalogue lists the active
+   * and deprecated models; retired models appear only when asked for.
+   */
+  lifecycle?: ModelLifecycle[];
 }
 
 export interface ModelsPage {

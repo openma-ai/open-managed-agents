@@ -552,7 +552,7 @@ function runtimeEnvironmentConfig(environment: Environment): object {
 }
 
 interface RuntimePermissionPolicy {
-  type: "always_allow" | "always_ask";
+  type: "always_allow" | "always_ask" | "auto";
 }
 
 interface RuntimeToolDefaultConfig {

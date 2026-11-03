@@ -75,7 +75,7 @@ type HeaderValue = string | readonly string[] | null | undefined;
 
 function mergeDefaultHeaders(
   defaultHeaders: AnthropicClientOptions["defaultHeaders"],
-  additions: Record<string, string>,
+  additions: Record<string, HeaderValue>,
 ): Record<string, HeaderValue> {
   const merged: Record<string, HeaderValue> = {};
   const set = (name: string, value: HeaderValue) => {
@@ -122,6 +122,7 @@ export class OpenMA {
   constructor(options: OpenMAOptions = {}) {
     const {
       activeTenantId,
+      apiKey,
       baseUrl,
       bearer,
       defaultHeaders,
@@ -129,16 +130,29 @@ export class OpenMA {
       ...anthropicOptions
     } = options;
 
+    // Anthropic TS SDK 1.x sends apiKey as Authorization Bearer. OpenMA's
+    // control-plane auth still uses the tenant x-api-key header, so hand-set
+    // X-Api-Key and explicitly omit Authorization (SDK validates either).
+    // OpenMA callers pass a string key today. Function setters would still
+    // emit Bearer under SDK 1.x, so only string keys are remapped to X-Api-Key.
+    const openMaApiKey =
+      typeof apiKey === "string" && apiKey.length > 0 ? apiKey : null;
+
+    const authToken = options.authToken ?? bearer ?? null;
     this.anthropic = new Anthropic({
       ...anthropicOptions,
+      // Prevent SDK 1.x from emitting Authorization: Bearer for the OpenMA key.
+      apiKey: null,
       baseURL: options.baseURL ?? baseUrl ?? "https://app.openma.ai",
-      authToken: options.authToken ?? bearer,
+      authToken,
       defaultHeaders: mergeDefaultHeaders(defaultHeaders, {
+        ...(openMaApiKey ? { "X-Api-Key": openMaApiKey } : {}),
+        // Omit Authorization only when we are not using authToken Bearer auth.
+        ...(openMaApiKey && !authToken ? { Authorization: null } : {}),
         ...(activeTenantId ? { "x-active-tenant": activeTenantId } : {}),
         ...(userAgent ? { "user-agent": userAgent } : {}),
       }),
     });
-    // OpenMA's wire contract differs from SDK 0.120.0's coordinator types only.
     // Keep the official resources and transport intact; do not normalize patches.
     this.beta = this.anthropic.beta as unknown as OpenMaBeta;
     this.oma = new OmaResources(this.anthropic);

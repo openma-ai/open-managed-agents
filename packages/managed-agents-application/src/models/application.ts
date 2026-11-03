@@ -46,6 +46,7 @@ export class ModelsApplicationService implements ModelsApplicationPort {
       limit: pageSize,
       ...(query.afterId !== undefined && { afterId: query.afterId }),
       ...(query.beforeId !== undefined && { beforeId: query.beforeId }),
+      ...(query.lifecycle !== undefined && { lifecycle: query.lifecycle }),
     });
     if (result.type === "invalid_position") {
       return {

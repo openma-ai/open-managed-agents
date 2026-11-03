@@ -93,14 +93,12 @@ export function allowsApiKeyRequest(
     return request.transport === "x-api-key" && isHostedInferenceProxyPath(request.path);
   }
 
-  // A workspace key may administer Work through the normal x-api-key API,
-  // but it must never become a standing Environment Worker bearer. Embedded
-  // and external workers therefore enter through the same environment-scoped
-  // credential boundary.
-  const isEnvironmentWork = /^\/v1\/environments\/[^/]+\/work(?:\/|$)/.test(
-    request.path,
-  );
-  return !(request.transport === "bearer" && isEnvironmentWork);
+  // Workspace keys may administer Work. Anthropic SDK 1.x sends `apiKey` as
+  // `Authorization: Bearer` (not `x-api-key`), so transport can no longer
+  // distinguish a standing Environment Worker. Environment-scoped credentials
+  // are gated above by credential type + path; workspace credentials stay
+  // allowed on Work routes for both transports.
+  return true;
 }
 
 const DEFAULT_BYPASS = (path: string) =>
@@ -227,10 +225,10 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps) {
       return next();
     }
 
-    // 2. Official Managed Agents helpers use Bearer auth for both the
-    // standing environment key and the per-work sessions token. Resolve the
-    // scoped token first; the policy guard below prevents a workspace key from
-    // masquerading as the standing Environment Worker bearer.
+    // 2. Official Managed Agents helpers use Bearer auth for the standing
+    // environment key, per-work sessions token, and (as of SDK 1.x) workspace
+    // apiKey. Resolve the scoped token first; allowsApiKeyRequest still keeps
+    // environment credentials inside their Work path.
     const authorization = c.req.header("authorization") ?? "";
     if (authorization.startsWith("Bearer ")) {
       const token = authorization.slice("Bearer ".length);

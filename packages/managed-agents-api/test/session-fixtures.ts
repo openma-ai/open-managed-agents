@@ -41,6 +41,7 @@ export const sessionWire: BetaManagedAgentsSession = {
   agent: {
     id: sessionView.agent.id,
     description: null,
+    execution_identity: { type: "service_account" },
     mcp_servers: [],
     model: {
       id: "claude-opus-5",

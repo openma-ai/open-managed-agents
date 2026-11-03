@@ -18,9 +18,6 @@ export function toCreateUserProfileCommand(
     ...(body.external_id !== undefined && { externalId: body.external_id }),
     ...(body.metadata !== undefined && { metadata: body.metadata }),
     ...(body.name !== undefined && { name: body.name }),
-    ...(body.relationship !== undefined && {
-      relationship: body.relationship,
-    }),
   };
 }
 
@@ -34,9 +31,6 @@ export function toUpdateUserProfileCommand(
     ...(body.external_id !== undefined && { externalId: body.external_id }),
     ...(body.metadata !== undefined && { metadata: body.metadata }),
     ...(body.name !== undefined && { name: body.name }),
-    ...(body.relationship !== undefined && {
-      relationship: body.relationship,
-    }),
   };
 }
 
@@ -55,6 +49,7 @@ export function toUserProfileResponse(profile: UserProfileView): object {
     id: profile.id,
     created_at: profile.createdAt,
     metadata: profile.metadata,
+    name: profile.name ?? null,
     trust_grants: profile.trustGrants,
     type: "user_profile",
     updated_at: profile.updatedAt,
@@ -63,10 +58,6 @@ export function toUserProfileResponse(profile: UserProfileView): object {
     }),
     ...(profile.externalId !== undefined && {
       external_id: profile.externalId,
-    }),
-    ...(profile.name !== undefined && { name: profile.name }),
-    ...(profile.relationship !== undefined && {
-      relationship: profile.relationship,
     }),
   };
 }

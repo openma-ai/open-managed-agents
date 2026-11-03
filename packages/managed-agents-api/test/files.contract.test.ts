@@ -41,10 +41,13 @@ describe("Files API — /v1/files", () => {
       }),
     );
 
+    // SDK 1.3 FileListParams uses the forward PageCursor `page` query (legacy
+    // after_id remains accepted by OpenMA and is mapped the same way).
     const page = await client.beta.files.list({
       limit: 25,
-      after_id: "file_cursor_01",
+      page: "file_cursor_01",
       scope_id: "session_01",
+      betas: ["files-api-2025-04-14"],
     });
 
     expect(calls).toEqual([
@@ -64,9 +67,8 @@ describe("Files API — /v1/files", () => {
       downloadable: true,
       scope: { type: "session", id: "session_01" },
     });
-    expect(page.has_more).toBe(true);
-    expect(page.first_id).toBe("file_01");
-    expect(page.last_id).toBe("file_01");
+    expect(page.next_page).toBe("file_01");
+    expect(page.hasNextPage()).toBe(true);
   });
 
   it("retrieves file metadata", async () => {
@@ -80,7 +82,9 @@ describe("Files API — /v1/files", () => {
       }),
     );
 
-    const file = await client.beta.files.retrieveMetadata("file_01");
+    const file = await client.beta.files.retrieveMetadata("file_01", {
+      betas: ["files-api-2025-04-14"],
+    });
 
     expect(calls).toEqual([{ fileId: "file_01" }]);
     expect(file).toMatchObject({ id: "file_01", type: "file" });
@@ -103,6 +107,7 @@ describe("Files API — /v1/files", () => {
 
     const file = await client.beta.files.upload({
       file: new File(["hello"], "notes.txt", { type: "text/plain" }),
+      betas: ["files-api-2025-04-14"],
     });
 
     expect(calls).toEqual([
@@ -133,7 +138,9 @@ describe("Files API — /v1/files", () => {
       }),
     );
 
-    const response = await client.beta.files.download("file_01");
+    const response = await client.beta.files.download("file_01", {
+      betas: ["files-api-2025-04-14"],
+    });
 
     expect(calls).toEqual([{ fileId: "file_01" }]);
     expect(await response.text()).toBe("hello");
@@ -151,7 +158,9 @@ describe("Files API — /v1/files", () => {
       }),
     );
 
-    const deleted = await client.beta.files.delete("file_01");
+    const deleted = await client.beta.files.delete("file_01", {
+      betas: ["files-api-2025-04-14"],
+    });
 
     expect(calls).toEqual([{ fileId: "file_01" }]);
     expect(deleted).toEqual({ id: "file_01", type: "file_deleted" });

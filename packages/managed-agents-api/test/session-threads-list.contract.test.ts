@@ -92,6 +92,7 @@ describe("Managed Agents API — GET /v1/sessions/:session_id/threads", () => {
           type: "agent",
           id: sessionWire.agent.id,
           description: null,
+          execution_identity: { type: "service_account" },
           mcp_servers: [],
           model: { id: "claude-opus-5", effort: { type: "high" } },
           name: "Coding Assistant",
