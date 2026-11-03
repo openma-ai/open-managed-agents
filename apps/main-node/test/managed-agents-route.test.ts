@@ -21,6 +21,31 @@ interface ProcessHandle {
 const REPO_ROOT = resolve(__dirname, "../../..");
 const MAIN_NODE_ENTRY = join(REPO_ROOT, "apps/main-node/src/index.ts");
 const TSX_BIN = join(REPO_ROOT, "apps/main-node/node_modules/.bin/tsx");
+
+const TEST_API_BETAS = [
+  "managed-agents-2026-04-01",
+  "files-api-2025-04-14",
+  "skills-2025-10-02",
+  "agent-memory-2026-07-22",
+  "dreaming-2026-04-21",
+  "mcp-tunnels-2026-06-22",
+  "user-profiles-2026-08-18",
+].join(",");
+
+function makeOfficialClient(options: {
+  baseURL: string;
+  apiKey?: string | null;
+  authToken?: string;
+}): Anthropic {
+  return new Anthropic({
+    apiKey: options.apiKey === undefined ? "test-key" : options.apiKey,
+    ...(options.authToken !== undefined ? { authToken: options.authToken } : {}),
+    baseURL: options.baseURL,
+    maxRetries: 0,
+    defaultHeaders: { "anthropic-beta": TEST_API_BETAS },
+  });
+}
+
 const SKILL_MARKDOWN = `---
 name: repository-guide
 description: How to work in this repository
@@ -55,13 +80,9 @@ describe("main-node official Managed Agents route", () => {
     ["Custom title", "Custom title"],
   ])("persists the skill title for upload title %j", async (title, expected) => {
     handle = await startMainNode(dataDirectory);
-    const client = new Anthropic({
-      apiKey: "test-key",
-      baseURL: `http://127.0.0.1:${handle.port}`,
-      maxRetries: 0,
-    });
+    const client = makeOfficialClient({ baseURL: `http://127.0.0.1:${handle.port}` });
     const created = await client.beta.skills.create({
-      ...(title !== undefined && { display_title: title }),
+      ...(title !== undefined && { display_name: title }),
       files: [
         new File([SKILL_MARKDOWN], "archive-folder/SKILL.md", {
           type: "text/markdown",
@@ -69,23 +90,26 @@ describe("main-node official Managed Agents route", () => {
         new File(["reference"], "archive-folder/reference.txt"),
       ],
     });
-    expect(created.display_title).toBe(expected);
+    expect(created.display_name).toBe(expected);
     const retrieved = await client.beta.skills.retrieve(created.id);
-    expect(retrieved.display_title).toBe(expected);
+    expect(retrieved.display_name).toBe(expected);
     const listed = await client.beta.skills.list();
-    expect(listed.data.find((skill) => skill.id === created.id)?.display_title)
+    expect(listed.data.find((skill) => skill.id === created.id)?.display_name)
       .toBe(expected);
     const version = await client.beta.skills.versions.retrieve(
-      created.latest_version!,
+      created.latest_version_id!,
       { skill_id: created.id },
     );
     expect(version).toMatchObject({
       name: "repository-guide",
       description: "How to work in this repository",
-      directory: "archive-folder",
+      skill_id: created.id,
+      type: "skill_version",
     });
+    expect(version).not.toHaveProperty("directory");
+    expect(version).not.toHaveProperty("version");
     const content = await client.beta.skills.versions.download(
-      created.latest_version!,
+      created.latest_version_id!,
       { skill_id: created.id },
     );
     expect(new TextDecoder().decode(
@@ -95,11 +119,7 @@ describe("main-node official Managed Agents route", () => {
 
   it("serves an official SDK create and retrieve through the scoped application slice", async () => {
     handle = await startMainNode(dataDirectory);
-    const client = new Anthropic({
-      apiKey: "test-key",
-      baseURL: `http://127.0.0.1:${handle.port}`,
-      maxRetries: 0,
-    });
+    const client = makeOfficialClient({ baseURL: `http://127.0.0.1:${handle.port}` });
     const modelId = `route-test-model-${randomBytes(6).toString("hex")}`;
     const modelCard = await fetch(
       `http://127.0.0.1:${handle.port}/v1/oma/model_cards`,
@@ -137,6 +157,7 @@ describe("main-node official Managed Agents route", () => {
       "archived_at",
       "created_at",
       "description",
+      "execution_identity",
       "id",
       "mcp_servers",
       "metadata",
@@ -160,9 +181,13 @@ describe("main-node official Managed Agents route", () => {
       allowed_fallback_models: null,
       capabilities: null,
       created_at: expect.any(String),
+      deprecated_at: null,
       display_name: modelId,
+      lifecycle: "active",
+      line: null,
       max_input_tokens: null,
       max_tokens: null,
+      retires_at: null,
       type: "model",
     });
     const omaModels = await fetch(
@@ -344,7 +369,7 @@ describe("main-node official Managed Agents route", () => {
     });
 
     const createdSkill = await client.beta.skills.create({
-      display_title: "Repository guide",
+      display_name: "Repository guide",
       files: [
         new File([SKILL_MARKDOWN], "repository-guide/SKILL.md", {
           type: "text/markdown",
@@ -356,31 +381,31 @@ describe("main-node official Managed Agents route", () => {
     });
     const retrievedSkill = await client.beta.skills.retrieve(createdSkill.id);
     const initialSkillVersion = await client.beta.skills.versions.retrieve(
-      createdSkill.latest_version!,
+      createdSkill.latest_version_id!,
       { skill_id: createdSkill.id },
     );
     const downloadedSkillVersion = await client.beta.skills.versions.download(
-      createdSkill.latest_version!,
+      createdSkill.latest_version_id!,
       { skill_id: createdSkill.id },
     );
 
     expect(createdSkill).toMatchObject({
       id: expect.stringMatching(/^skill_/),
       type: "skill",
-      display_title: "Repository guide",
-      latest_version: expect.any(String),
-      source: "custom",
+      display_name: "Repository guide",
+      latest_version_id: expect.any(String),
+      source: { type: "custom" },
     });
     expect(retrievedSkill).toEqual(createdSkill);
     expect(initialSkillVersion).toMatchObject({
-      id: expect.stringMatching(/^skv_/),
+      id: createdSkill.latest_version_id,
       type: "skill_version",
       description: "How to work in this repository",
-      directory: "repository-guide",
       name: "repository-guide",
       skill_id: createdSkill.id,
-      version: createdSkill.latest_version,
     });
+    expect(initialSkillVersion).not.toHaveProperty("directory");
+    expect(initialSkillVersion).not.toHaveProperty("version");
     expect(
       Object.keys(
         unzipSync(new Uint8Array(await downloadedSkillVersion.arrayBuffer())),
@@ -510,7 +535,6 @@ describe("main-node official Managed Agents route", () => {
       external_id: "node-customer-01",
       metadata: { owner: "platform" },
       name: "Node Customer",
-      relationship: "external",
     });
     const retrievedUserProfile = await client.beta.userProfiles.retrieve(
       createdUserProfile.id,
@@ -526,7 +550,6 @@ describe("main-node official Managed Agents route", () => {
       access_type: "application",
       external_id: "node-customer-01",
       name: "Node Customer",
-      relationship: "external",
     });
     expect(retrievedUserProfile).toEqual(createdUserProfile);
 
@@ -735,11 +758,7 @@ describe("main-node official Managed Agents route", () => {
 
   it("refines the official SDK client state model under conflicts", async () => {
     handle = await startMainNode(dataDirectory);
-    const client = new Anthropic({
-      apiKey: "test-key",
-      baseURL: `http://127.0.0.1:${handle.port}`,
-      maxRetries: 0,
-    });
+    const client = makeOfficialClient({ baseURL: `http://127.0.0.1:${handle.port}` });
     const suffix = randomBytes(8).toString("hex");
     const modelId = `state-model-${suffix}`;
     const modelCard = await fetch(
@@ -772,7 +791,7 @@ describe("main-node official Managed Agents route", () => {
       apiKey: "test-key",
     });
     const baseURL = `http://127.0.0.1:${handle.port}`;
-    const client = new Anthropic({ apiKey: "test-key", baseURL, maxRetries: 0 });
+    const client = makeOfficialClient({ baseURL });
     const suffix = randomBytes(8).toString("hex");
     const modelId = `worker-auth-${suffix}`;
     const modelCard = await fetch(`${baseURL}/v1/oma/model_cards`, {
@@ -831,7 +850,7 @@ describe("main-node official Managed Agents route", () => {
       }),
     });
     const attachedSkill = await client.beta.skills.create({
-      display_title: "Worker attached skill",
+      display_name: "Worker attached skill",
       files: [
         new File([SKILL_MARKDOWN], "repository-guide/SKILL.md", {
           type: "text/markdown",
@@ -839,7 +858,7 @@ describe("main-node official Managed Agents route", () => {
       ],
     });
     const unrelatedSkill = await client.beta.skills.create({
-      display_title: "Worker unrelated skill",
+      display_name: "Worker unrelated skill",
       files: [
         new File([SKILL_MARKDOWN], "unrelated/SKILL.md", {
           type: "text/markdown",
@@ -883,12 +902,7 @@ describe("main-node official Managed Agents route", () => {
       ],
     });
 
-    const environmentClient = new Anthropic({
-      apiKey: null,
-      authToken: environmentCredential.key,
-      baseURL,
-      maxRetries: 0,
-    });
+    const environmentClient = makeOfficialClient({ apiKey: null, authToken: environmentCredential.key, baseURL });
     const poller = client.beta.environments.work.poller({
       environmentId: environment.id,
       environmentKey: environmentCredential.key,
@@ -902,12 +916,7 @@ describe("main-node official Managed Agents route", () => {
     const work = next.value!;
     const sessionsToken = decodeWorkSecret(work.secret!).sessions_token;
     expect(sessionsToken).toMatch(/^sk-ant-req-v1\./);
-    const sessionClient = new Anthropic({
-      apiKey: null,
-      authToken: String(sessionsToken),
-      baseURL,
-      maxRetries: 0,
-    });
+    const sessionClient = makeOfficialClient({ apiKey: null, authToken: String(sessionsToken), baseURL });
 
     await expect(sessionClient.beta.sessions.retrieve(session.id)).resolves.toMatchObject({
       id: session.id,
@@ -927,14 +936,14 @@ describe("main-node official Managed Agents route", () => {
       attachedSkill.id,
     );
     expect(attachedSkillVersions.data).toHaveLength(1);
-    const concreteSkillVersion = attachedSkillVersions.data[0]!.version;
+    const concreteSkillVersion = attachedSkillVersions.data[0]!.id;
     await expect(
       sessionClient.beta.skills.versions.retrieve(concreteSkillVersion, {
         skill_id: attachedSkill.id,
       }),
     ).resolves.toMatchObject({
       skill_id: attachedSkill.id,
-      version: concreteSkillVersion,
+      id: concreteSkillVersion,
     });
     await expect(
       sessionClient.beta.skills.versions.download(concreteSkillVersion, {
@@ -997,12 +1006,7 @@ describe("main-node official Managed Agents route", () => {
     await expect(
       sessionClient.beta.sessions.retrieve(session.id),
     ).rejects.toMatchObject({ status: 401 });
-    const replacementSessionClient = new Anthropic({
-      apiKey: null,
-      authToken: replacementToken,
-      baseURL,
-      maxRetries: 0,
-    });
+    const replacementSessionClient = makeOfficialClient({ apiKey: null, authToken: replacementToken, baseURL });
     await expect(
       replacementSessionClient.beta.sessions.retrieve(session.id),
     ).resolves.toMatchObject({ id: session.id });

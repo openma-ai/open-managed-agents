@@ -70,7 +70,7 @@ describe("Skills API — /v1/skills/:skill_id/versions", () => {
       },
     ]);
     expect(version).toMatchObject({
-      id: "skv_01",
+      id: "1759178010641129",
       skill_id: "skill_01",
       type: "skill_version",
       name: "repository-guide",
@@ -125,7 +125,7 @@ describe("Skills API — /v1/skills/:skill_id/versions", () => {
     expect(calls).toEqual([
       { skillId: "skill_01", pageSize: 10, cursor: "version_page_01" },
     ]);
-    expect(page.data[0]?.id).toBe("skv_01");
+    expect(page.data[0]?.id).toBe("1759178010641129");
     expect(page.next_page).toBe("version_page_02");
   });
 

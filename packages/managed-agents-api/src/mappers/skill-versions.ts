@@ -62,7 +62,9 @@ export function toDownloadSkillVersionQuery(
 
 export function toSkillVersionResponse(version: SkillVersionView): object {
   return {
-    id: version.id,
+    // SDK 1.x BetaSkillVersion.id is the path/pin identifier (formerly `version`).
+    // Keep the internal skv_* id off the wire so latest_version_id matches.
+    id: version.version,
     created_at: version.createdAt,
     description: version.description,
     name: version.name,
