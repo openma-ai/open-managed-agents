@@ -36,6 +36,8 @@ export function mockSdkServer() {
     if (path.endsWith("/sandboxes") && call.method === "POST") return Response.json(sandboxInfo(server.state), { status: 202 });
     if (/\/endpoints\/\d+$/.test(path)) return Response.json({ endpoint: "exec.test:44772", headers: { "X-EXECD-ACCESS-TOKEN": "runtime-token" } });
     if (path.endsWith("/sb-1") && call.method === "GET") return Response.json(sandboxInfo(server.state));
+    if (path.endsWith("/pause")) server.state = "Paused";
+    if (path.endsWith("/resume")) server.state = "Running";
     if (path.endsWith("/command")) {
       const text = server.commands.map(event => (server.format === "sse" ? "data: " : "") + JSON.stringify(event) + "\r\n\r\n").join("");
       const bytes = new TextEncoder().encode(text);
