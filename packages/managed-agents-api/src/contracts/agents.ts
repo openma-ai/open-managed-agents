@@ -17,6 +17,7 @@ import {
   agentMcpServerResponseSchema,
   agentModelResponseSchema,
   agentMultiagentResponseSchema,
+  executionIdentityResponseSchema,
   openMaAgentExtensionResponseSchema,
   agentSkillResponseSchema,
   agentToolResponseSchema,
@@ -333,15 +334,7 @@ export const agentUpdateBodySchema: z.ZodType<AgentUpdateBody> = z
   })
   .strict();
 
-const agentExecutionIdentityResponseSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("service_account") }).strict(),
-  z
-    .object({
-      type: z.literal("aws_role"),
-      role_arn: z.string().min(1),
-    })
-    .strict(),
-]);
+const agentExecutionIdentityResponseSchema = executionIdentityResponseSchema;
 
 export const agentResponseSchema = z
   .object({

@@ -300,10 +300,21 @@ export const agentMultiagentResponseSchema = z
   })
   .strict();
 
+export const executionIdentityResponseSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("service_account") }).strict(),
+  z
+    .object({
+      type: z.literal("aws_role"),
+      role_arn: z.string().min(1),
+    })
+    .strict(),
+]);
+
 export const sessionThreadAgentResponseSchema = z
   .object({
     id: z.string(),
     description: z.string().nullable(),
+    execution_identity: executionIdentityResponseSchema,
     mcp_servers: z.array(agentMcpServerResponseSchema),
     model: agentModelResponseSchema,
     name: z.string(),
@@ -338,15 +349,7 @@ export const sessionAgentResponseSchema = z
     .object({
       id: z.string().min(1),
       description: z.string().nullable(),
-      execution_identity: z.discriminatedUnion("type", [
-        z.object({ type: z.literal("service_account") }).strict(),
-        z
-          .object({
-            type: z.literal("aws_role"),
-            role_arn: z.string().min(1),
-          })
-          .strict(),
-      ]),
+      execution_identity: executionIdentityResponseSchema,
       mcp_servers: z.array(agentMcpServerResponseSchema),
       model: agentModelResponseSchema,
       multiagent: sessionAgentMultiagentResponseSchema.nullable(),

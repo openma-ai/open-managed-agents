@@ -44,12 +44,15 @@ export const fileMetadataResponseSchema: z.ZodType<BetaFileMetadata> = z
   })
   .strict();
 
+/**
+ * SDK 1.3 models `client.beta.files.list` as a `PageCursor`, so the list
+ * response carries only `data` and the forward `next_page` cursor — the
+ * legacy `{ has_more, first_id, last_id }` page fields are gone.
+ */
 export const filePageResponseSchema = z
   .object({
     data: z.array(fileMetadataResponseSchema),
-    has_more: z.boolean(),
-    first_id: z.string().nullable(),
-    last_id: z.string().nullable(),
+    next_page: z.string().nullable(),
   })
   .strict();
 

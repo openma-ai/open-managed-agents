@@ -124,6 +124,7 @@ describe("Cloudflare official Managed Agents route", () => {
       "archived_at",
       "created_at",
       "description",
+      "execution_identity",
       "id",
       "mcp_servers",
       "metadata",
@@ -147,9 +148,13 @@ describe("Cloudflare official Managed Agents route", () => {
       allowed_fallback_models: null,
       capabilities: null,
       created_at: expect.any(String),
+      deprecated_at: null,
       display_name: modelId,
+      lifecycle: "active",
+      line: null,
       max_input_tokens: null,
       max_tokens: null,
+      retires_at: null,
       type: "model",
     });
     const omaModels = await workerFetch(
@@ -204,11 +209,15 @@ describe("Cloudflare official Managed Agents route", () => {
       file: new File(["hello from cf"], "notes.txt", {
         type: "text/plain",
       }),
+      betas: ["files-api-2025-04-14"],
     });
     const retrievedFile = await client.beta.files.retrieveMetadata(
       uploadedFile.id,
+      { betas: ["files-api-2025-04-14"] },
     );
-    const downloadedFile = await client.beta.files.download(uploadedFile.id);
+    const downloadedFile = await client.beta.files.download(uploadedFile.id, {
+      betas: ["files-api-2025-04-14"],
+    });
 
     expect(uploadedFile).toMatchObject({
       id: expect.stringMatching(/^file_/),
@@ -331,7 +340,7 @@ describe("Cloudflare official Managed Agents route", () => {
     });
 
     const createdSkill = await client.beta.skills.create({
-      display_title: "Repository guide",
+      display_name: "Repository guide",
       files: [
         new File([SKILL_MARKDOWN], "repository-guide/SKILL.md", {
           type: "text/markdown",
@@ -340,33 +349,34 @@ describe("Cloudflare official Managed Agents route", () => {
           type: "text/plain",
         }),
       ],
+      betas: ["skills-2025-10-02"],
     });
-    const retrievedSkill = await client.beta.skills.retrieve(createdSkill.id);
+    const retrievedSkill = await client.beta.skills.retrieve(createdSkill.id, {
+      betas: ["skills-2025-10-02"],
+    });
     const initialSkillVersion = await client.beta.skills.versions.retrieve(
-      createdSkill.latest_version!,
-      { skill_id: createdSkill.id },
+      createdSkill.latest_version_id!,
+      { skill_id: createdSkill.id, betas: ["skills-2025-10-02"] },
     );
     const downloadedSkillVersion = await client.beta.skills.versions.download(
-      createdSkill.latest_version!,
-      { skill_id: createdSkill.id },
+      createdSkill.latest_version_id!,
+      { skill_id: createdSkill.id, betas: ["skills-2025-10-02"] },
     );
 
     expect(createdSkill).toMatchObject({
       id: expect.stringMatching(/^skill_/),
       type: "skill",
-      display_title: "Repository guide",
-      latest_version: expect.any(String),
-      source: "custom",
+      display_name: "Repository guide",
+      latest_version_id: expect.any(String),
+      source: { type: "custom" },
     });
     expect(retrievedSkill).toEqual(createdSkill);
     expect(initialSkillVersion).toMatchObject({
-      id: expect.stringMatching(/^skv_/),
+      id: createdSkill.latest_version_id,
       type: "skill_version",
       description: "How to work in this repository",
-      directory: "repository-guide",
       name: "repository-guide",
       skill_id: createdSkill.id,
-      version: createdSkill.latest_version,
     });
     expect(
       Object.keys(
@@ -497,7 +507,6 @@ describe("Cloudflare official Managed Agents route", () => {
       external_id: "cf-customer-01",
       metadata: { owner: "platform" },
       name: "Cloudflare Customer",
-      relationship: "external",
     });
     const retrievedUserProfile = await client.beta.userProfiles.retrieve(
       createdUserProfile.id,
@@ -513,7 +522,6 @@ describe("Cloudflare official Managed Agents route", () => {
       access_type: "application",
       external_id: "cf-customer-01",
       name: "Cloudflare Customer",
-      relationship: "external",
     });
     expect(retrievedUserProfile).toEqual(createdUserProfile);
 
@@ -766,14 +774,16 @@ describe("Cloudflare official Managed Agents route", () => {
       file: new File(["cloudflare work input"], "input.txt", {
         type: "text/plain",
       }),
+      betas: ["files-api-2025-04-14"],
     });
     const attachedSkill = await client.beta.skills.create({
-      display_title: "Cloudflare worker skill",
+      display_name: "Cloudflare worker skill",
       files: [
         new File([SKILL_MARKDOWN], "repository-guide/SKILL.md", {
           type: "text/markdown",
         }),
       ],
+      betas: ["skills-2025-10-02"],
     });
     const attachedMemoryStore = await client.beta.memoryStores.create({
       name: `worker-memory-${suffix}`,
@@ -839,13 +849,19 @@ describe("Cloudflare official Managed Agents route", () => {
       sessionClient.beta.sessions.events.list(session.id),
     ).resolves.toMatchObject({ data: expect.any(Array) });
     await expect(
-      sessionClient.beta.files.download(attachedFile.id).then((file) => file.text()),
+      sessionClient.beta.files.download(attachedFile.id, {
+        betas: ["files-api-2025-04-14"],
+      }).then((file) => file.text()),
     ).resolves.toBe("cloudflare work input");
-    const versions = await sessionClient.beta.skills.versions.list(attachedSkill.id);
+    const versions = await sessionClient.beta.skills.versions.list(
+      attachedSkill.id,
+      { betas: ["skills-2025-10-02"] },
+    );
     expect(versions.data).toHaveLength(1);
     await expect(
-      sessionClient.beta.skills.versions.download(versions.data[0]!.version, {
+      sessionClient.beta.skills.versions.download(versions.data[0]!.id, {
         skill_id: attachedSkill.id,
+        betas: ["skills-2025-10-02"],
       }).then((file) => file.arrayBuffer()),
     ).resolves.toBeInstanceOf(ArrayBuffer);
     await expect(

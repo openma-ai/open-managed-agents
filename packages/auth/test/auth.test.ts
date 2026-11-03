@@ -134,7 +134,7 @@ describe("managed worker bearer authentication", () => {
     });
   });
 
-  it("does not accept a workspace key as a standing worker bearer", async () => {
+  it("accepts a workspace key on Work routes for Bearer and x-api-key", async () => {
     const deps = dependencies();
     const app = new Hono();
     app.use("*", createAuthMiddleware(deps));
@@ -142,15 +142,19 @@ describe("managed worker bearer authentication", () => {
       context.json({ tenantId: context.get("tenant_id") }),
     );
 
-    const worker = await app.request("/v1/environments/env_01/work/poll", {
+    // SDK 1.x sends apiKey as Authorization: Bearer. Workspace admin of Work
+    // must keep working under that transport; environment credentials remain
+    // path-scoped separately.
+    const viaBearer = await app.request("/v1/environments/env_01/work/poll", {
       headers: { Authorization: "Bearer workspace-key" },
     });
-    const administrator = await app.request("/v1/environments/env_01/work/poll", {
+    const viaApiKey = await app.request("/v1/environments/env_01/work/poll", {
       headers: { "x-api-key": "workspace-key" },
     });
 
-    expect(worker.status).toBe(403);
-    expect(administrator.status).toBe(200);
+    expect(viaBearer.status).toBe(200);
+    expect(viaApiKey.status).toBe(200);
+    await expect(viaBearer.json()).resolves.toEqual({ tenantId: "workspace_admin" });
   });
 
   it("allows the claimed Work session bearer to maintain its own Work", async () => {

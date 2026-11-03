@@ -53,9 +53,10 @@ export function buildFileRoutes(
     }
     const response = filePageResponseSchema.safeParse({
       data: result.page.files.map(toFileMetadataResponse),
-      has_more: result.page.hasMore,
-      first_id: result.page.firstId,
-      last_id: result.page.lastId,
+      // The application page is directional (`before_id` / `after_id`); the
+      // SDK 1.3 `PageCursor` only understands the forward cursor, so the
+      // last item of a continued page becomes `next_page`.
+      next_page: result.page.hasMore ? result.page.lastId : null,
     });
     if (!response.success) {
       return c.json(apiError("Application returned an invalid file page"), 500);
