@@ -5,7 +5,7 @@ import {
   supportsDuplexProcess,
   supportsSandboxRuntime,
 } from "@open-managed-agents/sandbox";
-import { setSandboxForTest } from "../../../test/sandbox-stub";
+import { setCloudflareSandboxForTest } from "../src/runtime/sandbox";
 
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
@@ -18,7 +18,7 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
   }
 }
 
-afterEach(() => setSandboxForTest(undefined));
+afterEach(() => setCloudflareSandboxForTest(undefined));
 
 describe("CloudflareSandbox duplex process", () => {
   it("exposes the live process capability required by SandboxSpawner", () => {
@@ -29,7 +29,7 @@ describe("CloudflareSandbox duplex process", () => {
 
   it("exposes lease and portable filesystem checkpoint lifecycle", async () => {
     const calls: unknown[] = [];
-    setSandboxForTest({
+    setCloudflareSandboxForTest({
       async renewActivityTimeout() { calls.push(["renewActivityTimeout"]); },
       async createBackup(options: unknown) {
         calls.push(["createBackup", options]);
@@ -94,7 +94,7 @@ describe("CloudflareSandbox duplex process", () => {
           onError?(error: Error): void;
         }
       | undefined;
-    setSandboxForTest({
+    setCloudflareSandboxForTest({
       async exec(command: string) {
         const encoded = command.match(/'([A-Za-z0-9+/=]+)'\s*\|\s*base64\s+-d/)?.[1];
         if (encoded) {
@@ -138,7 +138,7 @@ describe("CloudflareSandbox duplex process", () => {
 
   it("settles exit and cleans up when kill has no callback", async () => {
     const commands: string[] = [];
-    setSandboxForTest({
+    setCloudflareSandboxForTest({
       async exec(command: string) {
         commands.push(command);
         return { stdout: "", stderr: "", exitCode: 0, success: true };

@@ -11,7 +11,6 @@ import type {
   ProcessHandle,
 } from "@open-managed-agents/sandbox";
 import type { Env } from "@open-managed-agents/shared";
-import { getSandbox as cfGetSandbox } from "@cloudflare/sandbox";
 import { sessionOutputsPrefix } from "@open-managed-agents/shared";
 import { cloudflareWorkspaceMountPrefix } from "@open-managed-agents/managed-runtime-cloudflare";
 // `bash-parser` is CJS; the bundler handles interop for worker builds.
@@ -24,9 +23,17 @@ const parseShellCommand = parseShell as (command: string) => {
   commands?: Array<Record<string, any>>;
 };
 
+/** Vitest override — see test/sandbox-stub + cloudflare-sandbox-duplex.test.ts */
+let cloudflareSandboxTestOverride: unknown;
+export function setCloudflareSandboxForTest(sandbox: unknown): void {
+  cloudflareSandboxTestOverride = sandbox;
+}
+
+
+
 export class CloudflareSandbox
   implements SandboxExecutor, SandboxDuplexProcessPort, SandboxRuntimePort {
-  private sandboxPromise: Promise<any>;
+  private sandboxPromise: Promise<any> | null = null;
   private env: Env;
   private sessionId: string;
   private mounted = false;
@@ -38,16 +45,31 @@ export class CloudflareSandbox
   constructor(env: Env, sessionId: string) {
     this.env = env;
     this.sessionId = sessionId;
-    try {
-      this.sandboxPromise = Promise.resolve(cfGetSandbox(env.SANDBOX! as any, sessionId));
-    } catch (err: any) {
-      this.sandboxPromise = Promise.reject(
-        new Error(`getSandbox failed (SANDBOX: ${typeof env.SANDBOX}, id: ${sessionId}): ${err?.message || err}`)
-      );
+  }
+
+  /** Resolve DO stub (or vitest override). Lazy so capability probes work without a binding. */
+  private resolveSandboxStub(): Promise<any> {
+    if (cloudflareSandboxTestOverride !== undefined) {
+      return Promise.resolve(cloudflareSandboxTestOverride);
     }
+    const ns = this.env.SANDBOX as DurableObjectNamespace | undefined;
+    if (!ns || typeof (ns as any).getByName !== "function") {
+      throw new Error(`SANDBOX binding missing getByName (got ${typeof ns})`);
+    }
+    // Sandbox SDK 1.0: Durable Object stub via getByName (replaces getSandbox).
+    return Promise.resolve((ns as any).getByName(this.sessionId));
   }
 
   private async getSandbox() {
+    if (!this.sandboxPromise) {
+      try {
+        this.sandboxPromise = this.resolveSandboxStub();
+      } catch (err: any) {
+        this.sandboxPromise = Promise.reject(
+          new Error(`getSandbox failed (SANDBOX: ${typeof this.env.SANDBOX}, id: ${this.sessionId}): ${err?.message || err}`),
+        );
+      }
+    }
     return this.sandboxPromise;
   }
 
@@ -922,14 +944,14 @@ export class CloudflareSandbox
       if (typeof sandbox.destroy === "function") await sandbox.destroy();
     } catch {}
     // Invalidate the cached stub. Next `getSandbox()` call will rebuild via
-    // `cfGetSandbox(env.SANDBOX, sessionId)`, which returns the same logical
-    // Sandbox DO (sessionId-keyed) but with a fresh RPC connection. Without
-    // this, the wrapper would hand the next caller a stub pointing at the
-    // container we just destroyed — followup exec calls would hit a stale
-    // RPC handle (observed staging 2026-05-19: "An RPC stub was not
-    // disposed properly" warning preceded the 53-min container wedge by
-    // ~12s, suggesting stale-stub reuse plays a role in the hang loop).
-    this.sandboxPromise = Promise.resolve(cfGetSandbox(this.env.SANDBOX! as any, this.sessionId));
+    // getByName (or the vitest override), yielding a fresh RPC connection to
+    // the same sessionId-keyed DO. Without this, the wrapper would hand the
+    // next caller a stub pointing at the container we just destroyed —
+    // followup exec calls would hit a stale RPC handle (observed staging
+    // 2026-05-19: "An RPC stub was not disposed properly" warning preceded
+    // the 53-min container wedge by ~12s, suggesting stale-stub reuse plays
+    // a role in the hang loop).
+    this.sandboxPromise = null;
     this.mounted = false;
   }
 
